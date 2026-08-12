@@ -1,0 +1,18 @@
+{
+  "name": "antiburn-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MPL-2.0",
+  "description": "pnpm workspace root for the antiburn desktop application.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/antiburn/antiburn.git"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "desktop": "pnpm --filter @antiburn/desktop"
+  }
+}

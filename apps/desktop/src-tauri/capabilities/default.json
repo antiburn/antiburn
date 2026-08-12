@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities granted to every antiburn window. Deliberately minimal: the shell's own commands carry the privileged work, so the webview needs no direct filesystem, shell, or process access.",
+  "windows": ["popover", "settings"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "dialog:default",
+    "opener:default",
+    "updater:default"
+  ]
+}

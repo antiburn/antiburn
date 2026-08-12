@@ -18,13 +18,16 @@ GitHub-hosted updates and separately consented, default-off anonymous analytics.
 crates/antiburn-local/   The engine: discovery, session analysis, repository
                          identity, pricing, and local persistence contracts.
                          Standalone workspace with its own lockfile.
+apps/desktop/            The desktop application: a Tauri 2 menu-bar shell
+                         (React 19 + TypeScript) over the engine. Its Rust
+                         crate is a standalone workspace of its own.
 docs/oss/                Approved source-boundary manifests; the engine's
                          mechanical boundary tests validate against them.
 ```
 
-The desktop application (`apps/desktop/`) lands in a later milestone.
-
 ## Build and test
+
+### Engine
 
 Requires Rust (see `rust-toolchain.toml`).
 
@@ -37,6 +40,16 @@ cargo test
 The test suite includes mechanical source-boundary checks (`tests/boundary.rs`)
 that enforce the network-free, local-only contract: prohibited concepts,
 network-capable dependencies, and manifest integrity all fail the build.
+
+### Desktop application
+
+Additionally requires Node 22+ with pnpm (`corepack enable`) and the Tauri
+platform dependencies. See [`apps/desktop/README.md`](apps/desktop/README.md).
+
+```bash
+pnpm install
+pnpm --filter @antiburn/desktop dev
+```
 
 ## Provenance
 

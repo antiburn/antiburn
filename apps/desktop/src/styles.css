@@ -1,0 +1,63 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+@import 'tailwindcss';
+
+/*
+ * Skeleton-level theming only. The design system (tokens, typography, control
+ * geometry, motion) arrives in a later stream; until then the shell follows
+ * the operating system's light/dark preference through `color-scheme` and
+ * Tailwind's default `prefers-color-scheme` dark variant.
+ */
+@theme {
+  --color-surface: #ffffff;
+  --color-surface-muted: #f2f2f5;
+  --color-ink: #16181d;
+  --color-ink-muted: #6b7280;
+  --color-hairline: #00000014;
+}
+
+@theme {
+  --color-surface-dark: #1c1d21;
+  --color-surface-muted-dark: #26282d;
+  --color-ink-dark: #f2f2f5;
+  --color-ink-muted-dark: #9aa0aa;
+  --color-hairline-dark: #ffffff1f;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+
+  /* The popover is a fixed-size window: never let it rubber-band or scroll. */
+  overscroll-behavior: none;
+  user-select: none;
+  cursor: default;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: var(--color-surface-dark);
+    color: var(--color-ink-dark);
+  }
+}

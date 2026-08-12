@@ -1,0 +1,11 @@
+# pnpm workspace root for antiburn's JavaScript/TypeScript packages.
+# The Rust engine (crates/antiburn-local) and the desktop app's Rust shell
+# (apps/desktop/src-tauri) are standalone Cargo workspaces and are not
+# members of this workspace.
+packages:
+  - apps/*
+
+# No dependency is allowed to run install scripts. If a future dependency
+# needs one, add it to `onlyBuiltDependencies` deliberately, with a note
+# saying what the script does.
+onlyBuiltDependencies: []

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated macOS bundle Info.plist by tauri-bundler.
+
+  LSUIElement makes antiburn an agent application: it lives in the menu bar
+  with no Dock icon and no menu-bar app menu. The shell applies the same
+  policy at runtime (NSApplication accessory activation policy) so unbundled
+  development runs behave identically.
+-->
+<plist version="1.0">
+  <dict>
+    <key>LSUIElement</key>
+    <true/>
+  </dict>
+</plist>
