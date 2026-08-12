@@ -1,0 +1,51 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* ==========================================================================
+   Generic control interaction and the standard push button.
+   ========================================================================== */
+
+/* Every button gets the same press feedback, so a control that opts out has
+   to say so explicitly rather than every control opting in. Unlayered, which
+   means a call site cancels it with `active:transform-none` rather than by
+   racing Tailwind's utility layer. */
+button,
+[role='button'] {
+  transition:
+    opacity 120ms ease-out,
+    transform 80ms ease-out,
+    background-color 120ms ease-out;
+}
+
+button:active,
+[role='button']:active {
+  opacity: 0.85;
+  transform: scale(0.98);
+}
+
+/* --- Push button --- */
+/* In the `components` layer so utility classes on the element win: a variant
+   that fills with the accent color just adds `bg-accent-fill`. */
+@layer components {
+  .ui-push-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--control-height-regular);
+    padding: 0 10px;
+    border-radius: var(--radius-control);
+    font-size: 12px;
+    letter-spacing: 0;
+    background: var(--color-bg-secondary);
+    color: var(--color-text-primary);
+    border: 0.5px solid var(--color-border);
+    transition: background-color 120ms ease-out;
+  }
+
+  .ui-push-button:hover {
+    background: var(--color-bg-tertiary);
+  }
+}

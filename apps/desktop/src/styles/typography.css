@@ -1,0 +1,68 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* ==========================================================================
+   Type scale. One class per step; the family and line-height come from the
+   base element rules, so a step only sets size, weight, and tracking.
+
+   Declared outside any `@layer`, which means these outrank Tailwind
+   utilities. That is deliberate — `type-title-3` sets its own weight, so a
+   call site that wants a different weight has to say `font-normal!`.
+   ========================================================================== */
+
+.type-large-title {
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.36px;
+}
+
+.type-title-1 {
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0.35px;
+}
+
+.type-title-2 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.43px;
+}
+
+.type-title-3 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.23px;
+}
+
+.type-headline {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.08px;
+}
+
+.type-body {
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: -0.08px;
+}
+
+.type-callout {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.type-footnote {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.12px;
+}
+
+.type-caption {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.06px;
+}

@@ -5,19 +5,28 @@ local [`antiburn-local`](../../crates/antiburn-local) engine.
 
 This is currently a **skeleton**. It builds, runs, shows a tray item, opens an
 anchored popover and a settings window, and proves the engine link end to end.
-Design system, views, and data land in later streams.
+The design foundation and the shared UI primitives are in place; views and data
+land in later streams.
 
 ## Layout
 
 ```text
+design.md       The design contract: tokens, type scale, motion, platform rules
 src/            React 19 + TypeScript frontend (Vite, Tailwind v4)
-  lib/          Route selection and the typed IPC surface
+  components/
+    ui/         Shared presentation primitives (no app state, no IPC)
+  lib/          Route selection, platform/focus modality, the typed IPC surface
+  styles/       The design foundation, imported by src/styles.css
   views/        One component per window
 scripts/        Icon generator (see src-tauri/icons/README.md)
 src-tauri/      The Tauri 2 shell: windows, tray, commands
   capabilities/ Webview permission grants
   icons/        Generated app and tray artwork
 ```
+
+Read [`design.md`](design.md) before any styling work. Component code uses the
+semantic Tailwind utilities it defines (`bg-surface`, `text-label`,
+`type-body`, …) rather than raw values.
 
 `src-tauri` is a **standalone Cargo workspace** with its own `Cargo.lock`. It is
 deliberately not joined with the engine's workspace: the engine resolves under

@@ -1,0 +1,324 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* ==========================================================================
+   Design tokens: color, surface, status, spacing, radius, control geometry.
+
+   Two layers, on purpose:
+
+   1. A raw palette of `--color-bg-*` / `--color-text-*` / `--color-*-val`
+      custom properties on `:root`, redeclared per theme branch. These are the
+      only values a theme override has to restate.
+   2. A `@theme` block of stable semantic aliases that point at the raw
+      palette. Tailwind turns each one into a utility (`bg-surface`,
+      `text-label`, `border-separator`, `rounded-control`, …), so component
+      code never names a theme branch.
+
+   Theme resolution, in cascade order:
+     :root                      light defaults
+     @supports (-apple-system)  live system label/separator/accent tokens
+     @media (prefers-color-scheme: dark)
+     :root[data-theme=light|dark]  explicit override for platforms without
+                                   live system tokens
+     @media (prefers-reduced-transparency: reduce)
+   ========================================================================== */
+
+@theme {
+  --color-surface: var(--color-bg-primary);
+  --color-surface-secondary: var(--color-bg-secondary);
+  --color-surface-tertiary: var(--color-bg-tertiary);
+  --color-surface-card: var(--color-bg-card);
+  --color-input-fill: var(--color-bg-input);
+  /* Row hover tint. Tracks surface-secondary in light mode, but stays more
+     muted in dark mode where a 12% white overlay reads too bright. */
+  --color-surface-hover: var(--color-bg-row-hover);
+  /* Content surface of any standard decorated window (not the translucent
+     menu-bar popover, which uses --color-surface). */
+  --color-surface-window: var(--color-bg-window);
+  /* Source-list / sidebar material for any multi-pane window. */
+  --color-surface-sidebar: var(--color-bg-sidebar);
+  /* Soft selected-row fill for any list or source list. Distinct from
+     accent-fill, which stays reserved for controls. */
+  --color-surface-selected: var(--color-bg-selected);
+  --color-label: var(--color-text-primary);
+  --color-label-secondary: var(--color-text-secondary);
+  --color-label-tertiary: var(--color-text-tertiary);
+  --color-separator: var(--color-border);
+  --color-accent: var(--color-accent-val);
+  --color-accent-hover: var(--color-accent-hover-val);
+  /* accent-fill is the concrete hex; the live system accent token breaks when
+     used as a background-color, so backgrounds must use this one. */
+  --color-accent-fill: var(--color-accent-fill-val);
+  --color-system-green: var(--color-system-green-val);
+  --color-system-orange: var(--color-system-orange-val);
+  --color-system-orange-tint: var(--color-system-orange-tint-val);
+  --color-system-yellow: var(--color-system-yellow-val);
+  --color-system-red: var(--color-system-red-val);
+  /* Legible red for *text/glyphs* on the red tint — the system red reads as a
+     fill but dips below AA as text on a /15 pill (≈4.04:1 light), so this
+     variant darkens in light mode and brightens in dark (same split as
+     gold-text / indigo-text). */
+  --color-system-red-text: var(--color-system-red-text-val);
+  --color-system-blue: var(--color-system-blue-val);
+  --color-system-indigo: var(--color-system-indigo-val);
+  /* Legible indigo for *text/glyphs* — the system indigo is fine as a fill but
+     too dark to read as text in dark mode, so this variant lightens there. */
+  --color-system-indigo-text: var(--color-system-indigo-text-val);
+  --color-system-gold: var(--color-system-gold-val);
+  /* Legible gold for *text/glyphs* on the gold tint — same split again. */
+  --color-system-gold-text: var(--color-system-gold-text-val);
+
+  /* Session-analytics chart tokens are theme-adaptive too and live in
+   * ./session-analytics-colors.css. */
+
+  /* Corner radii */
+  --radius-control: 5px;
+  --radius-popover: 10px;
+  --radius-small: 4px;
+}
+
+/* --- Light (default) --- */
+:root {
+  color-scheme: light dark;
+
+  /* Backgrounds */
+  --color-bg-primary: rgb(255 255 255 / 0.58);
+  --color-bg-secondary: rgb(0 0 0 / 0.08);
+  --color-bg-tertiary: rgb(0 0 0 / 0.12);
+  --color-bg-row-hover: rgb(0 0 0 / 0.04);
+
+  --color-bg-card: rgb(0 0 0 / 0.04);
+  /* Raised fill for text inputs/textareas. Light mode = whiter than surface;
+     dark mode = lighter gray than surface. The explicit [data-theme] values
+     are solid, so material behind the window cannot bleed through; the
+     default :root and prefers-color-scheme branches stay translucent to match
+     the rest of those palettes. */
+  --color-bg-input: rgb(255 255 255 / 0.5);
+
+  --color-bg-window: rgb(246 246 246 / 0.8);
+  --color-bg-sidebar: rgb(0 0 0 / 0.03);
+  --color-bg-selected: rgb(0 0 0 / 0.09);
+
+  /* Text — explicit fallbacks, replaced by live system tokens when available */
+  --color-text-primary: rgb(0 0 0 / 0.85);
+  --color-text-secondary: rgb(60 60 67 / 0.85);
+  --color-text-tertiary: rgb(60 60 67 / 0.55);
+
+  /* Borders */
+  --color-border: rgb(0 0 0 / 0.15);
+
+  /* Accent */
+  --color-accent-val: rgb(0 122 255);
+  --color-accent-fill-val: rgb(0 122 255);
+  --color-accent-hover-val: rgb(0 122 255 / 0.85);
+
+  /* Status — accessible variants, tuned for contrast on a light surface */
+  --color-system-green-val: rgb(36 138 61);
+  --color-system-orange-val: rgb(179 81 0);
+  /* standard orange, for fills/backgrounds */
+  --color-system-orange-tint-val: rgb(255 149 0);
+  --color-system-yellow-val: rgb(160 90 0);
+  --color-system-red-val: rgb(215 0 21);
+  --color-system-red-text-val: rgb(190 0 20);
+  --color-system-blue-val: rgb(0 122 255);
+  --color-system-indigo-val: rgb(88 86 214);
+  --color-system-indigo-text-val: rgb(88 86 214);
+  --color-system-gold-val: rgb(202 138 4);
+  --color-system-gold-text-val: rgb(146 100 0);
+
+  /* Spacing rhythm (multiples of 4) */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 20px;
+  /* Group separation in a settings-style pane, where 20px left titled groups
+     reading as one run of rows. */
+  --space-2xl: 24px;
+
+  /* Control geometry */
+  --control-height-regular: 22px;
+  --control-height-small: 17px;
+
+  /* Source-list / sidebar width for multi-pane windows. Geometry vars are not
+     @theme-registered; consume as w-[var(--sidebar-width)]. Sized for the 36px
+     rows in ui/SidebarNav: 68px of chrome (container + row padding, a 16px
+     icon and its gap) around the longest label, then rounded up on the 4px
+     scale so the strip stays proportionate to the window. */
+  --sidebar-width: 220px;
+}
+
+/* --- Live system tokens, where the engine exposes them --- */
+@supports (color: -apple-system-label) {
+  :root {
+    --color-text-primary: -apple-system-label;
+    --color-text-secondary: -apple-system-secondary-label;
+    --color-text-tertiary: -apple-system-tertiary-label;
+    --color-border: -apple-system-separator;
+    --color-accent-val: -apple-system-accent-color;
+  }
+}
+
+/* The system tertiary label is ~30% opacity in light mode, which reads as too
+   faint on a translucent surface. Bump it to ~50% so the hierarchy stays
+   (still below secondary's ~60%) but tertiary actually registers. Dark mode
+   keeps the system token, which already has appropriate contrast. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-text-tertiary: rgb(60 60 67 / 0.5);
+  }
+}
+
+/* --- Dark --- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg-primary: rgb(30 30 30 / 0.4);
+    --color-bg-secondary: rgb(255 255 255 / 0.12);
+    --color-bg-tertiary: rgb(255 255 255 / 0.18);
+    --color-bg-row-hover: rgb(255 255 255 / 0.07);
+    --color-bg-card: rgb(255 255 255 / 0.08);
+    --color-bg-input: rgb(255 255 255 / 0.08);
+    --color-bg-window: rgb(40 40 40 / 0.8);
+    --color-bg-sidebar: rgb(255 255 255 / 0.04);
+    --color-bg-selected: rgb(255 255 255 / 0.14);
+    --color-text-primary: rgb(255 255 255 / 0.92);
+    --color-text-secondary: rgb(235 235 245 / 0.72);
+    --color-border: rgb(255 255 255 / 0.18);
+    --color-accent-val: rgb(10 132 255);
+    --color-accent-fill-val: rgb(10 132 255);
+    --color-accent-hover-val: rgb(10 132 255 / 0.85);
+    --color-system-green-val: rgb(48 219 91);
+    --color-system-orange-val: rgb(255 179 64);
+    --color-system-orange-tint-val: rgb(255 159 10);
+    --color-system-yellow-val: rgb(255 212 38);
+    --color-system-red-val: rgb(255 105 97);
+    --color-system-red-text-val: rgb(255 138 128);
+    --color-system-blue-val: rgb(10 132 255);
+    --color-system-indigo-val: rgb(94 92 230);
+    --color-system-indigo-text-val: rgb(150 148 255);
+    --color-system-gold-val: rgb(255 204 0);
+    --color-system-gold-text-val: rgb(245 203 92);
+    /* The system tertiary label is ~25% opacity in dark mode; bump to ~35% so
+       it reads on a translucent surface (same rationale as light mode). */
+    --color-text-tertiary: rgb(235 235 245 / 0.35);
+    /* The live label, separator, and accent tokens auto-adapt in dark mode —
+       no overrides needed for those three. */
+  }
+}
+
+@supports (color: -apple-system-label) {
+  :root {
+    --color-text-primary: -apple-system-label;
+    --color-text-secondary: -apple-system-secondary-label;
+    --color-border: -apple-system-separator;
+    --color-accent-val: -apple-system-accent-color;
+  }
+}
+
+/* --- Explicit theme override, for platforms with no live system tokens --- */
+:root[data-theme='light'] {
+  --color-bg-primary: rgb(255 255 255 / 0.58);
+  --color-bg-secondary: rgb(0 0 0 / 0.08);
+  --color-bg-tertiary: rgb(0 0 0 / 0.12);
+  --color-bg-row-hover: rgb(0 0 0 / 0.08);
+  --color-bg-card: rgb(0 0 0 / 0.04);
+  --color-bg-input: rgb(255 255 255);
+  --color-bg-window: rgb(246 246 246);
+  --color-bg-sidebar: rgb(0 0 0 / 0.03);
+  --color-bg-selected: rgb(0 0 0 / 0.09);
+  --color-text-primary: rgb(0 0 0 / 0.85);
+  --color-text-secondary: rgb(60 60 67 / 0.85);
+  --color-text-tertiary: rgb(60 60 67 / 0.5);
+  --color-border: rgb(0 0 0 / 0.15);
+  --color-accent-val: rgb(0 122 255);
+  --color-accent-fill-val: rgb(0 122 255);
+  --color-accent-hover-val: rgb(0 122 255 / 0.85);
+  --color-system-green-val: rgb(36 138 61);
+  --color-system-orange-val: rgb(179 81 0);
+  --color-system-orange-tint-val: rgb(255 149 0);
+  --color-system-yellow-val: rgb(160 90 0);
+  --color-system-red-val: rgb(215 0 21);
+  --color-system-red-text-val: rgb(190 0 20);
+  --color-system-blue-val: rgb(0 122 255);
+  --color-system-indigo-val: rgb(88 86 214);
+  --color-system-indigo-text-val: rgb(88 86 214);
+  --color-system-gold-val: rgb(202 138 4);
+  --color-system-gold-text-val: rgb(146 100 0);
+}
+
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: light) {
+  :root {
+    --color-bg-primary: rgb(255 255 255);
+    --color-bg-window: rgb(246 246 246);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root {
+    --color-bg-window: rgb(32 32 32);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-theme='light'] {
+    --color-bg-primary: rgb(255 255 255);
+    --color-bg-window: rgb(246 246 246);
+  }
+}
+
+:root[data-theme='dark'] {
+  --color-bg-primary: rgb(30 30 30 / 0.92);
+  --color-bg-secondary: rgb(255 255 255 / 0.12);
+  --color-bg-tertiary: rgb(255 255 255 / 0.18);
+  --color-bg-row-hover: rgb(255 255 255 / 0.04);
+  --color-bg-card: rgb(255 255 255 / 0.08);
+  --color-bg-input: rgb(58 58 60);
+  --color-bg-window: rgb(32 32 32);
+  --color-bg-sidebar: rgb(255 255 255 / 0.04);
+  --color-bg-selected: rgb(255 255 255 / 0.14);
+  --color-text-primary: rgb(255 255 255 / 0.92);
+  --color-text-secondary: rgb(235 235 245 / 0.72);
+  --color-text-tertiary: rgb(235 235 245 / 0.45);
+  --color-border: rgb(255 255 255 / 0.18);
+  --color-accent-val: rgb(10 132 255);
+  --color-accent-fill-val: rgb(10 132 255);
+  --color-accent-hover-val: rgb(10 132 255 / 0.85);
+  --color-system-green-val: rgb(48 219 91);
+  --color-system-orange-val: rgb(255 179 64);
+  --color-system-orange-tint-val: rgb(255 159 10);
+  --color-system-yellow-val: rgb(255 212 38);
+  --color-system-red-val: rgb(255 105 97);
+  --color-system-red-text-val: rgb(255 138 128);
+  --color-system-blue-val: rgb(10 132 255);
+  --color-system-indigo-val: rgb(94 92 230);
+  --color-system-indigo-text-val: rgb(150 148 255);
+  --color-system-gold-val: rgb(255 204 0);
+  --color-system-gold-text-val: rgb(245 203 92);
+}
+
+/* Must follow the :root[data-theme="dark"] block above — media queries add no
+   specificity, so an earlier rule with the same selector would lose.
+
+   Only --color-bg-window needs a reduced-transparency override.
+   --color-bg-sidebar and --color-bg-selected are low-alpha tints painted *on
+   top of* the window surface, never over the desktop, so once the window is
+   opaque they composite to opaque too; giving them solid values would just
+   hard-code a color that already falls out of the stack. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-theme='dark'] {
+    --color-bg-window: rgb(32 32 32);
+  }
+}
+
+@supports (color: -apple-system-label) {
+  :root[data-theme='light'],
+  :root[data-theme='dark'] {
+    --color-text-primary: -apple-system-label;
+    --color-text-secondary: -apple-system-secondary-label;
+    --color-border: -apple-system-separator;
+    --color-accent-val: -apple-system-accent-color;
+  }
+}

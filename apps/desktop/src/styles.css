@@ -4,33 +4,37 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+/*
+ * The single stylesheet the app loads. Cascade order matters:
+ *
+ *   tailwindcss                 preflight + the theme/utility layers
+ *   tokens                      @theme aliases and every palette branch
+ *   session-analytics-colors    the session-analytics @theme sub-palette
+ *   base                        unlayered element behavior
+ *   typography                  unlayered type scale (outranks utilities)
+ *   focus                       keyboard-only focus ring
+ *   controls                    button interaction + .ui-push-button
+ *   platform-controls           styling for the headless control primitives
+ *   motion                      reduced-motion clamp, last so it wins
+ *
+ * Component-scoped stylesheets (text-roll.css) are imported by the component
+ * that owns them, not from here.
+ */
+
 @import 'tailwindcss';
+@import './styles/tokens.css';
+@import './styles/session-analytics-colors.css';
+@import './styles/base.css';
+@import './styles/typography.css';
+@import './styles/focus.css';
+@import './styles/controls.css';
+@import './styles/platform-controls.css';
+@import './styles/motion.css';
 
 /*
- * Skeleton-level theming only. The design system (tokens, typography, control
- * geometry, motion) arrives in a later stream; until then the shell follows
- * the operating system's light/dark preference through `color-scheme` and
- * Tailwind's default `prefers-color-scheme` dark variant.
+ * App shell layout. Everything above is the shared design foundation; these
+ * few rules are this app's own windows.
  */
-@theme {
-  --color-surface: #ffffff;
-  --color-surface-muted: #f2f2f5;
-  --color-ink: #16181d;
-  --color-ink-muted: #6b7280;
-  --color-hairline: #00000014;
-}
-
-@theme {
-  --color-surface-dark: #1c1d21;
-  --color-surface-muted-dark: #26282d;
-  --color-ink-dark: #f2f2f5;
-  --color-ink-muted-dark: #9aa0aa;
-  --color-hairline-dark: #ffffff1f;
-}
-
-:root {
-  color-scheme: light dark;
-}
 
 html,
 body,
@@ -38,26 +42,16 @@ body,
   height: 100%;
 }
 
+/*
+ * The foundation leaves the document transparent so a window can opt into
+ * translucent material. Neither of this app's windows does yet, so the shell
+ * paints the standard window surface itself.
+ *
+ * These read the raw palette variables rather than the `@theme` aliases:
+ * Tailwind only emits an alias that a generated utility uses, and no utility
+ * references these two.
+ */
 body {
-  margin: 0;
-  background-color: var(--color-surface);
-  color: var(--color-ink);
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-
-  /* The popover is a fixed-size window: never let it rubber-band or scroll. */
-  overscroll-behavior: none;
-  user-select: none;
-  cursor: default;
-}
-
-@media (prefers-color-scheme: dark) {
-  body {
-    background-color: var(--color-surface-dark);
-    color: var(--color-ink-dark);
-  }
+  background-color: var(--color-bg-window);
+  color: var(--color-text-primary);
 }

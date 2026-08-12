@@ -6,12 +6,20 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { App } from './App';
+import { installFocusModality } from './lib/focusModality';
+import { applyPlatformAttribute } from './lib/platform';
 import './styles.css';
 
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('index.html is missing the #root mount point');
 }
+
+// Both write attributes the stylesheet keys off, so they run before the first
+// paint: `data-platform` guards the platform-specific control rules, and
+// `data-keyboard` gates the focus ring.
+applyPlatformAttribute();
+installFocusModality();
 
 createRoot(container).render(
   <StrictMode>

@@ -1,0 +1,34 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* ==========================================================================
+   Reduced-motion baseline.
+
+   One global clamp rather than per-component opt-ins: any animation or
+   transition added anywhere is neutralized by default, and a surface that
+   still needs a hint of movement re-states a short duration below.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  /* The one documented exception. Under reduced motion the segmented
+     control's sliding indicator is replaced by a per-segment fill
+     (`motion-reduce:block` in SegmentedControl), and an instant swap between
+     two filled segments reads as a flicker. A 60ms crossfade is short enough
+     to stay well inside "no motion" while keeping the change legible: it is a
+     color change, not movement. */
+  .ui-segmented-reduced-fill {
+    transition-duration: 60ms !important;
+  }
+}
