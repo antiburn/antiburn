@@ -1,0 +1,282 @@
+# Approved denylist for the first antiburn public repository commit.
+#
+# Deny rules take precedence over source-allowlist.toml. `path` rules prevent
+# source copying. `concept` rules must also be checked against adapted output so
+# prohibited behavior cannot be hidden inside an otherwise allowed file.
+#
+# Both source manifests are published with the public repository so its
+# deterministic source-boundary check is reproducible. Concept rules do not
+# apply to the manifests' own rule text; the checker must exempt the manifest
+# files (or their public copies) from concept-string matching.
+
+schema_version = 1
+status = "approved"
+# Active canonical private repository and provenance source for the initial OSS extraction. This
+# repository and exact reviewed commit identify the source tree whose deny boundary was reviewed.
+source_repository = "TeamCadenceAI/cadence"
+current_canonical_private_repository = "TeamCadenceAI/cadence"
+# The D-020 and D-021 frontend slices were reviewed at later commits on this same docs-only
+# branch; the desktop/ source tree is unchanged from this commit. Refresh source_commit whenever
+# a manifest amendment reviews a changed source tree.
+source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
+# The intended future private target is not an OSS prerequisite and has no source SHA yet. If a
+# later authorized platform migration makes it canonical, version this manifest at the next source
+# review to record its exact reviewed commit while retaining Cadence provenance.
+intended_future_private_repository = "antiburn/antiburn-cloud"
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022"]
+default_action = "deny"
+glob_semantics = "* matches one path segment; ** matches recursively"
+approval_note = "Phase 0 complete; implementation checks run when their artifacts exist"
+
+[[rule]]
+id = "private-git-history"
+kind = "path"
+patterns = [".git/**"]
+reason = "The public repository starts with a new root commit and no private history."
+
+[[rule]]
+id = "web-backend-and-infrastructure"
+kind = "path"
+patterns = [
+  "crates/api/**",
+  "crates/db/**",
+  "crates/worker/**",
+  "web/**",
+  "migrations/**",
+  "infra/**",
+]
+reason = "Cadence cloud services, tenant data, deployment infrastructure, and web UI are outside the public local app."
+
+[[rule]]
+id = "private-domain-models"
+kind = "path"
+patterns = ["crates/domain/**"]
+exceptions = ["crates/domain/src/agent_kind.rs may inform a replacement DTO but must not be copied"]
+reason = "The domain crate contains backend, organization, Radar, Tune-up, publication, and web contracts."
+
+[[rule]]
+id = "current-desktop-frontend"
+kind = "path"
+patterns = ["desktop/src/**", "desktop/index.html", "desktop/package.json"]
+exceptions = [
+  "Only the paths and content slices explicitly named by source-allowlist.toml rules desktop-style-foundation, radix-control-styles, analytics-color-tokens, generic-react-primitives, and skeleton-contract-replacement are exempt under D-020.",
+  "Only the paths and content slices explicitly named by source-allowlist.toml rules local-presentation-support, local-environment-identity-replacement, local-session-analytics-shaping, local-session-cost-replacement, local-presentation-primitives, local-orchestration-presentation, local-session-analytics-leaves, local-session-analytics-decoupled-leaves, local-session-cost-badges, local-session-analytics-composition, local-recent-activity-presentation, and local-repository-list-replacement are additionally exempt under D-021.",
+  "An adapt exception authorizes only the behavior and exclusions recorded by its allowlist rule; it never authorizes copying an entire mixed file unchanged.",
+]
+reason = "D-020 and D-021 approve exact, rights-cleared design, primitive, and local-domain presentation slices. Every other frontend file, package manifest, excluded mixed-file section, container, store, command binding, DTO, simulation, fixture, URL, and asset remains denied until separately reviewed."
+
+[[rule]]
+id = "private-local-presentation-coupling"
+kind = "concept"
+patterns = [
+  "frontend import of the private global store",
+  "frontend import of a private Tauri command binding",
+  "frontend product analytics or Sentry event",
+  "targetOrgId or publicationId in a public presentation identity",
+  "backend/refined cost preference or Cadence-authoritative cost snapshot",
+  "upload status, upload error, upload limit, or publication action in public local presentation",
+  "Radar, Tune-up, ambience, or team-update row in Local Activity",
+  "Cloud dashboard or open-session-online action",
+  "organization lock or server-controlled repository eligibility",
+  "private AgentIcon, LinuxIcon, provider icon, or branded artwork source",
+]
+reason = "D-021 authorizes callback-driven local presentation and clean replacements, not private containers, identities, effects, services, artwork, or commercial feature behavior hidden inside approved mixed files."
+
+[[rule]]
+id = "current-tauri-app-shell"
+kind = "path"
+patterns = [
+  "desktop/src-tauri/src/*.rs",
+  "desktop/src-tauri/tauri*.conf.json",
+  "desktop/src-tauri/capabilities/**",
+]
+reason = "The current Tauri shell remains denied while approved generic tray, window, theme, and updater mechanics are reviewed at file/module granularity under D-017; private commands, state, CLI, and configuration remain private."
+
+[[rule]]
+id = "authentication-upload-and-publication"
+kind = "path"
+patterns = [
+  "desktop/src-tauri/src/core/api_client.rs",
+  "desktop/src-tauri/src/core/api_helpers.rs",
+  "desktop/src-tauri/src/core/app_state.rs",
+  "desktop/src-tauri/src/core/config.rs",
+  "desktop/src-tauri/src/core/jwt.rs",
+  "desktop/src-tauri/src/core/login.rs",
+  "desktop/src-tauri/src/core/monitor.rs",
+  "desktop/src-tauri/src/core/publication*.rs",
+  "desktop/src-tauri/src/core/session_gate.rs",
+  "desktop/src-tauri/src/core/session_observations.rs",
+  "desktop/src-tauri/src/core/session_visibility.rs",
+  "desktop/src-tauri/src/core/transport.rs",
+  "desktop/src-tauri/src/core/upload.rs",
+  "desktop/src-tauri/src/session_export/**",
+]
+reason = "Authentication, organizations, session publication/upload, server DTOs, and commercial eligibility remain private."
+
+[[rule]]
+id = "telemetry-device-and-commercial-enrichment"
+kind = "path"
+patterns = [
+  "desktop/src-tauri/src/core/analytics.rs",
+  "desktop/src-tauri/src/core/ambience.rs",
+  "desktop/src-tauri/src/core/device_info.rs",
+  "desktop/src-tauri/src/core/orchestration.rs",
+  "desktop/src-tauri/src/core/tracing.rs",
+]
+reason = "Cadence telemetry, device reporting, commercial orchestration, and backend enrichment are excluded from v1."
+
+[[rule]]
+id = "provider-usage"
+kind = "path"
+patterns = [
+  "desktop/src-tauri/crates/provider-usage/**",
+  "desktop/src-tauri/src/provider_usage/**",
+  "desktop/src-tauri/src/core/provider_usage_capture.rs",
+  "desktop/src-tauri/src/core/tests/provider_usage_capture_tests.rs",
+  "desktop/src-tauri/src/tests/provider_usage*.rs",
+]
+reason = "D-019 requires a passive Local Provider Usage subset, but the current implementation remains denied until exact review separates rights-cleared session/passive aggregation and presentation from credential, account-request, loopback, socket, IPC, telemetry, and private-policy code."
+
+[[rule]]
+id = "pricing-provider-signals"
+kind = "path"
+patterns = [
+  "crates/pricing/src/signal.rs",
+  "crates/pricing/tests/signal_tests.rs",
+  "crates/pricing/tests/fixtures/pricing_signal/**",
+  "desktop/src-tauri/src/core/pricing_hint.rs",
+  "desktop/src-tauri/src/core/runtime_pricing.rs",
+  "desktop/src-tauri/src/core/tests/pricing_hint_tests.rs",
+]
+reason = "Provider-plan detection and authenticated/backend pricing refinement are not part of local API-equivalent cost estimation."
+
+[[rule]]
+id = "live-agent-probe-storage"
+kind = "path"
+patterns = [
+  "desktop/src-tauri/src/core/agents/local_api_cache.rs",
+  "desktop/src-tauri/src/core/antigravity_store.rs",
+]
+reason = "These modules cache or derive live/provider observations outside the D-007 disk-only contract."
+
+[[rule]]
+id = "live-agent-probe-behavior"
+kind = "concept"
+patterns = [
+  "loopback HTTP or HTTPS",
+  "localhost or 127.0.0.1 provider requests",
+  "generic port discovery",
+  "lsof or netstat agent-port enumeration",
+  "provider process command-line inspection",
+  "CSRF, cookie, session-token, or provider-token extraction",
+  "Windsurf or Antigravity language-server RPC",
+  "provider local-API response caches",
+  "subprocess network egress inside the engine (git push or any network-capable child command)",
+]
+reason = "D-007 permits documented files, read-only databases, and bounded WSL operations only."
+
+[[rule]]
+id = "cue-and-realtime-integrations"
+kind = "path"
+patterns = [
+  "crates/cue/**",
+  "desktop/src-tauri/src/cue/**",
+  "desktop/src-tauri/src/core/realtime_redaction.rs",
+  "desktop/src-tauri/src/core/realtime_redaction_install.rs",
+  "desktop/src-tauri/src/core/tests/realtime_redaction*.rs",
+]
+reason = "Cue memory and realtime hook/plugin installers are explicitly excluded from the v1 public app."
+
+[[rule]]
+id = "publication-skill-contract"
+kind = "concept"
+patterns = [
+  "PublicationSkillDescription",
+  "publication_skill_descriptions",
+  "MAX_PUBLICATION_SKILL_",
+  "Cadence-managed skill identity",
+]
+reason = "The public local crate needs a local skill DTO, not the Cadence server publication contract."
+
+[[rule]]
+id = "real-transcript-harness"
+kind = "path"
+patterns = ["desktop/src-tauri/crates/session-analysis/tests/real_transcript_parity.rs"]
+reason = "The harness reads live ~/.claude transcripts and encodes a production-data workflow unsuitable for the public test suite."
+replacement = "Use checked-in synthetic parity fixtures only."
+
+[[rule]]
+id = "production-derived-fixtures"
+kind = "concept"
+patterns = [
+  "real user transcripts",
+  "customer repository content",
+  "private prompts or responses",
+  "real usernames, home paths, repository names, tokens, or endpoints",
+  "real developer usernames, home paths, or captured machine output (lsof/ps lines) in inline test modules of adapted source",
+]
+reason = "D-010 requires synthetic fixtures by default; redaction alone is not publication approval."
+
+[[rule]]
+id = "secret-redaction-v1"
+kind = "path"
+patterns = [
+  "crates/secret-redaction/**",
+  "desktop/src-tauri/src/core/secret_redaction.rs",
+  "desktop/src-tauri/src/core/tests/secret_redaction_tests.rs",
+]
+reason = "The v1 app does not upload transcripts, emit session telemetry, or create automatic support bundles, so runtime secret redaction adds no required boundary protection."
+replacement = "User-initiated exports display a sensitive-content warning; never log raw transcript content. Revisit only if sharing, upload, telemetry, support bundles, or cloud sync is added."
+
+[[rule]]
+id = "commercial-branding-and-assets"
+kind = "path"
+patterns = [
+  "desktop/public/images/**",
+  "desktop/src-tauri/icons/**",
+  "desktop/src/components/icons/**",
+  "desktop/design.md",
+  "desktop/design.dark.md",
+]
+exceptions = [
+  "desktop/design.md and desktop/design.dark.md may inform only the consolidated, neutral public design contract authorized by source-allowlist.toml rule desktop-design-contract under D-020.",
+]
+reason = "Existing artwork and the unreviewed private presentation layer are not approved public inputs. D-020 permits one consolidated product-neutral design contract, not wholesale publication of private branding, examples, or assets."
+replacement = "Create independently approved public app artwork and authorize any adapted product-neutral design source explicitly."
+
+[[rule]]
+id = "commercial-release-infrastructure"
+kind = "path"
+patterns = [
+  ".github/workflows/**",
+  "desktop/release/**",
+  "desktop/scripts/setup-releases-bucket.sh",
+]
+exceptions = [
+  "Only .github/workflows/release-desktop.yml may inform the adapted public release workflow under source-allowlist.toml rule release-workflow-adaptation; every other workflow, credential, and release identity remains denied.",
+]
+reason = "The public repository receives its GitHub Release workflow by adapting only the approved stage design, without private credentials, Sentry steps, cloud-storage promotion, or Cadence release identities."
+
+[[rule]]
+id = "commercial-identities-secrets-and-hosts"
+kind = "concept"
+patterns = [
+  "ai.teamcadence.cadence",
+  "teamcadence.ai",
+  "Cadence authentication or organization identifiers",
+  "Cadence API, telemetry, Sentry, Stripe, AWS, or Cloudflare secrets",
+  "commercial updater public or private keys",
+  "commercial release bucket, CDN, role, account, or endpoint identifiers",
+]
+reason = "The public product uses ai.antiburn.desktop, a separate GitHub Release namespace and updater key, and no commercial release infrastructure."
+
+[[rule]]
+id = "unsafe-links-and-binary-artifacts"
+kind = "concept"
+patterns = [
+  "symlink escaping the public repository",
+  "unexplained executable or binary asset",
+  "generated file without generator/source note",
+  "vendored dependency without source and license evidence",
+]
+reason = "D-009 and D-010 require reviewable source, asset, and dependency provenance."

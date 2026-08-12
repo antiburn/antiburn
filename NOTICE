@@ -1,0 +1,8 @@
+antiburn
+Copyright (c) 2026 Cadence
+
+This repository's source code is licensed under the Mozilla Public License,
+v. 2.0 (see LICENSE). It begins from a fresh Git root containing only the
+approved public subset of a previously private implementation, admitted under
+the source-boundary manifests in docs/oss/ and published by an authorized
+MPL-2.0 commit of the Cadence legal entity.

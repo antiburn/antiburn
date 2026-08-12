@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "provider_version": "1.1.25",
+  "capture_month": "2026-07",
+  "operation": "opencode fork",
+  "tables": {
+    "session": [
+      {
+        "id": "ses_parent",
+        "parent_id": null,
+        "directory": "/Users/example/work/acme",
+        "title": "Parent statement",
+        "time_created": 1785479562621,
+        "time_updated": 1785479565840
+      },
+      {
+        "id": "ses_child",
+        "parent_id": null,
+        "directory": "/Users/example/work/acme",
+        "title": "Parent statement (fork #1)",
+        "time_created": 1785479571227,
+        "time_updated": 1785479578667
+      },
+      {
+        "id": "ses_similar",
+        "parent_id": null,
+        "directory": "/Users/example/work/acme",
+        "title": "Parent statement (fork #2)",
+        "time_created": 1785479581227,
+        "time_updated": 1785479588667
+      }
+    ],
+    "message": [
+      {"id":"msg_parent_user","session_id":"ses_parent","time_created":1785479562643,"time_updated":1785479565859,"data":{"role":"user"}},
+      {"id":"msg_parent_assistant","session_id":"ses_parent","time_created":1785479562887,"time_updated":1785479565823,"data":{"role":"assistant","parentID":"msg_parent_user"}},
+      {"id":"msg_child_user_1","session_id":"ses_child","time_created":1785479562643,"time_updated":1785479571234,"data":{"role":"user"}},
+      {"id":"msg_child_assistant_1","session_id":"ses_child","time_created":1785479562887,"time_updated":1785479571238,"data":{"role":"assistant","parentID":"msg_child_user_1"}},
+      {"id":"msg_child_user_2","session_id":"ses_child","time_created":1785479576514,"time_updated":1785479578686,"data":{"role":"user"}},
+      {"id":"msg_child_assistant_2","session_id":"ses_child","time_created":1785479576704,"time_updated":1785479578661,"data":{"role":"assistant","parentID":"msg_child_user_2"}},
+      {"id":"msg_similar_user_1","session_id":"ses_similar","time_created":1785479582643,"time_updated":1785479585859,"data":{"role":"user"}},
+      {"id":"msg_similar_assistant_1","session_id":"ses_similar","time_created":1785479582887,"time_updated":1785479585823,"data":{"role":"assistant","parentID":"msg_similar_user_1"}},
+      {"id":"msg_similar_user_2","session_id":"ses_similar","time_created":1785479586514,"time_updated":1785479588686,"data":{"role":"user"}},
+      {"id":"msg_similar_assistant_2","session_id":"ses_similar","time_created":1785479586704,"time_updated":1785479588661,"data":{"role":"assistant","parentID":"msg_similar_user_2"}}
+    ],
+    "part": [
+      {"id":"prt_parent_user","message_id":"msg_parent_user","session_id":"ses_parent","time_created":1785479562881,"time_updated":1785479562881,"data":{"type":"text","text":"State the parent marker"}},
+      {"id":"prt_parent_assistant","message_id":"msg_parent_assistant","session_id":"ses_parent","time_created":1785479565562,"time_updated":1785479565562,"data":{"type":"text","text":"This is the parent marker."}},
+      {"id":"prt_child_user_1","message_id":"msg_child_user_1","session_id":"ses_child","time_created":1785479571236,"time_updated":1785479571236,"data":{"type":"text","text":"State the parent marker"}},
+      {"id":"prt_child_assistant_1","message_id":"msg_child_assistant_1","session_id":"ses_child","time_created":1785479571240,"time_updated":1785479571240,"data":{"type":"text","text":"This is the parent marker."}},
+      {"id":"prt_child_user_2","message_id":"msg_child_user_2","session_id":"ses_child","time_created":1785479576702,"time_updated":1785479576702,"data":{"type":"text","text":"State the child marker"}},
+      {"id":"prt_child_assistant_2","message_id":"msg_child_assistant_2","session_id":"ses_child","time_created":1785479578322,"time_updated":1785479578322,"data":{"type":"text","text":"This is the child marker."}},
+      {"id":"prt_similar_user_1","message_id":"msg_similar_user_1","session_id":"ses_similar","time_created":1785479582881,"time_updated":1785479582881,"data":{"type":"text","text":"A different opening prompt"}},
+      {"id":"prt_similar_assistant_1","message_id":"msg_similar_assistant_1","session_id":"ses_similar","time_created":1785479585562,"time_updated":1785479585562,"data":{"type":"text","text":"A different opening response."}},
+      {"id":"prt_similar_user_2","message_id":"msg_similar_user_2","session_id":"ses_similar","time_created":1785479586702,"time_updated":1785479586702,"data":{"type":"text","text":"State another marker"}},
+      {"id":"prt_similar_assistant_2","message_id":"msg_similar_assistant_2","session_id":"ses_similar","time_created":1785479588322,"time_updated":1785479588322,"data":{"type":"text","text":"This is another marker."}}
+    ]
+  },
+  "verified_contract": {
+    "fork_parent_id_is_null": true,
+    "copied_rows_receive_new_message_and_part_ids": true,
+    "copied_rows_preserve_original_message_timestamps": true,
+    "generated_fork_title_suffix": " (fork #1)"
+  }
+}

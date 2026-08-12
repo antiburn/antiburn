@@ -1,0 +1,720 @@
+# Approved source inventory for the first antiburn public repository commit.
+#
+# Rules authorize private-repository inputs, not permission to copy an entire
+# directory unchanged. `adapt` requires extracting only the behavior described
+# here and satisfying every matching deny rule. Independently authored public
+# files use Git/DCO provenance instead of synthetic private-source rules; the
+# denylist and publication checks still apply to the complete public tree.
+
+schema_version = 1
+status = "approved"
+# Active canonical private repository and provenance source for the initial OSS extraction. This
+# repository and exact reviewed commit identify the source tree whose rights and boundary were
+# reviewed.
+source_repository = "TeamCadenceAI/cadence"
+current_canonical_private_repository = "TeamCadenceAI/cadence"
+# The D-020 and D-021 frontend slices were reviewed at later commits on this same docs-only
+# branch; the desktop/ source tree is unchanged from this commit. Refresh source_commit whenever
+# a manifest amendment reviews a changed source tree.
+source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
+# The intended future private target is not an OSS prerequisite and has no source SHA yet. If a
+# later authorized platform migration makes it canonical, version this manifest at the next source
+# review to record its exact reviewed commit while retaining Cadence provenance.
+intended_future_private_repository = "antiburn/antiburn-cloud"
+governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022"]
+default_action = "deny"
+publication_authorization = "authorized MPL-2.0 repository commit or merge; unresolved rights remain denied"
+third_party_resolution = "deferred until the public local-crate manifest and lockfile exist"
+glob_semantics = "* matches one path segment; ** matches recursively"
+approval_note = "Phase 0 complete; implementation checks run when their artifacts exist"
+fixture_resolution = "replace current initial-context fixtures during engine extraction"
+
+[[rule]]
+id = "analysis-engine"
+source_paths = ["desktop/src-tauri/crates/session-analysis/src/**"]
+path_kind = "directory"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/analysis/"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Preserve vendor-neutral parsing, normalization, metrics, and initial-context behavior.",
+  "Replace Cadence package names and private DTO dependencies with public local-crate types.",
+  "Do not retain publication, backend-enrichment, provider-usage, or telemetry contracts.",
+]
+
+[[rule]]
+id = "analysis-manifest"
+source_paths = ["desktop/src-tauri/crates/session-analysis/Cargo.toml"]
+path_kind = "file"
+disposition = "replace"
+destination = "crates/antiburn-local/Cargo.toml"
+provenance = "Cadence company-authored manifest used only as dependency evidence"
+current_license = "No package license field; private workspace source"
+intended_license = "MPL-2.0"
+notes = [
+  "Create a self-contained public manifest rather than copying the private manifest.",
+  "Remove cadence-pricing and cadence-skill-details path dependencies.",
+  "Run the D-010 license check against every locked direct and transitive dependency.",
+]
+
+[[rule]]
+id = "analysis-synthetic-fixtures"
+source_paths = ["desktop/src-tauri/crates/session-analysis/tests/fixtures/initial_context/**"]
+path_kind = "directory"
+disposition = "replace"
+destination = "crates/antiburn-local/tests/fixtures/initial_context/"
+provenance = "Private test fixtures not copied because repository evidence cannot establish their origin"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Create new minimal fixtures from public format specifications during engine extraction.",
+  "Do not use the current fixture text as an input to the replacement.",
+  "Use obviously fictional identities and document each generated fixture's purpose.",
+  "Verification confirmed the replacement is required: claude_realistic.jsonl references a real commercial product (Dashpivot) in its skill list.",
+]
+
+[[rule]]
+id = "agent-framework"
+source_paths = [
+  "desktop/src-tauri/src/core/agents/mod.rs",
+  "desktop/src-tauri/src/core/agents/path_codec.rs",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/discovery/"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain local session source models, bounded file reads, path classification, and deduplication.",
+  "Remove monitor/upload caches, publication previews, Cadence state, and private app events.",
+  "Limit WSL orchestration to Claude Code, Codex, and OpenCode as ratified in D-007.",
+]
+
+[[rule]]
+id = "disk-agent-adapters"
+source_paths = [
+  "desktop/src-tauri/src/core/agents/amp_code.rs",
+  "desktop/src-tauri/src/core/agents/claude.rs",
+  "desktop/src-tauri/src/core/agents/claude_subagents.rs",
+  "desktop/src-tauri/src/core/agents/cline.rs",
+  "desktop/src-tauri/src/core/agents/codex.rs",
+  "desktop/src-tauri/src/core/agents/codex_subagents.rs",
+  "desktop/src-tauri/src/core/agents/copilot.rs",
+  "desktop/src-tauri/src/core/agents/cursor.rs",
+  "desktop/src-tauri/src/core/agents/kiro.rs",
+  "desktop/src-tauri/src/core/agents/opencode.rs",
+  "desktop/src-tauri/src/core/agents/pi.rs",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/discovery/agents/"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract documented filesystem and read-only database discovery only.",
+  "Keep bounded mounted-WSL behavior only for Claude Code, Codex, and OpenCode.",
+  "Retain the current bounded Claude WSL discovery; D-007 as amended includes it in the v1 matrix.",
+  "Remove Cadence publication, monitor, provider-usage, organization, and UI-specific behavior.",
+  "Redefine publication::LocalForkObservation and the session_observations fork observers as engine-local fork-observation types; cursor.rs and opencode.rs thread the publication type through their core discovery signatures and do not compile without the replacement.",
+]
+
+[[rule]]
+id = "disk-agent-subagent-adapters"
+source_paths = ["desktop/src-tauri/src/core/agents/antigravity_subagents.rs"]
+path_kind = "file"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/discovery/agents/antigravity_subagents.rs"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain only file/database-backed parent-child session relationships.",
+  "Do not import provider-usage observations or live process/API behavior.",
+]
+
+[[rule]]
+id = "antigravity-disk-adapter"
+source_paths = [
+  "desktop/src-tauri/src/core/agents/antigravity.rs",
+  "desktop/src-tauri/src/core/agents/tests/antigravity_tests.rs",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/discovery/agents/antigravity.rs"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain documented disk and immutable/read-only database discovery only.",
+  "Delete process enumeration, CSRF extraction, port discovery, loopback HTTP, API caching, and related tests.",
+]
+
+[[rule]]
+id = "windsurf-disk-adapter"
+source_paths = ["desktop/src-tauri/src/core/agents/windsurf.rs"]
+path_kind = "file"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/discovery/agents/windsurf.rs"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain documented workspaceStorage/chatSessions file discovery only.",
+  "Delete process enumeration, CSRF extraction, port discovery, loopback HTTP, API caching, and related tests.",
+]
+
+[[rule]]
+id = "disk-agent-tests"
+source_paths = [
+  "desktop/src-tauri/src/core/agents/tests/opencode_tests.rs",
+  "desktop/src-tauri/src/core/agents/tests/pi_tests.rs",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "crates/antiburn-local/tests/discovery/"
+provenance = "Cadence company-authored tests; retain only synthetic inputs under D-010"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Keep only tests for the ratified disk/database/WSL matrix and replace any uncertain fixture input.",
+  "Scrub real developer usernames and home paths from every inline test that travels with adapted source, and replace the verbatim lsof capture in antigravity_tests.rs with a fabricated line.",
+  "Re-home the crates/analysis session-fork fixture consumed by opencode_tests.rs via include_str! inside the engine crate; do not keep the cross-tree path dependency.",
+]
+
+[[rule]]
+id = "session-scanner"
+source_paths = ["desktop/src-tauri/src/core/scanner.rs"]
+path_kind = "file"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/discovery/scanner.rs"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain bounded metadata parsing, agent inference, and normalized title provenance.",
+  "Replace private module paths and remove upload/monitor-specific fields.",
+]
+
+[[rule]]
+id = "local-repository-discovery"
+source_paths = ["desktop/src-tauri/src/core/repo_discovery/**"]
+path_kind = "directory"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/repositories/"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain local root resolution, worktree identity, bounded traversal, and supported platform paths.",
+  "Remove GitHub organization gates, selected-org filtering, upload eligibility, Tauri permission state, and private endpoint types.",
+  "Replace the Tauri event-bus progress reporting (crate::events plus app.emit call sites) with an engine-owned callback or channel seam; the current public API is built around Tauri emission.",
+  "Replace the api_client OrgRepoInfo parameter type on the public entry point with a local repository descriptor.",
+  "Rewrite tests around local repository identity and user-selected roots only.",
+]
+
+[[rule]]
+id = "local-path-policy"
+source_paths = [
+  "desktop/src-tauri/src/core/paths.rs",
+  "desktop/src-tauri/src/core/scan_roots.rs",
+  "desktop/src-tauri/src/core/ignored_paths.rs",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/paths/"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain portable agent-root, normalization, user-selected scan-root, and local-ignore behavior.",
+  "Remove Cadence app-state locations; the Tauri shell owns ai.antiburn.desktop data/config/cache paths.",
+  "Remove per-organization storage, upload gates, and Tauri permission coupling.",
+  "Extract or reimplement the state_files atomic-JSON persistence helpers (desktop_state_dir, write_json_atomic, now_rfc3339); scan_roots.rs and ignored_paths.rs are built on that unlisted module.",
+]
+
+[[rule]]
+id = "local-git-and-wsl-boundary"
+source_paths = [
+  "desktop/src-tauri/src/core/environment.rs",
+  "desktop/src-tauri/src/core/git.rs",
+  "desktop/src-tauri/src/core/process.rs",
+  "desktop/src-tauri/src/core/process_windows.rs",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/platform/"
+provenance = "Cadence company-authored; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain local Git identity/worktree helpers and the exact bounded WSL operations required by D-007.",
+  "Do not retain generic process execution, private CLI-host coupling, or commands used by live agent probes.",
+  "Delete push_notes and push_notes_at from git.rs: a git-push subprocess is outbound network egress and is prohibited in the network-free engine.",
+  "Extract or reimplement the tcc_state read and the protected-directory list shared with repo_discovery; the current circular dependency guards the macOS consent-dialog safety property and must be re-homed, not dropped.",
+]
+
+[[rule]]
+id = "pricing-core"
+source_paths = [
+  "crates/pricing/src/calc.rs",
+  "crates/pricing/src/model.rs",
+  "crates/pricing/src/table.rs",
+  "crates/pricing/src/lib.rs",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "crates/antiburn-local/src/pricing/"
+provenance = "Cadence company-authored; current crate is explicitly proprietary"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain local price models, model-key normalization, bundled catalog, and cost calculation.",
+  "Remove the provider/account usage signal module and its exports.",
+  "Record pricing source and catalog version in the public package.",
+]
+
+[[rule]]
+id = "pricing-manifest"
+source_paths = ["crates/pricing/Cargo.toml"]
+path_kind = "file"
+disposition = "replace"
+destination = "crates/antiburn-local/Cargo.toml"
+provenance = "Private manifest used only as dependency evidence"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = ["Merge approved pricing dependencies into the public local-crate manifest after D-010 scanning."]
+
+[[rule]]
+id = "local-skill-dto"
+source_paths = [
+  "crates/skill-details/Cargo.toml",
+  "crates/skill-details/src/lib.rs",
+]
+path_kind = "files"
+disposition = "replace"
+destination = "crates/antiburn-local/src/model/skill.rs"
+provenance = "Cadence company-authored; current crate is explicitly proprietary and mixes local/publication DTOs"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Define the smallest local-only skill-use DTO required by analysis and the antiburn UI.",
+  "Do not carry PublicationSkillDescription, publication validation, Cadence-managed flags, or server wire contracts.",
+]
+
+[[rule]]
+id = "local-agent-kind-dto"
+source_paths = ["crates/domain/src/agent_kind.rs"]
+path_kind = "file"
+disposition = "replace"
+destination = "crates/antiburn-local/src/model/agent.rs"
+provenance = "Private cross-product DTO used as behavior reference only"
+current_license = "Proprietary workspace"
+intended_license = "MPL-2.0"
+notes = [
+  "Define an antiburn-local AgentKind containing only the ratified D-007 agents and local serialization needs.",
+  "Do not export cadence-domain or its backend/session/publication models.",
+]
+
+[[rule]]
+id = "desktop-design-contract"
+source_paths = [
+  "desktop/design.md",
+  "desktop/design.dark.md",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "apps/desktop/design.md"
+provenance = "Cadence company-authored design evidence; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Consolidate the light and dark guidance into one public canonical design contract.",
+  "Preserve the approved typography, spacing, color, geometry, motion, focus, accessibility, reduced-motion, reduced-transparency, and platform behavior.",
+  "Remove Cadence, Radar, Tune-up, account, publication, telemetry, and other private examples or identities.",
+  "Use semantic public names; keep platform-specific behavior behind internal styles and data attributes.",
+]
+
+[[rule]]
+id = "desktop-style-foundation"
+source_paths = ["desktop/src/main.css"]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src/styles/"
+provenance = "Cadence company-authored mixed stylesheet; D-020 approves only the named product-neutral sections"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract semantic color, surface, status, spacing, radius, and control-geometry tokens; system/light/dark and reduced-transparency palettes; base typography, selection, cursor, overscroll, and input behavior; keyboard-only focus behavior; generic button interaction and push-button styling; and the global reduced-motion baseline.",
+  "Split the approved material into focused public token, base, typography, control, and motion styles rather than copying main.css unchanged.",
+  "Rename public CSS APIs from mac-* or Cadence-specific names to semantic ui-*, type-*, or equivalent names without changing rendered behavior.",
+  "Do not copy the avatar focus exception, session-row and activity-filter selectors, nudge styles, Cadence notification names, banner reveal, onboarding transitions, release-note selectors, or their feature-specific reduced-motion exceptions under this rule.",
+  "Onboarding, public notifications, release notes, activity, and session presentation require their own later feature-source review; Radar and Tune-up material remains private.",
+  "Cross-check that every class and token the adapted D-020 primitives reference falls within these approved foundation sections; the primitives depend on main.css tokens and typography/push-button classes to render.",
+]
+
+[[rule]]
+id = "radix-control-styles"
+source_paths = ["desktop/src/styles/radix-macos.css"]
+path_kind = "file"
+disposition = "adapt"
+destination = "apps/desktop/src/styles/platform-controls.css"
+provenance = "Cadence company-authored product-neutral styling; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Preserve the current dropdown, tooltip, radio, switch, progress, and scroll-area behavior and geometry.",
+  "Rename the public file and CSS APIs to semantic cross-platform names instead of exposing mac-* names.",
+  "Validate the licenses of every retained Radix dependency against the eventual public lockfile.",
+]
+
+[[rule]]
+id = "analytics-color-tokens"
+source_paths = ["desktop/src/styles/analytics-colors.css"]
+path_kind = "file"
+disposition = "adapt"
+destination = "apps/desktop/src/styles/session-analytics-colors.css"
+provenance = "Cadence company-authored local-domain presentation tokens; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Preserve the theme-aware session-analysis palette required by the approved local Session Analytics surface.",
+  "Keep the tokens presentation-only and independent of private DTOs, stores, commands, telemetry, and enrichment.",
+  "Rewrite the explanatory comments during adaptation; the current prose describes internal scoring bands and chart semantics rather than the tokens themselves.",
+]
+
+[[rule]]
+id = "generic-react-primitives"
+source_paths = [
+  "desktop/src/components/ui/Card.tsx",
+  "desktop/src/components/ui/Disclosure.test.tsx",
+  "desktop/src/components/ui/Disclosure.tsx",
+  "desktop/src/components/ui/InlineLink.test.tsx",
+  "desktop/src/components/ui/InlineLink.tsx",
+  "desktop/src/components/ui/Pane.test.tsx",
+  "desktop/src/components/ui/Pane.tsx",
+  "desktop/src/components/ui/PlatformToggle.tsx",
+  "desktop/src/components/ui/PushButton.test.tsx",
+  "desktop/src/components/ui/PushButton.tsx",
+  "desktop/src/components/ui/RangeSlider.test.tsx",
+  "desktop/src/components/ui/RangeSlider.tsx",
+  "desktop/src/components/ui/Row.test.tsx",
+  "desktop/src/components/ui/Row.tsx",
+  "desktop/src/components/ui/ScrollPane.test.tsx",
+  "desktop/src/components/ui/ScrollPane.tsx",
+  "desktop/src/components/ui/SectionGroup.tsx",
+  "desktop/src/components/ui/SegmentedControl.test.tsx",
+  "desktop/src/components/ui/SegmentedControl.tsx",
+  "desktop/src/components/ui/SidebarNav.test.tsx",
+  "desktop/src/components/ui/SidebarNav.tsx",
+  "desktop/src/components/ui/StatusText.test.tsx",
+  "desktop/src/components/ui/StatusText.tsx",
+  "desktop/src/components/ui/text-roll.css",
+  "desktop/src/components/ui/TextRoll.test.tsx",
+  "desktop/src/components/ui/TextRoll.tsx",
+  "desktop/src/components/ui/ToggleRow.tsx",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "apps/desktop/src/components/ui/"
+provenance = "Cadence company-authored generic presentation and tests; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Preserve existing accessibility, keyboard, focus, platform, reduced-motion, scroll, gesture, and visual behavior.",
+  "Rename PlatformToggle to the semantic public ToggleSwitch API and migrate internal mac-* and activity-specific CSS names without changing presentation.",
+  "Keep InlineLink callback-only so the consuming app shell owns external-browser effects.",
+  "Keep TextRoll.tsx and text-roll.css together for local cost and Provider Usage values.",
+  "Carry the listed tests with their components and author new public tests for Card, ToggleSwitch, SectionGroup, and ToggleRow.",
+  "Rename the 'Quit Cadence' fixture strings in SidebarNav.test.tsx during adaptation.",
+  "Do not add private stores, commands, Cloud DTOs, authentication, organization, publication, Radar, Tune-up, active provider probes, credentials, Sentry, telemetry, feature flags, branded assets, or private fixtures.",
+]
+
+[[rule]]
+id = "skeleton-contract-replacement"
+source_paths = ["desktop/src/components/ui/Skeleton.tsx"]
+path_kind = "file"
+disposition = "replace"
+destination = "apps/desktop/src/components/ui/Skeleton.tsx"
+provenance = "Current source is behavior evidence only because its comments identify Radix Themes as an ergonomic reference"
+current_license = "Proprietary source with an explicit third-party design reference"
+intended_license = "MPL-2.0"
+notes = [
+  "Author a small clean public implementation from the required loading, child, standalone, and card-placeholder behavior contract rather than copying this source.",
+  "Add public accessibility and rendering tests.",
+  "If implementation instead uses or derives from Radix source, record the exact upstream version, license, copyright, and required attribution before publication.",
+]
+
+[[rule]]
+id = "local-presentation-support"
+source_paths = [
+  "desktop/src/lib/agents.test.ts",
+  "desktop/src/lib/agents.ts",
+  "desktop/src/lib/relativeTime.ts",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "apps/desktop/src/lib/presentation/"
+provenance = "Cadence company-authored presentation support; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain relative-time formatting and the display names, local surface metadata, and analytics-capability facts for only the ratified public agent matrix.",
+  "Remove backend-oriented comments and receive capability facts from the public local contract where practical.",
+  "Agent and provider artwork remains separately denied; icon filenames or slots are not authorization to copy current private assets.",
+]
+
+[[rule]]
+id = "local-environment-identity-replacement"
+source_paths = [
+  "desktop/src/lib/environmentKeys.test.ts",
+  "desktop/src/lib/environmentKeys.ts",
+]
+path_kind = "files"
+disposition = "replace"
+destination = "apps/desktop/src/lib/presentation/localIdentity.ts"
+provenance = "Current private identity helpers are behavior evidence only because session identity includes organization state"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Create local environment, session, and repository identity helpers from public agent, session, WSL, and stable repository keys.",
+  "Do not include targetOrgId, organization identity, publication identity, or Cloud cache semantics.",
+  "Author public collision and case-normalization tests.",
+]
+
+[[rule]]
+id = "local-session-analytics-shaping"
+source_paths = [
+  "desktop/src/lib/sessionAnalytics.test.ts",
+  "desktop/src/lib/sessionAnalytics.ts",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src/lib/presentation/sessionAnalytics.ts"
+provenance = "Cadence company-authored mixed local/backend presentation logic; D-021 approves only local shaping and formatting"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain pure phase, token, context, activity, tool, duration, compact-number, reference-band, chart-series, and API-equivalent local cost presentation helpers.",
+  "Replace private commands DTO imports with public antiburn-local DTOs or small public presentation types.",
+  "Do not copy backend/refined cost preference, Cadence-authoritative snapshot policy, upload timing, organization identity, or provider-billed attribution under this rule.",
+  "Adapt only synthetic tests that exercise the approved local helpers; rewrite or omit backend/refined/provider attribution cases.",
+]
+
+[[rule]]
+id = "local-session-cost-replacement"
+source_paths = [
+  "desktop/src/lib/sessionCosts.test.ts",
+  "desktop/src/lib/sessionCosts.ts",
+]
+path_kind = "files"
+disposition = "replace"
+destination = "apps/desktop/src/lib/presentation/sessionCosts.ts"
+provenance = "Current private cost-selection module is behavior evidence only because it combines local and backend subjects"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Create the smallest local-only cost subject, scope, stable-key, model-breakdown, and component-cost helpers needed by the public views.",
+  "Do not include targetOrgId, backend/refined preference, publication snapshots, or provider-billed attribution.",
+  "Author public tests from the local API-equivalent cost contract and synthetic inputs.",
+]
+
+[[rule]]
+id = "local-presentation-primitives"
+source_paths = [
+  "desktop/src/components/shared/Tooltip.tsx",
+  "desktop/src/components/shared/WslOriginBadge.test.tsx",
+  "desktop/src/components/shared/WslOriginBadge.tsx",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "apps/desktop/src/components/presentation/"
+provenance = "Cadence company-authored product-neutral presentation; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Preserve accessible Tooltip behavior with semantic public CSS APIs.",
+  "Preserve the WSL-origin label and compact placement, but use independently approved public artwork or an injected icon.",
+  "Do not copy desktop/src/components/icons/LinuxIcon.tsx or any other currently denied private icon source under this rule.",
+  "Add a focused public Tooltip test and adapt the WSL behavior test without private icon fixtures.",
+]
+
+[[rule]]
+id = "local-orchestration-presentation"
+source_paths = [
+  "desktop/src/components/tray/CollapsibleIndigoBadge.tsx",
+  "desktop/src/components/tray/OrchestratedBadge.test.tsx",
+  "desktop/src/components/tray/OrchestratedBadge.tsx",
+  "desktop/src/components/tray/SubagentBadge.test.tsx",
+  "desktop/src/components/tray/SubagentBadge.tsx",
+  "desktop/src/components/tray/SubagentRosterRow.tsx",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "apps/desktop/src/components/session/orchestration/"
+provenance = "Cadence company-authored local orchestration presentation and tests; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Rename CollapsibleIndigoBadge to the semantic CollapsibleOrchestrationCard API while preserving its visual treatment and accessible expansion behavior.",
+  "Replace private commands DTOs with public local orchestration types and preserve callback-based parent/child navigation.",
+  "Use the separately approved public agent-icon registry or an icon slot; do not copy current private icon components or artwork.",
+  "Retain and adapt the listed synthetic tests; add coverage for the shared roster row and collapsible card.",
+]
+
+[[rule]]
+id = "local-session-analytics-leaves"
+source_paths = [
+  "desktop/src/components/tray/analytics/ContextDriftChart.tsx",
+  "desktop/src/components/tray/analytics/Hypnogram.tsx",
+  "desktop/src/components/tray/analytics/hypnogramGeometry.ts",
+  "desktop/src/components/tray/analytics/HypnogramMarkers.tsx",
+  "desktop/src/components/tray/analytics/HypnogramSegments.logic.ts",
+  "desktop/src/components/tray/analytics/HypnogramSegments.test.tsx",
+  "desktop/src/components/tray/analytics/HypnogramSegments.tsx",
+  "desktop/src/components/tray/analytics/InitialContextChart.tsx",
+  "desktop/src/components/tray/analytics/markerCluster.test.ts",
+  "desktop/src/components/tray/analytics/markerCluster.ts",
+  "desktop/src/components/tray/analytics/PatternScore.tsx",
+  "desktop/src/components/tray/analytics/PhaseDonut.tsx",
+  "desktop/src/components/tray/analytics/TokenAreaChart.tsx",
+  "desktop/src/components/tray/analytics/ToolMixChart.tsx",
+  "desktop/src/components/tray/analytics/tooltip.ts",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "apps/desktop/src/components/session/analytics/"
+provenance = "Cadence company-authored local analytics presentation, geometry, and synthetic tests; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Retain chart geometry, phase/token/context/tool presentation, marker clustering, tooltip positioning, keyboard behavior, reduced-motion behavior, and synthetic tests.",
+  "Replace private commands DTO imports with public antiburn-local DTOs or small public presentation types.",
+  "Remove private Tauri and icon mocks from adapted tests by injecting public marker/icon presentation.",
+  "Treat Recharts as an implementation dependency candidate whose exact public lockfile license must pass D-010.",
+  "Sequencing: land the sessionAnalytics.ts extraction and sessionCosts.ts replacement first; these leaves import their value helpers and do not compile without them.",
+]
+
+[[rule]]
+id = "local-session-analytics-decoupled-leaves"
+source_paths = [
+  "desktop/src/components/tray/analytics/CostBreakdown.test.tsx",
+  "desktop/src/components/tray/analytics/CostBreakdown.tsx",
+  "desktop/src/components/tray/analytics/SkillMarkerTooltip.test.tsx",
+  "desktop/src/components/tray/analytics/SkillMarkerTooltip.tsx",
+  "desktop/src/components/tray/analytics/skillMarkerKind.tsx",
+  "desktop/src/components/tray/analytics/spawnMarkerKind.tsx",
+]
+path_kind = "files"
+disposition = "adapt"
+destination = "apps/desktop/src/components/session/analytics/"
+provenance = "Cadence company-authored mixed analytics leaves; D-021 approves only callback-driven local presentation"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Keep API-equivalent local cost rows, local skill evidence, marker rendering, and synthetic presentation tests.",
+  "Remove SessionProviderUsageAttribution from CostBreakdown; review provider attribution with the Local Provider Usage source slice.",
+  "Replace SkillMarkerTooltip's direct revealInFinder command with an injected optional reveal callback.",
+  "Replace private DTO and icon imports with public local types and independently approved public presentation.",
+]
+
+[[rule]]
+id = "local-session-cost-badges"
+source_paths = [
+  "desktop/src/components/tray/SessionActiveTimeBadge.test.tsx",
+  "desktop/src/components/tray/SessionActiveTimeBadge.tsx",
+  "desktop/src/components/tray/SessionCostBadge.test.tsx",
+  "desktop/src/components/tray/SessionCostBadge.tsx",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src/components/session/metrics/"
+provenance = "Cadence company-authored mixed view/store components; D-021 approves only value-driven presentation"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract value-driven cost and active-time badge components that receive loading, value, model, state, and tooltip data through props.",
+  "Keep useAppStore, targetOrgId, private cache selection, command calls, and provider-usage attribution in private wrappers.",
+  "Rewrite tests around public props and synthetic local cost results rather than the private store or Tauri mocks.",
+]
+
+[[rule]]
+id = "local-session-analytics-composition"
+source_paths = [
+  "desktop/src/components/tray/SessionAnalyticsView.test.tsx",
+  "desktop/src/components/tray/SessionAnalyticsView.tsx",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src/components/session/SessionAnalyticsPresentation.tsx"
+provenance = "Cadence company-authored mixed presentation/container; D-021 approves only local callback-driven presentation"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract the current visual hierarchy, local chart composition, skeleton timing/presentation, fork and orchestration relationships, WSL identity, local cost, and callback-driven navigation.",
+  "Receive public local DTOs, display state, navigation, export, deletion, and source-reveal actions through props; do not import a global store or Tauri commands.",
+  "Keep polling, telemetry, openSessionOnline, upload-limit copy/state, targetOrgId, publicationId, backend/refined cost selection, and Cloud actions private.",
+  "Prerequisite refactor: make the session cost and active-time badges value-driven first (they are store-reading leaves shared with RecentActivity and DebugSection), and lift the Tokens-card split/hint/info computation out of the render body; the local-versus-backend cost seam does not exist in the current code.",
+  "The export, deletion, and source-reveal actions are new public features composed into this flow, not extractions from the current file.",
+  "Rewrite presentation tests around public props and callbacks; do not copy private-store, command, Cloud, or upload fixtures.",
+]
+
+[[rule]]
+id = "local-recent-activity-presentation"
+source_paths = [
+  "desktop/src/components/tray/RecentActivity.test.tsx",
+  "desktop/src/components/tray/RecentActivity.tsx",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src/components/activity/LocalActivityList.tsx"
+provenance = "Cadence company-authored mixed activity feed; D-021 approves only local session presentation"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract local session-row layout, active-session treatment, time and truncation presentation, empty/loading behavior, scrolling, local cost, active time, WSL identity, and callback-driven Session Analytics navigation.",
+  "Receive entries, titles, range labels, settings intent, and supported local filters through props; do not add extension points solely for private features.",
+  "Do not copy RadarPinnedCard, RadarActivityRow, Radar skill/share/feedback behavior, ambience rows, team-update filters, upload status/errors, telemetry, Tauri listeners, targetOrgId, private-store reads, or Cloud organization identity.",
+  "Expect prerequisite private-side refactors before extraction: the row primitives, time corner, and list merge/grouping/scroll machinery are shared with Radar and ambience rows, and upload status is currently fused into the time-corner component.",
+  "The active-session and hover-reveal treatment lives in main.css session-row selectors that D-020 excludes; that styling requires its own later feature-source review before LocalActivityList can render faithfully.",
+  "The current list has no loading state; do not invent one to satisfy the extraction contract wording.",
+  "Rewrite tests around public local DTOs and callbacks rather than private-store, Tauri, Radar, ambience, upload, or telemetry mocks.",
+]
+
+[[rule]]
+id = "local-repository-list-replacement"
+source_paths = [
+  "desktop/src/components/shared/RepoList.test.tsx",
+  "desktop/src/components/shared/RepoList.tsx",
+]
+path_kind = "files"
+disposition = "replace"
+destination = "apps/desktop/src/components/repositories/LocalRepositoryList.tsx"
+provenance = "Current large component is behavior evidence only because it is deeply coupled to organizations, upload eligibility, private hooks, commands, and copy"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Create a smaller public list using D-020 primitives and the approved repository UX: local identity/path, WSL origin, include/ignore, refresh, locate, undo, loading, empty, permission, and not-found states.",
+  "Do not copy organization locks, upload eligibility, Cadence copy, private hooks, command DTOs, or upload-gate semantics.",
+  "Author public tests from synthetic local repository DTOs and callback contracts; do not copy the current private-store/Tauri test harness.",
+  "The current private RepoList may remain unchanged until an independently justified shared presentation seam exists.",
+]
+
+[[rule]]
+id = "release-workflow-adaptation"
+source_paths = [".github/workflows/release-desktop.yml"]
+path_kind = "file"
+disposition = "adapt"
+destination = ".github/workflows/"
+provenance = "Cadence company-authored release automation; publish under D-008's authorized-commit rule"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Adapt only the protected-tag, signed-build, draft-review, and publish stage design for the GitHub Releases model ratified by D-005.",
+  "Remove Sentry, S3/CDN promotion, commercial identities, endpoints, bucket and secret names, private repository references, and Cadence release tags.",
+  "Use antiburn names, tags, protected environments, and secrets; keep least-privilege permissions and pin third-party actions by immutable commit.",
+  "Fork pull requests must not gain access to signing, publishing, or infrastructure credentials.",
+]

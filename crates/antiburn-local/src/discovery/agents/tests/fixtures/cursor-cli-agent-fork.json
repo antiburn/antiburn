@@ -1,0 +1,123 @@
+{
+  "_comment": "Synthetic. Three Cursor Agent sessions in one workspace: a parent, a fork that copies the parent's visible prefix, and a session whose title claims a fork but whose transcript diverges (must fail closed).",
+  "sessions": [
+    {
+      "id": "00000000-0000-4000-8000-000000000101",
+      "meta": {
+        "title": "Add a retry to the upload queue",
+        "createdAtMs": 1700000000000,
+        "updatedAtMs": 1700000060000
+      },
+      "transcript": [
+        {
+          "role": "user",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Add a retry to the upload queue."
+              }
+            ]
+          }
+        },
+        {
+          "role": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "I'll add a bounded retry with backoff around the enqueue call."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000102",
+      "meta": {
+        "title": "Add a retry to the upload queue (forked)",
+        "createdAtMs": 1700000120000,
+        "updatedAtMs": 1700000180000
+      },
+      "transcript": [
+        {
+          "role": "user",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Add a retry to the upload queue."
+              }
+            ]
+          }
+        },
+        {
+          "role": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "I'll add a bounded retry with backoff around the enqueue call."
+              }
+            ]
+          }
+        },
+        {
+          "role": "user",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Cap the backoff at thirty seconds."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000103",
+      "meta": {
+        "title": "Add a retry to the upload queue (forked)",
+        "createdAtMs": 1700000240000,
+        "updatedAtMs": 1700000300000
+      },
+      "transcript": [
+        {
+          "role": "user",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Add a retry to the download queue instead."
+              }
+            ]
+          }
+        },
+        {
+          "role": "assistant",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "That is a different queue, so I'll start from scratch."
+              }
+            ]
+          }
+        },
+        {
+          "role": "user",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Cap the backoff at thirty seconds."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

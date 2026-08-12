@@ -1,0 +1,34 @@
+# cargo-deny configuration for the antiburn-local engine.
+#
+# CI runs `cargo deny check licenses` against the engine's own lockfile; every
+# dependency must carry one of the allowed permissive licenses (MPL-2.0 is the
+# project's own license). Additions outside this list need explicit review.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "MPL-2.0",
+]
+
+[bans]
+# The mechanical boundary test (tests/boundary.rs) already forbids
+# network-capable dependencies by name; duplicate the load-bearing ones here
+# so `cargo deny` fails fast too.
+deny = [
+    { crate = "reqwest" },
+    { crate = "hyper" },
+    { crate = "ureq" },
+    { crate = "curl" },
+    { crate = "native-tls" },
+    { crate = "openssl" },
+    { crate = "rustls" },
+    { crate = "tauri" },
+]

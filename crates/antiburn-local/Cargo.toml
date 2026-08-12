@@ -1,0 +1,53 @@
+# Standalone workspace root: the engine never joins the private workspace and
+# resolves with its own lockfile.
+[workspace]
+
+[package]
+name = "antiburn-local"
+version = "0.1.0"
+edition = "2024"
+description = "Self-contained, network-free local engine for antiburn: discovery, session analysis, repository identity, pricing, and versioned local persistence/export contracts."
+license = "MPL-2.0"
+repository = "https://github.com/antiburn/antiburn"
+
+[lib]
+name = "antiburn_local"
+path = "src/lib.rs"
+
+# Self-containment contract: this crate performs no network or socket I/O and
+# depends on no private workspace packages. Every dependency added here must
+# pass the D-010 license check against the crate's own lockfile.
+[dependencies]
+anyhow = "1"
+# Async trait methods on the per-agent discovery adapter contract.
+async-trait = "0.1"
+# Bounded-concurrency stream combinators for the discovery fan-out.
+futures-util = "0.3"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+# Async runtime pieces used by local persistence and the bounded child-process
+# mechanism. Deliberately excludes `net`: the engine opens no sockets.
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+# Logging facade only. Emits nothing unless the embedding application installs
+# a subscriber, and performs no I/O of its own.
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+# Process-group signalling when a bounded child misses its deadline.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Durable renames, the kill-on-close process host, and windowless consoles.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+# Unforgeable per-spawn marker for the process host's PATH hand-off.
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# Deterministic file mtimes for discovery's recency-window tests.
+filetime = "0.2"
+serial_test = "4"
+tempfile = "3"
+# Manifest parsing for the mechanical source-boundary test.
+toml = "0.8"

@@ -1,0 +1,39 @@
+{
+  "_comment": "Synthetic. A Claude interactive fork job: the state file states the child/parent lineage that discovery turns into a `forkedFrom` header.",
+  "job_state": {
+    "interactiveLineage": true,
+    "forkSessionId": "claude-child-fork",
+    "forkParentSessionId": "claude-parent-fork",
+    "sessionId": "claude-child-fork",
+    "cwd": "/home/avery/projects/demo-app",
+    "name": "Cap the upload backoff",
+    "intent": "Cap the upload retry backoff at thirty seconds."
+  },
+  "child_transcript": [
+    {
+      "type": "user",
+      "sessionId": "claude-child-fork",
+      "cwd": "/home/avery/projects/demo-app",
+      "timestamp": "2026-06-01T10:00:00.000Z",
+      "message": {
+        "role": "user",
+        "content": "Cap the upload backoff at thirty seconds."
+      }
+    },
+    {
+      "type": "assistant",
+      "sessionId": "claude-child-fork",
+      "cwd": "/home/avery/projects/demo-app",
+      "timestamp": "2026-06-01T10:00:04.000Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Clamping the backoff to 30s."
+          }
+        ]
+      }
+    }
+  ]
+}
