@@ -1,0 +1,224 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* ==========================================================================
+   Activity-row treatment: the running-session pulse, the title shimmer, the
+   hover-revealed secondary detail, and the corner gutter it needs.
+
+   Everything here hangs off `.activity-row`, which the row component applies
+   to its own box. Three ideas, in order:
+
+   1. A running session pulses, without moving. The pulse is an opacity-only
+      animation on a `::before` layer behind the card, so a row that starts or
+      stops does not resize, reflow, or jump to a different group in the list.
+   2. A running session's title shimmers. Scoped to the title box and
+      contained, so the sweep repaints a small element rather than the whole
+      row.
+   3. Secondary detail is revealed by hover or focus rather than always shown,
+      so a resting list reads as titles. It fades rather than pops, and the
+      reveal is driven from the row, not from each detail.
+
+   Declared outside any `@layer` so a Tailwind utility on the same element does
+   not silently outrank the animation.
+   ========================================================================== */
+
+/* --- Running-session pulse --- */
+
+/* The two cycles live on the row so the background and the title read as one
+   effect with two tempos. The broad-area background is the slower of the two
+   deliberately: a large surface pulsing at the title's rate is agitating. */
+.activity-row-active {
+  --activity-row-pulse-cycle: 3200ms;
+  --activity-row-shimmer-cycle: 2000ms;
+}
+
+@keyframes activity-row-pulse {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+
+  50% {
+    opacity: 0.28;
+  }
+}
+
+/* Behind the card, never in front of it: `z-index: -1` on a layer inside a
+   row that establishes its own stacking context (the component pairs this
+   class with `isolate`), so the tint cannot cover the row's own content. */
+.activity-row-active::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background-color: var(--color-bg-secondary);
+  opacity: 0.12;
+  pointer-events: none;
+  animation: activity-row-pulse var(--activity-row-pulse-cycle) cubic-bezier(0.77, 0, 0.175, 1)
+    infinite;
+}
+
+/* --- Running-session title shimmer --- */
+
+/* A highlight band sweeps across the title from right to left. The band is a
+   background gradient clipped to the glyphs, drawn on a `::before` overlay
+   that repeats the text through `attr(data-text)` — the real text stays in the
+   DOM underneath as the accessible, selectable copy, and the overlay is inert. */
+@keyframes activity-row-title-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: 0% 0;
+  }
+}
+
+.activity-row-title-shimmer {
+  --activity-row-shimmer-base: var(--color-text-secondary);
+  --activity-row-shimmer-highlight: var(--color-text-primary);
+  position: relative;
+  display: block;
+  /* Contain the sweep's repaint to this box instead of invalidating the row. */
+  contain: paint;
+  color: var(--activity-row-shimmer-base);
+}
+
+.activity-row-title-shimmer::before {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 40%,
+    var(--activity-row-shimmer-highlight) 50%,
+    transparent 60%,
+    transparent 100%
+  );
+  background-size: 400% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: activity-row-title-shimmer var(--activity-row-shimmer-cycle) linear infinite;
+}
+
+/* --- Hover-revealed secondary detail --- */
+
+/* Opacity only — no transform, no layout property — so revealing detail moves
+   nothing. `visibility` stays in the transition because it still reserves the
+   layout space, and being a discrete property it flips to visible at the
+   *start* of the fade-in and to hidden only at the *end* of the fade-out, so
+   the fade is seen in both directions.
+
+   The timing is asymmetric on purpose. Entry is relaxed: the row's response to
+   hover is already carried by its background tint, so this detail is
+   enrichment arriving after, and nothing the reader is waiting on is gated
+   behind it. Exit is quick, because a slow fade-out smears when sweeping down
+   a list and there is no reason to linger on detail the pointer has left. */
+.activity-row-secondary-detail {
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 120ms ease-out,
+    visibility 120ms ease-out;
+}
+
+/* Interactive secondary detail — buttons, not prose — opts out of the
+   `visibility` half. `visibility: hidden` prunes the subtree from the
+   accessibility tree, which would leave a screen-reader user with no way to
+   learn the control exists: it could not be reached by browsing, only by
+   landing DOM focus on the host first. Suppressing hit-testing instead keeps
+   it announceable and focusable while still making it unclickable when
+   invisible, which is the property that actually matters.
+
+   Must sit between the base rule and the reveal rule: same specificity, so
+   source order decides. */
+.activity-row-secondary-detail.reveal-interactive {
+  visibility: visible;
+  pointer-events: none;
+}
+
+/* Two hosts: any list row, and — via the opt-in `.reveal-host` hook — a banner
+   that is not a row but wants the same behavior. The last selector keeps the
+   detail up while its own popup is open, so moving the pointer onto a portaled
+   tooltip does not yank the thing it describes out from under it. */
+.activity-row:hover .activity-row-secondary-detail,
+.activity-row:focus-visible .activity-row-secondary-detail,
+.activity-row:has(:focus-visible) .activity-row-secondary-detail,
+.reveal-host:hover .activity-row-secondary-detail,
+.reveal-host:focus-visible .activity-row-secondary-detail,
+.reveal-host:has(:focus-visible) .activity-row-secondary-detail,
+.activity-row-secondary-detail:has([data-state*='open']) {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transition-duration: 200ms;
+}
+
+/* --- Corner gutter --- */
+
+/* The corner time is absolutely positioned, so while it is hidden it costs the
+   row nothing and the title line runs the full card width — no permanently
+   reserved gutter. The line only yields room in the states that actually paint
+   it: hover, focus, the corner's *own* popup being open, or a pinned corner
+   that stays on at rest.
+
+   Scoped to `[data-row-corner]` rather than to any open popup in the row: some
+   other control's tooltip does not reveal the corner, so matching on it would
+   shorten the title against an empty gutter — most visibly when the pointer
+   crosses onto that control's portaled tooltip and the row loses `:hover`.
+
+   The width is sized, not guessed: the row's own inset plus the widest compact
+   time the corner can render. A pinned corner also carries a glyph and its
+   gap, so it asks for more; sizing both off one custom property keeps the two
+   in step. */
+.activity-row-corner-gutter {
+  --activity-row-corner-gutter: 3rem;
+}
+
+.activity-row:has([data-row-corner-pinned]) .activity-row-corner-gutter {
+  --activity-row-corner-gutter: 4rem;
+}
+
+.activity-row:hover .activity-row-corner-gutter,
+.activity-row:focus-visible .activity-row-corner-gutter,
+.activity-row:has(:focus-visible) .activity-row-corner-gutter,
+.activity-row:has([data-row-corner] [data-state*='open']) .activity-row-corner-gutter,
+.activity-row:has([data-row-corner-pinned]) .activity-row-corner-gutter {
+  padding-right: var(--activity-row-corner-gutter);
+}
+
+/* --- Reduced motion --- */
+
+/* The global clamp in motion.css shortens transitions; these two effects are
+   *ambient loops*, which no duration makes acceptable, so they stop outright.
+   Each keeps its resting meaning: the pulse settles at a fixed tint that still
+   marks the row, and the title drops the overlay and paints as plain primary
+   text rather than staying at the dimmed shimmer base. */
+@media (prefers-reduced-motion: reduce) {
+  .activity-row-active::before {
+    animation: none !important;
+    opacity: 0.18;
+  }
+
+  .activity-row-title-shimmer {
+    color: var(--color-text-primary);
+  }
+
+  .activity-row-title-shimmer::before {
+    content: none;
+    animation: none !important;
+  }
+}
