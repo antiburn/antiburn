@@ -4,40 +4,87 @@
 
 //! The antiburn desktop shell.
 //!
-//! The shell owns windows, the menu-bar item, and the IPC surface; every
-//! analysis, discovery, and pricing decision belongs to the
+//! The shell owns windows, the menu-bar item, local persistence, and the IPC
+//! surface; every analysis, discovery, and pricing decision belongs to the
 //! [`antiburn_local`] engine. Keeping that split sharp is what lets the engine
 //! stay network-free and independently testable.
 //!
 //! # Modules
 //!
+//! - [`agents`] — translating between the engine's two names for an agent.
+//! - [`analytics`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
+//! - [`dto`] — the shapes that cross that boundary.
+//! - [`export`] — the derived-only session export document.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
+//! - [`repositories`] — which repositories on this machine antiburn watches.
+//! - [`scan`] — the background scan and its scheduling policy.
 //! - [`settings`] — the standalone settings window.
+//! - [`store`] — the app's local SQLite database.
 //! - [`tray`] — the menu-bar item and its click and menu handling.
+//!
+//! # Offline by construction
+//!
+//! Nothing in this crate opens a socket. The engine is network-free by its own
+//! contract, the shell adds no HTTP client, and the only network-capable
+//! surface in the whole application is the updater plugin — registered in
+//! release builds only, so a development run performs no network requests at
+//! all. The webview side is held to the same rule by a test
+//! (`apps/desktop/tests/offline.test.ts`).
 
+mod agents;
+mod analytics;
 mod commands;
+mod dto;
+mod export;
 mod popover;
+mod repositories;
+mod scan;
 mod settings;
+mod store;
 mod tray;
 
+use std::sync::Mutex;
+
 use tauri::{Manager, RunEvent, WindowEvent};
+
+/// The scan scheduler's handle, kept so the app can abort it on exit rather
+/// than leaving a task running against a store that is going away.
+#[derive(Default)]
+struct Scheduler(Mutex<Option<tauri::async_runtime::JoinHandle<()>>>);
 
 /// Builds and runs the application. Returns only when the app exits.
 ///
 /// # Panics
 ///
-/// Panics if the webview runtime, the popover window, or the tray item cannot
-/// be created: none of the three has a meaningful degraded mode.
+/// Panics if the webview runtime, the popover window, the tray item, or the
+/// local database cannot be created: none of the four has a meaningful degraded
+/// mode.
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
-
-    builder = builder
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            commands::add_scan_root,
+            commands::app_info,
+            commands::default_scan_roots,
+            commands::delete_session_data,
             commands::engine_catalog_version,
+            commands::export_session,
+            commands::get_scan_status,
+            commands::get_session_analytics,
+            commands::get_settings,
+            commands::get_subagent_analytics,
+            commands::list_recent_sessions,
+            commands::list_repositories,
+            commands::list_scan_roots,
             commands::open_settings_window,
+            commands::refresh_repositories,
+            commands::remove_scan_root,
+            commands::reveal_source,
+            commands::scan_now,
+            commands::set_repository_enabled,
+            commands::set_settings,
         ])
         .on_window_event(on_window_event)
         .setup(|app| {
@@ -47,9 +94,24 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // Local state lives under the app's own data directory. The engine
+            // never chooses this location; the shell does, and hands it to the
+            // engine's state helpers as an explicit argument.
+            let data_dir = app.path().app_data_dir()?;
+            app.manage(store::Store::open(&data_dir)?);
+            app.manage(scan::ScanController::default());
+            app.manage(Scheduler::default());
             app.manage(popover::PopoverState::default());
+
             popover::create(app.handle())?;
             tray::create(app.handle())?;
+
+            let handle = scan::spawn_scheduler(app.handle());
+            if let Some(scheduler) = app.try_state::<Scheduler>()
+                && let Ok(mut slot) = scheduler.0.lock()
+            {
+                *slot = Some(handle);
+            }
 
             install_updater(app.handle());
 
@@ -59,15 +121,30 @@ pub fn run() {
     builder
         .build(tauri::generate_context!())
         .expect("failed to build the antiburn application")
-        .run(|_app, event| {
+        .run(|app, event| match event {
             // Closing the settings window must not quit a menu-bar app: the
             // tray item is the app's real lifetime.
-            if let RunEvent::ExitRequested { api, code, .. } = event
-                && code.is_none()
-            {
+            RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
                 api.prevent_exit();
             }
+            // A deliberate quit: stop the scan before the store it writes to
+            // is dropped.
+            RunEvent::Exit => abort_scheduler(app),
+            _ => {}
         });
+}
+
+/// Stop the scan scheduler. Safe to call when it never started.
+fn abort_scheduler(app: &tauri::AppHandle) {
+    let Some(scheduler) = app.try_state::<Scheduler>() else {
+        return;
+    };
+    let Ok(mut slot) = scheduler.0.lock() else {
+        return;
+    };
+    if let Some(handle) = slot.take() {
+        handle.abort();
+    }
 }
 
 /// Window policy shared by every window the shell creates.
@@ -83,6 +160,9 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let _ = window.hide();
+            if window.label() == popover::LABEL {
+                popover::note_hidden(window.app_handle());
+            }
         }
         _ => {}
     }

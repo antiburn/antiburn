@@ -58,6 +58,8 @@ name = "antiburn"
 version = "0.1.0"
 dependencies = [
  "antiburn-local",
+ "anyhow",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",
@@ -65,6 +67,9 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-updater",
+ "tempfile",
+ "time",
+ "tokio",
 ]
 
 [[package]]

@@ -102,6 +102,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
+        note_hidden(app);
         return;
     }
 
@@ -119,6 +120,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 
     let _ = window.show();
     let _ = window.set_focus();
+    note_shown(app);
 }
 
 /// Hides the popover after it loses focus, remembering when it happened.
@@ -127,6 +129,29 @@ pub fn hide_on_focus_loss(window: &Window) {
         state.record_auto_hide();
     }
     let _ = window.hide();
+    note_hidden(window.app_handle());
+}
+
+/// Tell the scan scheduler the popover is on screen.
+///
+/// The popover *is* the view of the scanned data, so its visibility is what
+/// gates the periodic rescan (see [`crate::scan`]). Reported from here rather
+/// than inferred from window events, because a hidden window that was never
+/// shown produces no event at all.
+fn note_shown(app: &AppHandle) {
+    if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
+        controller.set_popover_visible(true);
+        // Opening the popover is the one moment a reader is guaranteed to be
+        // looking, so refresh immediately instead of waiting out a tick.
+        controller.request();
+    }
+}
+
+/// Tell the scan scheduler the popover is gone.
+pub fn note_hidden(app: &AppHandle) {
+    if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
+        controller.set_popover_visible(false);
+    }
 }
 
 /// Places the popover under (or above) the menu-bar item, clamped to the

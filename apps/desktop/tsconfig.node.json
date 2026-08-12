@@ -17,5 +17,5 @@
     "composite": true,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo"
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "tests/**/*.ts"]
 }

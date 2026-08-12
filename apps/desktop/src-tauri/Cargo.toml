@@ -30,6 +30,12 @@ tauri-build = { version = "2", features = [] }
 # The local engine. This is the only first-party dependency; the shell adds
 # windows, tray, and IPC around it and owns no analysis logic of its own.
 antiburn-local = { path = "../../../crates/antiburn-local" }
+# Error plumbing inside the shell's own modules; never crosses the IPC edge,
+# where errors become plain strings.
+anyhow = "1"
+# The app-owned local database. `bundled` compiles SQLite from source, so the
+# app never depends on a system library and CI needs no extra packages.
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 # Required by `tauri::generate_context!`, which expands to code in this crate.
 serde_json = "1"
@@ -38,11 +44,20 @@ serde_json = "1"
 tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# RFC 3339 stamps for the store's own timestamps.
+time = { version = "0.3", features = ["formatting"] }
+# The scan scheduler. Deliberately excludes `net`: the shell opens no sockets
+# either — the updater plugin is the only network-capable surface.
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds
 # only (see `src/lib.rs`), so development never contacts the network.
 tauri-plugin-updater = "2"
+
+[dev-dependencies]
+# Synthetic agent stores for the scan-pipeline tests.
+tempfile = "3"
 
 [profile.release]
 codegen-units = 1

@@ -3,10 +3,11 @@
 The antiburn desktop application: a menu-bar / system-tray shell around the
 local [`antiburn-local`](../../crates/antiburn-local) engine.
 
-This is currently a **skeleton**. It builds, runs, shows a tray item, opens an
-anchored popover and a settings window, and proves the engine link end to end.
-The design foundation and the shared UI primitives are in place; views and data
-land in later streams.
+The app discovers the coding-agent sessions already on this machine, analyzes
+them with the engine, and shows activity, per-session analytics, and
+API-equivalent cost estimates. Everything runs on the device: nothing is
+uploaded, and the only network-capable surface in the whole application is the
+updater plugin, which is registered in release builds only.
 
 ## Layout
 
@@ -15,11 +16,12 @@ design.md       The design contract: tokens, type scale, motion, platform rules
 src/            React 19 + TypeScript frontend (Vite, Tailwind v4)
   components/
     ui/         Shared presentation primitives (no app state, no IPC)
-  lib/          Route selection, platform/focus modality, the typed IPC surface
+  lib/          Route selection, the typed IPC surface, presentation helpers
   styles/       The design foundation, imported by src/styles.css
-  views/        One component per window
+  views/        One component per window, plus its panes
+tests/          Checks that must not live inside the tree they check
 scripts/        Icon generator (see src-tauri/icons/README.md)
-src-tauri/      The Tauri 2 shell: windows, tray, commands
+src-tauri/      The Tauri 2 shell: windows, tray, store, scan, commands
   capabilities/ Webview permission grants
   icons/        Generated app and tray artwork
 ```
@@ -67,6 +69,24 @@ cargo test
 Debug builds load the frontend from the Vite dev server, so `cargo` checks do
 not need a built bundle. Release packaging embeds `apps/desktop/dist`.
 
+`rusqlite` is compiled from bundled sources, so neither CI nor a checkout needs
+a system SQLite.
+
+## What keeps the app offline
+
+Three independent checks, none of which relies on review:
+
+1. The engine's own `tests/boundary.rs` keeps `antiburn-local` free of network
+   and socket dependencies.
+2. The repository-wide [`scripts/check-boundary.mjs`](../../scripts/check-boundary.mjs)
+   scans every file for prohibited concepts, including telemetry SDKs and raw
+   socket types.
+3. [`tests/offline.test.ts`](tests/offline.test.ts) walks `src/` and fails on
+   any browser networking API (`fetch`, `XMLHttpRequest`, `WebSocket`,
+   `EventSource`, `sendBeacon`, remote dynamic imports). It lives outside `src/`
+   on purpose: it names every API it bans, so a guard inside the tree it checks
+   would trip its own check.
+
 ## Shell behavior
 
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
@@ -77,6 +97,17 @@ not need a built bundle. Release packaging embeds `apps/desktop/dist`.
   open, flipping above the item and clamping to the display when there is no
   room below. It hides when it loses focus.
 - **Settings.** An ordinary decorated window, created on first use and reused.
+  A source list on the left, one pane on the right; every control writes
+  through immediately, so there is no Save button and no dirty state.
+- **Local store.** One SQLite database under the app data directory
+  (`ai.antiburn.desktop`) holds preferences, scan roots, a session metadata
+  cache, and the engine-derived analysis. **It never stores transcript
+  content** — see the contract in `src-tauri/src/store/schema.rs`. Migrations
+  are embedded and versioned by the `user_version` pragma.
+- **Scanning.** A single background task refreshes what the app knows: once at
+  launch (after onboarding), whenever the popover is opened, every 60s while it
+  stays open, paused entirely while it is hidden, and on demand. Passes never
+  overlap and are bounded — see the policy at the top of `src-tauri/src/scan.rs`.
 - **Theme.** Follows the operating system through `color-scheme` and Tailwind's
   `prefers-color-scheme` dark variant.
 - **macOS.** `LSUIElement` in [`src-tauri/Info.plist`](src-tauri/Info.plist)
@@ -97,6 +128,12 @@ These are deliberate, and belong to later milestones:
   `tauri.conf.json` is empty and `bundle.createUpdaterArtifacts` is `false`;
   release signing sets both. The plugin is registered in release builds only,
   so development performs no network requests at all.
-- Launch-at-login is not wired up.
+- Launch-at-login is recorded as a preference but not enforced: registering a
+  login item needs the autostart plugin, which this build does not carry. The
+  General pane says so next to the control rather than showing a switch that
+  silently does nothing.
+- Agent icons are a single neutral glyph for every agent. Vendor logos are the
+  vendors' marks; original per-agent artwork is a later stream, and
+  `src/lib/agentIcon.tsx` already carries the icon-name seam it will key off.
 - `icon.icns` / `icon.ico` are produced during release packaging rather than
   checked in — nothing in the build or test path needs them yet.

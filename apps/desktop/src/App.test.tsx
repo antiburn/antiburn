@@ -10,36 +10,61 @@ import { App } from './App';
 // The shell is not attached under jsdom, so the IPC surface is stubbed at the
 // module boundary: `isTauri()` reports presence and `invoke` answers commands.
 const invoke = vi.hoisted(() => vi.fn());
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke,
-  isTauri: () => true,
-}));
+vi.mock('@tauri-apps/api/core', () => ({ invoke, isTauri: () => true }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
+
+const settings = {
+  theme: 'system',
+  activityWindowDays: 7,
+  onboardingCompleted: false,
+  launchAtLogin: false,
+  autoUpdate: true,
+};
 
 describe('App', () => {
   beforeEach(() => {
     invoke.mockReset();
     invoke.mockImplementation((command: string) => {
-      if (command === 'engine_catalog_version') {
-        return Promise.resolve('2026-01-01');
+      switch (command) {
+        case 'get_settings':
+          return Promise.resolve(settings);
+        case 'app_info':
+          return Promise.resolve({
+            appVersion: '0.1.0',
+            pricingCatalogVersion: '2026-01-01',
+            schemaVersion: 1,
+            dataDir: '/home/avery/.antiburn',
+            updatesSupported: false,
+          });
+        case 'default_scan_roots':
+          return Promise.resolve(['/home/avery/code']);
+        case 'list_scan_roots':
+        case 'list_recent_sessions':
+        case 'list_repositories':
+          return Promise.resolve([]);
+        default:
+          return Promise.resolve(null);
       }
-      return Promise.resolve(null);
     });
     window.location.hash = '';
+    delete document.documentElement.dataset['theme'];
   });
 
-  it('renders the popover with the engine-reported catalog version', async () => {
+  it('opens the first-run flow in the popover before onboarding is finished', async () => {
     render(<App />);
 
-    expect(screen.getByRole('heading', { name: 'antiburn' })).toBeInTheDocument();
-    expect(await screen.findByText('Pricing catalog 2026-01-01')).toBeInTheDocument();
-    expect(invoke).toHaveBeenCalledWith('engine_catalog_version');
+    expect(
+      await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
+    ).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith('get_settings');
   });
 
-  it('renders the settings view for the settings fragment', () => {
+  it('renders the settings window for the settings fragment', async () => {
     window.location.hash = '#/settings';
 
     render(<App />);
 
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('tablist', { name: 'Settings sections' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'General' })).toBeInTheDocument();
   });
 });

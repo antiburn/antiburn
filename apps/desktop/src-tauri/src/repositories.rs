@@ -1,0 +1,445 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! Which repositories on this machine antiburn watches.
+//!
+//! # Why this is assembled here rather than taken whole from the engine
+//!
+//! The engine's merged pipeline (`repositories::discover_repositories`) is
+//! **owner-scoped**: the forward scan keeps a clone only when its git remote
+//! names a specific owner, and the session pass that would supply that owner is
+//! crate-private. antiburn has no account and therefore no owner to supply, so
+//! it assembles the same two passes from the engine's public parts:
+//!
+//! 1. **From sessions.** Every working directory the store has seen resolves to
+//!    a canonical repository root through the engine's git helpers. This is the
+//!    authoritative list — it finds clones wherever they live and yields the
+//!    per-repository session count.
+//! 2. **Forward, over the reader's own scan roots.** The engine's
+//!    [`scan_roots_for_repos`] walk *is* owner-scoped, so it runs once per owner
+//!    the first pass observed (capped at [`MAX_SCAN_OWNERS`]). That is what
+//!    surfaces a sibling clone with no agent sessions yet.
+//!
+//! Both passes are bounded. Session working directories already under a known
+//! root are resolved from the store rather than by shelling out to git again,
+//! so the steady state costs one git call per genuinely new repository.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use antiburn_local::paths::{home_dir, ignored_paths};
+use antiburn_local::platform::git;
+use antiburn_local::repositories::{
+    LocatedRepo, NoConsentGrants, merge_located_repos, normalize_remote_url,
+    parse_repo_name_from_url, repo_root_identity, scan_roots_for_repos,
+};
+use tauri::{AppHandle, Manager};
+
+use crate::dto::RepositoryItem;
+use crate::scan::{IGNORE_SCOPE, RETENTION_DAYS, unix_now};
+use crate::store::{RepositoryRecord, Store};
+
+/// Owners the forward scan runs for, most sessions first. A machine that works
+/// across many owners still gets its session-located repositories in full; the
+/// cap only bounds the extra walk that finds clones with no sessions.
+const MAX_SCAN_OWNERS: usize = 4;
+
+/// Session working directories resolved through git in one pass. Directories
+/// already under a known repository root do not count against this.
+const MAX_NEW_ROOTS_PER_PASS: usize = 64;
+
+/// Sessions considered when counting per-repository activity.
+const MAX_SESSIONS_CONSIDERED: usize = 2_000;
+
+/// Re-derive the repository list and persist it.
+pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
+    let store = app.state::<Store>();
+    let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
+
+    let since = unix_now() - RETENTION_DAYS * 86_400;
+    let sessions = store.recent_sessions(since, MAX_SESSIONS_CONSIDERED)?;
+    let known: Vec<RepositoryRecord> = store.repositories()?;
+    let scan_roots: Vec<PathBuf> = store.scan_roots()?.into_iter().map(PathBuf::from).collect();
+
+    let cwds: Vec<String> = distinct_cwds(&sessions);
+    let located = locate_from_cwds(&cwds, &known).await;
+    let counted = count_sessions(located, &sessions);
+
+    let owners = top_owners(&counted);
+    let scanned = forward_scan(&owners, &scan_roots).await;
+
+    let merged = merge_located_repos(counted.into_iter().map(|(repo, _)| repo).collect(), scanned);
+    let mut records = Vec::with_capacity(merged.len());
+    for repo in &merged {
+        records.push(to_record(repo, &sessions, &known, &ignored).await);
+    }
+    store.replace_repositories(&records)?;
+    Ok(())
+}
+
+/// The repository list as the settings pane renders it.
+pub fn list(store: &Store) -> anyhow::Result<Vec<RepositoryItem>> {
+    Ok(store
+        .repositories()?
+        .into_iter()
+        .map(|record| RepositoryItem {
+            key: record.key,
+            repo_name: record.repo_name,
+            full_name: record.full_name,
+            status: if record.enabled {
+                record.status
+            } else {
+                // The engine's own vocabulary: a present-but-excluded repository
+                // is `disabled`, not "accessible but off".
+                "disabled".to_string()
+            },
+            repo_root: record.repo_root,
+            suspected_path: record.suspected_path,
+            worktree_count: record.worktree_count,
+            session_count: record.session_count,
+            wsl_distro: record.wsl_distro,
+            enabled: record.enabled,
+        })
+        .collect())
+}
+
+/// Include or ignore one repository.
+///
+/// The choice is written twice on purpose: the store's flag is the record the
+/// settings pane reads back, and the engine's ignored-path store is what the
+/// *next scan* enforces, so ignoring a repository also stops its sessions from
+/// being collected.
+pub async fn set_enabled(store: &Store, key: &str, enabled: bool) -> anyhow::Result<bool> {
+    let Some(record) = store
+        .repositories()?
+        .into_iter()
+        .find(|record| record.key == key)
+    else {
+        return Ok(false);
+    };
+    if let Some(path) = record
+        .repo_root
+        .as_deref()
+        .or(record.suspected_path.as_deref())
+    {
+        if enabled {
+            ignored_paths::unignore_path(store.state_dir(), IGNORE_SCOPE, path).await?;
+        } else {
+            ignored_paths::ignore_path(store.state_dir(), IGNORE_SCOPE, path).await?;
+        }
+    }
+    store.set_repository_enabled(key, enabled)
+}
+
+/// Distinct, non-empty working directories across the considered sessions.
+fn distinct_cwds(sessions: &[crate::store::SessionRecord]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut cwds = Vec::new();
+    for session in sessions {
+        let Some(cwd) = session.cwd.as_deref() else {
+            continue;
+        };
+        if cwd.is_empty() {
+            continue;
+        }
+        if seen.insert(cwd.to_string()) {
+            cwds.push(cwd.to_string());
+        }
+    }
+    cwds
+}
+
+/// Resolve working directories to canonical repository roots, reusing roots the
+/// last pass already established.
+async fn locate_from_cwds(cwds: &[String], known: &[RepositoryRecord]) -> Vec<LocatedRepo> {
+    let mut by_key: HashMap<String, LocatedRepo> = HashMap::new();
+    let mut resolved = 0usize;
+
+    for cwd in cwds {
+        // Already under a repository the last pass found: no git call needed.
+        if let Some(record) = known.iter().find(|record| {
+            record
+                .repo_root
+                .as_deref()
+                .is_some_and(|root| under(cwd, root))
+        }) {
+            let Some(root) = record.repo_root.as_deref() else {
+                continue;
+            };
+            by_key
+                .entry(record.key.clone())
+                .or_insert_with(|| LocatedRepo {
+                    remote_url: String::new(),
+                    repo_root: PathBuf::from(root),
+                    dir_accessible: true,
+                    worktree_count: record.worktree_count,
+                    session_count: 0,
+                });
+            continue;
+        }
+
+        if resolved >= MAX_NEW_ROOTS_PER_PASS {
+            continue;
+        }
+        resolved += 1;
+
+        let Ok(root) = git::repo_root_at(Path::new(cwd)).await else {
+            continue;
+        };
+        let root = git::canonical_main_repo_root(&root).await;
+        let key = repo_root_identity(&root);
+        if by_key.contains_key(&key) {
+            continue;
+        }
+        let remote = git::preferred_remote_url_at(&root)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        by_key.insert(
+            key,
+            LocatedRepo {
+                remote_url: normalize_remote_url(&remote),
+                repo_root: root.clone(),
+                dir_accessible: tokio::fs::read_dir(&root).await.is_ok(),
+                worktree_count: git::worktree_count_at(&root).await,
+                session_count: 0,
+            },
+        );
+    }
+
+    by_key.into_values().collect()
+}
+
+/// Attach the per-repository session count, keeping each root's own sessions.
+fn count_sessions(
+    located: Vec<LocatedRepo>,
+    sessions: &[crate::store::SessionRecord],
+) -> Vec<(LocatedRepo, String)> {
+    located
+        .into_iter()
+        .map(|mut repo| {
+            let root = repo.repo_root.to_string_lossy().to_string();
+            repo.session_count = sessions
+                .iter()
+                .filter(|session| {
+                    session
+                        .cwd
+                        .as_deref()
+                        .is_some_and(|cwd| under(cwd, root.as_str()))
+                })
+                .count() as u32;
+            (repo, root)
+        })
+        .collect()
+}
+
+/// The owners worth running the forward scan for, busiest first.
+fn top_owners(located: &[(LocatedRepo, String)]) -> Vec<String> {
+    let mut weight: HashMap<String, u32> = HashMap::new();
+    for (repo, _) in located {
+        let Some(owner) = git::parse_owner_from_url(&repo.remote_url) else {
+            continue;
+        };
+        *weight.entry(owner).or_insert(0) += repo.session_count.max(1);
+    }
+    let mut owners: Vec<(String, u32)> = weight.into_iter().collect();
+    owners.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    owners
+        .into_iter()
+        .take(MAX_SCAN_OWNERS)
+        .map(|(owner, _)| owner)
+        .collect()
+}
+
+/// The engine's owner-scoped forward walk, over the common code directories and
+/// the reader's declared scan roots.
+async fn forward_scan(owners: &[String], scan_roots: &[PathBuf]) -> Vec<LocatedRepo> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let mut located = Vec::new();
+    for owner in owners {
+        // `probe_protected: false` — a background pass must never be able to
+        // raise the operating system's consent dialog.
+        let (repos, _deferred) =
+            scan_roots_for_repos(&home, owner, false, scan_roots, &NoConsentGrants).await;
+        located.extend(repos);
+    }
+    located
+}
+
+/// Shape one located repository into the record the store keeps.
+async fn to_record(
+    repo: &LocatedRepo,
+    sessions: &[crate::store::SessionRecord],
+    known: &[RepositoryRecord],
+    ignored: &HashSet<String>,
+) -> RepositoryRecord {
+    let root = repo.repo_root.to_string_lossy().to_string();
+    let key = repo_root_identity(&repo.repo_root);
+    let name = parse_repo_name_from_url(&repo.remote_url).unwrap_or_else(|| {
+        repo.repo_root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| root.clone())
+    });
+    let full_name = match git::parse_owner_from_url(&repo.remote_url) {
+        Some(owner) => format!("{owner}/{name}"),
+        // A clone with no usable remote is still a real repository on this
+        // machine; it just has no owner-qualified name to show.
+        None => name.clone(),
+    };
+    let session_count = if repo.session_count > 0 {
+        repo.session_count
+    } else {
+        sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .cwd
+                    .as_deref()
+                    .is_some_and(|cwd| under(cwd, root.as_str()))
+            })
+            .count() as u32
+    };
+
+    // Selection is the reader's, so a rescan inherits it; a repository seen for
+    // the first time starts from the engine's opt-out list.
+    let enabled = known
+        .iter()
+        .find(|record| record.key == key)
+        .map(|record| record.enabled)
+        .unwrap_or_else(|| !ignored_paths::set_contains(ignored, &root));
+
+    let wsl_distro =
+        antiburn_local::platform::environment::environment_from_mounted_path(&repo.repo_root)
+            .and_then(|environment| environment.wsl_distro().map(str::to_string));
+
+    RepositoryRecord {
+        key,
+        repo_name: name,
+        full_name,
+        status: if repo.dir_accessible {
+            "accessible".to_string()
+        } else {
+            "permission_denied".to_string()
+        },
+        repo_root: repo.dir_accessible.then(|| root.clone()),
+        suspected_path: (!repo.dir_accessible).then_some(root),
+        worktree_count: repo.worktree_count,
+        session_count,
+        wsl_distro,
+        enabled,
+    }
+}
+
+/// True when `path` is `root` or sits beneath it, comparing with `/` on every
+/// platform so a Windows working directory still matches its root.
+fn under(path: &str, root: &str) -> bool {
+    let path = ignored_paths::normalize(path).replace('\\', "/");
+    let root = ignored_paths::normalize(root).replace('\\', "/");
+    path == root || path.starts_with(&format!("{root}/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn located(remote: &str, root: &str, sessions: u32) -> (LocatedRepo, String) {
+        (
+            LocatedRepo {
+                remote_url: normalize_remote_url(remote),
+                repo_root: PathBuf::from(root),
+                dir_accessible: true,
+                worktree_count: 1,
+                session_count: sessions,
+            },
+            root.to_string(),
+        )
+    }
+
+    #[test]
+    fn a_working_directory_matches_its_root_and_its_descendants_only() {
+        assert!(under(
+            "/home/avery/code/widgets",
+            "/home/avery/code/widgets"
+        ));
+        assert!(under(
+            "/home/avery/code/widgets/src/api",
+            "/home/avery/code/widgets"
+        ));
+        assert!(under(
+            "/home/avery/code/widgets/",
+            "/home/avery/code/widgets"
+        ));
+        // A sibling whose name merely starts the same must not match.
+        assert!(!under(
+            "/home/avery/code/widgets-legacy",
+            "/home/avery/code/widgets"
+        ));
+        assert!(!under("/home/avery/code", "/home/avery/code/widgets"));
+    }
+
+    #[test]
+    fn windows_working_directories_match_their_root() {
+        assert!(under(r"C:\work\widgets\src", r"C:\work\widgets"));
+        assert!(!under(r"C:\work\widgets-legacy", r"C:\work\widgets"));
+    }
+
+    #[test]
+    fn owners_are_ranked_by_activity_and_capped() {
+        let repos = vec![
+            located("https://github.com/avery/widgets.git", "/a", 9),
+            located("https://github.com/avery/gadgets.git", "/b", 1),
+            located("https://github.com/bailey/sprockets.git", "/c", 4),
+            located("https://github.com/casey/cogs.git", "/d", 3),
+            located("https://github.com/devon/bolts.git", "/e", 2),
+            located("https://github.com/emery/nuts.git", "/f", 1),
+        ];
+        let owners = top_owners(&repos);
+        assert_eq!(owners.len(), MAX_SCAN_OWNERS);
+        assert_eq!(owners[0], "avery", "10 sessions across two clones");
+        assert_eq!(owners[1], "bailey");
+    }
+
+    #[test]
+    fn a_clone_with_no_remote_contributes_no_owner() {
+        let repos = vec![located("", "/a", 3)];
+        assert!(top_owners(&repos).is_empty());
+    }
+
+    #[test]
+    fn session_counts_are_attributed_to_the_root_that_contains_them() {
+        let session = |cwd: &str| crate::store::SessionRecord {
+            key: crate::store::SessionKey::new("native", "claude-code", cwd),
+            source_kind: "file".into(),
+            source_label: "/tmp/x.jsonl".into(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: Some(cwd.to_string()),
+            surface: "cli".into(),
+            updated_at_epoch: Some(1),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+        };
+        let sessions = vec![
+            session("/home/avery/code/widgets"),
+            session("/home/avery/code/widgets/src"),
+            session("/home/avery/code/gadgets"),
+        ];
+        let counted = count_sessions(
+            vec![LocatedRepo {
+                remote_url: String::new(),
+                repo_root: PathBuf::from("/home/avery/code/widgets"),
+                dir_accessible: true,
+                worktree_count: 1,
+                session_count: 0,
+            }],
+            &sessions,
+        );
+        assert_eq!(counted[0].0.session_count, 2);
+    }
+}
