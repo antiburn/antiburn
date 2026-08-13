@@ -284,6 +284,13 @@ and a provenance record.
    two provenance steps skip themselves — attestation persistence is plan-gated
    on private repositories — and activate automatically once the repository is
    public; a private-phase draft has no provenance bundle to verify.)
+
+   When running `cargo test` inside the extracted tarball, set
+   `ANTIBURN_OSS_MANIFEST_DIR` to a repository checkout's `docs/oss/`
+   directory. The boundary suite's manifest test reads the governance
+   manifests, which deliberately do not ship in the tarball; without the
+   variable, that one test fails with a "must ship with the repository"
+   error while everything else passes.
 5. Publish. **Leave "Set as the latest release" unchecked** — the workflow
    already sets `--latest=false`, and for good reason: "latest" is a property of
    the repository, and the application's updater reads
@@ -334,7 +341,7 @@ becomes a no-op and everything else stays byte-identical.
 
 | Failure | What it means | What to do |
 | --- | --- | --- |
-| `verify` rejects the tag | A manifest, the lockfile, or the changelog disagrees with the tag | Fix on `main`, delete the *unpublished* tag, re-tag. Deleting a tag that was never published is fine; deleting a published one is not. |
+| `verify` rejects the tag | A manifest, the lockfile, or the changelog disagrees with the tag | Fix on `main`, delete the *unpublished* tag, re-tag. Deleting a tag that was never published is fine; deleting a published one is not. Deleting any release tag requires an admin to temporarily disable the tag-immutability ruleset (Settings → Rules → Rulesets), then re-enable it immediately after re-tagging — that friction is deliberate. |
 | `checks` fails | The tagged commit does not pass CI | Fix on `main` and cut a new version. Do not re-tag around a failing gate. |
 | A `build` job fails | Usually a credential or a platform toolchain | Fix, then re-run the failed jobs. The draft is rebuilt idempotently. |
 | `draft` refuses: "already published" | The tag has a published release | Stop. This is the immutability rule doing its job — go to [`rollback.md`](rollback.md). |
