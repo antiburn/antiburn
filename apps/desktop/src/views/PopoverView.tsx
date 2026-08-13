@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { LocalActivityList } from '../components/activity/LocalActivityList';
 import type { LocalActivityEntry } from '../components/activity/LocalActivityList';
+import { ProviderUsageCluster } from '../components/providerUsage';
 import { Skeleton } from '../components/ui/Skeleton';
 import { renderAgentIcon } from '../lib/agentIcon';
 import { indexOfSession, toActivityEntries } from '../lib/activityEntries';
@@ -16,6 +17,8 @@ import {
   addScanRoot,
   defaultScanRoots,
   DEFAULT_SETTINGS,
+  EMPTY_PROVIDER_USAGE,
+  getProviderUsage,
   getSettings,
   listRecentSessions,
   listScanRoots,
@@ -24,16 +27,19 @@ import {
   removeScanRoot,
   setSettings,
   type AppSettings,
+  type ProviderUsageSummaryPayload,
 } from '../lib/ipc';
 import { OnboardingFlow } from './popover/OnboardingFlow';
 import { SessionPane, type SessionSubject } from './popover/SessionPane';
+import { UsageView } from './popover/UsageView';
 
 /**
  * The tray popover.
  *
- * Three surfaces share one 380px window: the first-run flow, the activity list,
- * and one session's analytics. There is no router — a popover is a single
- * place, and a stack of "where I came from" is all the navigation it needs.
+ * Four surfaces share one 380px window: the first-run flow, the activity list,
+ * one session's analytics, and local provider usage. There is no router — a
+ * popover is a single place, and a stack of "where I came from" is all the
+ * navigation it needs.
  */
 
 /** Placeholder rows while the first list load is in flight. */
@@ -60,6 +66,14 @@ export function PopoverView() {
   const [defaultRoots, setDefaultRoots] = useState<string[]>([]);
   /** Navigation stack. Empty means the activity list is showing. */
   const [stack, setStack] = useState<SessionSubject[]>([]);
+  /**
+   * Provider usage, or null while the first snapshot is in flight. The footer
+   * is withheld rather than shown empty until then: an empty usage footer and
+   * a not-yet-loaded one look identical, and one of them is a lie.
+   */
+  const [usage, setUsage] = useState<ProviderUsageSummaryPayload | null>(null);
+  /** Whether the full Usage view is showing over the activity list. */
+  const [showUsage, setShowUsage] = useState(false);
 
   const current = stack.at(-1) ?? null;
   const windowDays = settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
@@ -67,6 +81,10 @@ export function PopoverView() {
   const refreshEntries = useCallback(async (days: number) => {
     const payloads = await listRecentSessions(days);
     setEntries(toActivityEntries(payloads));
+  }, []);
+
+  const refreshUsage = useCallback(async () => {
+    setUsage(await getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE));
   }, []);
 
   // First load: preferences decide the theme and the visible window, so
@@ -86,13 +104,16 @@ export function PopoverView() {
       setScanRoots(roots);
       setDefaultRoots(defaults);
       if (stored.onboardingCompleted) {
-        await refreshEntries(stored.activityWindowDays).catch(() => setEntries([]));
+        await Promise.all([
+          refreshEntries(stored.activityWindowDays).catch(() => setEntries([])),
+          refreshUsage(),
+        ]);
       }
     })();
     return () => {
       active = false;
     };
-  }, [refreshEntries]);
+  }, [refreshEntries, refreshUsage]);
 
   // A finished scan is the only thing that changes the list behind the reader's
   // back, so that is what the list listens for rather than polling.
@@ -102,12 +123,13 @@ export function PopoverView() {
     const pending = onScanEvent((_status, phase) => {
       if (phase !== 'finished' || !active) return;
       void refreshEntries(windowDays).catch(() => {});
+      void refreshUsage();
     });
     return () => {
       active = false;
       void pending.then((unlisten) => unlisten());
     };
-  }, [settings?.onboardingCompleted, windowDays, refreshEntries]);
+  }, [settings?.onboardingCompleted, windowDays, refreshEntries, refreshUsage]);
 
   const handleAddScanRoot = useCallback(async () => {
     const picked = await open({ directory: true, multiple: false });
@@ -124,8 +146,11 @@ export function PopoverView() {
     const saved = await setSettings({ ...base, onboardingCompleted: true });
     setSettingsState(saved);
     setEntries(null);
-    await refreshEntries(saved.activityWindowDays).catch(() => setEntries([]));
-  }, [settings, refreshEntries]);
+    await Promise.all([
+      refreshEntries(saved.activityWindowDays).catch(() => setEntries([])),
+      refreshUsage(),
+    ]);
+  }, [settings, refreshEntries, refreshUsage]);
 
   const openSession = useCallback((subject: SessionSubject) => {
     setStack((previous) => [...previous, subject]);
@@ -161,6 +186,12 @@ export function PopoverView() {
         onFinish={() => void handleFinishOnboarding()}
       />
     );
+  }
+
+  // Usage sits over the list rather than in the session stack: it is a second
+  // way of reading the same activity, not a place a session leads to.
+  if (showUsage && usage) {
+    return <UsageView summary={usage} onBack={() => setShowUsage(false)} />;
   }
 
   if (current) {
@@ -220,6 +251,13 @@ export function PopoverView() {
           />
         )}
       </div>
+
+      {usage && (
+        <ProviderUsageCluster
+          providers={usage.providers}
+          onViewAll={() => setShowUsage(true)}
+        />
+      )}
     </div>
   );
 }

@@ -406,3 +406,43 @@ fn agent_scan_state_records_the_high_water_cursor() {
         .unwrap();
     assert_eq!(cursor, 1_000, "the cursor never rewinds");
 }
+
+#[test]
+fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
+    let store = store();
+    store
+        .upsert_sessions(&[session("analyzed", 2_000), session("pending", 1_500)])
+        .unwrap();
+    store
+        .save_analysis(&AnalysisRecord {
+            key: SessionKey::new("native", "claude-code", "analyzed"),
+            metrics_json: "{}".into(),
+            cost_json: None,
+            model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
+            active_secs: 1,
+            duration_secs: 1,
+            pattern_score: 0,
+            source_fingerprint: "1:1".into(),
+            pricing_generation: 0,
+        })
+        .unwrap();
+
+    let evidence = store.usage_evidence(1_000).unwrap();
+    assert_eq!(evidence.len(), 2, "newest first");
+    assert_eq!(evidence[0].updated_at_epoch, 2_000);
+    assert!(
+        evidence[0]
+            .model_breakdown_json
+            .as_deref()
+            .is_some_and(|json| json.contains("claude-opus-4-6"))
+    );
+    // A session analysis has not reached yet comes back with no breakdown
+    // rather than being dropped: "not measured" is not "measured zero".
+    assert_eq!(evidence[1].updated_at_epoch, 1_500);
+    assert_eq!(evidence[1].model_breakdown_json, None);
+    assert_eq!(evidence[1].agent, "claude-code");
+
+    // The bound is inclusive and excludes everything below it.
+    assert_eq!(store.usage_evidence(2_000).unwrap().len(), 1);
+    assert!(store.usage_evidence(2_001).unwrap().is_empty());
+}

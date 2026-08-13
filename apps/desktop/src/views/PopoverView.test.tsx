@@ -79,6 +79,30 @@ const ANALYTICS = {
   sourcePath: '/home/avery/.claude/projects/widgets/session-abc-123.jsonl',
 };
 
+const USAGE_WINDOW = {
+  tokensIn: 1_000,
+  tokensOut: 200,
+  cacheRead: 50,
+  estimatedUsd: 1.25,
+  sessionCount: 1,
+};
+
+const PROVIDER_USAGE = {
+  providers: [
+    {
+      provider: 'anthropic',
+      displayName: 'Anthropic',
+      state: 'estimated',
+      staleness: 'fresh',
+      windows: { today: USAGE_WINDOW, week: USAGE_WINDOW, month: USAGE_WINDOW },
+      lastActivityAt: '2027-01-15T07:59:00Z',
+    },
+  ],
+  generatedAt: '2027-01-15T08:00:00Z',
+  retentionDays: 14,
+  coverageSince: '2027-01-01T08:00:00Z',
+};
+
 function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string) => {
     if (command in overrides) return Promise.resolve(overrides[command]);
@@ -89,6 +113,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve([activityEntry()]);
       case 'get_session_analytics':
         return Promise.resolve(ANALYTICS);
+      case 'get_provider_usage':
+        return Promise.resolve(PROVIDER_USAGE);
       case 'list_scan_roots':
       case 'default_scan_roots':
         return Promise.resolve([]);
@@ -206,6 +232,43 @@ describe('PopoverView', () => {
         path: '/home/avery/.claude/projects/widgets/session-abc-123.jsonl',
       }),
     );
+  });
+
+  it('asks for provider usage with the reader own offset and shows the footer', async () => {
+    render(<PopoverView />);
+
+    expect(await screen.findByTestId('provider-usage-cluster')).toBeInTheDocument();
+    // "Today" and "this month" are the reader's calendar days, so the offset
+    // travels with the request rather than being guessed shell-side.
+    expect(invoke).toHaveBeenCalledWith('get_provider_usage', {
+      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+    });
+    expect(
+      screen.getByRole('button', { name: 'Anthropic, $1.25 today, estimated' }),
+    ).toBeInTheDocument();
+  });
+
+  it('opens the full usage view from the footer and comes back to the list', async () => {
+    render(<PopoverView />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Usage' }));
+
+    expect(await screen.findByRole('heading', { name: 'Provider usage' })).toBeInTheDocument();
+    expect(screen.queryByText('Wire the tray popover')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }));
+    expect(await screen.findByText('Wire the tray popover')).toBeInTheDocument();
+  });
+
+  it('withholds the usage footer entirely when the shell reports nothing', async () => {
+    mockCommands({ get_provider_usage: { ...PROVIDER_USAGE, providers: [] } });
+    render(<PopoverView />);
+
+    await screen.findByText('Wire the tray popover');
+    // The footer still appears — it is how the Usage view is reached — but it
+    // says there was no usage today rather than showing an empty chip row.
+    expect(screen.getByTestId('provider-usage-cluster')).toBeInTheDocument();
+    expect(screen.getByText('No provider usage today')).toBeInTheDocument();
   });
 
   it('runs the first-run flow and starts scanning when it finishes', async () => {

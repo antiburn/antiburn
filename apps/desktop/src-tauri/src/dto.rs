@@ -186,6 +186,136 @@ pub struct ScanStatus {
     pub agents: Vec<AgentScanState>,
 }
 
+/* -------------------------------------------------------------------------
+ * Local provider usage
+ * ---------------------------------------------------------------------- */
+
+/// How well the app can describe one provider's usage.
+///
+/// The ladder is a *capability* statement, not a quality score: it says what
+/// kind of evidence produced the numbers, so a view can never dress a rough
+/// figure up as a precise one.
+///
+/// Only three of the five are producible from session observations, which is
+/// all v1 has. [`Live`](Self::Live) and [`Detected`](Self::Detected) are
+/// declared because they are part of the ratified presentation contract and a
+/// view must render them correctly the day a separately-approved passive
+/// evidence source starts emitting them — but nothing in this build ever does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderUsageState {
+    /// The provider itself reported a current allowance and how much of it is
+    /// gone.
+    ///
+    /// **Reserved.** A transcript records what was spent, never what remains,
+    /// so no amount of session evidence can reach this state. Producing it
+    /// needs a passive provider-owned source that has not passed review.
+    #[allow(dead_code)]
+    Live,
+    /// Every model that contributed tokens could be priced, so the cost is a
+    /// complete on-device estimate of what those tokens are worth.
+    Estimated,
+    /// Tokens were observed, but at least one model has no price in the
+    /// bundled catalog — so the cost, when present at all, is a floor rather
+    /// than a total.
+    Observed,
+    /// The provider is present but nothing is quantified.
+    ///
+    /// **Reserved.** Same rationale as [`Live`](Self::Live): distinguishing
+    /// "installed and signed in" from "used" needs evidence beyond a
+    /// transcript.
+    #[allow(dead_code)]
+    Detected,
+    /// Sessions were attributed to this provider, but they carry no token
+    /// evidence at all — unanalyzed, or analyzed to nothing.
+    Unknown,
+}
+
+/// Whether a provider's newest local evidence is recent enough to describe now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderUsageStaleness {
+    /// Evidence inside the freshness threshold.
+    Fresh,
+    /// The newest session attributed to this provider predates the threshold,
+    /// so these totals describe past work rather than current work.
+    Stale,
+    /// No activity timestamp at all.
+    Unknown,
+}
+
+/// One provider's totals over one window.
+///
+/// There is deliberately no percentage, allowance, remaining balance, or reset
+/// field anywhere in this type. Session evidence records what was *spent*; a
+/// denominator would have to be invented, and an invented denominator is the
+/// one thing this surface must never show.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageWindow {
+    /// Effective input: fresh prompt tokens plus prompt-cache writes, matching
+    /// the engine's own `tokens_in`.
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    /// Prompt-cache reads, kept separate because they are billed at their own
+    /// rate and are not "input the reader wrote".
+    pub cache_read: u64,
+    /// On-device cost estimate for the models in this window that could be
+    /// priced. Absent when none could. A partial estimate is possible and is
+    /// signalled by [`ProviderUsageState::Observed`], never by this field.
+    pub estimated_usd: Option<f64>,
+    /// Sessions that contributed to this window. A session that used two
+    /// providers is counted once under each.
+    pub session_count: u32,
+}
+
+/// The three windows every provider is summarized over.
+///
+/// Independent, not nested: `week` is the trailing seven calendar days and
+/// `month` starts at the first of the current month, so early in a month the
+/// week reaches back further than the month does.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageWindows {
+    pub today: ProviderUsageWindow,
+    pub week: ProviderUsageWindow,
+    pub month: ProviderUsageWindow,
+}
+
+/// Everything the usage surfaces show about one provider.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsage {
+    /// Canonical provider id (`anthropic`, `openai`, `unknown`, …).
+    pub provider: String,
+    pub display_name: String,
+    pub state: ProviderUsageState,
+    pub staleness: ProviderUsageStaleness,
+    pub windows: ProviderUsageWindows,
+    /// ISO-8601 stamp of the newest session attributed to this provider.
+    pub last_activity_at: Option<String>,
+}
+
+/// Local provider usage, as one snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageSummary {
+    /// Providers with at least one session in the covered span, newest first.
+    /// A provider the reader has not used lately is absent rather than zeroed.
+    pub providers: Vec<ProviderUsage>,
+    /// ISO-8601 stamp of the moment this snapshot was computed.
+    pub generated_at: String,
+    /// How many days of session history the app keeps.
+    ///
+    /// Load-bearing, not trivia: it is shorter than a calendar month, so the
+    /// `month` window is truncated for most of every month and a view that did
+    /// not say so would be quietly wrong.
+    pub retention_days: u32,
+    /// ISO-8601 stamp of the earliest activity these windows can include.
+    /// Later than the start of the month whenever retention bites.
+    pub coverage_since: String,
+}
+
 /// Where the app came from and what it is running against.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

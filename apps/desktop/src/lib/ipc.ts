@@ -131,6 +131,70 @@ export interface SessionAnalyticsPayload {
   sourcePath: string | null;
 }
 
+/**
+ * How well the app can describe one provider's usage. Mirrors Rust
+ * `ProviderUsageState`.
+ *
+ * `live` and `detected` are part of the contract but are **never** produced by
+ * this build: a session transcript records what was spent, not what remains,
+ * so neither an allowance nor a bare "signed in" signal can come out of it.
+ * They are declared — and rendered — so a later, separately reviewed passive
+ * source cannot arrive to a view that has no branch for it.
+ */
+export type ProviderUsageState = 'live' | 'estimated' | 'observed' | 'detected' | 'unknown';
+
+/** Whether a provider's newest local evidence still describes now. */
+export type ProviderUsageStaleness = 'fresh' | 'stale' | 'unknown';
+
+/**
+ * One provider's totals over one window.
+ *
+ * There is no percentage, allowance, remaining balance, or reset here, and
+ * that is deliberate — see `ProviderUsageState`.
+ */
+export interface ProviderUsageWindowPayload {
+  /** Fresh prompt tokens plus prompt-cache writes. */
+  tokensIn: number;
+  tokensOut: number;
+  /** Prompt-cache reads, billed at their own rate. */
+  cacheRead: number;
+  /**
+   * On-device estimate for the models that could be priced, or null when none
+   * could. A `observed` state means this is a floor rather than a total.
+   */
+  estimatedUsd: number | null;
+  /** Sessions that contributed. One session can count under two providers. */
+  sessionCount: number;
+}
+
+/** The three windows every provider is summarized over. */
+export interface ProviderUsageWindowsPayload {
+  today: ProviderUsageWindowPayload;
+  week: ProviderUsageWindowPayload;
+  month: ProviderUsageWindowPayload;
+}
+
+/** Everything the usage surfaces show about one provider. */
+export interface ProviderUsagePayload {
+  /** Canonical id (`anthropic`, `openai`, `unknown`, …) — a key, not copy. */
+  provider: string;
+  displayName: string;
+  state: ProviderUsageState;
+  staleness: ProviderUsageStaleness;
+  windows: ProviderUsageWindowsPayload;
+  lastActivityAt: string | null;
+}
+
+/** Local provider usage as one snapshot. Mirrors Rust `ProviderUsageSummary`. */
+export interface ProviderUsageSummaryPayload {
+  providers: ProviderUsagePayload[];
+  generatedAt: string;
+  /** Days of session history the app keeps — shorter than a calendar month. */
+  retentionDays: number;
+  /** Earliest activity these windows can include. */
+  coverageSince: string;
+}
+
 /** One repository row. Mirrors Rust `RepositoryItem`. */
 export interface RepositoryItemPayload {
   key: string;
@@ -257,6 +321,32 @@ export async function getSubagentAnalytics(
     wslDistro: wslDistro ?? null,
   });
 }
+
+/**
+ * Per-provider token and cost totals derived from the sessions on this machine.
+ *
+ * The reader's UTC offset travels with the request because "today" and "this
+ * month" are *their* calendar days, and the shell cannot resolve a local offset
+ * reliably from inside a multi-threaded process. `getTimezoneOffset` returns
+ * minutes *behind* UTC, so it is negated on the way out.
+ *
+ * Without a shell the answer is an empty snapshot rather than null: the usage
+ * surfaces have an honest empty state and no separate "no shell" state.
+ */
+export async function getProviderUsage(): Promise<ProviderUsageSummaryPayload> {
+  if (!hasShell()) return EMPTY_PROVIDER_USAGE;
+  return invoke<ProviderUsageSummaryPayload>('get_provider_usage', {
+    utcOffsetMinutes: -new Date().getTimezoneOffset(),
+  });
+}
+
+/** What provider usage looks like with nothing to report. */
+export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
+  providers: [],
+  generatedAt: '',
+  retentionDays: 0,
+  coverageSince: '',
+};
 
 /** Run a scan now, unless one is already in flight. */
 export async function scanNow(): Promise<ScanStatus | null> {

@@ -25,15 +25,18 @@ use tauri_plugin_opener::OpenerExt;
 use crate::agents::kind_from_slug;
 use crate::analytics;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, OrchestrationStatus, RepositoryItem, ScanStatus,
-    SessionAnalytics, SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
+    ActivityEntry, AgentScanState, AppInfo, OrchestrationStatus, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalytics, SessionIdentity, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
+use crate::provider_usage;
 use crate::repositories;
 use crate::scan::{self, ScanController};
 use crate::settings;
 use crate::store::{
     AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey, SessionRecord, Store,
+    iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -212,16 +215,33 @@ fn path_is_under(path: &str, root: &str) -> bool {
     path == root || path.starts_with(&format!("{root}/"))
 }
 
-/// An epoch stamp as the ISO-8601 string the activity list parses.
-fn iso_from_epoch(epoch: Option<i64>) -> String {
-    let epoch = epoch.unwrap_or(0);
-    time::OffsetDateTime::from_unix_timestamp(epoch)
-        .ok()
-        .and_then(|at| {
-            at.format(&time::format_description::well_known::Rfc3339)
-                .ok()
-        })
-        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
+/* -------------------------------------------------------------------------
+ * Local provider usage
+ * ---------------------------------------------------------------------- */
+
+/// Per-provider token and cost totals derived from the sessions already on this
+/// machine.
+///
+/// `utc_offset_minutes` is the webview's own offset from UTC. The shell asks
+/// for it rather than reading the platform's, because "today" and "this month"
+/// are the reader's calendar days, and resolving the local offset inside a
+/// multi-threaded process is not reliable on every platform. Omitting it falls
+/// back to UTC, which is right for a machine running on it and off by at most
+/// one day's boundary for anyone else.
+///
+/// Nothing here contacts a provider. Every figure comes from
+/// [`crate::provider_usage`], which reads the local database and the engine's
+/// bundled pricing table and nothing else.
+#[tauri::command]
+pub fn get_provider_usage(
+    app: tauri::AppHandle,
+    utc_offset_minutes: Option<i32>,
+) -> CommandResult<ProviderUsageSummary> {
+    let now = scan::unix_now();
+    let offset = utc_offset_minutes.unwrap_or(0);
+    let since = provider_usage::lookback_start(now, offset);
+    let evidence = app.state::<Store>().usage_evidence(since).map_err(fail)?;
+    Ok(provider_usage::summarize(&evidence, now, offset))
 }
 
 /* -------------------------------------------------------------------------

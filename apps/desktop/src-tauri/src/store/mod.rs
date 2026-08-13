@@ -39,6 +39,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub use model::{
     AnalysisRecord, AppSettings, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS, RelationKind,
     RelationRecord, RepositoryRecord, SessionKey, SessionRecord, ThemePreference,
+    UsageEvidenceRecord,
 };
 
 /// File name of the database inside the app data directory.
@@ -424,6 +425,38 @@ impl Store {
             .optional()?)
     }
 
+    /// Agent, heartbeat, and token breakdown for every session at or after
+    /// `since_epoch`.
+    ///
+    /// One join rather than a listing plus a lookup per row: provider usage
+    /// walks every retained session, and the N+1 shape would take the
+    /// connection lock once per session.
+    ///
+    /// A session with no analysis row still comes back, with `None` for its
+    /// breakdown — the aggregation counts it as an unattributed session rather
+    /// than pretending it spent nothing.
+    pub fn usage_evidence(&self, since_epoch: i64) -> Result<Vec<UsageEvidenceRecord>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT s.agent, COALESCE(s.updated_at_epoch, 0), a.model_breakdown_json
+               FROM session s
+               LEFT JOIN session_analysis a
+                 ON a.environment_key = s.environment_key
+                AND a.agent = s.agent
+                AND a.session_id = s.session_id
+              WHERE COALESCE(s.updated_at_epoch, 0) >= ?1
+              ORDER BY COALESCE(s.updated_at_epoch, 0) DESC",
+        )?;
+        let rows = statement.query_map(params![since_epoch], |row| {
+            Ok(UsageEvidenceRecord {
+                agent: row.get(0)?,
+                updated_at_epoch: row.get(1)?,
+                model_breakdown_json: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /* --------------------------------------------------------------------
      * Relations
      * ----------------------------------------------------------------- */
@@ -647,6 +680,22 @@ pub fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+/// An epoch stamp as the RFC 3339 string the views parse.
+///
+/// Lives beside [`now_rfc3339`] because the two answer the same question in the
+/// same spelling; every payload that carries a time uses one of them, so the
+/// webview never has to guess a format.
+pub fn iso_from_epoch(epoch: Option<i64>) -> String {
+    let epoch = epoch.unwrap_or(0);
+    time::OffsetDateTime::from_unix_timestamp(epoch)
+        .ok()
+        .and_then(|at| {
+            at.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
 fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<()> {

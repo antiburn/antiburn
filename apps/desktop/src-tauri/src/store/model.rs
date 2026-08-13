@@ -99,6 +99,24 @@ pub struct AnalysisRecord {
     pub pricing_generation: i64,
 }
 
+/// One session's token evidence, as the provider-usage aggregation reads it.
+///
+/// A projection rather than a record: the aggregation needs three columns out
+/// of a two-table join and nothing else, and materializing whole
+/// [`SessionRecord`]s and [`AnalysisRecord`]s to reach them would read
+/// megabytes of metrics JSON per pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageEvidenceRecord {
+    /// The agent's discovery slug.
+    pub agent: String,
+    /// Transcript heartbeat, in unix seconds. Zero when the session never
+    /// carried one, which puts it outside every window.
+    pub updated_at_epoch: i64,
+    /// Billable tokens per normalized model key, or `None` when the session has
+    /// not been analyzed. Absence is "we do not know yet", never "zero".
+    pub model_breakdown_json: Option<String>,
+}
+
 /// One local relationship between two sessions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationRecord {

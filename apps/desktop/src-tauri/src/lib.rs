@@ -17,6 +17,7 @@
 //! - [`dto`] — the shapes that cross that boundary.
 //! - [`export`] — the derived-only session export document.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
+//! - [`provider_usage`] — per-provider totals derived from local sessions.
 //! - [`repositories`] — which repositories on this machine antiburn watches.
 //! - [`scan`] — the background scan and its scheduling policy.
 //! - [`settings`] — the standalone settings window.
@@ -38,6 +39,7 @@ mod commands;
 mod dto;
 mod export;
 mod popover;
+mod provider_usage;
 mod repositories;
 mod scan;
 mod settings;
@@ -71,6 +73,7 @@ pub fn run() {
             commands::delete_session_data,
             commands::engine_catalog_version,
             commands::export_session,
+            commands::get_provider_usage,
             commands::get_scan_status,
             commands::get_session_analytics,
             commands::get_settings,

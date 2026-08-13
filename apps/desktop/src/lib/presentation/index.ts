@@ -22,6 +22,7 @@ export {
   sameLocalSession,
   sessionIdentityKey,
 } from './localIdentity';
+export * from './providerUsage';
 export { relativeTime } from './relativeTime';
 export * from './sessionAnalytics';
 export * from './sessionCosts';
