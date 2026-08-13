@@ -352,13 +352,17 @@ mod tests {
         assert!(internal_process_host_args(args).is_none());
     }
 
+    // These output-assertion tests give the child a generous budget: the
+    // variable on CI is PowerShell cold-start (profile-less JIT/AMSI warmup
+    // can eat several seconds on a fresh Windows runner), not the code under
+    // test. Only the dedicated kill-on-timeout test keeps a tight window.
     #[tokio::test]
     async fn bounded_output_preserves_output_and_exit_status() {
         #[cfg(target_os = "windows")]
         let script = "[Console]::Out.Write('stdout'); [Console]::Error.Write('stderr'); exit 23";
         #[cfg(not(target_os = "windows"))]
         let script = "printf stdout; printf stderr >&2; exit 23";
-        let output = run_script(script, Duration::from_secs(5), 64)
+        let output = run_script(script, Duration::from_secs(60), 64)
             .await
             .unwrap();
 
@@ -373,7 +377,7 @@ mod tests {
         let stdout_script = "[Console]::Out.Write('overflow')";
         #[cfg(not(target_os = "windows"))]
         let stdout_script = "printf overflow";
-        let stdout = run_script(stdout_script, Duration::from_secs(5), 4)
+        let stdout = run_script(stdout_script, Duration::from_secs(60), 4)
             .await
             .unwrap();
         assert_eq!(stdout.stdout, b"over");
@@ -383,7 +387,7 @@ mod tests {
         let stderr_script = "[Console]::Out.Write('ok'); [Console]::Error.Write('overflow')";
         #[cfg(not(target_os = "windows"))]
         let stderr_script = "printf ok; printf overflow >&2";
-        let stderr = run_script(stderr_script, Duration::from_secs(5), 4)
+        let stderr = run_script(stderr_script, Duration::from_secs(60), 4)
             .await
             .unwrap();
         assert_eq!(stderr.stdout, b"ok");
