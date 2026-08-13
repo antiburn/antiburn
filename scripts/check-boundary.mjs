@@ -12,19 +12,13 @@
 //
 // Exemptions (each is a place that legitimately names the concepts):
 // - docs/oss/*  — the governance manifests' own rule text
-// - docs/audits/** — this repository's own conformance audits (see below)
 // - NOTICE      — the copyright holder's legal name
 // - crates/antiburn-local/tests/boundary.rs — the engine's pattern table
 // - this script — its own pattern table
 //
-// `docs/audits/**` is exempt as a directory rather than file by file. An audit
-// of a boundary has to NAME the concepts it is auditing — the private product,
-// the SDKs, the probe utilities — or it degrades into circumlocution that
-// nobody can act on, and the repository ends up unable to document its own
-// decisions without failing CI. The exemption is prose-only by construction:
-// nothing under `docs/audits/` is compiled, linked, or shipped, so a banned
-// token there is a word rather than a dependency. Code and configuration
-// elsewhere in the tree remain covered without exception.
+// Conformance audits that must name prohibited concepts are governance
+// records and live in the private repository, not here — so this scan
+// covers the complete public tree without directory-level exemptions.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -39,13 +33,9 @@ const EXEMPT = new Set([
   'scripts/check-boundary.mjs',
 ]);
 
-/** Directory prefixes exempt wholesale. Paths are compared with `/`. */
-const EXEMPT_PREFIXES = ['docs/audits/'];
-
 /** Whether a repository-relative path is exempt from the concept scan. */
 function isExempt(rel) {
-  const posix = rel.split(path.sep).join('/');
-  return EXEMPT.has(posix) || EXEMPT_PREFIXES.some((prefix) => posix.startsWith(prefix));
+  return EXEMPT.has(rel.split(path.sep).join('/'));
 }
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist']);

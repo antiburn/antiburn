@@ -38,7 +38,6 @@ docs/oss/                Approved source-boundary manifests; the engine's
                          mechanical boundary tests validate against them.
 docs/support.md          The v1 platform and agent support matrix, and what
                          antiburn stores about your sessions.
-docs/audits/             Point-in-time conformance audits of this repository.
 docs/deviations.md       Every deliberate difference from the ratified feature
                          matrix, with its reason and revisit milestone.
 ```

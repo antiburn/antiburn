@@ -18,7 +18,8 @@ application's authentication, organizations, publication, and commercial
 enrichment features have no public counterpart and no public placeholder, which
 is the matrix working as written.
 
-Related: the conformance record in [`docs/audits/`](audits/), the support and
+Related: the conformance audit (kept with the project's private governance
+records), the support and
 data-handling claims in [`docs/support.md`](support.md).
 
 ## Register
