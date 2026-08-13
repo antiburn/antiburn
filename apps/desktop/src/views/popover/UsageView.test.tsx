@@ -52,7 +52,9 @@ const OPENAI: ProviderUsagePayload = {
   lastActivityAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
 };
 
-function summary(overrides: Partial<ProviderUsageSummaryPayload> = {}): ProviderUsageSummaryPayload {
+function summary(
+  overrides: Partial<ProviderUsageSummaryPayload> = {},
+): ProviderUsageSummaryPayload {
   return {
     providers: [ANTHROPIC, OPENAI],
     generatedAt: '2027-01-15T08:00:00Z',
@@ -62,60 +64,56 @@ function summary(overrides: Partial<ProviderUsageSummaryPayload> = {}): Provider
   };
 }
 
-/** The headline figure, which is deliberately separate from the rows below it. */
-function total() {
-  return within(screen.getByRole('region', { name: 'Usage total' }));
-}
-
 describe('UsageView', () => {
-  it('opens on today and lists only the providers used then', () => {
+  it('sections current work first: used-today providers under Recently used', () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />);
 
-    expect(screen.getByRole('heading', { name: 'Provider usage' })).toBeInTheDocument();
-    expect(screen.getByText('Anthropic')).toBeInTheDocument();
-    expect(screen.queryByText('OpenAI')).not.toBeInTheDocument();
-    expect(total().getByText('Today')).toBeInTheDocument();
-    expect(total().getByText('$2.50')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Usage' })).toBeInTheDocument();
+
+    const recent = within(screen.getByRole('region', { name: 'Recently used' }));
+    expect(recent.getByText('Anthropic')).toBeInTheDocument();
+    expect(recent.getByText('Used today')).toBeInTheDocument();
+
+    const rest = within(screen.getByRole('region', { name: 'All detected' }));
+    expect(rest.getByText('OpenAI')).toBeInTheDocument();
+    expect(rest.queryByText('Used today')).not.toBeInTheDocument();
   });
 
-  it('switches windows and re-totals from the same snapshot', () => {
+  it('shows every window on one card, with sessions beside each figure', () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Week' }));
-
-    expect(total().getByText('Last 7 days')).toBeInTheDocument();
-    expect(screen.getByText('OpenAI')).toBeInTheDocument();
-    // The headline is every provider's week added up; OpenAI contributes
-    // tokens but no price, so the total stays the priced part.
-    expect(total().getByText('$8.00')).toBeInTheDocument();
-    expect(total().getByText(/6 sessions/)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('radio', { name: 'Month' }));
-    expect(total().getByText('This month')).toBeInTheDocument();
+    const card = screen.getByText('Anthropic').closest('li');
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText('Today')).toBeInTheDocument();
+    expect(within(card!).getByText('Last 7 days')).toBeInTheDocument();
+    expect(within(card!).getByText('This month')).toBeInTheDocument();
+    // "$2.50" appears twice by design: the Today's-spend metric row and the
+    // Today window row describe the same day.
+    expect(within(card!).getAllByText('$2.50')).toHaveLength(2);
+    expect(within(card!).getAllByText('$8.00')).toHaveLength(2);
+    expect(within(card!).getByText('1 session')).toBeInTheDocument();
   });
 
-  it('keeps the arrow-key contract of the window selector', () => {
+  it('derives the metric block from the reader’s own windows', () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />);
-    const group = screen.getByRole('radiogroup', { name: 'Usage window' });
 
-    fireEvent.keyDown(within(group).getByRole('radio', { name: 'Today' }), {
-      key: 'ArrowRight',
-    });
-    expect(within(group).getByRole('radio', { name: 'Week' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    const card = screen.getByText('Anthropic').closest('li');
+    expect(within(card!).getByText("Today's spend")).toBeInTheDocument();
+    expect(within(card!).getByText("Today's tokens")).toBeInTheDocument();
+    // 1,000 today vs (4,000 − 1,000)/6 = 500 per day → 2.0× and rising.
+    expect(within(card!).getByText(/Picking up · 2\.0×/)).toBeInTheDocument();
   });
 
   it('marks an unpriced provider observed and shows its tokens instead of a dollar zero', () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />);
-    fireEvent.click(screen.getByRole('radio', { name: 'Week' }));
 
-    const row = screen.getByText('OpenAI').closest('li');
-    expect(row).not.toBeNull();
-    expect(within(row!).getByText('Observed')).toBeInTheDocument();
-    expect(within(row!).getByText('20.0k')).toBeInTheDocument();
-    expect(within(row!).getByText(/Last used 3d ago/)).toBeInTheDocument();
+    const card = screen.getByText('OpenAI').closest('li');
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText('Observed')).toBeInTheDocument();
+    expect(within(card!).getAllByText('20.0k').length).toBeGreaterThan(0);
+    expect(within(card!).getByText(/Last used 3d ago/)).toBeInTheDocument();
+    // Nothing today against a real weekly baseline reads as easing off.
+    expect(within(card!).getByText(/Easing · 0\.0×/)).toBeInTheDocument();
   });
 
   it('says how far back the windows can see, because retention is shorter than a month', () => {
@@ -130,8 +128,6 @@ describe('UsageView', () => {
     render(<UsageView summary={summary({ providers: [] })} onBack={vi.fn()} />);
 
     expect(screen.getByText('No local evidence yet')).toBeInTheDocument();
-    // The headline is a dash, never a $0.00 that would claim the work was free.
-    expect(total().getByText('—')).toBeInTheDocument();
   });
 
   it('goes back to the activity list', () => {
@@ -140,5 +136,16 @@ describe('UsageView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }));
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('UsageWindowRows shares', () => {
+  it('fills each bar with the window’s share of the provider’s own month', () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} />);
+
+    const card = screen.getByText('Anthropic').closest('li')!;
+    // Fixture: today $2.50 of this month's $8.00 → 31% (rounded).
+    expect(within(card).getByTestId('usage-share-today')).toHaveStyle({ width: '31%' });
+    expect(within(card).getByTestId('usage-share-month')).toHaveStyle({ width: '100%' });
   });
 });

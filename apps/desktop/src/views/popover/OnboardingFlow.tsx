@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Check, FolderPlus, HardDrive, X } from 'lucide-react';
+import { Check, FolderPlus, X } from 'lucide-react';
+
+import appIcon from '../../assets/app-icon.png';
 import { useEffect, useRef, useState } from 'react';
 
 import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
@@ -90,9 +92,15 @@ function StepDots({ step }: { step: Step }) {
 function Welcome() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-secondary text-label-secondary">
-        <HardDrive size={22} strokeWidth={1.75} aria-hidden="true" />
-      </div>
+      <img
+        src={appIcon}
+        alt=""
+        aria-hidden="true"
+        width={96}
+        height={96}
+        className="mb-5 h-24 w-24 select-none drop-shadow-md"
+        draggable={false}
+      />
       <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
         Everything stays on this machine
       </h2>
@@ -281,8 +289,8 @@ function HistoricalScan({
               agents
             </p>
             <p className="mt-1 type-footnote text-label-secondary">
-              {found} {found === 1 ? 'session' : 'sessions'} so far. Session files are read, never
-              written.
+              {found} {found === 1 ? 'session' : 'sessions'} so far. Session files are read,
+              never written.
             </p>
           </>
         ) : scanStatus?.error ? (
@@ -315,10 +323,8 @@ function HistoricalScan({
       <div className="pb-1">
         {running ? (
           <PushButton onClick={onCancelScan}>Stop</PushButton>
-        ) : (
-          <PushButton onClick={onDiscover}>
-            {scanStatus?.finishedAt ? 'Scan again' : 'Scan now'}
-          </PushButton>
+        ) : scanStatus?.finishedAt ? null : (
+          <PushButton onClick={onDiscover}>Scan now</PushButton>
         )}
       </div>
     </div>

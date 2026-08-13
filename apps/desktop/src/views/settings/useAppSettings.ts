@@ -5,7 +5,13 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { applyTheme } from '../../lib/appearance';
-import { DEFAULT_SETTINGS, getSettings, setSettings, type AppSettings } from '../../lib/ipc';
+import {
+  DEFAULT_SETTINGS,
+  getSettings,
+  onSettingsChanged,
+  setSettings,
+  type AppSettings,
+} from '../../lib/ipc';
 
 /**
  * The settings window's copy of the reader's preferences.
@@ -42,8 +48,16 @@ export function useAppSettings(): AppSettingsController {
       .catch(() => {
         if (active) setLoaded(true);
       });
+    // Writes can come from another window (onboarding runs in the popover);
+    // the broadcast keeps this window's copy — and its theme — current too.
+    const pending = onSettingsChanged((stored) => {
+      if (!active) return;
+      applyTheme(stored.theme);
+      setLocal(stored);
+    });
     return () => {
       active = false;
+      void pending.then((unlisten) => unlisten());
     };
   }, []);
 

@@ -130,7 +130,7 @@ export function SettingsView() {
             role="tabpanel"
             id={`${pane}-panel`}
             aria-labelledby={`${pane}-tab`}
-            className="mx-auto w-full max-w-[520px]"
+            className="mx-auto w-full max-w-[600px]"
           >
             {pane === 'general' && <GeneralPane {...controller} info={info} />}
             {pane === 'appearance' && <AppearancePane {...controller} />}

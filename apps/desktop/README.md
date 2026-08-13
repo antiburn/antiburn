@@ -114,7 +114,7 @@ Three independent checks, none of which relies on review:
 - **Notifications.** Exactly two, both posted by the shell and never by the
   webview (which is granted no notification permission): an automatic update
   check that found a version, and the first scan failure of a run. Each is gated
-  by the master preference *and* its own, both default on, and neither repeats —
+  by the master preference _and_ its own, both default on, and neither repeats —
   see the policy at the top of `src-tauri/src/notifications.rs`. Delivery is the
   platform's own notification centre; nothing about a notification leaves the
   machine.

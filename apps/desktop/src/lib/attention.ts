@@ -30,9 +30,7 @@ import type { SettingsPane } from './settingsPanes';
 export type AttentionKind = 'storage' | 'sourceAccess';
 
 /** What pressing a banner's action does. */
-export type AttentionAction =
-  | { kind: 'openSettings'; pane: SettingsPane }
-  | { kind: 'rescan' };
+export type AttentionAction = { kind: 'openSettings'; pane: SettingsPane } | { kind: 'rescan' };
 
 export interface AttentionBanner {
   id: AttentionKind;
@@ -76,7 +74,9 @@ export function attentionBanners({ repositories, storage }: AttentionInput): Att
 
   // A repository the reader turned off reports `disabled`, never
   // `permission_denied`, so an ignored folder can never raise this.
-  const blocked = repositories.filter((repository) => repository.status === 'permission_denied');
+  const blocked = repositories.filter(
+    (repository) => repository.status === 'permission_denied',
+  );
   if (blocked.length > 0) {
     const first = blocked[0]?.repoName ?? 'a repository';
     banners.push({

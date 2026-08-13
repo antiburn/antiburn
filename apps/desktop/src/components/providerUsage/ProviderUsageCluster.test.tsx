@@ -48,7 +48,13 @@ function ranked(count: number): ProviderUsagePayload[] {
 
 describe('ProviderUsageCluster', () => {
   it('shows a chip per provider used today, with the figure in its name', () => {
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider()]}
+        onViewAll={vi.fn()}
+      />,
+    );
 
     // The chip renders a glyph and a number; everything a reader needs to know
     // about what that number *is* has to be in the accessible name.
@@ -68,6 +74,7 @@ describe('ProviderUsageCluster', () => {
           }),
         ]}
         onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
       />,
     );
 
@@ -86,19 +93,28 @@ describe('ProviderUsageCluster', () => {
           }),
         ]}
         onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
       />,
     );
 
     expect(
-      screen.getByRole('button', { name: /anthropic, \$1\.25 today, estimated, last used 2d ago/i }),
+      screen.getByRole('button', {
+        name: /anthropic, \$1\.25 today, estimated, last used 2d ago/i,
+      }),
     ).toBeInTheDocument();
   });
 
   it('says so honestly when nothing was used today', () => {
     const idle = provider({
-      windows: { today: usageWindow(), week: usageWindow({ tokensIn: 5 }), month: usageWindow() },
+      windows: {
+        today: usageWindow(),
+        week: usageWindow({ tokensIn: 5 }),
+        month: usageWindow(),
+      },
     });
-    render(<ProviderUsageCluster providers={[idle]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster onOpenSettings={vi.fn()} providers={[idle]} onViewAll={vi.fn()} />,
+    );
 
     expect(screen.getByText('No provider usage today')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /anthropic/i })).not.toBeInTheDocument();
@@ -106,7 +122,14 @@ describe('ProviderUsageCluster', () => {
 
   it('collapses everything past the chip budget into one overflow affordance', () => {
     const onViewAll = vi.fn();
-    render(<ProviderUsageCluster providers={ranked(5)} onViewAll={onViewAll} maxVisible={3} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={ranked(5)}
+        onViewAll={onViewAll}
+        maxVisible={3}
+      />,
+    );
 
     expect(screen.getAllByRole('button', { name: /^Provider \d/ })).toHaveLength(3);
     const overflow = screen.getByRole('button', { name: 'Show 2 more providers' });
@@ -115,7 +138,13 @@ describe('ProviderUsageCluster', () => {
   });
 
   it('opens a provider panel on click and closes it on a second click', () => {
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider()]}
+        onViewAll={vi.fn()}
+      />,
+    );
     const chip = screen.getByRole('button', { name: /anthropic/i });
 
     expect(chip).toHaveAttribute('aria-expanded', 'false');
@@ -133,7 +162,13 @@ describe('ProviderUsageCluster', () => {
   });
 
   it('closes the panel on Escape and on a press outside it', () => {
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider()]}
+        onViewAll={vi.fn()}
+      />,
+    );
     const chip = screen.getByRole('button', { name: /anthropic/i });
 
     fireEvent.click(chip);
@@ -146,9 +181,16 @@ describe('ProviderUsageCluster', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('leads to the full view from the panel and from the footer affordance', () => {
+  it('leads to the full view from the panel, and to settings from the gear', () => {
     const onViewAll = vi.fn();
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={onViewAll} />);
+    const onOpenSettings = vi.fn();
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={onOpenSettings}
+        providers={[provider()]}
+        onViewAll={onViewAll}
+      />,
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /anthropic/i }));
     fireEvent.click(screen.getByRole('button', { name: 'All provider usage' }));
@@ -156,12 +198,19 @@ describe('ProviderUsageCluster', () => {
     // Navigating away also dismisses the panel, so returning shows the list.
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Usage' }));
-    expect(onViewAll).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(onViewAll).toHaveBeenCalledTimes(1);
   });
 
   it('moves focus into the panel it opens', () => {
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider()]}
+        onViewAll={vi.fn()}
+      />,
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /anthropic/i }));
 
@@ -173,7 +222,13 @@ describe('ProviderUsageCluster', () => {
   });
 
   it('holds Tab inside the panel while it is open', () => {
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider()]}
+        onViewAll={vi.fn()}
+      />,
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /anthropic/i }));
     const panel = screen.getByRole('dialog');
@@ -190,7 +245,13 @@ describe('ProviderUsageCluster', () => {
   });
 
   it('returns focus to the chip that opened the panel', () => {
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider()]}
+        onViewAll={vi.fn()}
+      />,
+    );
     const chip = screen.getByRole('button', { name: /anthropic/i });
 
     fireEvent.click(chip);
@@ -202,7 +263,13 @@ describe('ProviderUsageCluster', () => {
   });
 
   it('claims Escape so a host does not also act on it', () => {
-    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    render(
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider()]}
+        onViewAll={vi.fn()}
+      />,
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /anthropic/i }));
     // `fireEvent` returns false when a handler called `preventDefault`, which
@@ -215,7 +282,11 @@ describe('ProviderUsageCluster', () => {
     // v1 never emits `live`, but the contract says a view must not fall through
     // to an unknown branch the day a reviewed passive source does.
     render(
-      <ProviderUsageCluster providers={[provider({ state: 'live' })]} onViewAll={vi.fn()} />,
+      <ProviderUsageCluster
+        onOpenSettings={vi.fn()}
+        providers={[provider({ state: 'live' })]}
+        onViewAll={vi.fn()}
+      />,
     );
 
     fireEvent.click(screen.getByRole('button', { name: /anthropic, \$1\.25 today, live/i }));

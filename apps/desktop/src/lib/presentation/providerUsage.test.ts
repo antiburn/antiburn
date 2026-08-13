@@ -72,13 +72,13 @@ describe('usage values', () => {
   });
 
   it('splits the token rows the way the shell reports them', () => {
-    expect(tokenRows(usageWindow({ tokensIn: 1_000, tokensOut: 2_000, cacheRead: 3_000 }))).toEqual(
-      [
-        { label: 'Input', value: '1.0k' },
-        { label: 'Output', value: '2.0k' },
-        { label: 'Cache read', value: '3.0k' },
-      ],
-    );
+    expect(
+      tokenRows(usageWindow({ tokensIn: 1_000, tokensOut: 2_000, cacheRead: 3_000 })),
+    ).toEqual([
+      { label: 'Input', value: '1.0k' },
+      { label: 'Output', value: '2.0k' },
+      { label: 'Cache read', value: '3.0k' },
+    ]);
   });
 });
 

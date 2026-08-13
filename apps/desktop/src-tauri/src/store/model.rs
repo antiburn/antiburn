@@ -202,8 +202,10 @@ impl ThemePreference {
 }
 
 /// Narrowest and widest activity windows the settings pane offers, in days.
+/// The ceiling equals the store's retention window: offering more days than
+/// the store keeps would render a header over data that cannot exist.
 pub const MIN_ACTIVITY_DAYS: u32 = 1;
-pub const MAX_ACTIVITY_DAYS: u32 = 30;
+pub const MAX_ACTIVITY_DAYS: u32 = 14;
 /// Days of activity a fresh install shows.
 pub const DEFAULT_ACTIVITY_DAYS: u32 = 7;
 

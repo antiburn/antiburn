@@ -45,7 +45,9 @@ describe('scanStatusLabel', () => {
   });
 
   it('counts agents once there is a ratio worth printing', () => {
-    expect(scanStatusLabel(status({ running: true, totalAgents: 11 }), false)).toBe('Scanning…');
+    expect(scanStatusLabel(status({ running: true, totalAgents: 11 }), false)).toBe(
+      'Scanning…',
+    );
     expect(
       scanStatusLabel(status({ running: true, completedAgents: 4, totalAgents: 11 }), false),
     ).toBe('Scanning… 4 of 11 agents');

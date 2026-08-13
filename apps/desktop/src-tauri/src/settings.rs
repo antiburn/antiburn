@@ -51,10 +51,11 @@ impl PendingPane {
 /// selects its view from this fragment (see `src/lib/route.ts`).
 const URL: &str = "index.html#/settings";
 
-const WIDTH: f64 = 620.0;
-const HEIGHT: f64 = 460.0;
-const MIN_WIDTH: f64 = 480.0;
-const MIN_HEIGHT: f64 = 360.0;
+// Fixed geometry: a 220px sidebar leaves a ≥600px content column, and the
+// whole window still fits a 1280×800 display. Non-resizable — every pane is
+// designed for exactly this rectangle.
+const WIDTH: f64 = 960.0;
+const HEIGHT: f64 = 680.0;
 
 /// Shows the settings window, creating it if this is the first request.
 ///
@@ -82,8 +83,8 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
         .title("antiburn Settings")
         .inner_size(WIDTH, HEIGHT)
-        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
-        .resizable(true)
+        .resizable(false)
+        .maximizable(false)
         .center()
         .focused(true)
         .build()?;

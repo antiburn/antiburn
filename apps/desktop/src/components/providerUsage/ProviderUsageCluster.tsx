@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { Settings } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import type { ProviderUsagePayload } from '../../lib/ipc';
@@ -23,6 +24,8 @@ export interface ProviderUsageClusterProps {
   providers: readonly ProviderUsagePayload[];
   /** Open the full Usage view. */
   onViewAll: () => void;
+  /** Open the standalone Settings window (the footer's right-hand gear). */
+  onOpenSettings: () => void;
   maxVisible?: number;
 }
 
@@ -53,6 +56,7 @@ const FOCUSABLE =
 export function ProviderUsageCluster({
   providers,
   onViewAll,
+  onOpenSettings,
   maxVisible = DEFAULT_MAX_CHIPS,
 }: ProviderUsageClusterProps) {
   const [openProvider, setOpenProvider] = useState<string | null>(null);
@@ -198,10 +202,11 @@ export function ProviderUsageCluster({
 
       <button
         type="button"
-        onClick={viewAll}
-        className="ml-auto inline-flex h-6 shrink-0 items-center rounded-control px-1.5 type-caption text-label-secondary hover:bg-surface-hover"
+        onClick={onOpenSettings}
+        aria-label="Open settings"
+        className="-mr-0.5 ml-auto inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-control text-label-secondary hover:bg-surface-hover"
       >
-        Usage
+        <Settings size={14} strokeWidth={1.75} aria-hidden="true" />
       </button>
 
       {open && (

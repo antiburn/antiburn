@@ -7,14 +7,13 @@ import { ChevronRight } from 'lucide-react';
 import type { ProviderUsagePayload } from '../../lib/ipc';
 import {
   providerWindow,
-  sessionCountLabel,
   stalenessNote,
   tokenRows,
+  updatedNote,
   usageStateDescription,
-  usageValueLabel,
-  usageWindowLabel,
-  USAGE_WINDOWS,
 } from '../../lib/presentation/providerUsage';
+import { UsageMetricRows } from './UsageMetricRows';
+import { UsageWindowRows } from './UsageWindowRows';
 import { ProviderGlyph, UsageStateBadge } from './ProviderUsagePrimitives';
 
 export interface ProviderUsageDetailProps {
@@ -40,6 +39,7 @@ export function ProviderUsageDetail({
   onViewAll,
 }: ProviderUsageDetailProps) {
   const stale = stalenessNote(provider);
+  const updated = updatedNote(provider);
   // The broadest window the app can see, so the token split describes as much
   // history as exists rather than only the current day.
   const month = providerWindow(provider, 'month');
@@ -54,29 +54,20 @@ export function ProviderUsageDetail({
           <h2 id={headingId} className="type-headline truncate text-label">
             {provider.displayName}
           </h2>
-          {stale && <p className="type-caption text-label-tertiary">{stale}</p>}
+          {(stale ?? updated) && (
+            <p
+              className={`type-caption ${stale ? 'text-system-orange' : 'text-label-tertiary'}`}
+            >
+              {stale ?? updated}
+            </p>
+          )}
         </div>
         <UsageStateBadge state={provider.state} className="mt-px" />
       </div>
 
-      <dl className="space-y-1.5">
-        {USAGE_WINDOWS.map(({ value }) => {
-          const window = providerWindow(provider, value);
-          return (
-            <div key={value} className="flex items-baseline justify-between gap-3">
-              <dt className="type-footnote text-label-secondary">{usageWindowLabel(value)}</dt>
-              <dd className="flex items-baseline gap-2">
-                <span className="type-caption text-label-tertiary">
-                  {sessionCountLabel(window.sessionCount)}
-                </span>
-                <span className="type-footnote tabular-nums text-label">
-                  {usageValueLabel(window)}
-                </span>
-              </dd>
-            </div>
-          );
-        })}
-      </dl>
+      <UsageMetricRows provider={provider} />
+
+      <UsageWindowRows provider={provider} className="border-t border-separator pt-2.5" />
 
       <div className="space-y-1 border-t border-separator pt-2.5">
         <p className="type-caption font-medium text-label-secondary">Tokens · this month</p>
@@ -88,7 +79,9 @@ export function ProviderUsageDetail({
         ))}
       </div>
 
-      <p className="type-caption text-label-tertiary">{usageStateDescription(provider.state)}</p>
+      <p className="type-caption text-label-tertiary">
+        {usageStateDescription(provider.state)}
+      </p>
 
       {onViewAll && (
         <button

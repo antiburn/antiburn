@@ -238,3 +238,99 @@ export function tokenRows(
 export function sessionCountLabel(count: number): string {
   return `${count} ${count === 1 ? 'session' : 'sessions'}`;
 }
+
+/* -------------------------------------------------------------------------
+ * Pace: today against the trailing week, from the windows the shell already
+ * reports. Deliberately daily-grained — a per-hour rate would need turn-level
+ * evidence this build does not collect, and a made-up denominator is exactly
+ * the kind of figure these surfaces refuse to show.
+ * ---------------------------------------------------------------------- */
+
+export type PaceTrendKind = 'picking-up' | 'steady' | 'easing' | 'insufficient';
+
+export interface PaceTrend {
+  kind: PaceTrendKind;
+  /** Today ÷ the prior week's daily average; null when insufficient. */
+  ratio: number | null;
+}
+
+/** Below this the trend reads "Easing"; above its inverse, "Picking up". */
+const PACE_STEADY_BAND = 0.85;
+
+/**
+ * Today's activity against the trailing week's daily average, by tokens.
+ *
+ * The week window includes today, so the baseline is the other six days. A
+ * baseline with no evidence — a fresh install, or a provider first used
+ * today — is `insufficient` rather than an infinite ratio.
+ */
+export function paceTrend(provider: ProviderUsagePayload): PaceTrend {
+  const today = windowTokens(providerWindow(provider, 'today'));
+  const week = windowTokens(providerWindow(provider, 'week'));
+  const prior = week - today;
+  if (prior <= 0) return { kind: 'insufficient', ratio: null };
+  const ratio = today / (prior / 6);
+  if (ratio > 1 / PACE_STEADY_BAND) return { kind: 'picking-up', ratio };
+  if (ratio < PACE_STEADY_BAND) return { kind: 'easing', ratio };
+  return { kind: 'steady', ratio };
+}
+
+/** `"Picking up · 1.4× the 7-day average"`, or why there is no trend. */
+export function paceTrendLabel(trend: PaceTrend): string {
+  if (trend.kind === 'insufficient' || trend.ratio == null) return 'Not enough history';
+  const word =
+    trend.kind === 'picking-up' ? 'Picking up' : trend.kind === 'easing' ? 'Easing' : 'Steady';
+  return `${word} · ${trend.ratio.toFixed(1)}× the 7-day average`;
+}
+
+/** `"Updated 2h ago"`, or null without a timestamp. */
+export function updatedNote(provider: ProviderUsagePayload): string | null {
+  if (!provider.lastActivityAt) return null;
+  return `Updated ${relativeTime(provider.lastActivityAt)}`;
+}
+
+/**
+ * A window's share of the same provider's month, in [0, 1] — by estimated
+ * cost when the month is priced, by tokens otherwise.
+ *
+ * This is what the window bars are ALLOWED to mean: one span of the reader's
+ * own local spend against a longer span of it. It is deliberately not a meter
+ * against any allowance — that figure does not exist on this machine.
+ */
+export function windowShareOfMonth(
+  provider: ProviderUsagePayload,
+  key: UsageWindowKey,
+): number {
+  const window = providerWindow(provider, key);
+  const month = providerWindow(provider, 'month');
+  const numerator =
+    month.estimatedUsd != null && month.estimatedUsd > 0
+      ? (window.estimatedUsd ?? 0)
+      : windowTokens(window);
+  const denominator =
+    month.estimatedUsd != null && month.estimatedUsd > 0
+      ? month.estimatedUsd
+      : windowTokens(month);
+  if (denominator <= 0) return 0;
+  return Math.min(1, Math.max(0, numerator / denominator));
+}
+
+/** The metric rows the detail card and the Usage view share, in order. */
+export function usageMetricRows(
+  provider: ProviderUsagePayload,
+): ReadonlyArray<{ key: string; label: string; value: string }> {
+  const today = providerWindow(provider, 'today');
+  return [
+    {
+      key: 'today-spend',
+      label: "Today's spend",
+      value: today.estimatedUsd != null ? formatCost(today.estimatedUsd) : '—',
+    },
+    {
+      key: 'today-tokens',
+      label: "Today's tokens",
+      value: windowTokens(today) > 0 ? formatCompact(windowTokens(today)) : '—',
+    },
+    { key: 'trend', label: 'Pace trend', value: paceTrendLabel(paceTrend(provider)) },
+  ];
+}

@@ -74,8 +74,79 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     for repo in &merged {
         records.push(to_record(repo, &sessions, &known, &ignored).await);
     }
+    retain_disabled(&mut records, known);
+    surface_orphaned_opt_outs(&mut records, store.state_dir()).await;
     store.replace_repositories(&records)?;
     Ok(())
+}
+
+/// Give every opted-out root a Settings row, even when its record is gone.
+///
+/// An opted-out repository produces no session evidence, so nothing re-derives
+/// its row — and a row that vanished (an earlier build dropped it) leaves the
+/// opt-out active with no toggle to undo it. Any ignored path that exists on
+/// disk and matches no listed record is surfaced as a disabled row: name from
+/// its git remote when one answers, its folder name otherwise.
+async fn surface_orphaned_opt_outs(records: &mut Vec<RepositoryRecord>, state_dir: &Path) {
+    let listed: HashSet<String> = records
+        .iter()
+        .flat_map(|record| {
+            record
+                .repo_root
+                .iter()
+                .chain(record.suspected_path.iter())
+                .map(|path| repo_root_identity(Path::new(path)))
+        })
+        .collect();
+
+    for path in ignored_paths::list_ignored(state_dir, IGNORE_SCOPE) {
+        let root = Path::new(&path);
+        if listed.contains(&repo_root_identity(root)) || !root.is_dir() {
+            continue;
+        }
+        let folder_name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("repository")
+            .to_string();
+        let remote_name = git::first_remote_url_at(root)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|url| parse_repo_name_from_url(&normalize_remote_url(&url)));
+        let (repo_name, full_name) = match remote_name {
+            Some(name) => (name.rsplit('/').next().unwrap_or(&name).to_string(), name),
+            None => (folder_name.clone(), folder_name),
+        };
+        records.push(RepositoryRecord {
+            key: repo_root_identity(root),
+            repo_name,
+            full_name,
+            status: "accessible".to_string(),
+            repo_root: Some(path),
+            suspected_path: None,
+            worktree_count: 0,
+            session_count: 0,
+            wsl_distro: None,
+            enabled: false,
+        });
+    }
+}
+
+/// Carry disabled repositories forward through a rebuild.
+///
+/// The list is re-derived from session evidence, and a disabled repository has
+/// none: its rows are purged on opt-out and the scan indexes nothing new. But
+/// the Settings list is where the reader turns it back ON — losing the row
+/// would make the opt-out irreversible from the UI, so the stored record rides
+/// along until it is re-enabled and re-located normally.
+fn retain_disabled(records: &mut Vec<RepositoryRecord>, known: Vec<RepositoryRecord>) {
+    let listed: HashSet<String> = records.iter().map(|record| record.key.clone()).collect();
+    for record in known {
+        if !record.enabled && !listed.contains(&record.key) {
+            records.push(record);
+        }
+    }
 }
 
 /// The repository list as the settings pane renders it.
@@ -127,9 +198,35 @@ pub async fn set_enabled(store: &Store, key: &str, enabled: bool) -> anyhow::Res
             ignored_paths::unignore_path(store.state_dir(), IGNORE_SCOPE, path).await?;
         } else {
             ignored_paths::ignore_path(store.state_dir(), IGNORE_SCOPE, path).await?;
+            // Excluded means excluded: rows already indexed for this
+            // repository leave the store now, not at the next retention
+            // prune. Re-checked against the full opt-out set as the scan
+            // does, so normalization matches exactly — which also sweeps any
+            // stragglers from earlier opt-outs.
+            purge_ignored_sessions(store)?;
         }
     }
     store.set_repository_enabled(key, enabled)
+}
+
+/// Remove every stored session whose working directory the reader has opted
+/// out of, using the same containment test the scan gate applies on the way
+/// in. Returns how many rows were removed.
+pub fn purge_ignored_sessions(store: &Store) -> anyhow::Result<usize> {
+    let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
+    if ignored.is_empty() {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for session in store.recent_sessions(0, usize::MAX)? {
+        let Some(cwd) = session.cwd.as_deref() else {
+            continue;
+        };
+        if ignored_paths::set_contains(&ignored, cwd) && store.delete_session(&session.key)? {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Distinct, non-empty working directories across the considered sessions.
@@ -358,6 +455,109 @@ mod tests {
             },
             root.to_string(),
         )
+    }
+
+    fn repo_record(key: &str, enabled: bool) -> RepositoryRecord {
+        RepositoryRecord {
+            key: key.to_string(),
+            repo_name: key.to_string(),
+            full_name: format!("avery/{key}"),
+            status: "accessible".to_string(),
+            repo_root: Some(format!("/home/avery/code/{key}")),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 0,
+            wsl_distro: None,
+            enabled,
+        }
+    }
+
+    /// An opted-out path whose record is gone entirely (an earlier build
+    /// dropped it) is resurrected as a disabled row from the opt-out store,
+    /// so the exclusion is always visible and reversible.
+    #[tokio::test]
+    async fn an_orphaned_opt_out_surfaces_as_a_disabled_row() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path().join("ingot");
+        std::fs::create_dir_all(&repo).unwrap();
+        ignored_paths::ignore_path(dir.path(), IGNORE_SCOPE, &repo.to_string_lossy())
+            .await
+            .unwrap();
+
+        let mut records = vec![repo_record("widgets", true)];
+        surface_orphaned_opt_outs(&mut records, dir.path()).await;
+
+        assert_eq!(records.len(), 2);
+        let orphan = &records[1];
+        assert_eq!(orphan.repo_name, "ingot");
+        assert!(!orphan.enabled);
+        assert_eq!(orphan.repo_root.as_deref(), Some(&*repo.to_string_lossy()));
+
+        // Idempotent: a second pass sees the row listed and adds nothing.
+        let mut again = records.clone();
+        surface_orphaned_opt_outs(&mut again, dir.path()).await;
+        assert_eq!(again.len(), 2);
+    }
+
+    /// A disabled repository has no session evidence left (its rows were
+    /// purged), but its Settings row must survive a rebuild — it is the only
+    /// place the reader can turn it back on.
+    #[test]
+    fn a_disabled_repository_survives_a_list_rebuild() {
+        let mut records = vec![repo_record("widgets", true)];
+        retain_disabled(
+            &mut records,
+            vec![
+                repo_record("widgets", true),   // re-located normally
+                repo_record("gadgets", false),  // disabled, no evidence left
+                repo_record("sprockets", true), // enabled but gone from disk
+            ],
+        );
+
+        let keys: Vec<&str> = records.iter().map(|record| record.key.as_str()).collect();
+        assert_eq!(keys, ["widgets", "gadgets"]);
+        // An enabled repository that stopped being discoverable is genuinely
+        // gone and must not be resurrected from stale records.
+        assert!(!keys.contains(&"sprockets"));
+    }
+
+    /// Disabling a repository removes its already-indexed rows immediately;
+    /// sessions from other repositories stay.
+    #[tokio::test]
+    async fn purging_removes_stored_sessions_under_the_opted_out_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::Store::open_in_memory(dir.path()).unwrap();
+
+        let session = |id: &str, cwd: &str| crate::store::SessionRecord {
+            key: crate::store::SessionKey::new("native", "claude-code", id),
+            source_kind: "file".to_string(),
+            source_label: format!("file:{id}"),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: Some(cwd.to_string()),
+            surface: "cli".to_string(),
+            updated_at_epoch: Some(1_800_000_000),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+        };
+        store
+            .upsert_sessions(&[
+                session("in-widgets", "/home/avery/code/widgets"),
+                session("in-widgets-sub", "/home/avery/code/widgets/src"),
+                session("in-gadgets", "/home/avery/code/gadgets"),
+            ])
+            .unwrap();
+
+        ignored_paths::ignore_path(store.state_dir(), IGNORE_SCOPE, "/home/avery/code/widgets")
+            .await
+            .unwrap();
+        let removed = purge_ignored_sessions(&store).unwrap();
+
+        assert_eq!(removed, 2);
+        let remaining = store.recent_sessions(0, 10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].key.session_id, "in-gadgets");
     }
 
     #[test]

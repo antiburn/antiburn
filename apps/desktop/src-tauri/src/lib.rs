@@ -88,11 +88,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::add_scan_root,
             commands::app_info,
+            commands::begin_popover_hold,
             commands::cancel_scan,
             commands::clear_local_index,
             commands::default_scan_roots,
             commands::delete_session_data,
             commands::engine_catalog_version,
+            commands::end_popover_hold,
             commands::export_session,
             commands::get_provider_usage,
             commands::get_scan_status,
@@ -128,6 +130,17 @@ pub fn run() {
             // engine's state helpers as an explicit argument.
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
+
+            // Apply the persisted theme before any window shows, so the first
+            // paint is already in the reader's chosen appearance. "system" and
+            // anything unrecognized mean: follow the OS.
+            if let Ok(settings) = app.state::<store::Store>().settings() {
+                app.set_theme(match settings.theme.as_str() {
+                    "light" => Some(tauri::Theme::Light),
+                    "dark" => Some(tauri::Theme::Dark),
+                    _ => None,
+                });
+            }
             app.manage(scan::ScanController::default());
             app.manage(Schedulers::default());
             app.manage(popover::PopoverState::default());

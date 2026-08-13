@@ -13,6 +13,7 @@ import {
   getSessionAnalytics,
   getSubagentAnalytics,
   revealSource,
+  withPopoverHold,
   type SessionAnalyticsPayload,
 } from '../../lib/ipc';
 import { agentSupportsAnalytics } from '../../lib/presentation/agents';
@@ -176,15 +177,19 @@ export function SessionPane({
    * and a file name.
    */
   const handleExport = useCallback(async () => {
-    const proceed = await confirm(
-      'The export contains this session’s analysis, the paths it ran in, and short excerpts — its title and any skill descriptions. No message bodies, tool arguments, or file contents. It still describes real work, so save it somewhere you would keep a private note.',
-      { title: 'Export session analysis?', kind: 'warning', okLabel: 'Choose destination…' },
-    );
-    if (!proceed) return;
+    // Both dialogs run under one popover hold: they steal focus by design,
+    // and the surface behind them must survive to receive the result.
+    const destination = await withPopoverHold(async () => {
+      const proceed = await confirm(
+        'The export contains this session’s analysis, the paths it ran in, and short excerpts — its title and any skill descriptions. No message bodies, tool arguments, or file contents. It still describes real work, so save it somewhere you would keep a private note.',
+        { title: 'Export session analysis?', kind: 'warning', okLabel: 'Choose destination…' },
+      );
+      if (!proceed) return null;
 
-    const destination = await save({
-      defaultPath: exportFileName(subject),
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+      return save({
+        defaultPath: exportFileName(subject),
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
     });
     if (!destination) return;
 
@@ -199,9 +204,11 @@ export function SessionPane({
    * It does not: the agent's transcript is the agent's.
    */
   const handleDelete = useCallback(async () => {
-    const proceed = await confirm(
-      'This removes antiburn’s stored analysis for the session. The agent’s own transcript file is not touched, and a later scan will find the session again.',
-      { title: 'Remove this session from antiburn?', kind: 'warning', okLabel: 'Remove' },
+    const proceed = await withPopoverHold(() =>
+      confirm(
+        'This removes antiburn’s stored analysis for the session. The agent’s own transcript file is not touched, and a later scan will find the session again.',
+        { title: 'Remove this session from antiburn?', kind: 'warning', okLabel: 'Remove' },
+      ),
     );
     if (!proceed) return;
     await deleteSessionData(subject.agent, subject.sessionId, subject.wslDistro);

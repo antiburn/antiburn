@@ -20,14 +20,19 @@ const confirmDialog = vi.hoisted(() => vi.fn());
 const saveDialog = vi.hoisted(() => vi.fn());
 const openDialog = vi.hoisted(() => vi.fn());
 /** Shell event handlers the view subscribed to, by event name. */
-const listeners = vi.hoisted(() => new Map<string, ((event: { payload: unknown }) => void)[]>());
+const listeners = vi.hoisted(
+  () => new Map<string, ((event: { payload: unknown }) => void)[]>(),
+);
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke, isTauri: () => true }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
     listeners.set(name, [...(listeners.get(name) ?? []), handler]);
     return () => {
-      listeners.set(name, (listeners.get(name) ?? []).filter((each) => each !== handler));
+      listeners.set(
+        name,
+        (listeners.get(name) ?? []).filter((each) => each !== handler),
+      );
     };
   }),
 }));
@@ -203,7 +208,9 @@ describe('PopoverView', () => {
 
     fireEvent.click(await screen.findByText('Wire the tray popover'));
 
-    expect(await screen.findByRole('heading', { name: 'Session Analytics' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'Session Analytics' }),
+    ).toBeInTheDocument();
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('get_session_analytics', {
         agent: 'claude-code',
@@ -215,7 +222,9 @@ describe('PopoverView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
 
     expect(await screen.findByText('Wire the tray popover')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Session Analytics' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Session Analytics' }),
+    ).not.toBeInTheDocument();
   });
 
   it('warns before an export and only writes once a destination is chosen', async () => {
@@ -305,12 +314,15 @@ describe('PopoverView', () => {
     ).toBeInTheDocument();
   });
 
-  it('opens the full usage view from the footer and comes back to the list', async () => {
+  it('opens the full usage view through a provider panel and comes back', async () => {
     render(<PopoverView />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Usage' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Anthropic, $1.25 today, estimated' }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'All provider usage' }));
 
-    expect(await screen.findByRole('heading', { name: 'Provider usage' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Usage' })).toBeInTheDocument();
     expect(screen.queryByText('Wire the tray popover')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }));
@@ -379,7 +391,10 @@ describe('PopoverView', () => {
   });
 
   it('announces each onboarding step and moves focus to its heading', async () => {
-    mockCommands({ get_settings: { ...SETTINGS, onboardingCompleted: false }, get_scan_status: null });
+    mockCommands({
+      get_settings: { ...SETTINGS, onboardingCompleted: false },
+      get_scan_status: null,
+    });
     render(<PopoverView />);
 
     const welcome = await screen.findByRole('heading', {
@@ -548,7 +563,10 @@ describe('PopoverView — window behaviour', () => {
       }),
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Usage' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Anthropic, $1.25 today, estimated' }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'All provider usage' }));
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('set_popover_height', {
         height: 620,
@@ -594,42 +612,12 @@ describe('PopoverView — window behaviour', () => {
     const activity = await screen.findByRole('heading', { name: 'antiburn' });
     await waitFor(() => expect(activity).toHaveFocus());
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Usage' }));
-
-    const usage = await screen.findByRole('heading', { name: 'Provider usage' });
-    await waitFor(() => expect(usage).toHaveFocus());
-  });
-
-  it('shows when the index was last refreshed and can rescan on demand', async () => {
-    render(<PopoverView />);
-
-    expect(await screen.findByTestId('scan-status')).toHaveTextContent(/scanned 2m ago/i);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Scan now' }));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('scan_now'));
-  });
-
-  it('persists a pause of background discovery', async () => {
-    render(<PopoverView />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Pause background scanning' }));
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, discoveryPaused: true },
-      }),
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Anthropic, $1.25 today, estimated' }),
     );
-  });
+    fireEvent.click(await screen.findByRole('button', { name: 'All provider usage' }));
 
-  it('says so plainly while discovery is paused', async () => {
-    mockCommands({ get_settings: { ...SETTINGS, discoveryPaused: true } });
-    render(<PopoverView />);
-
-    expect(await screen.findByTestId('scan-status')).toHaveTextContent('Scanning paused');
-    // Pausing background work never removes the way to ask for a pass.
-    expect(screen.getByRole('button', { name: 'Scan now' })).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Resume background scanning' }),
-    ).toBeInTheDocument();
+    const usage = await screen.findByRole('heading', { name: 'Usage' });
+    await waitFor(() => expect(usage).toHaveFocus());
   });
 });

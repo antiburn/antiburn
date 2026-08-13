@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderPlus, X } from 'lucide-react';
+import { FolderPlus, RefreshCw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
@@ -14,14 +14,20 @@ import { SectionGroup } from '../../components/ui/SectionGroup';
 import { StatusText } from '../../components/ui/StatusText';
 import {
   addScanRoot,
+  getScanStatus,
   listRepositories,
   listScanRoots,
+  onScanEvent,
   refreshRepositories,
   removeScanRoot,
+  scanNow,
   setRepositoryEnabled,
   type RepositoryItemPayload,
+  type ScanStatus,
 } from '../../lib/ipc';
 import type { LocalRepositoryItem, LocalRepositoryStatus } from '../../lib/types/repository';
+import { scanStatusLabel } from '../popover/ScanStatusBar';
+import { useAppSettings } from './useAppSettings';
 
 /**
  * Sources: which repositories antiburn watches, and where it looks for them.
@@ -61,9 +67,32 @@ function toItems(payloads: readonly RepositoryItemPayload[]): LocalRepositoryIte
 }
 
 export function SourcesPane() {
+  const { settings: appSettings } = useAppSettings();
   const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
   const [scanRoots, setScanRoots] = useState<string[]>([]);
   const [scanning, setScanning] = useState(true);
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+
+  // The main view no longer carries a scan status line; this pane is where a
+  // reader checks on and re-runs scanning, so it stays live via scan events.
+  useEffect(() => {
+    let active = true;
+    void getScanStatus()
+      .then((status) => {
+        if (active) setScanStatus(status);
+      })
+      .catch(() => undefined);
+    const unlisten = onScanEvent((status) => setScanStatus(status));
+    return () => {
+      active = false;
+      void unlisten.then((dispose) => dispose());
+    };
+  }, []);
+
+  const handleRescanSessions = useCallback(async () => {
+    const status = await scanNow().catch(() => null);
+    if (status) setScanStatus(status);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -117,6 +146,31 @@ export function SourcesPane() {
     <>
       <PaneHeader title="Sources" />
       <div className="space-y-6">
+        <SectionGroup
+          title="Scanning"
+          trailing={
+            <StatusText tone="secondary">
+              {scanStatusLabel(scanStatus, appSettings.discoveryPaused)}
+            </StatusText>
+          }
+        >
+          <Card>
+            <div className="flex items-center justify-between gap-3 px-4 py-3">
+              <p className="type-footnote text-label-secondary">
+                Looks for new sessions on this machine and re-reads ones that changed.
+              </p>
+              <PushButton
+                className="shrink-0 gap-1.5"
+                disabled={scanStatus?.running === true}
+                onClick={() => void handleRescanSessions()}
+              >
+                <RefreshCw size={12} aria-hidden="true" />
+                {scanStatus?.running ? 'Scanning…' : 'Rescan'}
+              </PushButton>
+            </div>
+          </Card>
+        </SectionGroup>
+
         <SectionGroup
           title="Scan folders"
           trailing={

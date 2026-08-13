@@ -23,8 +23,10 @@ import { relativeTime } from '../../lib/presentation/relativeTime';
 import type { AppSettingsController } from './useAppSettings';
 
 /** Narrowest and widest activity windows, mirroring the store's own clamp. */
+// Mirrors the shell's MIN/MAX_ACTIVITY_DAYS: the ceiling equals the store's
+// two-week retention, so the slider can never promise days that cannot exist.
 const MIN_DAYS = 1;
-const MAX_DAYS = 30;
+const MAX_DAYS = 14;
 
 function dayLabel(days: number): string {
   return days === 1 ? '1 day' : `${days} days`;
@@ -106,7 +108,7 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
             label="Show the last"
             description={`The popover lists sessions from the last ${dayLabel(
               settings.activityWindowDays,
-            )}. antiburn keeps two weeks of history regardless, so widening this needs no rescan.`}
+            )}. antiburn keeps two weeks of history; widening this shows it right away and asks the next scan to fill anything missing.`}
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 {dayLabel(settings.activityWindowDays)}

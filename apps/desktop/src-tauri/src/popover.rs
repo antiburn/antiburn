@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, Rect, WebviewUrl, WebviewWindow,
+    AppHandle, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Window,
 };
 
@@ -53,10 +53,10 @@ const RESIZE_DURATION: Duration = Duration::from_millis(140);
 /// requests, which every platform coalesces down to its own refresh rate.
 const RESIZE_STEPS: u32 = 12;
 
-/// Gap in physical pixels between the menu-bar item and the popover edge.
+/// Gap in logical pixels between the menu-bar item and the popover edge.
 const ANCHOR_GAP: f64 = 6.0;
 
-/// Minimum physical gap between the popover and the edge of its display.
+/// Minimum logical gap between the popover and the edge of its display.
 const SCREEN_MARGIN: f64 = 8.0;
 
 /// How long after an automatic dismissal a tray click is treated as part of
@@ -87,6 +87,11 @@ pub struct PopoverState {
     /// Bumped by every height request, so an animation still in flight can see
     /// that a newer one superseded it and stop rather than fight it.
     resize_generation: AtomicU64,
+    /// While positive, losing focus does not hide the popover. Held around
+    /// native dialogs (the folder picker) the popover itself opens: the dialog
+    /// takes focus by design, and hiding would tear down the surface the
+    /// reader is in the middle of using.
+    focus_hold: AtomicU64,
 }
 
 impl Default for PopoverState {
@@ -96,6 +101,7 @@ impl Default for PopoverState {
             anchor: Mutex::new(None),
             height: Mutex::new(MAX_HEIGHT),
             resize_generation: AtomicU64::new(0),
+            focus_hold: AtomicU64::new(0),
         }
     }
 }
@@ -120,6 +126,24 @@ impl PopoverState {
             }
             _ => false,
         }
+    }
+
+    fn begin_focus_hold(&self) {
+        self.focus_hold.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Ends one hold. Saturating: an unmatched release (a frontend bug) must
+    /// not underflow into a near-infinite hold.
+    fn end_focus_hold(&self) {
+        let _ = self
+            .focus_hold
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+                held.checked_sub(1)
+            });
+    }
+
+    fn holds_focus(&self) -> bool {
+        self.focus_hold.load(Ordering::SeqCst) > 0
     }
 
     fn record_anchor(&self, anchor: AnchorRect) {
@@ -302,19 +326,46 @@ fn apply_height(window: &WebviewWindow, height: f64) {
         // places it.
         return;
     };
-    let Ok(scale) = window.scale_factor() else {
-        return;
-    };
-    let _ = place(window, anchor, WIDTH * scale, height * scale);
+    let _ = place(window, anchor, WIDTH, height);
 }
 
 /// Hides the popover after it loses focus, remembering when it happened.
+///
+/// No-op while a focus hold is active: a native dialog the popover opened is
+/// about to take (or has taken) focus, and the popover must survive it.
 pub fn hide_on_focus_loss(window: &Window) {
     if let Some(state) = window.app_handle().try_state::<PopoverState>() {
+        if state.holds_focus() {
+            return;
+        }
         state.record_auto_hide();
     }
     let _ = window.hide();
     note_hidden(window.app_handle());
+}
+
+/// Begin a focus hold. Paired with [`end_focus_hold`] around a native dialog.
+pub fn begin_focus_hold(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.begin_focus_hold();
+    }
+}
+
+/// End a focus hold and hand focus back to the popover.
+///
+/// The dialog that motivated the hold had focus while it was up; when it
+/// closes, macOS gives focus back to whichever window it likes. Refocusing the
+/// still-visible popover keeps Escape and the keyboard working where the
+/// reader left off.
+pub fn end_focus_hold(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.end_focus_hold();
+    }
+    if let Some(window) = app.get_webview_window(LABEL)
+        && window.is_visible().unwrap_or(false)
+    {
+        let _ = window.set_focus();
+    }
 }
 
 /// Tell the scan scheduler the popover is on screen.
@@ -341,64 +392,123 @@ pub fn note_hidden(app: &AppHandle) {
 
 /// Records the menu-bar item's rectangle and places the popover against it.
 fn anchor_to(window: &WebviewWindow, anchor: Rect) -> tauri::Result<()> {
-    // Tray backends report physical coordinates on macOS and Windows; the
-    // conversion only matters where they report logical ones.
-    let scale = window.scale_factor()?;
-    let position = anchor.position.to_physical::<f64>(scale);
-    let size = anchor.size.to_physical::<f64>(scale);
+    // Tray backends hand over *physical* coordinates on macOS and Windows, so
+    // the `to_physical(1.0)` is a no-op cast, not a conversion. Notably the
+    // popover window's own scale factor must NOT be used here: on a
+    // multi-display desktop the popover may last have been shown on a
+    // different-DPI screen than the one the menu-bar item lives on, and
+    // converting with the wrong scale lands the window on the wrong display.
+    let position = anchor.position.to_physical::<f64>(1.0);
+    let size = anchor.size.to_physical::<f64>(1.0);
     let anchor = AnchorRect {
         x: position.x,
         y: position.y,
         width: size.width,
         height: size.height,
     };
-    if let Some(state) = window.app_handle().try_state::<PopoverState>() {
-        state.record_anchor(anchor);
-    }
+    let state = window.app_handle().state::<PopoverState>();
+    state.record_anchor(anchor);
 
-    let window_size = window.outer_size()?;
-    place(
-        window,
-        anchor,
-        f64::from(window_size.width),
-        f64::from(window_size.height),
-    )
+    // The window's own logical geometry: the width is a constant and the
+    // height is the shell's bookkeeping, so no physical size read (whose scale
+    // depends on where the window last was) is involved.
+    place(window, anchor, WIDTH, state.height())
 }
 
-/// Places the popover under (or above) the menu-bar item, clamped to the
-/// display the item lives on.
-///
-/// `width` and `height` are the window's own size in physical pixels. They are
-/// passed in rather than read from the window because a resize in flight has
-/// not necessarily been reported back yet, and placing a growing popover
-/// against its *old* height puts it in the wrong place for a frame.
-fn place(window: &WebviewWindow, anchor: AnchorRect, width: f64, height: f64) -> tauri::Result<()> {
-    let anchor_center_x = anchor.x + anchor.width / 2.0;
-    let mut x = anchor_center_x - width / 2.0;
-    let mut y = anchor.y + anchor.height + ANCHOR_GAP;
+/// The display's usable frame in logical coordinates, plus the scale that maps
+/// the anchor's physical rectangle into the same space.
+struct MonitorFrame {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    scale: f64,
+}
 
-    if let Some(monitor) = window
-        .app_handle()
-        .monitor_from_point(anchor_center_x, anchor.y)?
-    {
-        let origin = monitor.position();
-        let size = monitor.size();
-        let left = f64::from(origin.x) + SCREEN_MARGIN;
-        let top = f64::from(origin.y) + SCREEN_MARGIN;
-        let right = f64::from(origin.x) + f64::from(size.width) - width - SCREEN_MARGIN;
-        let bottom = f64::from(origin.y) + f64::from(size.height) - height - SCREEN_MARGIN;
+/// The monitor whose physical rectangle contains the menu-bar item's origin.
+///
+/// Chosen by containment over the whole monitor list rather than
+/// `monitor_from_point`, so the answer is the display the *anchor* is on —
+/// the only display whose scale correctly reverses the tray rect's
+/// physical-to-logical conversion on a mixed-DPI desktop.
+fn monitor_frame_for(window: &WebviewWindow, anchor: AnchorRect) -> Option<MonitorFrame> {
+    let monitors = window.available_monitors().ok()?;
+    let monitor = monitors
+        .into_iter()
+        .find(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            anchor.x >= f64::from(position.x)
+                && anchor.x < f64::from(position.x) + f64::from(size.width)
+                && anchor.y >= f64::from(position.y)
+                && anchor.y < f64::from(position.y) + f64::from(size.height)
+        })
+        .or_else(|| window.current_monitor().ok().flatten())?;
+
+    let scale = monitor.scale_factor();
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let position = monitor.position();
+    let size = monitor.size();
+    let left = f64::from(position.x) / scale;
+    let top = f64::from(position.y) / scale;
+    Some(MonitorFrame {
+        left,
+        top,
+        right: left + f64::from(size.width) / scale,
+        bottom: top + f64::from(size.height) / scale,
+        scale,
+    })
+}
+
+/// Where the popover belongs, in logical coordinates. Pure, so the flip and
+/// clamp behavior is testable without a window.
+fn compute_position(
+    anchor: AnchorRect,
+    frame: Option<&MonitorFrame>,
+    width: f64,
+    height: f64,
+) -> (f64, f64) {
+    let scale = frame.map(|frame| frame.scale).unwrap_or(1.0);
+    let ax = anchor.x / scale;
+    let ay = anchor.y / scale;
+    let aw = anchor.width / scale;
+    let ah = anchor.height / scale;
+
+    let mut x = ax + aw / 2.0 - width / 2.0;
+    let mut y = ay + ah + ANCHOR_GAP;
+
+    if let Some(frame) = frame {
+        let left = frame.left + SCREEN_MARGIN;
+        let top = frame.top + SCREEN_MARGIN;
+        let right = frame.right - width - SCREEN_MARGIN;
+        let bottom = frame.bottom - height - SCREEN_MARGIN;
 
         // Where the menu bar sits at the bottom of the screen — Windows, and
         // Linux panels — flip the popover above its anchor instead.
         if y > bottom {
-            y = anchor.y - height - ANCHOR_GAP;
+            y = ay - height - ANCHOR_GAP;
         }
 
         x = clamp(x, left, right);
         y = clamp(y, top, bottom);
     }
 
-    window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32))
+    (x, y)
+}
+
+/// Places the popover under (or above) the menu-bar item, clamped to the
+/// display the item lives on.
+///
+/// `width` and `height` are the window's own size in **logical** pixels. They
+/// are passed in rather than read from the window because a resize in flight
+/// has not necessarily been reported back yet, and a hidden window's physical
+/// size is still scaled for whichever display it was last shown on.
+fn place(window: &WebviewWindow, anchor: AnchorRect, width: f64, height: f64) -> tauri::Result<()> {
+    let frame = monitor_frame_for(window, anchor);
+    let (x, y) = compute_position(anchor, frame.as_ref(), width, height);
+    window.set_position(LogicalPosition::new(x, y))
 }
 
 /// `f64::clamp` panics when `max < min`, which happens on displays narrower
@@ -417,6 +527,104 @@ mod tests {
     #[test]
     fn clamp_prefers_the_low_edge_on_undersized_displays() {
         assert_eq!(clamp(500.0, 8.0, -20.0), 8.0);
+    }
+
+    /// A 2x display: the anchor arrives in physical pixels, the window is
+    /// placed in logical ones. The popover must center under the item on the
+    /// *anchor's* display, whatever scale the window last rendered at.
+    #[test]
+    fn a_high_dpi_anchor_is_centered_in_its_displays_logical_space() {
+        let frame = MonitorFrame {
+            left: 0.0,
+            top: 0.0,
+            right: 1728.0, // 3456 physical / 2.0
+            bottom: 1117.0,
+            scale: 2.0,
+        };
+        // Menu-bar item at physical x=3000, 60 wide, bottom edge y=48.
+        let anchor = AnchorRect {
+            x: 3000.0,
+            y: 0.0,
+            width: 60.0,
+            height: 48.0,
+        };
+        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, MAX_HEIGHT);
+        // Logical center of the item is 1515; half the popover left of that.
+        assert!((x - (1515.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
+        assert!((y - (24.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
+    }
+
+    /// A secondary 1x display sitting right of a 2x primary: its physical
+    /// origin is offset, and the anchor must resolve against ITS frame — the
+    /// frame derived by dividing that monitor's physical rect by its own
+    /// scale, exactly what `monitor_frame_for` produces.
+    #[test]
+    fn a_second_display_with_different_scale_places_in_its_own_frame() {
+        // Physical origin x=3456 (right of the 2x primary), scale 1.0.
+        let frame = MonitorFrame {
+            left: 3456.0,
+            top: 0.0,
+            right: 3456.0 + 1920.0,
+            bottom: 1080.0,
+            scale: 1.0,
+        };
+        let anchor = AnchorRect {
+            x: 4000.0,
+            y: 0.0,
+            width: 40.0,
+            height: 24.0,
+        };
+        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, MAX_HEIGHT);
+        assert!((x - (4020.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
+        assert!((y - (24.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
+    }
+
+    /// Bottom taskbar (Windows/Linux): a popover that would overflow the
+    /// bottom edge flips above its anchor.
+    #[test]
+    fn a_bottom_anchored_panel_flips_the_popover_above_the_item() {
+        let frame = MonitorFrame {
+            left: 0.0,
+            top: 0.0,
+            right: 1920.0,
+            bottom: 1080.0,
+            scale: 1.0,
+        };
+        let anchor = AnchorRect {
+            x: 1700.0,
+            y: 1040.0,
+            width: 40.0,
+            height: 40.0,
+        };
+        let (_, y) = compute_position(anchor, Some(&frame), WIDTH, MAX_HEIGHT);
+        assert!(
+            (y - (1040.0 - MAX_HEIGHT - ANCHOR_GAP)).abs() < 0.5,
+            "y was {y}"
+        );
+    }
+
+    /// The clamp keeps the popover on the display when the item sits in a
+    /// corner.
+    #[test]
+    fn a_corner_anchor_is_clamped_inside_the_display_margin() {
+        let frame = MonitorFrame {
+            left: 0.0,
+            top: 0.0,
+            right: 1920.0,
+            bottom: 1080.0,
+            scale: 1.0,
+        };
+        let anchor = AnchorRect {
+            x: 1910.0,
+            y: 0.0,
+            width: 10.0,
+            height: 24.0,
+        };
+        let (x, _) = compute_position(anchor, Some(&frame), WIDTH, MAX_HEIGHT);
+        assert!(
+            (x - (1920.0 - WIDTH - SCREEN_MARGIN)).abs() < 0.5,
+            "x was {x}"
+        );
     }
 
     #[test]

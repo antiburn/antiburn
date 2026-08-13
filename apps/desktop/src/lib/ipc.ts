@@ -366,6 +366,24 @@ export async function hidePopover(): Promise<void> {
 }
 
 /**
+ * Run `action` (typically a native dialog) with the popover held on screen.
+ *
+ * The popover hides itself on focus loss, and a dialog it opens takes focus by
+ * design. The hold tells the shell that this particular focus loss is part of
+ * the popover's own flow; releasing it hands focus back. Released in a
+ * `finally`, so a rejected dialog can never leave the window unhideable.
+ */
+export async function withPopoverHold<T>(action: () => Promise<T>): Promise<T> {
+  if (!hasShell()) return action();
+  await invoke('begin_popover_hold');
+  try {
+    return await action();
+  } finally {
+    await invoke('end_popover_hold').catch(() => undefined);
+  }
+}
+
+/**
  * Resize the popover to the height the view now on screen needs.
  *
  * The shell clamps the value, so this is a request rather than an instruction.
@@ -626,6 +644,36 @@ export async function onScanEvent(
     ),
   );
   return () => unlisteners.forEach((unlisten) => unlisten());
+}
+
+/**
+ * Event the shell emits after every settings write, carrying the stored
+ * (clamped) settings. Mirrors `SETTINGS_CHANGED_EVENT` in
+ * `src-tauri/src/commands.rs`. Preferences are written in the settings window
+ * but rendered in the popover too; this is what keeps a long-lived popover
+ * webview current without a poll.
+ */
+export const SETTINGS_CHANGED_EVENT = 'settings:changed';
+
+/** Subscribe to settings writes from any window. The result unsubscribes. */
+export async function onSettingsChanged(
+  handler: (settings: AppSettings) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return () => {};
+  return listen<AppSettings>(SETTINGS_CHANGED_EVENT, (event) => handler(event.payload));
+}
+
+/**
+ * Event the shell emits when stored sessions were removed outside a scan
+ * (repository opt-out, index clearing). Mirrors `SESSIONS_INVALIDATED_EVENT`
+ * in `src-tauri/src/commands.rs`.
+ */
+export const SESSIONS_INVALIDATED_EVENT = 'sessions:invalidated';
+
+/** Subscribe to out-of-band session-index changes. The result unsubscribes. */
+export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return () => {};
+  return listen(SESSIONS_INVALIDATED_EVENT, () => handler());
 }
 
 /** Event the shell emits when storage health changes. Mirrors `src-tauri/src/storage_health.rs`. */

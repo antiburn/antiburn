@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { open } from '@tauri-apps/plugin-dialog';
-import { Settings2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AlertTriangle } from 'lucide-react';
@@ -33,6 +32,8 @@ import {
   listRepositories,
   listScanRoots,
   onScanEvent,
+  onSessionsInvalidated,
+  onSettingsChanged,
   onStorageHealth,
   openSettingsWindow,
   removeScanRoot,
@@ -40,15 +41,19 @@ import {
   setPopoverHeight,
   setRepositoryEnabled,
   setSettings,
+  withPopoverHold,
   type AppSettings,
   type ProviderUsageSummaryPayload,
   type ScanStatus,
   type StorageHealthPayload,
 } from '../lib/ipc';
-import { popoverHeightFor, prefersReducedMotion, type PopoverSurface } from '../lib/popoverHeight';
+import {
+  popoverHeightFor,
+  prefersReducedMotion,
+  type PopoverSurface,
+} from '../lib/popoverHeight';
 import type { LocalRepositoryItem, LocalRepositoryStatus } from '../lib/types/repository';
 import { OnboardingFlow } from './popover/OnboardingFlow';
-import { ScanStatusBar } from './popover/ScanStatusBar';
 import { SessionPane, type SessionSubject } from './popover/SessionPane';
 import { UsageView } from './popover/UsageView';
 
@@ -136,6 +141,13 @@ export function PopoverView() {
   const windowDays = settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
   const onboarding = settings != null && !settings.onboardingCompleted;
 
+  // The settings-changed subscription compares against the days it last saw
+  // without re-subscribing on every change.
+  const windowDaysRef = useRef(windowDays);
+  useEffect(() => {
+    windowDaysRef.current = windowDays;
+  }, [windowDays]);
+
   const refreshEntries = useCallback(async (days: number) => {
     const payloads = await listRecentSessions(days);
     setEntries(toActivityEntries(payloads));
@@ -191,6 +203,44 @@ export function PopoverView() {
     };
   }, [refreshEntries, refreshUsage, refreshRepositoryList]);
 
+  // Settings are written in the settings window but rendered here: the theme,
+  // the day window, and the pause state all change what this window shows.
+  // The shell broadcasts every write, and the popover restyles and re-queries
+  // as needed instead of waiting for its next mount (which never comes — the
+  // window lives for the whole run).
+  useEffect(() => {
+    let active = true;
+    const pending = onSettingsChanged((stored) => {
+      if (!active) return;
+      const previousDays = windowDaysRef.current;
+      applyTheme(stored.theme);
+      setSettingsState(stored);
+      if (stored.activityWindowDays !== previousDays) {
+        void refreshEntries(stored.activityWindowDays).catch(() => {});
+      }
+    });
+    return () => {
+      active = false;
+      void pending.then((unlisten) => unlisten());
+    };
+  }, [refreshEntries]);
+
+  // Sessions can leave the index without a scan — a repository opt-out purges
+  // its rows on the spot — and the list must not keep showing them.
+  useEffect(() => {
+    let active = true;
+    const pending = onSessionsInvalidated(() => {
+      if (!active) return;
+      void refreshEntries(windowDaysRef.current).catch(() => {});
+      void refreshUsage();
+      void refreshRepositoryList();
+    });
+    return () => {
+      active = false;
+      void pending.then((unlisten) => unlisten());
+    };
+  }, [refreshEntries, refreshUsage, refreshRepositoryList]);
+
   // Storage health changes rarely and matters immediately, so it is pushed
   // rather than polled. Only changes are emitted, so this is not a per-tick
   // event.
@@ -201,7 +251,8 @@ export function PopoverView() {
       setStorage(status);
       // A failure that recovers should not leave its banner dismissed, or the
       // next failure would arrive silently.
-      if (!status.failing) setDismissed((previous) => previous.filter((id) => id !== 'storage'));
+      if (!status.failing)
+        setDismissed((previous) => previous.filter((id) => id !== 'storage'));
     });
     return () => {
       active = false;
@@ -278,7 +329,7 @@ export function PopoverView() {
    * ------------------------------------------------------------------ */
 
   const handleAddScanRoot = useCallback(async () => {
-    const picked = await open({ directory: true, multiple: false });
+    const picked = await withPopoverHold(() => open({ directory: true, multiple: false }));
     if (typeof picked !== 'string') return;
     setScanRoots(await addScanRoot(picked));
   }, []);
@@ -426,30 +477,10 @@ export function PopoverView() {
     return (
       <div className="flex h-full flex-col">
         <header className="flex h-11 shrink-0 items-center gap-2 px-4">
-          <h1
-            data-view-heading
-            tabIndex={-1}
-            className="type-headline text-label outline-none"
-          >
+          <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
             antiburn
           </h1>
-          <button
-            type="button"
-            onClick={() => void openSettingsWindow()}
-            aria-label="Open settings"
-            className="-mr-1.5 ml-auto inline-flex h-6 shrink-0 items-center rounded-control px-1.5 text-label-secondary hover:bg-surface-hover"
-          >
-            <Settings2 size={14} strokeWidth={2} aria-hidden="true" />
-          </button>
         </header>
-
-        <ScanStatusBar
-          status={scanStatus}
-          paused={settings?.discoveryPaused ?? false}
-          onRescan={() => void handleRescan()}
-          onCancel={() => void handleCancelScan()}
-          onTogglePaused={(paused) => void applySettings({ discoveryPaused: paused })}
-        />
 
         {banners.length > 0 && (
           <div className="shrink-0 space-y-1 px-2 pb-1.5">
@@ -480,7 +511,9 @@ export function PopoverView() {
             <LocalActivityList
               entries={entries}
               days={windowDays}
-              onOpenSettings={() => void openSettingsWindow()}
+              // The affordance sits on the day-range label, so it lands on the
+              // pane that owns "Show the last" rather than the last-open pane.
+              onOpenSettings={() => void openSettingsWindow('general')}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return;
                 openSession(subjectFor(entry));
@@ -490,12 +523,11 @@ export function PopoverView() {
           )}
         </div>
 
-        {usage && (
-          <ProviderUsageCluster
-            providers={usage.providers}
-            onViewAll={() => setShowUsage(true)}
-          />
-        )}
+        <ProviderUsageCluster
+          providers={usage?.providers ?? []}
+          onViewAll={() => setShowUsage(true)}
+          onOpenSettings={() => void openSettingsWindow()}
+        />
       </div>
     );
   }

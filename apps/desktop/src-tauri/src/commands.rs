@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::repositories::platform::{PlatformDiscovery as _, platform};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::agents::kind_from_slug;
@@ -113,6 +113,22 @@ pub fn set_popover_height(app: tauri::AppHandle, height: f64, animate: Option<bo
     popover::set_height(&app, height, animate.unwrap_or(true));
 }
 
+/// Keep the popover on screen while a native dialog it opened holds focus.
+///
+/// Paired with [`end_popover_hold`]; the webview wraps its folder-picker call
+/// in the two so losing focus to the picker does not dismiss the surface the
+/// reader is using.
+#[tauri::command]
+pub fn begin_popover_hold(app: tauri::AppHandle) {
+    popover::begin_focus_hold(&app);
+}
+
+/// Release the dialog hold and hand focus back to the popover.
+#[tauri::command]
+pub fn end_popover_hold(app: tauri::AppHandle) {
+    popover::end_focus_hold(&app);
+}
+
 /// Where the app came from and what it is running against.
 #[tauri::command]
 pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
@@ -146,6 +162,13 @@ pub fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
 /// `launchAtLogin` is recorded but not enforced: registering a login item needs
 /// the autostart plugin, which this build does not carry. The settings pane
 /// says so next to the control rather than silently doing nothing.
+/// Event carrying the stored settings to every window after a write.
+///
+/// Preferences are written from the settings window but *rendered* in the
+/// popover too (theme, the activity window, the pause state). The event is
+/// what keeps a long-lived popover webview honest without a poll.
+pub const SETTINGS_CHANGED_EVENT: &str = "settings:changed";
+
 #[tauri::command]
 pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
@@ -161,6 +184,20 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     if wants_scan && !saved.discovery_paused {
         app.state::<ScanController>().request();
     }
+
+    // The webviews restyle themselves from the event; the native side of the
+    // theme (window chrome, scrollbars, the `prefers-color-scheme` each
+    // webview reports) follows AppHandle::set_theme, which covers every
+    // current and future window.
+    if saved.theme != previous.theme {
+        app.set_theme(match saved.theme.as_str() {
+            "light" => Some(tauri::Theme::Light),
+            "dark" => Some(tauri::Theme::Dark),
+            _ => None,
+        });
+    }
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, &saved);
+
     Ok(saved)
 }
 
@@ -577,8 +614,19 @@ pub async fn set_repository_enabled(
             .await
             .map_err(fail)?;
     }
+    // Disabling purges the repository's rows; the open popover re-reads its
+    // list on this event rather than waiting for a scan. Re-enabling asks for
+    // a pass so the rows come back without the reader doing anything.
+    let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
+    if enabled {
+        app.state::<ScanController>().request();
+    }
     list_repositories(app)
 }
+
+/// Event the shell emits when stored sessions were removed outside a scan
+/// (repository opt-out, index clearing). The popover re-queries on it.
+pub const SESSIONS_INVALIDATED_EVENT: &str = "sessions:invalidated";
 
 /// Re-derive the repository list from what is on disk right now.
 #[tauri::command]

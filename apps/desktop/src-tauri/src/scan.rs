@@ -62,7 +62,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use antiburn_local::discovery::{Explorers, SessionLog, SessionSource, session_log_metadata};
+use antiburn_local::discovery::{
+    Explorers, SessionLog, SessionSource, session_log_metadata, session_source_preview,
+};
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
 use tauri::{AppHandle, Emitter, Manager};
@@ -283,11 +285,22 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
         )
         .await;
 
-    let records = describe(logs, &home, &ignored).await;
+    let Described { records, rejected } = describe(logs, &home, &ignored).await;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
     checked(app, "The session index", store.upsert_sessions(&records))?;
+
+    // A transcript the gate rejected may have been indexed by an earlier
+    // version of the app that did not gate; the row is removed rather than
+    // left to mislead until retention ages it out.
+    for key in &rejected {
+        checked(
+            app,
+            "The session index",
+            store.delete_session(key).map(|_| ()),
+        )?;
+    }
 
     for (agent, seen, cursor) in per_agent_totals(&records) {
         checked(
@@ -322,14 +335,22 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
     Ok(records.len())
 }
 
+/// What one scan pass learned: rows for the index, and previously indexable
+/// transcripts the sub-agent gate now refuses.
+struct Described {
+    records: Vec<SessionRecord>,
+    rejected: Vec<SessionKey>,
+}
+
 /// Read metadata for every discovered log, at a bounded concurrency, and drop
 /// the ones the reader opted out of.
 async fn describe(
     logs: Vec<SessionLog>,
     home: &std::path::Path,
     ignored: &std::collections::HashSet<String>,
-) -> Vec<SessionRecord> {
+) -> Described {
     let mut records = Vec::with_capacity(logs.len());
+    let mut rejected = Vec::new();
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
         let mut set = JoinSet::new();
         for log in chunk {
@@ -338,29 +359,66 @@ async fn describe(
             set.spawn(async move { describe_one(log, &home).await });
         }
         while let Some(joined) = set.join_next().await {
-            if let Ok(Some(record)) = joined {
-                let cwd = record.cwd.as_deref();
-                // The engine's opt-out gate, applied once here so every surface
-                // that reads the store inherits it.
-                if cwd.is_some_and(|cwd| ignored_paths::set_contains(ignored, cwd)) {
-                    continue;
+            match joined {
+                Ok(DescribeOutcome::Session(record)) => {
+                    let cwd = record.cwd.as_deref();
+                    // The engine's opt-out gate, applied once here so every
+                    // surface that reads the store inherits it.
+                    if cwd.is_some_and(|cwd| ignored_paths::set_contains(ignored, cwd)) {
+                        continue;
+                    }
+                    records.push(*record);
                 }
-                records.push(record);
+                Ok(DescribeOutcome::Subagent(key)) => rejected.push(key),
+                Ok(DescribeOutcome::Skip) | Err(_) => {}
             }
         }
     }
-    records
+    Described { records, rejected }
 }
 
-async fn describe_one(log: SessionLog, home: &std::path::Path) -> Option<SessionRecord> {
+enum DescribeOutcome {
+    Session(Box<SessionRecord>),
+    /// A sub-agent transcript: never listed, and evicted if an earlier,
+    /// ungated version of the app indexed it.
+    Subagent(SessionKey),
+    Skip,
+}
+
+async fn describe_one(log: SessionLog, home: &std::path::Path) -> DescribeOutcome {
     let metadata = session_log_metadata(&log).await;
-    let session_id = metadata
+    let Some(session_id) = metadata
         .as_ref()
         .and_then(|metadata| metadata.session_id.clone())
-        .or_else(|| recovered_id(&log))?;
+        .or_else(|| recovered_id(&log))
+    else {
+        return DescribeOutcome::Skip;
+    };
     if session_id.is_empty() {
-        return None;
+        return DescribeOutcome::Skip;
     }
+
+    let key = SessionKey::new(
+        log.environment.key(),
+        log.agent_type.slug(),
+        session_id.clone(),
+    );
+    // One bounded content read serves both content checks below.
+    let preview = match log.agent_type {
+        AgentKind::Claude | AgentKind::Codex => session_source_preview(&log.source).await,
+        _ => None,
+    };
+    if is_subagent_transcript(&log, preview.as_deref()) {
+        return DescribeOutcome::Subagent(key);
+    }
+
+    let title = sanitized_title(
+        metadata
+            .as_ref()
+            .and_then(|metadata| metadata.title.clone()),
+        &log.agent_type,
+        preview.as_deref(),
+    );
 
     // A dir listing per orchestrator-capable session; vendors that record no
     // orchestration return empty without touching the disk.
@@ -372,18 +430,12 @@ async fn describe_one(log: SessionLog, home: &std::path::Path) -> Option<Session
         _ => 0,
     };
 
-    Some(SessionRecord {
-        key: SessionKey::new(
-            log.environment.key(),
-            log.agent_type.slug(),
-            session_id.clone(),
-        ),
+    DescribeOutcome::Session(Box::new(SessionRecord {
+        key,
         source_kind: source_kind(&log.source).to_string(),
         source_label: log.source_label(),
         wsl_distro: log.environment.wsl_distro().map(str::to_string),
-        title: metadata
-            .as_ref()
-            .and_then(|metadata| metadata.title.clone()),
+        title,
         title_source: metadata
             .as_ref()
             .and_then(|metadata| metadata.title_source)
@@ -396,7 +448,141 @@ async fn describe_one(log: SessionLog, home: &std::path::Path) -> Option<Session
         // inside the transcript, and reading every transcript on every pass
         // would cost far more than the relationship is worth here.
         fork_parent_session_id: None,
-    })
+    }))
+}
+
+/// Whether this transcript belongs to a sub-agent rather than a top-level
+/// session. Sub-agent work is presented on the parent row (the roster and the
+/// fan-out pill), so listing the transcript as its own session would double
+/// what the reader already sees.
+///
+/// The evidence is in the content, not the path: some agent versions write
+/// sidechain transcripts beside top-level ones in the same directory.
+///
+/// - **Claude Code**: a sidechain transcript marks its records with
+///   `isSidechain: true` and carries a top-level `agentId` string. The check
+///   parses up to [`SUBAGENT_SCAN_LINES`] leading records — the marker is on
+///   the very first record in every observed format, so the bound is
+///   generosity, not risk.
+/// - **Codex**: a sub-agent thread's `session_meta` payload names a parent
+///   (`parent_thread_id`), an object `source`, or `thread_source:
+///   "subagent"`. Discovery already excludes the known shapes; this catches
+///   records written by earlier app versions and format drift.
+fn is_subagent_transcript(log: &SessionLog, preview: Option<&str>) -> bool {
+    let claude = matches!(log.agent_type, AgentKind::Claude);
+    let codex = matches!(log.agent_type, AgentKind::Codex);
+    if !claude && !codex {
+        return false;
+    }
+    let Some(content) = preview else {
+        return false;
+    };
+    let lines = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(SUBAGENT_SCAN_LINES);
+    for line in lines {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if claude
+            && (value.get("isSidechain").and_then(|v| v.as_bool()) == Some(true)
+                || value.get("agentId").is_some_and(|v| v.is_string()))
+        {
+            return true;
+        }
+        if codex && value.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+            let payload = value.get("payload").unwrap_or(&serde_json::Value::Null);
+            if payload
+                .get("parent_thread_id")
+                .is_some_and(|v| !v.is_null())
+                || payload.get("source").is_some_and(|v| v.is_object())
+                || payload.get("thread_source").and_then(|v| v.as_str()) == Some("subagent")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Leading records the sub-agent check reads before deciding a transcript is
+/// top-level. The markers sit on the first record in practice.
+const SUBAGENT_SCAN_LINES: usize = 40;
+
+/// Longest title the list stores. Matches what one activity row can show with
+/// room for truncation, and keeps a pasted wall of text from becoming the row.
+const MAX_TITLE_CHARS: usize = 200;
+
+/// Whether a title is injected context rather than something the reader wrote:
+/// harness blocks like `<recommended_plugins>` / `<system-reminder>` ride the
+/// transcript as user-role messages, and a title fallback that picks the first
+/// user message picks them up.
+fn is_injected_title(title: &str) -> bool {
+    let trimmed = title.trim_start();
+    trimmed.starts_with('<') || trimmed.starts_with("Caveat:")
+}
+
+/// Replace an injected-context title with the first thing the reader actually
+/// typed, or drop the title entirely so the row falls back to its path label.
+///
+/// Only Claude transcripts need this: their harness injects context blocks as
+/// user-role messages, and the engine's title fallback (first user message)
+/// cannot tell those from human input without re-reading content — which the
+/// scan has already done for the sub-agent gate.
+fn sanitized_title(
+    title: Option<String>,
+    agent: &AgentKind,
+    preview: Option<&str>,
+) -> Option<String> {
+    let title = title?;
+    if !is_injected_title(&title) {
+        return Some(title);
+    }
+    if !matches!(agent, AgentKind::Claude) {
+        return None;
+    }
+    let content = preview?;
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) != Some("user")
+            || value.get("isMeta").and_then(|v| v.as_bool()) == Some(true)
+            || value.get("isSidechain").and_then(|v| v.as_bool()) == Some(true)
+        {
+            continue;
+        }
+        let message = value.get("message");
+        let text = message
+            .and_then(|m| m.get("content"))
+            .and_then(|content| match content {
+                serde_json::Value::String(text) => Some(text.clone()),
+                serde_json::Value::Array(parts) => parts.iter().find_map(|part| {
+                    if part.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        part.get("text")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            });
+        let Some(text) = text else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() || is_injected_title(trimmed) {
+            continue;
+        }
+        let first_line = trimmed.lines().next().unwrap_or_default().trim();
+        if first_line.is_empty() {
+            continue;
+        }
+        return Some(first_line.chars().take(MAX_TITLE_CHARS).collect());
+    }
+    None
 }
 
 /// The id an agent embeds in the transcript's filename, for vendors whose
@@ -592,9 +778,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.records.len(), 2);
+        assert!(records.rejected.is_empty());
 
         let claude = records
+            .records
             .iter()
             .find(|record| record.key.agent == "claude-code")
             .expect("a claude record");
@@ -609,6 +797,7 @@ mod tests {
         assert_eq!(claude.subagent_count, 0);
 
         let codex = records
+            .records
             .iter()
             .find(|record| record.key.agent == "codex")
             .expect("a codex record");
@@ -634,8 +823,8 @@ mod tests {
         let ignored = HashSet::from(["/home/avery/code/widgets".to_string()]);
         let records = describe(logs, home.path(), &ignored).await;
 
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].key.agent, "codex");
+        assert_eq!(records.records.len(), 1);
+        assert_eq!(records.records[0].key.agent, "codex");
     }
 
     #[tokio::test]
@@ -655,8 +844,8 @@ mod tests {
                 &HashSet::new(),
             )
             .await;
-            store.upsert_sessions(&records).unwrap();
-            for (agent, seen, cursor) in per_agent_totals(&records) {
+            store.upsert_sessions(&records.records).unwrap();
+            for (agent, seen, cursor) in per_agent_totals(&records.records) {
                 store.record_agent_scan(&agent, cursor, seen).unwrap();
             }
         }
@@ -678,6 +867,179 @@ mod tests {
         );
     }
 
+    /// A synthetic Claude sidechain transcript: `agentId` on every record and
+    /// `isSidechain: true`, written beside top-level sessions the way current
+    /// agent versions do.
+    fn write_claude_sidechain(home: &std::path::Path, agent_id: &str) -> std::path::PathBuf {
+        let project = home
+            .join(".claude")
+            .join("projects")
+            .join("-home-avery-code-widgets");
+        std::fs::create_dir_all(&project).unwrap();
+        let path = project.join(format!("agent-{agent_id}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                concat!(
+                    r#"{{"type":"user","isSidechain":true,"agentId":"{id}","#,
+                    r#""sessionId":"{id}","cwd":"/home/avery/code/widgets","#,
+                    r#""timestamp":"2026-08-01T10:00:00Z","#,
+                    r#""message":{{"role":"user","content":"subtask"}}}}"#,
+                    "\n",
+                ),
+                id = agent_id
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn a_sidechain_transcript_is_rejected_not_listed() {
+        let home = tempfile::TempDir::new().unwrap();
+        let parent = write_claude_session(home.path(), "11111111-2222-3333-4444-555555555555");
+        let sidechain = write_claude_sidechain(home.path(), "aaaa-1111");
+
+        let described = describe(
+            vec![
+                log(AgentKind::Claude, parent, 1_800_000_000),
+                log(AgentKind::Claude, sidechain, 1_800_000_050),
+            ],
+            home.path(),
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(described.records.len(), 1, "only the parent is listable");
+        assert_eq!(described.rejected.len(), 1);
+        assert_eq!(described.rejected[0].session_id, "aaaa-1111");
+    }
+
+    #[tokio::test]
+    async fn a_codex_subagent_thread_is_rejected_not_listed() {
+        let home = tempfile::TempDir::new().unwrap();
+        let day = home.path().join(".codex/sessions/2026/08/01");
+        std::fs::create_dir_all(&day).unwrap();
+        let path = day.join("rollout-2026-08-01T10-00-00-child-1.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"timestamp":"2026-08-01T10:00:00Z","type":"session_meta","#,
+                r#""payload":{"id":"child-1","cwd":"/home/avery/code/gadgets","#,
+                r#""parent_thread_id":"parent-9","thread_source":"subagent"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let described = describe(
+            vec![log(AgentKind::Codex, path, 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+        )
+        .await;
+
+        assert!(described.records.is_empty());
+        assert_eq!(described.rejected.len(), 1);
+        assert_eq!(described.rejected[0].session_id, "child-1");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_transcript_evicts_its_stale_row_from_the_store() {
+        let home = tempfile::TempDir::new().unwrap();
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+        // An earlier, ungated version of the app indexed the sidechain.
+        store
+            .upsert_sessions(&[record("claude-code", "aaaa-1111", Some(1_800_000_000))])
+            .unwrap();
+        assert_eq!(store.recent_sessions(0, 10).unwrap().len(), 1);
+
+        let sidechain = write_claude_sidechain(home.path(), "aaaa-1111");
+        let described = describe(
+            vec![log(AgentKind::Claude, sidechain, 1_800_000_050)],
+            home.path(),
+            &HashSet::new(),
+        )
+        .await;
+        for key in &described.rejected {
+            store.delete_session(key).unwrap();
+        }
+
+        assert!(store.recent_sessions(0, 10).unwrap().is_empty());
+    }
+
+    /// A transcript whose first user message is an injected harness block:
+    /// the title must come from the first thing the reader actually typed.
+    #[tokio::test]
+    async fn an_injected_context_block_never_becomes_the_title() {
+        let home = tempfile::TempDir::new().unwrap();
+        let project = home
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-home-avery-code-widgets");
+        std::fs::create_dir_all(&project).unwrap();
+        let path = project.join("cccc-dddd.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"sessionId":"cccc-dddd","cwd":"/home/avery/code/widgets","type":"user","#,
+                r#""timestamp":"2026-08-01T10:00:00Z","message":{"role":"user","#,
+                r#""content":"<recommended_plugins> Here is a list of plugins that are recommended."}}"#,
+                "\n",
+                r#"{"type":"user","timestamp":"2026-08-01T10:00:10Z","#,
+                r#""message":{"role":"user","content":"Fix the tray popover anchoring"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let described = describe(
+            vec![log(AgentKind::Claude, path, 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(described.records.len(), 1);
+        assert_eq!(
+            described.records[0].title.as_deref(),
+            Some("Fix the tray popover anchoring")
+        );
+    }
+
+    /// A transcript that is nothing but injected context gets no title at all
+    /// — the row falls back to its path label rather than showing harness
+    /// text as if the reader wrote it.
+    #[tokio::test]
+    async fn a_transcript_with_only_injected_context_gets_no_title() {
+        assert_eq!(
+            sanitized_title(
+                Some("<recommended_plugins> Here is a list".to_string()),
+                &AgentKind::Claude,
+                Some(concat!(
+                    r#"{"type":"user","message":{"role":"user","content":"<system-reminder>x</system-reminder>"}}"#,
+                    "\n",
+                )),
+            ),
+            None
+        );
+        // Non-injected titles pass through untouched.
+        assert_eq!(
+            sanitized_title(Some("Fix the bug".to_string()), &AgentKind::Claude, None),
+            Some("Fix the bug".to_string())
+        );
+        // "Caveat:" is the harness's resumed-session preamble, not the reader.
+        assert_eq!(
+            sanitized_title(
+                Some("Caveat: the messages below were generated".to_string()),
+                &AgentKind::Claude,
+                None
+            ),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn a_transcript_with_no_embedded_id_falls_back_to_its_filename() {
         let home = tempfile::TempDir::new().unwrap();
@@ -690,8 +1052,8 @@ mod tests {
             &HashSet::new(),
         )
         .await;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].key.session_id, "orphan-session");
+        assert_eq!(records.records.len(), 1);
+        assert_eq!(records.records[0].key.session_id, "orphan-session");
     }
 
     fn record(agent: &str, session_id: &str, updated_at: Option<i64>) -> SessionRecord {
