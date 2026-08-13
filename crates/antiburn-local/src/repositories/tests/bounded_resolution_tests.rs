@@ -12,13 +12,19 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+// serial + the consent fakes are consumed only by the unix-gated tests below.
+#[cfg(unix)]
 use serial_test::serial;
 use tokio::sync::Semaphore;
 
-use super::support::{EnvGuard, FakeConsent, run_git};
+use super::support::run_git;
+#[cfg(unix)]
+use super::support::{EnvGuard, FakeConsent};
+#[cfg(unix)]
+use crate::repositories::sessions::verify_failed_granted_cwds;
 use crate::repositories::sessions::{
     DistinctRepoRoot, IndexedTaskResult, SeenRepos, fold_cwd_resolutions, located_repos_from_seen,
-    resolve_cwd_roots_bounded, run_indexed_bounded_with_progress, verify_failed_granted_cwds,
+    resolve_cwd_roots_bounded, run_indexed_bounded_with_progress,
 };
 use crate::repositories::{concurrency_from, located_repos_for_owner, repo_root_identity};
 

@@ -5,14 +5,22 @@
 //! Stage B: concurrent per-root git details, then the serial access fold that
 //! is allowed to change consent state.
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+// serial, the consent fakes, and the access probe are consumed only by the
+// unix-gated tests below.
+#[cfg(unix)]
 use serial_test::serial;
 
-use super::support::{EnvGuard, FakeConsent, run_git};
+use super::support::run_git;
+#[cfg(unix)]
+use super::support::{EnvGuard, FakeConsent};
+#[cfg(unix)]
 use crate::repositories::access::verify_dir_access;
 use crate::repositories::repo_root_identity;
 use crate::repositories::sessions::{

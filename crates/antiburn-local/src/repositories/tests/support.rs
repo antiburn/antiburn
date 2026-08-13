@@ -50,6 +50,9 @@ impl FakeConsent {
     }
 
     /// Stage `dir_name` as a grant made outside the application.
+    // Consumed only by the macOS consent-promotion tests; other targets
+    // never stage external grants.
+    #[cfg(target_os = "macos")]
     pub fn stage_external_grant(&self, dir_name: &str) {
         self.external.lock().unwrap().insert(dir_name.to_string());
     }

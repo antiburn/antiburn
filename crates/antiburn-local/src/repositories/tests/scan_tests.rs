@@ -11,7 +11,9 @@ use serial_test::serial;
 
 use super::support::{EnvGuard, FakeConsent, init_repo, located};
 use crate::paths::scan_roots;
-use crate::repositories::access::{verify_cwd_admitted_on_grant, verify_dir_access};
+use crate::repositories::access::verify_cwd_admitted_on_grant;
+#[cfg(unix)]
+use crate::repositories::access::verify_dir_access;
 use crate::repositories::platform::{self, PlatformDiscovery as _};
 use crate::repositories::scan::is_excluded_dir;
 use crate::repositories::{
