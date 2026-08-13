@@ -144,9 +144,16 @@ build-level subset that a developer working in this directory runs into first:
   `macOSPrivateApi` plus transparent-window support, and arrives with the
   design system.
 - Updates are configured but inert. `plugins.updater.pubkey` in
-  `tauri.conf.json` is empty and `bundle.createUpdaterArtifacts` is `false`;
-  release signing sets both. The plugin is registered in release builds only,
-  so development performs no network requests at all.
+  `tauri.conf.json` is empty, so the app reports no update support and the
+  release workflow refuses to build until the key pair is minted (see
+  [`docs/runbooks/updater-key-recovery.md`](../../docs/runbooks/updater-key-recovery.md)).
+  The plugin is registered in release builds only, so development performs no
+  network requests at all.
+- `bundle.createUpdaterArtifacts` is `true`, which means a **bundle** build
+  signs its updater artifact and therefore needs `TAURI_SIGNING_PRIVATE_KEY` in
+  the environment. Nothing in CI or the everyday `cargo`/`pnpm` checks bundles,
+  so this only affects running `tauri build` by hand; to do that without a key,
+  pass `--config '{"bundle":{"createUpdaterArtifacts":false}}'`.
 - Launch-at-login is recorded as a preference but not enforced: registering a
   login item needs the autostart plugin, which this build does not carry. The
   General pane says so next to the control rather than showing a switch that

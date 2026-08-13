@@ -26,6 +26,28 @@
 //!
 //! Nothing here contacts a server in a development build: the plugin is never
 //! registered there, so [`supported`] is false and the scheduler does nothing.
+//!
+//! # The signing key is a release requirement, not a nicety
+//!
+//! `plugins.updater.pubkey` in `tauri.conf.json` is deliberately **empty** in
+//! the committed configuration, and `bundle.createUpdaterArtifacts` is **true**
+//! — so a release build produces signed updater bundles, and this build refuses
+//! to claim update support until the matching public key is committed. The two
+//! halves are one decision: an updater with artifacts but no key would download
+//! something it cannot verify, and an updater with a key but no artifacts would
+//! have nothing to check.
+//!
+//! A real release therefore **requires** the key pair to exist: the private
+//! half in the release environment as `TAURI_SIGNING_PRIVATE_KEY`, the public
+//! half committed here. `.github/workflows/release-app.yml` fails the release
+//! outright while the field is empty rather than shipping a build whose update
+//! path is decoration. The key has not been minted yet — custody, rotation, and
+//! what a reader has to do if it is ever lost are in
+//! `docs/runbooks/updater-key-recovery.md`.
+//!
+//! (The warning lives here rather than beside the field because `tauri.conf.json`
+//! is parsed as strict JSON — `tauri-build`'s default features exclude
+//! `config-json5` — so a comment in that file would fail the build.)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

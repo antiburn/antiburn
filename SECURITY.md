@@ -24,3 +24,17 @@ antiburn runs entirely on-device. Reports of particular interest:
 
 Security fixes target the latest release; corrective releases are published
 rather than replacing assets under an existing tag.
+
+## What happens after you report
+
+How a report becomes a shipped fix, and what we do if a release or a signing key
+is ever compromised, is written down rather than improvised:
+
+- [`docs/runbooks/security-releases.md`](docs/runbooks/security-releases.md) —
+  acknowledgement, the private fix, the release, and when the advisory goes out
+- [`docs/runbooks/compromised-release.md`](docs/runbooks/compromised-release.md)
+  — a published artifact or signing key in someone else's hands
+- [`docs/runbooks/rollback.md`](docs/runbooks/rollback.md) — superseding a bad
+  release without deleting or replacing anything published
+- [`docs/runbooks/updater-key-recovery.md`](docs/runbooks/updater-key-recovery.md)
+  — custody and rotation of the update signing key

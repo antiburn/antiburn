@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Called by the release workflows so the release gate *is* the everyday gate
+  # rather than a copy of it that drifts. Nothing here reads a secret, so the
+  # call site grants none.
+  workflow_call:
 
 # Least privilege: nothing in CI writes to the repository, and fork pull
 # requests never see credentials (none are configured for this workflow).
