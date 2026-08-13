@@ -21,4 +21,21 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
-Nothing released yet.
+## [0.1.0] - 2026-08-13
+
+### Added
+
+- Initial public surface of the local engine, extracted as a self-contained
+  crate:
+  - `discovery` — local discovery of AI coding-agent sessions from documented
+    files, read-only databases, and bounded WSL paths.
+  - `analysis` — transcript and session analysis.
+  - `repositories` — repository identity.
+  - `pricing` — API-equivalent pricing.
+  - `model`, `paths`, `platform` — shared local data model, filesystem roots,
+    and platform handling.
+  - Versioned local persistence and export contracts.
+- The network-free boundary as a compatibility contract: no network or socket
+  I/O, no private dependencies, and a public API that carries no
+  authentication, organization, remote-sharing, enrichment, or telemetry
+  concepts. Enforced mechanically by the crate's boundary test suite.

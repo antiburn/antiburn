@@ -288,6 +288,43 @@ and a provenance record.
    would point every installed copy of the app at a release that has no such
    file.
 
+### How consumers pin the engine
+
+A consumer depends on the crate by pinning the full commit SHA of a released
+tag — the SHA, not the tag name, is the contract, and restoring the previous
+SHA is the supported rollback:
+
+```toml
+antiburn-local = { git = "https://github.com/antiburn/antiburn", rev = "<full-sha>" } # antiburn-local-v<version>
+```
+
+While this repository is private, downstream consumers authenticate on their
+own side; nothing about this repository or its workflows changes, and the
+`GITHUB_TOKEN` rule above stands. The recipe, so that the manifest already has
+its final public form and going public later needs no consumer-side code
+change:
+
+1. A fine-grained access token, read-only on this repository's contents and
+   nothing else, stored as a secret in the consumer's CI.
+2. A URL rewrite in the consumer's CI, applied only when the secret is
+   present, so the same manifest works before and after the repository is
+   public:
+
+   ```bash
+   git config --global \
+     url."https://x-access-token:${TOKEN}@github.com/antiburn/antiburn".insteadOf \
+     "https://github.com/antiburn/antiburn"
+   ```
+
+3. `git-fetch-with-cli = true` under `[net]` in the consumer's cargo config,
+   so cargo fetches through the git CLI — which honors the rewrite in CI and
+   the developer's normal credential helper locally.
+
+The lockfile records the manifest URL, never the rewritten one, so the token
+cannot end up in a committed lockfile. When the repository becomes public,
+the consumer deletes the secret and revokes the token; the rewrite step
+becomes a no-op and everything else stays byte-identical.
+
 ---
 
 ## When a run fails
