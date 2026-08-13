@@ -280,7 +280,10 @@ and a provenance record.
    `NOTICE` alongside it, inventories the dependency tree, attests provenance,
    and drafts the release.
 4. Review the draft: the tarball extracts, `cargo test` passes inside it, the
-   checksum matches, provenance verifies.
+   checksum matches, provenance verifies. (While the repository is private, the
+   two provenance steps skip themselves — attestation persistence is plan-gated
+   on private repositories — and activate automatically once the repository is
+   public; a private-phase draft has no provenance bundle to verify.)
 5. Publish. **Leave "Set as the latest release" unchecked** — the workflow
    already sets `--latest=false`, and for good reason: "latest" is a property of
    the repository, and the application's updater reads
