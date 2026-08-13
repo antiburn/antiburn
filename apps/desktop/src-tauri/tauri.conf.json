@@ -30,7 +30,9 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/512x512.png",
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "macOS": {
       "minimumSystemVersion": "13.0"
