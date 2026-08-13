@@ -141,7 +141,11 @@ jobs:
             --directory "${RUNNER_TEMP}/stage" \
             --file "dist/${name}.tar.gz" \
             "$name"
-          tar --list --file "dist/${name}.tar.gz" | head -n 20
+          # Listed to a file first: piping straight into `head` closes the pipe
+          # after 20 lines and, under pipefail, tar's resulting write error
+          # fails the step.
+          tar --list --file "dist/${name}.tar.gz" > "${RUNNER_TEMP}/tarball-listing.txt"
+          head -n 20 "${RUNNER_TEMP}/tarball-listing.txt"
 
       - name: Inventory the engine dependency tree
         env:
