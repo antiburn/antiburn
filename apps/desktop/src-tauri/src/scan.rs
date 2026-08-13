@@ -44,6 +44,14 @@
 //! at the next phase boundary: nothing further is analyzed, and the status the
 //! views render says `cancelled` rather than pretending the pass completed.
 //!
+//! # Failing
+//!
+//! A pass that ends in an error says so in three places, each for a different
+//! reader: [`ScanStatus::error`] for the status line, [`crate::storage_health`]
+//! when the failure was a *write* (which the popover surfaces as a banner with
+//! a retry), and [`crate::notifications`] once per run of the app, for someone
+//! who is not looking at antiburn at all.
+//!
 //! Every pass is bounded: discovery is windowed to the retention horizon, the
 //! per-session metadata reads run at a fixed concurrency, and analysis is
 //! capped at [`MAX_ANALYSES_PER_PASS`] sessions so one pass cannot grow with
@@ -64,6 +72,7 @@ use tokio::task::JoinSet;
 use crate::analytics;
 use crate::dto::ScanStatus;
 use crate::repositories;
+use crate::storage_health::{self, checked};
 use crate::store::{SessionKey, SessionRecord, Store};
 
 /// How often the scheduler wakes up.
@@ -234,7 +243,13 @@ pub async fn run_pass(app: &AppHandle) -> ScanStatus {
     });
     controller.running.store(false, Ordering::SeqCst);
     controller.cancel.store(false, Ordering::SeqCst);
+    // A pass that got all the way through wrote to the store several times, so
+    // it is also the proof that a previously reported storage failure is over.
+    if outcome.is_ok() {
+        storage_health::note_ok(app);
+    }
     let _ = app.emit(EVENT_FINISHED, finished.clone());
+    crate::notifications::note_scan_outcome(app, &finished);
     finished
 }
 
@@ -269,13 +284,24 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
         .await;
 
     let records = describe(logs, &home, &ignored).await;
-    store.upsert_sessions(&records)?;
+    // Every write below is routed through the storage-health check, so a
+    // database that has stopped accepting writes becomes a banner in the
+    // popover rather than a list that silently stops changing.
+    checked(app, "The session index", store.upsert_sessions(&records))?;
 
     for (agent, seen, cursor) in per_agent_totals(&records) {
-        store.record_agent_scan(&agent, cursor, seen)?;
+        checked(
+            app,
+            "The scan bookkeeping",
+            store.record_agent_scan(&agent, cursor, seen),
+        )?;
     }
 
-    store.prune_sessions_before(now - RETENTION_DAYS * 86_400)?;
+    checked(
+        app,
+        "The retention prune",
+        store.prune_sessions_before(now - RETENTION_DAYS * 86_400),
+    )?;
 
     // Everything discovered so far is already persisted, so a cancel here keeps
     // the reader's results and only skips the work still ahead.

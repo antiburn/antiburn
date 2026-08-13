@@ -109,6 +109,12 @@ component: the updater, which asks GitHub Releases whether a newer version exist
 - There is **no analytics and no telemetry** in this application — no client, no
   consent screen, and no endpoint.
 
+**Notifications are local.** antiburn posts exactly two — an update check that found
+a newer version, and the first scan failure of a run — and hands them to your own
+operating system's notification centre. Nothing about a notification leaves the
+machine, and both can be turned off in Settings → Notifications, together or one at
+a time.
+
 ## Reporting a gap
 
 If an agent on this list is not discovered on a supported platform, that is a bug —

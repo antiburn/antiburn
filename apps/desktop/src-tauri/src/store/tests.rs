@@ -54,6 +54,12 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(defaults, AppSettings::default());
     assert!(!defaults.onboarding_completed);
 
+    // Notifications default on, both kinds with them, so the two per-kind
+    // preferences below are a real change rather than a re-statement.
+    assert!(defaults.notifications_enabled);
+    assert!(defaults.notify_update_available);
+    assert!(defaults.notify_scan_failure);
+
     let saved = store
         .save_settings(&AppSettings {
             theme: ThemePreference::Dark,
@@ -62,6 +68,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             launch_at_login: true,
             auto_update: false,
             discovery_paused: true,
+            notifications_enabled: false,
+            notify_update_available: false,
+            notify_scan_failure: true,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
@@ -69,6 +78,11 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(saved.activity_window_days, 14);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
+    // Each notification preference is stored on its own key, so a reader who
+    // silences the master switch keeps the per-kind choices they made.
+    assert!(!saved.notifications_enabled);
+    assert!(!saved.notify_update_available);
+    assert!(saved.notify_scan_failure);
 }
 
 /// The schema's data policy says which columns may hold free text. This is the

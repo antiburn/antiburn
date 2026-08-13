@@ -20,7 +20,9 @@
 //!   preference real; without it the switch would be decoration.
 //! - **What it says afterwards.** Every check — automatic or not — ends in an
 //!   [`EVENT_UPDATE`] event carrying an [`UpdateStatus`], which is what the
-//!   Updates pane renders. Nothing is inferred from silence.
+//!   Updates pane renders. Nothing is inferred from silence. An *automatic*
+//!   check that finds a version also asks [`crate::notifications`] to say so
+//!   once, since nobody is watching the pane when the schedule runs.
 //!
 //! Nothing here contacts a server in a development build: the plugin is never
 //! registered there, so [`supported`] is false and the scheduler does nothing.
@@ -161,6 +163,11 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         loop {
             if should_check(&app) {
                 let status = check(&app, true).await;
+                // The Updates pane learns from the event; someone who is not
+                // looking at antiburn learns from a notification, at most once
+                // per version. A *manual* check is deliberately not notified:
+                // the reader is already looking at the answer.
+                crate::notifications::note_update_status(&app, &status);
                 let _ = app.emit(EVENT_UPDATE, status);
             }
             tokio::time::sleep(CHECK_INTERVAL).await;

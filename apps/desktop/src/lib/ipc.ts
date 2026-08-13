@@ -22,6 +22,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
+import type { SettingsPane } from './settingsPanes';
 import type {
   ActiveSessionsSummary,
   SessionCostComponents,
@@ -53,6 +54,15 @@ export interface AppSettings {
    * everything already indexed stays browsable.
    */
   discoveryPaused: boolean;
+  /**
+   * The master switch for desktop notifications. Off means nothing is
+   * delivered, whatever the two per-kind preferences say.
+   */
+  notificationsEnabled: boolean;
+  /** Notify when an automatic update check finds a newer version. */
+  notifyUpdateAvailable: boolean;
+  /** Notify the first time a scan fails in this run of the app. */
+  notifyScanFailure: boolean;
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -247,6 +257,20 @@ export interface ScanStatus {
   agents: AgentScanState[];
 }
 
+/**
+ * Whether the local database is still accepting writes. Mirrors Rust
+ * `StorageHealthStatus`.
+ *
+ * A store that has stopped accepting writes looks exactly like a quiet machine
+ * from the outside — the list keeps rendering, it just stops changing — so the
+ * shell reports it and the popover surfaces it.
+ */
+export interface StorageHealthPayload {
+  failing: boolean;
+  /** What failed, in the store's own words. Present only while `failing`. */
+  message: string | null;
+}
+
 /** The outcome of one update check. Mirrors Rust `UpdateStatus`. */
 export interface UpdateStatusPayload {
   kind: 'current' | 'available' | 'failed' | 'unsupported';
@@ -274,6 +298,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   launchAtLogin: false,
   autoUpdate: true,
   discoveryPaused: false,
+  notificationsEnabled: true,
+  notifyUpdateAvailable: true,
+  notifyScanFailure: true,
 };
 
 /* -------------------------------------------------------------------------
@@ -291,10 +318,39 @@ export async function engineCatalogVersion(): Promise<string | null> {
   return invoke<string>('engine_catalog_version');
 }
 
-/** Opens (or refocuses) the standalone settings window. */
-export async function openSettingsWindow(): Promise<void> {
+/**
+ * Opens (or refocuses) the standalone settings window.
+ *
+ * `pane` is a request for a section — an attention banner uses it to land a
+ * reader on the pane that can fix what they were told about. Omitting it leaves
+ * the window wherever it was.
+ */
+export async function openSettingsWindow(pane?: SettingsPane): Promise<void> {
   if (!hasShell()) return;
-  await invoke('open_settings_window');
+  await invoke('open_settings_window', { pane: pane ?? null });
+}
+
+/**
+ * The pane a caller asked for, taken once, as the settings window mounts.
+ *
+ * Taken rather than read: a window opened later must not jump to a pane
+ * somebody asked for an hour ago.
+ */
+export async function takeSettingsPane(): Promise<string | null> {
+  if (!hasShell()) return null;
+  return invoke<string | null>('take_settings_pane');
+}
+
+/**
+ * Quit antiburn.
+ *
+ * Routed through the shell rather than closing windows, because a menu-bar app
+ * outlives its windows: only `exit(0)` distinguishes a deliberate quit from the
+ * window closes the shell suppresses.
+ */
+export async function quitApp(): Promise<void> {
+  if (!hasShell()) return;
+  await invoke('quit_app');
 }
 
 /**
@@ -437,6 +493,21 @@ export async function clearLocalIndex(): Promise<number> {
   return invoke<number>('clear_local_index');
 }
 
+/**
+ * Whether the local database is still accepting writes.
+ *
+ * Falls back to healthy rather than to null: "we do not know" and "something is
+ * wrong" are different claims, and only the second one is worth showing a
+ * reader a banner about.
+ */
+export async function getStorageHealth(): Promise<StorageHealthPayload> {
+  if (!hasShell()) return HEALTHY_STORAGE;
+  return (await invoke<StorageHealthPayload | null>('get_storage_health')) ?? HEALTHY_STORAGE;
+}
+
+/** What storage health looks like with nothing wrong. */
+export const HEALTHY_STORAGE: StorageHealthPayload = { failing: false, message: null };
+
 /** Every repository antiburn knows about on this machine. */
 export async function listRepositories(): Promise<RepositoryItemPayload[]> {
   if (!hasShell()) return [];
@@ -555,6 +626,36 @@ export async function onScanEvent(
     ),
   );
   return () => unlisteners.forEach((unlisten) => unlisten());
+}
+
+/** Event the shell emits when storage health changes. Mirrors `src-tauri/src/storage_health.rs`. */
+export const STORAGE_HEALTH_EVENT = 'storage:health';
+
+/**
+ * Subscribe to storage-health changes. The returned function unsubscribes.
+ *
+ * Only *changes* are emitted, so a machine whose disk is full produces one
+ * event rather than one per scan tick.
+ */
+export async function onStorageHealth(
+  handler: (status: StorageHealthPayload) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return () => {};
+  return listen<StorageHealthPayload>(STORAGE_HEALTH_EVENT, (event) => handler(event.payload));
+}
+
+/**
+ * Event the shell emits to move an *already open* settings window to a pane.
+ * Mirrors `src-tauri/src/settings.rs`.
+ */
+export const SETTINGS_PANE_EVENT = 'settings:pane';
+
+/** Subscribe to pane requests aimed at an open settings window. */
+export async function onSettingsPaneRequest(
+  handler: (pane: string) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return () => {};
+  return listen<string>(SETTINGS_PANE_EVENT, (event) => handler(event.payload));
 }
 
 /** Event the shell emits after every update check. Mirrors `src-tauri/src/updates.rs`. */

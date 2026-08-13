@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PopoverView } from './PopoverView';
@@ -19,14 +19,28 @@ const invoke = vi.hoisted(() => vi.fn());
 const confirmDialog = vi.hoisted(() => vi.fn());
 const saveDialog = vi.hoisted(() => vi.fn());
 const openDialog = vi.hoisted(() => vi.fn());
+/** Shell event handlers the view subscribed to, by event name. */
+const listeners = vi.hoisted(() => new Map<string, ((event: { payload: unknown }) => void)[]>());
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke, isTauri: () => true }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.set(name, [...(listeners.get(name) ?? []), handler]);
+    return () => {
+      listeners.set(name, (listeners.get(name) ?? []).filter((each) => each !== handler));
+    };
+  }),
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   confirm: confirmDialog,
   save: saveDialog,
   open: openDialog,
 }));
+
+/** Push a shell event at whatever subscribed to it. */
+function emit(name: string, payload: unknown) {
+  act(() => (listeners.get(name) ?? []).forEach((handler) => handler({ payload })));
+}
 
 const SETTINGS = {
   theme: 'system' as const,
@@ -115,6 +129,24 @@ const PROVIDER_USAGE = {
   coverageSince: '2027-01-01T08:00:00Z',
 };
 
+const HEALTHY_STORAGE = { failing: false, message: null };
+
+function repositoryPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    key: '/home/avery/code/widgets',
+    repoName: 'widgets',
+    fullName: 'avery/widgets',
+    status: 'accessible',
+    repoRoot: '/home/avery/code/widgets',
+    suspectedPath: null,
+    worktreeCount: 1,
+    sessionCount: 3,
+    wslDistro: null,
+    enabled: true,
+    ...overrides,
+  };
+}
+
 function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string, args?: unknown) => {
     if (command in overrides) return Promise.resolve(overrides[command]);
@@ -138,6 +170,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       case 'list_repositories':
       case 'set_repository_enabled':
         return Promise.resolve([]);
+      case 'get_storage_health':
+        return Promise.resolve(HEALTHY_STORAGE);
       default:
         return Promise.resolve(null);
     }
@@ -150,6 +184,7 @@ describe('PopoverView', () => {
     confirmDialog.mockReset();
     saveDialog.mockReset();
     openDialog.mockReset();
+    listeners.clear();
     mockCommands();
   });
 
@@ -361,12 +396,144 @@ describe('PopoverView', () => {
   });
 });
 
+/**
+ * Attention banners.
+ *
+ * Every case here starts from a signal the shell actually reports — a
+ * repository the system refuses to open, a database that rejected a write.
+ * There is no test for a speculative banner because there is no speculative
+ * banner.
+ */
+describe('PopoverView — attention banners', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    confirmDialog.mockReset();
+    saveDialog.mockReset();
+    openDialog.mockReset();
+    listeners.clear();
+    mockCommands();
+  });
+
+  it('says nothing when nothing is wrong', async () => {
+    mockCommands({ list_repositories: [repositoryPayload()] });
+    render(<PopoverView />);
+
+    await screen.findByText('Wire the tray popover');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a blocked repository, and Review opens Settings at Sources', async () => {
+    mockCommands({
+      list_repositories: [repositoryPayload({ status: 'permission_denied' })],
+    });
+    render(<PopoverView />);
+
+    const banner = await screen.findByRole('status');
+    expect(banner).toHaveTextContent(/blocking antiburn from reading widgets/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+
+    // Not just "open Settings": the banner lands the reader on the pane that
+    // can do something about what it reported.
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('open_settings_window', { pane: 'sources' }),
+    );
+  });
+
+  it('reads the repository list on first paint rather than waiting for a scan', async () => {
+    // A blocked repository is precisely the case where a scan may never
+    // complete, so the banner cannot depend on one finishing.
+    mockCommands({
+      list_repositories: [repositoryPayload({ status: 'permission_denied' })],
+    });
+    render(<PopoverView />);
+
+    await screen.findByRole('status');
+    expect(invoke).toHaveBeenCalledWith('list_repositories');
+  });
+
+  it('stays dismissed once the reader waves it away', async () => {
+    mockCommands({
+      list_repositories: [repositoryPayload({ status: 'permission_denied' })],
+    });
+    render(<PopoverView />);
+
+    await screen.findByRole('status');
+    fireEvent.click(screen.getByRole('button', { name: /^Dismiss the/ }));
+
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+
+    // A scan finishing re-reads the repository list; the banner must not come
+    // back from the dead because of it.
+    emit('scan:finished', SCAN_STATUS);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_repositories'));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a storage failure with a retry that runs a scan', async () => {
+    mockCommands({
+      get_storage_health: {
+        failing: true,
+        message: 'The session index could not be written: disk full',
+      },
+    });
+    render(<PopoverView />);
+
+    const banner = await screen.findByRole('status');
+    expect(banner).toHaveTextContent(/disk full/);
+    expect(banner).toHaveTextContent(/Nothing already indexed is lost/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('scan_now'));
+  });
+
+  it('takes the storage banner away when the shell reports a recovery', async () => {
+    mockCommands({
+      get_storage_health: {
+        failing: true,
+        message: 'The session index could not be written: disk full',
+      },
+    });
+    render(<PopoverView />);
+
+    await screen.findByRole('status');
+
+    emit('storage:health', { failing: false, message: null });
+
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+  });
+
+  it('shows a recovered-then-failed store again, even after a dismissal', async () => {
+    mockCommands({
+      get_storage_health: {
+        failing: true,
+        message: 'The session index could not be written: disk full',
+      },
+    });
+    render(<PopoverView />);
+
+    await screen.findByRole('status');
+    fireEvent.click(screen.getByRole('button', { name: /^Dismiss the/ }));
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+
+    // Recovery clears the dismissal, so the *next* failure is not silent.
+    emit('storage:health', { failing: false, message: null });
+    emit('storage:health', {
+      failing: true,
+      message: 'The retention prune could not be written: database is locked',
+    });
+
+    expect(await screen.findByRole('status')).toHaveTextContent(/database is locked/);
+  });
+});
+
 describe('PopoverView — window behaviour', () => {
   beforeEach(() => {
     invoke.mockReset();
     confirmDialog.mockReset();
     saveDialog.mockReset();
     openDialog.mockReset();
+    listeners.clear();
     mockCommands();
   });
 

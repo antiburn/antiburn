@@ -47,6 +47,9 @@ const SETTINGS = {
   launchAtLogin: false,
   autoUpdate: true,
   discoveryPaused: false,
+  notificationsEnabled: true,
+  notifyUpdateAvailable: true,
+  notifyScanFailure: true,
 };
 
 const INFO = {
@@ -344,5 +347,168 @@ describe('SettingsView', () => {
 
     expect(await screen.findByText(INFO.dataDir)).toBeInTheDocument();
     expect(screen.getByText(INFO.pricingCatalogVersion)).toBeInTheDocument();
+  });
+
+  it('states the licence in About without sending anyone to a browser', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+
+    expect(await screen.findByText('MPL-2.0')).toBeInTheDocument();
+    expect(screen.getByText(/Mozilla Public License 2\.0/)).toBeInTheDocument();
+    // This repository is not public yet, so About carries no external link at
+    // all rather than links that would open a browser at a 404.
+    expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('links About to the privacy pane instead of a support URL', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+
+    expect(
+      await screen.findByText(/no message text, no tool arguments, no file contents/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Privacy' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('quits antiburn from the sidebar, through the shell', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Quit antiburn' }));
+
+    // Through the shell, not by closing a window: a menu-bar app outlives its
+    // windows, and only `exit(0)` is a deliberate quit.
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('quit_app'));
+  });
+
+  it('opens on the pane the shell was asked for, when the window is new', async () => {
+    mockCommands({ take_settings_pane: 'sources' });
+    render(<SettingsView />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Sources' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    );
+  });
+
+  it('moves an already-open window to a requested pane', async () => {
+    render(<SettingsView />);
+
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    emit('settings:pane', 'sources');
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Sources' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    );
+  });
+
+  it('ignores a pane id it does not recognize rather than rendering nothing', async () => {
+    render(<SettingsView />);
+
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    emit('settings:pane', 'account');
+
+    expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+});
+
+/**
+ * Notifications.
+ *
+ * The pane's whole job is to let a reader decide what may interrupt them, so
+ * these tests check the two-level gate and the same honesty rule the Updates
+ * pane follows: no control over a notification this build could never post.
+ */
+describe('SettingsView — notifications', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+    checkForUpdate.mockReset();
+    listeners.clear();
+    delete document.documentElement.dataset['theme'];
+    mockCommands();
+  });
+
+  it('names both notifications rather than describing a category', async () => {
+    mockCommands({ app_info: { ...INFO, updatesSupported: true } });
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+
+    expect(await screen.findByRole('switch', { name: 'Notify me' })).toBeChecked();
+    expect(
+      screen.getByRole('switch', { name: 'A new version is available' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'A scan could not finish' })).toBeInTheDocument();
+    // The system's own setting overrules everything here, and the pane says so.
+    expect(screen.getByText(/final say/i)).toBeInTheDocument();
+  });
+
+  it('persists the master switch', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Notify me' }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: { ...SETTINGS, notificationsEnabled: false },
+      }),
+    );
+  });
+
+  it('persists a per-kind choice on its own', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'A scan could not finish' }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: { ...SETTINGS, notifyScanFailure: false },
+      }),
+    );
+  });
+
+  it('leaves the per-kind switches inert, and their choices intact, while the master is off', async () => {
+    mockCommands({
+      get_settings: { ...SETTINGS, notificationsEnabled: false },
+      app_info: { ...INFO, updatesSupported: true },
+    });
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+
+    const scanFailure = await screen.findByRole('switch', { name: 'A scan could not finish' });
+    expect(scanFailure).toBeDisabled();
+    // Still on: turning the master back on restores what the reader chose
+    // rather than a default.
+    expect(scanFailure).toBeChecked();
+  });
+
+  it('renders no update-notification switch in a build that cannot find an update', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+
+    await screen.findByRole('switch', { name: 'Notify me' });
+    expect(
+      screen.queryByRole('switch', { name: 'A new version is available' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/never finds a version to tell you about/i)).toBeInTheDocument();
   });
 });

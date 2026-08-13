@@ -7,16 +7,36 @@ import { Pane } from '../../components/ui/Pane';
 import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
 import { revealSource, type AppInfo } from '../../lib/ipc';
+import type { SettingsPane } from '../../lib/settingsPanes';
 import { PushButton } from '../../components/ui/PushButton';
 
 /**
- * About: what this build is, and where its data lives.
+ * About: what this build is, where its data lives, and what it is licensed
+ * under.
  *
  * The data directory is shown, and revealable, because a local-first app that
  * will not tell you where it keeps your data is asking for trust it has not
  * earned.
+ *
+ * # Why there are no external links here
+ *
+ * The matrix's About row lists release-notes, source, security, and support
+ * links. They are deliberately absent: this repository is not public yet, so
+ * every one of those would be a link that opens a browser at a 404. A dead link
+ * in the pane whose job is to establish provenance is worse than an honest
+ * silence, so what is here instead is the material that genuinely ships with
+ * the app — the licence it is under, and the privacy pane that says what it
+ * does with your data. The deferral is recorded in `docs/deviations.md` and the
+ * links land with publication.
  */
-export function AboutPane({ info }: { info: AppInfo | null }) {
+export function AboutPane({
+  info,
+  onOpenPane,
+}: {
+  info: AppInfo | null;
+  /** Move the window to another pane; About links to content, not to URLs. */
+  onOpenPane?: (pane: SettingsPane) => void;
+}) {
   return (
     <Pane title="About">
       <SectionGroup title="Build">
@@ -52,6 +72,28 @@ export function AboutPane({ info }: { info: AppInfo | null }) {
               </span>
             }
           />
+        </Card>
+      </SectionGroup>
+
+      <SectionGroup title="Licence and data handling">
+        <Card>
+          <Row
+            label="Licence"
+            // Stated, not linked. The full text ships in the bundle and every
+            // source file carries the header, so this is checkable without a
+            // browser — which is the point of putting it in an offline app.
+            description="antiburn is free software under the Mozilla Public License 2.0. The full text ships with the application, and every source file carries its header."
+            trailing={
+              <span className="type-body tabular-nums text-label-secondary">MPL-2.0</span>
+            }
+          />
+          {onOpenPane && (
+            <Row
+              label="Privacy and data handling"
+              description="What antiburn reads, what it stores, how long it keeps it, and the one time it uses the network. The long form lives in Privacy."
+              trailing={<PushButton onClick={() => onOpenPane('privacy')}>Open</PushButton>}
+            />
+          )}
         </Card>
       </SectionGroup>
 

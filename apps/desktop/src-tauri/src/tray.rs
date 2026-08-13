@@ -66,7 +66,9 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         MENU_SETTINGS => {
-            if let Err(error) = settings::open(app) {
+            // No pane in particular: the tray's Settings item is a general
+            // entry point, so it leaves the window wherever it was last.
+            if let Err(error) = settings::open(app, None) {
                 eprintln!("antiburn: could not open settings ({error})");
             }
         }

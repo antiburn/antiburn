@@ -207,6 +207,18 @@ impl Store {
                 .get("discoveryPaused")
                 .map(|value| value == "true")
                 .unwrap_or(defaults.discovery_paused),
+            notifications_enabled: stored
+                .get("notificationsEnabled")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notifications_enabled),
+            notify_update_available: stored
+                .get("notifyUpdateAvailable")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notify_update_available),
+            notify_scan_failure: stored
+                .get("notifyScanFailure")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notify_scan_failure),
         };
         Ok(settings.normalized())
     }
@@ -238,6 +250,18 @@ impl Store {
             put.execute(params![
                 "discoveryPaused",
                 bool_text(settings.discovery_paused)
+            ])?;
+            put.execute(params![
+                "notificationsEnabled",
+                bool_text(settings.notifications_enabled)
+            ])?;
+            put.execute(params![
+                "notifyUpdateAvailable",
+                bool_text(settings.notify_update_available)
+            ])?;
+            put.execute(params![
+                "notifyScanFailure",
+                bool_text(settings.notify_scan_failure)
             ])?;
         }
         tx.commit()?;

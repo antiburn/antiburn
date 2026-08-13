@@ -231,6 +231,13 @@ pub struct AppSettings {
     /// Paused stops the *scheduler* only: an explicit rescan still runs, and
     /// everything already indexed stays browsable. See [`crate::scan`].
     pub discovery_paused: bool,
+    /// The master switch for desktop notifications. Off means nothing is
+    /// delivered, whatever the two per-kind preferences below say.
+    pub notifications_enabled: bool,
+    /// Notify when an automatic update check finds a newer version.
+    pub notify_update_available: bool,
+    /// Notify the first time a scan fails in this run of the app.
+    pub notify_scan_failure: bool,
 }
 
 impl Default for AppSettings {
@@ -242,6 +249,14 @@ impl Default for AppSettings {
             launch_at_login: false,
             auto_update: true,
             discovery_paused: false,
+            // On by default, and both kinds with them. There are exactly two,
+            // both are about something the reader would want to act on, and
+            // neither repeats: a notification surface that has to be found
+            // before it says anything useful is a notification surface nobody
+            // finds.
+            notifications_enabled: true,
+            notify_update_available: true,
+            notify_scan_failure: true,
         }
     }
 }

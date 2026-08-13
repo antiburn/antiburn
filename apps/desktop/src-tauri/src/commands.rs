@@ -57,9 +57,36 @@ pub fn engine_catalog_version() -> &'static str {
 }
 
 /// Opens, or refocuses, the standalone settings window.
+///
+/// `pane` is optional and is a *request*: the frontend owns the pane list, so
+/// an id it does not recognize simply leaves the window where it was.
 #[tauri::command]
-pub fn open_settings_window(app: tauri::AppHandle) -> CommandResult<()> {
-    settings::open(&app).map_err(fail)
+pub fn open_settings_window(app: tauri::AppHandle, pane: Option<String>) -> CommandResult<()> {
+    settings::open(&app, pane).map_err(fail)
+}
+
+/// The pane a caller asked for, taken once, as the settings window mounts.
+#[tauri::command]
+pub fn take_settings_pane(app: tauri::AppHandle) -> Option<String> {
+    app.try_state::<settings::PendingPane>()
+        .and_then(|pending| pending.take())
+}
+
+/// Quit antiburn.
+///
+/// The Settings sidebar's quit action and the tray menu's both land here, so
+/// there is one exit path: `exit(0)` is what distinguishes a deliberate quit
+/// from the window closes the shell suppresses (see `on_window_event`), and the
+/// background tasks are aborted on the way out.
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Whether the local database is still accepting writes.
+#[tauri::command]
+pub fn get_storage_health(app: tauri::AppHandle) -> crate::storage_health::StorageHealthStatus {
+    crate::storage_health::status(&app)
 }
 
 /* -------------------------------------------------------------------------

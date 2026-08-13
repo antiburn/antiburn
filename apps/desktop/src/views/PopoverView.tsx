@@ -6,13 +6,17 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { Settings2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { AlertTriangle } from 'lucide-react';
+
 import { LocalActivityList } from '../components/activity/LocalActivityList';
 import type { LocalActivityEntry } from '../components/activity/LocalActivityList';
 import { ProviderUsageCluster } from '../components/providerUsage';
+import { Banner } from '../components/ui/Banner';
 import { Skeleton } from '../components/ui/Skeleton';
 import { renderAgentIcon } from '../lib/agentIcon';
 import { indexOfSession, toActivityEntries } from '../lib/activityEntries';
 import { applyTheme } from '../lib/appearance';
+import { attentionBanners, type AttentionKind } from '../lib/attention';
 import {
   addScanRoot,
   cancelScan,
@@ -22,11 +26,14 @@ import {
   getProviderUsage,
   getScanStatus,
   getSettings,
+  getStorageHealth,
+  HEALTHY_STORAGE,
   hidePopover,
   listRecentSessions,
   listRepositories,
   listScanRoots,
   onScanEvent,
+  onStorageHealth,
   openSettingsWindow,
   removeScanRoot,
   scanNow,
@@ -36,6 +43,7 @@ import {
   type AppSettings,
   type ProviderUsageSummaryPayload,
   type ScanStatus,
+  type StorageHealthPayload,
 } from '../lib/ipc';
 import { popoverHeightFor, prefersReducedMotion, type PopoverSurface } from '../lib/popoverHeight';
 import type { LocalRepositoryItem, LocalRepositoryStatus } from '../lib/types/repository';
@@ -64,6 +72,12 @@ import { UsageView } from './popover/UsageView';
  * - **Focus.** Swapping surfaces by conditional render leaves focus on `<body>`
  *   and tells a screen-reader user nothing. Every surface marks its heading,
  *   and that heading is focused when the surface changes.
+ *
+ * A fourth thing is owned here for a different reason: the **attention
+ * banners** above the activity list. What they may say is decided by
+ * `lib/attention`, from signals the shell reports; dismissal is held here,
+ * because "I have seen this" is a fact about this run of the popover and not
+ * something worth persisting.
  */
 
 /** Placeholder rows while the first list load is in flight. */
@@ -113,6 +127,10 @@ export function PopoverView() {
   const [usage, setUsage] = useState<ProviderUsageSummaryPayload | null>(null);
   /** Whether the full Usage view is showing over the activity list. */
   const [showUsage, setShowUsage] = useState(false);
+  /** Whether the local database is still accepting writes. */
+  const [storage, setStorage] = useState<StorageHealthPayload>(HEALTHY_STORAGE);
+  /** Banners the reader has waved away this run. */
+  const [dismissed, setDismissed] = useState<readonly AttentionKind[]>([]);
 
   const current = stack.at(-1) ?? null;
   const windowDays = settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
@@ -143,15 +161,24 @@ export function PopoverView() {
       if (!active) return;
       applyTheme(stored.theme);
       setSettingsState(stored);
-      const [roots, defaults, status] = await Promise.all([
+      const [roots, defaults, status, health] = await Promise.all([
         listScanRoots().catch(() => []),
         defaultScanRoots().catch(() => []),
         getScanStatus().catch(() => null),
+        getStorageHealth().catch(() => HEALTHY_STORAGE),
       ]);
       if (!active) return;
       setScanRoots(roots);
       setDefaultRoots(defaults);
       setScanStatus(status);
+      setStorage(health);
+      // The repository list is read on first paint rather than waiting for a
+      // scan to finish: onboarding's Repositories step needs it, and so does
+      // the source-access banner — a blocked repository is exactly the case
+      // where no scan will ever complete to deliver the news. Not awaited: it
+      // is a store read that nothing below depends on, and the activity list
+      // is what a reader opened the popover for.
+      void refreshRepositoryList();
       if (stored.onboardingCompleted) {
         await Promise.all([
           refreshEntries(stored.activityWindowDays).catch(() => setEntries([])),
@@ -162,7 +189,25 @@ export function PopoverView() {
     return () => {
       active = false;
     };
-  }, [refreshEntries, refreshUsage]);
+  }, [refreshEntries, refreshUsage, refreshRepositoryList]);
+
+  // Storage health changes rarely and matters immediately, so it is pushed
+  // rather than polled. Only changes are emitted, so this is not a per-tick
+  // event.
+  useEffect(() => {
+    let active = true;
+    const pending = onStorageHealth((status) => {
+      if (!active) return;
+      setStorage(status);
+      // A failure that recovers should not leave its banner dismissed, or the
+      // next failure would arrive silently.
+      if (!status.failing) setDismissed((previous) => previous.filter((id) => id !== 'storage'));
+    });
+    return () => {
+      active = false;
+      void pending.then((unlisten) => unlisten());
+    };
+  }, []);
 
   // The scan is the only thing that changes what is on screen behind the
   // reader's back, so that is what the list listens for rather than polling.
@@ -245,6 +290,18 @@ export function PopoverView() {
   const handleRescan = useCallback(async () => {
     const status = await scanNow().catch(() => null);
     if (status) setScanStatus(status);
+  }, []);
+
+  /* ---------------------------------------------------------------------
+   * Attention banners
+   * ------------------------------------------------------------------ */
+
+  const banners = attentionBanners({ repositories, storage }).filter(
+    (banner) => !dismissed.includes(banner.id),
+  );
+
+  const dismissBanner = useCallback((id: AttentionKind) => {
+    setDismissed((previous) => (previous.includes(id) ? previous : [...previous, id]));
   }, []);
 
   const handleCancelScan = useCallback(async () => {
@@ -393,6 +450,28 @@ export function PopoverView() {
           onCancel={() => void handleCancelScan()}
           onTogglePaused={(paused) => void applySettings({ discoveryPaused: paused })}
         />
+
+        {banners.length > 0 && (
+          <div className="shrink-0 space-y-1 px-2 pb-1.5">
+            {banners.map((banner) => (
+              <Banner
+                key={banner.id}
+                icon={AlertTriangle}
+                message={banner.message}
+                actionLabel={banner.actionLabel}
+                onAction={() => {
+                  if (banner.action.kind === 'rescan') {
+                    void handleRescan();
+                    return;
+                  }
+                  void openSettingsWindow(banner.action.pane);
+                }}
+                onDismiss={() => dismissBanner(banner.id)}
+                dismissLabel={banner.dismissLabel}
+              />
+            ))}
+          </div>
+        )}
 
         <div className="min-h-0 flex-1">
           {entries == null ? (

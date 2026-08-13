@@ -90,8 +90,11 @@ Three independent checks, none of which relies on review:
 ## Shell behavior
 
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
-  menu with Settings and Quit — an agent application has no Dock icon and no
-  application menu, so the menu is the only way out.
+  menu with Settings and Quit. The Settings sidebar ends in the same Quit
+  action — an agent application has no Dock icon and no application menu, so
+  those two are the only places a reader can look for the way out. Both go
+  through the shell's `exit(0)`, which is what distinguishes a deliberate quit
+  from the window closes the shell suppresses.
 - **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
   It is created once at startup and anchored under its menu-bar item on each
   open, flipping above the item and clamping to the display when there is no
@@ -108,6 +111,18 @@ Three independent checks, none of which relies on review:
   launch (after onboarding), whenever the popover is opened, every 60s while it
   stays open, paused entirely while it is hidden, and on demand. Passes never
   overlap and are bounded — see the policy at the top of `src-tauri/src/scan.rs`.
+- **Notifications.** Exactly two, both posted by the shell and never by the
+  webview (which is granted no notification permission): an automatic update
+  check that found a version, and the first scan failure of a run. Each is gated
+  by the master preference *and* its own, both default on, and neither repeats —
+  see the policy at the top of `src-tauri/src/notifications.rs`. Delivery is the
+  platform's own notification centre; nothing about a notification leaves the
+  machine.
+- **Attention.** The popover shows a banner above the activity list when a
+  repository cannot be read (which opens Settings at Sources) or when the local
+  database rejects a write (which retries with a scan). Both are derived from
+  shell-reported signals in `src/lib/attention.ts`; there is no speculative
+  banner kind.
 - **Theme.** Follows the operating system through `color-scheme` and Tailwind's
   `prefers-color-scheme` dark variant.
 - **macOS.** `LSUIElement` in [`src-tauri/Info.plist`](src-tauri/Info.plist)
@@ -119,7 +134,11 @@ There is no router: each window owns one route for its whole lifetime.
 
 ## Known gaps
 
-These are deliberate, and belong to later milestones:
+Every deliberate difference from the ratified feature matrix — the deferred
+update-install flow, the absent external links, the omitted panes, and the CI
+coverage choices — is recorded with its reason and its revisit milestone in
+[`docs/deviations.md`](../../docs/deviations.md). The list below is the
+build-level subset that a developer working in this directory runs into first:
 
 - The popover is opaque and square-cornered. Rounded, translucent chrome needs
   `macOSPrivateApi` plus transparent-window support, and arrives with the

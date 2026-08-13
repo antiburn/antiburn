@@ -1,0 +1,59 @@
+# Deliberate Deviations
+
+Every place the shipped application knowingly differs from the ratified feature
+matrix, with the reason and the milestone it should be revisited at.
+
+This file exists because the alternative is worse. A deviation that lives only
+in a commit message is indistinguishable, six months later, from a thing
+somebody forgot to build — and the difference between those two is the whole
+value of having a ratified matrix. If a row below stops being true, either the
+code or this file is wrong, and both are cheap to check.
+
+**What belongs here:** a difference from an approved **Keep**, **Localize**, or
+**Include** row that was decided rather than missed.
+
+**What does not:** anything the matrix marks **Private only**, **Omit**, or
+**Defer**. Those are absences by design, not deviations — the private
+application's authentication, organizations, publication, and commercial
+enrichment features have no public counterpart and no public placeholder, which
+is the matrix working as written.
+
+Related: the conformance record in [`docs/audits/`](audits/), the support and
+data-handling claims in [`docs/support.md`](support.md).
+
+## Register
+
+| # | Deviation | What the matrix asks for | What ships | Why | Revisit at |
+| --- | --- | --- | --- | --- | --- |
+| D-1 | **About carries no external links** | About links to release notes, licence, source, security, support, and privacy | The licence *stated* (MPL-2.0, with the full text shipped in the bundle and a header in every source file) and a row that opens the Privacy pane | This repository is not public yet, so every one of those links would open a browser at a 404. In the one pane whose job is to establish provenance, a dead link is worse than an honest silence. | Publication. The links land the day the repository is public. |
+| D-2 | **No Send Feedback pane** | Settings → Send Feedback opens a public issue, discussion, or support URL in the browser | Nothing. No pane, no disabled row. | Same cause as D-1: there is no public issue tracker to open yet. Under the omission discipline a control that cannot work is not shipped disabled — it is not shipped. | Publication, with D-1. |
+| D-3 | **No Debug pane** | Settings → Debug with debug-build simulations of public states and routes | Nothing | The omission discipline again, applied to ourselves: the pane's value is deterministic UI states for contributors, and there are no outside contributors until the repository is public. Building a contributor affordance before there are contributors is how placeholder surfaces get shipped. | Publication, if a contributor workflow needs it. |
+| D-4 | **No update download, install, restart, progress, or post-update interstitial** | Update progress (check/download/install/failure/retry/restart) is **Keep**; the updated interstitial and release notes are **Localize** | A check, its result, and a schedule preference. `UpdatesPane` reports what the last check found; the notification body says in as many words that this build does not install updates. | The updater has no signing key (`tauri.conf.json` `plugins.updater.pubkey` is empty and `bundle.createUpdaterArtifacts` is `false`), so there are no signed artifacts to download and nothing to verify one against. An install flow over an unverifiable download is the one update UX worth refusing to ship. | The release milestone, with signing. The copy in `notifications::update_message` and `UpdatesPane` is written to be revisited then. |
+| D-5 | **Onboarding Welcome promises no analytics opt-in** | Welcome copy mentions that anonymous analytics is sent only after a separate, default-off opt-in | Copy that says no usage data is collected at all | This build ships no analytics of any kind, so promising the reader a control over analytics would be describing an app nobody has written. Shipping neither the analytics nor the promise is the only internally consistent pair. The rationale is also stated at the top of `OnboardingFlow.tsx`. | The next governance review. Either the matrix row is amended or the analytics channel is built and consented for; the current state needs the same amendment either way. |
+| D-6 | **Notifications are the platform's, not a floating window** | A floating notification window, retained as a generic mechanism | The operating system's own notification centre, through `tauri-plugin-notification` | A local-first application has no reason to reimplement a notification centre, and a custom always-on-top window is exactly the kind of thing the platform already does better and the reader already knows how to silence. The interaction the matrix wants — a short, local, dismissible message — is preserved; the window is not. | Only if a notification needs presentation the platform cannot express. |
+| D-7 | **Two notification kinds, not four** | Approved local scan, source-error, update, and evidence-backed Provider Usage notifications | An available update, and a scan that failed | Source-access problems became an attention *banner* instead (see D-8): the popover is where the affected list is, and a notification about a repository the reader is already looking at is noise. Provider Usage milestones need trustworthy passive evidence of an allowance, which D-019 states this build does not have — a usage notification would have to invent the threshold it was announcing. | The Provider Usage row revisits with any separately reviewed passive evidence source. |
+| D-8 | **Two attention banners, not four** | Source access problems, repeated scan failures, storage/migration problems, and update availability | Source access and storage | The other two already have a home that is more useful than a banner: a failed or repeated-failure scan is reported in the status line directly above the list (with the controls to retry it), and update availability is in the Updates pane and, once, in a notification. Three surfaces for one fact is nagging. | Only if the status line proves too quiet in live use. |
+| D-9 | **Storage *open* failures are fatal, not banner-surfaced** | Attention banners cover storage problems | Write failures raise a banner with a retry; a database that cannot be opened at all stops the app at launch | There is no useful antiburn without its store: every surface reads from it. An app that starts into a permanent error banner, with an empty list and no working control, is a worse answer than one that refuses to start. Write failures are different — they are usually transient (a full disk, a locked file) and the retry is an ordinary rescan. | Only if a recoverable open failure turns up in practice. |
+| D-10 | **Quit does not confirm** | "Preserve native confirmation behavior" for the quit action | Both quit paths — the tray menu and the Settings sidebar — exit immediately | Nothing in this application is unsaved: every setting writes through on change, and the index is rebuilt by the next scan. A confirmation would be asking a reader to approve the loss of nothing. The two paths behave identically on purpose. | Only if quitting ever becomes destructive. |
+| D-11 | **Launch at login is recorded, not enforced** | General carries the everyday controls | The preference is stored, and the row says plainly that this build does not register a login item | Registering a login item needs the autostart plugin, which this build does not carry. The alternative — hiding the control — loses the reader's choice; the alternative to *that* is a switch that silently does nothing, which is the failure the honesty rule exists to prevent. | Whenever the autostart plugin is added. |
+| D-12 | **`desktop-frontend` CI omits macOS** | "Frontend and Tauri checks pass on the supported release matrix" | Linux and Windows for the frontend suite; Linux, Windows, and macOS for the shell | The frontend suite is jsdom. Windows earns its place — path handling, line endings, and the platform-aware modifier logic are exactly what a Linux-only run cannot fail — while macOS shares its behaviour with Linux there and is the slowest runner. The code that is genuinely platform-specific (tray, anchoring, window policy, paths) is in the shell, which does run on all three. The rationale is also written into `.github/workflows/ci.yml`. | Whenever frontend code acquires macOS-specific behaviour. |
+| D-13 | **No aggregate required-status job, and no Prettier check** | Not a matrix row; a gap recorded here so it is not rediscovered | Branch protection enumerates the job names | Recorded rather than fixed: it is a CI ergonomics problem, not a product or boundary one, and the fix (a `ci-required` aggregate) belongs with the next workflow change rather than inside a feature commit. | Next CI change. |
+| D-14 | **Published support claims are narrower than the matrix permits** | D-007 permits Windows 10 1809+ | `docs/support.md` declares Windows 10 "not tested; no support claimed" | Erring narrow is the correct direction for a support claim: the matrix says what may be supported, and the documentation should say what has been tested. This is a deviation in the safe direction and is recorded so it is not mistaken for an oversight. | Whenever Windows 10 is actually tested. |
+| D-15 | **No Sound lab** | "Keep debug-only only if local notifications ship; otherwise omit" | Nothing | Notifications now ship, so the conditional is live — but antiburn posts no sound of its own. Every notification uses the platform default, so there is no presentation to test and nothing for the pane to do. | If antiburn ever ships a sound. |
+
+## Checked, and not deviating
+
+Recorded so the next reader does not have to re-derive them.
+
+- **Popover geometry.** 380px wide and non-resizable; the window opens at the
+  contract's 700px and each surface requests its own bounded height below that
+  (`lib/popoverHeight.ts`, clamped again in `popover.rs`). Per-view bounded
+  height change is itself a **Keep** row, so the smaller onboarding and usage
+  heights are the row being implemented, not a departure from it.
+- **The private-only rows.** Authentication, accounts, organizations, upload,
+  publication, and the private commercial enrichment features have no public
+  control, route, cache, command, simulation, or placeholder. That is the
+  matrix as written, not a deviation from it.
+- **Provider Usage states.** `live` and `detected` are declared and rendered but
+  unreachable in this build, which is what D-019 requires: a session transcript
+  records what was spent, never what remains.
