@@ -41,7 +41,11 @@ export function AboutPane({ info }: { info: AppInfo | null }) {
           />
           <Row
             label="Local database"
-            description="Schema version of antiburn's own store. It holds derived analysis only — never transcript content."
+            // Narrower than "never transcript content", because that was not
+            // true: the store keeps a session's title and each skill's
+            // one-line description, both capped. Privacy settings carry the
+            // long form; this says enough to not mislead.
+            description="Schema version of antiburn's own store. It holds derived analysis, plus short capped excerpts for titles and skill descriptions — no message text, tool arguments, or file contents. See Privacy."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 v{info?.schemaVersion ?? '—'}

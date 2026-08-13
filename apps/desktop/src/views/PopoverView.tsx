@@ -4,7 +4,7 @@
 
 import { open } from '@tauri-apps/plugin-dialog';
 import { Settings2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { LocalActivityList } from '../components/activity/LocalActivityList';
 import type { LocalActivityEntry } from '../components/activity/LocalActivityList';
@@ -15,21 +15,32 @@ import { indexOfSession, toActivityEntries } from '../lib/activityEntries';
 import { applyTheme } from '../lib/appearance';
 import {
   addScanRoot,
+  cancelScan,
   defaultScanRoots,
   DEFAULT_SETTINGS,
   EMPTY_PROVIDER_USAGE,
   getProviderUsage,
+  getScanStatus,
   getSettings,
+  hidePopover,
   listRecentSessions,
+  listRepositories,
   listScanRoots,
   onScanEvent,
   openSettingsWindow,
   removeScanRoot,
+  scanNow,
+  setPopoverHeight,
+  setRepositoryEnabled,
   setSettings,
   type AppSettings,
   type ProviderUsageSummaryPayload,
+  type ScanStatus,
 } from '../lib/ipc';
+import { popoverHeightFor, prefersReducedMotion, type PopoverSurface } from '../lib/popoverHeight';
+import type { LocalRepositoryItem, LocalRepositoryStatus } from '../lib/types/repository';
 import { OnboardingFlow } from './popover/OnboardingFlow';
+import { ScanStatusBar } from './popover/ScanStatusBar';
 import { SessionPane, type SessionSubject } from './popover/SessionPane';
 import { UsageView } from './popover/UsageView';
 
@@ -40,6 +51,19 @@ import { UsageView } from './popover/UsageView';
  * one session's analytics, and local provider usage. There is no router — a
  * popover is a single place, and a stack of "where I came from" is all the
  * navigation it needs.
+ *
+ * Three things are owned here rather than by any one surface, because they are
+ * properties of *the window*:
+ *
+ * - **Height.** Each surface declares one (`lib/popoverHeight`) and the shell
+ *   animates between them, bounded at 700px.
+ * - **Escape.** The keyboard's way out of a tray popover. It dismisses the
+ *   window unless a surface has already handled the key for something nearer —
+ *   an open provider panel, say — which those surfaces signal by calling
+ *   `preventDefault`.
+ * - **Focus.** Swapping surfaces by conditional render leaves focus on `<body>`
+ *   and tells a screen-reader user nothing. Every surface marks its heading,
+ *   and that heading is focused when the surface changes.
  */
 
 /** Placeholder rows while the first list load is in flight. */
@@ -59,11 +83,26 @@ function ActivitySkeleton() {
   );
 }
 
+/** Narrow the shell's status string to the repository list's union. */
+function repositoryStatus(status: string): LocalRepositoryStatus {
+  switch (status) {
+    case 'accessible':
+    case 'permission_denied':
+    case 'not_cloned':
+    case 'disabled':
+      return status;
+    default:
+      return 'accessible';
+  }
+}
+
 export function PopoverView() {
   const [settings, setSettingsState] = useState<AppSettings | null>(null);
   const [entries, setEntries] = useState<LocalActivityEntry[] | null>(null);
   const [scanRoots, setScanRoots] = useState<string[]>([]);
   const [defaultRoots, setDefaultRoots] = useState<string[]>([]);
+  const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   /** Navigation stack. Empty means the activity list is showing. */
   const [stack, setStack] = useState<SessionSubject[]>([]);
   /**
@@ -77,6 +116,7 @@ export function PopoverView() {
 
   const current = stack.at(-1) ?? null;
   const windowDays = settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
+  const onboarding = settings != null && !settings.onboardingCompleted;
 
   const refreshEntries = useCallback(async (days: number) => {
     const payloads = await listRecentSessions(days);
@@ -85,6 +125,13 @@ export function PopoverView() {
 
   const refreshUsage = useCallback(async () => {
     setUsage(await getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE));
+  }, []);
+
+  const refreshRepositoryList = useCallback(async () => {
+    const payloads = await listRepositories().catch(() => []);
+    setRepositories(
+      payloads.map((payload) => ({ ...payload, status: repositoryStatus(payload.status) })),
+    );
   }, []);
 
   // First load: preferences decide the theme and the visible window, so
@@ -96,13 +143,15 @@ export function PopoverView() {
       if (!active) return;
       applyTheme(stored.theme);
       setSettingsState(stored);
-      const [roots, defaults] = await Promise.all([
+      const [roots, defaults, status] = await Promise.all([
         listScanRoots().catch(() => []),
         defaultScanRoots().catch(() => []),
+        getScanStatus().catch(() => null),
       ]);
       if (!active) return;
       setScanRoots(roots);
       setDefaultRoots(defaults);
+      setScanStatus(status);
       if (stored.onboardingCompleted) {
         await Promise.all([
           refreshEntries(stored.activityWindowDays).catch(() => setEntries([])),
@@ -115,21 +164,73 @@ export function PopoverView() {
     };
   }, [refreshEntries, refreshUsage]);
 
-  // A finished scan is the only thing that changes the list behind the reader's
-  // back, so that is what the list listens for rather than polling.
+  // The scan is the only thing that changes what is on screen behind the
+  // reader's back, so that is what the list listens for rather than polling.
+  // Every phase is kept, not just `finished`: the status line's whole job is to
+  // show the pass while it runs.
   useEffect(() => {
-    if (!settings?.onboardingCompleted) return;
     let active = true;
-    const pending = onScanEvent((_status, phase) => {
-      if (phase !== 'finished' || !active) return;
+    const pending = onScanEvent((status, phase) => {
+      if (!active) return;
+      setScanStatus(status);
+      if (phase !== 'finished') return;
       void refreshEntries(windowDays).catch(() => {});
       void refreshUsage();
+      void refreshRepositoryList();
     });
     return () => {
       active = false;
       void pending.then((unlisten) => unlisten());
     };
-  }, [settings?.onboardingCompleted, windowDays, refreshEntries, refreshUsage]);
+  }, [windowDays, refreshEntries, refreshUsage, refreshRepositoryList]);
+
+  /* ---------------------------------------------------------------------
+   * Window behaviour: which surface is showing, how tall it is, and Escape
+   * ------------------------------------------------------------------ */
+
+  const surface: PopoverSurface = onboarding
+    ? 'onboarding'
+    : showUsage && usage
+      ? 'usage'
+      : current
+        ? 'session'
+        : 'activity';
+
+  useEffect(() => {
+    // Reduced motion is a webview preference, so the decision is made here and
+    // the shell simply honours it.
+    void setPopoverHeight(popoverHeightFor(surface), !prefersReducedMotion()).catch(() => {});
+  }, [surface]);
+
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    // Conditional render swaps the whole surface; without this, focus is left
+    // on <body> and a keyboard or screen-reader user has to walk back in from
+    // the top of the document every time.
+    surfaceRef.current?.querySelector<HTMLElement>('[data-view-heading]')?.focus();
+  }, [surface]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      // A surface with something nearer to close — an open provider panel —
+      // claims the key by calling `preventDefault`. Anything left over
+      // dismisses the popover, which is the keyboard's only way out of a tray
+      // window.
+      if (event.defaultPrevented) return;
+      void hidePopover().catch(() => {});
+    };
+    // Bound to `window`, deliberately: it is the last object in the event's
+    // propagation path, so every surface listening on `document` has already
+    // had its chance to claim the key. Dismissing the whole window is the
+    // coarsest possible response to Escape and must therefore be the last.
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  /* ---------------------------------------------------------------------
+   * Actions
+   * ------------------------------------------------------------------ */
 
   const handleAddScanRoot = useCallback(async () => {
     const picked = await open({ directory: true, multiple: false });
@@ -141,16 +242,48 @@ export function PopoverView() {
     setScanRoots(await removeScanRoot(path));
   }, []);
 
+  const handleRescan = useCallback(async () => {
+    const status = await scanNow().catch(() => null);
+    if (status) setScanStatus(status);
+  }, []);
+
+  const handleCancelScan = useCallback(async () => {
+    const status = await cancelScan().catch(() => null);
+    if (status) setScanStatus(status);
+  }, []);
+
+  const applySettings = useCallback(
+    async (change: Partial<AppSettings>) => {
+      const base = settings ?? DEFAULT_SETTINGS;
+      const saved = await setSettings({ ...base, ...change }).catch(() => ({
+        ...base,
+        ...change,
+      }));
+      setSettingsState(saved);
+      return saved;
+    },
+    [settings],
+  );
+
+  const handleToggleRepository = useCallback(
+    async (item: LocalRepositoryItem, enabled: boolean) => {
+      const payloads = await setRepositoryEnabled(item.key, enabled).catch(() => []);
+      if (payloads.length === 0) return;
+      setRepositories(
+        payloads.map((payload) => ({ ...payload, status: repositoryStatus(payload.status) })),
+      );
+    },
+    [],
+  );
+
   const handleFinishOnboarding = useCallback(async () => {
-    const base = settings ?? DEFAULT_SETTINGS;
-    const saved = await setSettings({ ...base, onboardingCompleted: true });
-    setSettingsState(saved);
+    const saved = await applySettings({ onboardingCompleted: true });
     setEntries(null);
     await Promise.all([
       refreshEntries(saved.activityWindowDays).catch(() => setEntries([])),
       refreshUsage(),
     ]);
-  }, [settings, refreshEntries, refreshUsage]);
+  }, [applySettings, refreshEntries, refreshUsage]);
 
   const openSession = useCallback((subject: SessionSubject) => {
     setStack((previous) => [...previous, subject]);
@@ -175,89 +308,122 @@ export function PopoverView() {
     };
   }, []);
 
-  // Onboarding gates everything: without it there is nothing scanned to show.
-  if (settings && !settings.onboardingCompleted) {
+  /* ---------------------------------------------------------------------
+   * Surfaces
+   * ------------------------------------------------------------------ */
+
+  function body() {
+    // Onboarding gates everything: without it there is nothing scanned to show.
+    if (onboarding) {
+      return (
+        <OnboardingFlow
+          defaultRoots={defaultRoots}
+          scanRoots={scanRoots}
+          onAddScanRoot={() => void handleAddScanRoot()}
+          onRemoveScanRoot={(path) => void handleRemoveScanRoot(path)}
+          repositories={repositories}
+          onToggleRepository={(item, enabled) => void handleToggleRepository(item, enabled)}
+          onDiscover={() => void handleRescan()}
+          onCancelScan={() => void handleCancelScan()}
+          scanStatus={scanStatus}
+          windowDays={windowDays}
+          onWindowDaysChange={(days) => void applySettings({ activityWindowDays: days })}
+          onFinish={() => void handleFinishOnboarding()}
+        />
+      );
+    }
+
+    // Usage sits over the list rather than in the session stack: it is a second
+    // way of reading the same activity, not a place a session leads to.
+    if (showUsage && usage) {
+      return <UsageView summary={usage} onBack={() => setShowUsage(false)} />;
+    }
+
+    if (current) {
+      // Traversal only applies to a session that is actually in the list; a
+      // sub-agent or a fork opened from elsewhere has no neighbours.
+      const position = current.subagent
+        ? -1
+        : indexOfSession(entries ?? [], current.agent, current.sessionId, current.wslDistro);
+      const neighbour = (offset: number) => {
+        const entry = position >= 0 ? entries?.[position + offset] : undefined;
+        if (!entry?.sessionId) return undefined;
+        return () => replaceTop(subjectFor(entry));
+      };
+
+      return (
+        <SessionPane
+          subject={current}
+          onBack={goBack}
+          onPrev={neighbour(-1)}
+          onNext={neighbour(1)}
+          onOpenSession={openSession}
+          onDeleted={() => {
+            goBack();
+            void refreshEntries(windowDays).catch(() => {});
+          }}
+        />
+      );
+    }
+
     return (
-      <OnboardingFlow
-        defaultRoots={defaultRoots}
-        scanRoots={scanRoots}
-        onAddScanRoot={() => void handleAddScanRoot()}
-        onRemoveScanRoot={(path) => void handleRemoveScanRoot(path)}
-        onFinish={() => void handleFinishOnboarding()}
-      />
-    );
-  }
+      <div className="flex h-full flex-col">
+        <header className="flex h-11 shrink-0 items-center gap-2 px-4">
+          <h1
+            data-view-heading
+            tabIndex={-1}
+            className="type-headline text-label outline-none"
+          >
+            antiburn
+          </h1>
+          <button
+            type="button"
+            onClick={() => void openSettingsWindow()}
+            aria-label="Open settings"
+            className="-mr-1.5 ml-auto inline-flex h-6 shrink-0 items-center rounded-control px-1.5 text-label-secondary hover:bg-surface-hover"
+          >
+            <Settings2 size={14} strokeWidth={2} aria-hidden="true" />
+          </button>
+        </header>
 
-  // Usage sits over the list rather than in the session stack: it is a second
-  // way of reading the same activity, not a place a session leads to.
-  if (showUsage && usage) {
-    return <UsageView summary={usage} onBack={() => setShowUsage(false)} />;
-  }
+        <ScanStatusBar
+          status={scanStatus}
+          paused={settings?.discoveryPaused ?? false}
+          onRescan={() => void handleRescan()}
+          onCancel={() => void handleCancelScan()}
+          onTogglePaused={(paused) => void applySettings({ discoveryPaused: paused })}
+        />
 
-  if (current) {
-    // Traversal only applies to a session that is actually in the list; a
-    // sub-agent or a fork opened from elsewhere has no neighbours.
-    const position = current.subagent
-      ? -1
-      : indexOfSession(entries ?? [], current.agent, current.sessionId, current.wslDistro);
-    const neighbour = (offset: number) => {
-      const entry = position >= 0 ? entries?.[position + offset] : undefined;
-      if (!entry?.sessionId) return undefined;
-      return () => replaceTop(subjectFor(entry));
-    };
+        <div className="min-h-0 flex-1">
+          {entries == null ? (
+            <ActivitySkeleton />
+          ) : (
+            <LocalActivityList
+              entries={entries}
+              days={windowDays}
+              onOpenSettings={() => void openSettingsWindow()}
+              onOpenSession={(entry) => {
+                if (!entry.sessionId) return;
+                openSession(subjectFor(entry));
+              }}
+              renderAgentIcon={renderAgentIcon}
+            />
+          )}
+        </div>
 
-    return (
-      <SessionPane
-        subject={current}
-        onBack={goBack}
-        onPrev={neighbour(-1)}
-        onNext={neighbour(1)}
-        onOpenSession={openSession}
-        onDeleted={() => {
-          goBack();
-          void refreshEntries(windowDays).catch(() => {});
-        }}
-      />
+        {usage && (
+          <ProviderUsageCluster
+            providers={usage.providers}
+            onViewAll={() => setShowUsage(true)}
+          />
+        )}
+      </div>
     );
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex h-11 shrink-0 items-center gap-2 px-4">
-        <h1 className="type-headline text-label">antiburn</h1>
-        <button
-          type="button"
-          onClick={() => void openSettingsWindow()}
-          aria-label="Open settings"
-          className="-mr-1.5 ml-auto inline-flex h-6 shrink-0 items-center rounded-control px-1.5 text-label-secondary hover:bg-surface-hover"
-        >
-          <Settings2 size={14} strokeWidth={2} aria-hidden="true" />
-        </button>
-      </header>
-
-      <div className="min-h-0 flex-1">
-        {entries == null ? (
-          <ActivitySkeleton />
-        ) : (
-          <LocalActivityList
-            entries={entries}
-            days={windowDays}
-            onOpenSettings={() => void openSettingsWindow()}
-            onOpenSession={(entry) => {
-              if (!entry.sessionId) return;
-              openSession(subjectFor(entry));
-            }}
-            renderAgentIcon={renderAgentIcon}
-          />
-        )}
-      </div>
-
-      {usage && (
-        <ProviderUsageCluster
-          providers={usage.providers}
-          onViewAll={() => setShowUsage(true)}
-        />
-      )}
+    <div ref={surfaceRef} className="h-full">
+      {body()}
     </div>
   );
 }

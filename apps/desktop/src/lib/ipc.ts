@@ -44,7 +44,15 @@ export interface AppSettings {
   onboardingCompleted: boolean;
   /** Recorded; applied by the platform at next launch. */
   launchAtLogin: boolean;
+  /** Whether the shell may check the release feed on its own schedule. */
   autoUpdate: boolean;
+  /**
+   * Whether background discovery and indexing are paused.
+   *
+   * Paused stops scheduled scans only. An explicit rescan still runs, and
+   * everything already indexed stays browsable.
+   */
+  discoveryPaused: boolean;
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -53,7 +61,17 @@ export interface AppInfo {
   pricingCatalogVersion: string;
   schemaVersion: number;
   dataDir: string;
-  /** False in development builds, where the updater plugin is not installed. */
+  /** Sessions currently in the local index. */
+  indexedSessions: number;
+  /** Size of the local database on disk, in bytes. */
+  databaseBytes: number;
+  /**
+   * Whether this build can check for updates at all.
+   *
+   * Derived shell-side from *real* plugin-registration state plus a configured
+   * signing key — never from a compile-time flag — so a build that cannot
+   * update never renders a control implying it can.
+   */
   updatesSupported: boolean;
 }
 
@@ -223,8 +241,20 @@ export interface ScanStatus {
   totalAgents: number;
   sessions: number;
   finishedAt: string | null;
+  /** True when the last pass stopped because it was asked to, not because it failed. */
+  cancelled: boolean;
   error: string | null;
   agents: AgentScanState[];
+}
+
+/** The outcome of one update check. Mirrors Rust `UpdateStatus`. */
+export interface UpdateStatusPayload {
+  kind: 'current' | 'available' | 'failed' | 'unsupported';
+  version: string | null;
+  message: string | null;
+  checkedAt: string;
+  /** True when the shell's own schedule ran the check rather than a reader. */
+  automatic: boolean;
 }
 
 /* -------------------------------------------------------------------------
@@ -243,6 +273,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onboardingCompleted: false,
   launchAtLogin: false,
   autoUpdate: true,
+  discoveryPaused: false,
 };
 
 /* -------------------------------------------------------------------------
@@ -264,6 +295,30 @@ export async function engineCatalogVersion(): Promise<string | null> {
 export async function openSettingsWindow(): Promise<void> {
   if (!hasShell()) return;
   await invoke('open_settings_window');
+}
+
+/**
+ * Dismisses the tray popover.
+ *
+ * A shell command rather than `getCurrentWindow().hide()`, because the shell
+ * gates its background scan on the popover being visible and a window hidden
+ * behind its back would leave that gate open.
+ */
+export async function hidePopover(): Promise<void> {
+  if (!hasShell()) return;
+  await invoke('hide_popover');
+}
+
+/**
+ * Resize the popover to the height the view now on screen needs.
+ *
+ * The shell clamps the value, so this is a request rather than an instruction.
+ * `animate` is decided here because the reduced-motion preference is a
+ * webview-side media query and a height change is motion.
+ */
+export async function setPopoverHeight(height: number, animate: boolean): Promise<void> {
+  if (!hasShell()) return;
+  await invoke('set_popover_height', { height, animate });
 }
 
 /** Where the app came from and what it is running against. */
@@ -358,6 +413,28 @@ export async function scanNow(): Promise<ScanStatus | null> {
 export async function getScanStatus(): Promise<ScanStatus | null> {
   if (!hasShell()) return null;
   return invoke<ScanStatus>('get_scan_status');
+}
+
+/**
+ * Ask the scan in flight to stop at its next phase boundary.
+ *
+ * Everything it already found stays indexed: a cancelled pass is a shorter
+ * pass, not an undone one.
+ */
+export async function cancelScan(): Promise<ScanStatus | null> {
+  if (!hasShell()) return null;
+  return invoke<ScanStatus>('cancel_scan');
+}
+
+/**
+ * Forget antiburn's entire derived index, returning how many sessions went.
+ *
+ * antiburn's own records only. The agents' transcripts are never touched, and a
+ * later scan finds all of this again.
+ */
+export async function clearLocalIndex(): Promise<number> {
+  if (!hasShell()) return 0;
+  return invoke<number>('clear_local_index');
 }
 
 /** Every repository antiburn knows about on this machine. */
@@ -478,4 +555,22 @@ export async function onScanEvent(
     ),
   );
   return () => unlisteners.forEach((unlisten) => unlisten());
+}
+
+/** Event the shell emits after every update check. Mirrors `src-tauri/src/updates.rs`. */
+export const UPDATE_EVENT = 'update:status';
+
+/**
+ * Subscribe to the outcome of every update check the shell runs on its own
+ * schedule. The returned function unsubscribes.
+ *
+ * This is what makes the "check automatically" preference visible: the shell
+ * does the checking, and the Updates pane reflects what it found rather than
+ * inferring anything from silence.
+ */
+export async function onUpdateStatus(
+  handler: (status: UpdateStatusPayload) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return () => {};
+  return listen<UpdateStatusPayload>(UPDATE_EVENT, (event) => handler(event.payload));
 }

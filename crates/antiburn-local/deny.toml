@@ -1,8 +1,11 @@
 # cargo-deny configuration for the antiburn-local engine.
 #
-# CI runs `cargo deny check licenses` against the engine's own lockfile; every
-# dependency must carry one of the allowed permissive licenses (MPL-2.0 is the
-# project's own license). Additions outside this list need explicit review.
+# CI runs `cargo deny check bans licenses` against the engine's own lockfile.
+# Both halves matter and both are run: every dependency must carry one of the
+# allowed permissive licenses (MPL-2.0 is the project's own), and none of the
+# network stacks in the `[bans]` block below may appear at all. Running only
+# `check licenses` would leave that ban list as configuration describing a
+# boundary nothing enforced. Additions to either list need explicit review.
 
 [licenses]
 allow = [

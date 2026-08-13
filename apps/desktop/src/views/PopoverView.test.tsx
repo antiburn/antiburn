@@ -34,6 +34,18 @@ const SETTINGS = {
   onboardingCompleted: true,
   launchAtLogin: false,
   autoUpdate: true,
+  discoveryPaused: false,
+};
+
+const SCAN_STATUS = {
+  running: false,
+  completedAgents: 11,
+  totalAgents: 11,
+  sessions: 4,
+  finishedAt: new Date(Date.now() - 120_000).toISOString(),
+  cancelled: false,
+  error: null,
+  agents: [],
 };
 
 function activityEntry(overrides: Record<string, unknown> = {}) {
@@ -104,7 +116,7 @@ const PROVIDER_USAGE = {
 };
 
 function mockCommands(overrides: Record<string, unknown> = {}) {
-  invoke.mockImplementation((command: string) => {
+  invoke.mockImplementation((command: string, args?: unknown) => {
     if (command in overrides) return Promise.resolve(overrides[command]);
     switch (command) {
       case 'get_settings':
@@ -115,8 +127,16 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(ANALYTICS);
       case 'get_provider_usage':
         return Promise.resolve(PROVIDER_USAGE);
+      case 'get_scan_status':
+      case 'scan_now':
+      case 'cancel_scan':
+        return Promise.resolve(SCAN_STATUS);
+      case 'set_settings':
+        return Promise.resolve((args as Record<string, unknown> | undefined)?.['settings']);
       case 'list_scan_roots':
       case 'default_scan_roots':
+      case 'list_repositories':
+      case 'set_repository_enabled':
         return Promise.resolve([]);
       default:
         return Promise.resolve(null);
@@ -148,7 +168,7 @@ describe('PopoverView', () => {
 
     fireEvent.click(await screen.findByText('Wire the tray popover'));
 
-    expect(await screen.findByText('Session Health')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Session Analytics' })).toBeInTheDocument();
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('get_session_analytics', {
         agent: 'claude-code',
@@ -157,10 +177,10 @@ describe('PopoverView', () => {
       }),
     );
 
-    fireEvent.click(screen.getByText('Session Health'));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
 
     expect(await screen.findByText('Wire the tray popover')).toBeInTheDocument();
-    expect(screen.queryByText('Session Health')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Session Analytics' })).not.toBeInTheDocument();
   });
 
   it('warns before an export and only writes once a destination is chosen', async () => {
@@ -173,9 +193,11 @@ describe('PopoverView', () => {
 
     await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1));
     // The warning names what the file can describe, before a destination is
-    // ever requested.
+    // ever requested — including the two short excerpts it carries, which an
+    // earlier version of this copy denied.
     const [message] = confirmDialog.mock.calls[0] as [string];
-    expect(message).toMatch(/no message content/i);
+    expect(message).toMatch(/short excerpts/i);
+    expect(message).toMatch(/no message bodies, tool arguments, or file contents/i);
     expect(confirmDialog.mock.invocationCallOrder[0]).toBeLessThan(
       saveDialog.mock.invocationCallOrder[0] as number,
     );
@@ -271,27 +293,176 @@ describe('PopoverView', () => {
     expect(screen.getByText('No provider usage today')).toBeInTheDocument();
   });
 
-  it('runs the first-run flow and starts scanning when it finishes', async () => {
+  it('runs the five-step first-run flow and enters the activity view', async () => {
     mockCommands({
       get_settings: { ...SETTINGS, onboardingCompleted: false },
       default_scan_roots: ['/home/avery/code'],
-      set_settings: { ...SETTINGS, onboardingCompleted: true },
+      // A fresh install: nothing has been scanned, so the repository step has
+      // to ask for a pass before it has anything to show.
+      get_scan_status: null,
     });
     render(<PopoverView />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
-    expect(await screen.findByRole('heading', { name: 'Where to look' })).toBeInTheDocument();
-    // The engine's own default roots are listed, so the reader can see the
-    // common cases are already covered.
-    expect(screen.getByText('/home/avery/code')).toBeInTheDocument();
-
+    // 1 — Welcome. No account, and no promise of analytics this build does not
+    // ship.
+    expect(
+      await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/no usage data collected/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Start scanning' }));
+
+    // 2 — Sources. The engine's own default roots are listed, so the reader can
+    // see the common cases are already covered.
+    expect(await screen.findByRole('heading', { name: 'Where to look' })).toBeInTheDocument();
+    expect(screen.getByText('/home/avery/code')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    // 3 — Repositories, which needs a discovery pass to have something to show.
+    expect(await screen.findByRole('heading', { name: 'What to include' })).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('scan_now'));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    // 4 — Historical scan: the window choice, and the pass with a way out.
+    expect(await screen.findByRole('heading', { name: 'Historical scan' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: '14 days' }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: { ...SETTINGS, onboardingCompleted: false, activityWindowDays: 14 },
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    // 5 — Ready.
+    expect(await screen.findByRole('heading', { name: 'Ready' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, onboardingCompleted: true },
+        settings: { ...SETTINGS, activityWindowDays: 14, onboardingCompleted: true },
       }),
     );
+  });
+
+  it('announces each onboarding step and moves focus to its heading', async () => {
+    mockCommands({ get_settings: { ...SETTINGS, onboardingCompleted: false }, get_scan_status: null });
+    render(<PopoverView />);
+
+    const welcome = await screen.findByRole('heading', {
+      name: 'Everything stays on this machine',
+    });
+    await waitFor(() => expect(welcome).toHaveFocus());
+    expect(screen.getByText('Step 1 of 5')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const sources = await screen.findByRole('heading', { name: 'Where to look' });
+    await waitFor(() => expect(sources).toHaveFocus());
+    expect(screen.getByText('Step 2 of 5')).toBeInTheDocument();
+  });
+});
+
+describe('PopoverView — window behaviour', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    confirmDialog.mockReset();
+    saveDialog.mockReset();
+    openDialog.mockReset();
+    mockCommands();
+  });
+
+  it('asks the shell for each surface height, bounded at the contract ceiling', async () => {
+    render(<PopoverView />);
+    await screen.findByText('Wire the tray popover');
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_popover_height', {
+        height: 700,
+        animate: true,
+      }),
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Usage' }));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_popover_height', {
+        height: 620,
+        animate: true,
+      }),
+    );
+
+    // Nothing ever exceeds the 700px ceiling the app-shell contract sets.
+    const heights = invoke.mock.calls
+      .filter(([command]) => command === 'set_popover_height')
+      .map(([, args]) => (args as { height: number }).height);
+    expect(heights.length).toBeGreaterThan(0);
+    expect(Math.max(...heights)).toBeLessThanOrEqual(700);
+  });
+
+  it('dismisses the popover on Escape', async () => {
+    render(<PopoverView />);
+    await screen.findByText('Wire the tray popover');
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('hide_popover'));
+  });
+
+  it('lets an open provider panel claim Escape before the window does', async () => {
+    render(<PopoverView />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Anthropic, $1.25 today, estimated' }),
+    );
+    const panel = await screen.findByRole('dialog');
+    expect(panel).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(invoke).not.toHaveBeenCalledWith('hide_popover');
+  });
+
+  it('moves focus to the heading of the surface that takes over', async () => {
+    render(<PopoverView />);
+
+    const activity = await screen.findByRole('heading', { name: 'antiburn' });
+    await waitFor(() => expect(activity).toHaveFocus());
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Usage' }));
+
+    const usage = await screen.findByRole('heading', { name: 'Provider usage' });
+    await waitFor(() => expect(usage).toHaveFocus());
+  });
+
+  it('shows when the index was last refreshed and can rescan on demand', async () => {
+    render(<PopoverView />);
+
+    expect(await screen.findByTestId('scan-status')).toHaveTextContent(/scanned 2m ago/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan now' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('scan_now'));
+  });
+
+  it('persists a pause of background discovery', async () => {
+    render(<PopoverView />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause background scanning' }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: { ...SETTINGS, discoveryPaused: true },
+      }),
+    );
+  });
+
+  it('says so plainly while discovery is paused', async () => {
+    mockCommands({ get_settings: { ...SETTINGS, discoveryPaused: true } });
+    render(<PopoverView />);
+
+    expect(await screen.findByTestId('scan-status')).toHaveTextContent('Scanning paused');
+    // Pausing background work never removes the way to ask for a pass.
+    expect(screen.getByRole('button', { name: 'Scan now' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Resume background scanning' }),
+    ).toBeInTheDocument();
   });
 });

@@ -178,6 +178,9 @@ pub struct ScanStatus {
     pub sessions: usize,
     /// ISO-8601 stamp of the last completed scan.
     pub finished_at: Option<String>,
+    /// True when the last pass stopped because it was asked to. Distinct from
+    /// [`Self::error`]: a cancelled pass did nothing wrong, it just did less.
+    pub cancelled: bool,
     /// Why the last scan failed, when it did.
     pub error: Option<String>,
     /// Per-agent bookkeeping, filled when the status is read through the
@@ -328,6 +331,11 @@ pub struct AppInfo {
     /// Absolute path of the app data directory, so a reader can find their own
     /// data without being told where it "should" be.
     pub data_dir: String,
+    /// Sessions currently in the local index.
+    pub indexed_sessions: u32,
+    /// Size of the local database on disk, in bytes. Zero when it has not been
+    /// written yet — a fresh install, or a store held in memory.
+    pub database_bytes: u64,
     /// False in development builds, where the updater plugin is not installed.
     pub updates_supported: bool,
 }

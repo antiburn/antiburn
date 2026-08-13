@@ -138,10 +138,19 @@ describe('SessionAnalyticsPresentation — chrome', () => {
     expect(screen.getByText('Tools')).toBeTruthy();
   });
 
+  it('names the back control for what it does, not for the view it leaves', () => {
+    view();
+    // The heading and the control that leaves the view are two elements. A
+    // screen reader must not announce "Session Analytics, button" for a back
+    // arrow, and the view must have a heading of its own.
+    expect(screen.getByRole('heading', { name: 'Session Analytics' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeTruthy();
+  });
+
   it('navigates back through the callback', () => {
     const onBack = vi.fn();
     view({ onBack });
-    fireEvent.click(screen.getByText('Session Health'));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(onBack).toHaveBeenCalledOnce();
   });
 

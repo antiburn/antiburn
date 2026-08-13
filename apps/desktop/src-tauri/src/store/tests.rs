@@ -61,12 +61,146 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             onboarding_completed: true,
             launch_at_login: true,
             auto_update: false,
+            discovery_paused: true,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
     assert_eq!(saved.theme, ThemePreference::Dark);
     assert_eq!(saved.activity_window_days, 14);
     assert!(saved.onboarding_completed);
+    assert!(saved.discovery_paused);
+}
+
+/// The schema's data policy says which columns may hold free text. This is the
+/// mechanical half of that promise: a column added to `session` without a
+/// deliberate decision fails here rather than quietly becoming the place
+/// transcript text ends up.
+#[test]
+fn the_session_table_holds_exactly_the_columns_the_data_policy_names() {
+    let store = store();
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('session')")
+        .unwrap();
+    let columns: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        columns,
+        vec![
+            "environment_key",
+            "agent",
+            "session_id",
+            "source_kind",
+            "source_label",
+            "wsl_distro",
+            // The one declared free-text excerpt on this table. Everything else
+            // is identity, a location, or bookkeeping.
+            "title",
+            "title_source",
+            "cwd",
+            "surface",
+            "updated_at_epoch",
+            "subagent_count",
+            "first_seen_at",
+            "last_seen_at",
+        ]
+    );
+}
+
+#[test]
+fn clearing_the_index_forgets_the_derived_records_and_keeps_the_readers_choices() {
+    let store = store();
+    store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
+    store
+        .save_analysis(&AnalysisRecord {
+            key: SessionKey::new("native", "claude-code", "abc"),
+            metrics_json: "{}".into(),
+            cost_json: None,
+            model_breakdown_json: "{}".into(),
+            active_secs: 1,
+            duration_secs: 1,
+            pattern_score: 0,
+            source_fingerprint: "1:1".into(),
+            pricing_generation: 0,
+        })
+        .unwrap();
+    store
+        .replace_relations(
+            &SessionKey::new("native", "claude-code", "abc"),
+            RelationKind::Subagent,
+            &[RelationRecord {
+                kind: RelationKind::Subagent,
+                related_id: "child".into(),
+                label: Some("Reviewer".into()),
+            }],
+        )
+        .unwrap();
+    store
+        .record_agent_scan("claude-code", Some(2_000), 1)
+        .unwrap();
+    store.add_scan_root("/home/avery/work").unwrap();
+    let settings = store
+        .save_settings(&AppSettings {
+            onboarding_completed: true,
+            ..AppSettings::default()
+        })
+        .unwrap();
+    store
+        .replace_repositories(&[RepositoryRecord {
+            key: "widgets".into(),
+            repo_name: "widgets".into(),
+            full_name: "avery/widgets".into(),
+            status: "accessible".into(),
+            repo_root: Some("/home/avery/code/widgets".into()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 3,
+            wsl_distro: None,
+            enabled: false,
+        }])
+        .unwrap();
+
+    assert_eq!(store.clear_derived_index().unwrap(), 1);
+
+    assert!(store.recent_sessions(0, 100).unwrap().is_empty());
+    assert!(
+        store
+            .analysis(&SessionKey::new("native", "claude-code", "abc"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .relations(&SessionKey::new("native", "claude-code", "abc"))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.scan_state().unwrap().is_empty());
+
+    // Everything that is a choice rather than a derivation survives.
+    assert_eq!(store.settings().unwrap(), settings);
+    assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
+    let repositories = store.repositories().unwrap();
+    assert_eq!(repositories.len(), 1);
+    assert!(
+        !repositories[0].enabled,
+        "the include choice is the reader's"
+    );
+    assert_eq!(
+        repositories[0].session_count, 0,
+        "the count was derived from the index that just went away"
+    );
+}
+
+#[test]
+fn clearing_an_already_empty_index_is_a_no_op() {
+    let store = store();
+    assert_eq!(store.clear_derived_index().unwrap(), 0);
+    assert_eq!(store.clear_derived_index().unwrap(), 0);
 }
 
 #[test]

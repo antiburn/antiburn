@@ -8,13 +8,28 @@
 //! for the rest of the process lifetime. Creating it lazily would make the
 //! first open visibly slower (a webview has to boot and the bundle has to
 //! parse) and would lose any state the views accumulate.
+//!
+//! # Geometry
+//!
+//! The width is fixed at [`WIDTH`]; the height is **per view**, bounded by
+//! [`MIN_HEIGHT`] and [`MAX_HEIGHT`], and animated between the two ends of a
+//! change so a surface swap reads as one surface growing rather than two
+//! windows replacing each other. The webview asks for a height when its view
+//! changes ([`crate::commands::set_popover_height`]) and passes `animate: false`
+//! when the reader has asked the system for reduced motion — the preference
+//! lives in the webview, so the decision is made there and honored here.
+//!
+//! Every height change re-runs the anchoring maths against the menu-bar item's
+//! last known rectangle, because a taller popover on a bottom-anchored panel
+//! (Windows, most Linux panels) has to move as well as grow.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, Rect, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-    Window,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, Rect, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, Window,
 };
 
 /// Window label. Also listed in `capabilities/default.json`.
@@ -23,8 +38,20 @@ pub const LABEL: &str = "popover";
 /// Popover width in logical pixels. Fixed: the views size themselves to it.
 const WIDTH: f64 = 380.0;
 
-/// Starting height in logical pixels. Later streams animate this per view.
-const HEIGHT: f64 = 480.0;
+/// Tallest the popover ever gets, in logical pixels. Also the height the
+/// activity surface uses, so the resting state of the app is the full window.
+pub const MAX_HEIGHT: f64 = 700.0;
+
+/// Shortest the popover ever gets. Below this a view has no room for its own
+/// chrome, and a window that small next to the menu bar reads as a glitch.
+pub const MIN_HEIGHT: f64 = 320.0;
+
+/// How long a height change takes.
+const RESIZE_DURATION: Duration = Duration::from_millis(140);
+
+/// Frames one height change is drawn in. Twelve over 140ms is ~86 fps of
+/// requests, which every platform coalesces down to its own refresh rate.
+const RESIZE_STEPS: u32 = 12;
 
 /// Gap in physical pixels between the menu-bar item and the popover edge.
 const ANCHOR_GAP: f64 = 6.0;
@@ -40,10 +67,37 @@ const SCREEN_MARGIN: f64 = 8.0;
 /// and immediately reopen it. This window swallows that second half.
 const REOPEN_SUPPRESSION: Duration = Duration::from_millis(250);
 
+/// The menu-bar item's rectangle, in physical pixels on the display it lives
+/// on. Kept as plain numbers rather than a [`Rect`] so a height change can
+/// re-anchor without the tray handing the rectangle over a second time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AnchorRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
 /// Shared show/hide bookkeeping, registered as Tauri managed state.
-#[derive(Default)]
 pub struct PopoverState {
     auto_hidden_at: Mutex<Option<Instant>>,
+    anchor: Mutex<Option<AnchorRect>>,
+    /// The height the popover is currently sized to, in logical pixels.
+    height: Mutex<f64>,
+    /// Bumped by every height request, so an animation still in flight can see
+    /// that a newer one superseded it and stop rather than fight it.
+    resize_generation: AtomicU64,
+}
+
+impl Default for PopoverState {
+    fn default() -> Self {
+        PopoverState {
+            auto_hidden_at: Mutex::new(None),
+            anchor: Mutex::new(None),
+            height: Mutex::new(MAX_HEIGHT),
+            resize_generation: AtomicU64::new(0),
+        }
+    }
 }
 
 impl PopoverState {
@@ -67,13 +121,61 @@ impl PopoverState {
             _ => false,
         }
     }
+
+    fn record_anchor(&self, anchor: AnchorRect) {
+        if let Ok(mut slot) = self.anchor.lock() {
+            *slot = Some(anchor);
+        }
+    }
+
+    fn anchor(&self) -> Option<AnchorRect> {
+        self.anchor.lock().ok().and_then(|slot| *slot)
+    }
+
+    fn height(&self) -> f64 {
+        self.height
+            .lock()
+            .map(|height| *height)
+            .unwrap_or(MAX_HEIGHT)
+    }
+
+    fn set_height(&self, height: f64) {
+        if let Ok(mut slot) = self.height.lock() {
+            *slot = height;
+        }
+    }
+
+    /// Claim the right to drive the window's height, invalidating any animation
+    /// already running.
+    fn begin_resize(&self) -> u64 {
+        self.resize_generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn resize_is_current(&self, generation: u64) -> bool {
+        self.resize_generation.load(Ordering::SeqCst) == generation
+    }
+}
+
+/// A requested height, held inside the bounds the window can actually be.
+pub fn clamp_height(height: f64) -> f64 {
+    if height.is_nan() {
+        return MAX_HEIGHT;
+    }
+    height.clamp(MIN_HEIGHT, MAX_HEIGHT)
+}
+
+/// Ease-out cubic. A height change should arrive quickly and settle, which is
+/// what makes a growing surface read as one surface rather than a jump.
+fn ease_out(progress: f64) -> f64 {
+    let remaining = 1.0 - progress.clamp(0.0, 1.0);
+    1.0 - remaining * remaining * remaining
 }
 
 /// Creates the popover window, hidden and off the taskbar.
 pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("antiburn")
-        .inner_size(WIDTH, HEIGHT)
+        .inner_size(WIDTH, MAX_HEIGHT)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -123,6 +225,89 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     note_shown(app);
 }
 
+/// Dismisses the popover from the webview — the Escape key, and anything else
+/// the views treat as "put this away".
+///
+/// Deliberately a shell command rather than `getCurrentWindow().hide()`: the
+/// scan scheduler is gated on the popover being on screen, and a window hidden
+/// behind the shell's back would leave that gate stuck open.
+pub fn hide(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    let _ = window.hide();
+    note_hidden(app);
+}
+
+/// Resize the popover to the height the current view asked for.
+///
+/// Clamped to [`MIN_HEIGHT`]..=[`MAX_HEIGHT`], animated unless the caller says
+/// otherwise, and re-anchored on the way so a popover hanging off a
+/// bottom-of-screen panel grows upward instead of off the display.
+pub fn set_height(app: &AppHandle, requested: f64, animate: bool) {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+
+    let target = clamp_height(requested);
+    let from = state.height();
+    // Sub-pixel requests are the view re-reporting the height it already has.
+    if (from - target).abs() < 1.0 {
+        return;
+    }
+
+    let generation = state.begin_resize();
+    if !animate {
+        state.set_height(target);
+        apply_height(&window, target);
+        return;
+    }
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let step = RESIZE_DURATION / RESIZE_STEPS;
+        for frame in 1..=RESIZE_STEPS {
+            tokio::time::sleep(step).await;
+            let Some(state) = app.try_state::<PopoverState>() else {
+                return;
+            };
+            // A newer request owns the window now.
+            if !state.resize_is_current(generation) {
+                return;
+            }
+            let progress = f64::from(frame) / f64::from(RESIZE_STEPS);
+            let height = from + (target - from) * ease_out(progress);
+            state.set_height(height);
+            let Some(window) = app.get_webview_window(LABEL) else {
+                return;
+            };
+            apply_height(&window, height);
+        }
+    });
+}
+
+/// Size the window and put it back where its anchor says it belongs.
+fn apply_height(window: &WebviewWindow, height: f64) {
+    if window.set_size(LogicalSize::new(WIDTH, height)).is_err() {
+        return;
+    }
+    let Some(state) = window.app_handle().try_state::<PopoverState>() else {
+        return;
+    };
+    let Some(anchor) = state.anchor() else {
+        // Never opened, so there is nothing to anchor to yet; the next open
+        // places it.
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let _ = place(window, anchor, WIDTH * scale, height * scale);
+}
+
 /// Hides the popover after it loses focus, remembering when it happened.
 pub fn hide_on_focus_loss(window: &Window) {
     if let Some(state) = window.app_handle().try_state::<PopoverState>() {
@@ -154,25 +339,47 @@ pub fn note_hidden(app: &AppHandle) {
     }
 }
 
-/// Places the popover under (or above) the menu-bar item, clamped to the
-/// display the item lives on.
+/// Records the menu-bar item's rectangle and places the popover against it.
 fn anchor_to(window: &WebviewWindow, anchor: Rect) -> tauri::Result<()> {
     // Tray backends report physical coordinates on macOS and Windows; the
     // conversion only matters where they report logical ones.
     let scale = window.scale_factor()?;
-    let anchor_position = anchor.position.to_physical::<f64>(scale);
-    let anchor_size = anchor.size.to_physical::<f64>(scale);
-    let window_size = window.outer_size()?;
-    let width = f64::from(window_size.width);
-    let height = f64::from(window_size.height);
+    let position = anchor.position.to_physical::<f64>(scale);
+    let size = anchor.size.to_physical::<f64>(scale);
+    let anchor = AnchorRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    if let Some(state) = window.app_handle().try_state::<PopoverState>() {
+        state.record_anchor(anchor);
+    }
 
-    let anchor_center_x = anchor_position.x + anchor_size.width / 2.0;
+    let window_size = window.outer_size()?;
+    place(
+        window,
+        anchor,
+        f64::from(window_size.width),
+        f64::from(window_size.height),
+    )
+}
+
+/// Places the popover under (or above) the menu-bar item, clamped to the
+/// display the item lives on.
+///
+/// `width` and `height` are the window's own size in physical pixels. They are
+/// passed in rather than read from the window because a resize in flight has
+/// not necessarily been reported back yet, and placing a growing popover
+/// against its *old* height puts it in the wrong place for a frame.
+fn place(window: &WebviewWindow, anchor: AnchorRect, width: f64, height: f64) -> tauri::Result<()> {
+    let anchor_center_x = anchor.x + anchor.width / 2.0;
     let mut x = anchor_center_x - width / 2.0;
-    let mut y = anchor_position.y + anchor_size.height + ANCHOR_GAP;
+    let mut y = anchor.y + anchor.height + ANCHOR_GAP;
 
     if let Some(monitor) = window
         .app_handle()
-        .monitor_from_point(anchor_center_x, anchor_position.y)?
+        .monitor_from_point(anchor_center_x, anchor.y)?
     {
         let origin = monitor.position();
         let size = monitor.size();
@@ -184,7 +391,7 @@ fn anchor_to(window: &WebviewWindow, anchor: Rect) -> tauri::Result<()> {
         // Where the menu bar sits at the bottom of the screen — Windows, and
         // Linux panels — flip the popover above its anchor instead.
         if y > bottom {
-            y = anchor_position.y - height - ANCHOR_GAP;
+            y = anchor.y - height - ANCHOR_GAP;
         }
 
         x = clamp(x, left, right);
@@ -231,5 +438,64 @@ mod tests {
         state.record_auto_hide();
         assert!(state.suppresses_reopen());
         assert!(!state.suppresses_reopen());
+    }
+
+    #[test]
+    fn a_view_can_only_ask_for_a_height_the_window_can_actually_be() {
+        assert_eq!(clamp_height(MAX_HEIGHT), MAX_HEIGHT);
+        assert_eq!(clamp_height(MIN_HEIGHT), MIN_HEIGHT);
+        // The D-016 contract: 700px is the ceiling, not a suggestion.
+        assert_eq!(clamp_height(2_000.0), MAX_HEIGHT);
+        assert_eq!(clamp_height(10.0), MIN_HEIGHT);
+        assert_eq!(clamp_height(-1.0), MIN_HEIGHT);
+        assert_eq!(clamp_height(f64::NAN), MAX_HEIGHT);
+    }
+
+    #[test]
+    fn a_fresh_popover_rests_at_the_full_height() {
+        let state = PopoverState::default();
+        assert_eq!(state.height(), MAX_HEIGHT);
+        assert!(state.anchor().is_none());
+    }
+
+    #[test]
+    fn a_newer_height_request_invalidates_the_animation_already_running() {
+        let state = PopoverState::default();
+        let first = state.begin_resize();
+        assert!(state.resize_is_current(first));
+
+        let second = state.begin_resize();
+        assert!(state.resize_is_current(second));
+        assert!(
+            !state.resize_is_current(first),
+            "the superseded animation must stop rather than fight the new one"
+        );
+    }
+
+    #[test]
+    fn the_height_curve_starts_and_ends_where_it_should() {
+        assert_eq!(ease_out(0.0), 0.0);
+        assert_eq!(ease_out(1.0), 1.0);
+        // Ease-out: more than half the distance is covered by the halfway point.
+        assert!(ease_out(0.5) > 0.5);
+        assert!(ease_out(0.25) < ease_out(0.75));
+    }
+
+    #[test]
+    fn a_bottom_anchored_panel_flips_the_popover_above_its_item() {
+        // The maths `place` runs, reproduced against a 1080px-tall display with
+        // its panel at the bottom. A 700px popover cannot fit below a taskbar
+        // item at y=1040, so it must be placed above it.
+        let anchor = AnchorRect {
+            x: 900.0,
+            y: 1040.0,
+            width: 32.0,
+            height: 40.0,
+        };
+        let height = 700.0;
+        let bottom = 1080.0 - height - SCREEN_MARGIN;
+        let below = anchor.y + anchor.height + ANCHOR_GAP;
+        assert!(below > bottom, "there is no room below the item");
+        assert_eq!(anchor.y - height - ANCHOR_GAP, 334.0);
     }
 }

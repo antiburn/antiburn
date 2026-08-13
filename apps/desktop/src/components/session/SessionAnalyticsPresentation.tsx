@@ -491,7 +491,7 @@ function useSkeletonVisible(loading: boolean): boolean {
  * ---------------------------------------------------------------------- */
 
 /**
- * The Session Health surface: one session's rhythm, modes, health, tokens,
+ * The Session Analytics surface: one session's rhythm, modes, health, tokens,
  * context, and tools, or the same picture averaged across the live ones.
  *
  * Entirely prop-driven. Every value arrives as data and every action as a
@@ -643,19 +643,32 @@ export function SessionAnalyticsPresentation({
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-popover bg-surface text-label select-none">
       <div className="flex items-center justify-between gap-2 border-b border-separator px-4 py-3">
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex min-w-0 items-center gap-1.5 text-left"
-        >
-          <ChevronLeft size={14} aria-hidden="true" className="shrink-0 text-label" />
-          <span className="truncate type-headline text-label">Session Health</span>
+        {/* The control and the title are two things, not one. Wrapping the
+            heading text inside the back button made a screen reader announce
+            "Session Analytics, button" for the control that leaves this view,
+            and left the view itself with no heading at all. */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Back"
+            className="-ml-1 inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label hover:bg-surface-hover"
+          >
+            <ChevronLeft size={14} aria-hidden="true" className="shrink-0" />
+          </button>
+          <h2
+            data-view-heading
+            tabIndex={-1}
+            className="truncate type-headline text-label outline-none"
+          >
+            Session Analytics
+          </h2>
           {subagent && (
             <span className="shrink-0 rounded bg-system-indigo/15 px-1.5 py-px type-caption font-medium text-system-indigo-text">
               Sub-agent
             </span>
           )}
-        </button>
+        </div>
         <div className="flex shrink-0 items-center gap-1">
           {hasRelations && relations && (
             <RelationControl

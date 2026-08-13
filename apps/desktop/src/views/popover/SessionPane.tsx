@@ -177,7 +177,7 @@ export function SessionPane({
    */
   const handleExport = useCallback(async () => {
     const proceed = await confirm(
-      'The export contains this session’s analysis, its title, and the paths it ran in — no message content, but still a description of real work. Save it somewhere you would keep a private note.',
+      'The export contains this session’s analysis, the paths it ran in, and short excerpts — its title and any skill descriptions. No message bodies, tool arguments, or file contents. It still describes real work, so save it somewhere you would keep a private note.',
       { title: 'Export session analysis?', kind: 'warning', okLabel: 'Choose destination…' },
     );
     if (!proceed) return;

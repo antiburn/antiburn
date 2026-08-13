@@ -160,6 +160,57 @@ describe('ProviderUsageCluster', () => {
     expect(onViewAll).toHaveBeenCalledTimes(2);
   });
 
+  it('moves focus into the panel it opens', () => {
+    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /anthropic/i }));
+
+    // `role="dialog"` promises containment. A reader who is not in the dialog
+    // has been told about a surface they cannot reach.
+    const panel = screen.getByRole('dialog');
+    expect(panel.contains(document.activeElement)).toBe(true);
+    expect(screen.getByRole('button', { name: 'All provider usage' })).toHaveFocus();
+  });
+
+  it('holds Tab inside the panel while it is open', () => {
+    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /anthropic/i }));
+    const panel = screen.getByRole('dialog');
+    const viewAll = screen.getByRole('button', { name: 'All provider usage' });
+
+    // Forwards from the last control wraps to the first rather than escaping
+    // into the footer behind the dialog.
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(panel.contains(document.activeElement)).toBe(true);
+    expect(viewAll).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(panel.contains(document.activeElement)).toBe(true);
+  });
+
+  it('returns focus to the chip that opened the panel', () => {
+    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+    const chip = screen.getByRole('button', { name: /anthropic/i });
+
+    fireEvent.click(chip);
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // Not <body>: dismissing a dialog must put the reader back where they were.
+    expect(chip).toHaveFocus();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('claims Escape so a host does not also act on it', () => {
+    render(<ProviderUsageCluster providers={[provider()]} onViewAll={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /anthropic/i }));
+    // `fireEvent` returns false when a handler called `preventDefault`, which
+    // is the signal the popover uses to leave one Escape closing one thing.
+    const notCancelled = fireEvent.keyDown(document, { key: 'Escape', cancelable: true });
+    expect(notCancelled).toBe(false);
+  });
+
   it('renders a reserved state correctly if one ever arrives', () => {
     // v1 never emits `live`, but the contract says a view must not fall through
     // to an unknown branch the day a reviewed passive source does.

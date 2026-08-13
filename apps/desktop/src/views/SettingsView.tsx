@@ -2,7 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Info, Palette, RefreshCw, SlidersHorizontal, FolderGit2 } from 'lucide-react';
+import {
+  Info,
+  Palette,
+  RefreshCw,
+  ShieldCheck,
+  SlidersHorizontal,
+  FolderGit2,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { ScrollPane } from '../components/ui/ScrollPane';
@@ -11,6 +18,7 @@ import { appInfo, type AppInfo } from '../lib/ipc';
 import { AboutPane } from './settings/AboutPane';
 import { AppearancePane } from './settings/AppearancePane';
 import { GeneralPane } from './settings/GeneralPane';
+import { PrivacyPane } from './settings/PrivacyPane';
 import { SourcesPane } from './settings/SourcesPane';
 import { UpdatesPane } from './settings/UpdatesPane';
 import { useAppSettings } from './settings/useAppSettings';
@@ -28,6 +36,7 @@ const PANES: readonly SidebarNavItem[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'sources', label: 'Sources', icon: FolderGit2 },
+  { id: 'privacy', label: 'Privacy', icon: ShieldCheck },
   { id: 'updates', label: 'Updates', icon: RefreshCw, separatorBefore: true },
   { id: 'about', label: 'About', icon: Info },
 ];
@@ -63,9 +72,10 @@ export function SettingsView() {
             aria-labelledby={`${pane}-tab`}
             className="mx-auto w-full max-w-[520px]"
           >
-            {pane === 'general' && <GeneralPane {...controller} />}
+            {pane === 'general' && <GeneralPane {...controller} info={info} />}
             {pane === 'appearance' && <AppearancePane {...controller} />}
             {pane === 'sources' && <SourcesPane />}
+            {pane === 'privacy' && <PrivacyPane />}
             {pane === 'updates' && <UpdatesPane {...controller} info={info} />}
             {pane === 'about' && <AboutPane info={info} />}
           </div>

@@ -11,10 +11,12 @@
 //!
 //! # What is *not* here
 //!
-//! Raw transcript content. The database stores identities, locations, and
-//! derived numbers; a session's messages stay in the file its vendor wrote and
-//! are re-read on demand. [`schema`] states that as a schema-level contract,
-//! and [`crate::export`] honors the same rule.
+//! Transcript bodies. No message text, no tool arguments, no file contents. The
+//! database stores identities, locations, derived numbers, and two short
+//! derived excerpts — a session's title and each skill's one-line description,
+//! both length-capped before they are written. A session's messages stay in the
+//! file its vendor wrote and are re-read on demand. [`schema`] states that as a
+//! schema-level contract, and [`crate::export`] honors the same rule.
 //!
 //! # Concurrency
 //!
@@ -128,6 +130,25 @@ impl Store {
         Ok(())
     }
 
+    /// How many sessions the index currently holds.
+    pub fn session_count(&self) -> Result<u32> {
+        let connection = self.lock();
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0))?;
+        Ok(count.max(0) as u32)
+    }
+
+    /// Size of the database file on disk, in bytes.
+    ///
+    /// Zero rather than an error when it has not been written yet: "nothing on
+    /// disk" is a real state on a fresh install and in the in-memory store the
+    /// tests use, and it is not worth a failure path in a settings row.
+    pub fn database_bytes(&self) -> u64 {
+        std::fs::metadata(database_path(&self.state_dir))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    }
+
     /// The applied schema version.
     pub fn schema_version(&self) -> Result<i64> {
         Ok(self
@@ -182,6 +203,10 @@ impl Store {
                 .get("autoUpdate")
                 .map(|value| value == "true")
                 .unwrap_or(defaults.auto_update),
+            discovery_paused: stored
+                .get("discoveryPaused")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.discovery_paused),
         };
         Ok(settings.normalized())
     }
@@ -210,6 +235,10 @@ impl Store {
                 bool_text(settings.launch_at_login)
             ])?;
             put.execute(params!["autoUpdate", bool_text(settings.auto_update)])?;
+            put.execute(params![
+                "discoveryPaused",
+                bool_text(settings.discovery_paused)
+            ])?;
         }
         tx.commit()?;
         Ok(settings)
@@ -337,6 +366,35 @@ impl Store {
         }
         tx.commit()?;
         Ok(stale.len())
+    }
+
+    /// Forget the entire derived index: every session, its analysis, its
+    /// relations, and the per-agent scan bookkeeping. Returns how many sessions
+    /// were dropped.
+    ///
+    /// **antiburn's own tables only.** Not one provider file is opened, let
+    /// alone written — the transcripts this index was derived *from* are the
+    /// agents' files and stay exactly where they are, which is why a later scan
+    /// finds all of it again.
+    ///
+    /// Deliberately spared, because none of it is derived data:
+    ///
+    /// - `setting` — the reader's preferences, including whether onboarding is
+    ///   done. Clearing the index is not a factory reset.
+    /// - `scan_root` — the folders the reader pointed the scanner at.
+    /// - `repository` — the include/ignore choices the reader made. Their
+    ///   session counts *are* derived, so those are zeroed here and refilled by
+    ///   the next pass.
+    pub fn clear_derived_index(&self) -> Result<usize> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        tx.execute("DELETE FROM session_relation", [])?;
+        tx.execute("DELETE FROM session_analysis", [])?;
+        let sessions = tx.execute("DELETE FROM session", [])?;
+        tx.execute("DELETE FROM scan_state", [])?;
+        tx.execute("UPDATE repository SET session_count = 0", [])?;
+        tx.commit()?;
+        Ok(sessions)
     }
 
     /// Delete every antiburn-owned record for one session.

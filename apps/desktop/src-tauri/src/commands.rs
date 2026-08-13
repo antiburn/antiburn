@@ -30,6 +30,7 @@ use crate::dto::{
     SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
+use crate::popover;
 use crate::provider_usage;
 use crate::repositories;
 use crate::scan::{self, ScanController};
@@ -61,6 +62,30 @@ pub fn open_settings_window(app: tauri::AppHandle) -> CommandResult<()> {
     settings::open(&app).map_err(fail)
 }
 
+/* -------------------------------------------------------------------------
+ * Popover window
+ * ---------------------------------------------------------------------- */
+
+/// Dismiss the popover — the Escape key's destination.
+///
+/// A shell command rather than the webview hiding its own window, because the
+/// scan scheduler is gated on the popover being visible; hiding it behind the
+/// shell's back would leave that gate stuck open.
+#[tauri::command]
+pub fn hide_popover(app: tauri::AppHandle) {
+    popover::hide(&app);
+}
+
+/// Resize the popover to the height the view now on screen needs.
+///
+/// Clamped shell-side, so a webview bug cannot produce a window taller than the
+/// display or shorter than its own chrome. `animate` is the *webview's* call:
+/// the reduced-motion preference lives there, and a height change is motion.
+#[tauri::command]
+pub fn set_popover_height(app: tauri::AppHandle, height: f64, animate: Option<bool>) {
+    popover::set_height(&app, height, animate.unwrap_or(true));
+}
+
 /// Where the app came from and what it is running against.
 #[tauri::command]
 pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
@@ -70,9 +95,12 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         pricing_catalog_version: antiburn_local::pricing::PRICING_CATALOG_VERSION.to_string(),
         schema_version: store.schema_version().map_err(fail)?,
         data_dir: store.state_dir().to_string_lossy().to_string(),
-        // The updater plugin is registered in release builds only, so a
-        // development run says so rather than pretending a check happened.
-        updates_supported: !cfg!(debug_assertions),
+        indexed_sessions: store.session_count().map_err(fail)?,
+        database_bytes: store.database_bytes(),
+        // Real registration state, not a compile-time guess: a release build
+        // whose signing key was never configured has no working updater, and
+        // every piece of copy downstream is derived from this one flag.
+        updates_supported: crate::updates::supported(&app),
     })
 }
 
@@ -97,11 +125,13 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     let previous = store.settings().map_err(fail)?;
     let saved = store.save_settings(&settings).map_err(fail)?;
 
-    // Finishing onboarding, or widening the window past what the store holds,
-    // both want fresh data immediately rather than at the next tick.
+    // Finishing onboarding, widening the window past what the store holds, and
+    // resuming discovery all want fresh data immediately rather than at the
+    // next tick.
     let wants_scan = (!previous.onboarding_completed && saved.onboarding_completed)
-        || saved.activity_window_days > previous.activity_window_days;
-    if wants_scan {
+        || saved.activity_window_days > previous.activity_window_days
+        || (previous.discovery_paused && !saved.discovery_paused);
+    if wants_scan && !saved.discovery_paused {
         app.state::<ScanController>().request();
     }
     Ok(saved)
@@ -460,9 +490,23 @@ async fn resolve_lineage(
  * ---------------------------------------------------------------------- */
 
 /// Run a scan now, unless one is already in flight.
+///
+/// Explicit, so it runs even while background discovery is paused: pausing
+/// stops antiburn from scanning on its own, not from being asked.
 #[tauri::command]
 pub async fn scan_now(app: tauri::AppHandle) -> CommandResult<ScanStatus> {
     Ok(scan::run_pass(&app).await)
+}
+
+/// Ask the scan in flight to stop at its next phase boundary.
+///
+/// Everything it already persisted stays: a cancelled pass is a shorter pass,
+/// not an undone one.
+#[tauri::command]
+pub fn cancel_scan(app: tauri::AppHandle) -> ScanStatus {
+    let controller = app.state::<ScanController>();
+    controller.request_cancel();
+    controller.status()
 }
 
 /// What the current or last scan is doing, plus what each agent last saw.
@@ -645,10 +689,71 @@ pub fn delete_session_data(
     app.state::<Store>().delete_session(&key).map_err(fail)
 }
 
+/// Forget antiburn's entire derived index.
+///
+/// **antiburn's own records only.** Not one provider file is touched: the
+/// transcripts this index was derived from are the agents' files, they stay
+/// exactly where they are, and a later scan rebuilds everything this removed.
+/// Preferences, scan folders, and repository include choices are kept — this is
+/// "forget what you worked out", not "forget who I am".
+///
+/// Returns how many sessions were dropped, so the confirmation can report a
+/// number rather than a shrug.
+#[tauri::command]
+pub fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
+    let removed = app.state::<Store>().clear_derived_index().map_err(fail)?;
+    // The index is empty and the popover is showing it. Refill it rather than
+    // leaving a reader looking at an empty list until the next tick.
+    app.state::<ScanController>().request();
+    Ok(removed)
+}
+
 /// Reveal a transcript in the platform's file manager.
+///
+/// The path is canonicalized and checked to exist before it reaches the
+/// platform opener. The webview loads only this app's own bundle under a
+/// restrictive CSP, so a hostile path cannot get here today — but "cannot get
+/// here today" is a property of the *rest* of the app, and the one call that
+/// hands a string to the operating system should not depend on it.
 #[tauri::command]
 pub fn reveal_source(app: tauri::AppHandle, path: String) -> CommandResult<()> {
-    app.opener().reveal_item_in_dir(path).map_err(fail)
+    let target = revealable_path(&path)?;
+    app.opener().reveal_item_in_dir(target).map_err(fail)
+}
+
+/// Validate and resolve a path before it is handed to the platform opener.
+///
+/// Absolute, existing, and canonical — in that order. Relative paths are
+/// rejected outright rather than resolved, because "relative to what" has no
+/// answer a command handler should be inventing.
+fn revealable_path(path: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(path);
+    if path.is_empty() || !candidate.is_absolute() {
+        return Err(format!("{path} is not an absolute path"));
+    }
+    let resolved =
+        std::fs::canonicalize(candidate).map_err(|_| format!("{path} is not on this machine"))?;
+    Ok(presentable(resolved))
+}
+
+/// Windows canonicalization returns an extended-length (`\\?\`) path, which
+/// several shells and file managers refuse to open. Strip the prefix back off
+/// for presentation; everything else is unchanged.
+#[cfg(windows)]
+fn presentable(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy().to_string();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => match rest.strip_prefix(r"UNC\") {
+            Some(share) => PathBuf::from(format!(r"\\{share}")),
+            None => PathBuf::from(rest),
+        },
+        None => path,
+    }
+}
+
+#[cfg(not(windows))]
+fn presentable(path: PathBuf) -> PathBuf {
+    path
 }
 
 #[cfg(test)]
@@ -734,6 +839,68 @@ mod tests {
         // A session with no heartbeat still yields a parseable stamp rather
         // than an empty string the list would drop.
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn a_relative_path_never_reaches_the_platform_opener() {
+        for path in [
+            "",
+            "relative/session.jsonl",
+            "./session.jsonl",
+            "../../etc/passwd",
+        ] {
+            let error = revealable_path(path).expect_err("must be rejected");
+            assert!(
+                error.contains("absolute"),
+                "{path:?} should be refused for not being absolute, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_that_is_not_on_this_machine_is_refused_rather_than_forwarded() {
+        let absent = if cfg!(windows) {
+            r"C:\antiburn\does\not\exist\session.jsonl"
+        } else {
+            "/antiburn/does/not/exist/session.jsonl"
+        };
+        let error = revealable_path(absent).expect_err("must be rejected");
+        assert!(error.contains("not on this machine"), "got {error:?}");
+    }
+
+    #[test]
+    fn a_real_file_resolves_to_a_canonical_path() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let file = directory.path().join("session.jsonl");
+        std::fs::write(&file, "{}\n").unwrap();
+
+        let resolved = revealable_path(&file.to_string_lossy()).expect("a real file resolves");
+        assert!(resolved.is_absolute());
+        assert!(resolved.exists());
+        assert_eq!(resolved.file_name(), file.file_name());
+        // Nothing extended-length reaches the opener, on any platform.
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
+
+        // The data folder is revealed the same way, so directories resolve too.
+        let folder = revealable_path(&directory.path().to_string_lossy()).unwrap();
+        assert!(folder.is_dir());
+    }
+
+    #[test]
+    fn a_traversal_dressed_up_as_an_absolute_path_is_resolved_before_it_is_used() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let nested = directory.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let file = directory.path().join("session.jsonl");
+        std::fs::write(&file, "{}\n").unwrap();
+
+        let sneaky = nested.join("..").join("session.jsonl");
+        let resolved = revealable_path(&sneaky.to_string_lossy()).unwrap();
+        assert_eq!(
+            resolved,
+            revealable_path(&file.to_string_lossy()).unwrap(),
+            "the opener sees the resolved path, never the one that was typed"
+        );
     }
 
     #[test]

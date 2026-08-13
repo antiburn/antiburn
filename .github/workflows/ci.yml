@@ -58,8 +58,21 @@ jobs:
         run: cargo nextest run --locked --lib --tests
 
   desktop-frontend:
-    name: desktop app (frontend)
-    runs-on: ubuntu-latest
+    name: desktop app (frontend, ${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          # Windows too: the frontend suite covers path handling, line endings,
+          # and the platform-aware modifier logic, and those are exactly the
+          # places a Linux-only run cannot fail. macOS is left out on purpose —
+          # it is the slowest runner and shares its behaviour here with Linux,
+          # while the shell (which does not) is covered on all three below.
+          - name: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
     env:
       # Corepack must never block CI on its interactive download prompt.
       COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
@@ -93,15 +106,30 @@ jobs:
         run: pnpm --filter @antiburn/desktop build
 
   desktop-backend:
-    name: desktop app (backend)
-    runs-on: ubuntu-latest
+    name: desktop app (backend, ${{ matrix.name }})
+    # The shell owns every piece of platform-specific code in the application —
+    # tray item, popover anchoring, window policy, path handling — so it is
+    # built and tested on the whole release matrix rather than on Linux alone.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Tauri's Linux backend builds against the system WebKitGTK, GTK, and
-      # tray (AppIndicator) development packages.
+      # tray (AppIndicator) development packages. Windows and macOS use the
+      # webview and tray the operating system already ships.
       - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
@@ -124,6 +152,7 @@ jobs:
       # checks need no Node toolchain. Release packaging (which embeds the
       # built bundle) happens in the release workflow.
       - name: Check formatting
+        if: runner.os == 'Linux'
         working-directory: apps/desktop/src-tauri
         run: cargo fmt --check
 
@@ -162,10 +191,16 @@ jobs:
         with:
           tool: cargo-deny
 
-      - name: Check engine licenses
+      # `check licenses` does not evaluate `[bans]`. The engine's deny.toml
+      # bans the HTTP clients, TLS stacks, and the app framework outright, so
+      # the ban list has to be run or it is inert configuration describing a
+      # boundary nothing enforces.
+      - name: Check engine licenses and dependency bans
         working-directory: crates/antiburn-local
-        run: cargo deny --locked check licenses
+        run: cargo deny --locked check bans licenses
 
+      # The app crate has no `[bans]` block by design — it legitimately links
+      # Tauri and the updater plugin — so only its licenses are checked.
       - name: Check desktop app licenses
         working-directory: apps/desktop/src-tauri
         run: cargo deny --locked check licenses

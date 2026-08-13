@@ -33,7 +33,7 @@
       "icons/icon.png"
     ],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "13.0"
     },
     "linux": {
       "deb": {

@@ -20,18 +20,32 @@ pub const MIGRATIONS: &[&str] = &[V1];
 ///
 /// # Data policy (schema-level contract)
 ///
-/// **No raw transcript content is ever stored in this database.** Every table
-/// below holds normalized identity (agent, session id, environment), locations
-/// (paths that point *at* the provider's own file), or values derived by the
-/// engine's analysis (counts, durations, token totals, phase distributions,
-/// cost estimates). The transcripts themselves stay where their vendor wrote
-/// them and are re-read on demand. A column that would carry message text,
-/// prompts, tool arguments, or file contents does not belong in this schema.
+/// **No transcript bodies are stored in this database: no message text, no tool
+/// arguments, and no file contents.** Every table below holds normalized
+/// identity (agent, session id, environment), locations (paths that point *at*
+/// the provider's own file), or values derived by the engine's analysis (counts,
+/// durations, token totals, phase distributions, cost estimates). The
+/// transcripts themselves stay where their vendor wrote them and are re-read on
+/// demand.
 ///
-/// `session_analysis.metrics_json` is the one place that could drift, so it is
-/// pinned here explicitly: it holds `antiburn_local::analysis::SessionMetrics`,
-/// which is counts, timings, distributions, token totals, and skill *names* —
-/// never transcript text.
+/// Two columns carry a **short derived excerpt** of a transcript, and they are
+/// named here rather than left to be discovered, because a contract that
+/// overstates itself is worse than one that admits its edges:
+///
+/// - `session.title` — the session's own title. Vendors that record one supply
+///   it; where none exists the engine derives one from the first user message,
+///   capped at 200 characters (`title_source` says which happened, and
+///   `firstMessage` is the derived case).
+/// - `session_analysis.metrics_json` → each `skillUses[].description` — the
+///   one-line description a transcript's own skill listing carries, capped at
+///   [`crate::analytics::SKILL_DESCRIPTION_MAX_CHARS`] characters before it is
+///   ever written.
+///
+/// Everything else in `metrics_json` is
+/// `antiburn_local::analysis::SessionMetrics`: counts, timings, distributions,
+/// token totals, and skill *names*. Beyond those two bounded excerpts, a column
+/// carrying message text, prompts, tool arguments, or file contents does not
+/// belong in this schema.
 const V1: &str = r#"
 -- App settings, one row per key. Values are JSON scalars so a new preference
 -- is additive and needs no migration.
@@ -60,6 +74,9 @@ CREATE TABLE session (
     source_kind      TEXT NOT NULL,
     source_label     TEXT NOT NULL,
     wsl_distro       TEXT,
+    -- The session's own title. A short derived excerpt when `title_source` is
+    -- 'firstMessage' (the engine caps it at 200 characters); the vendor's own
+    -- string otherwise. See the data policy above.
     title            TEXT,
     title_source     TEXT,
     cwd              TEXT,
@@ -81,7 +98,8 @@ CREATE TABLE session_analysis (
     agent              TEXT NOT NULL,
     session_id         TEXT NOT NULL,
     -- `antiburn_local::analysis::SessionMetrics` as camelCase JSON: derived
-    -- counts and distributions only (see the module contract above).
+    -- counts and distributions, plus each skill's capped one-line description
+    -- (see the data policy above).
     metrics_json       TEXT NOT NULL,
     -- `analysis::SessionCost` components, or NULL when nothing priced.
     cost_json          TEXT,

@@ -4,7 +4,7 @@
 
 import { check } from '@tauri-apps/plugin-updater';
 import { AlertTriangle, Check as CheckGlyph, Download, Loader2 } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { Card } from '../../components/ui/Card';
 import { Pane } from '../../components/ui/Pane';
@@ -13,16 +13,25 @@ import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
 import { StatusText } from '../../components/ui/StatusText';
 import { ToggleRow } from '../../components/ui/ToggleRow';
-import type { AppInfo } from '../../lib/ipc';
+import { relativeTime } from '../../lib/presentation/relativeTime';
+import { onUpdateStatus, type AppInfo, type UpdateStatusPayload } from '../../lib/ipc';
 import type { AppSettingsController } from './useAppSettings';
 
 /**
  * Updates.
  *
  * The updater plugin is the **only** network-capable surface in the whole
- * application, and it is registered in release builds only. A development run
- * therefore says so plainly rather than running a check that would fail with an
- * opaque plugin error — an honest "unavailable" beats a misleading one.
+ * application, and `info.updatesSupported` is the shell's answer about whether
+ * it actually registered — not a compile-time guess. Everything here hangs off
+ * that one flag:
+ *
+ * - **Supported.** The automatic-check switch is shown and is real: the shell
+ *   runs the schedule, and the results arrive here as events, so the line under
+ *   the switch reports what the last automatic check actually found.
+ * - **Unsupported.** The switch is not rendered at all. A build that cannot
+ *   check for updates has no automatic behaviour to configure, and a disabled
+ *   switch over a preference nothing reads is the exact "control that does
+ *   nothing" this pane must not ship. The pane says why instead.
  */
 
 type CheckState =
@@ -35,6 +44,20 @@ type CheckState =
 export interface UpdatesPaneProps extends AppSettingsController {
   /** Absent until the shell answers; `null` outside the shell entirely. */
   info: AppInfo | null;
+}
+
+/** Fold a shell-reported check outcome into the pane's own state. */
+export function stateFromEvent(status: UpdateStatusPayload): CheckState {
+  switch (status.kind) {
+    case 'available':
+      return { kind: 'available', version: status.version ?? '' };
+    case 'current':
+      return { kind: 'current' };
+    case 'failed':
+      return { kind: 'failed', message: status.message ?? 'The check could not be completed' };
+    default:
+      return { kind: 'idle' };
+  }
 }
 
 function CheckStatus({ state }: { state: CheckState }) {
@@ -70,7 +93,24 @@ function CheckStatus({ state }: { state: CheckState }) {
 
 export function UpdatesPane({ settings, update, info }: UpdatesPaneProps) {
   const [state, setState] = useState<CheckState>({ kind: 'idle' });
+  /** When the shell last checked on its own, as it reported it. */
+  const [lastAutomatic, setLastAutomatic] = useState<string | null>(null);
   const supported = info?.updatesSupported ?? false;
+
+  // The shell owns the schedule, so this pane learns about an automatic check
+  // the same way it learns about anything else the shell did: an event.
+  useEffect(() => {
+    let active = true;
+    const pending = onUpdateStatus((status) => {
+      if (!active) return;
+      setState(stateFromEvent(status));
+      if (status.automatic) setLastAutomatic(status.checkedAt);
+    });
+    return () => {
+      active = false;
+      void pending.then((unlisten) => unlisten());
+    };
+  }, []);
 
   const runCheck = useCallback(async () => {
     setState({ kind: 'checking' });
@@ -89,14 +129,26 @@ export function UpdatesPane({ settings, update, info }: UpdatesPaneProps) {
     <Pane title="Updates">
       <SectionGroup title="Automatic updates">
         <Card>
-          <ToggleRow
-            label="Check for updates automatically"
-            description="antiburn contacts the release feed only for this check. Nothing about your sessions is ever sent."
-            checked={settings.autoUpdate}
-            onChange={(next) => void update({ autoUpdate: next })}
-            disabled={!supported}
-            dimmed={!supported}
-          />
+          {supported ? (
+            <ToggleRow
+              label="Check for updates automatically"
+              description={
+                lastAutomatic
+                  ? `A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else; last checked ${relativeTime(lastAutomatic)}.`
+                  : 'A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else — nothing about your sessions is ever sent.'
+              }
+              checked={settings.autoUpdate}
+              onChange={(next) => void update({ autoUpdate: next })}
+            />
+          ) : (
+            <Row
+              label="Automatic updates"
+              // Not a disabled switch: there is no automatic behaviour in this
+              // build to turn on or off, so there is nothing to render a
+              // control for.
+              description="This build has no updater, so it never contacts the release feed. Packaged releases check automatically."
+            />
+          )}
           <Row
             label="Version"
             description={

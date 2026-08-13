@@ -23,6 +23,7 @@
 //! - [`settings`] — the standalone settings window.
 //! - [`store`] — the app's local SQLite database.
 //! - [`tray`] — the menu-bar item and its click and menu handling.
+//! - [`updates`] — whether, and when, the release feed may be contacted.
 //!
 //! # Offline by construction
 //!
@@ -45,15 +46,24 @@ mod scan;
 mod settings;
 mod store;
 mod tray;
+mod updates;
 
 use std::sync::Mutex;
 
 use tauri::{Manager, RunEvent, WindowEvent};
 
-/// The scan scheduler's handle, kept so the app can abort it on exit rather
-/// than leaving a task running against a store that is going away.
+/// Handles of the app's background tasks, kept so it can abort them on exit
+/// rather than leaving them running against a store that is going away.
 #[derive(Default)]
-struct Scheduler(Mutex<Option<tauri::async_runtime::JoinHandle<()>>>);
+struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
+
+impl Schedulers {
+    fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
+        if let Ok(mut handles) = self.0.lock() {
+            handles.push(handle);
+        }
+    }
+}
 
 /// Builds and runs the application. Returns only when the app exits.
 ///
@@ -69,6 +79,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::add_scan_root,
             commands::app_info,
+            commands::cancel_scan,
+            commands::clear_local_index,
             commands::default_scan_roots,
             commands::delete_session_data,
             commands::engine_catalog_version,
@@ -78,6 +90,7 @@ pub fn run() {
             commands::get_session_analytics,
             commands::get_settings,
             commands::get_subagent_analytics,
+            commands::hide_popover,
             commands::list_recent_sessions,
             commands::list_repositories,
             commands::list_scan_roots,
@@ -86,6 +99,7 @@ pub fn run() {
             commands::remove_scan_root,
             commands::reveal_source,
             commands::scan_now,
+            commands::set_popover_height,
             commands::set_repository_enabled,
             commands::set_settings,
         ])
@@ -103,20 +117,21 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
             app.manage(scan::ScanController::default());
-            app.manage(Scheduler::default());
+            app.manage(Schedulers::default());
             app.manage(popover::PopoverState::default());
+            app.manage(updates::UpdaterState::default());
 
             popover::create(app.handle())?;
             tray::create(app.handle())?;
 
-            let handle = scan::spawn_scheduler(app.handle());
-            if let Some(scheduler) = app.try_state::<Scheduler>()
-                && let Ok(mut slot) = scheduler.0.lock()
-            {
-                *slot = Some(handle);
-            }
-
+            // Registered before the update scheduler starts, so the first
+            // automatic check can see whether there is anything to check with.
             install_updater(app.handle());
+
+            if let Some(schedulers) = app.try_state::<Schedulers>() {
+                schedulers.push(scan::spawn_scheduler(app.handle()));
+                schedulers.push(updates::spawn_scheduler(app.handle()));
+            }
 
             Ok(())
         });
@@ -130,22 +145,22 @@ pub fn run() {
             RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
                 api.prevent_exit();
             }
-            // A deliberate quit: stop the scan before the store it writes to
-            // is dropped.
-            RunEvent::Exit => abort_scheduler(app),
+            // A deliberate quit: stop the background tasks before the store
+            // they write to is dropped.
+            RunEvent::Exit => abort_schedulers(app),
             _ => {}
         });
 }
 
-/// Stop the scan scheduler. Safe to call when it never started.
-fn abort_scheduler(app: &tauri::AppHandle) {
-    let Some(scheduler) = app.try_state::<Scheduler>() else {
+/// Stop every background task. Safe to call when none ever started.
+fn abort_schedulers(app: &tauri::AppHandle) {
+    let Some(schedulers) = app.try_state::<Schedulers>() else {
         return;
     };
-    let Ok(mut slot) = scheduler.0.lock() else {
+    let Ok(mut handles) = schedulers.0.lock() else {
         return;
     };
-    if let Some(handle) = slot.take() {
+    for handle in handles.drain(..) {
         handle.abort();
     }
 }
@@ -174,13 +189,32 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
 /// Registers the GitHub Releases updater.
 ///
 /// Development builds never install it, so `pnpm dev` performs no network
-/// requests at all. Registration failure (most likely an unconfigured signing
-/// public key) is reported and then ignored: an app that cannot check for
-/// updates must still start.
-#[allow(unused_variables)]
+/// requests at all. A release build without a configured signing public key
+/// does not install it either: an updater that cannot verify what it downloads
+/// is worse than none. Either way the app starts, and
+/// [`updates::supported`] reports the truth — it is set from *here*, on the one
+/// path where registration actually succeeded, so nothing downstream can claim
+/// an update capability this build does not have.
 fn install_updater(app: &tauri::AppHandle) {
     #[cfg(not(debug_assertions))]
-    if let Err(error) = app.plugin(tauri_plugin_updater::Builder::new().build()) {
-        eprintln!("antiburn: update checks are disabled ({error})");
+    {
+        if !updates::signing_key_configured(app) {
+            eprintln!("antiburn: update checks are disabled (no updater public key is configured)");
+            return;
+        }
+        match app.plugin(tauri_plugin_updater::Builder::new().build()) {
+            Ok(()) => {
+                if let Some(state) = app.try_state::<updates::UpdaterState>() {
+                    state.note_registered();
+                }
+            }
+            Err(error) => eprintln!("antiburn: update checks are disabled ({error})"),
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        // The plugin is the only network-capable surface in the application;
+        // a development run must not carry it at all.
+        let _ = app;
     }
 }

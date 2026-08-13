@@ -28,6 +28,22 @@
 //! - **On demand**, from the rescan control and after any change to the source
 //!   selection.
 //!
+//! # Pausing
+//!
+//! `AppSettings::discovery_paused` stops every *scheduled* pass — the launch
+//! pass, the tick, and the passes requested when the popover opens or the
+//! sources change. It deliberately does not stop [`run_pass`] itself, so the
+//! rescan control still works while discovery is paused and the popover keeps
+//! browsing everything already indexed. "Paused" is a statement about
+//! background work, not a lock on the app.
+//!
+//! # Cancelling
+//!
+//! A pass in flight can be asked to stop ([`ScanController::request_cancel`]).
+//! The engine's discovery walk is not itself interruptible, so a cancel lands
+//! at the next phase boundary: nothing further is analyzed, and the status the
+//! views render says `cancelled` rather than pretending the pass completed.
+//!
 //! Every pass is bounded: discovery is windowed to the retention horizon, the
 //! per-session metadata reads run at a fixed concurrency, and analysis is
 //! capped at [`MAX_ANALYSES_PER_PASS`] sessions so one pass cannot grow with
@@ -82,6 +98,7 @@ pub const EVENT_FINISHED: &str = "scan:finished";
 pub struct ScanController {
     running: AtomicBool,
     popover_visible: AtomicBool,
+    cancel: AtomicBool,
     status: Mutex<ScanStatus>,
     kick: Notify,
 }
@@ -99,6 +116,20 @@ impl ScanController {
 
     fn popover_visible(&self) -> bool {
         self.popover_visible.load(Ordering::Relaxed)
+    }
+
+    /// Ask the pass in flight to stop at its next phase boundary.
+    ///
+    /// A no-op when nothing is running: the flag is cleared at the start of
+    /// every pass, so a stale request cannot cancel a future one.
+    pub fn request_cancel(&self) {
+        if self.running.load(Ordering::SeqCst) {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
     }
 
     /// The current or last pass.
@@ -124,7 +155,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // A fresh install has nothing to scan until the reader picks sources.
-        if onboarding_completed(&app) {
+        if scheduled_scanning_allowed(&app) {
             run_pass(&app).await;
         }
         loop {
@@ -132,20 +163,31 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             tokio::select! {
                 () = controller.kick.notified() => {}
                 () = tokio::time::sleep(TICK) => {
-                    if !controller.popover_visible() || !onboarding_completed(&app) {
+                    if !controller.popover_visible() {
                         continue;
                     }
                 }
+            }
+            // Checked after the wake-up rather than before the wait, so
+            // resuming discovery takes effect at the next request or tick
+            // instead of needing the app restarted.
+            if !scheduled_scanning_allowed(&app) {
+                continue;
             }
             run_pass(&app).await;
         }
     })
 }
 
-fn onboarding_completed(app: &AppHandle) -> bool {
+/// Whether the scheduler may start a pass of its own right now.
+///
+/// Two gates, both of them the reader's: onboarding has to be finished (before
+/// that there are no chosen sources to scan), and discovery must not be paused.
+/// Neither gate applies to an explicitly requested [`run_pass`].
+fn scheduled_scanning_allowed(app: &AppHandle) -> bool {
     app.state::<Store>()
         .settings()
-        .map(|settings| settings.onboarding_completed)
+        .map(|settings| settings.onboarding_completed && !settings.discovery_paused)
         .unwrap_or(false)
 }
 
@@ -156,12 +198,15 @@ pub async fn run_pass(app: &AppHandle) -> ScanStatus {
         if controller.running.swap(true, Ordering::SeqCst) {
             return controller.status();
         }
+        // A cancel request only ever applies to the pass it was made during.
+        controller.cancel.store(false, Ordering::SeqCst);
         let started = controller.update(|status| {
             status.running = true;
             status.completed_agents = 0;
             status.total_agents = AgentKind::ALL.len();
             status.sessions = 0;
             status.error = None;
+            status.cancelled = false;
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
@@ -169,19 +214,26 @@ pub async fn run_pass(app: &AppHandle) -> ScanStatus {
     let outcome = pass(app).await;
 
     let controller = app.state::<ScanController>();
+    let cancelled = controller.cancelled();
     let finished = controller.update(|status| {
         status.running = false;
+        status.cancelled = cancelled;
         status.finished_at = Some(crate::store::now_rfc3339());
         match &outcome {
             Ok(sessions) => {
                 status.sessions = *sessions;
-                status.completed_agents = status.total_agents;
+                // A cancelled pass did not finish every agent, and saying it
+                // did would make the progress line lie on its last frame.
+                if !cancelled {
+                    status.completed_agents = status.total_agents;
+                }
                 status.error = None;
             }
             Err(error) => status.error = Some(error.to_string()),
         }
     });
     controller.running.store(false, Ordering::SeqCst);
+    controller.cancel.store(false, Ordering::SeqCst);
     let _ = app.emit(EVENT_FINISHED, finished.clone());
     finished
 }
@@ -225,9 +277,19 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
 
     store.prune_sessions_before(now - RETENTION_DAYS * 86_400)?;
 
+    // Everything discovered so far is already persisted, so a cancel here keeps
+    // the reader's results and only skips the work still ahead.
+    if app.state::<ScanController>().cancelled() {
+        return Ok(records.len());
+    }
+
     // Derived analysis for the newest sessions in the visible window, so the
     // list's cost and time pills are populated without opening every row.
     top_up_analysis(app, now, i64::from(settings.activity_window_days)).await?;
+
+    if app.state::<ScanController>().cancelled() {
+        return Ok(records.len());
+    }
 
     repositories::refresh(app).await?;
 
@@ -360,6 +422,11 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
     let candidates = store.recent_sessions(since, MAX_ANALYSES_PER_PASS)?;
 
     for record in candidates {
+        // Analysis is the long tail of a pass — one whole transcript read per
+        // session — so this is where a cancel is felt.
+        if app.state::<ScanController>().cancelled() {
+            return Ok(());
+        }
         let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
             continue;
         };
@@ -700,6 +767,21 @@ mod tests {
         assert!(!status.running);
         assert_eq!(status.sessions, 0);
         assert!(status.error.is_none());
+        assert!(!status.cancelled);
+    }
+
+    #[test]
+    fn a_cancel_request_only_applies_while_a_pass_is_running() {
+        let controller = ScanController::default();
+
+        // Nothing is running: a cancel would otherwise be remembered and would
+        // kill the *next* pass, which is not what the reader asked for.
+        controller.request_cancel();
+        assert!(!controller.cancelled());
+
+        controller.running.store(true, Ordering::SeqCst);
+        controller.request_cancel();
+        assert!(controller.cancelled());
     }
 
     #[test]

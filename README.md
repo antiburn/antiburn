@@ -2,15 +2,28 @@
 
 Local-first visibility into your AI coding-agent sessions.
 
-antiburn discovers the coding-agent sessions already on your machine — Claude Code,
-Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Pi, Antigravity, and
-Windsurf — analyzes the transcripts locally, and shows you activity, session
-analytics, and API-equivalent cost estimates. Everything runs on your device.
+antiburn discovers the coding-agent sessions already on your machine, analyzes the
+transcripts locally, and shows you activity, session analytics, and API-equivalent
+cost estimates. Everything runs on your device.
+
+**Supported agents.** Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode,
+Kiro, and Amp are discovered from their documented local files on every supported
+platform. Three carry qualifications:
+
+- **Antigravity** and **Windsurf** are *disk-only*: sessions are read from documented
+  local files, and their live language-server APIs are deliberately not used.
+- **Pi** is not supported on Windows.
+- **WSL** discovery covers **Claude Code, Codex, and OpenCode** only. Other agents are
+  found in the native environment only.
+
+Supported platforms are macOS 13 or later, Windows 11, and mainstream x86-64 Linux
+desktops. See [`docs/support.md`](docs/support.md) for the full matrix and for what
+antiburn stores.
 
 **Network boundary:** the engine performs no network or socket I/O — discovery reads
-documented files, read-only databases, and bounded WSL paths only. The desktop app
-(coming to this repository) is useful fully offline; its only internet exceptions are
-GitHub-hosted updates and separately consented, default-off anonymous analytics.
+documented files, read-only databases, and bounded WSL paths only. The desktop app is
+useful fully offline; its only internet exception is checking GitHub Releases for a
+newer version. There is no analytics or telemetry of any kind in this application.
 
 ## Repository layout
 
@@ -23,6 +36,9 @@ apps/desktop/            The desktop application: a Tauri 2 menu-bar shell
                          crate is a standalone workspace of its own.
 docs/oss/                Approved source-boundary manifests; the engine's
                          mechanical boundary tests validate against them.
+docs/support.md          The v1 platform and agent support matrix, and what
+                         antiburn stores about your sessions.
+docs/audits/             Point-in-time conformance audits of this repository.
 ```
 
 ## Build and test

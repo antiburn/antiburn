@@ -39,7 +39,17 @@ export interface ProviderUsageClusterProps {
  * this component rather than portalled, because the popover window is 380px of
  * fixed chrome: a portalled surface would have nowhere to escape to, and a
  * collision-aware library would only be re-deriving "sit above the footer".
+ *
+ * The panel is a real `role="dialog"`, so it carries the obligations of one:
+ * focus moves into it on open, Tab is held inside it, and focus returns to the
+ * chip that opened it on close. A dialog a keyboard user is not *in* is worse
+ * than a plain disclosure, because the role promises containment that is not
+ * there.
  */
+
+/** Everything inside the panel a Tab can reach. */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 export function ProviderUsageCluster({
   providers,
   onViewAll,
@@ -47,6 +57,9 @@ export function ProviderUsageCluster({
 }: ProviderUsageClusterProps) {
   const [openProvider, setOpenProvider] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  /** The chip that opened the panel, so focus can be handed back to it. */
+  const invokerRef = useRef<HTMLElement | null>(null);
   const panelId = useId();
   const headingId = `${panelId}-heading`;
 
@@ -55,7 +68,14 @@ export function ProviderUsageCluster({
   const overflow = today.length - visible.length;
   const open = visible.find((provider) => provider.provider === openProvider) ?? null;
 
-  const close = useCallback(() => setOpenProvider(null), []);
+  const close = useCallback(() => {
+    setOpenProvider(null);
+    // Returned synchronously rather than in an effect: after the panel is gone
+    // there is no element to compute this from, and focus would fall to the
+    // top of the document.
+    invokerRef.current?.focus();
+    invokerRef.current = null;
+  }, []);
 
   // Dismissal is a genuine synchronization with the document: a pointer press
   // anywhere outside the footer closes the panel, and Escape closes it from
@@ -66,7 +86,34 @@ export function ProviderUsageCluster({
       if (!rootRef.current?.contains(event.target as Node)) close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close();
+      if (event.key === 'Escape') {
+        // Claimed, so the popover's own Escape handler does not also dismiss
+        // the whole window: one key press closes one thing.
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+      // A panel with nothing to focus still holds the key, or Tab would walk
+      // out of a dialog the reader has not dismissed.
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !panel.contains(active))) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && (active === last || !panel.contains(active))) {
+        event.preventDefault();
+        first?.focus();
+      }
     };
     document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -75,6 +122,17 @@ export function ProviderUsageCluster({
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [open, close]);
+
+  // Move focus into the dialog on open. The panel itself is the target when it
+  // has no control of its own, so the reader is at least *inside* the thing
+  // their key presses now apply to.
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const target = panel.querySelector<HTMLElement>(FOCUSABLE) ?? panel;
+    target.focus();
+  }, [open]);
 
   const viewAll = () => {
     close();
@@ -105,11 +163,14 @@ export function ProviderUsageCluster({
             aria-label={`${provider.displayName}, ${value} today, ${usageStateLabel(
               provider.state,
             ).toLocaleLowerCase()}${stale ? `, ${stale.toLocaleLowerCase()}` : ''}`}
-            onClick={() =>
-              setOpenProvider((current) =>
-                current === provider.provider ? null : provider.provider,
-              )
-            }
+            onClick={(event) => {
+              if (openProvider === provider.provider) {
+                close();
+                return;
+              }
+              invokerRef.current = event.currentTarget;
+              setOpenProvider(provider.provider);
+            }}
             className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-control px-1.5 type-caption tabular-nums leading-none text-label-secondary hover:bg-surface-hover ${
               isOpen ? 'bg-surface-hover' : ''
             }`.trimEnd()}
@@ -145,10 +206,15 @@ export function ProviderUsageCluster({
 
       {open && (
         <div
+          ref={panelRef}
           id={panelId}
           role="dialog"
+          aria-modal="true"
           aria-labelledby={headingId}
-          className="ui-anchored-panel absolute bottom-full left-2 right-2 mb-1.5 p-3"
+          // Focusable so the dialog itself can hold focus when it contains no
+          // control; never in the Tab order.
+          tabIndex={-1}
+          className="ui-anchored-panel absolute bottom-full left-2 right-2 mb-1.5 p-3 outline-none"
         >
           <ProviderUsageDetail provider={open} headingId={headingId} onViewAll={viewAll} />
         </div>

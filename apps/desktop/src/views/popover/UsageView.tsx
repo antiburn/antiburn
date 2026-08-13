@@ -56,7 +56,11 @@ export function UsageView({ summary, onBack }: UsageViewProps) {
         >
           <ChevronLeft size={15} strokeWidth={2} aria-hidden="true" />
         </button>
-        <h1 className="type-headline text-label">Provider usage</h1>
+        {/* Focused by the popover when this surface takes over, so a keyboard
+            or screen-reader user lands in the view rather than on <body>. */}
+        <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
+          Provider usage
+        </h1>
       </header>
 
       <div className="shrink-0 px-4 pb-3">

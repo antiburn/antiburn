@@ -223,8 +223,14 @@ pub struct AppSettings {
     /// Recorded, and applied by the platform at next launch. See
     /// [`crate::commands::set_settings`] for why it is inert today.
     pub launch_at_login: bool,
-    /// Whether the updater may check on its own.
+    /// Whether the updater may check on its own. Read by
+    /// [`crate::updates::spawn_scheduler`], which is what makes it real.
     pub auto_update: bool,
+    /// Whether background discovery and indexing are paused.
+    ///
+    /// Paused stops the *scheduler* only: an explicit rescan still runs, and
+    /// everything already indexed stays browsable. See [`crate::scan`].
+    pub discovery_paused: bool,
 }
 
 impl Default for AppSettings {
@@ -235,6 +241,7 @@ impl Default for AppSettings {
             onboarding_completed: false,
             launch_at_login: false,
             auto_update: true,
+            discovery_paused: false,
         }
     }
 }

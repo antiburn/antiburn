@@ -36,6 +36,46 @@ use crate::store::{AnalysisRecord, SessionKey};
 /// `MIN_ORCHESTRATED_SUBAGENTS`.
 pub const MIN_ORCHESTRATED_SUBAGENTS: u32 = 2;
 
+/// Longest a skill description may be once it leaves this module.
+///
+/// A skill's description is lifted verbatim from the line the transcript's own
+/// skill listing carries, and the engine puts no bound on it — a listing that
+/// inlined a paragraph would put that paragraph in the local store and in every
+/// export. That is a *derived excerpt*, and an excerpt with no ceiling is just
+/// the text. One line of prose is what the tooltip renders and what the
+/// contract in [`crate::store::schema`] and [`crate::export`] promises, so the
+/// ceiling is applied here, at the app's boundary, before the value can reach
+/// either.
+pub const SKILL_DESCRIPTION_MAX_CHARS: usize = 300;
+
+/// The character appended to a description this module had to shorten, so a
+/// reader can see that they are looking at the front of something longer.
+const TRUNCATION_MARK: char = '…';
+
+/// Hold every skill description to [`SKILL_DESCRIPTION_MAX_CHARS`].
+///
+/// Applied to the metrics' own `skill_uses`, which is the single value that
+/// becomes the cached `metrics_json`, the exported `metrics`, and the exported
+/// `skills` — so capping it once here caps all three.
+fn cap_skill_descriptions(skills: &mut [SkillUse]) {
+    for skill in skills {
+        if let Some(description) = skill.description.take() {
+            skill.description = Some(cap_excerpt(&description, SKILL_DESCRIPTION_MAX_CHARS));
+        }
+    }
+}
+
+/// `text` shortened to at most `max` characters, counting characters rather
+/// than bytes so a multi-byte description cannot be cut mid-character.
+fn cap_excerpt(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut capped: String = text.chars().take(max.saturating_sub(1)).collect();
+    capped.push(TRUNCATION_MARK);
+    capped
+}
+
 /// One session's analysis, before it is split between the wire payload, the
 /// store, and the export document.
 pub struct SessionAnalysis {
@@ -253,6 +293,7 @@ pub async fn analyze(
     // The views key icons and copy off the discovery slug, so the vendor label
     // the adapter registry dispatches on never leaves this module.
     metrics.agent = agent_slug.clone();
+    cap_skill_descriptions(&mut metrics.skill_uses);
 
     let members: Vec<SubagentMember> = roster
         .into_iter()
@@ -342,6 +383,7 @@ pub async fn analyze_subagent(
         };
     };
     metrics.agent = agent_slug;
+    cap_skill_descriptions(&mut metrics.skill_uses);
 
     let cost = price_breakdown(&metrics.model_breakdown);
     let models = sorted_models(&metrics.model_breakdown);
@@ -588,6 +630,70 @@ mod tests {
             FORK_OBSERVATION_KEY: { "parent_agent_session_id": "too-deep" }
         }}}}});
         assert_eq!(find_fork_observation(&deep, FORK_OBSERVATION_DEPTH), None);
+    }
+
+    fn skill(description: Option<&str>) -> SkillUse {
+        SkillUse {
+            name: "commit-helper".into(),
+            progress: 0.5,
+            description: description.map(str::to_string),
+            duration_ms: None,
+            tokens_out: 0,
+            context_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn a_short_skill_description_is_left_exactly_as_it_was() {
+        let mut skills = vec![skill(Some("Draft a conventional commit message"))];
+        cap_skill_descriptions(&mut skills);
+        assert_eq!(
+            skills[0].description.as_deref(),
+            Some("Draft a conventional commit message")
+        );
+    }
+
+    #[test]
+    fn a_long_skill_description_is_capped_before_it_can_reach_the_store_or_an_export() {
+        let paragraph = "x".repeat(5_000);
+        let mut skills = vec![skill(Some(&paragraph))];
+        cap_skill_descriptions(&mut skills);
+
+        let capped = skills[0]
+            .description
+            .as_deref()
+            .expect("the description survives, shortened");
+        assert_eq!(
+            capped.chars().count(),
+            SKILL_DESCRIPTION_MAX_CHARS,
+            "the contract in store::schema and export names this exact ceiling"
+        );
+        assert!(
+            capped.ends_with(TRUNCATION_MARK),
+            "a shortened excerpt must look shortened"
+        );
+    }
+
+    #[test]
+    fn a_skill_with_no_description_stays_without_one() {
+        let mut skills = vec![skill(None)];
+        cap_skill_descriptions(&mut skills);
+        assert_eq!(skills[0].description, None);
+    }
+
+    #[test]
+    fn a_multi_byte_description_is_cut_on_a_character_and_never_mid_glyph() {
+        // Counting bytes here would split a three-byte character in half and
+        // produce a string that is not valid UTF-8 to begin with.
+        let text = "é".repeat(SKILL_DESCRIPTION_MAX_CHARS + 50);
+        let capped = cap_excerpt(&text, SKILL_DESCRIPTION_MAX_CHARS);
+        assert_eq!(capped.chars().count(), SKILL_DESCRIPTION_MAX_CHARS);
+        assert!(capped.starts_with('é'));
+        assert!(capped.ends_with(TRUNCATION_MARK));
+
+        // Exactly at the ceiling is not "too long".
+        let exact = "a".repeat(SKILL_DESCRIPTION_MAX_CHARS);
+        assert_eq!(cap_excerpt(&exact, SKILL_DESCRIPTION_MAX_CHARS), exact);
     }
 
     #[test]
