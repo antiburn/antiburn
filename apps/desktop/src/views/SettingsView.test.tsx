@@ -219,7 +219,7 @@ describe('SettingsView', () => {
   it('is honest that updates are unavailable in a build without the updater', async () => {
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
 
     const button = await screen.findByRole('button', { name: 'Check for updates' });
     // The button exists as soon as the pane renders, but stays disabled until
@@ -236,7 +236,7 @@ describe('SettingsView', () => {
   it('renders no automatic-update control at all in a build that cannot update', async () => {
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     await screen.findByText(/updater is installed in packaged releases only/i);
 
     // Not a disabled switch over a preference nothing reads — no switch.
@@ -251,7 +251,7 @@ describe('SettingsView', () => {
     checkForUpdate.mockResolvedValue(null);
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     const button = await screen.findByRole('button', { name: 'Check for updates' });
     // The button renders disabled and is enabled only once `app_info` resolves.
     // Clicking before that is swallowed, which is what used to make this test
@@ -267,7 +267,7 @@ describe('SettingsView', () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } });
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     const toggle = await screen.findByRole('switch', {
       name: 'Check for updates automatically',
     });
@@ -286,7 +286,7 @@ describe('SettingsView', () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } });
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     await screen.findByRole('switch', { name: 'Check for updates automatically' });
 
     emit('update:status', {
@@ -534,7 +534,6 @@ describe('SettingsView — window chrome', () => {
       'Notifications',
       'Sources',
       'Appearance',
-      'Updates',
       'About',
     ]);
   });
@@ -565,10 +564,11 @@ describe('SettingsView — notifications', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
 
     expect(await screen.findByRole('switch', { name: 'Notify me' })).toBeChecked();
+    // The update and scan kinds have no rows; the master switch's own copy
+    // names them, so allowing notifications is still informed consent.
     expect(
-      screen.getByRole('switch', { name: 'A new version is available' }),
+      screen.getByText(/a newer version, a scan that could not finish/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole('switch', { name: 'A scan could not finish' })).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Usage anomalies' })).toBeInTheDocument();
     // Milestone pills are independent toggles, one group per window class.
     expect(
@@ -628,40 +628,25 @@ describe('SettingsView — notifications', () => {
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
-    fireEvent.click(await screen.findByRole('switch', { name: 'A scan could not finish' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Usage anomalies' }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, notifyScanFailure: false },
+        settings: { ...SETTINGS, notifyUsageAnomalies: false },
       }),
     );
   });
 
   it('leaves the per-kind switches inert, and their choices intact, while the master is off', async () => {
-    mockCommands({
-      get_settings: { ...SETTINGS, notificationsEnabled: false },
-      app_info: { ...INFO, updatesSupported: true },
-    });
+    mockCommands({ get_settings: { ...SETTINGS, notificationsEnabled: false } });
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
 
-    const scanFailure = await screen.findByRole('switch', { name: 'A scan could not finish' });
-    expect(scanFailure).toBeDisabled();
+    const anomalies = await screen.findByRole('switch', { name: 'Usage anomalies' });
+    expect(anomalies).toBeDisabled();
     // Still on: turning the master back on restores what the reader chose
     // rather than a default.
-    expect(scanFailure).toBeChecked();
-  });
-
-  it('renders no update-notification switch in a build that cannot find an update', async () => {
-    render(<SettingsView />);
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
-
-    await screen.findByRole('switch', { name: 'Notify me' });
-    expect(
-      screen.queryByRole('switch', { name: 'A new version is available' }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByText(/never finds a version to tell you about/i)).toBeInTheDocument();
+    expect(anomalies).toBeChecked();
   });
 });

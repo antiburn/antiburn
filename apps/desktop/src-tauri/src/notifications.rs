@@ -178,7 +178,7 @@ pub fn update_message(version: &str) -> (String, String) {
         format!(
             "Version {version} is on the release feed. \
              This build checks for updates but does not install them yet — \
-             Settings → Updates shows what the last check found."
+             Settings → About shows what the last check found."
         ),
     )
 }

@@ -10,6 +10,8 @@ import { revealSource, type AppInfo } from '../../lib/ipc';
 import { detectPlatform, type Platform } from '../../lib/platform';
 import type { SettingsPane } from '../../lib/settingsPanes';
 import { PushButton } from '../../components/ui/PushButton';
+import { UpdatesSection } from './UpdatesSection';
+import type { AppSettingsController } from './useAppSettings';
 
 /** Display names for the masthead; `detectPlatform` reports lowercase ids. */
 const PLATFORM_LABELS: Record<Platform, string> = {
@@ -38,14 +40,13 @@ const PLATFORM_LABELS: Record<Platform, string> = {
  * does with your data. The deferral is recorded in `docs/deviations.md` and the
  * links land with publication.
  */
-export function AboutPane({
-  info,
-  onOpenPane,
-}: {
+export interface AboutPaneProps extends AppSettingsController {
   info: AppInfo | null;
   /** Move the window to another pane; About links to content, not to URLs. */
   onOpenPane?: (pane: SettingsPane) => void;
-}) {
+}
+
+export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutPaneProps) {
   return (
     <Pane title="About">
       {/* The app identity sits directly on the window surface rather than in a
@@ -66,6 +67,8 @@ export function AboutPane({
           </p>
         </div>
       </div>
+
+      <UpdatesSection settings={settings} update={update} loaded={loaded} info={info} />
 
       <SectionGroup title="Build">
         <Card>

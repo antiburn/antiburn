@@ -7,7 +7,6 @@ import { AlertTriangle, Check as CheckGlyph, Download, Loader2 } from 'lucide-re
 import { useCallback, useEffect, useState } from 'react';
 
 import { Card } from '../../components/ui/Card';
-import { Pane } from '../../components/ui/Pane';
 import { PushButton } from '../../components/ui/PushButton';
 import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
@@ -18,7 +17,12 @@ import { onUpdateStatus, type AppInfo, type UpdateStatusPayload } from '../../li
 import type { AppSettingsController } from './useAppSettings';
 
 /**
- * Updates.
+ * The Updates section of the About pane.
+ *
+ * A section rather than a sidebar pane of its own: software update belongs
+ * with the build it updates, which is what About is. The masthead above
+ * already names the version, so the row here is the action and its status,
+ * not a restatement.
  *
  * The updater plugin is the **only** network-capable surface in the whole
  * application, and `info.updatesSupported` is the shell's answer about whether
@@ -31,7 +35,7 @@ import type { AppSettingsController } from './useAppSettings';
  * - **Unsupported.** The switch is not rendered at all. A build that cannot
  *   check for updates has no automatic behaviour to configure, and a disabled
  *   switch over a preference nothing reads is the exact "control that does
- *   nothing" this pane must not ship. The pane says why instead.
+ *   nothing" this section must not ship. The section says why instead.
  */
 
 type CheckState =
@@ -41,12 +45,12 @@ type CheckState =
   | { kind: 'available'; version: string }
   | { kind: 'failed'; message: string };
 
-export interface UpdatesPaneProps extends AppSettingsController {
+export interface UpdatesSectionProps extends AppSettingsController {
   /** Absent until the shell answers; `null` outside the shell entirely. */
   info: AppInfo | null;
 }
 
-/** Fold a shell-reported check outcome into the pane's own state. */
+/** Fold a shell-reported check outcome into the section's own state. */
 export function stateFromEvent(status: UpdateStatusPayload): CheckState {
   switch (status.kind) {
     case 'available':
@@ -91,14 +95,14 @@ function CheckStatus({ state }: { state: CheckState }) {
   }
 }
 
-export function UpdatesPane({ settings, update, info }: UpdatesPaneProps) {
+export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) {
   const [state, setState] = useState<CheckState>({ kind: 'idle' });
   /** When the shell last checked on its own, as it reported it. */
   const [lastAutomatic, setLastAutomatic] = useState<string | null>(null);
   const supported = info?.updatesSupported ?? false;
 
-  // The shell owns the schedule, so this pane learns about an automatic check
-  // the same way it learns about anything else the shell did: an event.
+  // The shell owns the schedule, so this section learns about an automatic
+  // check the same way it learns about anything else the shell did: an event.
   useEffect(() => {
     let active = true;
     const pending = onUpdateStatus((status) => {
@@ -126,55 +130,48 @@ export function UpdatesPane({ settings, update, info }: UpdatesPaneProps) {
   }, []);
 
   return (
-    <Pane title="Updates">
-      <SectionGroup title="Automatic updates">
-        <Card>
-          {supported ? (
-            <ToggleRow
-              label="Check for updates automatically"
-              description={
-                lastAutomatic
-                  ? `A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else; last checked ${relativeTime(lastAutomatic)}.`
-                  : 'A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else — nothing about your sessions is ever sent.'
-              }
-              checked={settings.autoUpdate}
-              onChange={(next) => void update({ autoUpdate: next })}
-            />
-          ) : (
-            <Row
-              label="Automatic updates"
-              // Not a disabled switch: there is no automatic behaviour in this
-              // build to turn on or off, so there is nothing to render a
-              // control for.
-              description="This build has no updater, so it never contacts the release feed. Packaged releases check automatically."
-            />
+    <SectionGroup title="Updates">
+      <Card>
+        <Row
+          label="Software update"
+          description={
+            supported
+              ? undefined
+              : 'Updates are unavailable in this build — the updater is installed in packaged releases only.'
+          }
+          trailing={
+            <PushButton onClick={() => void runCheck()} disabled={!supported}>
+              Check for updates
+            </PushButton>
+          }
+        >
+          {supported && state.kind !== 'idle' && (
+            <div className="mt-1.5">
+              <CheckStatus state={state} />
+            </div>
           )}
-          <Row
-            label="Version"
+        </Row>
+        {supported ? (
+          <ToggleRow
+            label="Check for updates automatically"
             description={
-              supported
-                ? undefined
-                : 'Updates are unavailable in this build — the updater is installed in packaged releases only.'
+              lastAutomatic
+                ? `A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else; last checked ${relativeTime(lastAutomatic)}.`
+                : 'A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else — nothing about your sessions is ever sent.'
             }
-            trailing={
-              <div className="flex items-center gap-3">
-                <span className="type-body tabular-nums text-label-secondary">
-                  {info?.appVersion ?? '—'}
-                </span>
-                <PushButton onClick={() => void runCheck()} disabled={!supported}>
-                  Check for updates
-                </PushButton>
-              </div>
-            }
-          >
-            {supported && state.kind !== 'idle' && (
-              <div className="mt-1.5">
-                <CheckStatus state={state} />
-              </div>
-            )}
-          </Row>
-        </Card>
-      </SectionGroup>
-    </Pane>
+            checked={settings.autoUpdate}
+            onChange={(next) => void update({ autoUpdate: next })}
+          />
+        ) : (
+          <Row
+            label="Automatic updates"
+            // Not a disabled switch: there is no automatic behaviour in this
+            // build to turn on or off, so there is nothing to render a
+            // control for.
+            description="This build has no updater, so it never contacts the release feed. Packaged releases check automatically."
+          />
+        )}
+      </Card>
+    </SectionGroup>
   );
 }

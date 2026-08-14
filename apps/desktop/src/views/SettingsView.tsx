@@ -7,7 +7,6 @@ import {
   Info,
   LogOut,
   Palette,
-  RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
   FolderGit2,
@@ -32,7 +31,6 @@ import { GeneralPane } from './settings/GeneralPane';
 import { NotificationsPane } from './settings/NotificationsPane';
 import { PrivacyPane } from './settings/PrivacyPane';
 import { SourcesPane } from './settings/SourcesPane';
-import { UpdatesPane } from './settings/UpdatesPane';
 import { useAppSettings } from './settings/useAppSettings';
 
 /**
@@ -58,14 +56,14 @@ import { useAppSettings } from './settings/useAppSettings';
 
 // Everyday panes first, provenance last: Privacy and Notifications sit ahead
 // of Sources and Appearance so the order survives a future where more panes
-// exist, and Updates + About close the list past a hairline.
+// exist, and About closes the list. Software update lives inside About, with
+// the build it updates, rather than as a pane of its own.
 const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
   { id: 'privacy', label: 'Privacy', icon: ShieldCheck },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'sources', label: 'Sources', icon: FolderGit2 },
   { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'updates', label: 'Updates', icon: RefreshCw, separatorBefore: true },
   { id: 'about', label: 'About', icon: Info },
 ];
 
@@ -193,9 +191,8 @@ export function SettingsView() {
             {pane === 'appearance' && <AppearancePane {...controller} />}
             {pane === 'sources' && <SourcesPane />}
             {pane === 'privacy' && <PrivacyPane />}
-            {pane === 'notifications' && <NotificationsPane {...controller} info={info} />}
-            {pane === 'updates' && <UpdatesPane {...controller} info={info} />}
-            {pane === 'about' && <AboutPane info={info} onOpenPane={setPane} />}
+            {pane === 'notifications' && <NotificationsPane {...controller} />}
+            {pane === 'about' && <AboutPane {...controller} info={info} onOpenPane={setPane} />}
           </div>
         </ScrollPane>
       </div>

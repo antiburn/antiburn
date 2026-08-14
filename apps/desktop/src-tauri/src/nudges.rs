@@ -98,7 +98,8 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
         return;
     }
     let pane = match event.kind {
-        NudgeKind::UpdateAvailable => Some("updates"),
+        // Software update lives inside About (with the build it updates).
+        NudgeKind::UpdateAvailable => Some("about"),
         NudgeKind::ScanFailure => Some("general"),
         NudgeKind::DiskSpaceLow | NudgeKind::UsageAnomaly | NudgeKind::UsageMilestone => {
             Some("notifications")

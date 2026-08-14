@@ -12,7 +12,6 @@ import { SegmentedControl } from '../../components/ui/SegmentedControl';
 import { ToggleRow } from '../../components/ui/ToggleRow';
 import {
   postTestNotification,
-  type AppInfo,
   type DiskSpaceDisplay,
   type Milestones,
   type NudgePlacement,
@@ -34,17 +33,16 @@ import type { AppSettingsController } from './useAppSettings';
  * than in the system settings. The test button exists because of that: the
  * system no longer previews these, so the pane must.
  *
- * Two rows follow the honesty rule other panes established: the update row
- * renders an explanation instead of a switch in a build with no updater, and
- * the milestone rows say plainly that no live usage source ships yet
- * (`docs/deviations.md` D-19) — the pills configure a preference the engine
- * honors the day a source exists, not a notification this build can post.
+ * The update and scan-failure kinds have no rows of their own — they are
+ * named in the master switch's copy and governed by it (their per-kind
+ * preferences persist for a hand-edited row, defaulting on). The milestone
+ * rows follow the honesty rule other panes established: they say plainly
+ * that no live usage source ships yet (`docs/deviations.md` D-19) — the
+ * pills configure a preference the engine honors the day a source exists,
+ * not a notification this build can post.
  */
 
-export interface NotificationsPaneProps extends AppSettingsController {
-  /** Absent until the shell answers; `null` outside the shell entirely. */
-  info: AppInfo | null;
-}
+export type NotificationsPaneProps = AppSettingsController;
 
 const PLACEMENTS: readonly { value: NudgePlacement; label: string }[] = [
   { value: 'menuBar', label: 'Menu bar' },
@@ -106,9 +104,8 @@ function MilestonePills({
   );
 }
 
-export function NotificationsPane({ settings, update, info }: NotificationsPaneProps) {
+export function NotificationsPane({ settings, update }: NotificationsPaneProps) {
   const on = settings.notificationsEnabled;
-  const updatesSupported = info?.updatesSupported ?? false;
   const macOS = isMacOS();
 
   return (
@@ -117,7 +114,7 @@ export function NotificationsPane({ settings, update, info }: NotificationsPaneP
         <Card>
           <ToggleRow
             label="Notify me"
-            description="antiburn interrupts you for the things listed in this pane and nothing else. There is no digest, no progress notification, and no marketing."
+            description="antiburn interrupts you for a newer version, a scan that could not finish, and the alerts below — nothing else. There is no digest, no progress notification, and no marketing."
             checked={on}
             onChange={(next) => void update({ notificationsEnabled: next })}
           />
@@ -172,43 +169,6 @@ export function NotificationsPane({ settings, update, info }: NotificationsPaneP
               }
             />
           )}
-        </Card>
-      </SectionGroup>
-
-      {/* Titled by contents, not "what antiburn will say": since the usage
-          and disk groups below carry their own notification switches, an
-          umbrella title over just these two rows would claim a completeness
-          it no longer has. */}
-      <SectionGroup title="Updates and scans">
-        <Card>
-          {updatesSupported ? (
-            <ToggleRow
-              label="A new version is available"
-              description="Posted once per version, after a scheduled check finds one. A check you started yourself is never notified — you are already looking at the answer."
-              checked={settings.notifyUpdateAvailable}
-              onChange={(next) => void update({ notifyUpdateAvailable: next })}
-              // Dimmed and inert because the master switch above is off — a
-              // state, not a feature that is missing.
-              dimmed={!on}
-              disabled={!on}
-            />
-          ) : (
-            <Row
-              label="A new version is available"
-              // Not a switch: this build has no updater, so the notification it
-              // would control can never be posted.
-              description="This build has no updater, so it never finds a version to tell you about. Packaged releases check on their own schedule."
-              dimmed
-            />
-          )}
-          <ToggleRow
-            label="A scan could not finish"
-            description="Posted once per run of antiburn, not once per pass: whatever stopped the first scan usually stops the next one too, and sixty notifications would say the same thing sixty times."
-            checked={settings.notifyScanFailure}
-            onChange={(next) => void update({ notifyScanFailure: next })}
-            dimmed={!on}
-            disabled={!on}
-          />
         </Card>
       </SectionGroup>
 
