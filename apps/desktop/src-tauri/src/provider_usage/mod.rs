@@ -35,6 +35,7 @@
 //!    window starts later than the first. [`ProviderUsageSummary::coverage_since`]
 //!    carries the real start, and the views print it.
 
+pub mod live;
 pub mod providers;
 
 #[cfg(test)]
@@ -334,6 +335,40 @@ fn provider_without_models(agent: &str) -> &'static str {
 /// `rows` may hold sessions outside every window — the caller's query is
 /// bounded by [`lookback_start`], which is a lower bound, not an exact filter —
 /// and those are skipped here.
+/// Estimated spend, in USD, across every provider for sessions whose
+/// heartbeat falls in `[start, end)`.
+///
+/// The anomaly monitor's arithmetic, kept next to `summarize` because it
+/// reuses the same attribution and per-model pricing. Same floor semantics as
+/// the windows: models the catalog cannot price contribute nothing, so the
+/// figure can only understate — which is the right direction for a number
+/// that decides whether to interrupt someone.
+pub fn spend_between(rows: &[UsageEvidenceRecord], start: i64, end: i64) -> f64 {
+    let mut models: BTreeMap<String, ModelTokens> = BTreeMap::new();
+    for record in rows {
+        if record.updated_at_epoch < start || record.updated_at_epoch >= end {
+            continue;
+        }
+        for (_, provider_models) in attribute(&record.agent, breakdown_of(record)) {
+            for (model, tokens) in provider_models {
+                let entry = models.entry(model).or_default();
+                entry.input_tokens = entry.input_tokens.saturating_add(tokens.input_tokens);
+                entry.output_tokens = entry.output_tokens.saturating_add(tokens.output_tokens);
+                entry.cache_read_tokens = entry
+                    .cache_read_tokens
+                    .saturating_add(tokens.cache_read_tokens);
+                entry.cache_creation_tokens = entry
+                    .cache_creation_tokens
+                    .saturating_add(tokens.cache_creation_tokens);
+                entry.cache_creation_1h_tokens = entry
+                    .cache_creation_1h_tokens
+                    .saturating_add(tokens.cache_creation_1h_tokens);
+            }
+        }
+    }
+    price(&models).usd
+}
+
 pub fn summarize(
     rows: &[UsageEvidenceRecord],
     now: i64,

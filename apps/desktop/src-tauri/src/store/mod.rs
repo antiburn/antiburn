@@ -168,6 +168,37 @@ impl Store {
      * Settings
      * ----------------------------------------------------------------- */
 
+    /// A non-preference scalar the shell persists for itself, by key.
+    ///
+    /// Same table as the settings, different audience: these rows carry state
+    /// (a last-fired timestamp, a delivered-milestone ledger) rather than a
+    /// choice, so they are namespaced under `internal:` and never surface in
+    /// [`Store::settings`]. `None` covers both "never written" and an
+    /// unreadable store — callers treat absence as "act as if new".
+    pub fn internal_value(&self, key: &str) -> Option<String> {
+        let connection = self.lock();
+        connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+    }
+
+    /// Write (or replace) an internal scalar. Errors are swallowed by design:
+    /// every caller is a background loop for which "the seed did not persist"
+    /// degrades to a duplicate notification after a relaunch, which is a
+    /// better failure than a loop that stops.
+    pub fn set_internal_value(&self, key: &str, value: &str) {
+        let connection = self.lock();
+        let _ = connection.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        );
+    }
+
     /// Every preference, with defaults filled in for keys never written.
     pub fn settings(&self) -> Result<AppSettings> {
         let connection = self.lock();

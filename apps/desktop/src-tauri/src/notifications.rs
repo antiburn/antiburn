@@ -9,13 +9,16 @@
 //! choose to look at. That makes it the surface where restraint matters most,
 //! so the whole policy is here rather than spread across the callers:
 //!
-//! - **There are exactly two kinds.** A newer version is available, and a scan
-//!   failed. Both are things a reader would act on; neither is a progress
-//!   report. Nothing else in the app posts a notification.
+//! - **Every kind is enumerated here.** A newer version, a failed scan, low
+//!   disk space, unusually fast spend, a crossed usage milestone, and the
+//!   settings pane's own test. Each is something a reader would act on (or,
+//!   for the test, explicitly asked for); none is a progress report. Nothing
+//!   else in the app posts a notification.
 //! - **Every kind is gated twice** — once by the master preference and once by
-//!   its own ([`allowed`]). Both default on, because a notification surface
+//!   its own ([`allowed`]). All default on, because a notification surface
 //!   that has to be discovered before it says anything is a surface nobody
-//!   discovers.
+//!   discovers. The one exception is [`Kind::Test`], which bypasses the
+//!   master switch: pressing "Show test" is the reader asking to see one.
 //! - **Nothing repeats.** A scan failure is announced once per run of the app,
 //!   not once per tick ([`NotificationState::claim_scan_failure`]), and a
 //!   version is announced once, not every six hours
@@ -52,18 +55,40 @@ pub enum Kind {
     UpdateAvailable,
     /// A scan pass ended in an error.
     ScanFailure,
+    /// Free disk space dropped below the reader's threshold.
+    DiskSpaceLow,
+    /// Sustained spend unusually fast for this machine.
+    UsageAnomaly,
+    /// A live usage window crossed a milestone the reader asked about.
+    UsageMilestone,
+    /// The settings pane's "Show test" button.
+    Test,
 }
 
 /// Whether `kind` may be delivered under these preferences.
 ///
 /// The master switch wins: turning notifications off turns *all* of them off,
-/// without the two per-kind preferences having to be rewritten (so turning the
-/// master back on restores the reader's earlier choices rather than a default).
+/// without the per-kind preferences having to be rewritten (so turning the
+/// master back on restores the reader's earlier choices rather than a
+/// default). [`Kind::Test`] alone ignores the master switch — it exists so a
+/// reader can see what a notification looks like *before* deciding to allow
+/// them.
 pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
+    if kind == Kind::Test {
+        return true;
+    }
     settings.notifications_enabled
         && match kind {
             Kind::UpdateAvailable => settings.notify_update_available,
             Kind::ScanFailure => settings.notify_scan_failure,
+            Kind::DiskSpaceLow => settings.notify_disk_space_low,
+            Kind::UsageAnomaly => settings.notify_usage_anomalies,
+            // Milestones have no single switch: the two per-window rows are
+            // the preference, and an empty selection is "off".
+            Kind::UsageMilestone => {
+                settings.milestones_5h.any() || settings.milestones_weekly.any()
+            }
+            Kind::Test => true,
         }
 }
 
@@ -172,6 +197,64 @@ pub fn scan_failure_message(error: &str) -> (String, String) {
     )
 }
 
+/// The title and body of a low-disk notification.
+pub fn disk_space_low_message(free_gb: u64, threshold_gb: u32) -> (String, String) {
+    (
+        format!("{free_gb} GB of disk space left"),
+        format!(
+            "Free space dropped below your {threshold_gb} GB mark. \
+             Settings → Notifications has the threshold."
+        ),
+    )
+}
+
+/// The title and body of a spend-anomaly notification.
+///
+/// Estimates, and the copy says so: the figures come from the local pricing
+/// catalog over this machine's own transcripts, never from a provider.
+pub fn usage_anomaly_message(hour_usd: f64, week_usd: f64) -> (String, String) {
+    (
+        "Spending unusually fast".to_string(),
+        format!(
+            "An estimated ${hour_usd:.2} in the last hour, against roughly \
+             ${week_usd:.2} across the whole past week. Estimated locally \
+             from your sessions — nothing was fetched."
+        ),
+    )
+}
+
+/// The title and body of a usage-milestone notification.
+pub fn usage_milestone_message(content: &crate::provider_usage::live::MilestoneContent) -> (String, String) {
+    let highest = content
+        .crossings
+        .iter()
+        .map(|crossing| crossing.threshold)
+        .max()
+        .unwrap_or(0);
+    let windows = content
+        .crossings
+        .iter()
+        .map(|crossing| crossing.window_label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    (
+        format!("{}% of your {} used", highest, windows),
+        format!(
+            "{} reports the crossing; the number is the provider's own. \
+             Settings → Notifications chooses which milestones speak.",
+            content.provider
+        ),
+    )
+}
+
+/// The title and body of the settings pane's test notification.
+pub fn test_message() -> (String, String) {
+    (
+        "antiburn notifications are working".to_string(),
+        "This is a sample notification from your settings.".to_string(),
+    )
+}
+
 /// Report a finished scan pass, if it failed and nothing has reported one yet.
 pub fn note_scan_outcome(app: &AppHandle, status: &ScanStatus) {
     let Some(error) = status.error.as_deref() else {
@@ -212,6 +295,51 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
         return;
     }
     let (title, body) = update_message(version);
+    PlatformNotifier(app).deliver(&title, &body);
+}
+
+/// Report low disk space. Returns whether the episode was consumed: `true`
+/// when delivered, `false` when suppressed by preference so the caller's
+/// trigger retries on its next tick (see [`crate::disk_monitor`]).
+pub fn note_disk_space_low(app: &AppHandle, free_gb: u64, threshold_gb: u32) -> bool {
+    if !enabled(app, Kind::DiskSpaceLow) {
+        return false;
+    }
+    let (title, body) = disk_space_low_message(free_gb, threshold_gb);
+    PlatformNotifier(app).deliver(&title, &body);
+    true
+}
+
+/// Report a spend anomaly. Once-per-episode is the caller's job
+/// ([`crate::usage_alerts`]); this only applies the preference gate.
+pub fn note_usage_anomaly(app: &AppHandle, hour_usd: f64, week_usd: f64) -> bool {
+    if !enabled(app, Kind::UsageAnomaly) {
+        return false;
+    }
+    let (title, body) = usage_anomaly_message(hour_usd, week_usd);
+    PlatformNotifier(app).deliver(&title, &body);
+    true
+}
+
+/// Report crossed milestones. Selection and dedup happen in the engine
+/// ([`crate::provider_usage::live`]); this only applies the preference gate.
+pub fn note_usage_milestone(
+    app: &AppHandle,
+    content: &crate::provider_usage::live::MilestoneContent,
+) -> bool {
+    if !enabled(app, Kind::UsageMilestone) {
+        return false;
+    }
+    let (title, body) = usage_milestone_message(content);
+    PlatformNotifier(app).deliver(&title, &body);
+    true
+}
+
+/// Post the settings pane's test notification. Bypasses the master switch —
+/// the reader pressed the button — but is otherwise the same delivery path as
+/// every real kind, so what they see is what they will get.
+pub fn note_test(app: &AppHandle) {
+    let (title, body) = test_message();
     PlatformNotifier(app).deliver(&title, &body);
 }
 
@@ -273,6 +401,68 @@ mod tests {
         };
         assert!(allowed(&settings, Kind::UpdateAvailable));
         assert!(!allowed(&settings, Kind::ScanFailure));
+    }
+
+    #[test]
+    fn the_test_kind_bypasses_the_master_switch_and_nothing_else_does() {
+        let settings = AppSettings {
+            notifications_enabled: false,
+            ..settings()
+        };
+        assert!(allowed(&settings, Kind::Test));
+        for kind in [
+            Kind::UpdateAvailable,
+            Kind::ScanFailure,
+            Kind::DiskSpaceLow,
+            Kind::UsageAnomaly,
+            Kind::UsageMilestone,
+        ] {
+            assert!(!allowed(&settings, kind));
+        }
+    }
+
+    #[test]
+    fn an_empty_milestone_selection_is_how_milestones_are_off() {
+        let none = crate::store::Milestones {
+            at50: false,
+            at75: false,
+            at90: false,
+        };
+        let settings = AppSettings {
+            milestones_5h: none,
+            milestones_weekly: none,
+            ..settings()
+        };
+        assert!(!allowed(&settings, Kind::UsageMilestone));
+
+        let settings = AppSettings {
+            milestones_weekly: none,
+            ..AppSettings::default()
+        };
+        // One row still selected is still a preference to hear about it.
+        assert!(allowed(&settings, Kind::UsageMilestone));
+    }
+
+    #[test]
+    fn disk_and_anomaly_kinds_honor_their_own_switches() {
+        let settings = AppSettings {
+            notify_disk_space_low: false,
+            notify_usage_anomalies: false,
+            ..settings()
+        };
+        assert!(!allowed(&settings, Kind::DiskSpaceLow));
+        assert!(!allowed(&settings, Kind::UsageAnomaly));
+        assert!(allowed(&settings, Kind::ScanFailure));
+    }
+
+    #[test]
+    fn the_anomaly_copy_says_the_figures_are_local_estimates() {
+        let (_, body) = usage_anomaly_message(12.5, 40.0);
+        assert!(body.contains("$12.50"));
+        assert!(
+            body.contains("Estimated locally") && body.contains("nothing was fetched"),
+            "an estimate must not read as a provider's own number"
+        );
     }
 
     #[test]

@@ -613,3 +613,25 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
     assert_eq!(store.usage_evidence(2_000).unwrap().len(), 1);
     assert!(store.usage_evidence(2_001).unwrap().is_empty());
 }
+
+#[test]
+fn internal_values_round_trip_and_stay_out_of_settings() {
+    let store = store();
+    assert_eq!(store.internal_value("internal:diskSpaceLowFiredMs"), None);
+
+    store.set_internal_value("internal:diskSpaceLowFiredMs", "1723600000000");
+    assert_eq!(
+        store.internal_value("internal:diskSpaceLowFiredMs").as_deref(),
+        Some("1723600000000")
+    );
+
+    // Overwrite, not append: one row per key, like every setting.
+    store.set_internal_value("internal:diskSpaceLowFiredMs", "1723600001000");
+    assert_eq!(
+        store.internal_value("internal:diskSpaceLowFiredMs").as_deref(),
+        Some("1723600001000")
+    );
+
+    // Internal rows share the table but never surface as preferences.
+    assert_eq!(store.settings().unwrap(), AppSettings::default());
+}

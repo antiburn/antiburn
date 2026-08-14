@@ -40,6 +40,7 @@
 mod agents;
 mod analytics;
 mod commands;
+mod disk_monitor;
 mod dto;
 mod export;
 mod notifications;
@@ -51,7 +52,9 @@ mod settings;
 mod storage_health;
 mod store;
 mod tray;
+mod tray_title;
 mod updates;
+mod usage_alerts;
 
 use std::sync::Mutex;
 
@@ -107,6 +110,7 @@ pub fn run() {
             commands::list_repositories,
             commands::list_scan_roots,
             commands::open_settings_window,
+            commands::post_test_notification,
             commands::quit_app,
             commands::refresh_repositories,
             commands::remove_scan_root,
@@ -159,6 +163,8 @@ pub fn run() {
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
+                schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
+                schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
             }
 
             Ok(())
