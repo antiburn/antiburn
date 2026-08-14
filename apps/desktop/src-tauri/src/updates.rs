@@ -29,13 +29,14 @@
 //!
 //! # The signing key is a release requirement, not a nicety
 //!
-//! `plugins.updater.pubkey` in `tauri.conf.json` is deliberately **empty** in
-//! the committed configuration, and `bundle.createUpdaterArtifacts` is **true**
-//! — so a release build produces signed updater bundles, and this build refuses
-//! to claim update support until the matching public key is committed. The two
-//! halves are one decision: an updater with artifacts but no key would download
-//! something it cannot verify, and an updater with a key but no artifacts would
-//! have nothing to check.
+//! `plugins.updater.pubkey` in `tauri.conf.json` carries the updater key's
+//! public half (minted 2026-08-14; custody in
+//! `docs/runbooks/updater-key-recovery.md`), and
+//! `bundle.createUpdaterArtifacts` is **true** — so a release build produces
+//! signed updater bundles, and this build claims update support only while a
+//! key is present. The two halves are one decision: an updater with artifacts
+//! but no key would download something it cannot verify, and an updater with a
+//! key but no artifacts would have nothing to check.
 //!
 //! A real release therefore **requires** the key pair to exist: the private
 //! half in the release environment as `TAURI_SIGNING_PRIVATE_KEY`, the public
