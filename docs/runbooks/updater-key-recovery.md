@@ -46,8 +46,13 @@ is parsed as strict JSON, so a comment there fails the build.)
 ## Minting it, once
 
 ```bash
-pnpm --filter @antiburn/desktop exec tauri signer generate -w ./antiburn-updater.key
+pnpm --filter @antiburn/desktop exec tauri signer generate -w "$HOME/antiburn-updater.key"
 ```
+
+The `-w` path is deliberately absolute: `pnpm --filter` runs the tool inside
+`apps/desktop`, so a relative path would drop both halves into the working
+tree. `.gitignore` guards `*.key` as a backstop, but the private half should
+never touch the repository at all.
 
 Give it a passphrase. Then:
 
