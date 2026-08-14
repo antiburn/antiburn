@@ -24,6 +24,24 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Fixed
+
+- The macOS app opens after download. Unsigned rehearsal builds are now sealed
+  with an ad-hoc signature, so instead of "antiburn is damaged and can't be
+  opened", macOS shows the standard unidentified-developer warning and
+  right-click → Open works.
+
+### Changed
+
+- Installing no longer shows a licence-agreement screen — neither on the
+  mounted macOS disk image nor in the Windows installer. The MPL-2.0 requires
+  no acceptance, and the full licence text is now readable inside the app.
+
+### Added
+
+- Settings → About gains "Legal notices" and "Licence text": the notice and
+  attributions, and the complete licence, readable in place.
+
 ## [0.1.0-rc.2] - 2026-08-14
 
 A release-candidate rehearsal build, not a supported release. The macOS and

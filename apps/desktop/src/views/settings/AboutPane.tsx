@@ -3,9 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { Card } from '../../components/ui/Card';
+import { Disclosure, DisclosureGroup } from '../../components/ui/Disclosure';
 import { Pane } from '../../components/ui/Pane';
 import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
+import { ATTRIBUTIONS, LICENSE_TEXT, NOTICE_TEXT } from '../../lib/legalNotices';
 import { revealSource, type AppInfo } from '../../lib/ipc';
 import { detectPlatform, type Platform } from '../../lib/platform';
 import type { SettingsPane } from '../../lib/settingsPanes';
@@ -101,10 +103,10 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
         <Card>
           <Row
             label="Licence"
-            // Stated, not linked. The full text ships in the bundle and every
-            // source file carries the header, so this is checkable without a
-            // browser — which is the point of putting it in an offline app.
-            description="antiburn is free software under the Mozilla Public License 2.0. The full text ships with the application, and every source file carries its header."
+            // Stated and readable here, never linked. Keeping the full text in
+            // the pane makes it checkable without a browser — which is the
+            // point of putting it in an offline app.
+            description="antiburn is free software under the Mozilla Public License 2.0. The full text is readable below, and every source file carries its header."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">MPL-2.0</span>
             }
@@ -117,6 +119,31 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
             />
           )}
         </Card>
+        {/* Disclosures rather than rows: legal text is explanatory prose, and
+            the bodies stay unmounted while collapsed so two long documents do
+            not sit in the accessibility tree of every About visit. Plain text
+            only — the pane's no-external-links rule applies to the licence's
+            own URLs too, so nothing here is an anchor. */}
+        <DisclosureGroup>
+          <Disclosure label="Legal notices">
+            <div className="flex flex-col gap-3">
+              <p className="type-footnote whitespace-pre-wrap text-label-secondary">
+                {NOTICE_TEXT.trim()}
+              </p>
+              {ATTRIBUTIONS.map((attribution) => (
+                <div key={attribution.title}>
+                  <p className="type-footnote font-medium text-label">{attribution.title}</p>
+                  <p className="type-footnote text-label-secondary">{attribution.body}</p>
+                </div>
+              ))}
+            </div>
+          </Disclosure>
+          <Disclosure label="Licence text">
+            <p className="type-footnote whitespace-pre-wrap text-label-secondary">
+              {LICENSE_TEXT.trim()}
+            </p>
+          </Disclosure>
+        </DisclosureGroup>
       </SectionGroup>
 
       <SectionGroup title="Data">
