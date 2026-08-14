@@ -14,9 +14,11 @@
 //! - [`agents`] — translating between the engine's two names for an agent.
 //! - [`analytics`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
+//! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
 //! - [`export`] — the derived-only session export document.
-//! - [`notifications`] — the two things worth interrupting a reader for.
+//! - [`notifications`] — the policy on what may interrupt a reader.
+//! - [`nudges`] — presentation glue between that policy and the window.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
 //! - [`provider_usage`] — per-provider totals derived from local sessions.
 //! - [`repositories`] — which repositories on this machine antiburn watches.
@@ -25,7 +27,9 @@
 //! - [`storage_health`] — whether the local database still accepts writes.
 //! - [`store`] — the app's local SQLite database.
 //! - [`tray`] — the menu-bar item and its click and menu handling.
+//! - [`tray_title`] — the attributed-string text beside the tray glyph.
 //! - [`updates`] — whether, and when, the release feed may be contacted.
+//! - [`usage_alerts`] — the spend-anomaly and milestone monitor.
 //!
 //! # Offline by construction
 //!
@@ -33,9 +37,10 @@
 //! contract, the shell adds no HTTP client, and the only network-capable
 //! surface in the whole application is the updater plugin — registered in
 //! release builds only, so a development run performs no network requests at
-//! all. The notification plugin talks to the platform's local notification
-//! centre and nothing else. The webview side is held to the same rule by a test
-//! (`apps/desktop/tests/offline.test.ts`).
+//! all. Notifications are antiburn's own window, fed by a local event.
+//! Online features are per-feature opt-in under D-023, and none ships
+//! connected (`docs/deviations.md`, D-19). The webview side is held to the
+//! same rule by a test (`apps/desktop/tests/offline.test.ts`).
 
 mod agents;
 mod analytics;

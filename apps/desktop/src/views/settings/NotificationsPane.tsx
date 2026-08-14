@@ -117,7 +117,7 @@ export function NotificationsPane({ settings, update, info }: NotificationsPaneP
         <Card>
           <ToggleRow
             label="Notify me"
-            description="antiburn interrupts you for the things listed below and nothing else. There is no digest, no progress notification, and no marketing."
+            description="antiburn interrupts you for the things listed in this pane and nothing else. There is no digest, no progress notification, and no marketing."
             checked={on}
             onChange={(next) => void update({ notificationsEnabled: next })}
           />
@@ -175,7 +175,11 @@ export function NotificationsPane({ settings, update, info }: NotificationsPaneP
         </Card>
       </SectionGroup>
 
-      <SectionGroup title="What antiburn will say">
+      {/* Titled by contents, not "what antiburn will say": since the usage
+          and disk groups below carry their own notification switches, an
+          umbrella title over just these two rows would claim a completeness
+          it no longer has. */}
+      <SectionGroup title="Updates and scans">
         <Card>
           {updatesSupported ? (
             <ToggleRow
