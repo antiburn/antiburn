@@ -4,10 +4,16 @@
 
 //! The standalone settings window.
 //!
-//! Unlike the popover this is an ordinary, decorated, resizable window: it is
-//! a place to read and change configuration, not a transient surface. It is
-//! created on first use and then reused, because a menu-bar app can be asked
-//! to open settings many times per session.
+//! Unlike the popover this is an ordinary window with real decorations: a
+//! place to read and change configuration, not a transient surface. It is
+//! fixed at 960×680, created on first use, and then reused, because a
+//! menu-bar app can be asked to open settings many times per session.
+//!
+//! On macOS the title bar is an overlay: decorations (traffic lights, system
+//! shadow, real close semantics) are kept, the bar itself is transparent, and
+//! the floating title text is hidden — the frontend paints a
+//! `data-tauri-drag-region` strip across the top as the drag handle (see
+//! `src/views/SettingsView.tsx`). Windows and Linux keep the stock title bar.
 
 use std::sync::Mutex;
 
@@ -80,14 +86,29 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
         pending.set(pane);
     }
 
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
         .title("antiburn Settings")
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
         .maximizable(false)
         .center()
-        .focused(true)
-        .build()?;
+        .focused(true);
+
+    #[cfg(target_os = "macos")]
+    {
+        // Overlay keeps decorations while making the title bar transparent;
+        // `hidden_title` drops the floating title text. `.title(...)` above
+        // stays so Mission Control and accessibility still name the window.
+        // The webview covers the bar's area, so the frontend supplies the drag
+        // handle (`data-tauri-drag-region` in SettingsView) — the ACL already
+        // grants `core:window:allow-start-dragging`.
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+
+    builder.build()?;
 
     Ok(())
 }
