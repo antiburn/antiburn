@@ -36,6 +36,19 @@ import type {
 /** How the app renders itself. `system` follows the OS appearance. */
 export type ThemePreference = 'system' | 'light' | 'dark';
 
+/** Where the notification window appears. `menuBar` is macOS-only. */
+export type NudgePlacement = 'menuBar' | 'topRight';
+
+/** When the menu bar shows the free-disk-space number. */
+export type DiskSpaceDisplay = 'always' | 'whenLow' | 'never';
+
+/** Which usage-milestone thresholds notify, for one window class. */
+export interface Milestones {
+  at50: boolean;
+  at75: boolean;
+  at90: boolean;
+}
+
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
   theme: ThemePreference;
@@ -56,13 +69,36 @@ export interface AppSettings {
   discoveryPaused: boolean;
   /**
    * The master switch for desktop notifications. Off means nothing is
-   * delivered, whatever the two per-kind preferences say.
+   * delivered, whatever the per-kind preferences say.
    */
   notificationsEnabled: boolean;
   /** Notify when an automatic update check finds a newer version. */
   notifyUpdateAvailable: boolean;
   /** Notify the first time a scan fails in this run of the app. */
   notifyScanFailure: boolean;
+  /** Where the notification window appears. */
+  nudgePlacement: NudgePlacement;
+  /** Seconds a nudge stays before dismissing itself (3–30). */
+  nudgeAutoDismissSecs: number;
+  /** Whether a nudge may play the notification chime. */
+  notificationSound: boolean;
+  /** When the menu bar shows the free-disk-space number. */
+  diskSpaceDisplay: DiskSpaceDisplay;
+  /** Free space, in GB, below which the disk counts as low (5–2000). */
+  diskSpaceThresholdGb: number;
+  /** Notify once each time free space drops below the threshold. */
+  notifyDiskSpaceLow: boolean;
+  /** Notify when sustained spend is unusually fast for this machine. */
+  notifyUsageAnomalies: boolean;
+  /** Five-hour-window milestones. Only fire while live usage is enabled. */
+  milestones5h: Milestones;
+  /** Weekly-window milestones. */
+  milestonesWeekly: Milestones;
+  /**
+   * The per-feature online opt-in for live usage limits. Off by default: the
+   * app calls no provider endpoint until the reader turns this on.
+   */
+  liveUsageEnabled: boolean;
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -303,6 +339,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notificationsEnabled: true,
   notifyUpdateAvailable: true,
   notifyScanFailure: true,
+  nudgePlacement: 'menuBar',
+  nudgeAutoDismissSecs: 10,
+  notificationSound: true,
+  diskSpaceDisplay: 'whenLow',
+  diskSpaceThresholdGb: 50,
+  notifyDiskSpaceLow: true,
+  notifyUsageAnomalies: true,
+  milestones5h: { at50: true, at75: true, at90: true },
+  milestonesWeekly: { at50: true, at75: true, at90: true },
+  liveUsageEnabled: false,
 };
 
 /* -------------------------------------------------------------------------

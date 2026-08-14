@@ -39,9 +39,9 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub use model::{
-    AnalysisRecord, AppSettings, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS, RelationKind,
-    RelationRecord, RepositoryRecord, SessionKey, SessionRecord, ThemePreference,
-    UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, Milestones, NudgePlacement,
+    MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS, RelationKind, RelationRecord, RepositoryRecord,
+    SessionKey, SessionRecord, ThemePreference, UsageEvidenceRecord,
 };
 
 /// File name of the database inside the app data directory.
@@ -219,6 +219,46 @@ impl Store {
                 .get("notifyScanFailure")
                 .map(|value| value == "true")
                 .unwrap_or(defaults.notify_scan_failure),
+            nudge_placement: stored
+                .get("nudgePlacement")
+                .and_then(|value| NudgePlacement::parse(value))
+                .unwrap_or(defaults.nudge_placement),
+            nudge_auto_dismiss_secs: stored
+                .get("nudgeAutoDismissSecs")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(defaults.nudge_auto_dismiss_secs),
+            notification_sound: stored
+                .get("notificationSound")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notification_sound),
+            disk_space_display: stored
+                .get("diskSpaceDisplay")
+                .and_then(|value| DiskSpaceDisplay::parse(value))
+                .unwrap_or(defaults.disk_space_display),
+            disk_space_threshold_gb: stored
+                .get("diskSpaceThresholdGb")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(defaults.disk_space_threshold_gb),
+            notify_disk_space_low: stored
+                .get("notifyDiskSpaceLow")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notify_disk_space_low),
+            notify_usage_anomalies: stored
+                .get("notifyUsageAnomalies")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notify_usage_anomalies),
+            milestones_5h: stored
+                .get("milestones5h")
+                .map(|value| Milestones::parse(value))
+                .unwrap_or(defaults.milestones_5h),
+            milestones_weekly: stored
+                .get("milestonesWeekly")
+                .map(|value| Milestones::parse(value))
+                .unwrap_or(defaults.milestones_weekly),
+            live_usage_enabled: stored
+                .get("liveUsageEnabled")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.live_usage_enabled),
         };
         Ok(settings.normalized())
     }
@@ -262,6 +302,43 @@ impl Store {
             put.execute(params![
                 "notifyScanFailure",
                 bool_text(settings.notify_scan_failure)
+            ])?;
+            put.execute(params![
+                "nudgePlacement",
+                settings.nudge_placement.as_str()
+            ])?;
+            put.execute(params![
+                "nudgeAutoDismissSecs",
+                settings.nudge_auto_dismiss_secs.to_string()
+            ])?;
+            put.execute(params![
+                "notificationSound",
+                bool_text(settings.notification_sound)
+            ])?;
+            put.execute(params![
+                "diskSpaceDisplay",
+                settings.disk_space_display.as_str()
+            ])?;
+            put.execute(params![
+                "diskSpaceThresholdGb",
+                settings.disk_space_threshold_gb.to_string()
+            ])?;
+            put.execute(params![
+                "notifyDiskSpaceLow",
+                bool_text(settings.notify_disk_space_low)
+            ])?;
+            put.execute(params![
+                "notifyUsageAnomalies",
+                bool_text(settings.notify_usage_anomalies)
+            ])?;
+            put.execute(params!["milestones5h", settings.milestones_5h.as_str()])?;
+            put.execute(params![
+                "milestonesWeekly",
+                settings.milestones_weekly.as_str()
+            ])?;
+            put.execute(params![
+                "liveUsageEnabled",
+                bool_text(settings.live_usage_enabled)
             ])?;
         }
         tx.commit()?;
