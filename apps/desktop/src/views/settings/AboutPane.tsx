@@ -7,8 +7,17 @@ import { Pane } from '../../components/ui/Pane';
 import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
 import { revealSource, type AppInfo } from '../../lib/ipc';
+import { detectPlatform, type Platform } from '../../lib/platform';
 import type { SettingsPane } from '../../lib/settingsPanes';
 import { PushButton } from '../../components/ui/PushButton';
+
+/** Display names for the masthead; `detectPlatform` reports lowercase ids. */
+const PLATFORM_LABELS: Record<Platform, string> = {
+  macos: 'macOS',
+  windows: 'Windows',
+  linux: 'Linux',
+  unknown: 'Unknown',
+};
 
 /**
  * About: what this build is, where its data lives, and what it is licensed
@@ -39,17 +48,29 @@ export function AboutPane({
 }) {
   return (
     <Pane title="About">
+      {/* The app identity sits directly on the window surface rather than in a
+          Card: it is a masthead, not a group of settings rows, and card chrome
+          would read as an empty container around it. */}
+      <div className="flex flex-col items-center gap-3 py-2 text-center">
+        <div>
+          <p className="type-title-1 text-label">antiburn</p>
+          <p className="type-callout text-label-secondary">
+            Local-first visibility into your AI coding-agent sessions.
+          </p>
+        </div>
+        <div>
+          <p className="type-body tabular-nums text-label">
+            Version {info?.appVersion ?? '—'}
+          </p>
+          <p className="type-footnote text-label-secondary">
+            {PLATFORM_LABELS[detectPlatform()]}
+            {info?.arch ? ` · ${info.arch}` : ''}
+          </p>
+        </div>
+      </div>
+
       <SectionGroup title="Build">
         <Card>
-          <Row
-            label="antiburn"
-            description="Local-first visibility into your AI coding-agent sessions."
-            trailing={
-              <span className="type-body tabular-nums text-label-secondary">
-                {info?.appVersion ?? '—'}
-              </span>
-            }
-          />
           <Row
             label="Pricing catalog"
             description="Review date of the bundled price list every cost estimate is computed from. Prices are never fetched."

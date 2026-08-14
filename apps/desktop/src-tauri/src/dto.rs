@@ -324,6 +324,8 @@ pub struct ProviderUsageSummary {
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub app_version: String,
+    /// CPU architecture this binary was compiled for, e.g. `aarch64`.
+    pub arch: String,
     /// Review date of the engine's bundled pricing catalog.
     pub pricing_catalog_version: String,
     /// Applied schema version of the local database.

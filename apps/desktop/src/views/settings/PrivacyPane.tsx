@@ -6,6 +6,7 @@ import { confirm } from '@tauri-apps/plugin-dialog';
 import { useCallback, useState } from 'react';
 
 import { Card } from '../../components/ui/Card';
+import { Disclosure, DisclosureGroup } from '../../components/ui/Disclosure';
 import { Pane } from '../../components/ui/Pane';
 import { PushButton } from '../../components/ui/PushButton';
 import { Row } from '../../components/ui/Row';
@@ -57,30 +58,47 @@ export function PrivacyPane() {
 
   return (
     <Pane title="Privacy">
-      <SectionGroup title="How antiburn handles your data">
-        <Card>
-          <Row
-            label="Sources are read, never written"
-            description="antiburn reads the session files and read-only databases your coding agents already keep on this machine. It never modifies them, never deletes them, and never copies a transcript anywhere."
-          />
-          <Row
-            label="Only derived analysis is stored"
-            description="The local database holds identities, file locations, and numbers the analysis produced — counts, durations, token totals, cost estimates. It holds no transcript bodies: no message text, no tool arguments, no file contents. Two short excerpts are kept so sessions are recognizable: a session's title (for agents that record none, the opening of your first message, capped at 200 characters) and each skill's one-line description, capped at 300 characters."
-          />
-          <Row
-            label="History is kept for two weeks"
-            description="Sessions older than 14 days are dropped from the index automatically. The agents' own files are left exactly where they are — antiburn simply stops describing them."
-          />
-          <Row
-            label="Nothing is uploaded"
-            description="There is no account, no server, and no usage data collected. The only time antiburn uses the network is when it asks GitHub Releases whether a newer version exists, and that check sends nothing about you or your sessions."
-          />
-          <Row
-            label="Exports describe real work"
-            description="An exported session carries derived analysis plus the session's title and the paths it ran in — enough to describe what you were doing. antiburn warns before every export and asks where to put the file."
-          />
-        </Card>
-      </SectionGroup>
+      <div className="space-y-3">
+        <p className="type-body text-pretty text-label-secondary">
+          antiburn reads the session files your coding agents already keep on this machine,
+          stores only derived analysis, and uploads nothing. Each promise below opens into the
+          specifics a reader could reasonably want to check.
+        </p>
+        {/* Disclosures rather than Card rows: this is explanatory prose, and a
+            card of five paragraph-length rows read as settings that could not
+            be changed. Collapsed by default — the labels are the contract, the
+            bodies are the receipts. */}
+        <DisclosureGroup>
+          <Disclosure label="Sources are read, never written">
+            antiburn reads the session files and read-only databases your coding agents already
+            keep on this machine. It never modifies them, never deletes them, and never copies a
+            transcript anywhere.
+          </Disclosure>
+          <Disclosure label="Only derived analysis is stored">
+            The local database holds identities, file locations, and numbers the analysis
+            produced — counts, durations, token totals, cost estimates. It holds no transcript
+            bodies: no message text, no tool arguments, no file contents. Two short excerpts are
+            kept so sessions are recognizable: a session&rsquo;s title (for agents that record
+            none, the opening of your first message, capped at 200 characters) and each
+            skill&rsquo;s one-line description, capped at 300 characters.
+          </Disclosure>
+          <Disclosure label="History is kept for two weeks">
+            Sessions older than 14 days are dropped from the index automatically. The
+            agents&rsquo; own files are left exactly where they are — antiburn simply stops
+            describing them.
+          </Disclosure>
+          <Disclosure label="Nothing is uploaded">
+            There is no account, no server, and no usage data collected. The only time antiburn
+            uses the network is when it asks GitHub Releases whether a newer version exists, and
+            that check sends nothing about you or your sessions.
+          </Disclosure>
+          <Disclosure label="Exports describe real work">
+            An exported session carries derived analysis plus the session&rsquo;s title and the
+            paths it ran in — enough to describe what you were doing. antiburn warns before
+            every export and asks where to put the file.
+          </Disclosure>
+        </DisclosureGroup>
+      </div>
 
       <SectionGroup title="Local data">
         <Card>

@@ -64,6 +64,7 @@ const SETTINGS = {
 
 const INFO = {
   appVersion: '0.1.0',
+  arch: 'aarch64',
   pricingCatalogVersion: '2026-08-12',
   schemaVersion: 1,
   dataDir: '/home/avery/Library/Application Support/ai.antiburn.desktop',
@@ -326,6 +327,15 @@ describe('SettingsView', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Privacy' }));
 
+    // The contract's headlines are always on screen as disclosure labels…
+    const stored = await screen.findByRole('button', {
+      name: 'Only derived analysis is stored',
+    });
+    expect(screen.getByRole('button', { name: 'Nothing is uploaded' })).toBeInTheDocument();
+
+    // …and each opens into its receipts. Collapsed bodies are unmounted, so
+    // the specifics genuinely appear on expansion rather than being hidden.
+    fireEvent.click(stored);
     expect(
       await screen.findByText(/no message text, no tool arguments, no file contents/i),
     ).toBeInTheDocument();
@@ -378,12 +388,23 @@ describe('SettingsView', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
 
     expect(
-      await screen.findByText(/no message text, no tool arguments, no file contents/i),
+      await screen.findByRole('button', { name: 'Only derived analysis is stored' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Privacy' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
+  });
+
+  it('opens About on a masthead that names the build', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+
+    expect(await screen.findByText('Version 0.1.0')).toBeInTheDocument();
+    // The platform half of the line depends on the host's user agent, which
+    // jsdom fakes; the architecture comes from the shell and is asserted.
+    expect(screen.getByText(/· aarch64$/)).toBeInTheDocument();
   });
 
   it('quits antiburn from the sidebar, through the shell', async () => {

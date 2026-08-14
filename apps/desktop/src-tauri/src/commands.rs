@@ -135,6 +135,7 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
     let store = app.state::<Store>();
     Ok(AppInfo {
         app_version: app.package_info().version.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
         pricing_catalog_version: antiburn_local::pricing::PRICING_CATALOG_VERSION.to_string(),
         schema_version: store.schema_version().map_err(fail)?,
         data_dir: store.state_dir().to_string_lossy().to_string(),

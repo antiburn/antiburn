@@ -68,6 +68,8 @@ export interface AppSettings {
 /** Where the app came from. Mirrors Rust `AppInfo`. */
 export interface AppInfo {
   appVersion: string;
+  /** CPU architecture this binary was compiled for, e.g. `aarch64`. */
+  arch: string;
   pricingCatalogVersion: string;
   schemaVersion: number;
   dataDir: string;
