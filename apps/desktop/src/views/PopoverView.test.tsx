@@ -591,6 +591,17 @@ describe('PopoverView — window behaviour', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('hide_popover'));
   });
 
+  it('opens Settings on the platform preferences shortcut', async () => {
+    render(<PopoverView />);
+    await screen.findByText('Wire the tray popover');
+
+    fireEvent.keyDown(document, { key: ',', metaKey: true });
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('open_settings_window', { pane: null }),
+    );
+  });
+
   it('lets an open provider panel claim Escape before the window does', async () => {
     render(<PopoverView />);
 

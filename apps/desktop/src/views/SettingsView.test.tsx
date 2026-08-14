@@ -18,6 +18,9 @@ const invoke = vi.hoisted(() => vi.fn());
 const openDialog = vi.hoisted(() => vi.fn());
 const confirmDialog = vi.hoisted(() => vi.fn());
 const checkForUpdate = vi.hoisted(() => vi.fn());
+const closeWindow = vi.hoisted(() => vi.fn());
+/** Mutable so a test can render the macOS chrome; jsdom itself has no OS. */
+const platform = vi.hoisted(() => ({ mac: false }));
 /** Shell event handlers the view subscribed to, by event name. */
 const listeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
 
@@ -28,12 +31,19 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => listeners.delete(name);
   }),
 }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ close: closeWindow }),
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: openDialog,
   confirm: confirmDialog,
   save: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: checkForUpdate }));
+vi.mock('../lib/platform', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/platform')>();
+  return { ...actual, isMacOS: () => platform.mac };
+});
 
 /** Push a shell event at whatever subscribed to it. */
 function emit(name: string, payload: unknown) {
@@ -422,6 +432,80 @@ describe('SettingsView', () => {
       'aria-selected',
       'true',
     );
+  });
+});
+
+/**
+ * Window chrome and shortcuts.
+ *
+ * On macOS the native title bar is hidden and a frontend strip is the window's
+ * drag handle; everywhere else the native bar stays and no strip renders.
+ * `isMacOS` is mocked mutably because jsdom has no operating system to ask.
+ */
+describe('SettingsView — window chrome', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+    checkForUpdate.mockReset();
+    closeWindow.mockReset();
+    platform.mac = false;
+    listeners.clear();
+    delete document.documentElement.dataset['theme'];
+    mockCommands();
+  });
+
+  it('renders the drag strip on macOS, empty and inert', async () => {
+    platform.mac = true;
+    const { container } = render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    const strip = container.querySelector('[data-tauri-drag-region]');
+    expect(strip).not.toBeNull();
+    // A drag starts only when the mousedown lands on the strip itself, so it
+    // must never grow children that would eat the drag.
+    expect(strip).toBeEmptyDOMElement();
+    expect(strip).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('renders no drag strip where the native title bar exists', async () => {
+    const { container } = render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    expect(container.querySelector('[data-tauri-drag-region]')).toBeNull();
+  });
+
+  it('closes the window on ⌘W, as a request the shell may turn into a hide', async () => {
+    render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    fireEvent.keyDown(document, { key: 'w', metaKey: true });
+
+    await waitFor(() => expect(closeWindow).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not close on Escape: a settings window is not a modal', async () => {
+    render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(closeWindow).not.toHaveBeenCalled();
+  });
+
+  it('orders the sidebar with everyday panes first and provenance last', async () => {
+    render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'General',
+      'Privacy',
+      'Notifications',
+      'Sources',
+      'Appearance',
+      'Updates',
+      'About',
+    ]);
   });
 });
 

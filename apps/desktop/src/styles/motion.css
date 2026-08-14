@@ -32,3 +32,28 @@
     transition-duration: 60ms !important;
   }
 }
+
+/* ==========================================================================
+   Panel entrance.
+
+   Played by the settings window when a section is selected: the panel is
+   remounted (keyed by pane) and steps in once. Short and one-way — there is
+   no exit animation, because the outgoing panel is gone the moment the key
+   changes. Neutralized by the reduced-motion clamp above.
+   ========================================================================== */
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-step-in {
+  animation: step-in 200ms ease-out;
+}

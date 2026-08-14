@@ -342,6 +342,21 @@ export async function takeSettingsPane(): Promise<string | null> {
 }
 
 /**
+ * Asks the shell to close the settings window (⌘W).
+ *
+ * A close *request*, not a destroy: the shell intercepts `CloseRequested` for
+ * every window and hides instead (see `src-tauri/src/lib.rs`), so this takes
+ * exactly the same path as the title-bar close button. Needs
+ * `core:window:allow-close` in `capabilities/default.json` — the ACL's
+ * `core:window:default` set is read-only.
+ */
+export async function closeSettingsWindow(): Promise<void> {
+  if (!hasShell()) return;
+  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+  await getCurrentWindow().close();
+}
+
+/**
  * Quit antiburn.
  *
  * Routed through the shell rather than closing windows, because a menu-bar app
