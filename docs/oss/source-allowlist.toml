@@ -21,7 +21,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022"]
+governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023"]
 default_action = "deny"
 publication_authorization = "authorized MPL-2.0 repository commit or merge; unresolved rights remain denied"
 third_party_resolution = "deferred until the public local-crate manifest and lockfile exist"
@@ -717,4 +717,90 @@ notes = [
   "Remove Sentry, S3/CDN promotion, commercial identities, endpoints, bucket and secret names, private repository references, and Cadence release tags.",
   "Use antiburn names, tags, protected environments, and secrets; keep least-privilege permissions and pin third-party actions by immutable commit.",
   "Fork pull requests must not gain access to signing, publishing, or infrastructure credentials.",
+]
+
+[[rule]]
+id = "disk-space-monitor"
+source_paths = ["desktop/src-tauri/src/disk_monitor.rs"]
+path_kind = "file"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/disk_monitor.rs"
+provenance = "Cadence company-authored; D-023 maintainer decision authorizes the near-verbatim port; reviewed at private commit a2c0d12ae522458aa7beafb6d743c3a2f0a54988"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Keep the poll cadence, binary-GB arithmetic, edge trigger with re-arm hysteresis, launch seeding, and the rationale comments.",
+  "Rewrite the delivery function against the public notifications pipeline; do not copy popover parking, DeferredNudge, NotificationGate, or NudgeAccess entitlement gating.",
+  "Strip Cadence names, analytics calls, and private state types; add MPL-2.0 headers.",
+]
+
+[[rule]]
+id = "tray-title-attributed-string"
+source_paths = ["desktop/src-tauri/src/tray_title.rs"]
+path_kind = "file"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/tray_title.rs"
+provenance = "Cadence company-authored; D-023 maintainer decision authorizes the near-verbatim port; reviewed at private commit a2c0d12ae522458aa7beafb6d743c3a2f0a54988"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Keep the NSAttributedString approach, font/baseline/color/leading-space constants, empty-string clearing, and the click-target resync with their rationale comments.",
+  "Strip Cadence names; add MPL-2.0 headers.",
+]
+
+[[rule]]
+id = "notification-sound-crate"
+source_paths = ["desktop/src-tauri/crates/sound/**"]
+path_kind = "directory"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/crates/sound/"
+provenance = "Cadence company-authored synthesis crate; D-023 maintainer decision authorizes the port; reviewed at private commit a2c0d12ae522458aa7beafb6d743c3a2f0a54988"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Copy the synthesis, chord, tuning, and voice code with their ear-tuned constants verbatim; the comments warn against rounding them.",
+  "Do not copy the Sound-lab tuning surface or its commands; the public app ships a fixed chime (deviations register D-15).",
+  "Rename the crate and every Cadence identifier; keep rodio playback-only (no decoder features) and the no-asset-file property.",
+  "Run the D-010 license check for fundsp, rodio, and their transitive dependencies.",
+]
+
+[[rule]]
+id = "nudge-window-mechanics"
+source_paths = [
+  "desktop/src-tauri/crates/nudge/src/model.rs",
+  "desktop/src-tauri/crates/nudge/src/window.rs",
+  "desktop/src-tauri/crates/nudge/src/geometry.rs",
+  "desktop/src-tauri/crates/nudge/src/macos.rs",
+  "desktop/src-tauri/crates/nudge/src/win.rs",
+  "desktop/src-tauri/crates/nudge/src/linux.rs",
+  "desktop/src-tauri/crates/nudge/src/commands.rs",
+  "desktop/src-tauri/src/nudges.rs",
+  "desktop/src/components/cadence-notification/CadenceNotificationWindow.tsx",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/nudge_window.rs and apps/desktop/src/views/NudgeView.tsx"
+provenance = "Cadence company-authored notification window; D-023 maintainer decision authorizes the slim-subset port; reviewed at private commit a2c0d12ae522458aa7beafb6d743c3a2f0a54988"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract only the slim subset: window construction, placement geometry, show/replace/dismiss, auto-dismiss timing, and the view's tone/title/body/dismiss presentation.",
+  "Do not copy gate.rs (Focus/DND gate), popover parking, DeferredNudge, NudgeAccess entitlement, ambience/radar/tune-up kinds, cooldown telemetry, or analytics.",
+  "Strip Cadence names and event names; add MPL-2.0 headers; route delivery through the public notifications module's gating.",
+]
+
+[[rule]]
+id = "usage-milestone-engine"
+source_paths = ["desktop/src-tauri/src/provider_usage/mod.rs"]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/provider_usage/live.rs"
+provenance = "Cadence company-authored milestone selection; D-023 maintainer decision authorizes the engine-slice port; reviewed at private commit a2c0d12ae522458aa7beafb6d743c3a2f0a54988"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract the milestone selection engine only: threshold filtering, delivery-key scheme (provider, account, window, reset-epoch), silent priming of already-crossed thresholds, and highest-crossing-wins selection.",
+  "Re-source it to the public LiveUsageSource fed by user-supplied credentials under the D-023 network policy (per-feature opt-in, default off, provider endpoints only, never a private-app endpoint).",
+  "Do not copy the private snapshot collectors, pi_api client, loopback/local-API probes, credential capture, persistence contracts, or telemetry.",
+  "Strip Cadence names; add MPL-2.0 headers.",
 ]

@@ -23,7 +23,15 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022"]
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023"]
+# D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
+# disk-space-monitor, tray-title-attributed-string, notification-sound-crate,
+# nudge-window-mechanics, and usage-milestone-engine, and amends the network
+# posture: the public app is offline-first; online features are per-feature
+# opt-in, default off, call provider endpoints directly with user-supplied
+# credentials, and never call a private-app endpoint. The D-007 discovery
+# boundary (documented files, read-only databases, no credential/token access,
+# no loopback or local provider APIs) is unchanged.
 default_action = "deny"
 glob_semantics = "* matches one path segment; ** matches recursively"
 approval_note = "Phase 0 complete; implementation checks run when their artifacts exist"
@@ -61,6 +69,7 @@ patterns = ["desktop/src/**", "desktop/index.html", "desktop/package.json"]
 exceptions = [
   "Only the paths and content slices explicitly named by source-allowlist.toml rules desktop-style-foundation, radix-control-styles, analytics-color-tokens, generic-react-primitives, and skeleton-contract-replacement are exempt under D-020.",
   "Only the paths and content slices explicitly named by source-allowlist.toml rules local-presentation-support, local-environment-identity-replacement, local-session-analytics-shaping, local-session-cost-replacement, local-presentation-primitives, local-orchestration-presentation, local-session-analytics-leaves, local-session-analytics-decoupled-leaves, local-session-cost-badges, local-session-analytics-composition, local-recent-activity-presentation, and local-repository-list-replacement are additionally exempt under D-021.",
+  "Only the notification-window component slice explicitly named by source-allowlist.toml rule nudge-window-mechanics is additionally exempt under D-023.",
   "An adapt exception authorizes only the behavior and exclusions recorded by its allowlist rule; it never authorizes copying an entire mixed file unchanged.",
 ]
 reason = "D-020 and D-021 approve exact, rights-cleared design, primitive, and local-domain presentation slices. Every other frontend file, package manifest, excluded mixed-file section, container, store, command binding, DTO, simulation, fixture, URL, and asset remains denied until separately reviewed."
@@ -89,6 +98,9 @@ patterns = [
   "desktop/src-tauri/src/*.rs",
   "desktop/src-tauri/tauri*.conf.json",
   "desktop/src-tauri/capabilities/**",
+]
+exceptions = [
+  "Only the paths and content slices explicitly named by source-allowlist.toml rules disk-space-monitor, tray-title-attributed-string, and nudge-window-mechanics are exempt under D-023.",
 ]
 reason = "The current Tauri shell remains denied while approved generic tray, window, theme, and updater mechanics are reviewed at file/module granularity under D-017; private commands, state, CLI, and configuration remain private."
 
@@ -134,6 +146,9 @@ patterns = [
   "desktop/src-tauri/src/core/provider_usage_capture.rs",
   "desktop/src-tauri/src/core/tests/provider_usage_capture_tests.rs",
   "desktop/src-tauri/src/tests/provider_usage*.rs",
+]
+exceptions = [
+  "Only the milestone-selection engine slice explicitly named by source-allowlist.toml rule usage-milestone-engine is exempt under D-023; the collectors, clients, probes, and persistence named in the reason remain denied.",
 ]
 reason = "D-019 requires a passive Local Provider Usage subset, but the current implementation remains denied until exact review separates rights-cleared session/passive aggregation and presentation from credential, account-request, loopback, socket, IPC, telemetry, and private-policy code."
 
