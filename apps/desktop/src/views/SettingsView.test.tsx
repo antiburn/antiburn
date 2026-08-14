@@ -5,6 +5,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { NOTICE_TEXT } from '../lib/legalNotices';
 import { SettingsView } from './SettingsView';
 
 /**
@@ -388,6 +389,36 @@ describe('SettingsView', () => {
     expect(screen.getByText(/Mozilla Public License 2\.0/)).toBeInTheDocument();
     // This repository is not public yet, so About carries no external link at
     // all rather than links that would open a browser at a 404.
+    expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('makes the full licence text readable in About, still without links', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Licence text' }));
+
+    // A phrase from the licence body proper, not from any label or summary.
+    expect(
+      await screen.findByText(/means Covered Software of a particular Contributor/),
+    ).toBeInTheDocument();
+    // The licence text contains bare URLs; none may become an anchor.
+    expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('shows the notice and third-party attributions under Legal notices', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Legal notices' }));
+
+    // The NOTICE body is asserted by containment rather than by quoting it
+    // here: its text is exempt from the source-boundary scan, this file is
+    // not.
+    const notices = await screen.findByText(/Copyright \(c\) 2026/);
+    expect(notices.textContent).toBe(NOTICE_TEXT.trim());
+    expect(screen.getByText('simple-icons')).toBeInTheDocument();
+    expect(screen.getByText(/CC0-1\.0/)).toBeInTheDocument();
     expect(document.querySelectorAll('a')).toHaveLength(0);
   });
 
