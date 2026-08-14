@@ -84,7 +84,7 @@ Variables (Settings → Secrets and variables → Actions → Variables), not se
 
 | Variable | Default when unset | Effect |
 | --- | --- | --- |
-| `ALLOW_UNSIGNED_MACOS` | unset (= build fails without Apple credentials) | `true` builds macOS artifacts **without** Developer ID signing or notarization. Gatekeeper refuses these on a normal machine. Only for a deliberate, clearly-labelled build. |
+| `ALLOW_UNSIGNED_MACOS` | unset (= build fails without Apple credentials) | `true` builds macOS artifacts **without** Developer ID signing or notarization; the app is sealed with an ad-hoc signature instead. Gatekeeper still warns on first launch — right-click → Open accepts it, or clear quarantine with `xattr -dr com.apple.quarantine /Applications/antiburn.app`. Only for a deliberate, clearly-labelled build. |
 | `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate) | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download. |
 | `WINDOWS_TIMESTAMP_URL` | `http://timestamp.digicert.com` | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate. |
 
@@ -234,7 +234,10 @@ draft.
       downloaded installer, launch it, confirm the tray item appears, open the
       popover, and check that Settings → About shows the new version. On macOS,
       confirm it opens without a Gatekeeper prompt (which is what notarization
-      buys); on Windows, note whether SmartScreen warns.
+      buys); on Windows, note whether SmartScreen warns. For a deliberate
+      unsigned rehearsal build, the macOS expectation is different: the ad-hoc
+      seal produces the "unidentified developer" prompt and right-click → Open
+      accepts it — "damaged and can't be opened" means the seal regressed.
 - [ ] **The previous version can update to this one.** The real test of a
       release: install the previous version, point it at the draft only after
       publishing (drafts are not reachable), or rehearse with a pre-release tag.
@@ -362,4 +365,8 @@ published one.
 - Publishing by hand from a local build. Every published artifact comes from a
   tagged run of these workflows, which is what the provenance attestation
   actually attests to.
-- Signing with anything but the credentials in the `release` environment.
+- Signing with anything but the credentials in the `release` environment. (The
+  deliberate `ALLOW_UNSIGNED_*` builds are sealed with codesign's ad-hoc
+  identity, which asserts no identity and uses no credential — a seal, not a
+  signature. The rule forbids any *identity-claiming* signature from outside
+  the environment.)
