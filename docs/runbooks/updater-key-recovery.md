@@ -27,18 +27,21 @@ already trusts.
 
 ## Current state
 
-The key pair **has not been minted yet.** `plugins.updater.pubkey` is empty,
-which is why:
+The key pair **was minted 2026-08-14.** The public half is committed as
+`plugins.updater.pubkey`; the private half and its passphrase live in the
+`release` environment (`TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`) and in the
+maintainer's password manager, which holds the canonical copy. Because the
+field is non-empty:
 
-- `apps/desktop/src-tauri/src/updates.rs` reports update support as false, so
-  the app never claims a capability it does not have;
-- `.github/workflows/release-app.yml` refuses to build a release at all while
-  the field is empty.
+- `apps/desktop/src-tauri/src/updates.rs` reports update support as true, and
+  release builds check `latest.json` for verifiable updates;
+- `.github/workflows/release-app.yml`'s key gate passes (it still refuses to
+  build if the field is ever emptied).
 
-`bundle.createUpdaterArtifacts` is `true`, so the moment the key exists the
-pipeline produces signed bundles. The two settings are one decision: artifacts
-without a key would be unverifiable downloads, and a key without artifacts would
-have nothing to check.
+`bundle.createUpdaterArtifacts` is `true`, so the pipeline produces signed
+bundles. The two settings are one decision: artifacts without a key would be
+unverifiable downloads, and a key without artifacts would have nothing to
+check.
 
 (The reason that warning is not a comment next to the field: `tauri.conf.json`
 is parsed as strict JSON, so a comment there fails the build.)

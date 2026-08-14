@@ -42,7 +42,7 @@
 //! half in the release environment as `TAURI_SIGNING_PRIVATE_KEY`, the public
 //! half committed here. `.github/workflows/release-app.yml` fails the release
 //! outright while the field is empty rather than shipping a build whose update
-//! path is decoration. The key has not been minted yet — custody, rotation, and
+//! path is decoration. The key was minted 2026-08-14 — custody, rotation, and
 //! what a reader has to do if it is ever lost are in
 //! `docs/runbooks/updater-key-recovery.md`.
 //!
