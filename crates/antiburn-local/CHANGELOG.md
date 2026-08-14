@@ -21,6 +21,20 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-14
+
+### Fixed
+
+- `pricing::normalize_model_key` no longer panics on model IDs containing
+  multi-byte UTF-8 characters. Model IDs come from external transcript files;
+  the date-suffix check now runs on bytes and only slices at a confirmed ASCII
+  hyphen boundary.
+- The scan-down arm of `repositories::resolve_granted_repos` reports the
+  canonical repository path in `repo_root` and `suspected_path` instead of the
+  folded identity key (which lowercases and slash-normalizes on Windows). The
+  key now serves only deduplication, matching the session-resolved arm and the
+  documented field contract.
+
 ## [0.1.0] - 2026-08-13
 
 ### Added
