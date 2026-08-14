@@ -32,3 +32,73 @@
     transition-duration: 60ms !important;
   }
 }
+
+/* ==========================================================================
+   Panel entrance.
+
+   Played by the settings window when a section is selected: the panel is
+   remounted (keyed by pane) and steps in once. Short and one-way — there is
+   no exit animation, because the outgoing panel is gone the moment the key
+   changes. Neutralized by the reduced-motion clamp above.
+   ========================================================================== */
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-step-in {
+  animation: step-in 200ms ease-out;
+}
+
+/* ==========================================================================
+   Notification entrance and exit.
+
+   Played by the notification window as a nudge arrives and again as it
+   leaves. Unlike the panel entrance above, the exit is load-bearing: the view
+   defers the real dismiss (or the clicked CTA) to `animationend`, so these
+   rules must exist for the notification to ever close. The reduced-motion
+   clamp collapses both to ~0ms, which still fires that event — the action
+   simply runs immediately.
+
+   Transform-only, deliberately: the webview is prewarmed and hidden, and
+   WebKit can suspend an animation that begins while a window is off screen. A
+   suspended opacity keyframe would leave the notification blank; a suspended
+   transform only leaves it off by a few points, and the view's own watchdog
+   clears the state either way.
+   ========================================================================== */
+
+@keyframes nudge-in {
+  from {
+    transform: translateY(-8px) scale(0.98);
+  }
+
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes nudge-out {
+  from {
+    transform: translateY(0);
+  }
+
+  to {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-nudge-in {
+  animation: nudge-in 200ms ease-out;
+}
+
+.animate-nudge-out {
+  animation: nudge-out 160ms ease-in forwards;
+}

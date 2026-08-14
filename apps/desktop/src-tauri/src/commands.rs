@@ -83,6 +83,17 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// Post the settings pane's test notification.
+///
+/// The one notification the webview can cause, and only by this explicit
+/// command: it goes through the same delivery path as every real kind (so a
+/// reader sees exactly what they will get), bypassing only the master
+/// preference — pressing the button *is* the permission.
+#[tauri::command]
+pub fn post_test_notification(app: tauri::AppHandle) {
+    crate::notifications::note_test(&app);
+}
+
 /// Whether the local database is still accepting writes.
 #[tauri::command]
 pub fn get_storage_health(app: tauri::AppHandle) -> crate::storage_health::StorageHealthStatus {
@@ -135,6 +146,7 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
     let store = app.state::<Store>();
     Ok(AppInfo {
         app_version: app.package_info().version.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
         pricing_catalog_version: antiburn_local::pricing::PRICING_CATALOG_VERSION.to_string(),
         schema_version: store.schema_version().map_err(fail)?,
         data_dir: store.state_dir().to_string_lossy().to_string(),
@@ -196,6 +208,16 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
             _ => None,
         });
     }
+
+    // The menu-bar free-space number follows its display preference on the
+    // next poll tick; repainting here makes the toggle feel wired rather than
+    // eventually-consistent.
+    if saved.disk_space_display != previous.disk_space_display
+        || saved.disk_space_threshold_gb != previous.disk_space_threshold_gb
+    {
+        crate::disk_monitor::refresh_title(&app);
+    }
+
     let _ = app.emit(SETTINGS_CHANGED_EVENT, &saved);
 
     Ok(saved)

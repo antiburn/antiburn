@@ -1,0 +1,41 @@
+# Standalone workspace root, like the engine: this crate resolves with its own
+# lockfile rather than joining the shell's, so the app-framework dependencies
+# next door cannot leak into its resolution.
+[workspace]
+
+[package]
+name = "antiburn-sound"
+version = "0.1.0"
+edition = "2024"
+description = "Programmatic notification sounds for the antiburn desktop app. Mechanism only — the app owns when and why a sound plays."
+license = "MPL-2.0"
+repository = "https://github.com/antiburn/antiburn"
+publish = false
+
+[lib]
+name = "antiburn_sound"
+path = "src/lib.rs"
+
+[dependencies]
+# Synthesis. Sounds are built as combinator chains and rendered offline into
+# memory, so nothing runs on the audio callback and a slow render can never
+# glitch playback. Smaller project than the playback crates below, which is a
+# deliberate accepted risk: it only produces a buffer of samples, so if it ever
+# went stale the maths could be hand-written behind this same seam without any
+# calling code changing.
+fundsp = "0.23"
+# Playback and mixing, so two sounds landing together don't fight. No decoder
+# features: we generate every sample and never read an audio file.
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
+# Facade only — the app installs the subscriber. Audio failures are logged and
+# swallowed rather than propagated, so the log is the only way to find out that
+# a machine has no working output device.
+tracing = "0.1"
+# Only for `Tuning`, which crosses the IPC boundary to the dev sound bench.
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# WAV writing for the `dump_sounds_for_listening` test only — it exists so a
+# render can be measured and listened to outside the app. Not used at runtime:
+# the app generates samples and hands them straight to the speaker.
+hound = "3"

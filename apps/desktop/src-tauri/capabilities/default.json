@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities granted to every antiburn window. Deliberately minimal: the shell's own commands carry the privileged work, so the webview needs no direct filesystem, shell, or process access. Note the absence of any notification permission — the notification plugin is registered, but only Rust may post one, so what is worth interrupting a reader for is decided in src/notifications.rs rather than anywhere a view can reach.",
-  "windows": ["popover", "settings"],
+  "description": "Capabilities granted to every antiburn window. Deliberately minimal: the shell's own commands carry the privileged work, so the webview needs no direct filesystem, shell, or process access. The nudge window is listed so it can hear its show event and call the nudge_* commands, but a notification still only ever *originates* in Rust — what is worth interrupting a reader for is decided in src/notifications.rs, nowhere a view can reach.",
+  "windows": ["popover", "settings", "nudge"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",

@@ -324,6 +324,19 @@ export function PopoverView() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
+  // ⌘, opens Settings — the platform's standard preferences shortcut, which
+  // an accessory app with no application menu has to own itself.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === ',') {
+        event.preventDefault();
+        void openSettingsWindow();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   /* ---------------------------------------------------------------------
    * Actions
    * ------------------------------------------------------------------ */

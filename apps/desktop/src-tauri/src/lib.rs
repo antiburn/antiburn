@@ -14,9 +14,11 @@
 //! - [`agents`] — translating between the engine's two names for an agent.
 //! - [`analytics`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
+//! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
 //! - [`export`] — the derived-only session export document.
-//! - [`notifications`] — the two things worth interrupting a reader for.
+//! - [`notifications`] — the policy on what may interrupt a reader.
+//! - [`nudges`] — presentation glue between that policy and the window.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
 //! - [`provider_usage`] — per-provider totals derived from local sessions.
 //! - [`repositories`] — which repositories on this machine antiburn watches.
@@ -25,7 +27,9 @@
 //! - [`storage_health`] — whether the local database still accepts writes.
 //! - [`store`] — the app's local SQLite database.
 //! - [`tray`] — the menu-bar item and its click and menu handling.
+//! - [`tray_title`] — the attributed-string text beside the tray glyph.
 //! - [`updates`] — whether, and when, the release feed may be contacted.
+//! - [`usage_alerts`] — the spend-anomaly and milestone monitor.
 //!
 //! # Offline by construction
 //!
@@ -33,16 +37,19 @@
 //! contract, the shell adds no HTTP client, and the only network-capable
 //! surface in the whole application is the updater plugin — registered in
 //! release builds only, so a development run performs no network requests at
-//! all. The notification plugin talks to the platform's local notification
-//! centre and nothing else. The webview side is held to the same rule by a test
-//! (`apps/desktop/tests/offline.test.ts`).
+//! all. Notifications are antiburn's own window, fed by a local event.
+//! Online features are per-feature opt-in under D-023, and none ships
+//! connected (`docs/deviations.md`, D-20). The webview side is held to the
+//! same rule by a test (`apps/desktop/tests/offline.test.ts`).
 
 mod agents;
 mod analytics;
 mod commands;
+mod disk_monitor;
 mod dto;
 mod export;
 mod notifications;
+mod nudges;
 mod popover;
 mod provider_usage;
 mod repositories;
@@ -51,7 +58,9 @@ mod settings;
 mod storage_health;
 mod store;
 mod tray;
+mod tray_title;
 mod updates;
+mod usage_alerts;
 
 use std::sync::Mutex;
 
@@ -78,12 +87,10 @@ impl Schedulers {
 /// local database cannot be created: none of the four has a meaningful degraded
 /// mode.
 pub fn run() {
-    let builder = tauri::Builder::default()
+    // `register` installs the non-activating-panel support the notification
+    // window needs on macOS; a no-op elsewhere.
+    let builder = antiburn_nudge::register(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
-        // Local notifications, driven from Rust only: the webview is granted no
-        // notification permission, so `notifications` is the single place that
-        // decides what is worth interrupting a reader for.
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::add_scan_root,
@@ -107,6 +114,7 @@ pub fn run() {
             commands::list_repositories,
             commands::list_scan_roots,
             commands::open_settings_window,
+            commands::post_test_notification,
             commands::quit_app,
             commands::refresh_repositories,
             commands::remove_scan_root,
@@ -116,6 +124,12 @@ pub fn run() {
             commands::set_repository_enabled,
             commands::set_settings,
             commands::take_settings_pane,
+            antiburn_nudge::commands::nudge_action,
+            antiburn_nudge::commands::nudge_dismiss,
+            antiburn_nudge::commands::nudge_ready,
+            antiburn_nudge::commands::nudge_resize,
+            antiburn_nudge::commands::nudge_reveal,
+            antiburn_nudge::commands::nudge_set_hovered,
         ])
         .on_window_event(on_window_event)
         .setup(|app| {
@@ -156,9 +170,28 @@ pub fn run() {
             // automatic check can see whether there is anything to check with.
             install_updater(app.handle());
 
+            // The notification window's manager and the chime player. Prewarm
+            // is deferred a little so the app has a valid display context —
+            // the same reasoning as the popover's own deferred build.
+            nudges::init(app.handle())?;
+            // The live-usage slot: empty in this build (deviations D-20), so
+            // the milestone pass idles until a source is registered here.
+            app.manage(usage_alerts::LiveUsage::default());
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    if let Some(manager) = handle.try_state::<antiburn_nudge::NudgeManager>() {
+                        manager.prewarm();
+                    }
+                });
+            }
+
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
+                schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
+                schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
             }
 
             Ok(())

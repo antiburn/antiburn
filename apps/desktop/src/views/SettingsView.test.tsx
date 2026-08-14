@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SettingsView } from './SettingsView';
@@ -18,6 +18,9 @@ const invoke = vi.hoisted(() => vi.fn());
 const openDialog = vi.hoisted(() => vi.fn());
 const confirmDialog = vi.hoisted(() => vi.fn());
 const checkForUpdate = vi.hoisted(() => vi.fn());
+const closeWindow = vi.hoisted(() => vi.fn());
+/** Mutable so a test can render the macOS chrome; jsdom itself has no OS. */
+const platform = vi.hoisted(() => ({ mac: false }));
 /** Shell event handlers the view subscribed to, by event name. */
 const listeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
 
@@ -28,12 +31,19 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => listeners.delete(name);
   }),
 }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ close: closeWindow }),
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: openDialog,
   confirm: confirmDialog,
   save: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: checkForUpdate }));
+vi.mock('../lib/platform', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isMacOS: () => platform.mac };
+});
 
 /** Push a shell event at whatever subscribed to it. */
 function emit(name: string, payload: unknown) {
@@ -50,10 +60,21 @@ const SETTINGS = {
   notificationsEnabled: true,
   notifyUpdateAvailable: true,
   notifyScanFailure: true,
+  nudgePlacement: 'menuBar' as const,
+  nudgeAutoDismissSecs: 10,
+  notificationSound: true,
+  diskSpaceDisplay: 'whenLow' as const,
+  diskSpaceThresholdGb: 50,
+  notifyDiskSpaceLow: true,
+  notifyUsageAnomalies: true,
+  milestones5h: { at50: true, at75: true, at90: true },
+  milestonesWeekly: { at50: true, at75: true, at90: true },
+  liveUsageEnabled: false,
 };
 
 const INFO = {
   appVersion: '0.1.0',
+  arch: 'aarch64',
   pricingCatalogVersion: '2026-08-12',
   schemaVersion: 1,
   dataDir: '/home/avery/Library/Application Support/ai.antiburn.desktop',
@@ -198,7 +219,7 @@ describe('SettingsView', () => {
   it('is honest that updates are unavailable in a build without the updater', async () => {
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
 
     const button = await screen.findByRole('button', { name: 'Check for updates' });
     // The button exists as soon as the pane renders, but stays disabled until
@@ -215,7 +236,7 @@ describe('SettingsView', () => {
   it('renders no automatic-update control at all in a build that cannot update', async () => {
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     await screen.findByText(/updater is installed in packaged releases only/i);
 
     // Not a disabled switch over a preference nothing reads — no switch.
@@ -230,7 +251,7 @@ describe('SettingsView', () => {
     checkForUpdate.mockResolvedValue(null);
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     const button = await screen.findByRole('button', { name: 'Check for updates' });
     // The button renders disabled and is enabled only once `app_info` resolves.
     // Clicking before that is swallowed, which is what used to make this test
@@ -246,7 +267,7 @@ describe('SettingsView', () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } });
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     const toggle = await screen.findByRole('switch', {
       name: 'Check for updates automatically',
     });
@@ -265,7 +286,7 @@ describe('SettingsView', () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } });
     render(<SettingsView />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Updates' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
     await screen.findByRole('switch', { name: 'Check for updates automatically' });
 
     emit('update:status', {
@@ -316,6 +337,15 @@ describe('SettingsView', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Privacy' }));
 
+    // The contract's headlines are always on screen as disclosure labels…
+    const stored = await screen.findByRole('button', {
+      name: 'Only derived analysis is stored',
+    });
+    expect(screen.getByRole('button', { name: 'Nothing is uploaded' })).toBeInTheDocument();
+
+    // …and each opens into its receipts. Collapsed bodies are unmounted, so
+    // the specifics genuinely appear on expansion rather than being hidden.
+    fireEvent.click(stored);
     expect(
       await screen.findByText(/no message text, no tool arguments, no file contents/i),
     ).toBeInTheDocument();
@@ -368,12 +398,23 @@ describe('SettingsView', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
 
     expect(
-      await screen.findByText(/no message text, no tool arguments, no file contents/i),
+      await screen.findByRole('button', { name: 'Only derived analysis is stored' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Privacy' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
+  });
+
+  it('opens About on a masthead that names the build', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+
+    expect(await screen.findByText('Version 0.1.0')).toBeInTheDocument();
+    // The platform half of the line depends on the host's user agent, which
+    // jsdom fakes; the architecture comes from the shell and is asserted.
+    expect(screen.getByText(/· aarch64$/)).toBeInTheDocument();
   });
 
   it('quits antiburn from the sidebar, through the shell', async () => {
@@ -426,6 +467,79 @@ describe('SettingsView', () => {
 });
 
 /**
+ * Window chrome and shortcuts.
+ *
+ * On macOS the native title bar is hidden and a frontend strip is the window's
+ * drag handle; everywhere else the native bar stays and no strip renders.
+ * `isMacOS` is mocked mutably because jsdom has no operating system to ask.
+ */
+describe('SettingsView — window chrome', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    openDialog.mockReset();
+    confirmDialog.mockReset();
+    checkForUpdate.mockReset();
+    closeWindow.mockReset();
+    platform.mac = false;
+    listeners.clear();
+    delete document.documentElement.dataset['theme'];
+    mockCommands();
+  });
+
+  it('renders the drag strip on macOS, empty and inert', async () => {
+    platform.mac = true;
+    const { container } = render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    const strip = container.querySelector('[data-tauri-drag-region]');
+    expect(strip).not.toBeNull();
+    // A drag starts only when the mousedown lands on the strip itself, so it
+    // must never grow children that would eat the drag.
+    expect(strip).toBeEmptyDOMElement();
+    expect(strip).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('renders no drag strip where the native title bar exists', async () => {
+    const { container } = render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    expect(container.querySelector('[data-tauri-drag-region]')).toBeNull();
+  });
+
+  it('closes the window on ⌘W, as a request the shell may turn into a hide', async () => {
+    render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    fireEvent.keyDown(document, { key: 'w', metaKey: true });
+
+    await waitFor(() => expect(closeWindow).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not close on Escape: a settings window is not a modal', async () => {
+    render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(closeWindow).not.toHaveBeenCalled();
+  });
+
+  it('orders the sidebar with everyday panes first and provenance last', async () => {
+    render(<SettingsView />);
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'General',
+      'Privacy',
+      'Notifications',
+      'Sources',
+      'Appearance',
+      'About',
+    ]);
+  });
+});
+
+/**
  * Notifications.
  *
  * The pane's whole job is to let a reader decide what may interrupt them, so
@@ -443,19 +557,58 @@ describe('SettingsView — notifications', () => {
     mockCommands();
   });
 
-  it('names both notifications rather than describing a category', async () => {
+  it('names every notification rather than describing a category', async () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } });
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
 
     expect(await screen.findByRole('switch', { name: 'Notify me' })).toBeChecked();
+    // The update and scan kinds have no rows; the master switch's own copy
+    // names them, so allowing notifications is still informed consent.
     expect(
-      screen.getByRole('switch', { name: 'A new version is available' }),
+      screen.getByText(/a newer version, a scan that could not finish/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole('switch', { name: 'A scan could not finish' })).toBeInTheDocument();
-    // The system's own setting overrules everything here, and the pane says so.
-    expect(screen.getByText(/final say/i)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Usage anomalies' })).toBeInTheDocument();
+    // Milestone pills are independent toggles, one group per window class.
+    expect(
+      screen.getByRole('group', { name: 'Five-hour milestone thresholds' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('group', { name: 'Weekly milestone thresholds' }),
+    ).toBeInTheDocument();
+    // The milestone rows say plainly that no live source ships yet (D-20).
+    expect(screen.getByText(/does not include yet/i)).toBeInTheDocument();
+  });
+
+  it('shows a test notification through the shell', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show test' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('post_test_notification'));
+  });
+
+  it('persists a milestone pill toggle as the settings subset', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    const group = await screen.findByRole('group', {
+      name: 'Five-hour milestone thresholds',
+    });
+    const fifty = within(group).getByRole('button', { name: '50%' });
+    expect(fifty).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(fifty);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: {
+          ...SETTINGS,
+          milestones5h: { at50: false, at75: true, at90: true },
+        },
+      }),
+    );
   });
 
   it('persists the master switch', async () => {
@@ -475,40 +628,25 @@ describe('SettingsView — notifications', () => {
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
-    fireEvent.click(await screen.findByRole('switch', { name: 'A scan could not finish' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Usage anomalies' }));
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, notifyScanFailure: false },
+        settings: { ...SETTINGS, notifyUsageAnomalies: false },
       }),
     );
   });
 
   it('leaves the per-kind switches inert, and their choices intact, while the master is off', async () => {
-    mockCommands({
-      get_settings: { ...SETTINGS, notificationsEnabled: false },
-      app_info: { ...INFO, updatesSupported: true },
-    });
+    mockCommands({ get_settings: { ...SETTINGS, notificationsEnabled: false } });
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
 
-    const scanFailure = await screen.findByRole('switch', { name: 'A scan could not finish' });
-    expect(scanFailure).toBeDisabled();
+    const anomalies = await screen.findByRole('switch', { name: 'Usage anomalies' });
+    expect(anomalies).toBeDisabled();
     // Still on: turning the master back on restores what the reader chose
     // rather than a default.
-    expect(scanFailure).toBeChecked();
-  });
-
-  it('renders no update-notification switch in a build that cannot find an update', async () => {
-    render(<SettingsView />);
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
-
-    await screen.findByRole('switch', { name: 'Notify me' });
-    expect(
-      screen.queryByRole('switch', { name: 'A new version is available' }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByText(/never finds a version to tell you about/i)).toBeInTheDocument();
+    expect(anomalies).toBeChecked();
   });
 });

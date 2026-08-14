@@ -71,11 +71,38 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             notifications_enabled: false,
             notify_update_available: false,
             notify_scan_failure: true,
+            nudge_placement: NudgePlacement::TopRight,
+            nudge_auto_dismiss_secs: 25,
+            notification_sound: false,
+            disk_space_display: DiskSpaceDisplay::Always,
+            disk_space_threshold_gb: 100,
+            notify_disk_space_low: false,
+            notify_usage_anomalies: false,
+            milestones_5h: Milestones {
+                at50: false,
+                at75: true,
+                at90: true,
+            },
+            milestones_weekly: Milestones {
+                at50: false,
+                at75: false,
+                at90: false,
+            },
+            live_usage_enabled: true,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
     assert_eq!(saved.theme, ThemePreference::Dark);
     assert_eq!(saved.activity_window_days, 14);
+    assert_eq!(saved.nudge_placement, NudgePlacement::TopRight);
+    assert_eq!(saved.nudge_auto_dismiss_secs, 25);
+    assert_eq!(saved.disk_space_display, DiskSpaceDisplay::Always);
+    assert_eq!(saved.disk_space_threshold_gb, 100);
+    // The empty milestone subset survives a round trip as "none selected",
+    // not as a reset back to the defaults.
+    assert!(!saved.milestones_weekly.any());
+    assert!(saved.milestones_5h.at75 && !saved.milestones_5h.at50);
+    assert!(saved.live_usage_enabled);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
     // Each notification preference is stored on its own key, so a reader who
@@ -593,4 +620,30 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
     // The bound is inclusive and excludes everything below it.
     assert_eq!(store.usage_evidence(2_000).unwrap().len(), 1);
     assert!(store.usage_evidence(2_001).unwrap().is_empty());
+}
+
+#[test]
+fn internal_values_round_trip_and_stay_out_of_settings() {
+    let store = store();
+    assert_eq!(store.internal_value("internal:diskSpaceLowFiredMs"), None);
+
+    store.set_internal_value("internal:diskSpaceLowFiredMs", "1723600000000");
+    assert_eq!(
+        store
+            .internal_value("internal:diskSpaceLowFiredMs")
+            .as_deref(),
+        Some("1723600000000")
+    );
+
+    // Overwrite, not append: one row per key, like every setting.
+    store.set_internal_value("internal:diskSpaceLowFiredMs", "1723600001000");
+    assert_eq!(
+        store
+            .internal_value("internal:diskSpaceLowFiredMs")
+            .as_deref(),
+        Some("1723600001000")
+    );
+
+    // Internal rows share the table but never surface as preferences.
+    assert_eq!(store.settings().unwrap(), AppSettings::default());
 }

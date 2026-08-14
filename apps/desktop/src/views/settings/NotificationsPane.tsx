@@ -4,34 +4,109 @@
 
 import { Card } from '../../components/ui/Card';
 import { Pane } from '../../components/ui/Pane';
+import { PushButton } from '../../components/ui/PushButton';
+import { RangeSlider } from '../../components/ui/RangeSlider';
 import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
+import { SegmentedControl } from '../../components/ui/SegmentedControl';
 import { ToggleRow } from '../../components/ui/ToggleRow';
-import type { AppInfo } from '../../lib/ipc';
+import {
+  postTestNotification,
+  type DiskSpaceDisplay,
+  type Milestones,
+  type NudgePlacement,
+} from '../../lib/ipc';
+import { isMacOS } from '../../lib/platform';
 import type { AppSettingsController } from './useAppSettings';
 
 /**
  * Notifications.
  *
- * There are exactly two, and the pane lists both rather than describing a
- * category: a reader deciding whether to allow notifications is entitled to
- * know precisely what they are agreeing to be interrupted by. The shell is the
- * only thing that posts one (`src-tauri/src/notifications.rs`) and enforces the
- * same two-level gate this pane presents.
+ * The pane lists every kind rather than describing a category: a reader
+ * deciding whether to allow notifications is entitled to know precisely what
+ * they are agreeing to be interrupted by. The shell is the only thing that
+ * posts one (`src-tauri/src/notifications.rs`) and enforces the same gates
+ * this pane presents.
  *
- * The update row follows the Updates pane's rule: a build with no updater never
- * finds a version, so it renders an explanation rather than a switch over a
- * notification that could not arrive.
+ * Delivery is antiburn's own notification window, so its presentation —
+ * placement, how long it stays, whether it chimes — is decided here rather
+ * than in the system settings. The test button exists because of that: the
+ * system no longer previews these, so the pane must.
+ *
+ * The update and scan-failure kinds have no rows of their own — they are
+ * named in the master switch's copy and governed by it (their per-kind
+ * preferences persist for a hand-edited row, defaulting on). The milestone
+ * rows follow the honesty rule other panes established: they say plainly
+ * that no live usage source ships yet (`docs/deviations.md` D-20) — the
+ * pills configure a preference the engine honors the day a source exists,
+ * not a notification this build can post.
  */
 
-export interface NotificationsPaneProps extends AppSettingsController {
-  /** Absent until the shell answers; `null` outside the shell entirely. */
-  info: AppInfo | null;
+export type NotificationsPaneProps = AppSettingsController;
+
+const PLACEMENTS: readonly { value: NudgePlacement; label: string }[] = [
+  { value: 'menuBar', label: 'Menu bar' },
+  { value: 'topRight', label: 'Top right' },
+];
+
+const DISK_DISPLAYS: readonly { value: DiskSpaceDisplay; label: string }[] = [
+  { value: 'always', label: 'Always' },
+  { value: 'whenLow', label: 'When low' },
+  { value: 'never', label: 'Never' },
+];
+
+/** The threshold presets. The store accepts 5–2000; these are the sensible
+ *  stops, matching the tray's own "N GB" rendering. */
+const DISK_THRESHOLDS: readonly { value: string; label: string }[] = [
+  { value: '25', label: '25 GB' },
+  { value: '50', label: '50 GB' },
+  { value: '100', label: '100 GB' },
+];
+
+/** Three multi-select pills. Not a `SegmentedControl`: these are independent
+ *  toggles that happen to sit together, so each button carries its own
+ *  pressed state rather than the group carrying one selection. */
+function MilestonePills({
+  value,
+  onChange,
+  ariaLabel,
+  disabled = false,
+}: {
+  value: Milestones;
+  onChange: (next: Milestones) => void;
+  ariaLabel: string;
+  disabled?: boolean;
+}) {
+  const options = [
+    ['at50', '50%'],
+    ['at75', '75%'],
+    ['at90', '90%'],
+  ] as const;
+  return (
+    <div role="group" aria-label={ariaLabel} className="flex items-center gap-1.5">
+      {options.map(([key, label]) => (
+        <button
+          key={key}
+          type="button"
+          aria-pressed={value[key]}
+          disabled={disabled}
+          onClick={() => onChange({ ...value, [key]: !value[key] })}
+          className={`type-footnote h-6 rounded-control px-2 tabular-nums transition-colors duration-[120ms] ease-out ${
+            value[key]
+              ? 'bg-accent-fill text-white'
+              : 'text-label-secondary hover:bg-surface-hover'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-export function NotificationsPane({ settings, update, info }: NotificationsPaneProps) {
+export function NotificationsPane({ settings, update }: NotificationsPaneProps) {
   const on = settings.notificationsEnabled;
-  const updatesSupported = info?.updatesSupported ?? false;
+  const macOS = isMacOS();
 
   return (
     <Pane title="Notifications">
@@ -39,57 +114,141 @@ export function NotificationsPane({ settings, update, info }: NotificationsPaneP
         <Card>
           <ToggleRow
             label="Notify me"
-            description="antiburn interrupts you for the two things below and nothing else. There is no digest, no progress notification, and no marketing."
+            description="antiburn interrupts you for a newer version, a scan that could not finish, and the alerts below — nothing else. There is no digest, no progress notification, and no marketing."
             checked={on}
             onChange={(next) => void update({ notificationsEnabled: next })}
           />
-        </Card>
-      </SectionGroup>
-
-      <SectionGroup title="What antiburn will say">
-        <Card>
-          {updatesSupported ? (
-            <ToggleRow
-              label="A new version is available"
-              description="Posted once per version, after a scheduled check finds one. A check you started yourself is never notified — you are already looking at the answer."
-              checked={settings.notifyUpdateAvailable}
-              onChange={(next) => void update({ notifyUpdateAvailable: next })}
-              // Dimmed and inert because the master switch above is off — a
-              // state, not a feature that is missing.
-              dimmed={!on}
-              disabled={!on}
-            />
-          ) : (
-            <Row
-              label="A new version is available"
-              // Not a switch: this build has no updater, so the notification it
-              // would control can never be posted.
-              description="This build has no updater, so it never finds a version to tell you about. Packaged releases check on their own schedule."
-              dimmed
-            />
-          )}
           <ToggleRow
-            label="A scan could not finish"
-            description="Posted once per run of antiburn, not once per pass: whatever stopped the first scan usually stops the next one too, and sixty notifications would say the same thing sixty times."
-            checked={settings.notifyScanFailure}
-            onChange={(next) => void update({ notifyScanFailure: next })}
+            label="Sound"
+            description="A short chime, generated by antiburn itself. Only the test and a spend anomaly play it; everything else stays quiet."
+            checked={settings.notificationSound}
+            onChange={(next) => void update({ notificationSound: next })}
             dimmed={!on}
             disabled={!on}
           />
+          <Row
+            label="Auto-dismiss time"
+            description="How long a notification stays before it fades. Hovering pauses the timer."
+            trailing={
+              <span className="type-body tabular-nums text-label-secondary">
+                {settings.nudgeAutoDismissSecs}s
+              </span>
+            }
+          >
+            <RangeSlider
+              className="mt-2 w-full"
+              value={settings.nudgeAutoDismissSecs}
+              min={3}
+              max={30}
+              ariaLabel="Seconds before a notification dismisses itself"
+              ariaValueText={`${settings.nudgeAutoDismissSecs} seconds`}
+              onChange={(secs) => void update({ nudgeAutoDismissSecs: secs })}
+            />
+          </Row>
+          <Row
+            label="Test notification"
+            // Deliberately never dimmed: the test bypasses the master switch,
+            // so a reader can see what they would be allowing before they
+            // allow it.
+            description="Show a sample notification, exactly as a real one would appear."
+            trailing={
+              <PushButton onClick={() => void postTestNotification()}>Show test</PushButton>
+            }
+          />
+          {macOS && (
+            <Row
+              label="Position"
+              description="Where notifications appear: hanging under the antiburn menu-bar icon, or at the screen's top-right corner."
+              trailing={
+                <SegmentedControl
+                  options={PLACEMENTS}
+                  value={settings.nudgePlacement}
+                  onChange={(next) => void update({ nudgePlacement: next })}
+                  ariaLabel="Notification position"
+                />
+              }
+            />
+          )}
         </Card>
       </SectionGroup>
 
-      <SectionGroup title="Delivery">
+      <SectionGroup title="Usage limits">
         <Card>
+          <ToggleRow
+            label="Usage anomalies"
+            description="Alerts when an hour's estimated spend reaches a quarter of your whole trailing week. Judged against this machine's own history, from local estimates — nothing is fetched."
+            checked={settings.notifyUsageAnomalies}
+            onChange={(next) => void update({ notifyUsageAnomalies: next })}
+            dimmed={!on}
+            disabled={!on}
+          />
           <Row
-            label="Your system has the final say"
-            // Stated rather than left to be discovered: a switch that is on
-            // while the operating system silently drops every notification is
-            // the most confusing state this pane can be in.
-            description="Notifications are delivered by your operating system's own notification centre. If antiburn is turned off there, nothing arrives whatever is chosen here. Nothing about a notification leaves this machine."
+            label="5-hour milestones"
+            description="Notify once as each selected level of a provider's 5-hour limit is crossed. Needs a live usage connection, which this build does not include yet — the choice is kept for when it does."
+            trailing={
+              <MilestonePills
+                value={settings.milestones5h}
+                onChange={(next) => void update({ milestones5h: next })}
+                ariaLabel="Five-hour milestone thresholds"
+                disabled={!on}
+              />
+            }
+            dimmed={!on}
+          />
+          <Row
+            label="Weekly milestones"
+            description="Tracked separately and re-armed when the weekly limit resets."
+            trailing={
+              <MilestonePills
+                value={settings.milestonesWeekly}
+                onChange={(next) => void update({ milestonesWeekly: next })}
+                ariaLabel="Weekly milestone thresholds"
+                disabled={!on}
+              />
+            }
+            dimmed={!on}
           />
         </Card>
       </SectionGroup>
+
+      {macOS && (
+        <SectionGroup title="Remaining disk space">
+          <Card>
+            <Row
+              label="Show in menu bar"
+              description="Free space on your startup disk, next to the antiburn icon. The number matches what Finder reports."
+              trailing={
+                <SegmentedControl
+                  options={DISK_DISPLAYS}
+                  value={settings.diskSpaceDisplay}
+                  onChange={(next) => void update({ diskSpaceDisplay: next })}
+                  ariaLabel="When to show free disk space in the menu bar"
+                />
+              }
+            />
+            <Row
+              label="Low when below"
+              description="The level that counts as running low."
+              trailing={
+                <SegmentedControl
+                  options={DISK_THRESHOLDS}
+                  value={String(settings.diskSpaceThresholdGb)}
+                  onChange={(next) => void update({ diskSpaceThresholdGb: Number(next) })}
+                  ariaLabel="Low disk space threshold"
+                />
+              }
+            />
+            <ToggleRow
+              label="Notify when low"
+              description="Once each time free space drops below the level, and again only after it recovers."
+              checked={settings.notifyDiskSpaceLow}
+              onChange={(next) => void update({ notifyDiskSpaceLow: next })}
+              dimmed={!on}
+              disabled={!on}
+            />
+          </Card>
+        </SectionGroup>
+      )}
     </Pane>
   );
 }

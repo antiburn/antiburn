@@ -95,7 +95,7 @@ readers.
 
 **What rotation costs.** Every installed build verifies against the old public
 key. Bundles signed with the new key will not verify, so those installations
-cannot update at all: they will report a failed check in Settings → Updates and
+cannot update at all: they will report a failed check in Settings → About and
 install nothing. They are not broken and they are not unsafe — they are stranded
 until somebody reinstalls by hand. The failure is a refusal, not a silent
 downgrade, which is the correct direction but is little comfort to the reader.

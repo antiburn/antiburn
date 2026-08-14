@@ -104,16 +104,21 @@ component: the updater, which asks GitHub Releases whether a newer version exist
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can
-  always be run by hand from Settings → Updates.
+  always be run by hand from Settings → About.
 - Development builds carry no updater at all.
 - There is **no analytics and no telemetry** in this application — no client, no
   consent screen, and no endpoint.
 
-**Notifications are local.** antiburn posts exactly two — an update check that found
-a newer version, and the first scan failure of a run — and hands them to your own
-operating system's notification centre. Nothing about a notification leaves the
-machine, and both can be turned off in Settings → Notifications, together or one at
-a time.
+**Notifications are local.** antiburn shows them in its own small notification
+window and posts exactly these: an update check that found a newer version, the
+first scan failure of a run, free disk space dropping below your threshold, an
+hour of unusually fast estimated spend, a usage milestone (silent in this build —
+it needs a live provider connection none of which ships yet, see
+[`deviations.md`](deviations.md) D-20), and the test button's own sample. Every
+figure in them is computed on this machine; nothing about a notification leaves
+it. All of them can be turned off in Settings → Notifications, together or one at
+a time — the test alone ignores the master switch, so you can preview a
+notification before allowing any.
 
 ## Reporting a gap
 

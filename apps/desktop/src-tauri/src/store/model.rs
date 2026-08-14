@@ -201,6 +201,128 @@ impl ThemePreference {
     }
 }
 
+/// Where the notification window appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum NudgePlacement {
+    /// Anchored under the tray icon, like the popover. macOS only; other
+    /// platforms have no meaningful menu-bar anchor and always use `TopRight`.
+    #[default]
+    MenuBar,
+    TopRight,
+}
+
+impl NudgePlacement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NudgePlacement::MenuBar => "menuBar",
+            NudgePlacement::TopRight => "topRight",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "menuBar" => Some(NudgePlacement::MenuBar),
+            "topRight" => Some(NudgePlacement::TopRight),
+            _ => None,
+        }
+    }
+}
+
+/// When the menu bar shows the free-disk-space number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum DiskSpaceDisplay {
+    Always,
+    /// The default: the number appears only while space is below the
+    /// threshold, so a healthy machine keeps a quiet menu bar.
+    #[default]
+    WhenLow,
+    Never,
+}
+
+impl DiskSpaceDisplay {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DiskSpaceDisplay::Always => "always",
+            DiskSpaceDisplay::WhenLow => "whenLow",
+            DiskSpaceDisplay::Never => "never",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "always" => Some(DiskSpaceDisplay::Always),
+            "whenLow" => Some(DiskSpaceDisplay::WhenLow),
+            "never" => Some(DiskSpaceDisplay::Never),
+            _ => None,
+        }
+    }
+}
+
+/// Which usage-milestone thresholds notify, for one window class.
+///
+/// Stored as the subset text `"50,75,90"` (possibly empty) so the setting
+/// stays a scalar row like every other key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Milestones {
+    pub at50: bool,
+    pub at75: bool,
+    pub at90: bool,
+}
+
+impl Default for Milestones {
+    fn default() -> Self {
+        // All three on: a milestone only speaks when the opt-in live source
+        // exists at all, so the default costs a fresh install nothing.
+        Self {
+            at50: true,
+            at75: true,
+            at90: true,
+        }
+    }
+}
+
+impl Milestones {
+    pub fn as_str(self) -> String {
+        let mut parts = Vec::new();
+        if self.at50 {
+            parts.push("50");
+        }
+        if self.at75 {
+            parts.push("75");
+        }
+        if self.at90 {
+            parts.push("90");
+        }
+        parts.join(",")
+    }
+
+    /// Lenient by design: unknown fragments are dropped rather than failing
+    /// the whole read, so a hand-edited row degrades instead of resetting.
+    pub fn parse(value: &str) -> Self {
+        let mut milestones = Self {
+            at50: false,
+            at75: false,
+            at90: false,
+        };
+        for part in value.split(',') {
+            match part.trim() {
+                "50" => milestones.at50 = true,
+                "75" => milestones.at75 = true,
+                "90" => milestones.at90 = true,
+                _ => {}
+            }
+        }
+        milestones
+    }
+
+    pub fn any(self) -> bool {
+        self.at50 || self.at75 || self.at90
+    }
+}
+
 /// Narrowest and widest activity windows the settings pane offers, in days.
 /// The ceiling equals the store's retention window: offering more days than
 /// the store keeps would render a header over data that cannot exist.
@@ -208,6 +330,17 @@ pub const MIN_ACTIVITY_DAYS: u32 = 1;
 pub const MAX_ACTIVITY_DAYS: u32 = 14;
 /// Days of activity a fresh install shows.
 pub const DEFAULT_ACTIVITY_DAYS: u32 = 7;
+
+/// Bounds for how long a nudge stays on screen before it dismisses itself.
+pub const MIN_NUDGE_AUTO_DISMISS_SECS: u32 = 3;
+pub const MAX_NUDGE_AUTO_DISMISS_SECS: u32 = 30;
+pub const DEFAULT_NUDGE_AUTO_DISMISS_SECS: u32 = 10;
+
+/// Bounds for the low-disk threshold. The pane offers presets; the wide range
+/// is for hand-edited rows, clamped rather than rejected.
+pub const MIN_DISK_THRESHOLD_GB: u32 = 5;
+pub const MAX_DISK_THRESHOLD_GB: u32 = 2000;
+pub const DEFAULT_DISK_THRESHOLD_GB: u32 = 50;
 
 /// Every user preference the app persists, as one value.
 ///
@@ -234,12 +367,35 @@ pub struct AppSettings {
     /// everything already indexed stays browsable. See [`crate::scan`].
     pub discovery_paused: bool,
     /// The master switch for desktop notifications. Off means nothing is
-    /// delivered, whatever the two per-kind preferences below say.
+    /// delivered, whatever the per-kind preferences below say.
     pub notifications_enabled: bool,
     /// Notify when an automatic update check finds a newer version.
     pub notify_update_available: bool,
     /// Notify the first time a scan fails in this run of the app.
     pub notify_scan_failure: bool,
+    /// Where the notification window appears. See [`NudgePlacement`].
+    pub nudge_placement: NudgePlacement,
+    /// Seconds a nudge stays before dismissing itself. Clamped to
+    /// [`MIN_NUDGE_AUTO_DISMISS_SECS`]..=[`MAX_NUDGE_AUTO_DISMISS_SECS`].
+    pub nudge_auto_dismiss_secs: u32,
+    /// Whether a nudge may play the notification chime.
+    pub notification_sound: bool,
+    /// When the menu bar shows the free-disk-space number.
+    pub disk_space_display: DiskSpaceDisplay,
+    /// Free space, in binary GB, below which the disk counts as low.
+    pub disk_space_threshold_gb: u32,
+    /// Notify once each time free space drops below the threshold.
+    pub notify_disk_space_low: bool,
+    /// Notify when sustained spend is unusually fast for this machine.
+    pub notify_usage_anomalies: bool,
+    /// Five-hour-window usage milestones that notify. Only meaningful while
+    /// the live usage source is enabled — milestones need a real limit.
+    pub milestones_5h: Milestones,
+    /// Weekly-window usage milestones that notify.
+    pub milestones_weekly: Milestones,
+    /// The per-feature online opt-in for live usage limits. Off by default:
+    /// the app calls no provider endpoint until the reader turns this on.
+    pub live_usage_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -251,14 +407,25 @@ impl Default for AppSettings {
             launch_at_login: false,
             auto_update: true,
             discovery_paused: false,
-            // On by default, and both kinds with them. There are exactly two,
-            // both are about something the reader would want to act on, and
-            // neither repeats: a notification surface that has to be found
-            // before it says anything useful is a notification surface nobody
-            // finds.
+            // On by default, and the per-kind switches with them: each kind
+            // is about something the reader would want to act on, and none
+            // repeats. A notification surface that has to be found before it
+            // says anything useful is a notification surface nobody finds.
             notifications_enabled: true,
             notify_update_available: true,
             notify_scan_failure: true,
+            nudge_placement: NudgePlacement::default(),
+            nudge_auto_dismiss_secs: DEFAULT_NUDGE_AUTO_DISMISS_SECS,
+            notification_sound: true,
+            disk_space_display: DiskSpaceDisplay::default(),
+            disk_space_threshold_gb: DEFAULT_DISK_THRESHOLD_GB,
+            notify_disk_space_low: true,
+            notify_usage_anomalies: true,
+            milestones_5h: Milestones::default(),
+            milestones_weekly: Milestones::default(),
+            // The one default-off switch: turning it on is what authorizes
+            // the app's only non-update network use.
+            live_usage_enabled: false,
         }
     }
 }
@@ -270,6 +437,12 @@ impl AppSettings {
         self.activity_window_days = self
             .activity_window_days
             .clamp(MIN_ACTIVITY_DAYS, MAX_ACTIVITY_DAYS);
+        self.nudge_auto_dismiss_secs = self
+            .nudge_auto_dismiss_secs
+            .clamp(MIN_NUDGE_AUTO_DISMISS_SECS, MAX_NUDGE_AUTO_DISMISS_SECS);
+        self.disk_space_threshold_gb = self
+            .disk_space_threshold_gb
+            .clamp(MIN_DISK_THRESHOLD_GB, MAX_DISK_THRESHOLD_GB);
         self
     }
 }

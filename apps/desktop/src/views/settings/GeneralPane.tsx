@@ -102,6 +102,33 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
 
   return (
     <Pane title="General">
+      {/* Monitoring leads: whether antiburn is looking at all is the pane's
+          primary switch, and everything below describes what the looking
+          produced. */}
+      <SectionGroup title="Monitoring">
+        <Card>
+          <ToggleRow
+            label="Keep looking for new sessions"
+            description="antiburn re-reads your agents' session files while the popover is open. Turning this off stops the background pass — everything already indexed stays readable, and you can still scan on demand."
+            checked={!settings.discoveryPaused}
+            onChange={(next) => void update({ discoveryPaused: !next })}
+          />
+          <Row
+            label="Historical scan"
+            description={`Read every session file antiburn can find on this machine, from the start. ${scanSummary(
+              scanStatus,
+            )}`}
+            trailing={
+              running ? (
+                <PushButton onClick={() => void handleCancel()}>Stop</PushButton>
+              ) : (
+                <PushButton onClick={() => void handleScan()}>Scan now</PushButton>
+              )
+            }
+          />
+        </Card>
+      </SectionGroup>
+
       <SectionGroup title="Activity">
         <Card>
           <Row
@@ -125,30 +152,6 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
               onChange={(days) => void update({ activityWindowDays: days })}
             />
           </Row>
-        </Card>
-      </SectionGroup>
-
-      <SectionGroup title="Monitoring">
-        <Card>
-          <ToggleRow
-            label="Keep looking for new sessions"
-            description="antiburn re-reads your agents' session files while the popover is open. Turning this off stops the background pass — everything already indexed stays readable, and you can still scan on demand."
-            checked={!settings.discoveryPaused}
-            onChange={(next) => void update({ discoveryPaused: !next })}
-          />
-          <Row
-            label="Historical scan"
-            description={`Read every session file antiburn can find on this machine, from the start. ${scanSummary(
-              scanStatus,
-            )}`}
-            trailing={
-              running ? (
-                <PushButton onClick={() => void handleCancel()}>Stop</PushButton>
-              ) : (
-                <PushButton onClick={() => void handleScan()}>Scan now</PushButton>
-              )
-            }
-          />
         </Card>
       </SectionGroup>
 

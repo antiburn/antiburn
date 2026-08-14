@@ -255,7 +255,7 @@ curl -sSL https://github.com/antiburn/antiburn/releases/latest/download/latest.j
 ```
 
 The `version` must be the one just published and the URLs must point at its tag.
-Then open an installed copy of the previous version and use Settings → Updates →
+Then open an installed copy of the previous version and use Settings → About →
 Check now: it should report the new version.
 
 If anything here is wrong, **do not fix the assets**. Go to

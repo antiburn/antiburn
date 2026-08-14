@@ -9,13 +9,16 @@
 //! choose to look at. That makes it the surface where restraint matters most,
 //! so the whole policy is here rather than spread across the callers:
 //!
-//! - **There are exactly two kinds.** A newer version is available, and a scan
-//!   failed. Both are things a reader would act on; neither is a progress
-//!   report. Nothing else in the app posts a notification.
+//! - **Every kind is enumerated here.** A newer version, a failed scan, low
+//!   disk space, unusually fast spend, a crossed usage milestone, and the
+//!   settings pane's own test. Each is something a reader would act on (or,
+//!   for the test, explicitly asked for); none is a progress report. Nothing
+//!   else in the app posts a notification.
 //! - **Every kind is gated twice** — once by the master preference and once by
-//!   its own ([`allowed`]). Both default on, because a notification surface
+//!   its own ([`allowed`]). All default on, because a notification surface
 //!   that has to be discovered before it says anything is a surface nobody
-//!   discovers.
+//!   discovers. The one exception is [`Kind::Test`], which bypasses the
+//!   master switch: pressing "Show test" is the reader asking to see one.
 //! - **Nothing repeats.** A scan failure is announced once per run of the app,
 //!   not once per tick ([`NotificationState::claim_scan_failure`]), and a
 //!   version is announced once, not every six hours
@@ -25,20 +28,19 @@
 //!   permission (`capabilities/default.json`), so "what is worth interrupting
 //!   someone for" is decided in one place, in this file.
 //!
-//! Delivery goes through the [`Notifier`] seam: the decisions above are
-//! ordinary functions over settings and state, and the one line that talks to
-//! the operating system is behind a trait so the tests never need a
-//! notification centre.
+//! Delivery goes to antiburn's own notification window (the `antiburn-nudge`
+//! crate, via [`crate::nudges`]): the decisions above are ordinary functions
+//! over settings and state, and presentation — placement, auto-dismiss, the
+//! chime — is applied at the seam, never decided here.
 //!
-//! Nothing here is network-capable. The platform plugin hands a title and a
-//! body to the local notification centre — on macOS through the system's own
-//! delivery service, on Linux through D-Bus, on Windows through WinRT — and
-//! antiburn's notification bodies carry a version string or a scan error,
-//! never session content.
+//! Nothing here is network-capable. A nudge is an event emitted to a local
+//! webview, and antiburn's notification bodies carry a version string, a scan
+//! error, or a locally-estimated figure — never session content.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use antiburn_nudge::{Nudge, NudgeKind, NudgeTone};
 use tauri::{AppHandle, Manager};
 
 use crate::dto::ScanStatus;
@@ -52,18 +54,40 @@ pub enum Kind {
     UpdateAvailable,
     /// A scan pass ended in an error.
     ScanFailure,
+    /// Free disk space dropped below the reader's threshold.
+    DiskSpaceLow,
+    /// Sustained spend unusually fast for this machine.
+    UsageAnomaly,
+    /// A live usage window crossed a milestone the reader asked about.
+    UsageMilestone,
+    /// The settings pane's "Show test" button.
+    Test,
 }
 
 /// Whether `kind` may be delivered under these preferences.
 ///
 /// The master switch wins: turning notifications off turns *all* of them off,
-/// without the two per-kind preferences having to be rewritten (so turning the
-/// master back on restores the reader's earlier choices rather than a default).
+/// without the per-kind preferences having to be rewritten (so turning the
+/// master back on restores the reader's earlier choices rather than a
+/// default). [`Kind::Test`] alone ignores the master switch — it exists so a
+/// reader can see what a notification looks like *before* deciding to allow
+/// them.
 pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
+    if kind == Kind::Test {
+        return true;
+    }
     settings.notifications_enabled
         && match kind {
             Kind::UpdateAvailable => settings.notify_update_available,
             Kind::ScanFailure => settings.notify_scan_failure,
+            Kind::DiskSpaceLow => settings.notify_disk_space_low,
+            Kind::UsageAnomaly => settings.notify_usage_anomalies,
+            // Milestones have no single switch: the two per-window rows are
+            // the preference, and an empty selection is "off".
+            Kind::UsageMilestone => {
+                settings.milestones_5h.any() || settings.milestones_weekly.any()
+            }
+            Kind::Test => true,
         }
 }
 
@@ -109,37 +133,36 @@ impl NotificationState {
     }
 }
 
-/// The one line that talks to the operating system.
+/// Build and hand off one approved nudge.
 ///
-/// Behind a trait so the policy above is testable without a notification
-/// centre — and so a platform that refuses to deliver (an unbundled
-/// development run on macOS, a Linux session with no notification daemon) is a
-/// logged failure rather than a panic.
-pub trait Notifier {
-    fn deliver(&self, title: &str, body: &str);
-}
-
-/// The platform's own notification centre, through the Tauri plugin.
-pub struct PlatformNotifier<'a>(pub &'a AppHandle);
-
-impl Notifier for PlatformNotifier<'_> {
-    fn deliver(&self, title: &str, body: &str) {
-        use tauri_plugin_notification::NotificationExt as _;
-
-        if let Err(error) = self
-            .0
-            .notification()
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-        {
-            // Not fatal, and not retried: a notification that could not be
-            // delivered has already been overtaken by whatever the reader is
-            // doing instead.
-            eprintln!("antiburn: could not post a notification ({error})");
-        }
+/// The id is unique per delivery — the view de-duplicates re-emitted events
+/// by id, so reusing one would make a genuinely new nudge look like an echo.
+/// Every nudge carries a dismiss CTA; `extra_action` is the one optional
+/// deeper destination (routed in [`crate::nudges`]).
+fn deliver(
+    app: &AppHandle,
+    kind: Kind,
+    title: String,
+    body: String,
+    extra_action: Option<(&str, &str)>,
+) {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let (nudge_kind, tone) = match kind {
+        Kind::UpdateAvailable => (NudgeKind::UpdateAvailable, NudgeTone::Info),
+        Kind::ScanFailure => (NudgeKind::ScanFailure, NudgeTone::Warning),
+        Kind::DiskSpaceLow => (NudgeKind::DiskSpaceLow, NudgeTone::Warning),
+        Kind::UsageAnomaly => (NudgeKind::UsageAnomaly, NudgeTone::Warning),
+        Kind::UsageMilestone => (NudgeKind::UsageMilestone, NudgeTone::Info),
+        Kind::Test => (NudgeKind::Test, NudgeTone::Info),
+    };
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut nudge =
+        Nudge::new(format!("antiburn-{sequence}"), nudge_kind, tone, title).reason(body);
+    if let Some((id, label)) = extra_action {
+        nudge = nudge.action(id, label, true);
     }
+    nudge = nudge.action("dismiss", "Dismiss", extra_action.is_none());
+    crate::nudges::deliver(app, nudge);
 }
 
 /// The title and body of an update notification.
@@ -155,7 +178,7 @@ pub fn update_message(version: &str) -> (String, String) {
         format!(
             "Version {version} is on the release feed. \
              This build checks for updates but does not install them yet — \
-             Settings → Updates shows what the last check found."
+             Settings → About shows what the last check found."
         ),
     )
 }
@@ -169,6 +192,66 @@ pub fn scan_failure_message(error: &str) -> (String, String) {
     (
         "antiburn could not finish a scan".to_string(),
         format!("{error}. Open antiburn to try again; everything already indexed is unaffected."),
+    )
+}
+
+/// The title and body of a low-disk notification.
+pub fn disk_space_low_message(free_gb: u64, threshold_gb: u32) -> (String, String) {
+    (
+        format!("{free_gb} GB of disk space left"),
+        format!(
+            "Free space dropped below your {threshold_gb} GB mark. \
+             Settings → Notifications has the threshold."
+        ),
+    )
+}
+
+/// The title and body of a spend-anomaly notification.
+///
+/// Estimates, and the copy says so: the figures come from the local pricing
+/// catalog over this machine's own transcripts, never from a provider.
+pub fn usage_anomaly_message(hour_usd: f64, week_usd: f64) -> (String, String) {
+    (
+        "Spending unusually fast".to_string(),
+        format!(
+            "An estimated ${hour_usd:.2} in the last hour, against roughly \
+             ${week_usd:.2} across the whole past week. Estimated locally \
+             from your sessions — nothing was fetched."
+        ),
+    )
+}
+
+/// The title and body of a usage-milestone notification.
+pub fn usage_milestone_message(
+    content: &crate::provider_usage::live::MilestoneContent,
+) -> (String, String) {
+    let highest = content
+        .crossings
+        .iter()
+        .map(|crossing| crossing.threshold)
+        .max()
+        .unwrap_or(0);
+    let windows = content
+        .crossings
+        .iter()
+        .map(|crossing| crossing.window_label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    (
+        format!("{}% of your {} used", highest, windows),
+        format!(
+            "{} reports the crossing; the number is the provider's own. \
+             Settings → Notifications chooses which milestones speak.",
+            content.provider
+        ),
+    )
+}
+
+/// The title and body of the settings pane's test notification.
+pub fn test_message() -> (String, String) {
+    (
+        "antiburn notifications are working".to_string(),
+        "This is a sample notification from your settings.".to_string(),
     )
 }
 
@@ -187,7 +270,7 @@ pub fn note_scan_outcome(app: &AppHandle, status: &ScanStatus) {
         return;
     }
     let (title, body) = scan_failure_message(error);
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(app, Kind::ScanFailure, title, body, None);
 }
 
 /// Report the outcome of an update check, if it found a version worth naming.
@@ -212,7 +295,58 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
         return;
     }
     let (title, body) = update_message(version);
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(
+        app,
+        Kind::UpdateAvailable,
+        title,
+        body,
+        Some(("view", "View")),
+    );
+}
+
+/// Report low disk space. Returns whether the episode was consumed: `true`
+/// when delivered, `false` when suppressed by preference so the caller's
+/// trigger retries on its next tick (see [`crate::disk_monitor`]).
+pub fn note_disk_space_low(app: &AppHandle, free_gb: u64, threshold_gb: u32) -> bool {
+    if !enabled(app, Kind::DiskSpaceLow) {
+        return false;
+    }
+    let (title, body) = disk_space_low_message(free_gb, threshold_gb);
+    deliver(app, Kind::DiskSpaceLow, title, body, None);
+    true
+}
+
+/// Report a spend anomaly. Once-per-episode is the caller's job
+/// ([`crate::usage_alerts`]); this only applies the preference gate.
+pub fn note_usage_anomaly(app: &AppHandle, hour_usd: f64, week_usd: f64) -> bool {
+    if !enabled(app, Kind::UsageAnomaly) {
+        return false;
+    }
+    let (title, body) = usage_anomaly_message(hour_usd, week_usd);
+    deliver(app, Kind::UsageAnomaly, title, body, None);
+    true
+}
+
+/// Report crossed milestones. Selection and dedup happen in the engine
+/// ([`crate::provider_usage::live`]); this only applies the preference gate.
+pub fn note_usage_milestone(
+    app: &AppHandle,
+    content: &crate::provider_usage::live::MilestoneContent,
+) -> bool {
+    if !enabled(app, Kind::UsageMilestone) {
+        return false;
+    }
+    let (title, body) = usage_milestone_message(content);
+    deliver(app, Kind::UsageMilestone, title, body, None);
+    true
+}
+
+/// Post the settings pane's test notification. Bypasses the master switch —
+/// the reader pressed the button — but is otherwise the same delivery path as
+/// every real kind, so what they see is what they will get.
+pub fn note_test(app: &AppHandle) {
+    let (title, body) = test_message();
+    deliver(app, Kind::Test, title, body, None);
 }
 
 /// The reader's preferences, read fresh, defaulting to *silence* when the store
@@ -226,19 +360,6 @@ fn enabled(app: &AppHandle, kind: Kind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-
-    /// A notifier that records instead of delivering.
-    #[derive(Default)]
-    struct Recorder(RefCell<Vec<(String, String)>>);
-
-    impl Notifier for Recorder {
-        fn deliver(&self, title: &str, body: &str) {
-            self.0
-                .borrow_mut()
-                .push((title.to_string(), body.to_string()));
-        }
-    }
 
     fn settings() -> AppSettings {
         AppSettings::default()
@@ -276,6 +397,68 @@ mod tests {
     }
 
     #[test]
+    fn the_test_kind_bypasses_the_master_switch_and_nothing_else_does() {
+        let settings = AppSettings {
+            notifications_enabled: false,
+            ..settings()
+        };
+        assert!(allowed(&settings, Kind::Test));
+        for kind in [
+            Kind::UpdateAvailable,
+            Kind::ScanFailure,
+            Kind::DiskSpaceLow,
+            Kind::UsageAnomaly,
+            Kind::UsageMilestone,
+        ] {
+            assert!(!allowed(&settings, kind));
+        }
+    }
+
+    #[test]
+    fn an_empty_milestone_selection_is_how_milestones_are_off() {
+        let none = crate::store::Milestones {
+            at50: false,
+            at75: false,
+            at90: false,
+        };
+        let settings = AppSettings {
+            milestones_5h: none,
+            milestones_weekly: none,
+            ..settings()
+        };
+        assert!(!allowed(&settings, Kind::UsageMilestone));
+
+        let settings = AppSettings {
+            milestones_weekly: none,
+            ..AppSettings::default()
+        };
+        // One row still selected is still a preference to hear about it.
+        assert!(allowed(&settings, Kind::UsageMilestone));
+    }
+
+    #[test]
+    fn disk_and_anomaly_kinds_honor_their_own_switches() {
+        let settings = AppSettings {
+            notify_disk_space_low: false,
+            notify_usage_anomalies: false,
+            ..settings()
+        };
+        assert!(!allowed(&settings, Kind::DiskSpaceLow));
+        assert!(!allowed(&settings, Kind::UsageAnomaly));
+        assert!(allowed(&settings, Kind::ScanFailure));
+    }
+
+    #[test]
+    fn the_anomaly_copy_says_the_figures_are_local_estimates() {
+        let (_, body) = usage_anomaly_message(12.5, 40.0);
+        assert!(body.contains("$12.50"));
+        assert!(
+            body.contains("Estimated locally") && body.contains("nothing was fetched"),
+            "an estimate must not read as a provider's own number"
+        );
+    }
+
+    #[test]
     fn a_scan_failure_is_reported_once_per_run_not_once_per_tick() {
         let state = NotificationState::default();
         assert!(state.claim_scan_failure());
@@ -299,12 +482,7 @@ mod tests {
 
     #[test]
     fn the_delivered_copy_names_the_version_and_claims_no_install_this_build_cannot_do() {
-        let recorder = Recorder::default();
         let (title, body) = update_message("0.2.0");
-        recorder.deliver(&title, &body);
-
-        let delivered = recorder.0.borrow();
-        let (title, body) = &delivered[0];
         assert!(title.contains("antiburn"));
         assert!(body.contains("0.2.0"));
         assert!(

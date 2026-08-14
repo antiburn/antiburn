@@ -72,8 +72,13 @@ jobs:
           # Windows too: the frontend suite covers path handling, line endings,
           # and the platform-aware modifier logic, and those are exactly the
           # places a Linux-only run cannot fail. macOS is left out on purpose —
-          # it is the slowest runner and shares its behaviour here with Linux,
-          # while the shell (which does not) is covered on all three below.
+          # it is the slowest runner and shares its behaviour here with Linux.
+          # That stays true even though the settings window now renders
+          # macOS-only chrome (the title-bar drag strip): the suite is jsdom,
+          # which has no operating system, so those branches run under a
+          # mocked `isMacOS` and behave identically on every runner. The code
+          # that genuinely differs per OS is the shell, covered on all three
+          # below. Rationale mirrored in docs/deviations.md (D-12).
           - name: windows
             os: windows-latest
     runs-on: ${{ matrix.os }}
@@ -130,14 +135,17 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Tauri's Linux backend builds against the system WebKitGTK, GTK, and
-      # tray (AppIndicator) development packages. Windows and macOS use the
-      # webview and tray the operating system already ships.
+      # tray (AppIndicator) development packages; the notification chime's
+      # playback backend (rodio → alsa-sys) additionally needs the ALSA
+      # headers. Windows and macOS use the webview, tray, and audio output the
+      # operating system already ships.
       - name: Install Tauri system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
             build-essential \
+            libasound2-dev \
             libayatana-appindicator3-dev \
             libgtk-3-dev \
             librsvg2-dev \

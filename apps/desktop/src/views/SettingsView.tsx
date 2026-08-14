@@ -7,7 +7,6 @@ import {
   Info,
   LogOut,
   Palette,
-  RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
   FolderGit2,
@@ -18,11 +17,13 @@ import { ScrollPane } from '../components/ui/ScrollPane';
 import { SidebarNav, type SidebarNavItem } from '../components/ui/SidebarNav';
 import {
   appInfo,
+  closeSettingsWindow,
   onSettingsPaneRequest,
   quitApp,
   takeSettingsPane,
   type AppInfo,
 } from '../lib/ipc';
+import { isMacOS } from '../lib/platform';
 import { isSettingsPane, type SettingsPane } from '../lib/settingsPanes';
 import { AboutPane } from './settings/AboutPane';
 import { AppearancePane } from './settings/AppearancePane';
@@ -30,7 +31,6 @@ import { GeneralPane } from './settings/GeneralPane';
 import { NotificationsPane } from './settings/NotificationsPane';
 import { PrivacyPane } from './settings/PrivacyPane';
 import { SourcesPane } from './settings/SourcesPane';
-import { UpdatesPane } from './settings/UpdatesPane';
 import { useAppSettings } from './settings/useAppSettings';
 
 /**
@@ -54,13 +54,16 @@ import { useAppSettings } from './settings/useAppSettings';
  * reader can reasonably look for the way out.
  */
 
+// Everyday panes first, provenance last: Privacy and Notifications sit ahead
+// of Sources and Appearance so the order survives a future where more panes
+// exist, and About closes the list. Software update lives inside About, with
+// the build it updates, rather than as a pane of its own.
 const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
-  { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'sources', label: 'Sources', icon: FolderGit2 },
   { id: 'privacy', label: 'Privacy', icon: ShieldCheck },
   { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'updates', label: 'Updates', icon: RefreshCw, separatorBefore: true },
+  { id: 'sources', label: 'Sources', icon: FolderGit2 },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'about', label: 'About', icon: Info },
 ];
 
@@ -103,8 +106,51 @@ export function SettingsView() {
     };
   }, []);
 
+  // ⌘W closes the window. The shell runs as an accessory app with no
+  // application menu, so the standard shortcut has no owner unless it is
+  // handled here. Routed through a close *request* (which the shell turns into
+  // a hide), so this takes the same path as the title-bar button.
+  // Esc must NOT close: dismiss-on-Escape is modal behavior and a settings
+  // window is not a modal. Do not "fix" this by adding Escape.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === 'w'
+      ) {
+        event.preventDefault();
+        void closeSettingsWindow();
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // On macOS the native title bar is hidden (overlay style in
+  // `src-tauri/src/settings.rs`), so the content column pushes down past the
+  // drag strip: pt-10 (40px) starts content exactly at the strip's bottom
+  // edge. Windows/Linux keep the native bar and the original padding.
+  const contentPadding = isMacOS() ? 'px-6 pb-5 pt-10' : 'px-6 py-5';
+
   return (
-    <div className="flex h-full min-h-0">
+    <div className="relative flex h-full min-h-0">
+      {isMacOS() && (
+        // Custom title bar: the native one is hidden, so this transparent
+        // strip is the window's drag handle. h-10 (40px) — taller than the
+        // 28px overlay bar on purpose, a more forgiving grab target — and the
+        // sidebar and content clearances both stop at its bottom edge, so
+        // nothing interactive ever sits under it. No title text: the window
+        // is already named by its sidebar. `data-tauri-drag-region` starts a
+        // drag only when the mousedown lands on this element itself, so any
+        // future child must be pointer-events-none; double-click no-ops
+        // because the window is not resizable or maximizable.
+        <div
+          data-tauri-drag-region
+          className="absolute inset-x-0 top-0 z-10 h-10"
+          aria-hidden="true"
+        />
+      )}
       <SidebarNav
         items={PANES}
         value={pane}
@@ -112,6 +158,11 @@ export function SettingsView() {
           if (isSettingsPane(next)) setPane(next);
         }}
         ariaLabel="Settings sections"
+        // The overlay title bar hides the native bar: pt-7 plus the tablist's
+        // own py-3 lands the first row at 40px — the bottom edge of the drag
+        // strip — while the sidebar material still fills to the window's top
+        // edge behind the traffic lights.
+        className={isMacOS() ? 'pt-7' : ''}
         footer={
           <button
             type="button"
@@ -125,20 +176,23 @@ export function SettingsView() {
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ScrollPane viewportClassName="px-6 py-5">
+        <ScrollPane viewportClassName={contentPadding}>
+          {/* Keyed by pane so a section switch remounts the panel and plays
+              the entrance once; the global reduced-motion clamp in
+              styles/motion.css neutralizes it for readers who asked. */}
           <div
+            key={pane}
             role="tabpanel"
             id={`${pane}-panel`}
             aria-labelledby={`${pane}-tab`}
-            className="mx-auto w-full max-w-[600px]"
+            className="animate-step-in mx-auto w-full max-w-[600px]"
           >
             {pane === 'general' && <GeneralPane {...controller} info={info} />}
             {pane === 'appearance' && <AppearancePane {...controller} />}
             {pane === 'sources' && <SourcesPane />}
             {pane === 'privacy' && <PrivacyPane />}
-            {pane === 'notifications' && <NotificationsPane {...controller} info={info} />}
-            {pane === 'updates' && <UpdatesPane {...controller} info={info} />}
-            {pane === 'about' && <AboutPane info={info} onOpenPane={setPane} />}
+            {pane === 'notifications' && <NotificationsPane {...controller} />}
+            {pane === 'about' && <AboutPane {...controller} info={info} onOpenPane={setPane} />}
           </div>
         </ScrollPane>
       </div>

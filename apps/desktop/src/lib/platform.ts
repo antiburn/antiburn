@@ -5,10 +5,14 @@
 /**
  * Platform detection for the renderer.
  *
- * Styling never branches on this value in JavaScript. The platform is written
+ * Styling rarely branches on this value in JavaScript. The platform is written
  * once to `<html data-platform>` and the few genuinely platform-specific rules
  * key off that attribute (see src/styles/platform-controls.css), which keeps
- * the branch in CSS where it can be read alongside the rule it guards.
+ * the branch in CSS where it can be read alongside the rule it guards. The one
+ * sanctioned exception is window chrome: on macOS the settings window hides
+ * its native title bar, and `SettingsView` branches on `isMacOS()` to render
+ * the drag strip and its clearances — structure, not styling, so the attribute
+ * cannot carry it.
  */
 
 export type Platform = 'macos' | 'windows' | 'linux' | 'unknown';

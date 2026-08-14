@@ -39,9 +39,9 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub use model::{
-    AnalysisRecord, AppSettings, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS, RelationKind,
-    RelationRecord, RepositoryRecord, SessionKey, SessionRecord, ThemePreference,
-    UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS,
+    Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
+    SessionRecord, ThemePreference, UsageEvidenceRecord,
 };
 
 /// File name of the database inside the app data directory.
@@ -168,6 +168,37 @@ impl Store {
      * Settings
      * ----------------------------------------------------------------- */
 
+    /// A non-preference scalar the shell persists for itself, by key.
+    ///
+    /// Same table as the settings, different audience: these rows carry state
+    /// (a last-fired timestamp, a delivered-milestone ledger) rather than a
+    /// choice, so they are namespaced under `internal:` and never surface in
+    /// [`Store::settings`]. `None` covers both "never written" and an
+    /// unreadable store — callers treat absence as "act as if new".
+    pub fn internal_value(&self, key: &str) -> Option<String> {
+        let connection = self.lock();
+        connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+    }
+
+    /// Write (or replace) an internal scalar. Errors are swallowed by design:
+    /// every caller is a background loop for which "the seed did not persist"
+    /// degrades to a duplicate notification after a relaunch, which is a
+    /// better failure than a loop that stops.
+    pub fn set_internal_value(&self, key: &str, value: &str) {
+        let connection = self.lock();
+        let _ = connection.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        );
+    }
+
     /// Every preference, with defaults filled in for keys never written.
     pub fn settings(&self) -> Result<AppSettings> {
         let connection = self.lock();
@@ -219,6 +250,46 @@ impl Store {
                 .get("notifyScanFailure")
                 .map(|value| value == "true")
                 .unwrap_or(defaults.notify_scan_failure),
+            nudge_placement: stored
+                .get("nudgePlacement")
+                .and_then(|value| NudgePlacement::parse(value))
+                .unwrap_or(defaults.nudge_placement),
+            nudge_auto_dismiss_secs: stored
+                .get("nudgeAutoDismissSecs")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(defaults.nudge_auto_dismiss_secs),
+            notification_sound: stored
+                .get("notificationSound")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notification_sound),
+            disk_space_display: stored
+                .get("diskSpaceDisplay")
+                .and_then(|value| DiskSpaceDisplay::parse(value))
+                .unwrap_or(defaults.disk_space_display),
+            disk_space_threshold_gb: stored
+                .get("diskSpaceThresholdGb")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(defaults.disk_space_threshold_gb),
+            notify_disk_space_low: stored
+                .get("notifyDiskSpaceLow")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notify_disk_space_low),
+            notify_usage_anomalies: stored
+                .get("notifyUsageAnomalies")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.notify_usage_anomalies),
+            milestones_5h: stored
+                .get("milestones5h")
+                .map(|value| Milestones::parse(value))
+                .unwrap_or(defaults.milestones_5h),
+            milestones_weekly: stored
+                .get("milestonesWeekly")
+                .map(|value| Milestones::parse(value))
+                .unwrap_or(defaults.milestones_weekly),
+            live_usage_enabled: stored
+                .get("liveUsageEnabled")
+                .map(|value| value == "true")
+                .unwrap_or(defaults.live_usage_enabled),
         };
         Ok(settings.normalized())
     }
@@ -262,6 +333,40 @@ impl Store {
             put.execute(params![
                 "notifyScanFailure",
                 bool_text(settings.notify_scan_failure)
+            ])?;
+            put.execute(params!["nudgePlacement", settings.nudge_placement.as_str()])?;
+            put.execute(params![
+                "nudgeAutoDismissSecs",
+                settings.nudge_auto_dismiss_secs.to_string()
+            ])?;
+            put.execute(params![
+                "notificationSound",
+                bool_text(settings.notification_sound)
+            ])?;
+            put.execute(params![
+                "diskSpaceDisplay",
+                settings.disk_space_display.as_str()
+            ])?;
+            put.execute(params![
+                "diskSpaceThresholdGb",
+                settings.disk_space_threshold_gb.to_string()
+            ])?;
+            put.execute(params![
+                "notifyDiskSpaceLow",
+                bool_text(settings.notify_disk_space_low)
+            ])?;
+            put.execute(params![
+                "notifyUsageAnomalies",
+                bool_text(settings.notify_usage_anomalies)
+            ])?;
+            put.execute(params!["milestones5h", settings.milestones_5h.as_str()])?;
+            put.execute(params![
+                "milestonesWeekly",
+                settings.milestones_weekly.as_str()
+            ])?;
+            put.execute(params![
+                "liveUsageEnabled",
+                bool_text(settings.live_usage_enabled)
             ])?;
         }
         tx.commit()?;
