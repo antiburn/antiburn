@@ -3,10 +3,18 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { useRoute } from './lib/route';
+import { NudgeView } from './views/NudgeView';
 import { PopoverView } from './views/PopoverView';
 import { SettingsView } from './views/SettingsView';
 
 export function App() {
   const route = useRoute();
-  return route === 'settings' ? <SettingsView /> : <PopoverView />;
+  switch (route) {
+    case 'settings':
+      return <SettingsView />;
+    case 'nudge':
+      return <NudgeView />;
+    default:
+      return <PopoverView />;
+  }
 }

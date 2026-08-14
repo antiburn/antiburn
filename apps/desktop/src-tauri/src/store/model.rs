@@ -276,7 +276,11 @@ impl Default for Milestones {
     fn default() -> Self {
         // All three on: a milestone only speaks when the opt-in live source
         // exists at all, so the default costs a fresh install nothing.
-        Self { at50: true, at75: true, at90: true }
+        Self {
+            at50: true,
+            at75: true,
+            at90: true,
+        }
     }
 }
 
@@ -298,7 +302,11 @@ impl Milestones {
     /// Lenient by design: unknown fragments are dropped rather than failing
     /// the whole read, so a hand-edited row degrades instead of resetting.
     pub fn parse(value: &str) -> Self {
-        let mut milestones = Self { at50: false, at75: false, at90: false };
+        let mut milestones = Self {
+            at50: false,
+            at75: false,
+            at90: false,
+        };
         for part in value.split(',') {
             match part.trim() {
                 "50" => milestones.at50 = true,

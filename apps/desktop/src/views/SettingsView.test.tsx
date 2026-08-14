@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SettingsView } from './SettingsView';
@@ -60,6 +60,16 @@ const SETTINGS = {
   notificationsEnabled: true,
   notifyUpdateAvailable: true,
   notifyScanFailure: true,
+  nudgePlacement: 'menuBar' as const,
+  nudgeAutoDismissSecs: 10,
+  notificationSound: true,
+  diskSpaceDisplay: 'whenLow' as const,
+  diskSpaceThresholdGb: 50,
+  notifyDiskSpaceLow: true,
+  notifyUsageAnomalies: true,
+  milestones5h: { at50: true, at75: true, at90: true },
+  milestonesWeekly: { at50: true, at75: true, at90: true },
+  liveUsageEnabled: false,
 };
 
 const INFO = {
@@ -548,7 +558,7 @@ describe('SettingsView — notifications', () => {
     mockCommands();
   });
 
-  it('names both notifications rather than describing a category', async () => {
+  it('names every notification rather than describing a category', async () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } });
     render(<SettingsView />);
 
@@ -559,8 +569,46 @@ describe('SettingsView — notifications', () => {
       screen.getByRole('switch', { name: 'A new version is available' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'A scan could not finish' })).toBeInTheDocument();
-    // The system's own setting overrules everything here, and the pane says so.
-    expect(screen.getByText(/final say/i)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Usage anomalies' })).toBeInTheDocument();
+    // Milestone pills are independent toggles, one group per window class.
+    expect(
+      screen.getByRole('group', { name: 'Five-hour milestone thresholds' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('group', { name: 'Weekly milestone thresholds' }),
+    ).toBeInTheDocument();
+    // The milestone rows say plainly that no live source ships yet (D-19).
+    expect(screen.getByText(/does not include yet/i)).toBeInTheDocument();
+  });
+
+  it('shows a test notification through the shell', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show test' }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('post_test_notification'));
+  });
+
+  it('persists a milestone pill toggle as the settings subset', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+    const group = await screen.findByRole('group', {
+      name: 'Five-hour milestone thresholds',
+    });
+    const fifty = within(group).getByRole('button', { name: '50%' });
+    expect(fifty).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(fifty);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: {
+          ...SETTINGS,
+          milestones5h: { at50: false, at75: true, at90: true },
+        },
+      }),
+    );
   });
 
   it('persists the master switch', async () => {

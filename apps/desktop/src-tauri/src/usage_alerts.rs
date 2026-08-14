@@ -73,17 +73,32 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     })
 }
 
+/// The registered live usage source and the milestone engine's ledger.
+///
+/// `source` is `None` in this build — no provider connection ships yet
+/// (deviations register D-19) — so the milestone pass below is typed, wired,
+/// and silent. Registering the first source is the follow-up's one line.
+#[derive(Default)]
+pub struct LiveUsage {
+    pub source: Option<Box<dyn provider_usage::live::LiveUsageSource>>,
+    ledger: std::sync::Mutex<provider_usage::live::MilestoneLedger>,
+}
+
 fn run_pass(app: &AppHandle) {
     let Some(store) = app.try_state::<Store>() else {
         return;
     };
-    let now = crate::scan::unix_now();
-
     // Read fresh each pass, and default to not acting: an unreadable
     // preference is not permission (same rule as every notifier).
     let Ok(settings) = store.settings() else {
         return;
     };
+    let now = crate::scan::unix_now();
+    anomaly_pass(app, &store, &settings, now);
+    milestone_pass(app, &settings);
+}
+
+fn anomaly_pass(app: &AppHandle, store: &Store, settings: &crate::store::AppSettings, now: i64) {
     if !settings.notifications_enabled || !settings.notify_usage_anomalies {
         return;
     }
@@ -108,12 +123,39 @@ fn run_pass(app: &AppHandle) {
     }
 }
 
+fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
+    // Gate *before* evaluating: selection is destructive (a chosen crossing
+    // is recorded as delivered), so a crossing selected while notifications
+    // were off would be silently consumed.
+    if !settings.live_usage_enabled
+        || !crate::notifications::allowed(settings, crate::notifications::Kind::UsageMilestone)
+    {
+        return;
+    }
+    let Some(live) = app.try_state::<LiveUsage>() else {
+        return;
+    };
+    let Some(source) = live.source.as_ref() else {
+        return;
+    };
+    let snapshots = source.fetch();
+    let mut ledger = live
+        .ledger
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(content) = provider_usage::live::milestone_content(
+        &mut ledger,
+        &snapshots,
+        settings.milestones_5h,
+        settings.milestones_weekly,
+    ) {
+        let _ = crate::notifications::note_usage_milestone(app, &content);
+    }
+}
+
 /// The pure half of the rule, separated so the arithmetic is testable
 /// without a store or a clock.
-fn anomaly(
-    evidence: &[crate::store::UsageEvidenceRecord],
-    now: i64,
-) -> Option<(f64, f64)> {
+fn anomaly(evidence: &[crate::store::UsageEvidenceRecord], now: i64) -> Option<(f64, f64)> {
     let hour_usd = provider_usage::spend_between(evidence, now - HOUR_SECS, now + 1);
     if hour_usd < FLOOR_USD {
         return None;

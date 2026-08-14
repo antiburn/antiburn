@@ -38,6 +38,10 @@ use crate::store::Milestones;
 
 /// The window classes milestones are tracked for. Mirrors the two milestone
 /// preference rows: a short primary window and a weekly one.
+// Constructed only by live-source implementations, of which this build ships
+// none (deviations D-19). The allow, not the enum, is what the first source
+// deletes.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageWindowClass {
     Short,
@@ -116,7 +120,12 @@ pub struct MilestoneContent {
 
 const THRESHOLDS: [u8; 3] = [50, 75, 90];
 
-fn milestone_enabled(prefs_short: Milestones, prefs_weekly: Milestones, class: UsageWindowClass, threshold: u8) -> bool {
+fn milestone_enabled(
+    prefs_short: Milestones,
+    prefs_weekly: Milestones,
+    class: UsageWindowClass,
+    threshold: u8,
+) -> bool {
     let prefs = match class {
         UsageWindowClass::Short => prefs_short,
         UsageWindowClass::Weekly => prefs_weekly,
@@ -258,7 +267,11 @@ mod tests {
     }
 
     fn all() -> Milestones {
-        Milestones { at50: true, at75: true, at90: true }
+        Milestones {
+            at50: true,
+            at75: true,
+            at90: true,
+        }
     }
 
     #[test]
@@ -275,8 +288,7 @@ mod tests {
             None
         );
         // 90 crosses live: that one fires.
-        let content =
-            milestone_content(&mut ledger, &[snapshot(91.0, 100)], all(), all()).unwrap();
+        let content = milestone_content(&mut ledger, &[snapshot(91.0, 100)], all(), all()).unwrap();
         assert_eq!(content.crossings.len(), 1);
         assert_eq!(content.crossings[0].threshold, 90);
     }
@@ -287,8 +299,7 @@ mod tests {
         assert!(milestone_content(&mut ledger, &[snapshot(10.0, 100)], all(), all()).is_none());
         // Climbed through 50 and 75 between evaluations: one notification, at
         // the highest crossing.
-        let content =
-            milestone_content(&mut ledger, &[snapshot(78.0, 100)], all(), all()).unwrap();
+        let content = milestone_content(&mut ledger, &[snapshot(78.0, 100)], all(), all()).unwrap();
         assert_eq!(content.crossings[0].threshold, 75);
         // Neither 75 nor the superseded 50 fires again.
         assert!(milestone_content(&mut ledger, &[snapshot(79.0, 100)], all(), all()).is_none());
@@ -308,7 +319,11 @@ mod tests {
     #[test]
     fn disabled_thresholds_and_unauthoritative_windows_stay_silent() {
         let mut ledger = MilestoneLedger::default();
-        let none = Milestones { at50: false, at75: false, at90: false };
+        let none = Milestones {
+            at50: false,
+            at75: false,
+            at90: false,
+        };
         assert!(milestone_content(&mut ledger, &[snapshot(10.0, 100)], none, none).is_none());
         assert!(milestone_content(&mut ledger, &[snapshot(95.0, 100)], none, none).is_none());
 
@@ -324,19 +339,24 @@ mod tests {
     #[test]
     fn weekly_and_short_windows_follow_their_own_preference_rows() {
         let mut ledger = MilestoneLedger::default();
-        let weekly_only = Milestones { at50: true, at75: true, at90: true };
-        let short_none = Milestones { at50: false, at75: false, at90: false };
+        let weekly_only = Milestones {
+            at50: true,
+            at75: true,
+            at90: true,
+        };
+        let short_none = Milestones {
+            at50: false,
+            at75: false,
+            at90: false,
+        };
         let mut snap = snapshot(10.0, 100);
         snap.windows
             .push(window("weekly", UsageWindowClass::Weekly, 10.0, 500));
-        assert!(
-            milestone_content(&mut ledger, &[snap.clone()], short_none, weekly_only).is_none()
-        );
+        assert!(milestone_content(&mut ledger, &[snap.clone()], short_none, weekly_only).is_none());
 
         snap.windows[0].used_percent = 60.0; // short window crosses, but its row is off
         snap.windows[1].used_percent = 60.0; // weekly crosses, and its row is on
-        let content =
-            milestone_content(&mut ledger, &[snap], short_none, weekly_only).unwrap();
+        let content = milestone_content(&mut ledger, &[snap], short_none, weekly_only).unwrap();
         assert_eq!(content.crossings.len(), 1);
         assert_eq!(content.crossings[0].window_label, "weekly limit");
     }

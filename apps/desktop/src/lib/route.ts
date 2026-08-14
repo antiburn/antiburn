@@ -10,13 +10,29 @@ import { useSyncExternalStore } from 'react';
  * window owns exactly one route for its whole lifetime, and the fragment is
  * the only thing that distinguishes them.
  */
-export type Route = 'popover' | 'settings';
+export type Route = 'popover' | 'settings' | 'nudge';
 
 /** Fragment the Rust shell opens the settings window with. */
 export const SETTINGS_FRAGMENT = '#/settings';
 
+/** Fragment the nudge crate opens the notification window with. */
+export const NUDGE_FRAGMENT = '#/nudge';
+
+/**
+ * Every fragment that names a window other than the popover. The popover is the
+ * default rather than an entry, so an unknown fragment lands somewhere real
+ * instead of rendering nothing.
+ */
+// A Map, not a plain object: the fragment is outside input, and an object
+// index would resolve inherited names ("constructor") to functions rather
+// than falling back to the popover.
+const ROUTES = new Map<string, Route>([
+  ['settings', 'settings'],
+  ['nudge', 'nudge'],
+]);
+
 export function routeFromHash(hash: string): Route {
-  return hash.replace(/^#\/?/, '') === 'settings' ? 'settings' : 'popover';
+  return ROUTES.get(hash.replace(/^#\/?/, '')) ?? 'popover';
 }
 
 function subscribe(onChange: () => void): () => void {

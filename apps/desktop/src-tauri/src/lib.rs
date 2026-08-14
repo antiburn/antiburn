@@ -44,6 +44,7 @@ mod disk_monitor;
 mod dto;
 mod export;
 mod notifications;
+mod nudges;
 mod popover;
 mod provider_usage;
 mod repositories;
@@ -81,12 +82,10 @@ impl Schedulers {
 /// local database cannot be created: none of the four has a meaningful degraded
 /// mode.
 pub fn run() {
-    let builder = tauri::Builder::default()
+    // `register` installs the non-activating-panel support the notification
+    // window needs on macOS; a no-op elsewhere.
+    let builder = antiburn_nudge::register(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
-        // Local notifications, driven from Rust only: the webview is granted no
-        // notification permission, so `notifications` is the single place that
-        // decides what is worth interrupting a reader for.
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::add_scan_root,
@@ -120,6 +119,12 @@ pub fn run() {
             commands::set_repository_enabled,
             commands::set_settings,
             commands::take_settings_pane,
+            antiburn_nudge::commands::nudge_action,
+            antiburn_nudge::commands::nudge_dismiss,
+            antiburn_nudge::commands::nudge_ready,
+            antiburn_nudge::commands::nudge_resize,
+            antiburn_nudge::commands::nudge_reveal,
+            antiburn_nudge::commands::nudge_set_hovered,
         ])
         .on_window_event(on_window_event)
         .setup(|app| {
@@ -159,6 +164,23 @@ pub fn run() {
             // Registered before the update scheduler starts, so the first
             // automatic check can see whether there is anything to check with.
             install_updater(app.handle());
+
+            // The notification window's manager and the chime player. Prewarm
+            // is deferred a little so the app has a valid display context —
+            // the same reasoning as the popover's own deferred build.
+            nudges::init(app.handle())?;
+            // The live-usage slot: empty in this build (deviations D-19), so
+            // the milestone pass idles until a source is registered here.
+            app.manage(usage_alerts::LiveUsage::default());
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    if let Some(manager) = handle.try_state::<antiburn_nudge::NudgeManager>() {
+                        manager.prewarm();
+                    }
+                });
+            }
 
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));

@@ -28,20 +28,19 @@
 //!   permission (`capabilities/default.json`), so "what is worth interrupting
 //!   someone for" is decided in one place, in this file.
 //!
-//! Delivery goes through the [`Notifier`] seam: the decisions above are
-//! ordinary functions over settings and state, and the one line that talks to
-//! the operating system is behind a trait so the tests never need a
-//! notification centre.
+//! Delivery goes to antiburn's own notification window (the `antiburn-nudge`
+//! crate, via [`crate::nudges`]): the decisions above are ordinary functions
+//! over settings and state, and presentation — placement, auto-dismiss, the
+//! chime — is applied at the seam, never decided here.
 //!
-//! Nothing here is network-capable. The platform plugin hands a title and a
-//! body to the local notification centre — on macOS through the system's own
-//! delivery service, on Linux through D-Bus, on Windows through WinRT — and
-//! antiburn's notification bodies carry a version string or a scan error,
-//! never session content.
+//! Nothing here is network-capable. A nudge is an event emitted to a local
+//! webview, and antiburn's notification bodies carry a version string, a scan
+//! error, or a locally-estimated figure — never session content.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use antiburn_nudge::{Nudge, NudgeKind, NudgeTone};
 use tauri::{AppHandle, Manager};
 
 use crate::dto::ScanStatus;
@@ -134,37 +133,36 @@ impl NotificationState {
     }
 }
 
-/// The one line that talks to the operating system.
+/// Build and hand off one approved nudge.
 ///
-/// Behind a trait so the policy above is testable without a notification
-/// centre — and so a platform that refuses to deliver (an unbundled
-/// development run on macOS, a Linux session with no notification daemon) is a
-/// logged failure rather than a panic.
-pub trait Notifier {
-    fn deliver(&self, title: &str, body: &str);
-}
-
-/// The platform's own notification centre, through the Tauri plugin.
-pub struct PlatformNotifier<'a>(pub &'a AppHandle);
-
-impl Notifier for PlatformNotifier<'_> {
-    fn deliver(&self, title: &str, body: &str) {
-        use tauri_plugin_notification::NotificationExt as _;
-
-        if let Err(error) = self
-            .0
-            .notification()
-            .builder()
-            .title(title)
-            .body(body)
-            .show()
-        {
-            // Not fatal, and not retried: a notification that could not be
-            // delivered has already been overtaken by whatever the reader is
-            // doing instead.
-            eprintln!("antiburn: could not post a notification ({error})");
-        }
+/// The id is unique per delivery — the view de-duplicates re-emitted events
+/// by id, so reusing one would make a genuinely new nudge look like an echo.
+/// Every nudge carries a dismiss CTA; `extra_action` is the one optional
+/// deeper destination (routed in [`crate::nudges`]).
+fn deliver(
+    app: &AppHandle,
+    kind: Kind,
+    title: String,
+    body: String,
+    extra_action: Option<(&str, &str)>,
+) {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let (nudge_kind, tone) = match kind {
+        Kind::UpdateAvailable => (NudgeKind::UpdateAvailable, NudgeTone::Info),
+        Kind::ScanFailure => (NudgeKind::ScanFailure, NudgeTone::Warning),
+        Kind::DiskSpaceLow => (NudgeKind::DiskSpaceLow, NudgeTone::Warning),
+        Kind::UsageAnomaly => (NudgeKind::UsageAnomaly, NudgeTone::Warning),
+        Kind::UsageMilestone => (NudgeKind::UsageMilestone, NudgeTone::Info),
+        Kind::Test => (NudgeKind::Test, NudgeTone::Info),
+    };
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut nudge =
+        Nudge::new(format!("antiburn-{sequence}"), nudge_kind, tone, title).reason(body);
+    if let Some((id, label)) = extra_action {
+        nudge = nudge.action(id, label, true);
     }
+    nudge = nudge.action("dismiss", "Dismiss", extra_action.is_none());
+    crate::nudges::deliver(app, nudge);
 }
 
 /// The title and body of an update notification.
@@ -224,7 +222,9 @@ pub fn usage_anomaly_message(hour_usd: f64, week_usd: f64) -> (String, String) {
 }
 
 /// The title and body of a usage-milestone notification.
-pub fn usage_milestone_message(content: &crate::provider_usage::live::MilestoneContent) -> (String, String) {
+pub fn usage_milestone_message(
+    content: &crate::provider_usage::live::MilestoneContent,
+) -> (String, String) {
     let highest = content
         .crossings
         .iter()
@@ -270,7 +270,7 @@ pub fn note_scan_outcome(app: &AppHandle, status: &ScanStatus) {
         return;
     }
     let (title, body) = scan_failure_message(error);
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(app, Kind::ScanFailure, title, body, None);
 }
 
 /// Report the outcome of an update check, if it found a version worth naming.
@@ -295,7 +295,13 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
         return;
     }
     let (title, body) = update_message(version);
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(
+        app,
+        Kind::UpdateAvailable,
+        title,
+        body,
+        Some(("view", "View")),
+    );
 }
 
 /// Report low disk space. Returns whether the episode was consumed: `true`
@@ -306,7 +312,7 @@ pub fn note_disk_space_low(app: &AppHandle, free_gb: u64, threshold_gb: u32) -> 
         return false;
     }
     let (title, body) = disk_space_low_message(free_gb, threshold_gb);
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(app, Kind::DiskSpaceLow, title, body, None);
     true
 }
 
@@ -317,7 +323,7 @@ pub fn note_usage_anomaly(app: &AppHandle, hour_usd: f64, week_usd: f64) -> bool
         return false;
     }
     let (title, body) = usage_anomaly_message(hour_usd, week_usd);
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(app, Kind::UsageAnomaly, title, body, None);
     true
 }
 
@@ -331,7 +337,7 @@ pub fn note_usage_milestone(
         return false;
     }
     let (title, body) = usage_milestone_message(content);
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(app, Kind::UsageMilestone, title, body, None);
     true
 }
 
@@ -340,7 +346,7 @@ pub fn note_usage_milestone(
 /// every real kind, so what they see is what they will get.
 pub fn note_test(app: &AppHandle) {
     let (title, body) = test_message();
-    PlatformNotifier(app).deliver(&title, &body);
+    deliver(app, Kind::Test, title, body, None);
 }
 
 /// The reader's preferences, read fresh, defaulting to *silence* when the store
@@ -354,19 +360,6 @@ fn enabled(app: &AppHandle, kind: Kind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-
-    /// A notifier that records instead of delivering.
-    #[derive(Default)]
-    struct Recorder(RefCell<Vec<(String, String)>>);
-
-    impl Notifier for Recorder {
-        fn deliver(&self, title: &str, body: &str) {
-            self.0
-                .borrow_mut()
-                .push((title.to_string(), body.to_string()));
-        }
-    }
 
     fn settings() -> AppSettings {
         AppSettings::default()
@@ -489,12 +482,7 @@ mod tests {
 
     #[test]
     fn the_delivered_copy_names_the_version_and_claims_no_install_this_build_cannot_do() {
-        let recorder = Recorder::default();
         let (title, body) = update_message("0.2.0");
-        recorder.deliver(&title, &body);
-
-        let delivered = recorder.0.borrow();
-        let (title, body) = &delivered[0];
         assert!(title.contains("antiburn"));
         assert!(body.contains("0.2.0"));
         assert!(

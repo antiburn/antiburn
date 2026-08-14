@@ -78,8 +78,16 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             disk_space_threshold_gb: 100,
             notify_disk_space_low: false,
             notify_usage_anomalies: false,
-            milestones_5h: Milestones { at50: false, at75: true, at90: true },
-            milestones_weekly: Milestones { at50: false, at75: false, at90: false },
+            milestones_5h: Milestones {
+                at50: false,
+                at75: true,
+                at90: true,
+            },
+            milestones_weekly: Milestones {
+                at50: false,
+                at75: false,
+                at90: false,
+            },
             live_usage_enabled: true,
         })
         .unwrap();
@@ -621,14 +629,18 @@ fn internal_values_round_trip_and_stay_out_of_settings() {
 
     store.set_internal_value("internal:diskSpaceLowFiredMs", "1723600000000");
     assert_eq!(
-        store.internal_value("internal:diskSpaceLowFiredMs").as_deref(),
+        store
+            .internal_value("internal:diskSpaceLowFiredMs")
+            .as_deref(),
         Some("1723600000000")
     );
 
     // Overwrite, not append: one row per key, like every setting.
     store.set_internal_value("internal:diskSpaceLowFiredMs", "1723600001000");
     assert_eq!(
-        store.internal_value("internal:diskSpaceLowFiredMs").as_deref(),
+        store
+            .internal_value("internal:diskSpaceLowFiredMs")
+            .as_deref(),
         Some("1723600001000")
     );
 

@@ -39,9 +39,9 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, Milestones, NudgePlacement,
-    MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS, RelationKind, RelationRecord, RepositoryRecord,
-    SessionKey, SessionRecord, ThemePreference, UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS,
+    Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
+    SessionRecord, ThemePreference, UsageEvidenceRecord,
 };
 
 /// File name of the database inside the app data directory.
@@ -334,10 +334,7 @@ impl Store {
                 "notifyScanFailure",
                 bool_text(settings.notify_scan_failure)
             ])?;
-            put.execute(params![
-                "nudgePlacement",
-                settings.nudge_placement.as_str()
-            ])?;
+            put.execute(params!["nudgePlacement", settings.nudge_placement.as_str()])?;
             put.execute(params![
                 "nudgeAutoDismissSecs",
                 settings.nudge_auto_dismiss_secs.to_string()
