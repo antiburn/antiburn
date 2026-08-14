@@ -70,6 +70,13 @@ const HEIGHT: f64 = 680.0;
 /// about, instead of on whichever pane they last left open.
 pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
     if let Some(existing) = app.get_webview_window(LABEL) {
+        // Re-centered on every open, not just the first: this window hides on
+        // close rather than being destroyed, so without this a reader who
+        // moved desks (or just works across monitors) would have Settings
+        // reappear on whichever display it was last dismissed on. The private
+        // app gets the same behavior for free by destroying the window and
+        // letting the OS place the rebuild.
+        center_on_active_monitor(&existing);
         existing.show()?;
         existing.unminimize()?;
         existing.set_focus()?;
@@ -86,14 +93,18 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
         pending.set(pane);
     }
 
+    // Built hidden and positioned before the first show, so the window never
+    // visibly jumps from a default position to the right one. Deliberately no
+    // `.center()`: the builder's centering computes against the primary
+    // monitor before the window has a screen, which is exactly the "opens on
+    // the wrong display" this function exists to avoid.
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
         .title("antiburn Settings")
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
         .maximizable(false)
-        .center()
-        .focused(true);
+        .visible(false);
 
     #[cfg(target_os = "macos")]
     {
@@ -108,9 +119,52 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
             .hidden_title(true);
     }
 
-    builder.build()?;
+    let window = builder.build()?;
+    center_on_active_monitor(&window);
+    window.show()?;
+    window.set_focus()?;
 
     Ok(())
+}
+
+/// Center the window on the monitor the cursor is on.
+///
+/// The cursor is the active-monitor signal here because every path into
+/// [`open`] follows a click — the tray menu, the popover's affordances, ⌘,
+/// — so the pointer is on the display the reader is working on. Falls back
+/// through the window's current monitor to the primary one, and does nothing
+/// if even that cannot be resolved: a window at its old position is better
+/// than one at (0,0).
+fn center_on_active_monitor(window: &tauri::WebviewWindow) {
+    let monitor = window
+        .cursor_position()
+        .ok()
+        .and_then(|cursor| {
+            window.available_monitors().ok()?.into_iter().find(|m| {
+                let pos = m.position();
+                let size = m.size();
+                cursor.x >= pos.x as f64
+                    && cursor.x < pos.x as f64 + size.width as f64
+                    && cursor.y >= pos.y as f64
+                    && cursor.y < pos.y as f64 + size.height as f64
+            })
+        })
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+
+    // Physical pixels throughout: the monitor's frame is physical, and the
+    // window's fixed logical size scales by that monitor's own factor.
+    let scale = monitor.scale_factor();
+    let width = WIDTH * scale;
+    let height = HEIGHT * scale;
+    let pos = monitor.position();
+    let size = monitor.size();
+    let x = pos.x as f64 + (size.width as f64 - width) / 2.0;
+    let y = pos.y as f64 + (size.height as f64 - height) / 2.0;
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 #[cfg(test)]

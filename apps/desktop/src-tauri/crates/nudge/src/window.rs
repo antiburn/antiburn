@@ -7,9 +7,9 @@
 //! nothing about *what* a nudge means — that is the app's policy.
 //!
 //! The notification loads the app's own frontend bundle (same SPA as the
-//! popover); the frontend branches on the window label to render the
-//! notification view. The only contract is the label [`crate::NUDGE_LABEL`] and
-//! the `nudge:show` event.
+//! popover) at the `#/nudge` fragment; the frontend selects the notification
+//! view from that hash (`src/lib/route.ts`). The contract is the label
+//! [`crate::NUDGE_LABEL`], the fragment, and the `nudge:show` event.
 //!
 //! Types use the default `Wry` runtime — this is an in-repo crate for the
 //! antiburn app, not a general-purpose plugin, so there's no need to be generic
@@ -69,15 +69,21 @@ pub(crate) fn get_or_create_nudge_window(app: &AppHandle) -> tauri::Result<Webvi
 }
 
 fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
-    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::default())
-        .title("antiburn")
-        .inner_size(NUDGE_WIDTH, NUDGE_HEIGHT)
-        .resizable(false)
-        .visible(false)
-        .focused(false) // never take key focus
-        .shadow(true)
-        .skip_taskbar(true)
-        .always_on_top(true);
+    // The fragment, not the default URL: this app's frontend selects its view
+    // from the URL hash (`src/lib/route.ts`), unlike the source app, which
+    // branched on the window label. Without it the hidden window renders the
+    // popover view, which never reports a content height — and a nudge whose
+    // height never arrives is never revealed.
+    let mut builder =
+        WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/nudge".into()))
+            .title("antiburn")
+            .inner_size(NUDGE_WIDTH, NUDGE_HEIGHT)
+            .resizable(false)
+            .visible(false)
+            .focused(false) // never take key focus
+            .shadow(true)
+            .skip_taskbar(true)
+            .always_on_top(true);
 
     #[cfg(target_os = "macos")]
     {
