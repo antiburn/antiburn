@@ -24,7 +24,7 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-## [0.1.0-rc.1] - 2026-08-14
+## [0.1.0-rc.2] - 2026-08-14
 
 A release-candidate rehearsal build, not a supported release. The macOS and
 Windows binaries are **unsigned** — your operating system will warn you, and it
