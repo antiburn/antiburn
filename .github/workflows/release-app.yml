@@ -473,6 +473,15 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
           set -euo pipefail
+          # The bundler triggers its macOS signing path on the *presence* of
+          # APPLE_CERTIFICATE, so on an unsigned build these must be absent,
+          # not empty — an empty value reaches `security import`, which
+          # rejects it and fails the bundle (the rc.1 rehearsal failure).
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!var:-}" ]]; then
+              unset "$var"
+            fi
+          done
           if [[ -n "${TAURI_SIGNING_CONFIG:-}" ]]; then
             pnpm --filter @antiburn/desktop exec tauri build \
               --target "$TARGET" --bundles "$BUNDLES" --config "$TAURI_SIGNING_CONFIG"
