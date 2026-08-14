@@ -15,12 +15,12 @@
 //! ```no_run
 //! # use antiburn_sound::{SoundPlayer, SoundKind};
 //! let player = SoundPlayer::new();
-//! player.play(SoundKind::Radar, Some("marty"));   // marty's three notes
+//! player.play(SoundKind::ActorUpdate, Some("marty"));   // marty's three notes
 //! player.play(SoundKind::Notification, None);     // the same notes for everybody
 //! ```
 //!
 //! Every sound is three notes stepped through quickly. What varies is *which*
-//! three: a person's name picks them for the Radar sounds, while Notification
+//! three: a person's name picks them for the actor update sounds, while Notification
 //! plays a fixed set so it means the same thing on every machine.
 //!
 //! ## Two rules this crate holds itself to
@@ -57,10 +57,10 @@ pub use tuning::Tuning;
 /// this list short is the point — a person can learn three sounds, not eight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundKind {
-    /// A teammate shared a Radar update relevant to you. Their name picks the chord.
-    Radar,
-    /// Your own Radar draft is ready to share. Your name picks the chord.
-    MyRadarReady,
+    /// A teammate shared a actor update update relevant to you. Their name picks the chord.
+    ActorUpdate,
+    /// Your own actor update draft is ready to share. Your name picks the chord.
+    OwnUpdateReady,
     /// Something needs attention. The same for everybody — see
     /// [`chord::NOTIFICATION_CHORD`].
     Notification,
@@ -312,8 +312,8 @@ mod tests {
             sample_format: hound::SampleFormat::Int,
         };
         for (kind, name) in [
-            (SoundKind::Radar, "radar"),
-            (SoundKind::MyRadarReady, "my-radar-ready"),
+            (SoundKind::ActorUpdate, "actor_update"),
+            (SoundKind::OwnUpdateReady, "my-actor_update-ready"),
             (SoundKind::Notification, "notification"),
         ] {
             for actor in [Some("keith"), Some("Marty"), None] {
@@ -337,8 +337,8 @@ mod tests {
     #[test]
     fn every_sound_renders_something_audible() {
         for kind in [
-            SoundKind::Radar,
-            SoundKind::MyRadarReady,
+            SoundKind::ActorUpdate,
+            SoundKind::OwnUpdateReady,
             SoundKind::Notification,
         ] {
             for actor in [Some("keith"), None] {
@@ -355,8 +355,8 @@ mod tests {
     /// otherwise the whole per-person idea is decoration.
     #[test]
     fn different_people_sound_different() {
-        let a = render(SoundKind::Radar, Some("keith"));
-        let b = render(SoundKind::Radar, Some("Marty"));
+        let a = render(SoundKind::ActorUpdate, Some("keith"));
+        let b = render(SoundKind::ActorUpdate, Some("Marty"));
         assert_ne!(a, b);
     }
 
@@ -364,9 +364,13 @@ mod tests {
     /// so an empty string from a payload can't invent a bogus chord.
     #[test]
     fn blank_actors_fall_back_to_the_unison() {
-        let nobody = render(SoundKind::Radar, None);
+        let nobody = render(SoundKind::ActorUpdate, None);
         for blank in ["", "   "] {
-            assert_eq!(render(SoundKind::Radar, Some(blank)), nobody, "{blank:?}");
+            assert_eq!(
+                render(SoundKind::ActorUpdate, Some(blank)),
+                nobody,
+                "{blank:?}"
+            );
         }
     }
 
@@ -380,7 +384,7 @@ mod tests {
 
     /// Notification plays the same three notes for everybody, so it is the one sound
     /// a person's chord can collide with. Whoever hashes to those degrees hears their
-    /// own Radar and every Notification as the same sound.
+    /// own actor update and every Notification as the same sound.
     ///
     /// That is one name in 255 and accepted rather than designed out — removing the
     /// chord from the per-person pool would renumber every other person's, and the
@@ -393,7 +397,7 @@ mod tests {
             assert_ne!(
                 chord_for(name, DEFAULT_CHORD),
                 chord::NOTIFICATION_CHORD.to_vec(),
-                "{name} would hear their own Radar as every Notification"
+                "{name} would hear their own actor update as every Notification"
             );
         }
     }

@@ -13,7 +13,7 @@
 
 use crate::synth::{UNISON, Voice, Wave4};
 
-/// Warm and low, opening rather than striking. Used for Radar, My Radar ready and
+/// Warm and low, opening rather than striking. Used for ActorUpdate, Own-update ready and
 /// Tune up — the three that are informational rather than a problem.
 ///
 /// The long 239 ms attack is what keeps it from reading as an alert: it arrives

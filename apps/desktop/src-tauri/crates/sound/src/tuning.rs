@@ -65,20 +65,20 @@ impl Tuning {
     /// the sound bench.** Change them there and paste the result back, rather than
     /// editing values that look like they could be rounder.
     ///
-    /// **Radar and My Radar ready** carry `high_tilt` and `detune_track` because a
+    /// **actor update and Own-update ready** carry `high_tilt` and `detune_track` because a
     /// three-octave chord needs both: without the tilt the top note dominates, and
     /// without the tracking it warbles at roughly 6 Hz, which is heard as a trill.
     ///
-    /// **Notification** (settled 26 Jul) is separated from a Radar mostly by
+    /// **Notification** (settled 26 Jul) is separated from a actor update mostly by
     /// **pace and brightness**, not by pitch. Its notes are 180 ms apart against
-    /// Radar's 90 — half the speed, so it lands as a deliberate three-part phrase
-    /// where a Radar is a quick flick — and it is half again as bright. It also
+    /// actor update's 90 — half the speed, so it lands as a deliberate three-part phrase
+    /// where a actor update is a quick flick — and it is half again as bright. It also
     /// falls rather than rises, which is the conventional shape for "something
     /// needs attention". The one-semitone drop is small enough to be a colouring
     /// rather than a signal; the pace is what does the work.
     ///
     /// Its `detune_track` sits at 0.85 rather than 1.0, leaving a trace of the
-    /// warble that was tuned out of Radar entirely — a slight unsteadiness, which
+    /// warble that was tuned out of actor update entirely — a slight unsteadiness, which
     /// suits a sound that means something wants looking at.
     pub fn default_for(kind: SoundKind) -> Self {
         let base = Self {
@@ -87,7 +87,7 @@ impl Tuning {
             ..Self::default()
         };
         match kind {
-            SoundKind::Radar | SoundKind::MyRadarReady => base,
+            SoundKind::ActorUpdate | SoundKind::OwnUpdateReady => base,
             SoundKind::Notification => Self {
                 spread_ms: 180.0,
                 high_tilt: 0.45,
@@ -121,30 +121,30 @@ mod tests {
         assert_eq!(notification.brightness, 1.5);
         assert!(notification.descending);
 
-        let radar = Tuning::default_for(SoundKind::Radar);
-        assert_eq!(radar.spread_ms, 90.0);
-        assert_eq!(radar.high_tilt, 0.55);
-        assert_eq!(radar.detune_track, 1.0);
-        assert!(!radar.descending);
+        let actor_update = Tuning::default_for(SoundKind::ActorUpdate);
+        assert_eq!(actor_update.spread_ms, 90.0);
+        assert_eq!(actor_update.high_tilt, 0.55);
+        assert_eq!(actor_update.detune_track, 1.0);
+        assert!(!actor_update.descending);
 
-        // My Radar ready is the same sound as Radar on your own notes. If these ever
+        // Own-update ready is the same sound as actor update on your own notes. If these ever
         // diverge it is a decision, not a detail.
-        assert_eq!(Tuning::default_for(SoundKind::MyRadarReady), radar);
+        assert_eq!(Tuning::default_for(SoundKind::OwnUpdateReady), actor_update);
     }
 
-    /// Notification has to be tellable from a Radar by ear alone, and both are now
+    /// Notification has to be tellable from a actor update by ear alone, and both are now
     /// the same instrument on the same voice. This asserts the separation actually
     /// exists in the settings rather than only in the intent.
     #[test]
-    fn notification_is_clearly_apart_from_radar() {
-        let radar = Tuning::default_for(SoundKind::Radar);
+    fn notification_is_clearly_apart_from_an_actor_update() {
+        let actor_update = Tuning::default_for(SoundKind::ActorUpdate);
         let notification = Tuning::default_for(SoundKind::Notification);
 
         assert!(
-            notification.spread_ms >= radar.spread_ms * 1.5,
+            notification.spread_ms >= actor_update.spread_ms * 1.5,
             "pace is the main thing separating them and it has narrowed"
         );
-        assert_ne!(notification.descending, radar.descending);
-        assert!(notification.brightness > radar.brightness);
+        assert_ne!(notification.descending, actor_update.descending);
+        assert!(notification.brightness > actor_update.brightness);
     }
 }
