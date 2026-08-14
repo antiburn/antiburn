@@ -72,8 +72,13 @@ jobs:
           # Windows too: the frontend suite covers path handling, line endings,
           # and the platform-aware modifier logic, and those are exactly the
           # places a Linux-only run cannot fail. macOS is left out on purpose —
-          # it is the slowest runner and shares its behaviour here with Linux,
-          # while the shell (which does not) is covered on all three below.
+          # it is the slowest runner and shares its behaviour here with Linux.
+          # That stays true even though the settings window now renders
+          # macOS-only chrome (the title-bar drag strip): the suite is jsdom,
+          # which has no operating system, so those branches run under a
+          # mocked `isMacOS` and behave identically on every runner. The code
+          # that genuinely differs per OS is the shell, covered on all three
+          # below. Rationale mirrored in docs/deviations.md (D-12).
           - name: windows
             os: windows-latest
     runs-on: ${{ matrix.os }}
