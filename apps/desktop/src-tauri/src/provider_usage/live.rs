@@ -39,7 +39,7 @@ use crate::store::Milestones;
 /// The window classes milestones are tracked for. Mirrors the two milestone
 /// preference rows: a short primary window and a weekly one.
 // Constructed only by live-source implementations, of which this build ships
-// none (deviations D-19). The allow, not the enum, is what the first source
+// none (deviations D-20). The allow, not the enum, is what the first source
 // deletes.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

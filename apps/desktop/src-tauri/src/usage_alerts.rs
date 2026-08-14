@@ -76,7 +76,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
 /// The registered live usage source and the milestone engine's ledger.
 ///
 /// `source` is `None` in this build — no provider connection ships yet
-/// (deviations register D-19) — so the milestone pass below is typed, wired,
+/// (deviations register D-20) — so the milestone pass below is typed, wired,
 /// and silent. Registering the first source is the follow-up's one line.
 #[derive(Default)]
 pub struct LiveUsage {

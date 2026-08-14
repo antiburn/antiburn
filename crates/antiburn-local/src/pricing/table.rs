@@ -46,12 +46,15 @@ pub fn classify_model(model_id: &str) -> &'static str {
 /// Model IDs from transcripts look like `claude-opus-4-6-20260301`.
 /// Catalog keys are typically `claude-opus-4-6` (without the date).
 pub fn normalize_model_key(model_id: &str) -> &str {
-    // Date suffixes are 8 digits preceded by a hyphen
-    if model_id.len() > 9 {
-        let candidate = &model_id[model_id.len() - 8..];
-        if candidate.chars().all(|c| c.is_ascii_digit())
-            && model_id.as_bytes()[model_id.len() - 9] == b'-'
-        {
+    // Date suffixes are 8 digits preceded by a hyphen. The check runs on
+    // bytes: model IDs come from external transcript files, and slicing the
+    // string at a fixed byte offset would panic on a multi-byte character
+    // spanning it. Once the tail is confirmed to be `-` + 8 ASCII digits, the
+    // slice boundary is the ASCII hyphen, which is always a char boundary.
+    let bytes = model_id.as_bytes();
+    if bytes.len() > 9 {
+        let (head, tail) = bytes.split_at(bytes.len() - 8);
+        if tail.iter().all(u8::is_ascii_digit) && head[head.len() - 1] == b'-' {
             return &model_id[..model_id.len() - 9];
         }
     }
@@ -401,6 +404,20 @@ mod tests {
             normalize_model_key("claude-3-5-haiku-20241022"),
             "claude-3-5-haiku"
         );
+    }
+
+    #[test]
+    fn test_normalize_survives_non_ascii_model_ids() {
+        // Transcripts are external input; a multi-byte character spanning the
+        // would-be slice boundary must fall through, not panic. "€" is 3 bytes,
+        // so four of them put byte len-8 = 4 inside the second character.
+        assert_eq!(normalize_model_key("€€€€"), "€€€€");
+        assert_eq!(
+            normalize_model_key("modèle-häiku-20-àé"),
+            "modèle-häiku-20-àé"
+        );
+        // A real date suffix after non-ASCII prefix text still normalizes.
+        assert_eq!(normalize_model_key("modèle-4-20260301"), "modèle-4");
     }
 
     #[test]

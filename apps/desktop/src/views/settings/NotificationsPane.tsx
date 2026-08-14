@@ -37,7 +37,7 @@ import type { AppSettingsController } from './useAppSettings';
  * named in the master switch's copy and governed by it (their per-kind
  * preferences persist for a hand-edited row, defaulting on). The milestone
  * rows follow the honesty rule other panes established: they say plainly
- * that no live usage source ships yet (`docs/deviations.md` D-19) — the
+ * that no live usage source ships yet (`docs/deviations.md` D-20) — the
  * pills configure a preference the engine honors the day a source exists,
  * not a notification this build can post.
  */

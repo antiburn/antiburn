@@ -46,8 +46,13 @@ is parsed as strict JSON, so a comment there fails the build.)
 ## Minting it, once
 
 ```bash
-pnpm --filter @antiburn/desktop exec tauri signer generate -w ./antiburn-updater.key
+pnpm --filter @antiburn/desktop exec tauri signer generate -w "$HOME/antiburn-updater.key"
 ```
+
+The `-w` path is deliberately absolute: `pnpm --filter` runs the tool inside
+`apps/desktop`, so a relative path would drop both halves into the working
+tree. `.gitignore` guards `*.key` as a backstop, but the private half should
+never touch the repository at all.
 
 Give it a passphrase. Then:
 
@@ -90,7 +95,7 @@ readers.
 
 **What rotation costs.** Every installed build verifies against the old public
 key. Bundles signed with the new key will not verify, so those installations
-cannot update at all: they will report a failed check in Settings → Updates and
+cannot update at all: they will report a failed check in Settings → About and
 install nothing. They are not broken and they are not unsafe — they are stranded
 until somebody reinstalls by hand. The failure is a refusal, not a silent
 downgrade, which is the correct direction but is little comfort to the reader.

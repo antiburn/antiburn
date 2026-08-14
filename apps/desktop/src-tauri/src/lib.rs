@@ -39,7 +39,7 @@
 //! release builds only, so a development run performs no network requests at
 //! all. Notifications are antiburn's own window, fed by a local event.
 //! Online features are per-feature opt-in under D-023, and none ships
-//! connected (`docs/deviations.md`, D-19). The webview side is held to the
+//! connected (`docs/deviations.md`, D-20). The webview side is held to the
 //! same rule by a test (`apps/desktop/tests/offline.test.ts`).
 
 mod agents;
@@ -174,7 +174,7 @@ pub fn run() {
             // is deferred a little so the app has a valid display context —
             // the same reasoning as the popover's own deferred build.
             nudges::init(app.handle())?;
-            // The live-usage slot: empty in this build (deviations D-19), so
+            // The live-usage slot: empty in this build (deviations D-20), so
             // the milestone pass idles until a source is registered here.
             app.manage(usage_alerts::LiveUsage::default());
             {

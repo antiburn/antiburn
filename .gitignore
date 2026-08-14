@@ -2,3 +2,9 @@
 **/target/
 node_modules/
 .DS_Store
+
+# Signing material must never enter the tree. The updater keypair is minted
+# with an absolute path outside the repository (see
+# docs/runbooks/updater-key-recovery.md); this is the backstop.
+*.key
+*.key.pub

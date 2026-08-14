@@ -912,10 +912,15 @@ pub async fn resolve_granted_repos(
             scan_dir_for_repos(dir, &owner_lower, SCAN_DEPTH, consent, &mut by_root).await;
         }
         for located in by_root.into_values() {
+            // The identity key deduplicates; it is not a path. On Windows it
+            // folds case and separators, so the reported root/suspected path
+            // below carries the canonical path instead — matching the
+            // session-resolved arm above and `LocalRepoStatus`'s contract.
             let root_key = repo_root_identity(&located.repo_root);
-            if !seen.insert(root_key.clone()) {
+            if !seen.insert(root_key) {
                 continue;
             }
+            let root_str = located.repo_root.to_string_lossy().to_string();
             let repo_name = parse_repo_name_from_url(&located.remote_url).unwrap_or_else(|| {
                 located
                     .repo_root
@@ -931,7 +936,7 @@ pub async fn resolve_granted_repos(
                     repo_name,
                     full_name,
                     status: RepoAccessStatus::Accessible,
-                    repo_root: Some(root_key),
+                    repo_root: Some(root_str),
                     suspected_path: None,
                     worktree_count: located.worktree_count,
                     session_count: located.session_count,
@@ -946,7 +951,7 @@ pub async fn resolve_granted_repos(
                     full_name,
                     status: RepoAccessStatus::PermissionDenied,
                     repo_root: None,
-                    suspected_path: Some(root_key),
+                    suspected_path: Some(root_str),
                     worktree_count: located.worktree_count,
                     session_count: located.session_count,
                     enabled: true,

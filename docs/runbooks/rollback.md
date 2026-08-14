@@ -105,7 +105,7 @@ Same procedure. A malformed or wrongly-pointed `latest.json` cannot be edited on
 a published release; it is superseded by publishing a new release whose
 `latest.json` is correct. The window in which readers see the broken manifest is
 bounded by how long the corrective release takes: an update check that fails is
-reported in Settings → Updates and retried, and it installs nothing, so a broken
+reported in Settings → About and retried, and it installs nothing, so a broken
 manifest is an outage rather than a hazard.
 
 ## What is never done

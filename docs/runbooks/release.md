@@ -58,7 +58,7 @@ Placeholders below show the shape, never a real value.
 
 | Secret | Required | What it is | How to produce it |
 | --- | --- | --- | --- |
-| `TAURI_SIGNING_PRIVATE_KEY` | **Always** | The updater's private signing key. Signs every updater bundle; the app verifies against the public half compiled into it. | `pnpm --filter @antiburn/desktop exec tauri signer generate -w ./antiburn.key`, then paste the contents of `antiburn.key`. Placeholder: `dW50cnVzdGVkIGNvbW1lbnQ6…` |
+| `TAURI_SIGNING_PRIVATE_KEY` | **Always** | The updater's private signing key. Signs every updater bundle; the app verifies against the public half compiled into it. | `pnpm --filter @antiburn/desktop exec tauri signer generate -w "$HOME/antiburn.key"` (absolute path — a relative one lands in the working tree), then paste the contents of `antiburn.key`. Placeholder: `dW50cnVzdGVkIGNvbW1lbnQ6…` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | If the key has one | The passphrase for the above. Give the key a passphrase. | Chosen when generating the key. Placeholder: `<passphrase>` |
 | `APPLE_CERTIFICATE` | For signed macOS builds | Base64 of the **Developer ID Application** certificate and its private key, exported as `.p12`. | `base64 -i DeveloperID.p12 \| pbcopy`. Placeholder: `MIIM…` |
 | `APPLE_CERTIFICATE_PASSWORD` | With the above | The `.p12` export passphrase. | Chosen during export. Placeholder: `<passphrase>` |
@@ -255,7 +255,7 @@ curl -sSL https://github.com/antiburn/antiburn/releases/latest/download/latest.j
 ```
 
 The `version` must be the one just published and the URLs must point at its tag.
-Then open an installed copy of the previous version and use Settings → Updates →
+Then open an installed copy of the previous version and use Settings → About →
 Check now: it should report the new version.
 
 If anything here is wrong, **do not fix the assets**. Go to
@@ -273,6 +273,11 @@ and a provenance record.
    (`cargo update --manifest-path crates/antiburn-local/Cargo.toml --package antiburn-local`),
    and add a section to `crates/antiburn-local/CHANGELOG.md`. Check it with
    `node scripts/verify-release-version.mjs engine antiburn-local-v<version>`.
+   Refresh the app's lockfile too
+   (`cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn-local`):
+   the shell path-depends on the engine, so its lockfile records the engine
+   version, and the locked desktop CI legs and the license check fail on the
+   mismatch otherwise.
 2. Review, merge, then tag `antiburn-local-v<version>` and push the tag.
 3. The workflow re-runs CI (which includes the engine's own network-free
    boundary suite, the whole-tree boundary scan, and `cargo deny check bans
