@@ -24,5 +24,17 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-Nothing released yet. The first release adds a `## [X.Y.Z] - YYYY-MM-DD`
-section here, directly above this line's section, and moves the entries into it.
+## [0.1.0-rc.1] - 2026-08-14
+
+A release-candidate rehearsal build, not a supported release. The macOS and
+Windows binaries are **unsigned** — your operating system will warn you, and it
+is right to. Install it only if you are testing the release pipeline itself.
+
+### Added
+
+- First packaged build of the antiburn desktop application: the menu-bar/tray
+  shell over the antiburn-local engine, discovering and analyzing the coding
+  agent sessions already on your machine. Everything runs on the device;
+  nothing is uploaded.
+- Auto-update wiring: this build carries the updater public key and can verify
+  and install future signed releases.
