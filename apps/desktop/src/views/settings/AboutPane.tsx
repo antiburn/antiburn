@@ -59,9 +59,7 @@ export function AboutPane({
           </p>
         </div>
         <div>
-          <p className="type-body tabular-nums text-label">
-            Version {info?.appVersion ?? '—'}
-          </p>
+          <p className="type-body tabular-nums text-label">Version {info?.appVersion ?? '—'}</p>
           <p className="type-footnote text-label-secondary">
             {PLATFORM_LABELS[detectPlatform()]}
             {info?.arch ? ` · ${info.arch}` : ''}

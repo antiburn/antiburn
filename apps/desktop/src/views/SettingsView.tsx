@@ -116,7 +116,11 @@ export function SettingsView() {
   // window is not a modal. Do not "fix" this by adding Escape.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'w') {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === 'w'
+      ) {
         event.preventDefault();
         void closeSettingsWindow();
       }
@@ -160,7 +164,7 @@ export function SettingsView() {
         // own py-3 lands the first row at 40px — the bottom edge of the drag
         // strip — while the sidebar material still fills to the window's top
         // edge behind the traffic lights.
-        className={isMacOS() ? 'pt-7' : undefined}
+        className={isMacOS() ? 'pt-7' : ''}
         footer={
           <button
             type="button"

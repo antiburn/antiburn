@@ -41,7 +41,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 }));
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: checkForUpdate }));
 vi.mock('../lib/platform', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/platform')>();
+  const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, isMacOS: () => platform.mac };
 });
 
