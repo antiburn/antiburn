@@ -24,7 +24,6 @@
     "shortDescription": "Local-first visibility into your AI coding-agent sessions.",
     "longDescription": "antiburn discovers the coding-agent sessions already on your machine, analyzes the transcripts locally, and shows activity, session analytics, and API-equivalent cost estimates. Everything runs on your device.",
     "copyright": "antiburn contributors",
-    "licenseFile": "../../../LICENSE",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
