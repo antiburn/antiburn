@@ -330,6 +330,15 @@ async fn resolve_granted_scans_parent_downward() {
         results[0].session_count, 0,
         "a scan-only granted repository has no sessions"
     );
+    // The reported root is the canonical *path*, not the folded identity key —
+    // on Windows the key lowercases and slash-normalizes, and `repo_root`'s
+    // contract is a filesystem path. Matches the session-resolved arm.
+    let canonical = crate::platform::git::canonical_main_repo_root(&repo_dir).await;
+    assert_eq!(
+        results[0].repo_root.as_deref(),
+        Some(canonical.to_string_lossy().as_ref()),
+        "scan-down must report the canonical path, not the identity key"
+    );
 }
 
 #[tokio::test]
