@@ -273,6 +273,11 @@ and a provenance record.
    (`cargo update --manifest-path crates/antiburn-local/Cargo.toml --package antiburn-local`),
    and add a section to `crates/antiburn-local/CHANGELOG.md`. Check it with
    `node scripts/verify-release-version.mjs engine antiburn-local-v<version>`.
+   Refresh the app's lockfile too
+   (`cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn-local`):
+   the shell path-depends on the engine, so its lockfile records the engine
+   version, and the locked desktop CI legs and the license check fail on the
+   mismatch otherwise.
 2. Review, merge, then tag `antiburn-local-v<version>` and push the tag.
 3. The workflow re-runs CI (which includes the engine's own network-free
    boundary suite, the whole-tree boundary scan, and `cargo deny check bans
