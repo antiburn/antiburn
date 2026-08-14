@@ -518,8 +518,8 @@ jobs:
 
       # Collection is driven by the detached signatures rather than by a table
       # of expected filenames: whatever the bundler decided to call the updater
-      # artifact, it is the file sitting next to a `.sig`. That keeps this step
-      # correct across Tauri's own naming changes.
+      # artifact, it is the file sitting next to the platform's updater-format
+      # `.sig`. That keeps this step correct across Tauri's own naming changes.
       #
       # The macOS updater bundle is the one name that must be rewritten: both
       # architectures produce `antiburn.app.tar.gz`, and a release cannot hold
@@ -541,11 +541,21 @@ jobs:
           staging="release-artifacts"
           mkdir -p "$staging"
 
-          signatures=$(find "$bundle" -type f -name '*.sig' | sort)
+          # The bundler signs every bundle format it produces, but only one
+          # format per platform participates in the update flow — on Linux the
+          # AppImage updates while the .deb is install-only, so its signature
+          # is surplus. Select the platform's updater format first, then
+          # require exactly one.
+          case "$UPDATER_PLATFORM" in
+            linux-*) updater_sig_glob='*.AppImage.sig' ;;
+            darwin-*) updater_sig_glob='*.app.tar.gz.sig' ;;
+            *) updater_sig_glob='*.sig' ;;
+          esac
+          signatures=$(find "$bundle" -type f -name "$updater_sig_glob" | sort)
           count=$(printf '%s' "$signatures" | grep -c . || true)
           if [[ "$count" != "1" ]]; then
-            echo "::error::Expected exactly one signed updater artifact for ${TARGET}, found ${count}."
-            printf '%s\n' "$signatures"
+            echo "::error::Expected exactly one signed updater artifact matching ${updater_sig_glob} for ${TARGET}, found ${count}."
+            find "$bundle" -type f -name '*.sig' | sort
             exit 1
           fi
 
