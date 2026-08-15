@@ -71,6 +71,13 @@
   /* Legible gold for *text/glyphs* on the gold tint — same split again. */
   --color-system-gold-text: var(--color-system-gold-text-val);
 
+  /* Ink for vendor brand marks on agent rows. Deliberately firmer than
+     label-secondary: a mark is a shape, not text, so it needs near-full
+     contrast to read at 18px, and the set has to look like one set. Marks
+     whose identity *is* their colour opt out and use the brand's own hex —
+     see lib/agentIcon.tsx. */
+  --color-agent-mark: var(--color-agent-mark-val);
+
   /* Session-analytics chart tokens are theme-adaptive too and live in
    * ./session-analytics-colors.css. */
 
@@ -128,6 +135,9 @@
   --color-system-indigo-text-val: rgb(88 86 214);
   --color-system-gold-val: rgb(202 138 4);
   --color-system-gold-text-val: rgb(146 100 0);
+
+  /* Brand-mark ink */
+  --color-agent-mark-val: rgb(38 37 30);
 
   /* Spacing rhythm (multiples of 4) */
   --space-xs: 4px;
@@ -201,6 +211,7 @@
     --color-system-indigo-text-val: rgb(150 148 255);
     --color-system-gold-val: rgb(255 204 0);
     --color-system-gold-text-val: rgb(245 203 92);
+    --color-agent-mark-val: rgb(247 247 244);
     /* The system tertiary label is ~25% opacity in dark mode; bump to ~35% so
        it reads on a translucent surface (same rationale as light mode). */
     --color-text-tertiary: rgb(235 235 245 / 0.35);
@@ -247,6 +258,7 @@
   --color-system-indigo-text-val: rgb(88 86 214);
   --color-system-gold-val: rgb(202 138 4);
   --color-system-gold-text-val: rgb(146 100 0);
+  --color-agent-mark-val: rgb(38 37 30);
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: light) {
@@ -297,6 +309,7 @@
   --color-system-indigo-text-val: rgb(150 148 255);
   --color-system-gold-val: rgb(255 204 0);
   --color-system-gold-text-val: rgb(245 203 92);
+  --color-agent-mark-val: rgb(247 247 244);
 }
 
 /* Must follow the :root[data-theme="dark"] block above — media queries add no

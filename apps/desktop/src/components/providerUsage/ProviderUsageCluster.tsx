@@ -23,7 +23,7 @@ import {
 } from '../../lib/presentation/providerUsage';
 import { TextRoll } from '../ui/TextRoll';
 import { ProviderUsageDetail } from './ProviderUsageDetail';
-import { ProviderGlyph, providerMarkPath } from './ProviderUsagePrimitives';
+import { ProviderGlyph, providerMark } from './ProviderUsagePrimitives';
 import { UsageRing } from './UsageRing';
 
 /** Chips shown before the rest collapse into a single overflow affordance. */
@@ -313,7 +313,7 @@ export function ProviderUsageCluster({
               <UsageRing
                 percent={headline.usedPercent}
                 estimated={limits?.support === 'estimated'}
-                markPath={providerMarkPath(provider.provider)}
+                mark={providerMark(provider.provider)}
                 glyph={providerInitial(provider.displayName)}
                 size={22}
                 className="shrink-0 text-label-secondary"

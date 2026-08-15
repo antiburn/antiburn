@@ -387,9 +387,7 @@ describe('ProviderUsageCluster — the limit ring', () => {
     );
 
     expect(container.querySelector('[data-testid="usage-ring-arc"]')).toBeNull();
-    expect(screen.getByRole('button', { name: /^OpenAI,/ })).not.toHaveAccessibleName(
-      /limit/i,
-    );
+    expect(screen.getByRole('button', { name: /^OpenAI,/ })).not.toHaveAccessibleName(/limit/i);
   });
 
   it('shows the plan limits inside the panel the chip opens', () => {

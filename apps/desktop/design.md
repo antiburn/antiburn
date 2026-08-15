@@ -97,6 +97,9 @@ colors:
   system-gold-text:
     light: 'rgb(146 100 0)'
     dark: 'rgb(245 203 92)'
+  agent-mark: # vendor brand-mark ink; see the Vendor brand marks note below
+    light: 'rgb(38 37 30)'
+    dark: 'rgb(247 247 244)'
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
   mode-implementing:
     light: 'rgb(29 78 216)'
@@ -267,6 +270,12 @@ Notes for what isn't expressible as a token:
 - **Icons** — `lucide-react`, inherits `currentColor`. `size` 12 (footnote) / 14–16 (default) / 24
   (feature); color with `text-*`; `strokeWidth` 2 (2.5–3 tiny marks, 1.5 large/chart); `shrink-0` in
   flex; decorative → `aria-hidden`.
+- **Vendor brand marks** — the one exception to the icon rule, and not interchangeable with it: a
+  vendor's mark is its trademark, so its shape and colour are the vendor's to define. Marks are
+  filled paths, not stroked glyphs, and take `--color-agent-mark` rather than a `text-*` label
+  colour — a deliberately firmer ink, because a shape has no letterforms to carry it at 18px. A mark
+  whose identity _is_ its colour keeps that colour in both themes, taken from the value its source
+  package records. Marks are never drawn inline; they come from the `renderAgentIcon` slot.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. A platform without them takes an explicit

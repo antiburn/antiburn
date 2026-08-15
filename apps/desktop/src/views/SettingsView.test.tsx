@@ -428,7 +428,8 @@ describe('SettingsView', () => {
       await screen.findByRole('button', { name: 'Open third-party attributions' }),
     );
 
-    expect(await screen.findByText('simple-icons')).toBeInTheDocument();
+    expect(await screen.findByText('Agent brand marks')).toBeInTheDocument();
+    expect(screen.getByText(/simple-icons/)).toBeInTheDocument();
     expect(screen.getByText(/CC0-1\.0/)).toBeInTheDocument();
     expect(document.querySelectorAll('a')).toHaveLength(0);
   });
@@ -659,7 +660,9 @@ describe('SettingsView — notifications', () => {
       screen.getByRole('group', { name: 'Weekly milestone thresholds' }),
     ).toBeInTheDocument();
     // The milestone rows say plainly that no live source ships yet (D-20).
-    expect(screen.getByText(/fire only while Settings → Usage is set to refresh/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/fire only while Settings → Usage is set to refresh/i),
+    ).toBeInTheDocument();
   });
 
   it('shows a test notification through the shell', async () => {
