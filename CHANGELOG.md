@@ -76,6 +76,16 @@ CI changes, and documentation that no user acts on stay out — see
   because a milestone is a threshold being *crossed* and that needs readings
   that keep moving. With it off you still see your limits; antiburn just never
   interrupts you about them. The switch says both of these things.
+||||||| 37bd357
+
+### Changed
+
+- The legal documents in Settings → About now open as their own pages, with a
+  back arrow, instead of expanding in place and burying the rest of the pane.
+  Each one is reached by an "Open" button on its row, and the attributions for
+  bundled third-party material have moved out of "Legal notices" onto a row of
+  their own.
+
 
 ## [0.1.0-rc.3] - 2026-08-15
 

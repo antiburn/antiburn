@@ -396,7 +396,7 @@ describe('SettingsView', () => {
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'About' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Licence text' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open licence text' }));
 
     // A phrase from the licence body proper, not from any label or summary.
     expect(
@@ -406,27 +406,76 @@ describe('SettingsView', () => {
     expect(document.querySelectorAll('a')).toHaveLength(0);
   });
 
-  it('shows the notice and third-party attributions under Legal notices', async () => {
+  it('shows the notice in its own view under Legal notices', async () => {
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'About' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Legal notices' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open legal notices' }));
 
     // The NOTICE body is asserted by containment rather than by quoting it
     // here: its text is exempt from the source-boundary scan, this file is
     // not.
     const notices = await screen.findByText(/Copyright \(c\) 2026/);
     expect(notices.textContent).toBe(NOTICE_TEXT.trim());
-    expect(screen.getByText('simple-icons')).toBeInTheDocument();
+    expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('names the bundled third-party material in its own view', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Open third-party attributions' }),
+    );
+
+    expect(await screen.findByText('simple-icons')).toBeInTheDocument();
     expect(screen.getByText(/CC0-1\.0/)).toBeInTheDocument();
     expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('lands the reader on the document heading and takes them back to About', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+    const opener = await screen.findByRole('button', { name: 'Open legal notices' });
+    fireEvent.click(opener);
+
+    // Focus follows the surface: the button that opened this view no longer
+    // exists, so leaving it behind would drop a keyboard reader onto <body>.
+    const heading = await screen.findByRole('heading', { name: 'Legal notices' });
+    expect(heading).toHaveFocus();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to About' }));
+
+    // Back to the card, with focus on the row that was pressed.
+    expect(
+      await screen.findByRole('button', { name: 'Open licence text' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open legal notices' })).toHaveFocus();
+  });
+
+  it('leaves a document behind when the reader changes section', async () => {
+    render(<SettingsView />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open licence text' }));
+    expect(await screen.findByRole('heading', { name: 'Licence text' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+
+    // About opens on itself, not on the document somebody read last time.
+    expect(await screen.findByRole('heading', { name: 'About' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Licence text' })).not.toBeInTheDocument();
   });
 
   it('links About to the privacy pane instead of a support URL', async () => {
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'About' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Open privacy and data handling' }),
+    );
 
     expect(
       await screen.findByRole('button', { name: 'Only derived analysis is stored' }),
