@@ -52,6 +52,26 @@ describe('UsageRing', () => {
     expect(arcOffset(container)).toBeCloseTo(0, 5);
   });
 
+  it('keeps the provider’s identity inside the ring', () => {
+    // A chip that says how full something is without saying whose is a worse
+    // trade than the ring is worth.
+    const { container } = render(<UsageRing percent={40} glyph="A" />);
+    expect(container.querySelector('[data-testid="usage-ring-glyph"]')).toHaveTextContent('A');
+    expect(
+      render(<UsageRing percent={40} />).container.querySelector(
+        '[data-testid="usage-ring-glyph"]',
+      ),
+    ).toBeNull();
+  });
+
+  it('prefers a brand mark over the letter when one exists', () => {
+    // The letter is the fallback for providers with no rights-cleared mark,
+    // not a second thing to draw alongside one.
+    const { container } = render(<UsageRing percent={40} glyph="A" markPath="M0 0h24v24H0z" />);
+    expect(container.querySelector('[data-testid="usage-ring-mark"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="usage-ring-glyph"]')).toBeNull();
+  });
+
   it('is invisible to a screen reader, because its caller names it', () => {
     // The ring is a shape with no text. Every call site puts the figure into
     // the accessible name of the control around it instead.

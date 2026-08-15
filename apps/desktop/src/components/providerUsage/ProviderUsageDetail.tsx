@@ -15,7 +15,7 @@ import {
 import { LiveUsageDetail } from './LiveUsageDetail';
 import { UsageMetricRows } from './UsageMetricRows';
 import { UsageWindowRows } from './UsageWindowRows';
-import { ProviderGlyph, UsageStateBadge } from './ProviderUsagePrimitives';
+import { ProviderGlyph } from './ProviderUsagePrimitives';
 
 export interface ProviderUsageDetailProps {
   provider: ProviderUsagePayload;
@@ -61,7 +61,12 @@ export function ProviderUsageDetail({
       <div className="flex items-start gap-2">
         {/* The same glyph the chip carries, so the panel reads as that chip
             opened rather than as an unrelated card. */}
-        <ProviderGlyph displayName={provider.displayName} size={18} className="mt-px" />
+        <ProviderGlyph
+          displayName={provider.displayName}
+          provider={provider.provider}
+          size={18}
+          className="mt-px"
+        />
         <div className="min-w-0 flex-1">
           <h2 id={headingId} className="type-headline truncate text-label">
             {provider.displayName}
@@ -74,7 +79,6 @@ export function ProviderUsageDetail({
             </p>
           )}
         </div>
-        <UsageStateBadge state={provider.state} className="mt-px" />
       </div>
 
       {live && <LiveUsageDetail live={live} now={now} />}

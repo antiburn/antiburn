@@ -56,9 +56,11 @@ CI changes, and documentation that no user acts on stay out — see
   extrapolate from.
 
 - **A ring in the popover footer.** Each provider's chip now carries a ring
-  showing the limit nearest its ceiling — not the shortest window, the one
-  that will actually bite. Clicking it opens the same limits and pace figures
-  without leaving the list.
+  showing your account-wide limit — the weekly one, not the shortest window and
+  not whichever happens to be fullest. A per-model limit can be closer to its
+  ceiling without describing how you are doing overall, so it keeps its own
+  named row instead. Hovering a chip shows that provider's limits and pace
+  without leaving the list; clicking pins the panel open.
 
 - **Settings → Usage, with one switch.** Off by default. On, antiburn runs
   your coding agent in the background about every ten minutes so the agent

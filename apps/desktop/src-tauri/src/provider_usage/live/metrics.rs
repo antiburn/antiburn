@@ -27,9 +27,19 @@
 //!   different weeks and the rate across it is meaningless. Only the segment
 //!   since the most recent drop is used.
 //! - **Sparse history.** Fewer than two comparable readings in the last two
-//!   hours. This is the common case with a source that only updates when an
-//!   agent runs, and it is why the surfaces all have a "not enough history"
-//!   branch that is not an error state.
+//!   hours, *or* readings that span less than [`MIN_SPAN`]. This is the common
+//!   case with a source that only updates when an agent runs, and it is why
+//!   the surfaces all have a "not enough history" branch that is not an error
+//!   state.
+//!
+//! The span floor is the one that was learnt rather than designed. Two
+//! readings thirty seconds apart satisfy every count-based check and produce
+//! an authoritative-looking rate that is pure noise: observed live, the same
+//! window reported "At risk, 30%/hour, runs out in 3h" and then, minutes
+//! later, "Comfortable, 6.8%/hour, lasts past the reset". A verdict that can
+//! invert while a reader watches is worse than no verdict, so a rate now
+//! needs a span long enough for the underlying figure to have plausibly
+//! moved.
 //!
 //! # Two deliberate omissions from the adapted source
 //!
@@ -47,6 +57,13 @@
 use time::{Duration, OffsetDateTime};
 
 use super::model::{Confidence, Freshness};
+
+/// The shortest span of readings that can support a rate.
+///
+/// Fifteen minutes. Below this the denominator is small enough that ordinary
+/// jitter in when the provider recomputed its own figure dominates the
+/// result — and the surfaces present that result as a verdict, in colour.
+const MIN_SPAN: Duration = Duration::minutes(15);
 
 /// One reading of one window, kept so later readings have something to
 /// compare against.
@@ -186,7 +203,7 @@ pub fn usage_forecast(
         .filter(|sample| sample.observed_at >= now - Duration::hours(2))
         .cloned()
         .collect();
-    if recent.len() < 2 {
+    if recent.len() < 2 || span(&recent).is_none_or(|span| span < MIN_SPAN) {
         return UsageForecast::unavailable(ForecastUnavailableReason::SparseHistory);
     }
     let Some(rate) = consumption_rate(&recent) else {
@@ -214,6 +231,13 @@ pub fn usage_forecast(
         pace_trend: pace_trend(&short, &recent),
         estimated_exhaustion_at: estimated_exhaustion_at(now, used_percent, rate),
     }
+}
+
+/// How much time the readings cover, oldest to newest.
+fn span(samples: &[UsageSample]) -> Option<Duration> {
+    let first = samples.first()?;
+    let last = samples.last()?;
+    Some(last.observed_at - first.observed_at)
 }
 
 fn latest_pair_is_transition(samples: &[UsageSample]) -> bool {
@@ -421,6 +445,37 @@ mod tests {
         let samples = [sample(-10_800, 20.0), sample(0, 30.0)];
         assert_eq!(
             forecast(&samples, 30.0, 3_600).unavailable_reason,
+            Some(ForecastUnavailableReason::SparseHistory)
+        );
+    }
+
+    #[test]
+    fn two_readings_moments_apart_are_not_a_rate() {
+        // The defect this floor exists for, reproduced. Two readings thirty
+        // seconds apart pass every count-based check and yield 360%/hour,
+        // which the surfaces would render as a red "At risk" verdict and then
+        // contradict minutes later.
+        let moments = [sample(-30, 7.0), sample(0, 10.0)];
+        assert_eq!(
+            forecast(&moments, 10.0, 18_000).unavailable_reason,
+            Some(ForecastUnavailableReason::SparseHistory)
+        );
+
+        // The same two readings far enough apart to mean something.
+        let spread = [sample(-3_600, 7.0), sample(0, 10.0)];
+        let result = forecast(&spread, 10.0, 18_000);
+        assert_eq!(result.unavailable_reason, None);
+        assert!((result.consumption_rate.unwrap() - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_span_floor_is_measured_end_to_end_not_per_pair() {
+        // Many readings inside one short burst are still one short burst.
+        let burst: Vec<UsageSample> = (0..8)
+            .map(|index| sample(-700 + index * 100, 10.0 + index as f64))
+            .collect();
+        assert_eq!(
+            forecast(&burst, 18.0, 18_000).unavailable_reason,
             Some(ForecastUnavailableReason::SparseHistory)
         );
     }

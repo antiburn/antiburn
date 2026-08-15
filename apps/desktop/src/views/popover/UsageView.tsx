@@ -4,7 +4,7 @@
 
 import { ChevronLeft } from 'lucide-react';
 
-import { ProviderGlyph, UsageStateBadge } from '../../components/providerUsage';
+import { ProviderGlyph } from '../../components/providerUsage';
 import { LiveUsageDetail } from '../../components/providerUsage/LiveUsageDetail';
 import { UsageMetricRows } from '../../components/providerUsage/UsageMetricRows';
 import { UsageWindowRows } from '../../components/providerUsage/UsageWindowRows';
@@ -192,7 +192,12 @@ function ProviderCard({
   return (
     <li className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
       <div className="flex items-start gap-2">
-        <ProviderGlyph displayName={provider.displayName} size={18} className="mt-px" />
+        <ProviderGlyph
+          displayName={provider.displayName}
+          provider={provider.provider}
+          size={18}
+          className="mt-px"
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <h3 className="truncate type-footnote font-medium text-label">
@@ -212,7 +217,6 @@ function ProviderCard({
             </p>
           )}
         </div>
-        <UsageStateBadge state={provider.state} className="mt-px" />
       </div>
 
       {live && <LiveUsageDetail live={live} now={now} />}

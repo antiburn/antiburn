@@ -23,6 +23,8 @@
 export function UsageRing({
   percent,
   estimated = false,
+  glyph,
+  markPath,
   size = 16,
   className = '',
 }: {
@@ -30,6 +32,17 @@ export function UsageRing({
   percent: number | null;
   /** Whether the figure was modelled rather than stated by the provider. */
   estimated?: boolean;
+  /**
+   * What sits inside the ring — the provider's brand mark where one exists,
+   * otherwise its initial.
+   *
+   * Not decoration. Where this replaces a provider glyph, dropping it would
+   * leave a chip that says how full something is without saying whose, which
+   * is a worse trade than the ring is worth.
+   */
+  glyph?: string;
+  /** A `simple-icons` path, preferred over `glyph` when supplied. */
+  markPath?: string | undefined;
   size?: number;
   className?: string;
 }) {
@@ -87,6 +100,35 @@ export function UsageRing({
           className="text-label-tertiary"
           data-testid="usage-ring-estimated"
         />
+      )}
+      {markPath && (
+        // Scaled from the mark's own 24-unit box into the ring's 32-unit one
+        // and centred. 0.7 fills most of the ring's clear interior — the track
+        // and arc occupy the outer 2.5 units of a radius-13 circle, leaving
+        // about 23 units of usable space — without the mark touching the arc.
+        <g
+          transform="translate(16 16) scale(0.7) translate(-12 -12)"
+          fill="currentColor"
+          data-testid="usage-ring-mark"
+        >
+          <path d={markPath} />
+        </g>
+      )}
+      {!markPath && glyph && (
+        <text
+          x="16"
+          y="16"
+          textAnchor="middle"
+          dominantBaseline="central"
+          // Sized against the 32-unit box rather than the rendered size, so
+          // the letter keeps its proportion inside the ring at any scale.
+          fontSize="16"
+          fontWeight="500"
+          fill="currentColor"
+          data-testid="usage-ring-glyph"
+        >
+          {glyph}
+        </text>
       )}
     </svg>
   );

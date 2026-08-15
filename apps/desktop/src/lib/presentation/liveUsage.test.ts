@@ -433,21 +433,70 @@ describe('runway', () => {
 });
 
 describe('the headline window', () => {
-  it('is the one nearest its limit, not the shortest or the first', () => {
-    // A footer with room for one ring should show the constraint that will
-    // actually bite.
+  it('leads with the account-wide long window, not the shortest or the first', () => {
     const provider_ = provider({
       windows: [
         window({ id: 'five-hour', usedPercent: 10 }),
-        window({ id: 'seven-day', role: 'primaryLong', usedPercent: 88 }),
+        window({ id: 'seven-day', role: 'primaryLong', kind: 'weekly', usedPercent: 88 }),
       ],
     });
     expect(headlineWindow(provider_)?.id).toBe('seven-day');
   });
 
-  it('ignores windows the provider gave no figure for', () => {
+  it('does not let a fuller per-model limit take the ring from the account', () => {
+    // The case that made this rule: a model-scoped weekly at 95% beside an
+    // account weekly at 69%. Picking the fullest would have a reader glance at
+    // the footer and read 95% as their overall position, when it constrains
+    // one model. The per-model limit keeps its own row, one hover away.
+    const provider_ = provider({
+      windows: [
+        window({ id: 'five-hour', usedPercent: 14 }),
+        window({ id: 'seven-day', role: 'primaryLong', kind: 'weekly', usedPercent: 69 }),
+        window({
+          id: 'weekly-fable',
+          role: 'supplemental',
+          kind: 'weekly',
+          scopeModel: 'Fable',
+          usedPercent: 95,
+        }),
+      ],
+    });
+    expect(headlineWindow(provider_)?.id).toBe('seven-day');
+    expect(headlineWindow(provider_)?.usedPercent).toBe(69);
+  });
+
+  it('falls back through the roles rather than giving up', () => {
+    // A monthly account allowance with no weekly at all.
+    const monthly = provider({
+      windows: [
+        window({ id: 'five-hour', usedPercent: 14 }),
+        window({ id: 'billing', role: 'other', kind: 'billingCycle', usedPercent: 40 }),
+      ],
+    });
+    expect(headlineWindow(monthly)?.id).toBe('billing');
+
+    // Nothing but the short window: better than an empty footer.
+    const shortOnly = provider({ windows: [window({ id: 'five-hour', usedPercent: 14 })] });
+    expect(headlineWindow(shortOnly)?.id).toBe('five-hour');
+  });
+
+  it('keeps the account window even when the provider stated no figure for it', () => {
+    // An indeterminate ring on the right window beats a determinate ring on
+    // the wrong one.
+    const provider_ = provider({
+      windows: [
+        window({ id: 'seven-day', role: 'primaryLong', kind: 'weekly', usedPercent: null }),
+        window({ id: 'five-hour', usedPercent: 14 }),
+      ],
+    });
+    expect(headlineWindow(provider_)?.id).toBe('seven-day');
+  });
+
+  it('has nothing to show when no window carries a figure or a role', () => {
     expect(
-      headlineWindow(provider({ windows: [window({ usedPercent: null })] })),
+      headlineWindow(
+        provider({ windows: [window({ id: 'five-hour', role: 'primaryShort', usedPercent: null })] }),
+      ),
     ).toBeNull();
   });
 });

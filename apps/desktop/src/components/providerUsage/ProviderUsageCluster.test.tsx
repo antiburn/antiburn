@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   LiveUsageSummaryPayload,
@@ -353,9 +353,9 @@ function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
 }
 
 describe('ProviderUsageCluster — the limit ring', () => {
-  it('replaces the glyph with a ring at the window nearest its limit', () => {
-    // Not the shortest window and not the first: a footer with room for one
-    // ring should show the constraint that will actually bite.
+  it('replaces the glyph with a ring at the account-wide window', () => {
+    // Not the shortest and not the fullest: a single ring has to answer "how
+    // am I doing", which only the account-wide window answers.
     const { container } = render(
       <ProviderUsageCluster
         providers={[provider({ provider: 'anthropic', displayName: 'Anthropic' })]}
@@ -366,6 +366,9 @@ describe('ProviderUsageCluster — the limit ring', () => {
     );
 
     expect(container.querySelector('[data-testid="usage-ring-arc"]')).not.toBeNull();
+    // The ring carries the provider's identity rather than replacing it — the
+    // brand mark where one exists, so the chip still says whose limit it is.
+    expect(container.querySelector('[data-testid="usage-ring-mark"]')).not.toBeNull();
     // The ring is a shape with no text, so the figure has to reach the
     // accessible name or a screen-reader user simply does not get it.
     expect(
@@ -405,5 +408,89 @@ describe('ProviderUsageCluster — the limit ring', () => {
     expect(panel).toHaveTextContent('88% used');
     // And the spend half is still there, below it.
     expect(panel).toHaveTextContent('Last 7 days');
+  });
+});
+
+describe('ProviderUsageCluster — hover', () => {
+  const chip = () => screen.getByRole('button', { name: /^Anthropic,/ });
+
+  function cluster() {
+    render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'anthropic', displayName: 'Anthropic' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+  }
+
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+  afterEach(() => vi.useRealTimers());
+
+  it('waits before opening, so a pointer crossing the footer lights nothing up', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    act(() => void vi.advanceTimersByTime(200));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('does not claim to be modal, and does not steal focus, when hover opened it', () => {
+    // Yanking focus out from under a pointer that merely passed over a chip is
+    // hostile, and a modal nobody asked for is worse than a disclosure.
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(200));
+
+    const panel = screen.getByRole('dialog');
+    expect(panel).not.toHaveAttribute('aria-modal');
+    expect(panel.contains(document.activeElement)).toBe(false);
+  });
+
+  it('survives the diagonal from the chip into the panel', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(200));
+
+    fireEvent.pointerLeave(chip(), { pointerType: 'mouse' });
+    // Reaching the panel before the close lands keeps it open.
+    act(() => void vi.advanceTimersByTime(100));
+    fireEvent.pointerEnter(screen.getByRole('dialog'), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(500));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('closes once the pointer leaves the panel too', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(200));
+
+    fireEvent.pointerLeave(screen.getByRole('dialog'), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(140));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps a deliberately opened panel open when the pointer wanders off', () => {
+    // A click is a decision; a pointer moving away is not a retraction of it.
+    cluster();
+    fireEvent.click(chip());
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
+
+    fireEvent.pointerLeave(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(1_000));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('ignores hover from a touch pointer, which fires one just before its tap', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'touch' });
+    act(() => void vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    // The tap itself still opens it.
+    fireEvent.click(chip());
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });

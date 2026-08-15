@@ -7,30 +7,49 @@
  *
  * The window is 380px wide and never resizable, so height is the only degree of
  * freedom a view has. Four numbers rather than one fixed height: onboarding is
- * a short, centred flow that looks abandoned in a 700px window, while the
- * activity list, a session's analytics, and the usage breakdown all want every
- * pixel the contract allows.
+ * a short, centred flow that looks abandoned in a full-height window, while the
+ * activity list, a session's analytics, and the usage breakdown want room.
  *
- * 700 is the ceiling the app-shell contract sets, and the shell clamps to it
- * again — these values are a request, not an instruction.
+ * Two ceilings, not one, and the difference matters. [`DEFAULT_POPOVER_HEIGHT`]
+ * is the app-shell contract's 700 — the size the window is created at and the
+ * size it rests at. [`MAX_POPOVER_HEIGHT`] is 780, which only the Usage surface
+ * asks for, and which exceeds the contract: that is a recorded deviation
+ * (`docs/deviations.md`, D-22) rather than a quiet change. The shell clamps to
+ * the same pair, so these values are a request, not an instruction.
  */
 
 /** Every surface the popover can be showing. */
 export type PopoverSurface = 'onboarding' | 'activity' | 'session' | 'usage';
 
-/** Ceiling shared with the shell (`popover::MAX_HEIGHT`). */
-export const MAX_POPOVER_HEIGHT = 700;
+/**
+ * Ceiling shared with the shell (`popover::MAX_HEIGHT`).
+ *
+ * Above the contract's 700. Only a surface that genuinely cannot do its job in
+ * 700 should use it, and today exactly one does.
+ */
+export const MAX_POPOVER_HEIGHT = 780;
+
+/**
+ * The contract's height, shared with the shell (`popover::DEFAULT_HEIGHT`) —
+ * what the window is created at and rests at.
+ */
+export const DEFAULT_POPOVER_HEIGHT = 700;
 
 /** Height, in logical pixels, of each surface. */
 export const POPOVER_HEIGHTS: Record<PopoverSurface, number> = {
   // Three short centred screens and a source list. At full height the copy
   // floats in the middle of an empty window.
   onboarding: 520,
-  activity: MAX_POPOVER_HEIGHT,
-  session: MAX_POPOVER_HEIGHT,
-  // The usage breakdown is a fixed header, a short list, and a footnote; it
-  // runs out of content well before 700px.
-  usage: 620,
+  // Unchanged by the ceiling moving: nothing about these two got taller, and
+  // growing them is a separate decision nobody has made.
+  activity: DEFAULT_POPOVER_HEIGHT,
+  session: DEFAULT_POPOVER_HEIGHT,
+  // The one surface that outgrew the contract. It used to run out of content
+  // before 700, back when a provider card was three windows and a token split.
+  // A card now carries the provider's own limits above that — three rows,
+  // three reset lines, and the pace block — so two vendors no longer fit, and
+  // the reader ends up scrolling a surface whose whole point is one glance.
+  usage: MAX_POPOVER_HEIGHT,
 };
 
 /** The height a surface asks the shell for. */

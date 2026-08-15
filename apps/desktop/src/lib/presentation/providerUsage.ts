@@ -275,12 +275,20 @@ export function paceTrend(provider: ProviderUsagePayload): PaceTrend {
   return { kind: 'steady', ratio };
 }
 
-/** `"Picking up · 1.4× the 7-day average"`, or why there is no trend. */
+/**
+ * `"Picking up · 1.4× the 7-day average"`, or why there is no trend.
+ *
+ * A ratio under a tenth is floored to `<0.1×` rather than rounded. Rounding
+ * gives `0.0×`, which reads as a failed computation rather than as a quiet
+ * day — and a reader who has spent 28 cents against a 17-dollar average has
+ * not used *nothing*, they have used very little.
+ */
 export function paceTrendLabel(trend: PaceTrend): string {
   if (trend.kind === 'insufficient' || trend.ratio == null) return 'Not enough history';
   const word =
     trend.kind === 'picking-up' ? 'Picking up' : trend.kind === 'easing' ? 'Easing' : 'Steady';
-  return `${word} · ${trend.ratio.toFixed(1)}× the 7-day average`;
+  const ratio = trend.ratio < 0.1 ? '<0.1' : trend.ratio.toFixed(1);
+  return `${word} · ${ratio}× the 7-day average`;
 }
 
 /** `"Updated 2h ago"`, or null without a timestamp. */
@@ -331,6 +339,11 @@ export function usageMetricRows(
       label: "Today's tokens",
       value: windowTokens(today) > 0 ? formatCompact(windowTokens(today)) : '—',
     },
-    { key: 'trend', label: 'Pace trend', value: paceTrendLabel(paceTrend(provider)) },
+    // "Spend trend", not "Pace trend": a provider card can carry the plan
+    // limits above these rows, and those have their own Pace and Trend
+    // computed from the provider's percentages. Two rows called pace, four
+    // apart, measuring different things from different evidence, is a reader
+    // being asked to hold a distinction the labels refuse to make.
+    { key: 'trend', label: 'Spend trend', value: paceTrendLabel(paceTrend(provider)) },
   ];
 }

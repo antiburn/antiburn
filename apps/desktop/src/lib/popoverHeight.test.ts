@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DEFAULT_POPOVER_HEIGHT,
   MAX_POPOVER_HEIGHT,
   POPOVER_HEIGHTS,
   popoverHeightFor,
@@ -12,10 +13,11 @@ import {
 } from './popoverHeight';
 
 describe('popover heights', () => {
-  it('holds every surface at or under the 700px ceiling', () => {
-    expect(MAX_POPOVER_HEIGHT).toBe(700);
+  it('holds every surface between the shell’s two clamps', () => {
+    expect(DEFAULT_POPOVER_HEIGHT).toBe(700);
+    expect(MAX_POPOVER_HEIGHT).toBe(780);
     for (const [surface, height] of Object.entries(POPOVER_HEIGHTS)) {
-      expect(height, `${surface} is taller than the contract allows`).toBeLessThanOrEqual(
+      expect(height, `${surface} is taller than the ceiling allows`).toBeLessThanOrEqual(
         MAX_POPOVER_HEIGHT,
       );
       // Nothing so short it cannot hold its own chrome; the shell clamps to
@@ -24,11 +26,14 @@ describe('popover heights', () => {
     }
   });
 
-  it('gives the content-heavy surfaces the full window and onboarding less', () => {
-    expect(popoverHeightFor('activity')).toBe(MAX_POPOVER_HEIGHT);
-    expect(popoverHeightFor('session')).toBe(MAX_POPOVER_HEIGHT);
-    expect(popoverHeightFor('onboarding')).toBeLessThan(MAX_POPOVER_HEIGHT);
-    expect(popoverHeightFor('usage')).toBeLessThan(MAX_POPOVER_HEIGHT);
+  it('gives only the surface that outgrew the contract more than the contract', () => {
+    // D-22: the ceiling is above the contract's height, and exactly one
+    // surface uses it. Everything else stays where it was.
+    expect(MAX_POPOVER_HEIGHT).toBeGreaterThan(DEFAULT_POPOVER_HEIGHT);
+    expect(popoverHeightFor('usage')).toBe(MAX_POPOVER_HEIGHT);
+    expect(popoverHeightFor('activity')).toBe(DEFAULT_POPOVER_HEIGHT);
+    expect(popoverHeightFor('session')).toBe(DEFAULT_POPOVER_HEIGHT);
+    expect(popoverHeightFor('onboarding')).toBeLessThan(DEFAULT_POPOVER_HEIGHT);
   });
 });
 

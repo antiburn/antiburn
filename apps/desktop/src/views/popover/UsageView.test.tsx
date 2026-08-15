@@ -117,7 +117,7 @@ describe('UsageView', () => {
     expect(within(card!).getAllByText('20.0k').length).toBeGreaterThan(0);
     expect(within(card!).getByText(/Last used 3d ago/)).toBeInTheDocument();
     // Nothing today against a real weekly baseline reads as easing off.
-    expect(within(card!).getByText(/Easing · 0\.0×/)).toBeInTheDocument();
+    expect(within(card!).getByText(/Easing · <0\.1×/)).toBeInTheDocument();
   });
 
   it('says how far back the windows can see, because retention is shorter than a month', () => {

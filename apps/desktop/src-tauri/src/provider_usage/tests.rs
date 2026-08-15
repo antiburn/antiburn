@@ -199,7 +199,10 @@ fn a_fully_priced_provider_is_estimated_and_carries_the_engines_figure() {
 
     assert_eq!(anthropic.state, ProviderUsageState::Estimated);
     assert_eq!(anthropic.staleness, ProviderUsageStaleness::Fresh);
-    assert_eq!(anthropic.display_name, "Anthropic");
+    // The product, not the corporation: readers recognize "Claude". The id
+    // beside it stays `anthropic`, because that is what keys attribution.
+    assert_eq!(anthropic.provider, providers::ANTHROPIC);
+    assert_eq!(anthropic.display_name, "Claude");
     // A million input tokens of the catalog's Opus rate. The figure belongs to
     // the engine; this only asserts that it arrived intact.
     let expected = price_breakdown(&HashMap::from([(

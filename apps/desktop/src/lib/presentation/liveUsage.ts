@@ -435,18 +435,41 @@ export function runwayLabel(window: LiveUsageWindowPayload, now: number): string
 }
 
 /**
- * The window a compact surface should lead with: the one nearest its limit.
+ * The window a compact surface should lead with.
  *
- * Not the shortest, and not the first. A footer with room for one ring should
- * show the constraint that will actually bite, which on a quiet day is the
- * weekly limit and on a busy afternoon is the five-hour one.
+ * By *role*, not by how full it is. The account-wide long window — the weekly
+ * limit — is the one that describes the account's overall standing, so it
+ * leads whenever it exists.
+ *
+ * The tempting alternative is "whichever is nearest its ceiling", and it is
+ * wrong. A per-model weekly limit at 95% next to an account weekly at 69%
+ * would take the ring, and a reader glancing at the footer would read 95% as
+ * their overall position when it constrains one model. A single ring has to
+ * answer "how am I doing", and only the account-wide window answers that.
+ *
+ * The per-model limit is not hidden — it has its own row, with its own name,
+ * one hover away.
  */
 export function headlineWindow(
   provider: LiveProviderUsagePayload,
 ): LiveUsageWindowPayload | null {
+  const windows = liveWindows(provider);
+  const find = (match: (window: LiveUsageWindowPayload) => boolean) => windows.find(match);
+
   return (
-    liveWindows(provider)
-      .filter((window) => window.usedPercent != null)
-      .sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0] ?? null
+    find((window) => window.role === 'primaryLong') ??
+    find((window) => window.kind === 'weekly') ??
+    find((window) => window.kind === 'billingCycle' && window.scopeModel == null) ??
+    // Anything account-wide that is neither the short window nor a secondary
+    // limit — a monthly allowance, say.
+    find(
+      (window) =>
+        window.role !== 'primaryShort' &&
+        window.role !== 'supplemental' &&
+        window.usedPercent != null,
+    ) ??
+    // Last resort: the short window, which is better than an empty footer.
+    find((window) => window.usedPercent != null) ??
+    null
   );
 }
