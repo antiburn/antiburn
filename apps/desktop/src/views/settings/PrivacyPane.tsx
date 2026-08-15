@@ -88,9 +88,16 @@ export function PrivacyPane() {
             describing them.
           </Disclosure>
           <Disclosure label="Nothing is uploaded">
-            There is no account, no server, and no usage data collected. The only time antiburn
-            uses the network is when it asks GitHub Releases whether a newer version exists, and
+            There is no account, no server, and no usage data collected. antiburn itself opens
+            one kind of connection: it asks GitHub Releases whether a newer version exists, and
             that check sends nothing about you or your sessions.
+          </Disclosure>
+          <Disclosure label="One setting lets your agent go online">
+            Settings &rarr; Usage has a switch, off by default, that lets antiburn run your
+            coding agent in the background to refresh its own usage reading. Your agent goes
+            online when it does that, exactly as it does when you use it yourself; antiburn
+            reads the file it writes and opens no connection of its own. With the switch off,
+            plan limits are read from whatever your agent last cached here and nothing runs.
           </Disclosure>
           <Disclosure label="Exports describe real work">
             An exported session carries derived analysis plus the session&rsquo;s title and the

@@ -26,6 +26,13 @@ antiburn is local-first by contract, and CI enforces it mechanically:
 - Discovery reads **documented files, read-only databases, and bounded WSL
   paths only** — no process probing, port scanning, credential/token access,
   loopback HTTP, or provider IPC.
+- One opt-in setting, default off, **runs a coding agent** so that the agent
+  refreshes its own usage file, which antiburn then reads. That agent goes
+  online; antiburn opens no connection of its own, reads no credential, and
+  parses nothing the agent prints. Any future source of the same shape must
+  keep all four of those properties, and must be recorded in
+  `docs/deviations.md` before it ships. Reading a credential to talk to a
+  provider directly remains prohibited by the rule above.
 - Test fixtures must be **synthetic**: no real transcripts, usernames, home
   paths, repository names, or captured machine output — redaction is not
   sufficient.

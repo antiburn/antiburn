@@ -75,6 +75,18 @@ pub trait LiveUsageSource: Send + Sync {
     /// A stable id for this source, used in the error surface and in logs.
     fn id(&self) -> &'static str;
 
+    /// Whether this source may only run behind the online opt-in.
+    ///
+    /// Declared by the source rather than known by the caller, so adding one
+    /// cannot accidentally leave it ungated: a source that causes any traffic
+    /// — directly or through a child process — says so here, and
+    /// [`sources::collect`] never calls it while the preference is off. The
+    /// default is `false`, which is correct for a source that only reads a
+    /// file already on the disk.
+    fn requires_online_opt_in(&self) -> bool {
+        false
+    }
+
     /// Collect whatever this source can currently prove.
     fn fetch(&self) -> SourceOutcome;
 }
@@ -134,7 +146,12 @@ pub fn summarize(
     now: i64,
     utc_offset_minutes: i32,
 ) -> LiveUsageSummary {
-    let collected = sources::collect(sources);
+    // Read fresh, and default to *not* acting: an unreadable preference is not
+    // permission, the same rule every notifier in this app follows.
+    let online = store
+        .and_then(|store| store.settings().ok())
+        .is_some_and(|settings| settings.live_usage_enabled);
+    let collected = sources::collect(sources, online);
     let history = store
         .map(|store| history::record(store, &collected.snapshots, now))
         .unwrap_or_default();

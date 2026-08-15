@@ -19,6 +19,7 @@
 //! five-hour window onto a stale weekly one produces a picture that was never
 //! true at any instant.
 
+pub mod cli_refresh;
 pub mod local_cache;
 
 use super::LiveUsageSource;
@@ -27,18 +28,26 @@ use super::model::{Freshness, ProviderUsageSnapshot, SupportTier};
 /// Every source this build registers, in no particular order — ranking is
 /// [`preferred`]'s job, not registration order's.
 ///
-/// Only one source ships today. The list exists so that adding the opt-in
-/// online sources is a push rather than a rewrite, and so the ranking rule
-/// below is already exercised by tests before there is a second source to
-/// exercise it in the wild.
-pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
-    vec![Box::new(local_cache::ClaudeLocalCache::new())]
+/// `workspace` is a directory the app owns, for any source that needs a
+/// private place to work.
+pub fn registered(workspace: std::path::PathBuf) -> Vec<Box<dyn LiveUsageSource>> {
+    vec![
+        Box::new(local_cache::ClaudeLocalCache::new()),
+        Box::new(cli_refresh::ClaudeCliRefresh::new(workspace)),
+    ]
 }
 
-/// Collect from every source and keep the best reading per provider account.
-pub fn collect(sources: &[Box<dyn LiveUsageSource>]) -> Collected {
+/// Collect from every permitted source and keep the best reading per account.
+///
+/// `online` is the reader's per-feature opt-in. A source that declared
+/// [`LiveUsageSource::requires_online_opt_in`] is not merely ignored while it
+/// is off — it is never called, so nothing it would do can happen.
+pub fn collect(sources: &[Box<dyn LiveUsageSource>], online: bool) -> Collected {
     let mut collected = Collected::default();
     for source in sources {
+        if source.requires_online_opt_in() && !online {
+            continue;
+        }
         let outcome = source.fetch();
         if let Some(error) = outcome.error {
             collected.errors.push((source.id(), error));

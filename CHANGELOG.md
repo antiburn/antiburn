@@ -60,6 +60,21 @@ CI changes, and documentation that no user acts on stay out — see
   that will actually bite. Clicking it opens the same limits and pace figures
   without leaving the list.
 
+- **Settings → Usage, with one switch.** Off by default. On, antiburn runs
+  your coding agent in the background about every ten minutes so the agent
+  refreshes its own usage reading, and then reads the file the agent writes.
+  Your agent goes online to do that, exactly as it does when you use it
+  yourself — antiburn still opens no connection of its own, and nothing your
+  agent prints is read.
+
+  The pane also lists what antiburn can currently see, and turns a failed
+  reading into something you can act on rather than a blank.
+
+  Turning the switch on is also what lets usage milestone notifications fire,
+  because a milestone is a threshold being *crossed* and that needs readings
+  that keep moving. With it off you still see your limits; antiburn just never
+  interrupts you about them. The switch says both of these things.
+
 ## [0.1.0-rc.3] - 2026-08-15
 
 A release-candidate rehearsal build, not a supported release. The macOS and

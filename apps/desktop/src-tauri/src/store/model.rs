@@ -274,12 +274,11 @@ pub struct Milestones {
 
 impl Default for Milestones {
     fn default() -> Self {
-        // All three on. That default was chosen when nothing could fire it,
-        // and it is now the reason the milestone pass is still gated on
-        // `live_usage_enabled`: a source exists, so lifting the gate before
-        // the opt-in has a visible control would start interrupting readers
-        // on the strength of a preference they were never shown. Whichever
-        // moves first, these two decisions move together.
+        // All three on, because they are not the consent point: nothing
+        // fires until the reader turns on Settings → Usage → refresh, whose
+        // copy names milestones as one of its two consequences. Asking a
+        // second time, in a second place, for permission already given is how
+        // a preference screen becomes a form.
         Self {
             at50: true,
             at75: true,

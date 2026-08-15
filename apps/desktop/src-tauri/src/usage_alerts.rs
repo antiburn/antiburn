@@ -27,14 +27,13 @@
 //! something: the Usage surface shows a provider's own limits, read from what
 //! an agent cached on this machine.
 //!
-//! Milestone *notifications* nonetheless stay silent, and deliberately. They
-//! are still gated on `live_usage_enabled`, which defaults off and has no
-//! control yet, because the milestone preferences default to all three
-//! thresholds on — a default chosen when nothing could ever fire. Letting them
-//! fire now would start interrupting every reader with an agent installed, on
-//! the strength of a preference nobody was ever asked about. The gate lifts
-//! when the opt-in gets a control the reader can actually see
-//! (`docs/deviations.md`, D-20).
+//! Milestone notifications are gated on `live_usage_enabled` — the Settings →
+//! Usage switch, default off — and that pairing is deliberate rather than
+//! leftover. A milestone is a statement about a threshold being *crossed*, so
+//! it needs readings that keep moving, and only the refresh source makes them
+//! move: without it the offline reading sits still until the reader next uses
+//! their agent, and a crossing would be announced whenever that happened to
+//! be. So the one switch buys both, and its copy names both.
 
 use std::time::Duration;
 
@@ -91,10 +90,13 @@ pub struct LiveUsage {
     ledger: std::sync::Mutex<provider_usage::live::MilestoneLedger>,
 }
 
-impl Default for LiveUsage {
-    fn default() -> LiveUsage {
+impl LiveUsage {
+    /// `workspace` is a directory under the app's own data directory, for the
+    /// refresh source's private scratch space. Passed in rather than derived
+    /// here so the shell keeps one answer to "where does this app write".
+    pub fn new(workspace: std::path::PathBuf) -> LiveUsage {
         LiveUsage {
-            sources: provider_usage::live::sources::registered(),
+            sources: provider_usage::live::sources::registered(workspace),
             ledger: std::sync::Mutex::default(),
         }
     }
@@ -152,7 +154,7 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
         return;
     };
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
-        provider_usage::live::sources::collect(&live.sources)
+        provider_usage::live::sources::collect(&live.sources, settings.live_usage_enabled)
             .snapshots
             .iter()
             .map(milestone_snapshot)

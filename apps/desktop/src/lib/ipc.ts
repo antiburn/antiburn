@@ -95,8 +95,12 @@ export interface AppSettings {
   /** Weekly-window milestones. */
   milestonesWeekly: Milestones;
   /**
-   * The per-feature online opt-in for live usage limits. Off by default: the
-   * app calls no provider endpoint until the reader turns this on.
+   * The per-feature online opt-in for live usage limits. Off by default.
+   *
+   * On, antiburn runs the reader's coding agent periodically so the agent
+   * refreshes its own usage file — the agent goes online, antiburn does not —
+   * and milestone notifications become able to fire. Off, plan limits are read
+   * from whatever the agent last cached and nothing runs.
    */
   liveUsageEnabled: boolean;
 }

@@ -324,7 +324,7 @@ fn two_accounts_at_one_provider_never_merge() {
             other,
         ],
     ))];
-    let collected = sources::collect(&sources);
+    let collected = sources::collect(&sources, true);
     assert_eq!(collected.snapshots.len(), 2);
 }
 
@@ -382,4 +382,67 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
 
 fn required_present(json: &str, field: &str) -> bool {
     json.contains(&format!("\"{field}\":"))
+}
+
+/* -------------------------------------------------------------------------
+ * The online opt-in
+ * ---------------------------------------------------------------------- */
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// A source that declares it needs the opt-in, and counts how often it is
+/// actually asked.
+struct Counted(Arc<AtomicUsize>);
+
+impl LiveUsageSource for Counted {
+    fn id(&self) -> &'static str {
+        "counted"
+    }
+    fn requires_online_opt_in(&self) -> bool {
+        true
+    }
+    fn fetch(&self) -> SourceOutcome {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        SourceOutcome::found(vec![snapshot(
+            SupportTier::Live,
+            Freshness::Fresh,
+            NOW,
+            99.0,
+        )])
+    }
+}
+
+#[test]
+fn a_gated_source_is_never_called_while_the_opt_in_is_off() {
+    // Not merely filtered out afterwards: never called. The gate exists so
+    // that nothing the source would *do* — spawn a process, open a socket —
+    // can happen, and a design that discarded its results would already have
+    // done it.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+        Box::new(Fixed(
+            "offline",
+            vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 40.0)],
+        )),
+        Box::new(Counted(Arc::clone(&calls))),
+    ];
+
+    let off = sources::collect(&sources, false);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // The ungated source still ran, so turning the opt-in off costs the
+    // reader the refresh and nothing else.
+    assert_eq!(off.snapshots.len(), 1);
+    assert_eq!(off.snapshots[0].windows[0].used_percent, Some(40.0));
+
+    sources::collect(&sources, true);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_offline_source_is_ungated_by_default() {
+    // The default is what a new source inherits, so it has to be the right
+    // answer for a file read and the wrong one loudly for anything else —
+    // which is why the refresh source overrides it explicitly.
+    assert!(!Fixed("offline", Vec::new()).requires_online_opt_in());
 }

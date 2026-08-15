@@ -38,11 +38,12 @@
 //! surface in the whole application is the updater plugin — registered in
 //! release builds only, so a development run performs no network requests at
 //! all. Notifications are antiburn's own window, fed by a local event.
-//! Online features are per-feature opt-in under D-023, and none ships
-//! connected (`docs/deviations.md`, D-20) — the provider limit figures on the
-//! Usage surface are read from a file an agent already wrote, not fetched.
-//! The webview side is held to the same rule by a test
-//! (`apps/desktop/tests/offline.test.ts`).
+//! The provider limit figures on the Usage surface are read from a file an
+//! agent already wrote, never fetched. One opt-in setting, default off, runs
+//! that agent so it refreshes the file — the agent goes online, this crate
+//! still opens nothing, and nothing the agent prints is read
+//! (`docs/deviations.md`, D-20 and D-21). The webview side is held to the same
+//! rule by a test (`apps/desktop/tests/offline.test.ts`).
 
 mod agents;
 mod analytics;
@@ -181,7 +182,7 @@ pub fn run() {
             // provider's own limit figures, and the milestone ledger they
             // feed. Registered before the schedulers so the first pass sees
             // a populated registry rather than an empty one.
-            app.manage(usage_alerts::LiveUsage::default());
+            app.manage(usage_alerts::LiveUsage::new(data_dir.join("usage-refresh")));
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

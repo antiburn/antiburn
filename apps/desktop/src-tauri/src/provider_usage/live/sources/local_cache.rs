@@ -52,6 +52,44 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// source.
 const MAX_AGE: Duration = Duration::hours(1);
 
+/// The agent's state file, at the one documented place it lives.
+pub fn default_path() -> Option<PathBuf> {
+    antiburn_local::paths::home_dir().map(|home| home.join(".claude.json"))
+}
+
+/// Read one snapshot out of the agent's state file.
+///
+/// Shared with the refresh source, which runs the agent and then reads the
+/// very same file — one reader, so the two tiers cannot drift into disagreeing
+/// about what the file says.
+pub fn read(path: Option<&std::path::Path>, now: OffsetDateTime) -> SourceOutcome {
+    let Some(path) = path else {
+        return SourceOutcome::absent();
+    };
+    match fs::metadata(path) {
+        // No agent state file at all is the ordinary state of a machine
+        // that does not run this agent. Not an error, and not worth a
+        // line on anyone's screen.
+        Err(_) => return SourceOutcome::absent(),
+        Ok(metadata) if metadata.len() > MAX_BYTES => {
+            return SourceOutcome::failed(ProviderUsageError::Unavailable);
+        }
+        Ok(_) => {}
+    }
+    let Ok(contents) = fs::read_to_string(path) else {
+        // The file exists but will not open — a permission problem or a
+        // partial write. That one *is* worth surfacing: something the
+        // reader could fix is in the way.
+        return SourceOutcome::failed(ProviderUsageError::Unavailable);
+    };
+
+    match snapshot(&contents, now) {
+        Ok(Some(snapshot)) => SourceOutcome::found(vec![snapshot]),
+        Ok(None) => SourceOutcome::absent(),
+        Err(error) => SourceOutcome::failed(error),
+    }
+}
+
 /// Reads `~/.claude.json` for the usage Claude Code cached there.
 pub struct ClaudeLocalCache {
     path: Option<PathBuf>,
@@ -60,7 +98,7 @@ pub struct ClaudeLocalCache {
 impl ClaudeLocalCache {
     pub fn new() -> ClaudeLocalCache {
         ClaudeLocalCache {
-            path: antiburn_local::paths::home_dir().map(|home| home.join(".claude.json")),
+            path: default_path(),
         }
     }
 
@@ -77,31 +115,7 @@ impl LiveUsageSource for ClaudeLocalCache {
     }
 
     fn fetch(&self) -> SourceOutcome {
-        let Some(path) = self.path.as_deref() else {
-            return SourceOutcome::absent();
-        };
-        match fs::metadata(path) {
-            // No agent state file at all is the ordinary state of a machine
-            // that does not run this agent. Not an error, and not worth a
-            // line on anyone's screen.
-            Err(_) => return SourceOutcome::absent(),
-            Ok(metadata) if metadata.len() > MAX_BYTES => {
-                return SourceOutcome::failed(ProviderUsageError::Unavailable);
-            }
-            Ok(_) => {}
-        }
-        let Ok(contents) = fs::read_to_string(path) else {
-            // The file exists but will not open — a permission problem or a
-            // partial write. That one *is* worth surfacing: something the
-            // reader could fix is in the way.
-            return SourceOutcome::failed(ProviderUsageError::Unavailable);
-        };
-
-        match snapshot(&contents, OffsetDateTime::now_utc()) {
-            Ok(Some(snapshot)) => SourceOutcome::found(vec![snapshot]),
-            Ok(None) => SourceOutcome::absent(),
-            Err(error) => SourceOutcome::failed(error),
-        }
+        read(self.path.as_deref(), OffsetDateTime::now_utc())
     }
 }
 

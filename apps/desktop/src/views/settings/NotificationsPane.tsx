@@ -36,10 +36,10 @@ import type { AppSettingsController } from './useAppSettings';
  * The update and scan-failure kinds have no rows of their own — they are
  * named in the master switch's copy and governed by it (their per-kind
  * preferences persist for a hand-edited row, defaulting on). The milestone
- * rows follow the honesty rule other panes established: they say plainly
- * that no live usage source ships yet (`docs/deviations.md` D-20) — the
- * pills configure a preference the engine honors the day a source exists,
- * not a notification this build can post.
+ * rows carry a second gate that is not theirs: they fire only while
+ * Settings → Usage is set to refresh, because a milestone needs readings that
+ * keep moving and only that setting makes them move. The copy says so here
+ * rather than leaving a reader to wonder why their pills are quiet.
  */
 
 export type NotificationsPaneProps = AppSettingsController;
@@ -184,7 +184,7 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
           />
           <Row
             label="5-hour milestones"
-            description="Notify once as each selected level of a provider's 5-hour limit is crossed. Popover → Usage already shows those limits when an agent has cached them; these notifications stay silent until the live-usage opt-in gets a control, so nothing fires on a preference you were never shown."
+            description="Notify once as each selected level of a provider's 5-hour limit is crossed. These need readings that keep moving, so they fire only while Settings → Usage is set to refresh. With that off you still see your limits; antiburn just never interrupts you about them."
             trailing={
               <MilestonePills
                 value={settings.milestones5h}
