@@ -17,6 +17,7 @@ export const SETTINGS_PANE_IDS = [
   'sources',
   'privacy',
   'notifications',
+  'usage',
   'about',
 ] as const;
 

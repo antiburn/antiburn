@@ -274,8 +274,11 @@ pub struct Milestones {
 
 impl Default for Milestones {
     fn default() -> Self {
-        // All three on: a milestone only speaks when the opt-in live source
-        // exists at all, so the default costs a fresh install nothing.
+        // All three on, because they are not the consent point: nothing
+        // fires until the reader turns on Settings → Usage → refresh, whose
+        // copy names milestones as one of its two consequences. Asking a
+        // second time, in a second place, for permission already given is how
+        // a preference screen becomes a form.
         Self {
             at50: true,
             at75: true,

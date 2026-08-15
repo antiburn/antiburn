@@ -2,10 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProviderUsagePayload, ProviderUsageWindowPayload } from '../../lib/ipc';
+import type {
+  LiveUsageSummaryPayload,
+  ProviderUsagePayload,
+  ProviderUsageWindowPayload,
+} from '../../lib/ipc';
 import { ProviderUsageCluster } from './ProviderUsageCluster';
 
 function usageWindow(
@@ -292,5 +296,201 @@ describe('ProviderUsageCluster', () => {
     fireEvent.click(screen.getByRole('button', { name: /anthropic, \$1\.25 today, live/i }));
     expect(screen.getByText('Live')).toBeInTheDocument();
     expect(screen.getByText(/reported this usage directly/i)).toBeInTheDocument();
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * The ring: shown only where a provider stated a percentage
+ * ---------------------------------------------------------------------- */
+
+function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
+  const forecast = {
+    unavailableReason: 'sparseHistory',
+    confidence: null,
+    consumptionRate: null,
+    paceRatio: null,
+    paceTrend: null,
+    runwayAt: null,
+    usedToday: null,
+  };
+  return {
+    providers: [
+      {
+        provider: 'anthropic',
+        displayName: 'Anthropic',
+        support: 'live',
+        freshness: 'fresh',
+        sourceLabel: "Claude's cached usage",
+        observedAt: new Date().toISOString(),
+        windows: [
+          {
+            id: 'five-hour',
+            role: 'primaryShort',
+            kind: 'rolling',
+            scopeModel: null,
+            usedPercent: 12,
+            startsAt: null,
+            resetsAt: null,
+            forecast,
+          },
+          {
+            id: 'seven-day',
+            role: 'primaryLong',
+            kind: 'weekly',
+            scopeModel: null,
+            usedPercent,
+            startsAt: null,
+            resetsAt: null,
+            forecast,
+          },
+        ],
+        extraUsage: null,
+      },
+    ],
+    errors: [],
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+describe('ProviderUsageCluster — the limit ring', () => {
+  it('replaces the glyph with a ring at the account-wide window', () => {
+    // Not the shortest and not the fullest: a single ring has to answer "how
+    // am I doing", which only the account-wide window answers.
+    const { container } = render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'anthropic', displayName: 'Anthropic' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="usage-ring-arc"]')).not.toBeNull();
+    // The ring carries the provider's identity rather than replacing it — the
+    // brand mark where one exists, so the chip still says whose limit it is.
+    expect(container.querySelector('[data-testid="usage-ring-mark"]')).not.toBeNull();
+    // The ring is a shape with no text, so the figure has to reach the
+    // accessible name or a screen-reader user simply does not get it.
+    expect(
+      screen.getByRole('button', { name: /anthropic.*weekly limit 88% used/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the glyph, and says nothing extra, where no limit was stated', () => {
+    const { container } = render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'openai', displayName: 'OpenAI' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="usage-ring-arc"]')).toBeNull();
+    expect(screen.getByRole('button', { name: /^OpenAI,/ })).not.toHaveAccessibleName(
+      /limit/i,
+    );
+  });
+
+  it('shows the plan limits inside the panel the chip opens', () => {
+    render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'anthropic', displayName: 'Anthropic' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Anthropic,/ }));
+    const panel = screen.getByRole('dialog');
+    expect(panel).toHaveTextContent('Plan limits');
+    expect(panel).toHaveTextContent('88% used');
+    // And the spend half is still there, below it.
+    expect(panel).toHaveTextContent('Last 7 days');
+  });
+});
+
+describe('ProviderUsageCluster — hover', () => {
+  const chip = () => screen.getByRole('button', { name: /^Anthropic,/ });
+
+  function cluster() {
+    render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'anthropic', displayName: 'Anthropic' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+  }
+
+  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+  afterEach(() => vi.useRealTimers());
+
+  it('waits before opening, so a pointer crossing the footer lights nothing up', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    act(() => void vi.advanceTimersByTime(200));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('does not claim to be modal, and does not steal focus, when hover opened it', () => {
+    // Yanking focus out from under a pointer that merely passed over a chip is
+    // hostile, and a modal nobody asked for is worse than a disclosure.
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(200));
+
+    const panel = screen.getByRole('dialog');
+    expect(panel).not.toHaveAttribute('aria-modal');
+    expect(panel.contains(document.activeElement)).toBe(false);
+  });
+
+  it('survives the diagonal from the chip into the panel', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(200));
+
+    fireEvent.pointerLeave(chip(), { pointerType: 'mouse' });
+    // Reaching the panel before the close lands keeps it open.
+    act(() => void vi.advanceTimersByTime(100));
+    fireEvent.pointerEnter(screen.getByRole('dialog'), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(500));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('closes once the pointer leaves the panel too', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(200));
+
+    fireEvent.pointerLeave(screen.getByRole('dialog'), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(140));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps a deliberately opened panel open when the pointer wanders off', () => {
+    // A click is a decision; a pointer moving away is not a retraction of it.
+    cluster();
+    fireEvent.click(chip());
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
+
+    fireEvent.pointerLeave(chip(), { pointerType: 'mouse' });
+    act(() => void vi.advanceTimersByTime(1_000));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('ignores hover from a touch pointer, which fires one just before its tap', () => {
+    cluster();
+    fireEvent.pointerEnter(chip(), { pointerType: 'touch' });
+    act(() => void vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    // The tap itself still opens it.
+    fireEvent.click(chip());
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });

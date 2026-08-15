@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   FolderGit2,
+  Gauge,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -31,6 +32,7 @@ import { GeneralPane } from './settings/GeneralPane';
 import { NotificationsPane } from './settings/NotificationsPane';
 import { PrivacyPane } from './settings/PrivacyPane';
 import { SourcesPane } from './settings/SourcesPane';
+import { UsagePane } from './settings/UsagePane';
 import { useAppSettings } from './settings/useAppSettings';
 
 /**
@@ -62,6 +64,7 @@ const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
   { id: 'privacy', label: 'Privacy', icon: ShieldCheck },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'usage', label: 'Usage', icon: Gauge },
   { id: 'sources', label: 'Sources', icon: FolderGit2 },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'about', label: 'About', icon: Info },
@@ -192,6 +195,7 @@ export function SettingsView() {
             {pane === 'sources' && <SourcesPane />}
             {pane === 'privacy' && <PrivacyPane />}
             {pane === 'notifications' && <NotificationsPane {...controller} />}
+            {pane === 'usage' && <UsagePane {...controller} />}
             {pane === 'about' && <AboutPane {...controller} info={info} onOpenPane={setPane} />}
           </div>
         </ScrollPane>

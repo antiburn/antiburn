@@ -58,7 +58,7 @@ tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # RFC 3339 stamps for the store's own timestamps.
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 # The scan scheduler. Deliberately excludes `net`: the shell opens no sockets
 # either — the updater plugin is the only network-capable surface.
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

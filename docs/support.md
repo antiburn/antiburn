@@ -23,7 +23,9 @@ listed here is not claimed — a cell that is absent means "not supported", not
 ## Agents
 
 antiburn reads what a coding agent has already written to disk. It never asks a
-provider's API, never reads credentials, and never probes a running process.
+provider's API, never reads credentials, and never probes a running process. One
+opt-in setting *runs* an agent — see [Network](#network) — but even then antiburn
+reads the file the agent writes, not the agent.
 
 | Agent | Native (macOS / Windows / Linux) | WSL | Notes |
 | --- | --- | --- | --- |
@@ -63,6 +65,21 @@ Provider Usage shows what was *spent* on this machine. It never shows a percenta
 an allowance, a remaining balance, or a reset time: a transcript records spend, and a
 denominator would have to be invented.
 
+**Plan limits are a separate thing, from a separate place.** When one of your agents
+has cached its own usage reading on this machine, antiburn reads that file and shows
+the figures your provider stated — a percentage of a five-hour or weekly allowance,
+and when it resets. Those are the provider's numbers, not ours:
+
+- antiburn fetches nothing to get them. The agent fetched them when *it* was last
+  online, and antiburn reads the file it left behind, the same way it reads
+  everything else;
+- every reading is shown with the moment the provider stated it, and a reading older
+  than an hour is marked as such rather than ageing quietly on screen;
+- a figure the provider did not state is shown as unknown, never as zero;
+- they appear above the spend estimates and never replace them. If no agent has
+  cached a reading, the limits section is simply absent and the spend estimates are
+  unchanged.
+
 ## What antiburn stores
 
 antiburn keeps one SQLite database in its own application data directory. Settings →
@@ -99,8 +116,8 @@ above. The export flow warns before it writes and always asks where to put the f
 ## Network
 
 The engine performs no network or socket I/O at all, and this is enforced
-mechanically by its own test suite. The application adds exactly one network-capable
-component: the updater, which asks GitHub Releases whether a newer version exists.
+mechanically by its own test suite. The application itself opens exactly one kind of
+connection: the updater, which asks GitHub Releases whether a newer version exists.
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can
@@ -109,12 +126,20 @@ component: the updater, which asks GitHub Releases whether a newer version exist
 - There is **no analytics and no telemetry** in this application — no client, no
   consent screen, and no endpoint.
 
+**One setting causes traffic that is not antiburn's.** Settings → Usage has a switch,
+off by default, that lets antiburn run your coding agent in the background — about
+every ten minutes — so the agent refreshes its own usage reading. The agent goes
+online to do that, exactly as it does when you use it yourself. antiburn reads the
+file the agent writes and opens no connection of its own; it does not read, parse, or
+store anything the agent prints. With the switch off, nothing runs and plan limits are
+read from whatever your agent last cached on this machine.
+
 **Notifications are local.** antiburn shows them in its own small notification
 window and posts exactly these: an update check that found a newer version, the
 first scan failure of a run, free disk space dropping below your threshold, an
-hour of unusually fast estimated spend, a usage milestone (silent in this build —
-it needs a live provider connection none of which ships yet, see
-[`deviations.md`](deviations.md) D-20), and the test button's own sample. Every
+hour of unusually fast estimated spend, a usage milestone, and the test button's
+own sample. Milestones need readings that keep moving, so they fire only while
+Settings → Usage is set to refresh; with that off they stay silent. Every
 figure in them is computed on this machine; nothing about a notification leaves
 it. All of them can be turned off in Settings → Notifications, together or one at
 a time — the test alone ignores the master switch, so you can preview a

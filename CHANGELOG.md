@@ -24,6 +24,60 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- **Your plan's limits, on the Usage screen.** When one of your agents has
+  already fetched its own usage, antiburn now reads that and shows what your
+  provider actually said: how much of your 5-hour and weekly allowances is
+  gone, any per-model weekly limit, and when each one resets. A second mark on
+  each bar shows how far through the period the clock has travelled, so 60%
+  used with most of the window left reads differently from 60% used with an
+  hour to go.
+
+  antiburn still fetches nothing. These are numbers your agent collected while
+  it was online and left on this machine, so each one is shown with the moment
+  your provider stated it, and a reading more than an hour old says so rather
+  than ageing quietly on screen. A figure your provider did not give is shown
+  as unknown, never as zero.
+
+  Your local spend estimates are unchanged and sit directly below, as before.
+  If no agent has cached a reading, the limits section is simply not there.
+
+- **How fast, and whether it will last.** Once antiburn has seen a limit move
+  more than once, it says what that movement implies: the rate you are
+  consuming at, whether the last half hour is faster or slower than the last
+  two hours, when the allowance runs out if you carry on, and how much of a
+  weekly limit went today.
+
+  These need a series, and the readings only move when your agent refetches
+  them — so most of the time antiburn will say "not enough history", and it
+  says exactly that rather than showing a confident zero. A window that has
+  just reset says so too, because its numbers are fine and simply too new to
+  extrapolate from.
+
+- **A ring in the popover footer.** Each provider's chip now carries a ring
+  showing your account-wide limit — the weekly one, not the shortest window and
+  not whichever happens to be fullest. A per-model limit can be closer to its
+  ceiling without describing how you are doing overall, so it keeps its own
+  named row instead. Hovering a chip shows that provider's limits and pace
+  without leaving the list; clicking pins the panel open.
+
+- **Settings → Usage, with one switch.** Off by default. On, antiburn runs
+  your coding agent in the background about every ten minutes so the agent
+  refreshes its own usage reading, and then reads the file the agent writes.
+  Your agent goes online to do that, exactly as it does when you use it
+  yourself — antiburn still opens no connection of its own, and nothing your
+  agent prints is read.
+
+  The pane also lists what antiburn can currently see, and turns a failed
+  reading into something you can act on rather than a blank.
+
+  Turning the switch on is also what lets usage milestone notifications fire,
+  because a milestone is a threshold being *crossed* and that needs readings
+  that keep moving. With it off you still see your limits; antiburn just never
+  interrupts you about them. The switch says both of these things.
+||||||| 37bd357
+
 ### Changed
 
 - The legal documents in Settings → About now open as their own pages, with a
@@ -31,6 +85,7 @@ CI changes, and documentation that no user acts on stay out — see
   Each one is reached by an "Open" button on its row, and the attributions for
   bundled third-party material have moved out of "Legal notices" onto a row of
   their own.
+
 
 ## [0.1.0-rc.3] - 2026-08-15
 

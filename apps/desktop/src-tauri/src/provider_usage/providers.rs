@@ -171,10 +171,22 @@ fn is_openai_reasoning_family(model: &str) -> bool {
 ///
 /// Copy, and therefore deliberately the only string in this module a reader
 /// ever sees. Everything else is an identifier.
+///
+/// **Products, not corporations.** A reader recognizes "Claude" and "Codex";
+/// they do not think of their afternoon as time spent with Anthropic. The ids
+/// stay corporate (`anthropic`, `openai`) because they key attribution and
+/// must not move when a product is renamed.
+///
+/// The imprecision this buys is worth naming: these are *provider* buckets, so
+/// a bring-your-own agent pointed at an OpenAI model lands under `openai` and
+/// will read as "Codex" even though Codex was never involved. The trade is
+/// deliberate — the overwhelming majority of what this app sees is the vendor's
+/// own agent — but if BYO usage ever becomes common, this is the line that
+/// starts lying and a per-agent breakdown is the answer, not a vaguer name.
 pub fn display_name(provider: &str) -> &'static str {
     match provider {
-        ANTHROPIC => "Anthropic",
-        OPENAI => "OpenAI",
+        ANTHROPIC => "Claude",
+        OPENAI => "Codex",
         GITHUB => "GitHub Copilot",
         GOOGLE => "Google",
         CURSOR => "Cursor",

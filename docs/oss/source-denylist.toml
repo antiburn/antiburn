@@ -149,6 +149,7 @@ patterns = [
 ]
 exceptions = [
   "Only the milestone-selection engine slice explicitly named by source-allowlist.toml rule usage-milestone-engine is exempt under D-023; the collectors, clients, probes, and persistence named in the reason remain denied.",
+  "The pure domain slices explicitly named by source-allowlist.toml rule usage-limit-domain are additionally exempt under D-023: normalization, quality semantics, the error taxonomy, forecasting arithmetic, the window value types, and the Anthropic quota parsers. The collectors, credential capture, pi_api client, loopback/local-API probes, identity hashing, persistence contracts, anomaly engine, and telemetry remain denied.",
 ]
 reason = "D-019 requires a passive Local Provider Usage subset, but the current implementation remains denied until exact review separates rights-cleared session/passive aggregation and presentation from credential, account-request, loopback, socket, IPC, telemetry, and private-policy code."
 

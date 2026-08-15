@@ -569,17 +569,18 @@ describe('PopoverView — window behaviour', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'All provider usage' }));
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('set_popover_height', {
-        height: 620,
+        height: 780,
         animate: true,
       }),
     );
 
-    // Nothing ever exceeds the 700px ceiling the app-shell contract sets.
+    // Nothing exceeds the ceiling, which is now above the contract's 700 for
+    // the Usage surface alone (D-22). The shell clamps to the same number.
     const heights = invoke.mock.calls
       .filter(([command]) => command === 'set_popover_height')
       .map(([, args]) => (args as { height: number }).height);
     expect(heights.length).toBeGreaterThan(0);
-    expect(Math.max(...heights)).toBeLessThanOrEqual(700);
+    expect(Math.max(...heights)).toBeLessThanOrEqual(780);
   });
 
   it('dismisses the popover on Escape', async () => {

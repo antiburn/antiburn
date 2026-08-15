@@ -612,6 +612,7 @@ describe('SettingsView — window chrome', () => {
       'General',
       'Privacy',
       'Notifications',
+      'Usage',
       'Sources',
       'Appearance',
       'About',
@@ -658,7 +659,7 @@ describe('SettingsView — notifications', () => {
       screen.getByRole('group', { name: 'Weekly milestone thresholds' }),
     ).toBeInTheDocument();
     // The milestone rows say plainly that no live source ships yet (D-20).
-    expect(screen.getByText(/does not include yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/fire only while Settings → Usage is set to refresh/i)).toBeInTheDocument();
   });
 
   it('shows a test notification through the shell', async () => {

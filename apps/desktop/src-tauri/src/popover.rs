@@ -38,9 +38,26 @@ pub const LABEL: &str = "popover";
 /// Popover width in logical pixels. Fixed: the views size themselves to it.
 const WIDTH: f64 = 380.0;
 
-/// Tallest the popover ever gets, in logical pixels. Also the height the
-/// activity surface uses, so the resting state of the app is the full window.
-pub const MAX_HEIGHT: f64 = 700.0;
+/// Tallest the popover may ever get, in logical pixels.
+///
+/// Above the app-shell contract's 700, and recorded as such in the deviations
+/// register (D-22). The Usage surface asks for it: a provider card now carries
+/// the provider's own limits above the local estimates, and two vendors no
+/// longer fit in a window sized before that block existed.
+pub const MAX_HEIGHT: f64 = 780.0;
+
+/// The height the window is created at, and the one the activity surface uses
+/// — so the resting state of the app is unchanged by the ceiling moving.
+///
+/// Kept at the contract's 700 deliberately. Only the surface that needed more
+/// room takes more room; growing the activity list is a separate decision and
+/// has not been made.
+pub const DEFAULT_HEIGHT: f64 = 700.0;
+
+// D-22, as a build error rather than a test: the ceiling is a ceiling, and a
+// resting height above it would mean the window opens already clamped.
+const _: () = assert!(MAX_HEIGHT >= DEFAULT_HEIGHT);
+const _: () = assert!(DEFAULT_HEIGHT >= MIN_HEIGHT);
 
 /// Shortest the popover ever gets. Below this a view has no room for its own
 /// chrome, and a window that small next to the menu bar reads as a glitch.
@@ -99,7 +116,7 @@ impl Default for PopoverState {
         PopoverState {
             auto_hidden_at: Mutex::new(None),
             anchor: Mutex::new(None),
-            height: Mutex::new(MAX_HEIGHT),
+            height: Mutex::new(DEFAULT_HEIGHT),
             resize_generation: AtomicU64::new(0),
             focus_hold: AtomicU64::new(0),
         }
@@ -160,7 +177,7 @@ impl PopoverState {
         self.height
             .lock()
             .map(|height| *height)
-            .unwrap_or(MAX_HEIGHT)
+            .unwrap_or(DEFAULT_HEIGHT)
     }
 
     fn set_height(&self, height: f64) {
@@ -183,7 +200,7 @@ impl PopoverState {
 /// A requested height, held inside the bounds the window can actually be.
 pub fn clamp_height(height: f64) -> f64 {
     if height.is_nan() {
-        return MAX_HEIGHT;
+        return DEFAULT_HEIGHT;
     }
     height.clamp(MIN_HEIGHT, MAX_HEIGHT)
 }
@@ -199,7 +216,7 @@ fn ease_out(progress: f64) -> f64 {
 pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("antiburn")
-        .inner_size(WIDTH, MAX_HEIGHT)
+        .inner_size(WIDTH, DEFAULT_HEIGHT)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -548,7 +565,7 @@ mod tests {
             width: 60.0,
             height: 48.0,
         };
-        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, MAX_HEIGHT);
+        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
         // Logical center of the item is 1515; half the popover left of that.
         assert!((x - (1515.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
         assert!((y - (24.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
@@ -574,7 +591,7 @@ mod tests {
             width: 40.0,
             height: 24.0,
         };
-        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, MAX_HEIGHT);
+        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
         assert!((x - (4020.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
         assert!((y - (24.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
     }
@@ -652,17 +669,19 @@ mod tests {
     fn a_view_can_only_ask_for_a_height_the_window_can_actually_be() {
         assert_eq!(clamp_height(MAX_HEIGHT), MAX_HEIGHT);
         assert_eq!(clamp_height(MIN_HEIGHT), MIN_HEIGHT);
-        // The D-016 contract: 700px is the ceiling, not a suggestion.
+        // The ceiling is a ceiling, not a suggestion.
         assert_eq!(clamp_height(2_000.0), MAX_HEIGHT);
         assert_eq!(clamp_height(10.0), MIN_HEIGHT);
         assert_eq!(clamp_height(-1.0), MIN_HEIGHT);
-        assert_eq!(clamp_height(f64::NAN), MAX_HEIGHT);
+        // A height that is not a number falls back to the resting size rather
+        // than the ceiling: an unreadable request is not a request to grow.
+        assert_eq!(clamp_height(f64::NAN), DEFAULT_HEIGHT);
     }
 
     #[test]
-    fn a_fresh_popover_rests_at_the_full_height() {
+    fn a_fresh_popover_rests_at_the_default_height() {
         let state = PopoverState::default();
-        assert_eq!(state.height(), MAX_HEIGHT);
+        assert_eq!(state.height(), DEFAULT_HEIGHT);
         assert!(state.anchor().is_none());
     }
 
