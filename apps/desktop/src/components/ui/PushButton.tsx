@@ -22,6 +22,7 @@ export function PushButton({
   variant = 'secondary',
   disabled = false,
   ariaLabel,
+  id,
   className = '',
 }: {
   children: ReactNode;
@@ -31,6 +32,9 @@ export function PushButton({
   disabled?: boolean;
   /** Only needed when the visible label isn't a sufficient accessible name. */
   ariaLabel?: string;
+  /** For a caller that has to find this button again — a pane returning focus
+   *  to the control that opened a subview, after the subview unmounted it. */
+  id?: string;
   className?: string;
 }) {
   const variantClass =
@@ -40,6 +44,7 @@ export function PushButton({
   return (
     <button
       type="button"
+      id={id}
       aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}

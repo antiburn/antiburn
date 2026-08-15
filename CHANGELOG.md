@@ -24,6 +24,14 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- The legal documents in Settings → About now open as their own pages, with a
+  back arrow, instead of expanding in place and burying the rest of the pane.
+  Each one is reached by an "Open" button on its row, and the attributions for
+  bundled third-party material have moved out of "Legal notices" onto a row of
+  their own.
+
 ## [0.1.0-rc.3] - 2026-08-15
 
 A release-candidate rehearsal build, not a supported release. The macOS and
