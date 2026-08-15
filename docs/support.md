@@ -63,6 +63,21 @@ Provider Usage shows what was *spent* on this machine. It never shows a percenta
 an allowance, a remaining balance, or a reset time: a transcript records spend, and a
 denominator would have to be invented.
 
+**Plan limits are a separate thing, from a separate place.** When one of your agents
+has cached its own usage reading on this machine, antiburn reads that file and shows
+the figures your provider stated — a percentage of a five-hour or weekly allowance,
+and when it resets. Those are the provider's numbers, not ours:
+
+- antiburn fetches nothing to get them. The agent fetched them when *it* was last
+  online, and antiburn reads the file it left behind, the same way it reads
+  everything else;
+- every reading is shown with the moment the provider stated it, and a reading older
+  than an hour is marked as such rather than ageing quietly on screen;
+- a figure the provider did not state is shown as unknown, never as zero;
+- they appear above the spend estimates and never replace them. If no agent has
+  cached a reading, the limits section is simply absent and the spend estimates are
+  unchanged.
+
 ## What antiburn stores
 
 antiburn keeps one SQLite database in its own application data directory. Settings →

@@ -341,3 +341,123 @@ pub struct AppInfo {
     /// False in development builds, where the updater plugin is not installed.
     pub updates_supported: bool,
 }
+
+/* -------------------------------------------------------------------------
+ * Live provider usage — the provider's own figures.
+ *
+ * A separate payload from `ProviderUsageSummary` on purpose. That type's
+ * guarantee is that it contains no percentage, allowance, or reset anywhere,
+ * and a test proves it by serializing the whole thing and grepping. Adding a
+ * limit field to it would end that guarantee for the estimate path as well as
+ * the limit path, and the views can layer two payloads perfectly well.
+ * ---------------------------------------------------------------------- */
+
+/// How trustworthy a live reading is, as a word the view can print.
+///
+/// Deliberately the same vocabulary as [`ProviderUsageState`], so a reader who
+/// has learnt "Live" and "Observed" on one surface has learnt them on both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiveUsageSupport {
+    /// The provider stated this allowance. A determinate meter is honest.
+    Live,
+    /// The allowance is modelled rather than stated.
+    Estimated,
+    /// Activity is known; no trustworthy allowance is.
+    Observed,
+    /// An account was found, with nothing quantified.
+    Detected,
+}
+
+/// Whether a reading still describes the present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiveUsageFreshness {
+    Fresh,
+    Stale,
+}
+
+/// One provider-reported allowance.
+///
+/// Every field is either something the provider stated or `null`. Nothing here
+/// is derived, interpolated, or defaulted — in particular `used_percent` is
+/// `null` rather than `0.0` when the provider did not say, because a meter
+/// reading empty and a meter reading unknown are different facts.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageWindow {
+    /// Stable id within the provider: `five-hour`, `seven-day`, `weekly-<model>`.
+    pub id: String,
+    /// `primaryShort`, `primaryLong`, `supplemental`, or the provider's own word.
+    pub role: String,
+    /// `rolling`, `weekly`, `daily`, `monthly`, `billingCycle`, or the provider's own word.
+    pub kind: String,
+    /// The model a scoped window covers, when it covers one.
+    pub scope_model: Option<String>,
+    /// Consumed capacity in `0..=100`. Never remaining.
+    pub used_percent: Option<f64>,
+    /// ISO-8601 start of the current window, when the provider stated one.
+    pub starts_at: Option<String>,
+    /// ISO-8601 reset, when the provider stated one.
+    pub resets_at: Option<String>,
+}
+
+/// One provider account's live usage.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveProviderUsage {
+    /// Canonical provider id, matching [`ProviderUsage::provider`] so the
+    /// views can join the two payloads without a translation table.
+    pub provider: String,
+    pub display_name: String,
+    pub support: LiveUsageSupport,
+    pub freshness: LiveUsageFreshness,
+    /// A short description of where the figures came from, safe to display.
+    /// Carries no account identifier.
+    pub source_label: String,
+    /// ISO-8601 stamp of when the *provider fact* was observed — not when the
+    /// app read it. The difference is the whole point of showing it.
+    pub observed_at: String,
+    pub windows: Vec<LiveUsageWindow>,
+    /// Metered usage beyond the allowance, when the provider reports it.
+    pub extra_usage: Option<LiveExtraUsage>,
+}
+
+/// Metered spend alongside the allowance.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveExtraUsage {
+    /// Whether the account permits this path. `false` differs from unknown.
+    pub enabled: bool,
+    pub used_percent: Option<f64>,
+    pub used: Option<f64>,
+    pub remaining: Option<f64>,
+    pub limit: Option<f64>,
+    /// Currency code for the three amounts above, when they are monetary.
+    pub currency: Option<String>,
+}
+
+/// A source that failed, in terms a reader can act on.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageSourceError {
+    /// The source's stable id.
+    pub source: String,
+    /// `authentication`, `rateLimited`, `schema`, or `unavailable`.
+    pub category: String,
+}
+
+/// Live provider usage, as one snapshot.
+///
+/// An empty `providers` list is the ordinary state — no source configured, or
+/// none with anything to say — and the views render nothing rather than an
+/// empty frame. `errors` is separate so that "nothing found" and "something
+/// broke" never look alike.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageSummary {
+    pub providers: Vec<LiveProviderUsage>,
+    pub errors: Vec<LiveUsageSourceError>,
+    /// ISO-8601 stamp of the moment this snapshot was collected.
+    pub generated_at: String,
+}

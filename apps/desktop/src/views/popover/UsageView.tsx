@@ -5,10 +5,25 @@
 import { ChevronLeft } from 'lucide-react';
 
 import { ProviderGlyph, UsageStateBadge } from '../../components/providerUsage';
+import { LiveUsageWindowRows } from '../../components/providerUsage/LiveUsageWindowRows';
 import { UsageMetricRows } from '../../components/providerUsage/UsageMetricRows';
 import { UsageWindowRows } from '../../components/providerUsage/UsageWindowRows';
 import { ScrollPane } from '../../components/ui/ScrollPane';
-import type { ProviderUsagePayload, ProviderUsageSummaryPayload } from '../../lib/ipc';
+import type {
+  LiveProviderUsagePayload,
+  LiveUsageSummaryPayload,
+  ProviderUsagePayload,
+  ProviderUsageSummaryPayload,
+} from '../../lib/ipc';
+import { EMPTY_LIVE_USAGE } from '../../lib/ipc';
+import {
+  liveAuthNote,
+  liveExtraUsageLabel,
+  liveForProvider,
+  liveFreshnessToneClass,
+  liveSourceNote,
+  liveStalenessNote,
+} from '../../lib/presentation/liveUsage';
 import {
   coverageNote,
   providerWindow,
@@ -21,6 +36,16 @@ import {
 
 export interface UsageViewProps {
   summary: ProviderUsageSummaryPayload;
+  /** The provider's own limit figures, when a source could prove any. */
+  live?: LiveUsageSummaryPayload;
+  /**
+   * The instant countdowns and elapsed markers are measured from. Defaults to
+   * when the shell collected the snapshot, which is both pure — a render must
+   * not read the clock — and more truthful than reading it here would be: the
+   * countdown then agrees with the reading it sits under, instead of drifting
+   * a little further from it on every re-render.
+   */
+  now?: number;
   onBack: () => void;
 }
 
@@ -42,17 +67,31 @@ function sectioned(providers: readonly ProviderUsagePayload[]): {
  * Every provider antiburn can attribute local work to.
  *
  * Two sections — recently used, then everything else detected — with one card
- * per provider: its evidence state, the shared metric block, and its three
- * windows. The whole surface is derived from sessions already on this
- * machine, and the footnote says so in as many words. That sentence is not
- * decoration: a per-provider spend figure is exactly the shape of a bill, and
- * a reader who assumed it *was* one would be wrong twice over — it is an
- * estimate at API rates, and it only covers work this machine can see.
+ * per provider. Each card carries up to two things, in this order and never
+ * the other way round:
+ *
+ * 1. **The provider's own limits**, when a source could prove them: real
+ *    meters against a real allowance, dated with when the provider said it.
+ * 2. **What this machine spent**, always: an on-device estimate at API rates
+ *    over three calendar windows, whose bars are shares of the reader's own
+ *    month and not a meter against anything.
+ *
+ * The order is deliberate and so is the fact that the second half never
+ * moves. A reader who connects a source should find the limits added above
+ * what they already knew, and a reader whose source goes quiet should lose
+ * the top half and keep the bottom — never a view that reshuffles because a
+ * file on disk went stale. The two halves also travel over separate IPC
+ * commands, so the estimate payload's "no percentage, no allowance, no reset"
+ * guarantee survives this feature intact.
  */
-export function UsageView({ summary, onBack }: UsageViewProps) {
+export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: UsageViewProps) {
+  // `|| 0` rather than a fallback clock: with no snapshot there is no live
+  // section to render, so nothing consumes this.
+  const at = now ?? (Date.parse(live.generatedAt) || 0);
   const { recent, rest } = sectioned(summary.providers);
   const coverage = coverageNote(summary.coverageSince, summary.retentionDays);
   const empty = recent.length === 0 && rest.length === 0;
+  const authNote = liveAuthNote(live);
 
   return (
     <div className="flex h-full flex-col">
@@ -73,23 +112,36 @@ export function UsageView({ summary, onBack }: UsageViewProps) {
       </header>
 
       <ScrollPane viewportClassName="px-3 pb-2">
+        {authNote && (
+          <p
+            role="status"
+            className="mb-2 rounded-control bg-system-orange/10 px-3 py-2 type-caption text-system-orange"
+          >
+            {authNote}
+          </p>
+        )}
         {empty ? (
           <p className="px-2 py-6 text-center type-footnote text-label-tertiary">
             No local evidence yet
           </p>
         ) : (
           <>
-            <UsageSection title="Recently used" providers={recent} />
-            <UsageSection title="All detected" providers={rest} />
+            <UsageSection title="Recently used" providers={recent} live={live} now={at} />
+            <UsageSection title="All detected" providers={rest} live={live} now={at} />
           </>
         )}
       </ScrollPane>
 
       <footer className="shrink-0 space-y-1 border-t border-separator px-4 py-2.5">
         <p className="type-caption text-label-tertiary">
-          Local estimates, priced on this device from the sessions antiburn found here. Not a
-          bill, and not your provider&rsquo;s own figure — work done on another machine is not
-          counted.
+          Spend figures are local estimates, priced on this device from the sessions antiburn
+          found here. Not a bill, and not your provider&rsquo;s own figure — work done on
+          another machine is not counted.
+        </p>
+        <p className="type-caption text-label-tertiary">
+          Plan limits are your provider&rsquo;s own figures, read from what your agent last
+          cached on this machine. antiburn fetches nothing; a limit is only as current as the
+          moment shown beside it.
         </p>
         <p className="type-caption text-label-tertiary">
           Each session counts in the window of its most recent activity.
@@ -103,9 +155,13 @@ export function UsageView({ summary, onBack }: UsageViewProps) {
 function UsageSection({
   title,
   providers,
+  live,
+  now,
 }: {
   title: string;
   providers: readonly ProviderUsagePayload[];
+  live: LiveUsageSummaryPayload;
+  now: number;
 }) {
   if (providers.length === 0) return null;
   return (
@@ -115,14 +171,27 @@ function UsageSection({
       </h2>
       <ul className="space-y-2">
         {providers.map((provider) => (
-          <ProviderCard key={provider.provider} provider={provider} />
+          <ProviderCard
+            key={provider.provider}
+            provider={provider}
+            live={liveForProvider(live, provider.provider)}
+            now={now}
+          />
         ))}
       </ul>
     </section>
   );
 }
 
-function ProviderCard({ provider }: { provider: ProviderUsagePayload }) {
+function ProviderCard({
+  provider,
+  live,
+  now,
+}: {
+  provider: ProviderUsagePayload;
+  live: LiveProviderUsagePayload | null;
+  now: number;
+}) {
   const stale = stalenessNote(provider);
   const updated = updatedNote(provider);
   const usedToday = windowHasEvidence(providerWindow(provider, 'today'));
@@ -153,6 +222,8 @@ function ProviderCard({ provider }: { provider: ProviderUsagePayload }) {
         <UsageStateBadge state={provider.state} className="mt-px" />
       </div>
 
+      {live && <PlanLimits live={live} now={now} />}
+
       <UsageMetricRows provider={provider} />
 
       <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
@@ -161,5 +232,36 @@ function ProviderCard({ provider }: { provider: ProviderUsagePayload }) {
         {usageStateDescription(provider.state)}
       </p>
     </li>
+  );
+}
+
+/**
+ * The provider's own limits, above the local estimates.
+ *
+ * Headed and set apart on purpose. These figures come from somewhere else
+ * entirely — the provider said them, an agent cached them, and they are as old
+ * as that cache — and the reader has to be able to tell them apart from the
+ * estimate rows below at a glance, not by reading the labels.
+ */
+function PlanLimits({ live, now }: { live: LiveProviderUsagePayload; now: number }) {
+  const staleness = liveStalenessNote(live);
+  const extra = liveExtraUsageLabel(live);
+
+  return (
+    <section aria-label={`${live.displayName} plan limits`} className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <h4 className="type-caption font-medium tracking-wide uppercase text-label-tertiary">
+          Plan limits
+        </h4>
+        <span className={`type-caption ${liveFreshnessToneClass(live.freshness)}`}>
+          {liveSourceNote(live)}
+        </span>
+      </div>
+
+      <LiveUsageWindowRows provider={live} now={now} />
+
+      {extra && <p className="type-caption text-label-tertiary">{extra}</p>}
+      {staleness && <p className="type-caption text-system-orange">{staleness}</p>}
+    </section>
   );
 }

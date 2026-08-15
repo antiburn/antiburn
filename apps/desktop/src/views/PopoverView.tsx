@@ -21,7 +21,9 @@ import {
   cancelScan,
   defaultScanRoots,
   DEFAULT_SETTINGS,
+  EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
+  getLiveUsage,
   getProviderUsage,
   getScanStatus,
   getSettings,
@@ -43,6 +45,7 @@ import {
   setSettings,
   withPopoverHold,
   type AppSettings,
+  type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
   type ScanStatus,
   type StorageHealthPayload,
@@ -130,6 +133,12 @@ export function PopoverView() {
    * a not-yet-loaded one look identical, and one of them is a lie.
    */
   const [usage, setUsage] = useState<ProviderUsageSummaryPayload | null>(null);
+  /**
+   * The provider's own limit figures. Unlike `usage` this starts at the empty
+   * summary rather than null: the limit half is genuinely optional, so "no
+   * source has anything" is a real state and not a loading one.
+   */
+  const [liveUsage, setLiveUsage] = useState<LiveUsageSummaryPayload>(EMPTY_LIVE_USAGE);
   /** Whether the full Usage view is showing over the activity list. */
   const [showUsage, setShowUsage] = useState(false);
   /** Whether the local database is still accepting writes. */
@@ -154,7 +163,15 @@ export function PopoverView() {
   }, []);
 
   const refreshUsage = useCallback(async () => {
-    setUsage(await getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE));
+    // Two commands, refreshed together and settled independently: the limit
+    // half is allowed to be missing without the spend half waiting on it, and
+    // a source that throws leaves the estimate surface untouched.
+    const [spend, limits] = await Promise.all([
+      getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
+      getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+    ]);
+    setUsage(spend);
+    setLiveUsage(limits);
   }, []);
 
   const refreshRepositoryList = useCallback(async () => {
@@ -457,7 +474,9 @@ export function PopoverView() {
     // Usage sits over the list rather than in the session stack: it is a second
     // way of reading the same activity, not a place a session leads to.
     if (showUsage && usage) {
-      return <UsageView summary={usage} onBack={() => setShowUsage(false)} />;
+      return (
+        <UsageView summary={usage} live={liveUsage} onBack={() => setShowUsage(false)} />
+      );
     }
 
     if (current) {

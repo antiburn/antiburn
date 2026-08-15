@@ -9,9 +9,14 @@
 //! module holds the shape of that answer ([`LiveUsageSnapshot`]) and the
 //! engine that decides when a crossing deserves a notification. The engine is
 //! adapted from the private app under D-023 (allowlist rule
-//! `usage-milestone-engine`); the source that fills it is the per-feature
-//! online opt-in, and until one is connected the engine simply never sees a
-//! window.
+//! `usage-milestone-engine`).
+//!
+//! What fills it is [`super::sources`], narrowed by
+//! `usage_alerts::milestone_snapshot` down to the two window classes and the
+//! stated percentage this engine deals in. That narrowing is deliberate: a
+//! window with no stated reset never arrives here at all, because the reset
+//! epoch is half of a window's identity and a crossing that cannot re-arm
+//! would fire once and then be silent for good.
 //!
 //! # Delivery semantics, in order of importance
 //!
@@ -38,10 +43,10 @@ use crate::store::Milestones;
 
 /// The window classes milestones are tracked for. Mirrors the two milestone
 /// preference rows: a short primary window and a weekly one.
-// Constructed only by live-source implementations, of which this build ships
-// none (deviations D-20). The allow, not the enum, is what the first source
-// deletes.
-#[allow(dead_code)]
+///
+/// Two, not more. A per-model weekly limit is a weekly limit as far as a
+/// notification is concerned — inventing a third preference row for it would
+/// ask the reader a question they have no way to answer differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageWindowClass {
     Short,
@@ -77,17 +82,6 @@ pub struct LiveUsageSnapshot {
     /// False when the fetch is stale; stale numbers neither prime nor fire.
     pub fresh: bool,
     pub windows: Vec<LiveUsageWindow>,
-}
-
-/// A source of live usage snapshots.
-///
-/// Implementations call a provider endpoint with a credential the reader
-/// supplied, under the D-023 network policy: per-feature opt-in, default off,
-/// never a private-app endpoint. No implementation ships in this build — see
-/// the deviations register — so the engine below runs against nothing until
-/// one lands.
-pub trait LiveUsageSource: Send + Sync {
-    fn fetch(&self) -> Vec<LiveUsageSnapshot>;
 }
 
 /// What the engine remembers between evaluations. In-memory by design; see

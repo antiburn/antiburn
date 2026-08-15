@@ -6,6 +6,8 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
+  LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
   ProviderUsagePayload,
   ProviderUsageSummaryPayload,
   ProviderUsageWindowPayload,
@@ -147,5 +149,175 @@ describe('UsageWindowRows shares', () => {
     // Fixture: today $2.50 of this month's $8.00 → 31% (rounded).
     expect(within(card).getByTestId('usage-share-today')).toHaveStyle({ width: '31%' });
     expect(within(card).getByTestId('usage-share-month')).toHaveStyle({ width: '100%' });
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * The layered limit half
+ * ---------------------------------------------------------------------- */
+
+const NOW = Date.parse('2027-01-15T12:00:00Z');
+
+function liveWindow(
+  overrides: Partial<LiveUsageWindowPayload> = {},
+): LiveUsageWindowPayload {
+  return {
+    id: 'five-hour',
+    role: 'primaryShort',
+    kind: 'rolling',
+    scopeModel: null,
+    usedPercent: 81,
+    startsAt: '2027-01-15T09:30:00Z',
+    resetsAt: '2027-01-15T14:30:00Z',
+    ...overrides,
+  };
+}
+
+function live(
+  overrides: Partial<LiveUsageSummaryPayload> = {},
+): LiveUsageSummaryPayload {
+  return {
+    providers: [
+      {
+        provider: 'anthropic',
+        displayName: 'Anthropic',
+        support: 'live',
+        freshness: 'fresh',
+        sourceLabel: "Claude's cached usage",
+        observedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        windows: [
+          liveWindow(),
+          liveWindow({
+            id: 'seven-day',
+            role: 'primaryLong',
+            kind: 'weekly',
+            usedPercent: 65,
+            startsAt: '2027-01-12T18:00:00Z',
+            resetsAt: '2027-01-19T18:00:00Z',
+          }),
+        ],
+        extraUsage: null,
+      },
+    ],
+    errors: [],
+    generatedAt: '2027-01-15T12:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('UsageView — plan limits layered over local estimates', () => {
+  it('puts the provider’s limits above the spend estimates on the same card', () => {
+    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />);
+
+    const card = screen.getByText('Anthropic').closest('li')!;
+    const limits = within(card).getByRole('region', { name: 'Anthropic plan limits' });
+    expect(within(limits).getByText('5-hour limit')).toBeInTheDocument();
+    expect(within(limits).getByText('81% used')).toBeInTheDocument();
+    expect(within(limits).getByText('Weekly limit')).toBeInTheDocument();
+    expect(within(limits).getByText('Resets in 2h 30m')).toBeInTheDocument();
+
+    // The estimate half is still there and unchanged: a reader who connects a
+    // source gains the limits, they do not trade one surface for the other.
+    expect(within(card).getByText('Last 7 days')).toBeInTheDocument();
+    expect(within(card).getByTestId('usage-share-today')).toBeInTheDocument();
+
+    // And the limits come first in the document, not after.
+    expect(
+      limits.compareDocumentPosition(within(card).getByText('Last 7 days')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('marks how far through the period the clock has travelled', () => {
+    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />);
+
+    // 09:30 → 14:30 with the clock at 12:00 is half the period gone against
+    // 81% of the allowance: the whole point of showing both.
+    const bar = screen.getByRole('progressbar', { name: '5-hour limit' });
+    expect(bar).toHaveAttribute('aria-valuenow', '81');
+    expect(bar).toHaveAttribute('aria-valuetext', '81% used; 50% of the period elapsed');
+    expect(within(bar).getByTestId('live-usage-elapsed-five-hour')).toHaveStyle({ left: '50%' });
+  });
+
+  it('renders an unknown percentage as indeterminate rather than empty', () => {
+    const unknown = live();
+    unknown.providers[0].windows = [liveWindow({ usedPercent: null })];
+    render(<UsageView summary={summary()} live={unknown} now={NOW} onBack={vi.fn()} />);
+
+    expect(screen.getByText('Unknown')).toBeInTheDocument();
+    const bar = screen.getByRole('progressbar', { name: '5-hour limit' });
+    // No `aria-valuenow` at all: a progressbar without one is announced as
+    // indeterminate, which is the truth. A zero would be a claim.
+    expect(bar).not.toHaveAttribute('aria-valuenow');
+    expect(screen.queryByTestId('live-usage-fill-five-hour')).not.toBeInTheDocument();
+  });
+
+  it('omits the marker for a window whose period is not stated or implied', () => {
+    const unbounded = live();
+    // A weekly window with no start: its boundary is the provider's own, and
+    // "seven days before the reset" would be a guess dressed as a measurement.
+    unbounded.providers[0].windows = [
+      liveWindow({ id: 'seven-day', role: 'primaryLong', kind: 'weekly', startsAt: null }),
+    ];
+    render(<UsageView summary={summary()} live={unbounded} now={NOW} onBack={vi.fn()} />);
+
+    expect(screen.queryByTestId('live-usage-elapsed-seven-day')).not.toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Weekly limit' })).toHaveAttribute(
+      'aria-valuetext',
+      '81% used',
+    );
+  });
+
+  it('says a reading is stale without removing it', () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({
+          providers: [{ ...live().providers[0], freshness: 'stale' }],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/may have moved since/)).toBeInTheDocument();
+    // Still the best figures anyone has, so they stay on screen.
+    expect(screen.getByText('81% used')).toBeInTheDocument();
+  });
+
+  it('shows nothing at all where no source could prove a limit', () => {
+    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />);
+
+    // Anthropic has a live reading; OpenAI does not, and gets no empty frame.
+    const openai = screen.getByText('OpenAI').closest('li')!;
+    expect(within(openai).queryByRole('region', { name: /plan limits/ })).not.toBeInTheDocument();
+    expect(within(openai).getByText('Last 7 days')).toBeInTheDocument();
+  });
+
+  it('falls back to the estimate surface alone when no live payload is given', () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} />);
+
+    expect(screen.queryByRole('region', { name: /plan limits/ })).not.toBeInTheDocument();
+    // One per provider card, and both still there.
+    expect(screen.getAllByText('Last 7 days')).toHaveLength(2);
+  });
+
+  it('banners a signed-out agent, and only that failure', () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({ errors: [{ source: 'claude-local-cache', category: 'authentication' }] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(/sign in again/i);
+  });
+
+  it('separates the two halves in the footer, so neither claim covers the other', () => {
+    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />);
+
+    expect(screen.getByText(/Spend figures are local estimates/)).toBeInTheDocument();
+    expect(screen.getByText(/antiburn fetches nothing/)).toBeInTheDocument();
   });
 });

@@ -274,8 +274,12 @@ pub struct Milestones {
 
 impl Default for Milestones {
     fn default() -> Self {
-        // All three on: a milestone only speaks when the opt-in live source
-        // exists at all, so the default costs a fresh install nothing.
+        // All three on. That default was chosen when nothing could fire it,
+        // and it is now the reason the milestone pass is still gated on
+        // `live_usage_enabled`: a source exists, so lifting the gate before
+        // the opt-in has a visible control would start interrupting readers
+        // on the strength of a preference they were never shown. Whichever
+        // moves first, these two decisions move together.
         Self {
             at50: true,
             at75: true,

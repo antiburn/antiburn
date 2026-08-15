@@ -24,6 +24,25 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- **Your plan's limits, on the Usage screen.** When one of your agents has
+  already fetched its own usage, antiburn now reads that and shows what your
+  provider actually said: how much of your 5-hour and weekly allowances is
+  gone, any per-model weekly limit, and when each one resets. A second mark on
+  each bar shows how far through the period the clock has travelled, so 60%
+  used with most of the window left reads differently from 60% used with an
+  hour to go.
+
+  antiburn still fetches nothing. These are numbers your agent collected while
+  it was online and left on this machine, so each one is shown with the moment
+  your provider stated it, and a reading more than an hour old says so rather
+  than ageing quietly on screen. A figure your provider did not give is shown
+  as unknown, never as zero.
+
+  Your local spend estimates are unchanged and sit directly below, as before.
+  If no agent has cached a reading, the limits section is simply not there.
+
 ## [0.1.0-rc.3] - 2026-08-15
 
 A release-candidate rehearsal build, not a supported release. The macOS and

@@ -22,11 +22,19 @@
 //!
 //! # Milestones
 //!
-//! The milestone engine ([`crate::provider_usage::live`]) evaluates whatever
-//! the live usage source reports. No source ships in this build — the opt-in
-//! exists, the engine is tested, and the connection is a recorded follow-up
-//! (`docs/deviations.md`) — so the loop below evaluates an empty snapshot
-//! list, which the engine answers with silence.
+//! The milestone engine ([`crate::provider_usage::live::milestones`])
+//! evaluates whatever the registered sources report — and those now report
+//! something: the Usage surface shows a provider's own limits, read from what
+//! an agent cached on this machine.
+//!
+//! Milestone *notifications* nonetheless stay silent, and deliberately. They
+//! are still gated on `live_usage_enabled`, which defaults off and has no
+//! control yet, because the milestone preferences default to all three
+//! thresholds on — a default chosen when nothing could ever fire. Letting them
+//! fire now would start interrupting every reader with an agent installed, on
+//! the strength of a preference nobody was ever asked about. The gate lifts
+//! when the opt-in gets a control the reader can actually see
+//! (`docs/deviations.md`, D-20).
 
 use std::time::Duration;
 
@@ -73,15 +81,23 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     })
 }
 
-/// The registered live usage source and the milestone engine's ledger.
+/// The registered live usage sources and the milestone engine's ledger.
 ///
-/// `source` is `None` in this build — no provider connection ships yet
-/// (deviations register D-20) — so the milestone pass below is typed, wired,
-/// and silent. Registering the first source is the follow-up's one line.
-#[derive(Default)]
+/// Held as app state so both the milestone pass below and
+/// [`crate::commands::get_live_usage`] read the same registry — one place
+/// that knows what this build can prove.
 pub struct LiveUsage {
-    pub source: Option<Box<dyn provider_usage::live::LiveUsageSource>>,
+    pub sources: Vec<Box<dyn provider_usage::live::LiveUsageSource>>,
     ledger: std::sync::Mutex<provider_usage::live::MilestoneLedger>,
+}
+
+impl Default for LiveUsage {
+    fn default() -> LiveUsage {
+        LiveUsage {
+            sources: provider_usage::live::sources::registered(),
+            ledger: std::sync::Mutex::default(),
+        }
+    }
 }
 
 fn run_pass(app: &AppHandle) {
@@ -135,10 +151,12 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     let Some(live) = app.try_state::<LiveUsage>() else {
         return;
     };
-    let Some(source) = live.source.as_ref() else {
-        return;
-    };
-    let snapshots = source.fetch();
+    let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
+        provider_usage::live::sources::collect(&live.sources)
+            .snapshots
+            .iter()
+            .map(milestone_snapshot)
+            .collect();
     let mut ledger = live
         .ledger
         .lock()
@@ -150,6 +168,60 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
         settings.milestones_weekly,
     ) {
         let _ = crate::notifications::note_usage_milestone(app, &content);
+    }
+}
+
+/// Narrow a collected snapshot down to what the milestone engine needs.
+///
+/// The engine deals in two window classes and an integer percentage; the
+/// collected model carries more than that, and most of the extra is exactly
+/// what a *notification* should not try to say. Three rules do the narrowing:
+///
+/// - A window with no stated reset is dropped. The reset epoch is part of the
+///   window's identity, and without it a crossing could never re-arm — the
+///   notification would fire once and then go quiet forever.
+/// - A supplemental weekly window (a per-model limit) counts as weekly, so it
+///   follows the weekly preference row rather than inventing a third one.
+/// - Anything else — a daily limit, a provider-specific bucket — is dropped
+///   rather than forced into the nearer of two classes it does not belong to.
+fn milestone_snapshot(
+    snapshot: &provider_usage::live::ProviderUsageSnapshot,
+) -> provider_usage::live::milestones::LiveUsageSnapshot {
+    use provider_usage::live::milestones::{LiveUsageSnapshot, LiveUsageWindow, UsageWindowClass};
+    use provider_usage::live::{Freshness, UsageScope, UsageWindowKind, WindowRole};
+
+    LiveUsageSnapshot {
+        provider: snapshot.provider.to_string(),
+        account: snapshot.account.clone(),
+        fresh: snapshot.source.freshness == Freshness::Fresh,
+        windows: snapshot
+            .windows
+            .iter()
+            .filter_map(|window| {
+                let class = match (&window.role, &window.kind) {
+                    (WindowRole::PrimaryShort, _) => UsageWindowClass::Short,
+                    (WindowRole::PrimaryLong, _)
+                    | (WindowRole::Supplemental, UsageWindowKind::Weekly) => {
+                        UsageWindowClass::Weekly
+                    }
+                    _ => return None,
+                };
+                Some(LiveUsageWindow {
+                    id: window.id.clone(),
+                    class,
+                    label: match (&class, &window.scope) {
+                        (UsageWindowClass::Short, _) => "5-hour limit".to_string(),
+                        (UsageWindowClass::Weekly, UsageScope::Model(model)) => {
+                            format!("{model} weekly limit")
+                        }
+                        (UsageWindowClass::Weekly, _) => "weekly limit".to_string(),
+                    },
+                    used_percent: window.used_percent?,
+                    resets_at_epoch: window.resets_at?.unix_timestamp(),
+                    authoritative: window.authoritative,
+                })
+            })
+            .collect(),
     }
 }
 

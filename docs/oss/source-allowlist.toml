@@ -804,3 +804,32 @@ notes = [
   "Do not copy the private snapshot collectors, pi_api client, loopback/local-API probes, credential capture, persistence contracts, or telemetry.",
   "Strip Cadence names; add MPL-2.0 headers.",
 ]
+
+[[rule]]
+id = "usage-limit-domain"
+source_paths = [
+  "desktop/src-tauri/crates/provider-usage/src/normalize.rs",
+  "desktop/src-tauri/crates/provider-usage/src/support.rs",
+  "desktop/src-tauri/crates/provider-usage/src/probe.rs",
+  "desktop/src-tauri/crates/provider-usage/src/metrics.rs",
+  "desktop/src-tauri/crates/provider-usage/src/model.rs",
+  "desktop/src-tauri/crates/provider-usage/src/providers/anthropic.rs",
+  "desktop/src-tauri/crates/provider-usage/src/providers/mod.rs",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/provider_usage/live/"
+provenance = "Cadence company-authored usage-limit domain model, normalization, quality semantics, forecasting, and Anthropic quota parsers; D-023 maintainer decision authorizes the domain-slice port; reviewed at private commit a2c0d12ae522458aa7beafb6d743c3a2f0a54988"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract the pure domain only: percentage normalization with its fail-closed range checks, the Confidence/Freshness/SupportTier quality semantics, the SchemaReason and ProviderUsageError taxonomy, the sample-based forecasting arithmetic, the window/scope/unit/supplemental value types, and the Anthropic quota parsers.",
+  "From model.rs take UsageWindow, WindowRole, UsageWindowKind, UsageScope, UsageUnit, CreditBalance, SupplementalUsage, and the snapshot shape. Do not take AuthMode, CredentialSource, the opaque-account-key contract, or the confirmed-limit types.",
+  "From providers/anthropic.rs take parse_oauth_usage, parse_oauth_window, parse_extra, window_semantics, model_slug, and the /usage text parser with its sanitizer and reset parsing. Do not take parse_attributions, parse_status_line, or any pricing-signal coupling.",
+  "From providers/mod.rs take only parse_transport_error and the small JSON accessors it shares. Do not take SnapshotContext's account plumbing or any sibling provider module.",
+  "Do not copy probe.rs's ProviderUsageProbe trait or ProviderAccountContext: the public app fetches through its own LiveUsageSource seam and carries no credential-isolating probe registry.",
+  "Do not copy metrics.rs's callers, only the arithmetic; the public app has no upload, account-proving, or telemetry inputs to gate a forecast on.",
+  "Do not copy anomaly.rs: the public app already ships its own spend-anomaly rule in usage_alerts.rs, recorded in the deviations register as D-7.",
+  "Do not copy identity.rs: the public app uploads nothing, so no opaque account key is needed and the provider's own local account id may key the milestone ledger.",
+  "Strip Cadence names; add MPL-2.0 headers; keep every fail-closed branch as an error rather than a clamp.",
+]

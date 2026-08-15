@@ -39,8 +39,10 @@
 //! release builds only, so a development run performs no network requests at
 //! all. Notifications are antiburn's own window, fed by a local event.
 //! Online features are per-feature opt-in under D-023, and none ships
-//! connected (`docs/deviations.md`, D-20). The webview side is held to the
-//! same rule by a test (`apps/desktop/tests/offline.test.ts`).
+//! connected (`docs/deviations.md`, D-20) — the provider limit figures on the
+//! Usage surface are read from a file an agent already wrote, not fetched.
+//! The webview side is held to the same rule by a test
+//! (`apps/desktop/tests/offline.test.ts`).
 
 mod agents;
 mod analytics;
@@ -104,6 +106,7 @@ pub fn run() {
             commands::end_popover_hold,
             commands::export_session,
             commands::get_provider_usage,
+            commands::get_live_usage,
             commands::get_scan_status,
             commands::get_session_analytics,
             commands::get_settings,
@@ -174,8 +177,10 @@ pub fn run() {
             // is deferred a little so the app has a valid display context —
             // the same reasoning as the popover's own deferred build.
             nudges::init(app.handle())?;
-            // The live-usage slot: empty in this build (deviations D-20), so
-            // the milestone pass idles until a source is registered here.
+            // The live-usage registry: the sources that can prove a
+            // provider's own limit figures, and the milestone ledger they
+            // feed. Registered before the schedulers so the first pass sees
+            // a populated registry rather than an empty one.
             app.manage(usage_alerts::LiveUsage::default());
             {
                 let handle = app.handle().clone();

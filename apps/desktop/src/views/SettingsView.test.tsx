@@ -609,7 +609,7 @@ describe('SettingsView — notifications', () => {
       screen.getByRole('group', { name: 'Weekly milestone thresholds' }),
     ).toBeInTheDocument();
     // The milestone rows say plainly that no live source ships yet (D-20).
-    expect(screen.getByText(/does not include yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/until the live-usage opt-in gets a control/i)).toBeInTheDocument();
   });
 
   it('shows a test notification through the shell', async () => {

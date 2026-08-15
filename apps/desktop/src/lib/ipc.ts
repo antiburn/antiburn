@@ -261,6 +261,94 @@ export interface ProviderUsageSummaryPayload {
   coverageSince: string;
 }
 
+/* -------------------------------------------------------------------------
+ * Live provider usage — the provider's own limit figures.
+ *
+ * A second payload rather than fields on `ProviderUsageSummaryPayload`, and
+ * for the same reason on this side as on the shell's: that type's guarantee is
+ * that it carries no percentage, allowance, or reset, and a test proves it.
+ * The views layer the two.
+ *
+ * Still nothing is fetched here. These figures were fetched by the *agent*,
+ * which cached them on this machine; the shell reads that file and this module
+ * receives it over IPC like everything else. See `tests/offline.test.ts`.
+ * ---------------------------------------------------------------------- */
+
+/** How trustworthy a live reading is. Mirrors Rust `LiveUsageSupport`. */
+export type LiveUsageSupport = 'live' | 'estimated' | 'observed' | 'detected';
+
+/** Whether a live reading still describes now. */
+export type LiveUsageFreshness = 'fresh' | 'stale';
+
+/**
+ * One provider-reported allowance.
+ *
+ * Every field is either something the provider stated or null. In particular
+ * `usedPercent` is null — never 0 — when the provider did not say, because a
+ * meter reading empty and a meter reading unknown are different facts and the
+ * views render them differently.
+ */
+export interface LiveUsageWindowPayload {
+  /** `five-hour`, `seven-day`, `weekly-<model>`, or the provider's own name. */
+  id: string;
+  /** `primaryShort` | `primaryLong` | `supplemental` | the provider's word. */
+  role: string;
+  /** `rolling` | `weekly` | `daily` | `monthly` | `billingCycle` | provider's. */
+  kind: string;
+  /** The model a scoped window covers, when it covers one. */
+  scopeModel: string | null;
+  /** Consumed capacity, 0–100. Never remaining. */
+  usedPercent: number | null;
+  startsAt: string | null;
+  resetsAt: string | null;
+}
+
+/** Metered spend alongside the allowance. */
+export interface LiveExtraUsagePayload {
+  /** Whether the account permits this path. `false` differs from unknown. */
+  enabled: boolean;
+  usedPercent: number | null;
+  used: number | null;
+  remaining: number | null;
+  limit: number | null;
+  currency: string | null;
+}
+
+/** One provider account's live usage. Mirrors Rust `LiveProviderUsage`. */
+export interface LiveProviderUsagePayload {
+  /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
+  provider: string;
+  displayName: string;
+  support: LiveUsageSupport;
+  freshness: LiveUsageFreshness;
+  /** Where the figures came from. Safe to display; carries no account id. */
+  sourceLabel: string;
+  /** When the *provider fact* was observed — not when the app read it. */
+  observedAt: string;
+  windows: LiveUsageWindowPayload[];
+  extraUsage: LiveExtraUsagePayload | null;
+}
+
+/** A source that failed, in terms a reader can act on. */
+export interface LiveUsageSourceErrorPayload {
+  source: string;
+  /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
+  category: string;
+}
+
+/**
+ * Live provider usage as one snapshot. Mirrors Rust `LiveUsageSummary`.
+ *
+ * An empty `providers` list is the ordinary state and the views render
+ * nothing. `errors` is separate so "nothing found" and "something broke" never
+ * look alike.
+ */
+export interface LiveUsageSummaryPayload {
+  providers: LiveProviderUsagePayload[];
+  errors: LiveUsageSourceErrorPayload[];
+  generatedAt: string;
+}
+
 /** One repository row. Mirrors Rust `RepositoryItem`. */
 export interface RepositoryItemPayload {
   key: string;
@@ -619,6 +707,28 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
   generatedAt: '',
   retentionDays: 0,
   coverageSince: '',
+};
+
+/**
+ * The provider's own limit figures, when a registered source can prove them.
+ *
+ * No offset travels with this one: a rolling five-hour window and a weekly
+ * reset are the provider's own boundaries, stated as absolute instants, and
+ * the reader's calendar has nothing to do with either.
+ */
+export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
+  if (!hasShell()) return EMPTY_LIVE_USAGE;
+  // Coerced rather than passed through: a shell that answered with nothing is
+  // the same fact as a shell with no source, and the views should not each
+  // carry a null branch for a state that has a perfectly good empty value.
+  return (await invoke<LiveUsageSummaryPayload | null>('get_live_usage')) ?? EMPTY_LIVE_USAGE;
+}
+
+/** What live usage looks like with no source able to say anything. */
+export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
+  providers: [],
+  errors: [],
+  generatedAt: '',
 };
 
 /** Run a scan now, unless one is already in flight. */

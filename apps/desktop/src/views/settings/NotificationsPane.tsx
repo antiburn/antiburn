@@ -184,7 +184,7 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
           />
           <Row
             label="5-hour milestones"
-            description="Notify once as each selected level of a provider's 5-hour limit is crossed. Needs a live usage connection, which this build does not include yet — the choice is kept for when it does."
+            description="Notify once as each selected level of a provider's 5-hour limit is crossed. Popover → Usage already shows those limits when an agent has cached them; these notifications stay silent until the live-usage opt-in gets a control, so nothing fires on a preference you were never shown."
             trailing={
               <MilestonePills
                 value={settings.milestones5h}

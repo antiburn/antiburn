@@ -25,9 +25,9 @@ use tauri_plugin_opener::OpenerExt;
 use crate::agents::kind_from_slug;
 use crate::analytics;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, OrchestrationStatus, ProviderUsageSummary,
-    RepositoryItem, ScanStatus, SessionAnalytics, SessionIdentity, SessionRelation,
-    SessionRelations, SubagentMember,
+    ActivityEntry, AgentScanState, AppInfo, LiveUsageSummary, OrchestrationStatus,
+    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics, SessionIdentity,
+    SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
 use crate::popover;
@@ -358,6 +358,32 @@ pub fn get_provider_usage(
     let since = provider_usage::lookback_start(now, offset);
     let evidence = app.state::<Store>().usage_evidence(since).map_err(fail)?;
     Ok(provider_usage::summarize(&evidence, now, offset))
+}
+
+/// The provider's own limit figures, when a registered source can prove them.
+///
+/// Deliberately a second command rather than a field on
+/// [`get_provider_usage`]: that payload's guarantee is that it carries no
+/// percentage, allowance, or reset anywhere, and a test proves it by
+/// serializing the whole thing. Keeping the two apart means a limit surface
+/// can exist without weakening the estimate surface's contract, and the views
+/// layer them.
+///
+/// An empty summary is the ordinary answer — no source with anything to say —
+/// and is not an error. Sources that *failed* report separately, so "nothing
+/// found" and "something broke" never look alike on screen.
+#[tauri::command]
+pub fn get_live_usage(app: tauri::AppHandle) -> CommandResult<LiveUsageSummary> {
+    let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() else {
+        return Ok(LiveUsageSummary {
+            generated_at: crate::store::iso_from_epoch(Some(scan::unix_now())),
+            ..LiveUsageSummary::default()
+        });
+    };
+    Ok(provider_usage::live::summarize(
+        &live.sources,
+        scan::unix_now(),
+    ))
 }
 
 /* -------------------------------------------------------------------------
