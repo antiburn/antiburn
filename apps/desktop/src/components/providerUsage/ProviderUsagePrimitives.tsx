@@ -11,9 +11,9 @@ import {
   siMistralai,
   siOpenrouter,
   siWindsurf,
-  type SimpleIcon,
 } from 'simple-icons';
 
+import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from '../../lib/brandMarks';
 import type { ProviderUsageState } from '../../lib/ipc';
 import {
   providerInitial,
@@ -40,26 +40,29 @@ import {
  * that two marks mean one vendor. Cursor, Windsurf, and GitHub Copilot align
  * with `lib/agentIcon`'s registry for the same reason.
  *
- * Two absences are deliberate rather than pending:
+ * OpenAI follows that rule rather than the package: `simple-icons` carries no
+ * OpenAI mark — its nearest entry is `siOpenaigym`, a different product — so
+ * the mark comes from `lib/brandMarks`, the same one Codex rows carry.
  *
- * - **OpenAI.** The package carries no OpenAI mark; its nearest entry is
- *   `siOpenaigym`, which belongs to a different product. Wearing it would be
- *   the same mistake D-18 already refuses for Amp, where the package's `AMP`
- *   is Google's web framework. OpenAI keeps its letter.
- * - **xAI.** `siX` is the social network, not the model provider.
+ * One absence is deliberate rather than pending:
+ *
+ * - **xAI.** `siX` is the social network, not the model provider, and wearing
+ *   it would be the same mistake D-18 already refuses for Amp, where the
+ *   package's `AMP` is Google's web framework. xAI keeps its letter.
  *
  * Marks render in `currentColor` so the set reads as one in both themes, and
  * the use is nominative: identifying whose allowance a figure describes.
  */
-const PROVIDER_MARKS: Record<string, SimpleIcon> = {
-  anthropic: siClaude,
-  github: siGithubcopilot,
-  google: siGooglegemini,
-  cursor: siCursor,
-  windsurf: siWindsurf,
-  openrouter: siOpenrouter,
-  deepseek: siDeepseek,
-  mistral: siMistralai,
+const PROVIDER_MARKS: Record<string, BrandMark> = {
+  anthropic: fromSimpleIcons(siClaude),
+  openai: OPENAI_MARK,
+  github: fromSimpleIcons(siGithubcopilot),
+  google: fromSimpleIcons(siGooglegemini),
+  cursor: fromSimpleIcons(siCursor),
+  windsurf: fromSimpleIcons(siWindsurf),
+  openrouter: fromSimpleIcons(siOpenrouter),
+  deepseek: fromSimpleIcons(siDeepseek),
+  mistral: fromSimpleIcons(siMistralai),
 };
 
 export interface ProviderGlyphProps {
@@ -89,7 +92,7 @@ export function ProviderGlyph({
     return (
       <svg
         aria-hidden="true"
-        viewBox="0 0 24 24"
+        viewBox={mark.viewBox}
         width={size}
         height={size}
         fill="currentColor"
@@ -113,8 +116,8 @@ export function ProviderGlyph({
 }
 
 /** The brand mark for a provider, when one exists. Used by the ring. */
-export function providerMarkPath(provider: string): string | undefined {
-  return PROVIDER_MARKS[provider]?.path;
+export function providerMark(provider: string): BrandMark | undefined {
+  return PROVIDER_MARKS[provider];
 }
 
 export interface UsageStateBadgeProps {

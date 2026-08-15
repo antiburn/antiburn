@@ -2,6 +2,32 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import type { BrandMark } from '../../lib/brandMarks';
+
+/**
+ * How wide a mark is drawn, in the ring's 32-unit units.
+ *
+ * The track and arc occupy the outer 2.5 units of a radius-13 circle, leaving
+ * about 23 units of clear interior. 16.8 sits inside that with room to spare —
+ * a mark that fills the interior edge-to-edge reads as crowding the arc rather
+ * than sitting in it.
+ */
+const MARK_EXTENT = 16.8;
+
+/**
+ * Centre a mark in the ring's 32-unit box at {@link MARK_EXTENT}.
+ *
+ * A mark's own box is whatever its source draws in — `simple-icons` uses 24,
+ * other sources do not — so the scale is derived from its `viewBox` rather
+ * than assumed. Non-square boxes fit on their longer edge, so nothing is
+ * stretched and nothing overflows.
+ */
+function markTransform(mark: BrandMark): string {
+  const [, , w = 24, h = 24] = mark.viewBox.split(' ').map(Number);
+  const scale = MARK_EXTENT / Math.max(w, h);
+  return `translate(16 16) scale(${scale}) translate(${-w / 2} ${-h / 2})`;
+}
+
 /**
  * A provider's nearest limit, as a ring.
  *
@@ -24,7 +50,7 @@ export function UsageRing({
   percent,
   estimated = false,
   glyph,
-  markPath,
+  mark,
   size = 16,
   className = '',
 }: {
@@ -41,8 +67,8 @@ export function UsageRing({
    * is a worse trade than the ring is worth.
    */
   glyph?: string;
-  /** A `simple-icons` path, preferred over `glyph` when supplied. */
-  markPath?: string | undefined;
+  /** A brand mark, preferred over `glyph` when supplied. */
+  mark?: BrandMark | undefined;
   size?: number;
   className?: string;
 }) {
@@ -101,20 +127,18 @@ export function UsageRing({
           data-testid="usage-ring-estimated"
         />
       )}
-      {markPath && (
-        // Scaled from the mark's own 24-unit box into the ring's 32-unit one
-        // and centred. 0.7 fills most of the ring's clear interior — the track
-        // and arc occupy the outer 2.5 units of a radius-13 circle, leaving
-        // about 23 units of usable space — without the mark touching the arc.
-        <g
-          transform="translate(16 16) scale(0.7) translate(-12 -12)"
-          fill="currentColor"
-          data-testid="usage-ring-mark"
-        >
-          <path d={markPath} />
+      {mark && (
+        // Scaled from the mark's own box into the ring's 32-unit one and
+        // centred. 0.7 fills most of the ring's clear interior — the track and
+        // arc occupy the outer 2.5 units of a radius-13 circle, leaving about
+        // 23 units of usable space — without the mark touching the arc. Marks
+        // do not share one box (simple-icons draws at 24, other sources do
+        // not), so the scale is derived from the mark rather than assumed.
+        <g transform={markTransform(mark)} fill="currentColor" data-testid="usage-ring-mark">
+          <path d={mark.path} />
         </g>
       )}
-      {!markPath && glyph && (
+      {!mark && glyph && (
         <text
           x="16"
           y="16"

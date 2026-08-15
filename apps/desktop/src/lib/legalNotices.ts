@@ -23,12 +23,14 @@ export const NOTICE_TEXT: string = noticeText;
  */
 export const ATTRIBUTIONS: ReadonlyArray<{ title: string; body: string }> = [
   {
-    title: 'simple-icons',
+    title: 'Agent brand marks',
     body:
-      'Agent rows render brand marks from the simple-icons package, whose ' +
-      'path data is published under CC0-1.0. The marks remain trademarks of ' +
-      'their respective owners and appear here nominatively — to say which ' +
-      'tool a session belongs to, not to claim any affiliation.',
+      'Agent rows render brand marks from the simple-icons package, and ' +
+      'OpenAI’s mark from Gil Barbara’s SVG Logos. Both publish their path ' +
+      'data under CC0-1.0, and where a mark is drawn in a brand’s own colour ' +
+      'that colour is the value those packages record. The marks remain ' +
+      'trademarks of their respective owners and appear here nominatively — ' +
+      'to say which tool a session belongs to, not to claim any affiliation.',
   },
   {
     title: 'Provider artwork',

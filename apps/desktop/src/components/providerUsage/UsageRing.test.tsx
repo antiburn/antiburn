@@ -15,6 +15,17 @@ function arcOffset(container: HTMLElement): number {
   return Number(arc?.getAttribute('stroke-dashoffset'));
 }
 
+const SQUARE = {
+  path: 'M0 0h24v24H0z',
+  viewBox: '0 0 24 24',
+  provenance: {
+    package: 'test',
+    icon: 'square',
+    license: 'CC0-1.0',
+    source: 'https://example.test',
+  },
+};
+
 describe('UsageRing', () => {
   it('fills the arc in proportion to what is consumed', () => {
     const { container } = render(<UsageRing percent={75} />);
@@ -67,9 +78,35 @@ describe('UsageRing', () => {
   it('prefers a brand mark over the letter when one exists', () => {
     // The letter is the fallback for providers with no rights-cleared mark,
     // not a second thing to draw alongside one.
-    const { container } = render(<UsageRing percent={40} glyph="A" markPath="M0 0h24v24H0z" />);
+    const { container } = render(<UsageRing percent={40} glyph="A" mark={SQUARE} />);
     expect(container.querySelector('[data-testid="usage-ring-mark"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="usage-ring-glyph"]')).toBeNull();
+  });
+
+  /** The drawn width of a mark, in the ring's 32-unit units. */
+  function drawnExtent(mark: { path: string; viewBox: string }, edge: number): number {
+    const { container } = render(
+      <UsageRing percent={40} mark={{ ...mark, provenance: SQUARE.provenance }} />,
+    );
+    const t = container
+      .querySelector('[data-testid="usage-ring-mark"]')
+      ?.getAttribute('transform');
+    return Number(/scale\(([\d.]+)\)/.exec(t ?? '')?.[1]) * edge;
+  }
+
+  it('insets every mark from the arc, whatever box its source drew it in', () => {
+    // The track and arc take the outer 2.5 units of a radius-13 circle, so a
+    // mark that fills the interior edge-to-edge crowds it. Marks do not share
+    // one box — simple-icons draws at 24, other sources do not — so a scale
+    // derived from the ring instead of the mark silently resizes half the set.
+    expect(drawnExtent({ path: 'M0 0h24v24H0z', viewBox: '0 0 24 24' }, 24)).toBeCloseTo(
+      16.8,
+      5,
+    );
+    expect(drawnExtent({ path: 'M0 0h256v260H0z', viewBox: '0 0 256 260' }, 260)).toBeCloseTo(
+      16.8,
+      5,
+    );
   });
 
   it('is invisible to a screen reader, because its caller names it', () => {
