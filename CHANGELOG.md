@@ -24,6 +24,19 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.1.0-rc.3] - 2026-08-15
+
+A release-candidate rehearsal build, not a supported release. The macOS and
+Windows binaries are **unsigned** — your operating system will warn you, and it
+is right to. Install it only if you are testing the release pipeline itself.
+
+On macOS, opening it the first time takes a right-click → Open rather than a
+double-click: the build is sealed but carries no Developer ID, so the warning
+is the system doing its job. If you installed rc.2 and were told the app was
+damaged, this is the release that fixes it — remove the old copy first, or
+clear its quarantine with
+`xattr -dr com.apple.quarantine /Applications/antiburn.app`.
+
 ### Fixed
 
 - The macOS app opens after download. Unsigned rehearsal builds are now sealed
