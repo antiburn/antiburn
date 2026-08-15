@@ -38,6 +38,8 @@
 //! are looking at.
 
 pub mod anthropic;
+pub mod history;
+pub mod metrics;
 pub mod milestones;
 pub mod model;
 pub mod normalize;
@@ -48,13 +50,13 @@ mod tests;
 
 pub use milestones::{MilestoneContent, MilestoneLedger, milestone_content};
 pub use model::{
-    Freshness, ProviderUsageError, ProviderUsageSnapshot, SupportTier, UsageScope, UsageWindow,
-    UsageWindowKind, WindowRole,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SupportTier, UsageScope,
+    UsageWindow, UsageWindowKind, WindowRole,
 };
 
 use crate::dto::{
-    LiveExtraUsage, LiveProviderUsage, LiveUsageFreshness, LiveUsageSourceError, LiveUsageSummary,
-    LiveUsageSupport, LiveUsageWindow,
+    LiveExtraUsage, LiveProviderUsage, LiveUsageForecast, LiveUsageFreshness, LiveUsageSourceError,
+    LiveUsageSummary, LiveUsageSupport, LiveUsageWindow,
 };
 
 /// A source of provider-reported usage snapshots.
@@ -114,14 +116,31 @@ impl SourceOutcome {
     }
 }
 
-/// Collect from every registered source and shape the result for the views.
+/// Collect from every registered source, fold in what history says, and shape
+/// the result for the views.
+///
+/// `store` is where the reading series live: every pass appends whatever is
+/// new before computing, so a forecast always sees the reading it is about.
+/// Passing `None` skips both — used by tests that are only exercising the
+/// shaping, and by the fallback path where no store is mounted.
 ///
 /// The ordering is by provider id so a re-render never reshuffles equal rows;
 /// within a provider, windows keep the order the parser found them, which is
 /// the provider's own order — shortest window first in practice, and not
 /// something to second-guess.
-pub fn summarize(sources: &[Box<dyn LiveUsageSource>], now: i64) -> LiveUsageSummary {
+pub fn summarize(
+    sources: &[Box<dyn LiveUsageSource>],
+    store: Option<&crate::store::Store>,
+    now: i64,
+    utc_offset_minutes: i32,
+) -> LiveUsageSummary {
     let collected = sources::collect(sources);
+    let history = store
+        .map(|store| history::record(store, &collected.snapshots, now))
+        .unwrap_or_default();
+    let midnight = local_midnight(now, utc_offset_minutes);
+    let at =
+        time::OffsetDateTime::from_unix_timestamp(now).unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
 
     let mut providers: Vec<LiveProviderUsage> = collected
         .snapshots
@@ -139,10 +158,17 @@ pub fn summarize(sources: &[Box<dyn LiveUsageSource>], now: i64) -> LiveUsageSum
                 Freshness::Fresh => LiveUsageFreshness::Fresh,
                 Freshness::Stale => LiveUsageFreshness::Stale,
             },
-            source_label: snapshot.source.label,
+            source_label: snapshot.source.label.clone(),
             observed_at: iso(snapshot.observed_at),
-            windows: snapshot.windows.into_iter().map(window).collect(),
-            extra_usage: snapshot.supplemental.map(|extra| LiveExtraUsage {
+            windows: snapshot
+                .windows
+                .iter()
+                .map(|entry| {
+                    let samples = history.samples(&history::window_key(&snapshot, &entry.id));
+                    window(entry.clone(), &samples, &snapshot, at, midnight)
+                })
+                .collect(),
+            extra_usage: snapshot.supplemental.clone().map(|extra| LiveExtraUsage {
                 enabled: extra.enabled,
                 used_percent: extra.used_percent,
                 used: extra.balance.as_ref().and_then(|balance| balance.used),
@@ -171,7 +197,31 @@ pub fn summarize(sources: &[Box<dyn LiveUsageSource>], now: i64) -> LiveUsageSum
     }
 }
 
-fn window(window: UsageWindow) -> LiveUsageWindow {
+fn window(
+    window: UsageWindow,
+    samples: &[metrics::UsageSample],
+    snapshot: &ProviderUsageSnapshot,
+    now: time::OffsetDateTime,
+    local_midnight: time::OffsetDateTime,
+) -> LiveUsageWindow {
+    let forecast = metrics::usage_forecast(
+        samples,
+        window.used_percent,
+        window.resets_at,
+        now,
+        snapshot.source.freshness,
+        snapshot.source.confidence,
+    );
+    // Only on a window longer than a day. "How much of your five-hour limit
+    // you used today" is a question about a period that has already rolled
+    // several times, and the answer would be nonsense dressed as a metric.
+    let used_today = matches!(
+        window.kind,
+        UsageWindowKind::Weekly | UsageWindowKind::Monthly | UsageWindowKind::BillingCycle
+    )
+    .then(|| metrics::used_since(samples, local_midnight))
+    .flatten();
+
     LiveUsageWindow {
         id: window.id,
         role: match window.role {
@@ -196,7 +246,36 @@ fn window(window: UsageWindow) -> LiveUsageWindow {
         used_percent: window.used_percent,
         starts_at: window.starts_at.map(iso),
         resets_at: window.resets_at.map(iso),
+        forecast: LiveUsageForecast {
+            unavailable_reason: forecast
+                .unavailable_reason
+                .map(|reason| reason.as_str().to_string()),
+            confidence: forecast.confidence.map(|confidence| {
+                match confidence {
+                    Confidence::Low => "low",
+                    Confidence::Medium => "medium",
+                    Confidence::High => "high",
+                }
+                .to_string()
+            }),
+            consumption_rate: forecast.consumption_rate,
+            pace_ratio: forecast.pace_ratio.filter(|ratio| ratio.is_finite()),
+            pace_trend: forecast.pace_trend,
+            runway_at: forecast.estimated_exhaustion_at.map(iso),
+            used_today,
+        },
     }
+}
+
+/// The reader's most recent local midnight, as an instant.
+///
+/// Their calendar day, not UTC's: "used today" is a claim about the day the
+/// reader has been having. The offset comes from the webview for the same
+/// reason it does on the estimate command — resolving a local offset inside a
+/// multi-threaded process is not reliable on every platform.
+fn local_midnight(now: i64, utc_offset_minutes: i32) -> time::OffsetDateTime {
+    let start = super::window_bounds(now, utc_offset_minutes).today_start;
+    time::OffsetDateTime::from_unix_timestamp(start).unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
 }
 
 fn iso(at: time::OffsetDateTime) -> String {

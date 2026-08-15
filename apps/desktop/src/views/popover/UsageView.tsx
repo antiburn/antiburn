@@ -5,7 +5,7 @@
 import { ChevronLeft } from 'lucide-react';
 
 import { ProviderGlyph, UsageStateBadge } from '../../components/providerUsage';
-import { LiveUsageWindowRows } from '../../components/providerUsage/LiveUsageWindowRows';
+import { LiveUsageDetail } from '../../components/providerUsage/LiveUsageDetail';
 import { UsageMetricRows } from '../../components/providerUsage/UsageMetricRows';
 import { UsageWindowRows } from '../../components/providerUsage/UsageWindowRows';
 import { ScrollPane } from '../../components/ui/ScrollPane';
@@ -16,14 +16,7 @@ import type {
   ProviderUsageSummaryPayload,
 } from '../../lib/ipc';
 import { EMPTY_LIVE_USAGE } from '../../lib/ipc';
-import {
-  liveAuthNote,
-  liveExtraUsageLabel,
-  liveForProvider,
-  liveFreshnessToneClass,
-  liveSourceNote,
-  liveStalenessNote,
-} from '../../lib/presentation/liveUsage';
+import { liveAuthNote, liveForProvider } from '../../lib/presentation/liveUsage';
 import {
   coverageNote,
   providerWindow,
@@ -222,7 +215,7 @@ function ProviderCard({
         <UsageStateBadge state={provider.state} className="mt-px" />
       </div>
 
-      {live && <PlanLimits live={live} now={now} />}
+      {live && <LiveUsageDetail live={live} now={now} />}
 
       <UsageMetricRows provider={provider} />
 
@@ -232,36 +225,5 @@ function ProviderCard({
         {usageStateDescription(provider.state)}
       </p>
     </li>
-  );
-}
-
-/**
- * The provider's own limits, above the local estimates.
- *
- * Headed and set apart on purpose. These figures come from somewhere else
- * entirely — the provider said them, an agent cached them, and they are as old
- * as that cache — and the reader has to be able to tell them apart from the
- * estimate rows below at a glance, not by reading the labels.
- */
-function PlanLimits({ live, now }: { live: LiveProviderUsagePayload; now: number }) {
-  const staleness = liveStalenessNote(live);
-  const extra = liveExtraUsageLabel(live);
-
-  return (
-    <section aria-label={`${live.displayName} plan limits`} className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <h4 className="type-caption font-medium tracking-wide uppercase text-label-tertiary">
-          Plan limits
-        </h4>
-        <span className={`type-caption ${liveFreshnessToneClass(live.freshness)}`}>
-          {liveSourceNote(live)}
-        </span>
-      </div>
-
-      <LiveUsageWindowRows provider={live} now={now} />
-
-      {extra && <p className="type-caption text-label-tertiary">{extra}</p>}
-      {staleness && <p className="type-caption text-system-orange">{staleness}</p>}
-    </section>
   );
 }

@@ -6,6 +6,8 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
+  LiveProviderUsagePayload,
+  LiveUsageForecastPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
   ProviderUsagePayload,
@@ -158,6 +160,18 @@ describe('UsageWindowRows shares', () => {
 
 const NOW = Date.parse('2027-01-15T12:00:00Z');
 
+/** No forecast by default: sparse history is the resting state of a source
+    that only moves when an agent runs. */
+export const NO_FORECAST: LiveUsageForecastPayload = {
+  unavailableReason: 'sparseHistory',
+  confidence: null,
+  consumptionRate: null,
+  paceRatio: null,
+  paceTrend: null,
+  runwayAt: null,
+  usedToday: null,
+};
+
 function liveWindow(
   overrides: Partial<LiveUsageWindowPayload> = {},
 ): LiveUsageWindowPayload {
@@ -169,7 +183,31 @@ function liveWindow(
     usedPercent: 81,
     startsAt: '2027-01-15T09:30:00Z',
     resetsAt: '2027-01-15T14:30:00Z',
+    forecast: NO_FORECAST,
     ...overrides,
+  };
+}
+
+function liveProvider(): LiveProviderUsagePayload {
+  return {
+    provider: 'anthropic',
+    displayName: 'Anthropic',
+    support: 'live',
+    freshness: 'fresh',
+    sourceLabel: "Claude's cached usage",
+    observedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    windows: [
+      liveWindow(),
+      liveWindow({
+        id: 'seven-day',
+        role: 'primaryLong',
+        kind: 'weekly',
+        usedPercent: 65,
+        startsAt: '2027-01-12T18:00:00Z',
+        resetsAt: '2027-01-19T18:00:00Z',
+      }),
+    ],
+    extraUsage: null,
   };
 }
 
@@ -177,28 +215,7 @@ function live(
   overrides: Partial<LiveUsageSummaryPayload> = {},
 ): LiveUsageSummaryPayload {
   return {
-    providers: [
-      {
-        provider: 'anthropic',
-        displayName: 'Anthropic',
-        support: 'live',
-        freshness: 'fresh',
-        sourceLabel: "Claude's cached usage",
-        observedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
-        windows: [
-          liveWindow(),
-          liveWindow({
-            id: 'seven-day',
-            role: 'primaryLong',
-            kind: 'weekly',
-            usedPercent: 65,
-            startsAt: '2027-01-12T18:00:00Z',
-            resetsAt: '2027-01-19T18:00:00Z',
-          }),
-        ],
-        extraUsage: null,
-      },
-    ],
+    providers: [liveProvider()],
     errors: [],
     generatedAt: '2027-01-15T12:00:00Z',
     ...overrides,
@@ -241,7 +258,7 @@ describe('UsageView — plan limits layered over local estimates', () => {
 
   it('renders an unknown percentage as indeterminate rather than empty', () => {
     const unknown = live();
-    unknown.providers[0].windows = [liveWindow({ usedPercent: null })];
+    unknown.providers = [{ ...liveProvider(), windows: [liveWindow({ usedPercent: null })] }];
     render(<UsageView summary={summary()} live={unknown} now={NOW} onBack={vi.fn()} />);
 
     expect(screen.getByText('Unknown')).toBeInTheDocument();
@@ -253,12 +270,18 @@ describe('UsageView — plan limits layered over local estimates', () => {
   });
 
   it('omits the marker for a window whose period is not stated or implied', () => {
-    const unbounded = live();
     // A weekly window with no start: its boundary is the provider's own, and
     // "seven days before the reset" would be a guess dressed as a measurement.
-    unbounded.providers[0].windows = [
-      liveWindow({ id: 'seven-day', role: 'primaryLong', kind: 'weekly', startsAt: null }),
-    ];
+    const unbounded = live({
+      providers: [
+        {
+          ...liveProvider(),
+          windows: [
+            liveWindow({ id: 'seven-day', role: 'primaryLong', kind: 'weekly', startsAt: null }),
+          ],
+        },
+      ],
+    });
     render(<UsageView summary={summary()} live={unbounded} now={NOW} onBack={vi.fn()} />);
 
     expect(screen.queryByTestId('live-usage-elapsed-seven-day')).not.toBeInTheDocument();
@@ -272,9 +295,7 @@ describe('UsageView — plan limits layered over local estimates', () => {
     render(
       <UsageView
         summary={summary()}
-        live={live({
-          providers: [{ ...live().providers[0], freshness: 'stale' }],
-        })}
+        live={live({ providers: [{ ...liveProvider(), freshness: 'stale' }] })}
         now={NOW}
         onBack={vi.fn()}
       />,
@@ -319,5 +340,70 @@ describe('UsageView — plan limits layered over local estimates', () => {
 
     expect(screen.getByText(/Spend figures are local estimates/)).toBeInTheDocument();
     expect(screen.getByText(/antiburn fetches nothing/)).toBeInTheDocument();
+  });
+});
+
+describe('UsageView — what history says about a limit', () => {
+  const withForecast = (overrides: Partial<LiveUsageForecastPayload>) =>
+    live({
+      providers: [
+        {
+          ...liveProvider(),
+          windows: [
+            liveWindow({
+              usedPercent: 60,
+              resetsAt: '2027-01-15T14:00:00Z',
+              forecast: { ...NO_FORECAST, unavailableReason: null, ...overrides },
+            }),
+          ],
+        },
+      ],
+    });
+
+  it('reports pace, trend and runway when the series supports them', () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={withForecast({
+          confidence: 'high',
+          consumptionRate: 12.5,
+          paceRatio: 1.25,
+          paceTrend: 1.4,
+          runwayAt: '2027-01-15T13:12:00Z',
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    );
+
+    const card = screen.getByText('Anthropic').closest('li')!;
+    expect(within(card).getByText('Running hot · 1.3× · 12.5%/hour')).toBeInTheDocument();
+    expect(within(card).getByText('Picking up · 1.4×')).toBeInTheDocument();
+    expect(within(card).getByText('Runs out in 1h 12m')).toBeInTheDocument();
+  });
+
+  it('keeps the rows and gives the reason when the series does not', () => {
+    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />);
+
+    const card = screen.getByText('Anthropic').closest('li')!;
+    const rows = within(card).getByRole('group', { name: /pace$/ });
+    expect(within(rows).getByText('Pace')).toBeInTheDocument();
+    expect(within(rows).getByText('Runway')).toBeInTheDocument();
+    // Three questions still asked; the answer is why we cannot answer them.
+    expect(within(rows).getAllByText('Not enough history')).toHaveLength(3);
+  });
+
+  it('distinguishes a window that just reset from one with no history at all', () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={withForecast({ unavailableReason: 'transition' })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    );
+    // The numbers are fine and simply too new — a different message from
+    // "come back later", and a different one again from "go use your agent".
+    expect(screen.getAllByText('Just reset').length).toBeGreaterThan(0);
   });
 });

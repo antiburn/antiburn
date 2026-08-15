@@ -235,3 +235,218 @@ export function liveExtraUsageLabel(provider: LiveProviderUsagePayload): string 
   }
   return 'Extra usage is on';
 }
+
+/* -------------------------------------------------------------------------
+ * Derived metrics: what a window's history says about it.
+ *
+ * Every function below has an explicit "we cannot say" branch, and it fires
+ * far more often than the others. A source that only updates when an agent
+ * runs produces a sparse series by construction, so "not enough history" is
+ * the resting state rather than an error — and it must never be phrased, or
+ * coloured, as one.
+ * ---------------------------------------------------------------------- */
+
+/** How a window's pace reads against the pace its allowance can afford. */
+export type PaceState = 'comfortable' | 'onPace' | 'runningHot' | 'atRisk';
+
+/** Where each band starts. Below 0.8 is comfortable; above 1.5 is at risk. */
+const PACE_BANDS: ReadonlyArray<{ below: number; state: PaceState }> = [
+  { below: 0.8, state: 'comfortable' },
+  { below: 1.1, state: 'onPace' },
+  { below: 1.5, state: 'runningHot' },
+];
+
+/**
+ * Which band a pace ratio falls in.
+ *
+ * The bands are asymmetric on purpose. 1.0 is exactly on track, so the "on
+ * pace" band reaches further above it than below: a reader slightly ahead of
+ * their allowance is fine, and telling them otherwise every time they have a
+ * busy half hour is how a useful signal becomes one people stop reading.
+ */
+export function paceState(ratio: number): PaceState {
+  return PACE_BANDS.find((band) => ratio < band.below)?.state ?? 'atRisk';
+}
+
+/** The word for a band. */
+export function paceStateLabel(state: PaceState): string {
+  switch (state) {
+    case 'comfortable':
+      return 'Comfortable';
+    case 'onPace':
+      return 'On pace';
+    case 'runningHot':
+      return 'Running hot';
+    default:
+      return 'At risk';
+  }
+}
+
+/** Tailwind colour for a band. Green through red, in that order. */
+export function paceStateToneClass(state: PaceState): string {
+  switch (state) {
+    case 'comfortable':
+      return 'text-system-green';
+    case 'onPace':
+      return 'text-label-secondary';
+    case 'runningHot':
+      return 'text-system-orange';
+    default:
+      return 'text-system-red';
+  }
+}
+
+/** Below this a trend reads as easing; above its mirror, as picking up. */
+const TREND_EASING = 0.85;
+const TREND_PICKING_UP = 1.15;
+
+/** `"Picking up"` / `"Steady"` / `"Easing"`. */
+export function trendLabel(ratio: number): string {
+  if (ratio < TREND_EASING) return 'Easing';
+  if (ratio > TREND_PICKING_UP) return 'Picking up';
+  return 'Steady';
+}
+
+/**
+ * Why a window has no derived figures, in a sentence — or null when it has
+ * them.
+ *
+ * Each reason gets its own wording because each has a different implication
+ * for the reader. "Not enough history" means come back later; "just reset"
+ * means the numbers are fine and simply too new; "out of date" means go and
+ * use the agent.
+ */
+export function forecastUnavailableNote(window: LiveUsageWindowPayload): string | null {
+  switch (window.forecast.unavailableReason) {
+    case 'sparseHistory':
+      return 'Not enough history';
+    case 'transition':
+      return 'Just reset';
+    case 'stale':
+      return 'Reading is out of date';
+    default:
+      return null;
+  }
+}
+
+/** One derived row: a label, a value, and how alarming the value is. */
+export interface LiveMetricRow {
+  key: string;
+  label: string;
+  value: string;
+  toneClass: string;
+}
+
+/**
+ * The derived rows for one window, in a fixed order.
+ *
+ * Fixed because they answer a sequence of questions — how fast, faster than
+ * before?, will it last, how much was today — and a reader who learns where
+ * the runway sits should find it in the same place next time. A row whose
+ * figure is unavailable still appears, carrying the reason: a row that
+ * vanishes takes the question with it.
+ */
+export function liveMetricRows(
+  window: LiveUsageWindowPayload,
+  now: number,
+): LiveMetricRow[] {
+  const { forecast } = window;
+  const unavailable = forecastUnavailableNote(window);
+  const muted = 'text-label-tertiary';
+
+  const pace: LiveMetricRow = {
+    key: 'pace',
+    label: 'Pace',
+    value: unavailable ?? 'Not enough history',
+    toneClass: muted,
+  };
+  if (forecast.paceRatio != null && forecast.consumptionRate != null) {
+    const state = paceState(forecast.paceRatio);
+    pace.value = `${paceStateLabel(state)} · ${forecast.paceRatio.toFixed(1)}× · ${forecast.consumptionRate.toFixed(
+      1,
+    )}%/hour`;
+    pace.toneClass = paceStateToneClass(state);
+  } else if (forecast.consumptionRate != null) {
+    // A rate with no reset to measure it against: still worth showing, but it
+    // is not a verdict, so it stays muted.
+    pace.value = `${forecast.consumptionRate.toFixed(1)}%/hour`;
+  }
+
+  const trend: LiveMetricRow = {
+    key: 'trend',
+    label: 'Trend',
+    value: forecast.paceTrend == null ? (unavailable ?? 'Not enough history') : '',
+    toneClass: muted,
+  };
+  if (forecast.paceTrend != null) {
+    trend.value = `${trendLabel(forecast.paceTrend)} · ${forecast.paceTrend.toFixed(1)}×`;
+  }
+
+  const runway: LiveMetricRow = {
+    key: 'runway',
+    label: 'Runway',
+    value: unavailable ?? 'Not enough history',
+    toneClass: muted,
+  };
+  const runwayNote = runwayLabel(window, now);
+  if (runwayNote) {
+    runway.value = runwayNote;
+    runway.toneClass = forecast.paceRatio != null && forecast.paceRatio > 1 ? 'text-system-orange' : muted;
+  }
+
+  const rows = [pace, trend, runway];
+  if (forecast.usedToday != null) {
+    rows.push({
+      key: 'today',
+      label: 'Today',
+      value: `${forecast.usedToday.toFixed(1)} points of this window`,
+      toneClass: muted,
+    });
+  }
+  return rows;
+}
+
+/**
+ * `"Hits the limit Thu 15:00"`, or that it lasts — or null when there is no
+ * forecast to say either from.
+ *
+ * A runway past the reset is reported as lasting rather than as a date,
+ * because a limit that refills before you reach it is not a deadline and
+ * printing one would invent an anxiety.
+ */
+export function runwayLabel(window: LiveUsageWindowPayload, now: number): string | null {
+  const at = window.forecast.runwayAt ? Date.parse(window.forecast.runwayAt) : Number.NaN;
+  if (Number.isNaN(at)) return null;
+
+  const reset = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
+  if (!Number.isNaN(reset) && at >= reset) return 'Lasts past the reset';
+  if (at <= now) return 'At the limit';
+
+  const date = new Date(at);
+  const remaining = at - now;
+  if (remaining < 86_400_000) {
+    const hours = Math.floor(remaining / 3_600_000);
+    const minutes = Math.floor((remaining % 3_600_000) / 60_000);
+    return hours > 0 ? `Runs out in ${hours}h ${minutes}m` : `Runs out in ${minutes}m`;
+  }
+  const day = date.toLocaleDateString(undefined, { weekday: 'short' });
+  const time = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `Runs out ${day} ${time}`;
+}
+
+/**
+ * The window a compact surface should lead with: the one nearest its limit.
+ *
+ * Not the shortest, and not the first. A footer with room for one ring should
+ * show the constraint that will actually bite, which on a quiet day is the
+ * weekly limit and on a busy afternoon is the five-hour one.
+ */
+export function headlineWindow(
+  provider: LiveProviderUsagePayload,
+): LiveUsageWindowPayload | null {
+  return (
+    liveWindows(provider)
+      .filter((window) => window.usedPercent != null)
+      .sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0] ?? null
+  );
+}

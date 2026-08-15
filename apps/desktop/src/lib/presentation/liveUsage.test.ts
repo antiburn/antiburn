@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type {
   LiveProviderUsagePayload,
+  LiveUsageForecastPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from '../ipc';
@@ -21,11 +22,36 @@ import {
   liveSupportLabel,
   liveWindowElapsed,
   liveWindowLabel,
+  liveMetricRows,
   liveWindowValueLabel,
   liveWindows,
+  forecastUnavailableNote,
+  headlineWindow,
+  paceState,
+  paceStateLabel,
+  runwayLabel,
+  trendLabel,
 } from './liveUsage';
 
 const NOW = Date.parse('2027-01-15T12:00:00Z');
+
+/** Sparse history is the resting state of a source that only moves when an
+    agent runs, so it is what a fixture defaults to. */
+const NO_FORECAST: LiveUsageForecastPayload = {
+  unavailableReason: 'sparseHistory',
+  confidence: null,
+  consumptionRate: null,
+  paceRatio: null,
+  paceTrend: null,
+  runwayAt: null,
+  usedToday: null,
+};
+
+function forecast(
+  overrides: Partial<LiveUsageForecastPayload> = {},
+): LiveUsageForecastPayload {
+  return { ...NO_FORECAST, unavailableReason: null, ...overrides };
+}
 
 function window(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindowPayload {
   return {
@@ -36,6 +62,7 @@ function window(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindo
     usedPercent: 81,
     startsAt: null,
     resetsAt: '2027-01-15T14:30:00Z',
+    forecast: NO_FORECAST,
     ...overrides,
   };
 }
@@ -283,5 +310,144 @@ describe('extra usage', () => {
         provider({ extraUsage: { ...extra, usedPercent: null, used: null, currency: null } }),
       ),
     ).toBe('Extra usage is on');
+  });
+});
+
+describe('pace and trend bands', () => {
+  it('leaves more room above 1 than below it', () => {
+    // 1.0 is exactly on track. A reader slightly ahead of their allowance is
+    // fine, and flagging every busy half hour is how a signal stops being read.
+    expect(paceState(0.5)).toBe('comfortable');
+    expect(paceState(0.79)).toBe('comfortable');
+    expect(paceState(0.8)).toBe('onPace');
+    expect(paceState(1.0)).toBe('onPace');
+    expect(paceState(1.09)).toBe('onPace');
+    expect(paceState(1.1)).toBe('runningHot');
+    expect(paceState(1.49)).toBe('runningHot');
+    expect(paceState(1.5)).toBe('atRisk');
+    expect(paceStateLabel(paceState(2))).toBe('At risk');
+  });
+
+  it('names a trend only outside a steady band', () => {
+    expect(trendLabel(0.5)).toBe('Easing');
+    expect(trendLabel(1)).toBe('Steady');
+    expect(trendLabel(1.1)).toBe('Steady');
+    expect(trendLabel(2)).toBe('Picking up');
+  });
+});
+
+describe('why a forecast is missing', () => {
+  it('says something different for each reason, because each implies something different', () => {
+    // Come back later / the numbers are fine and too new / go use the agent.
+    expect(forecastUnavailableNote(window())).toBe('Not enough history');
+    expect(
+      forecastUnavailableNote(window({ forecast: forecast({ unavailableReason: 'transition' }) })),
+    ).toBe('Just reset');
+    expect(
+      forecastUnavailableNote(window({ forecast: forecast({ unavailableReason: 'stale' }) })),
+    ).toBe('Reading is out of date');
+    expect(forecastUnavailableNote(window({ forecast: forecast() }))).toBeNull();
+  });
+});
+
+describe('the derived rows', () => {
+  const busy = window({
+    usedPercent: 60,
+    resetsAt: '2027-01-15T14:00:00Z',
+    forecast: forecast({
+      confidence: 'high',
+      consumptionRate: 12.5,
+      paceRatio: 1.25,
+      paceTrend: 1.4,
+      runwayAt: '2027-01-15T13:12:00Z',
+    }),
+  });
+
+  it('leads with the verdict, the ratio, and the rate behind them', () => {
+    const rows = liveMetricRows(busy, NOW);
+    expect(rows.map((row) => row.label)).toEqual(['Pace', 'Trend', 'Runway']);
+    expect(rows[0]?.value).toBe('Running hot · 1.3× · 12.5%/hour');
+    expect(rows[0]?.toneClass).toContain('orange');
+    expect(rows[1]?.value).toBe('Picking up · 1.4×');
+  });
+
+  it('keeps every row when a figure is missing, carrying the reason instead', () => {
+    // A row that disappears takes its question with it, and a reader who
+    // cannot find "runway" concludes the app has no such idea.
+    const rows = liveMetricRows(window(), NOW);
+    expect(rows.map((row) => row.label)).toEqual(['Pace', 'Trend', 'Runway']);
+    expect(rows.every((row) => row.value === 'Not enough history')).toBe(true);
+    expect(rows.every((row) => row.toneClass === 'text-label-tertiary')).toBe(true);
+  });
+
+  it('shows a bare rate when there is no reset to judge it against', () => {
+    const unanchored = window({
+      resetsAt: null,
+      forecast: forecast({ consumptionRate: 4.25 }),
+    });
+    const rows = liveMetricRows(unanchored, NOW);
+    // A rate without a deadline is information, not a verdict, so it stays muted.
+    expect(rows[0]?.value).toBe('4.3%/hour');
+    expect(rows[0]?.toneClass).toBe('text-label-tertiary');
+  });
+
+  it('adds a today row only where a window is longer than a day', () => {
+    expect(
+      liveMetricRows(window({ forecast: forecast({ usedToday: 12.5 }) }), NOW).map(
+        (row) => row.label,
+      ),
+    ).toContain('Today');
+    expect(liveMetricRows(window(), NOW).map((row) => row.label)).not.toContain('Today');
+  });
+});
+
+describe('runway', () => {
+  it('reports lasting rather than a date when it outlives the reset', () => {
+    // A limit that refills before you reach it is not a deadline, and printing
+    // one would invent an anxiety.
+    const lasts = window({
+      resetsAt: '2027-01-15T14:00:00Z',
+      forecast: forecast({ runwayAt: '2027-01-15T20:00:00Z' }),
+    });
+    expect(runwayLabel(lasts, NOW)).toBe('Lasts past the reset');
+  });
+
+  it('counts down within the day and names the day beyond it', () => {
+    expect(
+      runwayLabel(
+        window({ resetsAt: null, forecast: forecast({ runwayAt: '2027-01-15T14:30:00Z' }) }),
+        NOW,
+      ),
+    ).toBe('Runs out in 2h 30m');
+    expect(
+      runwayLabel(
+        window({ resetsAt: null, forecast: forecast({ runwayAt: '2027-01-17T09:00:00Z' }) }),
+        NOW,
+      ),
+    ).toMatch(/^Runs out \w{3} /);
+  });
+
+  it('says nothing at all without a forecast', () => {
+    expect(runwayLabel(window(), NOW)).toBeNull();
+  });
+});
+
+describe('the headline window', () => {
+  it('is the one nearest its limit, not the shortest or the first', () => {
+    // A footer with room for one ring should show the constraint that will
+    // actually bite.
+    const provider_ = provider({
+      windows: [
+        window({ id: 'five-hour', usedPercent: 10 }),
+        window({ id: 'seven-day', role: 'primaryLong', usedPercent: 88 }),
+      ],
+    });
+    expect(headlineWindow(provider_)?.id).toBe('seven-day');
+  });
+
+  it('ignores windows the provider gave no figure for', () => {
+    expect(
+      headlineWindow(provider({ windows: [window({ usedPercent: null })] })),
+    ).toBeNull();
   });
 });

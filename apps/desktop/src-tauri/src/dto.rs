@@ -400,6 +400,38 @@ pub struct LiveUsageWindow {
     pub starts_at: Option<String>,
     /// ISO-8601 reset, when the provider stated one.
     pub resets_at: Option<String>,
+    /// What this window's own history supports saying about it.
+    pub forecast: LiveUsageForecast,
+}
+
+/// The derived half of a window: what its history says, or why it says
+/// nothing.
+///
+/// Exactly one of `unavailable_reason` and the value fields is populated.
+/// That is not a formality — "we have not seen enough of your week to say"
+/// and "you are on track" are different answers, and only one of them is
+/// reassuring. A null here always means the former.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageForecast {
+    /// `stale`, `transition`, or `sparseHistory`. Null when there *is* a
+    /// forecast.
+    pub unavailable_reason: Option<String>,
+    /// `low`, `medium`, or `high`, for the values below.
+    pub confidence: Option<String>,
+    /// Percentage points of the allowance consumed per hour.
+    pub consumption_rate: Option<f64>,
+    /// The current rate over the rate that would land exactly at the reset.
+    /// Above 1 means the allowance runs out first.
+    pub pace_ratio: Option<f64>,
+    /// The last half hour's rate over the last two hours'. Above 1 is
+    /// speeding up.
+    pub pace_trend: Option<f64>,
+    /// ISO-8601 moment the allowance runs out at the current rate.
+    pub runway_at: Option<String>,
+    /// Percentage points of this window consumed since the reader's local
+    /// midnight. Only meaningful on a window longer than a day.
+    pub used_today: Option<f64>,
 }
 
 /// One provider account's live usage.

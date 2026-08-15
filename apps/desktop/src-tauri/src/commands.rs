@@ -372,17 +372,26 @@ pub fn get_provider_usage(
 /// An empty summary is the ordinary answer — no source with anything to say —
 /// and is not an error. Sources that *failed* report separately, so "nothing
 /// found" and "something broke" never look alike on screen.
+/// `utc_offset_minutes` travels for one reason only: "used today" is a claim
+/// about the reader's calendar day. The windows themselves are the provider's
+/// own boundaries, stated as absolute instants, and owe nothing to it.
 #[tauri::command]
-pub fn get_live_usage(app: tauri::AppHandle) -> CommandResult<LiveUsageSummary> {
+pub fn get_live_usage(
+    app: tauri::AppHandle,
+    utc_offset_minutes: Option<i32>,
+) -> CommandResult<LiveUsageSummary> {
+    let now = scan::unix_now();
     let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() else {
         return Ok(LiveUsageSummary {
-            generated_at: crate::store::iso_from_epoch(Some(scan::unix_now())),
+            generated_at: crate::store::iso_from_epoch(Some(now)),
             ..LiveUsageSummary::default()
         });
     };
     Ok(provider_usage::live::summarize(
         &live.sources,
-        scan::unix_now(),
+        app.try_state::<Store>().as_deref(),
+        now,
+        utc_offset_minutes.unwrap_or(0),
     ))
 }
 

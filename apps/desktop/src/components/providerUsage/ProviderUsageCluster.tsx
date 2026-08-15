@@ -5,7 +5,14 @@
 import { Settings } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
-import type { ProviderUsagePayload } from '../../lib/ipc';
+import type { LiveUsageSummaryPayload, ProviderUsagePayload } from '../../lib/ipc';
+import { EMPTY_LIVE_USAGE } from '../../lib/ipc';
+import {
+  headlineWindow,
+  liveForProvider,
+  liveWindowLabel,
+  liveWindowValueLabel,
+} from '../../lib/presentation/liveUsage';
 import {
   providersForWindow,
   providerWindow,
@@ -16,12 +23,21 @@ import {
 import { TextRoll } from '../ui/TextRoll';
 import { ProviderUsageDetail } from './ProviderUsageDetail';
 import { ProviderGlyph } from './ProviderUsagePrimitives';
+import { UsageRing } from './UsageRing';
 
 /** Chips shown before the rest collapse into a single overflow affordance. */
 export const DEFAULT_MAX_CHIPS = 3;
 
 export interface ProviderUsageClusterProps {
   providers: readonly ProviderUsagePayload[];
+  /** The provider's own limit figures, when a source could prove any. */
+  live?: LiveUsageSummaryPayload;
+  /**
+   * The instant countdowns are measured from. Defaults to when the shell
+   * collected the snapshot — a render must not read the clock, and the
+   * countdown agrees with the reading it sits under this way.
+   */
+  now?: number;
   /** Open the full Usage view. */
   onViewAll: () => void;
   /** Open the standalone Settings window (the footer's right-hand gear). */
@@ -55,10 +71,13 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 export function ProviderUsageCluster({
   providers,
+  live = EMPTY_LIVE_USAGE,
+  now,
   onViewAll,
   onOpenSettings,
   maxVisible = DEFAULT_MAX_CHIPS,
 }: ProviderUsageClusterProps) {
+  const at = now ?? (Date.parse(live.generatedAt) || 0);
   const [openProvider, setOpenProvider] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -154,6 +173,11 @@ export function ProviderUsageCluster({
         const value = usageValueLabel(window);
         const stale = stalenessNote(provider);
         const isOpen = open?.provider === provider.provider;
+        // The ring is drawn only where the provider stated a percentage. The
+        // spend figure beside it has no denominator, so borrowing the shape
+        // for it would mean something here that it does not mean.
+        const limits = liveForProvider(live, provider.provider);
+        const headline = limits ? headlineWindow(limits) : null;
         return (
           <button
             key={provider.provider}
@@ -163,10 +187,17 @@ export function ProviderUsageCluster({
             aria-controls={isOpen ? panelId : undefined}
             // The chip shows a glyph and a number; the name, the window, and
             // what kind of figure it is have to live in the accessible name or
-            // they are lost.
+            // they are lost. The ring adds a second fact, so it adds a clause:
+            // a shape with no text is invisible to a screen reader.
             aria-label={`${provider.displayName}, ${value} today, ${usageStateLabel(
               provider.state,
-            ).toLocaleLowerCase()}${stale ? `, ${stale.toLocaleLowerCase()}` : ''}`}
+            ).toLocaleLowerCase()}${
+              headline
+                ? `, ${liveWindowLabel(headline).toLocaleLowerCase()} ${liveWindowValueLabel(
+                    headline,
+                  ).toLocaleLowerCase()}`
+                : ''
+            }${stale ? `, ${stale.toLocaleLowerCase()}` : ''}`}
             onClick={(event) => {
               if (openProvider === provider.provider) {
                 close();
@@ -179,7 +210,16 @@ export function ProviderUsageCluster({
               isOpen ? 'bg-surface-hover' : ''
             }`.trimEnd()}
           >
-            <ProviderGlyph displayName={provider.displayName} size={14} />
+            {headline ? (
+              <UsageRing
+                percent={headline.usedPercent}
+                estimated={limits?.support === 'estimated'}
+                size={14}
+                className="shrink-0"
+              />
+            ) : (
+              <ProviderGlyph displayName={provider.displayName} size={14} />
+            )}
             <TextRoll text={value} />
           </button>
         );
@@ -221,7 +261,13 @@ export function ProviderUsageCluster({
           tabIndex={-1}
           className="ui-anchored-panel absolute bottom-full left-2 right-2 mb-1.5 p-3 outline-none"
         >
-          <ProviderUsageDetail provider={open} headingId={headingId} onViewAll={viewAll} />
+          <ProviderUsageDetail
+            provider={open}
+            live={liveForProvider(live, open.provider)}
+            now={at}
+            headingId={headingId}
+            onViewAll={viewAll}
+          />
         </div>
       )}
     </div>

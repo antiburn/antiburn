@@ -4,7 +4,7 @@
 
 import { ChevronRight } from 'lucide-react';
 
-import type { ProviderUsagePayload } from '../../lib/ipc';
+import type { LiveProviderUsagePayload, ProviderUsagePayload } from '../../lib/ipc';
 import {
   providerWindow,
   stalenessNote,
@@ -12,12 +12,17 @@ import {
   updatedNote,
   usageStateDescription,
 } from '../../lib/presentation/providerUsage';
+import { LiveUsageDetail } from './LiveUsageDetail';
 import { UsageMetricRows } from './UsageMetricRows';
 import { UsageWindowRows } from './UsageWindowRows';
 import { ProviderGlyph, UsageStateBadge } from './ProviderUsagePrimitives';
 
 export interface ProviderUsageDetailProps {
   provider: ProviderUsagePayload;
+  /** The provider's own limits, when a source could prove any. */
+  live?: LiveProviderUsagePayload | null;
+  /** Injected so the rendered output is a function of its inputs in tests. */
+  now?: number;
   /** Id of the element naming this panel, for the caller's `aria-labelledby`. */
   headingId?: string;
   /** Rendered as an "All provider usage" affordance when supplied. */
@@ -28,13 +33,20 @@ export interface ProviderUsageDetailProps {
  * One provider's three windows, its token split, and what kind of evidence
  * produced them.
  *
- * Everything on this panel is a figure the reader's own sessions produced.
- * There is no meter and no remaining balance, because a transcript records
- * spend and not allowance — the state line at the bottom says exactly that
- * rather than leaving the reader to assume a missing bar is a loading state.
+ * Below the header, in this order: the provider's own limits when a source
+ * could prove any, then the figures the reader's own sessions produced.
+ *
+ * The second half never has a meter or a remaining balance, because a
+ * transcript records spend and not allowance — the state line at the bottom
+ * says exactly that, rather than leaving the reader to assume a missing bar is
+ * a loading state. The first half does have meters, because the provider
+ * supplied the denominator. Keeping them visibly separate is the whole reason
+ * the plan block carries its own heading in a panel this small.
  */
 export function ProviderUsageDetail({
   provider,
+  live = null,
+  now = 0,
   headingId,
   onViewAll,
 }: ProviderUsageDetailProps) {
@@ -64,6 +76,8 @@ export function ProviderUsageDetail({
         </div>
         <UsageStateBadge state={provider.state} className="mt-px" />
       </div>
+
+      {live && <LiveUsageDetail live={live} now={now} />}
 
       <UsageMetricRows provider={provider} />
 

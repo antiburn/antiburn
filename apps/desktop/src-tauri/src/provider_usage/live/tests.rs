@@ -287,7 +287,7 @@ fn a_stated_figure_beats_a_fresher_modelled_one() {
             )],
         )),
     ];
-    let summary = summarize(&sources, NOW);
+    let summary = summarize(&sources, None, NOW, 0);
     assert_eq!(summary.providers.len(), 1);
     assert_eq!(summary.providers[0].windows[0].used_percent, Some(81.0));
 }
@@ -309,7 +309,7 @@ fn between_two_stated_figures_the_fresher_one_wins() {
             vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
         )),
     ];
-    let summary = summarize(&sources, NOW);
+    let summary = summarize(&sources, None, NOW, 0);
     assert_eq!(summary.providers[0].windows[0].used_percent, Some(81.0));
 }
 
@@ -337,7 +337,7 @@ fn a_failed_source_reports_its_category_without_erasing_a_working_one() {
         )),
         Box::new(Broken("signed-out", ProviderUsageError::Authentication)),
     ];
-    let summary = summarize(&sources, NOW);
+    let summary = summarize(&sources, None, NOW, 0);
     assert_eq!(summary.providers.len(), 1);
     assert_eq!(summary.errors.len(), 1);
     assert_eq!(summary.errors[0].source, "signed-out");
@@ -346,7 +346,7 @@ fn a_failed_source_reports_its_category_without_erasing_a_working_one() {
 
 #[test]
 fn no_sources_is_an_empty_summary_and_not_an_error() {
-    let summary = summarize(&[], NOW);
+    let summary = summarize(&[], None, NOW, 0);
     assert!(summary.providers.is_empty());
     assert!(summary.errors.is_empty());
     assert_eq!(summary.generated_at, "2027-01-15T08:00:00Z");
@@ -365,7 +365,7 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
         "fixture",
         vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
     ))];
-    let json = serde_json::to_string(&summarize(&sources, NOW)).unwrap();
+    let json = serde_json::to_string(&summarize(&sources, None, NOW, 0)).unwrap();
 
     for required in [
         "usedPercent",

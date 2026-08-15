@@ -301,6 +301,34 @@ export interface LiveUsageWindowPayload {
   usedPercent: number | null;
   startsAt: string | null;
   resetsAt: string | null;
+  /** What this window's own history supports saying about it. */
+  forecast: LiveUsageForecastPayload;
+}
+
+/**
+ * The derived half of a window. Mirrors Rust `LiveUsageForecast`.
+ *
+ * Exactly one of `unavailableReason` and the value fields is populated, and
+ * that is not a formality: "we have not seen enough of your week to say" and
+ * "you are on track" are different answers, only one of them reassuring. A
+ * null value here always means the former, so the views say so rather than
+ * rendering a blank.
+ */
+export interface LiveUsageForecastPayload {
+  /** `stale` | `transition` | `sparseHistory`, or null when there is one. */
+  unavailableReason: string | null;
+  /** `low` | `medium` | `high`. */
+  confidence: string | null;
+  /** Percentage points of the allowance consumed per hour. */
+  consumptionRate: number | null;
+  /** Current rate over the rate that lands exactly at the reset. >1 overshoots. */
+  paceRatio: number | null;
+  /** Last half hour's rate over the last two hours'. >1 is speeding up. */
+  paceTrend: number | null;
+  /** When the allowance runs out at the current rate. */
+  runwayAt: string | null;
+  /** Points of this window consumed since the reader's local midnight. */
+  usedToday: number | null;
 }
 
 /** Metered spend alongside the allowance. */
@@ -712,16 +740,20 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
 /**
  * The provider's own limit figures, when a registered source can prove them.
  *
- * No offset travels with this one: a rolling five-hour window and a weekly
- * reset are the provider's own boundaries, stated as absolute instants, and
- * the reader's calendar has nothing to do with either.
+ * The offset travels for one thing only: "used today" is a claim about the
+ * reader's calendar day. The windows themselves are the provider's own
+ * boundaries, stated as absolute instants, and owe nothing to it.
  */
 export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
   if (!hasShell()) return EMPTY_LIVE_USAGE;
   // Coerced rather than passed through: a shell that answered with nothing is
   // the same fact as a shell with no source, and the views should not each
   // carry a null branch for a state that has a perfectly good empty value.
-  return (await invoke<LiveUsageSummaryPayload | null>('get_live_usage')) ?? EMPTY_LIVE_USAGE;
+  return (
+    (await invoke<LiveUsageSummaryPayload | null>('get_live_usage', {
+      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+    })) ?? EMPTY_LIVE_USAGE
+  );
 }
 
 /** What live usage looks like with no source able to say anything. */

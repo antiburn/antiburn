@@ -5,7 +5,11 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ProviderUsagePayload, ProviderUsageWindowPayload } from '../../lib/ipc';
+import type {
+  LiveUsageSummaryPayload,
+  ProviderUsagePayload,
+  ProviderUsageWindowPayload,
+} from '../../lib/ipc';
 import { ProviderUsageCluster } from './ProviderUsageCluster';
 
 function usageWindow(
@@ -292,5 +296,114 @@ describe('ProviderUsageCluster', () => {
     fireEvent.click(screen.getByRole('button', { name: /anthropic, \$1\.25 today, live/i }));
     expect(screen.getByText('Live')).toBeInTheDocument();
     expect(screen.getByText(/reported this usage directly/i)).toBeInTheDocument();
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * The ring: shown only where a provider stated a percentage
+ * ---------------------------------------------------------------------- */
+
+function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
+  const forecast = {
+    unavailableReason: 'sparseHistory',
+    confidence: null,
+    consumptionRate: null,
+    paceRatio: null,
+    paceTrend: null,
+    runwayAt: null,
+    usedToday: null,
+  };
+  return {
+    providers: [
+      {
+        provider: 'anthropic',
+        displayName: 'Anthropic',
+        support: 'live',
+        freshness: 'fresh',
+        sourceLabel: "Claude's cached usage",
+        observedAt: new Date().toISOString(),
+        windows: [
+          {
+            id: 'five-hour',
+            role: 'primaryShort',
+            kind: 'rolling',
+            scopeModel: null,
+            usedPercent: 12,
+            startsAt: null,
+            resetsAt: null,
+            forecast,
+          },
+          {
+            id: 'seven-day',
+            role: 'primaryLong',
+            kind: 'weekly',
+            scopeModel: null,
+            usedPercent,
+            startsAt: null,
+            resetsAt: null,
+            forecast,
+          },
+        ],
+        extraUsage: null,
+      },
+    ],
+    errors: [],
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+describe('ProviderUsageCluster — the limit ring', () => {
+  it('replaces the glyph with a ring at the window nearest its limit', () => {
+    // Not the shortest window and not the first: a footer with room for one
+    // ring should show the constraint that will actually bite.
+    const { container } = render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'anthropic', displayName: 'Anthropic' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="usage-ring-arc"]')).not.toBeNull();
+    // The ring is a shape with no text, so the figure has to reach the
+    // accessible name or a screen-reader user simply does not get it.
+    expect(
+      screen.getByRole('button', { name: /anthropic.*weekly limit 88% used/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the glyph, and says nothing extra, where no limit was stated', () => {
+    const { container } = render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'openai', displayName: 'OpenAI' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="usage-ring-arc"]')).toBeNull();
+    expect(screen.getByRole('button', { name: /^OpenAI,/ })).not.toHaveAccessibleName(
+      /limit/i,
+    );
+  });
+
+  it('shows the plan limits inside the panel the chip opens', () => {
+    render(
+      <ProviderUsageCluster
+        providers={[provider({ provider: 'anthropic', displayName: 'Anthropic' })]}
+        live={liveSummary(88)}
+        onViewAll={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Anthropic,/ }));
+    const panel = screen.getByRole('dialog');
+    expect(panel).toHaveTextContent('Plan limits');
+    expect(panel).toHaveTextContent('88% used');
+    // And the spend half is still there, below it.
+    expect(panel).toHaveTextContent('Last 7 days');
   });
 });

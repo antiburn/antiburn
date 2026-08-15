@@ -800,7 +800,7 @@ current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
   "Extract the milestone selection engine only: threshold filtering, delivery-key scheme (provider, account, window, reset-epoch), silent priming of already-crossed thresholds, and highest-crossing-wins selection.",
-  "Re-source it to the public LiveUsageSource fed by user-supplied credentials under the D-023 network policy (per-feature opt-in, default off, provider endpoints only, never a private-app endpoint).",
+  "SATISFIED: the engine is now fed by the public LiveUsageSource in apps/desktop/src-tauri/src/provider_usage/live/, whose only registered implementation reads a file an agent already wrote — no credential, no socket. The remaining instruction stands for the online sources when they land: per-feature opt-in, default off, provider endpoints only, never a private-app endpoint.",
   "Do not copy the private snapshot collectors, pi_api client, loopback/local-API probes, credential capture, persistence contracts, or telemetry.",
   "Strip Cadence names; add MPL-2.0 headers.",
 ]

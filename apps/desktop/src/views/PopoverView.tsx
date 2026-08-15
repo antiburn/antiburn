@@ -557,6 +557,7 @@ export function PopoverView() {
 
         <ProviderUsageCluster
           providers={usage?.providers ?? []}
+          live={liveUsage}
           onViewAll={() => setShowUsage(true)}
           onOpenSettings={() => void openSettingsWindow()}
         />

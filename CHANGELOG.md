@@ -43,6 +43,23 @@ CI changes, and documentation that no user acts on stay out — see
   Your local spend estimates are unchanged and sit directly below, as before.
   If no agent has cached a reading, the limits section is simply not there.
 
+- **How fast, and whether it will last.** Once antiburn has seen a limit move
+  more than once, it says what that movement implies: the rate you are
+  consuming at, whether the last half hour is faster or slower than the last
+  two hours, when the allowance runs out if you carry on, and how much of a
+  weekly limit went today.
+
+  These need a series, and the readings only move when your agent refetches
+  them — so most of the time antiburn will say "not enough history", and it
+  says exactly that rather than showing a confident zero. A window that has
+  just reset says so too, because its numbers are fine and simply too new to
+  extrapolate from.
+
+- **A ring in the popover footer.** Each provider's chip now carries a ring
+  showing the limit nearest its ceiling — not the shortest window, the one
+  that will actually bite. Clicking it opens the same limits and pace figures
+  without leaving the list.
+
 ## [0.1.0-rc.3] - 2026-08-15
 
 A release-candidate rehearsal build, not a supported release. The macOS and
