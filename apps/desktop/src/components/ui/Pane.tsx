@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 
 /** Title bar of a content pane: an optional leading control (a back arrow, say),
  *  the pane title, and an optional trailing action.
@@ -19,17 +19,31 @@ export function PaneHeader({
   title,
   leading,
   trailing,
+  headingRef,
   className = '',
 }: {
   title: string;
   leading?: ReactNode;
   trailing?: ReactNode;
+  /** Set by a pane that pushes a subview, so it can move focus to the new
+   *  title when the surface changes. Taking the ref is what makes the heading
+   *  programmatically focusable — `tabIndex={-1}` follows it rather than
+   *  sitting on every pane title, since a pane nobody navigates *into* has no
+   *  reason to be a focus target. */
+  headingRef?: Ref<HTMLHeadingElement>;
   className?: string;
 }) {
   return (
     <div className={`mb-6 flex items-center gap-2 ${className}`.trimEnd()}>
       {leading}
-      <h1 className="type-title-2 min-w-0 flex-1 text-balance text-label">{title}</h1>
+      <h1
+        ref={headingRef}
+        data-view-heading={headingRef ? '' : undefined}
+        tabIndex={headingRef ? -1 : undefined}
+        className="type-title-2 min-w-0 flex-1 text-balance text-label outline-none"
+      >
+        {title}
+      </h1>
       {trailing}
     </div>
   );

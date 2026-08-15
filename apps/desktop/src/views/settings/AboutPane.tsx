@@ -2,16 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { useEffect, useRef, useState } from 'react';
+
 import { Card } from '../../components/ui/Card';
-import { Disclosure, DisclosureGroup } from '../../components/ui/Disclosure';
 import { Pane } from '../../components/ui/Pane';
 import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
-import { ATTRIBUTIONS, LICENSE_TEXT, NOTICE_TEXT } from '../../lib/legalNotices';
 import { revealSource, type AppInfo } from '../../lib/ipc';
 import { detectPlatform, type Platform } from '../../lib/platform';
 import type { SettingsPane } from '../../lib/settingsPanes';
 import { PushButton } from '../../components/ui/PushButton';
+import { AboutDocumentView, type AboutDocumentId } from './AboutDocumentView';
 import { UpdatesSection } from './UpdatesSection';
 import type { AppSettingsController } from './useAppSettings';
 
@@ -41,6 +42,10 @@ const PLATFORM_LABELS: Record<Platform, string> = {
  * the app — the licence it is under, and the privacy pane that says what it
  * does with your data. The deferral is recorded in `docs/deviations.md` and the
  * links land with publication.
+ *
+ * Every one of those destinations is reached the same way: a row with an `Open`
+ * button. Three of them push an `AboutDocumentView` over this pane; the fourth
+ * moves the window to the Privacy pane, which is a section in its own right.
  */
 export interface AboutPaneProps extends AppSettingsController {
   info: AppInfo | null;
@@ -48,7 +53,40 @@ export interface AboutPaneProps extends AppSettingsController {
   onOpenPane?: (pane: SettingsPane) => void;
 }
 
+/** Ids of the `Open` buttons, so focus can return to the one that was pressed
+ *  once its document closes — by then React has unmounted the original node. */
+const OPEN_BUTTON_ID: Record<AboutDocumentId, string> = {
+  licence: 'about-open-licence',
+  notices: 'about-open-notices',
+  attributions: 'about-open-attributions',
+};
+
 export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutPaneProps) {
+  const [openDocument, setOpenDocument] = useState<AboutDocumentId | null>(null);
+  // A ref, not state: which row to hand focus back to is a note to the next
+  // effect, and nothing renders differently for it.
+  const returnFocusTo = useRef<AboutDocumentId | null>(null);
+
+  // Back from a document returns focus to the row that opened it, so a keyboard
+  // reader resumes where they left the card rather than at the top of About.
+  useEffect(() => {
+    if (openDocument || !returnFocusTo.current) return;
+    document.getElementById(OPEN_BUTTON_ID[returnFocusTo.current])?.focus();
+    returnFocusTo.current = null;
+  }, [openDocument]);
+
+  if (openDocument) {
+    return (
+      <AboutDocumentView
+        id={openDocument}
+        onBack={() => {
+          returnFocusTo.current = openDocument;
+          setOpenDocument(null);
+        }}
+      />
+    );
+  }
+
   return (
     <Pane title="About">
       {/* The app identity sits directly on the window surface rather than in a
@@ -99,51 +137,74 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
         </Card>
       </SectionGroup>
 
+      {/* Four peer rows, every one of them a door. The two legal documents were
+          disclosures here until it became clear what that meant in practice:
+          expanding the licence dropped seventeen kilobytes of MPL into the
+          middle of the pane and pushed Data past the fold. Each `Open` carries
+          its own accessible name — four buttons all called "Open" is a list a
+          screen-reader user cannot navigate. */}
       <SectionGroup title="Licence and data handling">
         <Card>
           <Row
             label="Licence"
             // Stated and readable here, never linked. Keeping the full text in
-            // the pane makes it checkable without a browser — which is the
+            // the app makes it checkable without a browser — which is the
             // point of putting it in an offline app.
-            description="antiburn is free software under the Mozilla Public License 2.0. The full text is readable below, and every source file carries its header."
+            description="antiburn is free software under the Mozilla Public License 2.0. The full text is readable here, and every source file carries its header."
             trailing={
-              <span className="type-body tabular-nums text-label-secondary">MPL-2.0</span>
+              <div className="flex items-center gap-2">
+                <span className="type-body tabular-nums text-label-secondary">MPL-2.0</span>
+                <PushButton
+                  id={OPEN_BUTTON_ID.licence}
+                  ariaLabel="Open licence text"
+                  onClick={() => setOpenDocument('licence')}
+                >
+                  Open
+                </PushButton>
+              </div>
             }
           />
           {onOpenPane && (
             <Row
               label="Privacy and data handling"
               description="What antiburn reads, what it stores, how long it keeps it, and the one time it uses the network. The long form lives in Privacy."
-              trailing={<PushButton onClick={() => onOpenPane('privacy')}>Open</PushButton>}
+              trailing={
+                <PushButton
+                  ariaLabel="Open privacy and data handling"
+                  onClick={() => onOpenPane('privacy')}
+                >
+                  Open
+                </PushButton>
+              }
             />
           )}
+          <Row
+            label="Legal notices"
+            description="Who holds the copyright in antiburn and where the work came from."
+            trailing={
+              <PushButton
+                id={OPEN_BUTTON_ID.notices}
+                ariaLabel="Open legal notices"
+                onClick={() => setOpenDocument('notices')}
+              >
+                Open
+              </PushButton>
+            }
+          />
+          <Row
+            label="Third-party attributions"
+            description="The third-party material bundled with the app, and the terms it is used under."
+            trailing={
+              <PushButton
+                id={OPEN_BUTTON_ID.attributions}
+                ariaLabel="Open third-party attributions"
+                onClick={() => setOpenDocument('attributions')}
+              >
+                Open
+              </PushButton>
+            }
+          />
         </Card>
-        {/* Disclosures rather than rows: legal text is explanatory prose, and
-            the bodies stay unmounted while collapsed so two long documents do
-            not sit in the accessibility tree of every About visit. Plain text
-            only — the pane's no-external-links rule applies to the licence's
-            own URLs too, so nothing here is an anchor. */}
-        <DisclosureGroup>
-          <Disclosure label="Legal notices">
-            <div className="flex flex-col gap-3">
-              <p className="type-footnote whitespace-pre-wrap text-label-secondary">
-                {NOTICE_TEXT.trim()}
-              </p>
-              {ATTRIBUTIONS.map((attribution) => (
-                <div key={attribution.title}>
-                  <p className="type-footnote font-medium text-label">{attribution.title}</p>
-                  <p className="type-footnote text-label-secondary">{attribution.body}</p>
-                </div>
-              ))}
-            </div>
-          </Disclosure>
-          <Disclosure label="Licence text">
-            <p className="type-footnote whitespace-pre-wrap text-label-secondary">
-              {LICENSE_TEXT.trim()}
-            </p>
-          </Disclosure>
-        </DisclosureGroup>
       </SectionGroup>
 
       <SectionGroup title="Data">
