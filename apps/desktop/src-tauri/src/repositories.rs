@@ -28,11 +28,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use antiburn_local::paths::{home_dir, ignored_paths};
+use antiburn_local::paths::{home_dir, ignored_paths, protected};
 use antiburn_local::platform::git;
 use antiburn_local::repositories::{
-    LocatedRepo, NoConsentGrants, merge_located_repos, normalize_remote_url,
-    parse_repo_name_from_url, repo_root_identity, scan_roots_for_repos,
+    DeferredProtectedPath, LocatedRepo, NoConsentGrants, merge_located_repos, normalize_remote_url,
+    parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity, scan_roots_for_repos,
 };
 use tauri::{AppHandle, Manager};
 
@@ -62,8 +62,18 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     let known: Vec<RepositoryRecord> = store.repositories()?;
     let scan_roots: Vec<PathBuf> = store.scan_roots()?.into_iter().map(PathBuf::from).collect();
 
+    // Nothing is granted yet: the record of which protected directories the user
+    // allowed arrives with the consent flow. Until then this pass treats every
+    // one of them as off limits, which is the safe direction — a repository the
+    // user cannot see listed is a lesser problem than a permission dialog they
+    // never asked for.
+    let granted: HashSet<String> = HashSet::new();
+
     let cwds: Vec<String> = distinct_cwds(&sessions);
-    let located = locate_from_cwds(&cwds, &known).await;
+    // `deferred` names the protected directories this pass deliberately left
+    // untouched. Offering the user a way to grant them is the consent flow's
+    // job; the guarantee that matters here is that none of them were read.
+    let (located, _deferred) = locate_from_cwds(&cwds, &known, &granted).await;
     let counted = count_sessions(located, &sessions);
 
     let owners = top_owners(&counted);
@@ -75,7 +85,7 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
         records.push(to_record(repo, &sessions, &known, &ignored).await);
     }
     retain_disabled(&mut records, known);
-    surface_orphaned_opt_outs(&mut records, store.state_dir()).await;
+    surface_orphaned_opt_outs(&mut records, store.state_dir(), &granted).await;
     store.replace_repositories(&records)?;
     Ok(())
 }
@@ -87,7 +97,11 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
 /// opt-out active with no toggle to undo it. Any ignored path that exists on
 /// disk and matches no listed record is surfaced as a disabled row: name from
 /// its git remote when one answers, its folder name otherwise.
-async fn surface_orphaned_opt_outs(records: &mut Vec<RepositoryRecord>, state_dir: &Path) {
+async fn surface_orphaned_opt_outs(
+    records: &mut Vec<RepositoryRecord>,
+    state_dir: &Path,
+    granted: &HashSet<String>,
+) {
     let listed: HashSet<String> = records
         .iter()
         .flat_map(|record| {
@@ -109,11 +123,19 @@ async fn surface_orphaned_opt_outs(records: &mut Vec<RepositoryRecord>, state_di
             .and_then(|name| name.to_str())
             .unwrap_or("repository")
             .to_string();
-        let remote_name = git::first_remote_url_at(root)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|url| parse_repo_name_from_url(&normalize_remote_url(&url)));
+        // An opted-out repository inside an ungranted protected directory keeps
+        // its row, named after its folder: reading its remote would mean running
+        // git in there, and the row exists precisely so the user can act on a
+        // repository antiburn is not otherwise touching.
+        let remote_name = if protected::cwd_resolution_blocked(root, granted) {
+            None
+        } else {
+            git::first_remote_url_at(root)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|url| parse_repo_name_from_url(&normalize_remote_url(&url)))
+        };
         let (repo_name, full_name) = match remote_name {
             Some(name) => (name.rsplit('/').next().unwrap_or(&name).to_string(), name),
             None => (folder_name.clone(), folder_name),
@@ -249,12 +271,24 @@ fn distinct_cwds(sessions: &[crate::store::SessionRecord]) -> Vec<String> {
 
 /// Resolve working directories to canonical repository roots, reusing roots the
 /// last pass already established.
-async fn locate_from_cwds(cwds: &[String], known: &[RepositoryRecord]) -> Vec<LocatedRepo> {
+///
+/// `granted` names the consent-protected directories the user has allowed.
+/// Working directories under any other protected directory are returned as
+/// deferred rather than resolved: this pass runs in the background, and both a
+/// directory read and a `git` process whose working directory sits inside one
+/// would raise a permission dialog with nothing on screen to explain it.
+async fn locate_from_cwds(
+    cwds: &[String],
+    known: &[RepositoryRecord],
+    granted: &HashSet<String>,
+) -> (Vec<LocatedRepo>, Vec<DeferredProtectedPath>) {
     let mut by_key: HashMap<String, LocatedRepo> = HashMap::new();
     let mut resolved = 0usize;
+    let mut unresolved: Vec<&str> = Vec::new();
 
     for cwd in cwds {
-        // Already under a repository the last pass found: no git call needed.
+        // Already under a repository the last pass found: answered from the
+        // store, so no filesystem access and no consent question to ask.
         if let Some(record) = known.iter().find(|record| {
             record
                 .repo_root
@@ -276,6 +310,21 @@ async fn locate_from_cwds(cwds: &[String], known: &[RepositoryRecord]) -> Vec<Lo
             continue;
         }
 
+        unresolved.push(cwd);
+    }
+
+    // Everything past this point shells out to git, so consent is settled first.
+    // Without a home directory nothing can be classified as protected, which
+    // matches how the engine's own guards fail open.
+    let (admitted, mut deferred) = match home_dir() {
+        Some(home) => partition_cwds_by_grants(&home, unresolved, granted),
+        None => (
+            unresolved.into_iter().map(str::to_string).collect(),
+            Vec::new(),
+        ),
+    };
+
+    for cwd in &admitted {
         if resolved >= MAX_NEW_ROOTS_PER_PASS {
             continue;
         }
@@ -285,6 +334,18 @@ async fn locate_from_cwds(cwds: &[String], known: &[RepositoryRecord]) -> Vec<Lo
             continue;
         };
         let root = git::canonical_main_repo_root(&root).await;
+        // A worktree outside the protected directories can still be owned by a
+        // main repository inside one, so the root gets its own check before the
+        // reads below.
+        if protected::cwd_resolution_blocked(&root, granted) {
+            if let Some(protected_dir) = protected::protected_dir_name(&root) {
+                deferred.push(DeferredProtectedPath {
+                    cwd: root.to_string_lossy().to_string(),
+                    protected_dir,
+                });
+            }
+            continue;
+        }
         let key = repo_root_identity(&root);
         if by_key.contains_key(&key) {
             continue;
@@ -306,7 +367,7 @@ async fn locate_from_cwds(cwds: &[String], known: &[RepositoryRecord]) -> Vec<Lo
         );
     }
 
-    by_key.into_values().collect()
+    (by_key.into_values().collect(), deferred)
 }
 
 /// Attach the per-repository session count, keeping each root's own sessions.
@@ -485,7 +546,7 @@ mod tests {
             .unwrap();
 
         let mut records = vec![repo_record("widgets", true)];
-        surface_orphaned_opt_outs(&mut records, dir.path()).await;
+        surface_orphaned_opt_outs(&mut records, dir.path(), &HashSet::new()).await;
 
         assert_eq!(records.len(), 2);
         let orphan = &records[1];
@@ -495,7 +556,7 @@ mod tests {
 
         // Idempotent: a second pass sees the row listed and adds nothing.
         let mut again = records.clone();
-        surface_orphaned_opt_outs(&mut again, dir.path()).await;
+        surface_orphaned_opt_outs(&mut again, dir.path(), &HashSet::new()).await;
         assert_eq!(again.len(), 2);
     }
 

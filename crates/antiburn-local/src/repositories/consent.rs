@@ -26,6 +26,9 @@ use std::path::Path;
 
 use async_trait::async_trait;
 
+use super::model::DeferredProtectedPath;
+use crate::paths::protected;
+
 /// The embedding application's record of consent-protected directories the user
 /// has granted, plus the hooks discovery uses to keep that record honest.
 #[async_trait]
@@ -85,5 +88,110 @@ pub struct NoConsentGrants;
 impl ConsentGrants for NoConsentGrants {
     fn granted_dirs(&self) -> HashSet<String> {
         HashSet::new()
+    }
+}
+
+/// Split working directories into those safe to resolve now and those held back
+/// pending the user's consent.
+///
+/// Anything under a protected directory absent from `granted` lands in the
+/// second list and must not be read, `stat`-ed for repository markers, or handed
+/// to `git` — that is what raises the dialog. The deferred entries carry the
+/// directory name responsible so the caller can ask for exactly that grant.
+///
+/// Pure and home-explicit: it touches no filesystem and resolves no home
+/// directory, so it behaves identically in tests on every platform. On platforms
+/// without consent controls nothing is ever deferred.
+#[must_use]
+pub fn partition_cwds_by_grants<I, S>(
+    home: &Path,
+    cwds: I,
+    granted: &HashSet<String>,
+) -> (Vec<String>, Vec<DeferredProtectedPath>)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut admitted = Vec::new();
+    let mut deferred = Vec::new();
+
+    for cwd in cwds {
+        let cwd = cwd.as_ref();
+        match protected::protected_dir_name_in(home, Path::new(cwd)) {
+            Some(protected_dir) if !granted.contains(&protected_dir) => {
+                deferred.push(DeferredProtectedPath {
+                    cwd: cwd.to_string(),
+                    protected_dir,
+                });
+            }
+            _ => admitted.push(cwd.to_string()),
+        }
+    }
+
+    super::matching::dedup_deferred_by_cwd(&mut deferred);
+    (admitted, deferred)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn protected_cwds_defer_until_their_directory_is_granted() {
+        let home = PathBuf::from("/Users/avery");
+        let documents = home.join("Documents/GitHub/repo").display().to_string();
+        let desktop = home.join("Desktop/scratch").display().to_string();
+        let plain = home.join("dev/repo").display().to_string();
+
+        let (admitted, deferred) = partition_cwds_by_grants(
+            &home,
+            [documents.clone(), desktop.clone(), plain.clone()],
+            &HashSet::new(),
+        );
+        assert_eq!(admitted, vec![plain.clone()]);
+        assert_eq!(
+            deferred
+                .iter()
+                .map(|entry| entry.protected_dir.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Documents", "Desktop"]
+        );
+
+        // Granting one directory admits its paths and holds the others back.
+        let (admitted, deferred) = partition_cwds_by_grants(
+            &home,
+            [documents.clone(), desktop.clone(), plain.clone()],
+            &HashSet::from(["Documents".to_string()]),
+        );
+        assert_eq!(admitted, vec![documents, plain]);
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].cwd, desktop);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn repeated_cwds_defer_once() {
+        let home = PathBuf::from("/Users/avery");
+        let documents = home.join("Documents/GitHub/repo").display().to_string();
+
+        let (_, deferred) =
+            partition_cwds_by_grants(&home, [&documents, &documents], &HashSet::new());
+
+        assert_eq!(deferred.len(), 1);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn platforms_without_consent_controls_defer_nothing() {
+        let home = PathBuf::from("/home/avery");
+        let documents = home.join("Documents/repo").display().to_string();
+
+        let (admitted, deferred) =
+            partition_cwds_by_grants(&home, [documents.clone()], &HashSet::new());
+
+        assert_eq!(admitted, vec![documents]);
+        assert!(deferred.is_empty());
     }
 }
