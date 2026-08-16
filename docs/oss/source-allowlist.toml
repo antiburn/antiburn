@@ -21,7 +21,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023"]
+governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023", "D-024"]
 default_action = "deny"
 publication_authorization = "authorized MPL-2.0 repository commit or merge; unresolved rights remain denied"
 third_party_resolution = "deferred until the public local-crate manifest and lockfile exist"
@@ -833,4 +833,51 @@ notes = [
   "Do not copy anomaly.rs: the public app already ships its own spend-anomaly rule in usage_alerts.rs, recorded in the deviations register as D-7.",
   "Do not copy identity.rs: the public app uploads nothing, so no opaque account key is needed and the provider's own local account id may key the milestone ledger.",
   "Strip Cadence names; add MPL-2.0 headers; keep every fail-closed branch as an error rather than a clamp.",
+]
+
+# The consent-grant record itself has no rule here, deliberately. Implementing
+# the engine's public ConsentGrants trait against the public store needs no
+# private input: the trait states the whole contract, and the storage is a table
+# in a database the private application does not have. It is therefore
+# independently authored under this manifest's Git/DCO provenance rule rather
+# than an adapt port, which is also what satisfies the standing
+# local-git-and-wsl-boundary instruction to re-home the consent-state read.
+# Recorded in docs/deviations.md as D-23.
+
+[[rule]]
+id = "tcc-consent-commands"
+source_paths = ["desktop/src-tauri/src/commands.rs"]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/commands.rs"
+provenance = "Cadence company-authored folder-access command slice; D-024 maintainer decision authorizes the slice port"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract only the folder-access slice: focus the window before probing, perform the deliberate directory read, capture elapsed time before anything else runs, record the outcome, then either record the grant or open the system settings pane. Also the settings deep-link and diagnostics commands.",
+  "Retain the ordering constraints and their reasons: an accessory-policy app must be frontmost or the system dialog opens behind it, and the elapsed measurement must not include opening system settings.",
+  "Do not copy any other command, the private state structs, organization filtering, upload, publication, account, or analytics paths from this file.",
+  "Strip Cadence names; add MPL-2.0 headers.",
+]
+
+[[rule]]
+id = "tcc-consent-frontend"
+source_paths = [
+  "desktop/src/hooks/useProtectedDirFlow.ts",
+  "desktop/src/components/shared/PermissionBanner.tsx",
+  "desktop/src/components/onboarding/RepoDiscoveryStep.tsx",
+  "desktop/src/components/settings/sections/RepositoriesSection.tsx",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src/lib/useProtectedDirFlow.ts, apps/desktop/src/components/repositories/PermissionBanner.tsx, and the permission slices of the public onboarding and sources surfaces"
+provenance = "Cadence company-authored consent presentation; D-024 maintainer decision authorizes the permission slices"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract only the permission slices: the sequential per-directory state machine with its transition timing, the recorded-denial threshold and its per-directory tracking, and the banner's request/granted/denied/scanning presentation.",
+  "From the two surface files take the permission slice alone -- not the containers, stores, command bindings, discovery hooks, or any other section.",
+  "Do not port the source's aggregate recorded-denial condition, which hides recovery until every directory is denied; the public flow is per-directory and records that divergence in docs/deviations.md.",
+  "Restyle onto the public primitives; do not copy private design-system imports, analytics, or organization-scoped filtering of the deferred list.",
+  "Strip Cadence names; add MPL-2.0 headers.",
 ]
