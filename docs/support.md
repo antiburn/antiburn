@@ -113,6 +113,16 @@ conversation belongs in the agent's own interface.
 **Exports** carry derived analysis, the paths a session ran in, and the two excerpts
 above. The export flow warns before it writes and always asks where to put the file.
 
+**Folder permissions (macOS).** macOS guards Documents, Desktop, and Downloads behind
+your explicit consent. antiburn never reads one of them until you have allowed it: a
+repository recorded in a guarded folder is skipped, and antiburn tells you it was
+skipped rather than asking the system for access on its own. The permission dialog you
+see is one antiburn asked for because you pressed a button, and what it wants is
+narrow — the git repositories your coding agents worked in, read for their names and
+locations. If you decline, the folder is simply left alone; you can change your mind
+in Settings → Sources, or revoke access in System Settings, and antiburn will notice
+the next time it looks.
+
 ## Network
 
 The engine performs no network or socket I/O at all, and this is enforced
