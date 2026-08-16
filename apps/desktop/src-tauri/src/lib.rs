@@ -48,6 +48,7 @@
 mod agents;
 mod analytics;
 mod commands;
+mod consent;
 mod disk_monitor;
 mod dto;
 mod export;

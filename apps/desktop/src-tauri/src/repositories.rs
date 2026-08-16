@@ -31,12 +31,15 @@ use std::path::{Path, PathBuf};
 use antiburn_local::paths::{home_dir, ignored_paths, protected};
 use antiburn_local::platform::git;
 use antiburn_local::repositories::{
-    DeferredProtectedPath, LocatedRepo, NoConsentGrants, merge_located_repos, normalize_remote_url,
-    parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity, scan_roots_for_repos,
+    DeferredProtectedPath, LocatedRepo, dedup_deferred_by_cwd, merge_located_repos,
+    normalize_remote_url, parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity,
+    scan_roots_for_repos,
 };
+use antiburn_local::repositories::ConsentGrants as _;
 use tauri::{AppHandle, Manager};
 
-use crate::dto::RepositoryItem;
+use crate::consent::StoreConsentGrants;
+use crate::dto::{DeferredPermissionDir, RepositoryItem};
 use crate::scan::{IGNORE_SCOPE, RETENTION_DAYS, unix_now};
 use crate::store::{RepositoryRecord, Store};
 
@@ -62,22 +65,20 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     let known: Vec<RepositoryRecord> = store.repositories()?;
     let scan_roots: Vec<PathBuf> = store.scan_roots()?.into_iter().map(PathBuf::from).collect();
 
-    // Nothing is granted yet: the record of which protected directories the user
-    // allowed arrives with the consent flow. Until then this pass treats every
-    // one of them as off limits, which is the safe direction — a repository the
-    // user cannot see listed is a lesser problem than a permission dialog they
-    // never asked for.
-    let granted: HashSet<String> = HashSet::new();
+    // What the user has already allowed. Read, never probed: confirming a grant
+    // means reading the directory, which is the very thing that prompts.
+    let consent = StoreConsentGrants::new(&store);
+    let granted = consent.granted_dirs();
 
     let cwds: Vec<String> = distinct_cwds(&sessions);
     // `deferred` names the protected directories this pass deliberately left
-    // untouched. Offering the user a way to grant them is the consent flow's
-    // job; the guarantee that matters here is that none of them were read.
-    let (located, _deferred) = locate_from_cwds(&cwds, &known, &granted).await;
+    // untouched, so the interface can offer the user a way to grant them.
+    let (located, deferred) = locate_from_cwds(&cwds, &known, &granted).await;
     let counted = count_sessions(located, &sessions);
 
     let owners = top_owners(&counted);
-    let scanned = forward_scan(&owners, &scan_roots).await;
+    let (scanned, scan_deferred) = forward_scan(&owners, &scan_roots, &consent).await;
+    let deferred = merge_deferred(deferred, scan_deferred);
 
     let merged = merge_located_repos(counted.into_iter().map(|(repo, _)| repo).collect(), scanned);
     let mut records = Vec::with_capacity(merged.len());
@@ -87,7 +88,39 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     retain_disabled(&mut records, known);
     surface_orphaned_opt_outs(&mut records, store.state_dir(), &granted).await;
     store.replace_repositories(&records)?;
+    store.set_deferred_permission_dirs(&summarize_deferred(&deferred))?;
     Ok(())
+}
+
+/// Combine two deferred lists, keeping each working directory once.
+fn merge_deferred(
+    mut first: Vec<DeferredProtectedPath>,
+    second: Vec<DeferredProtectedPath>,
+) -> Vec<DeferredProtectedPath> {
+    first.extend(second);
+    dedup_deferred_by_cwd(&mut first);
+    first
+}
+
+/// Reduce deferred paths to one entry per protected directory, since that is
+/// the granularity the operating system grants at and therefore the only
+/// granularity worth asking the user about.
+fn summarize_deferred(deferred: &[DeferredProtectedPath]) -> Vec<DeferredPermissionDir> {
+    let mut order: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for entry in deferred {
+        if !counts.contains_key(&entry.protected_dir) {
+            order.push(entry.protected_dir.clone());
+        }
+        *counts.entry(entry.protected_dir.clone()).or_insert(0) += 1;
+    }
+    order
+        .into_iter()
+        .map(|dir| DeferredPermissionDir {
+            path_count: counts.get(&dir).copied().unwrap_or(0),
+            dir,
+        })
+        .collect()
 }
 
 /// Give every opted-out root a Settings row, even when its record is gone.
@@ -413,19 +446,26 @@ fn top_owners(located: &[(LocatedRepo, String)]) -> Vec<String> {
 
 /// The engine's owner-scoped forward walk, over the common code directories and
 /// the reader's declared scan roots.
-async fn forward_scan(owners: &[String], scan_roots: &[PathBuf]) -> Vec<LocatedRepo> {
+async fn forward_scan(
+    owners: &[String],
+    scan_roots: &[PathBuf],
+    consent: &StoreConsentGrants<'_>,
+) -> (Vec<LocatedRepo>, Vec<DeferredProtectedPath>) {
     let Some(home) = home_dir() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let mut located = Vec::new();
+    let mut deferred = Vec::new();
     for owner in owners {
         // `probe_protected: false` — a background pass must never be able to
-        // raise the operating system's consent dialog.
-        let (repos, _deferred) =
-            scan_roots_for_repos(&home, owner, false, scan_roots, &NoConsentGrants).await;
+        // raise the operating system's consent dialog. Roots the user has
+        // already granted are walked normally; the rest come back deferred.
+        let (repos, skipped) =
+            scan_roots_for_repos(&home, owner, false, scan_roots, consent).await;
         located.extend(repos);
+        deferred.extend(skipped);
     }
-    located
+    (located, deferred)
 }
 
 /// Shape one located repository into the record the store keeps.

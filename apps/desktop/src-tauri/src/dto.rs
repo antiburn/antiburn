@@ -15,7 +15,7 @@
 //! never labels.
 
 use antiburn_local::analysis::{ActiveSessionsSummary, SessionCost, SkillUse};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
 ///
@@ -136,6 +136,20 @@ pub struct SessionAnalytics {
     /// The transcript's own path, for the reveal action. Absent for sessions
     /// held in a vendor database rather than a file.
     pub source_path: Option<String>,
+}
+
+/// A protected directory the last pass declined to read, and how many working
+/// directories are waiting behind it.
+///
+/// One entry per directory rather than per path: the operating system grants
+/// access at that granularity, so it is the only granularity worth asking about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeferredPermissionDir {
+    /// The protected directory's name, for example `Documents`.
+    pub dir: String,
+    /// How many known working directories sit inside it.
+    pub path_count: u32,
 }
 
 /// One repository row in the sources pane.
