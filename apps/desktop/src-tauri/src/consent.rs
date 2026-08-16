@@ -79,6 +79,15 @@ pub struct ProbeRecord {
     pub elapsed_ms: u64,
 }
 
+/// The recent probe history, oldest first.
+pub fn recent_probes() -> Vec<ProbeRecord> {
+    let probes = match probe_log().lock() {
+        Ok(probes) => probes,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    probes.iter().cloned().collect()
+}
+
 /// What a deliberate probe found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeOutcome {
@@ -106,6 +115,15 @@ impl ProbeOutcome {
             Self::Granted { .. } => "granted",
             Self::Denied { .. } => "denied",
             Self::RecordedDenial { .. } => "recorded-denial",
+        }
+    }
+
+    /// How long the system took to answer.
+    pub fn elapsed_ms(self) -> u64 {
+        match self {
+            Self::Granted { elapsed_ms }
+            | Self::Denied { elapsed_ms }
+            | Self::RecordedDenial { elapsed_ms } => elapsed_ms,
         }
     }
 }

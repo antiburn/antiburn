@@ -460,6 +460,18 @@ impl Store {
         Ok(())
     }
 
+    /// The protected directories the last pass declined to read.
+    ///
+    /// An unreadable or malformed value reads as "nothing deferred": the
+    /// consequence is a missing prompt, where the alternative — failing the
+    /// whole permissions query — would take the recovery interface down with it.
+    pub fn deferred_permission_dirs(&self) -> Result<Vec<DeferredPermissionDir>> {
+        Ok(self
+            .internal_value(DEFERRED_PERMISSION_DIRS_KEY)
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default())
+    }
+
     /* --------------------------------------------------------------------
      * Sessions
      * ----------------------------------------------------------------- */

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { open } from '@tauri-apps/plugin-dialog';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AlertTriangle } from 'lucide-react';
 
@@ -32,6 +32,7 @@ import {
   hidePopover,
   listRecentSessions,
   listRepositories,
+  getFolderPermissions,
   listScanRoots,
   onScanEvent,
   onSessionsInvalidated,
@@ -55,7 +56,12 @@ import {
   prefersReducedMotion,
   type PopoverSurface,
 } from '../lib/popoverHeight';
-import type { LocalRepositoryItem, LocalRepositoryStatus } from '../lib/types/repository';
+import type {
+  FolderPermissions,
+  LocalRepositoryItem,
+  LocalRepositoryStatus,
+} from '../lib/types/repository';
+import { useFolderPermissionFlow } from '../lib/useFolderPermissionFlow';
 import { OnboardingFlow } from './popover/OnboardingFlow';
 import { SessionPane, type SessionSubject } from './popover/SessionPane';
 import { UsageView } from './popover/UsageView';
@@ -123,6 +129,11 @@ export function PopoverView() {
   const [entries, setEntries] = useState<LocalActivityEntry[] | null>(null);
   const [scanRoots, setScanRoots] = useState<string[]>([]);
   const [defaultRoots, setDefaultRoots] = useState<string[]>([]);
+  const [permissions, setPermissions] = useState<FolderPermissions>({
+    deferred: [],
+    granted: [],
+    supported: false,
+  });
   const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   /** Navigation stack. Empty means the activity list is showing. */
@@ -371,7 +382,30 @@ export function PopoverView() {
   const handleRescan = useCallback(async () => {
     const status = await scanNow().catch(() => null);
     if (status) setScanStatus(status);
+    // A pass settles which folders are still out of reach; onboarding shows
+    // that directly, so it has to be re-read rather than assumed.
+    const next = await getFolderPermissions().catch(() => null);
+    if (next) setPermissions(next);
   }, []);
+
+  // Each grant refreshes the repository list the reader is watching, rather
+  // than making them wait for every folder in the queue.
+  const permissionFlow = useFolderPermissionFlow(permissions.deferred, () => {
+    void handleRescan();
+    void refreshRepositoryList();
+  });
+
+  /**
+   * Default roots antiburn has not actually read, because the operating system
+   * is still guarding the folder they sit in.
+   */
+  const blockedRoots = useMemo(() => {
+    if (!permissions.supported || permissions.deferred.length === 0) return [];
+    const blocked = permissions.deferred.map((entry) => entry.dir);
+    return defaultRoots.filter((root) =>
+      blocked.some((dir) => root.split(/[\\/]/).includes(dir)),
+    );
+  }, [defaultRoots, permissions]);
 
   /* ---------------------------------------------------------------------
    * Attention banners
@@ -456,6 +490,9 @@ export function PopoverView() {
       return (
         <OnboardingFlow
           defaultRoots={defaultRoots}
+          blockedRoots={blockedRoots}
+          permissions={permissions}
+          permissionFlow={permissionFlow}
           scanRoots={scanRoots}
           onAddScanRoot={() => void handleAddScanRoot()}
           onRemoveScanRoot={(path) => void handleRemoveScanRoot(path)}

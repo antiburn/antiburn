@@ -2,16 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Check, FolderPlus, X } from 'lucide-react';
+import { Check, FolderPlus, Lock, X } from 'lucide-react';
 
 import appIcon from '../../assets/app-icon.png';
 import { useEffect, useRef, useState } from 'react';
 
+import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
 import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
 import { PushButton } from '../../components/ui/PushButton';
 import { ScrollPane } from '../../components/ui/ScrollPane';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
-import type { ScanStatus } from '../../lib/ipc';
+import { openFolderAccessSettings, type ScanStatus } from '../../lib/ipc';
+import type { FolderPermissions } from '../../lib/types/repository';
+import type { FolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
 import type { LocalRepositoryItem } from '../../lib/types/repository';
 
 /**
@@ -38,6 +41,15 @@ import type { LocalRepositoryItem } from '../../lib/types/repository';
 export interface OnboardingFlowProps {
   /** Directories the engine searches without being asked. */
   defaultRoots: readonly string[];
+  /**
+   * Default roots the operating system is still guarding, so the step can say
+   * "needs permission" rather than ticking a folder nothing has read.
+   */
+  blockedRoots: readonly string[];
+  /** Which protected folders need permission, and which already have it. */
+  permissions: FolderPermissions;
+  /** The sequential request flow the notice drives. */
+  permissionFlow: FolderPermissionFlow;
   /** Extra directories the reader has added so far. */
   scanRoots: readonly string[];
   /** Open a directory picker and add the result. */
@@ -119,13 +131,14 @@ function Welcome() {
 
 function Sources({
   defaultRoots,
+  blockedRoots,
   scanRoots,
   onAddScanRoot,
   onRemoveScanRoot,
 }: Pick<
   OnboardingFlowProps,
   'defaultRoots' | 'scanRoots' | 'onAddScanRoot' | 'onRemoveScanRoot'
->) {
+> & { blockedRoots: readonly string[] }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-5 pt-2">
       <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
@@ -140,25 +153,45 @@ function Sources({
         {defaultRoots.length > 0 && (
           <>
             <p className="pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
-              Searched already
+              {blockedRoots.length > 0 ? 'Default folders' : 'Searched already'}
             </p>
             <ul className="space-y-0.5 pb-3">
-              {defaultRoots.map((root) => (
-                <li key={root} className="flex items-center gap-1.5">
-                  <Check
-                    size={11}
-                    strokeWidth={2.5}
-                    aria-hidden="true"
-                    className="shrink-0 text-label-tertiary"
-                  />
-                  <span
-                    dir="rtl"
-                    className="truncate text-left type-footnote text-label-secondary"
-                  >
-                    <bdi>{root}</bdi>
-                  </span>
-                </li>
-              ))}
+              {defaultRoots.map((root) => {
+                // A default root inside a folder macOS is still guarding has
+                // *not* been searched. Ticking it here would be the one lie
+                // this step could tell.
+                const blocked = blockedRoots.includes(root);
+                return (
+                  <li key={root} className="flex items-center gap-1.5">
+                    {blocked ? (
+                      <Lock
+                        size={11}
+                        strokeWidth={2.5}
+                        aria-hidden="true"
+                        className="shrink-0 text-label-tertiary"
+                      />
+                    ) : (
+                      <Check
+                        size={11}
+                        strokeWidth={2.5}
+                        aria-hidden="true"
+                        className="shrink-0 text-label-tertiary"
+                      />
+                    )}
+                    <span
+                      dir="rtl"
+                      className="truncate text-left type-footnote text-label-secondary"
+                    >
+                      <bdi>{root}</bdi>
+                    </span>
+                    {blocked ? (
+                      <span className="shrink-0 type-caption text-label-tertiary">
+                        needs permission
+                      </span>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           </>
         )}
@@ -213,10 +246,14 @@ function Repositories({
   repositories,
   onToggleRepository,
   scanning,
+  permissions,
+  permissionFlow,
 }: {
   repositories: readonly LocalRepositoryItem[];
   onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void;
   scanning: boolean;
+  permissions: FolderPermissions;
+  permissionFlow: FolderPermissionFlow;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-5 pt-2">
@@ -227,6 +264,20 @@ function Repositories({
         Everything found here is watched unless you turn it off. Turning one off also stops its
         sessions being indexed.
       </p>
+      {permissions.supported && permissions.deferred.length > 0 ? (
+        <div className="mt-2">
+          <FolderPermissionNotice
+            deferred={permissions.deferred}
+            phase={permissionFlow.phase}
+            current={permissionFlow.current}
+            position={permissionFlow.position}
+            total={permissionFlow.total}
+            recordedDenials={permissionFlow.recordedDenials}
+            onRequest={permissionFlow.start}
+            onOpenSettings={() => void openFolderAccessSettings()}
+          />
+        </div>
+      ) : null}
       <div className="mt-2 min-h-0 flex-1">
         <LocalRepositoryList
           repositories={[...repositories]}
@@ -356,6 +407,9 @@ function Ready({ sessions }: { sessions: number }) {
  *  deliberate deviation from the ratified copy. */
 export function OnboardingFlow({
   defaultRoots,
+  blockedRoots,
+  permissions,
+  permissionFlow,
   scanRoots,
   onAddScanRoot,
   onRemoveScanRoot,
@@ -413,6 +467,7 @@ export function OnboardingFlow({
         {step === 'sources' && (
           <Sources
             defaultRoots={defaultRoots}
+            blockedRoots={blockedRoots}
             scanRoots={scanRoots}
             onAddScanRoot={onAddScanRoot}
             onRemoveScanRoot={onRemoveScanRoot}
@@ -423,6 +478,8 @@ export function OnboardingFlow({
             repositories={repositories}
             onToggleRepository={onToggleRepository}
             scanning={running && repositories.length === 0}
+            permissions={permissions}
+            permissionFlow={permissionFlow}
           />
         )}
         {step === 'scan' && (

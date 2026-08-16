@@ -85,3 +85,50 @@ export interface LocalRepositoryItem {
   /** Whether the user has this repository included. Selection is opt-out. */
   enabled: boolean;
 }
+
+/**
+ * A protected folder the last pass declined to read, and how many working
+ * directories wait behind it.
+ *
+ * One entry per folder rather than per path: the operating system grants access
+ * at that granularity, so it is the only granularity worth asking about.
+ */
+export type DeferredPermissionDir = {
+  /** The folder's name, for example `Documents`. */
+  dir: string;
+  /** How many known working directories sit inside it. */
+  pathCount: number;
+};
+
+/** What the last pass could and could not read. */
+export type FolderPermissions = {
+  /** Folders the last pass declined to read, in the order it met them. */
+  deferred: DeferredPermissionDir[];
+  /** Folder names the reader has already granted. */
+  granted: string[];
+  /**
+   * Whether this platform guards folders behind consent at all. False
+   * everywhere but macOS, where the whole surface is hidden.
+   */
+  supported: boolean;
+};
+
+/**
+ * How the operating system answered a request for a folder.
+ *
+ * `recordedDenial` is the case worth handling separately: the system refused
+ * from a decision it already held, without showing a dialog, so asking again
+ * does nothing and the reader has to change it in system settings.
+ */
+export type FolderAccessOutcome = {
+  outcome: 'granted' | 'denied' | 'recorded-denial';
+  /** How long the system took to answer, in milliseconds. */
+  elapsedMs: number;
+};
+
+/** One recorded attempt to read a protected folder. */
+export type ProbeRecord = {
+  target: string;
+  outcome: string;
+  elapsedMs: number;
+};

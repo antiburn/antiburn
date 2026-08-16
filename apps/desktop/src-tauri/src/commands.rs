@@ -14,19 +14,24 @@
 //! returns an empty success instead, because the views have states for those and
 //! an error banner would be a lie.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::scan_roots as engine_scan_roots;
+use antiburn_local::paths::{home_dir, protected};
+use antiburn_local::repositories as repositories_engine;
+use antiburn_local::repositories::ConsentGrants as _;
 use antiburn_local::repositories::platform::{PlatformDiscovery as _, platform};
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::agents::kind_from_slug;
 use crate::analytics;
+use crate::consent;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, LiveUsageSummary, OrchestrationStatus,
-    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics, SessionIdentity,
+    ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, LiveUsageSummary,
+    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics, SessionIdentity,
     SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
@@ -838,6 +843,160 @@ pub fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     // leaving a reader looking at an empty list until the next tick.
     app.state::<ScanController>().request();
     Ok(removed)
+}
+
+/* --------------------------------------------------------------------------
+ * Folder permissions
+ * ----------------------------------------------------------------------- */
+
+/// What the last pass could and could not read.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderPermissions {
+    /// Protected directories the last pass declined to read, in the order it
+    /// met them.
+    pub deferred: Vec<DeferredPermissionDir>,
+    /// Directory names the user has already granted.
+    pub granted: Vec<String>,
+    /// Whether this platform guards directories behind consent at all. False
+    /// everywhere but macOS, and the interface hides the whole surface when so.
+    pub supported: bool,
+}
+
+/// The result of asking the operating system for a directory.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderAccessOutcome {
+    /// `granted`, `denied`, or `recorded-denial`.
+    pub outcome: String,
+    /// How long the system took to answer. See
+    /// [`consent::RECORDED_DENIAL_MS`] for why this is worth reporting.
+    pub elapsed_ms: u64,
+}
+
+/// Which directories need permission, and which already have it.
+#[tauri::command]
+pub fn get_folder_permissions(app: tauri::AppHandle) -> CommandResult<FolderPermissions> {
+    let store = app.state::<Store>();
+    let mut granted: Vec<String> = store.granted_dirs().map_err(fail)?.into_iter().collect();
+    granted.sort();
+    Ok(FolderPermissions {
+        deferred: store.deferred_permission_dirs().map_err(fail)?,
+        granted,
+        supported: !protected::protected_dir_names().is_empty(),
+    })
+}
+
+/// Ask the operating system for one protected directory.
+///
+/// **This is the call that raises the consent dialog**, and it is deliberate:
+/// it runs only when the reader asks for it, after the interface has explained
+/// what is about to happen. Two details are load-bearing and easy to lose:
+///
+/// 1. **The window is focused first.** antiburn has no dock icon and often no
+///    visible window, and a consent dialog raised by an unfocused accessory app
+///    can open behind everything else — the reader then waits on a prompt they
+///    cannot see. The popover is held open across the call for the same reason
+///    the folder picker holds it.
+/// 2. **The elapsed time is measured around the probe alone.** It is what
+///    separates "the reader answered a dialog" from "the system answered from a
+///    decision it already had", so no other work may be folded into it.
+///
+/// A grant kicks a rescan: the directory's repositories were skipped by every
+/// pass until now, and the reader who just granted it is watching for them.
+#[tauri::command]
+pub async fn request_folder_access(
+    app: tauri::AppHandle,
+    dir: String,
+) -> CommandResult<FolderAccessOutcome> {
+    let Some(home) = home_dir() else {
+        return Err("no home directory".to_string());
+    };
+    if !protected::protected_dir_names().contains(&dir.as_str()) {
+        return Err(format!("{dir} is not a consent-protected directory"));
+    }
+
+    popover::begin_focus_hold(&app);
+    if let Some(window) = app.get_webview_window(popover::LABEL) {
+        let _ = window.set_focus();
+    }
+
+    let outcome = {
+        let store = app.state::<Store>();
+        let consent = consent::StoreConsentGrants::new(&store);
+        let outcome = consent.probe_and_record(&home.join(&dir)).await;
+        if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
+            consent.grant(&dir).map_err(fail)?;
+        }
+        outcome
+    };
+
+    popover::end_focus_hold(&app);
+
+    if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
+        app.state::<ScanController>().request();
+    }
+
+    Ok(FolderAccessOutcome {
+        outcome: outcome.label().to_string(),
+        elapsed_ms: outcome.elapsed_ms(),
+    })
+}
+
+/// Open the system pane where folder permissions are granted.
+#[tauri::command]
+pub fn open_folder_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
+    let url = repositories_engine::permission_settings_url()
+        .ok_or_else(|| "no permission settings on this platform".to_string())?;
+    app.opener().open_url(url, None::<&str>).map_err(fail)
+}
+
+/// Open the system pane for full disk access.
+///
+/// The escape hatch for the case the per-folder pane cannot fix: after a
+/// permissions reset the app may have no row there to toggle at all.
+#[tauri::command]
+pub fn open_full_disk_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
+    let url = repositories_engine::full_disk_access_settings_url()
+        .ok_or_else(|| "no full disk access settings on this platform".to_string())?;
+    app.opener().open_url(url, None::<&str>).map_err(fail)
+}
+
+/// Probe outcomes from this run, for the reader to copy into a bug report.
+#[tauri::command]
+pub fn get_consent_diagnostics() -> Vec<consent::ProbeRecord> {
+    consent::recent_probes()
+}
+
+/// Re-check protected directories for grants made outside antiburn.
+///
+/// **This can raise the consent dialog**, so it is reachable only from an
+/// explicit action in settings — never from a background pass.
+#[tauri::command]
+pub async fn recheck_folder_permissions(app: tauri::AppHandle) -> CommandResult<Vec<String>> {
+    let deferred: HashSet<String> = app
+        .state::<Store>()
+        .deferred_permission_dirs()
+        .map_err(fail)?
+        .into_iter()
+        .map(|entry| entry.dir)
+        .collect();
+    if deferred.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let discovered = {
+        let store = app.state::<Store>();
+        let consent = consent::StoreConsentGrants::new(&store);
+        consent.discover_external_grants(&deferred).await
+    };
+
+    if !discovered.is_empty() {
+        app.state::<ScanController>().request();
+    }
+    let mut discovered: Vec<String> = discovered.into_iter().collect();
+    discovered.sort();
+    Ok(discovered)
 }
 
 /// Reveal a transcript in the platform's file manager.

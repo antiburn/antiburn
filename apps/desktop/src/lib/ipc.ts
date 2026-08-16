@@ -24,6 +24,11 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type { SettingsPane } from './settingsPanes';
 import type {
+  FolderAccessOutcome,
+  FolderPermissions,
+  ProbeRecord,
+} from './types/repository';
+import type {
   ActiveSessionsSummary,
   SessionCostComponents,
   SkillDetail,
@@ -1121,4 +1126,62 @@ export const NUDGE_HOVER_EVENT = 'nudge:hover';
 export async function onNudgeHover(handler: (hovered: boolean) => void): Promise<UnlistenFn> {
   if (!hasShell()) return () => {};
   return listen<boolean>(NUDGE_HOVER_EVENT, (event) => handler(event.payload === true));
+}
+
+/* -------------------------------------------------------------------------
+ * Folder permissions
+ * ---------------------------------------------------------------------- */
+
+/** Which protected folders need permission, and which already have it. */
+export async function getFolderPermissions(): Promise<FolderPermissions> {
+  if (!hasShell()) return { deferred: [], granted: [], supported: false };
+  return invoke<FolderPermissions>('get_folder_permissions');
+}
+
+/**
+ * Ask the operating system for one protected folder.
+ *
+ * **This is what raises the system's consent dialog**, so call it only from a
+ * deliberate action the reader took after being told what it does. The shell
+ * focuses the window first and holds the popover open across the call, because
+ * a dialog raised by an app with no visible window can otherwise open behind
+ * everything else.
+ */
+export async function requestFolderAccess(dir: string): Promise<FolderAccessOutcome> {
+  if (!hasShell()) return { outcome: 'denied', elapsedMs: 0 };
+  return invoke<FolderAccessOutcome>('request_folder_access', { dir });
+}
+
+/** Open the system pane where folder permissions are granted. */
+export async function openFolderAccessSettings(): Promise<void> {
+  if (!hasShell()) return;
+  await invoke('open_folder_access_settings');
+}
+
+/**
+ * Open the system pane for full disk access.
+ *
+ * The escape hatch for the case the per-folder pane cannot fix: after a
+ * permissions reset antiburn may have no row there to toggle at all.
+ */
+export async function openFullDiskAccessSettings(): Promise<void> {
+  if (!hasShell()) return;
+  await invoke('open_full_disk_access_settings');
+}
+
+/** Probe outcomes from this run, for a bug report. */
+export async function getConsentDiagnostics(): Promise<ProbeRecord[]> {
+  if (!hasShell()) return [];
+  return invoke<ProbeRecord[]>('get_consent_diagnostics');
+}
+
+/**
+ * Re-check protected folders for grants made outside antiburn.
+ *
+ * Returns the folder names newly found readable. **This can raise the consent
+ * dialog**, so it belongs behind an explicit control, never a background poll.
+ */
+export async function recheckFolderPermissions(): Promise<string[]> {
+  if (!hasShell()) return [];
+  return invoke<string[]>('recheck_folder_permissions');
 }
