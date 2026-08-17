@@ -58,8 +58,8 @@ pub fn environment_key(wsl_distro: Option<&str>) -> String {
     }
 }
 
-/// Cached metadata for one discovered session. No transcript content: the
-/// `source_*` pair points at the provider's own file rather than copying it.
+/// Cached metadata for one discovered session. The `source_*` pair identifies
+/// the provider's source even if other session content is also cached locally.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRecord {
     pub key: SessionKey,
@@ -327,8 +327,8 @@ impl Milestones {
 }
 
 /// Narrowest and widest activity windows the settings pane offers, in days.
-/// The ceiling equals the store's retention window: offering more days than
-/// the store keeps would render a header over data that cannot exist.
+/// These control presentation and recent discovery, not storage: sessions
+/// already indexed remain until the reader clears them.
 pub const MIN_ACTIVITY_DAYS: u32 = 1;
 pub const MAX_ACTIVITY_DAYS: u32 = 14;
 /// Days of activity a fresh install shows.

@@ -322,15 +322,6 @@ pub struct ProviderUsageSummary {
     pub providers: Vec<ProviderUsage>,
     /// ISO-8601 stamp of the moment this snapshot was computed.
     pub generated_at: String,
-    /// How many days of session history the app keeps.
-    ///
-    /// Load-bearing, not trivia: it is shorter than a calendar month, so the
-    /// `month` window is truncated for most of every month and a view that did
-    /// not say so would be quietly wrong.
-    pub retention_days: u32,
-    /// ISO-8601 stamp of the earliest activity these windows can include.
-    /// Later than the start of the month whenever retention bites.
-    pub coverage_since: String,
 }
 
 /// Where the app came from and what it is running against.

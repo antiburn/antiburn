@@ -158,12 +158,10 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(saved.notify_scan_failure);
 }
 
-/// The schema's data policy says which columns may hold free text. This is the
-/// mechanical half of that promise: a column added to `session` without a
-/// deliberate decision fails here rather than quietly becoming the place
-/// transcript text ends up.
+/// Pin the shipped v1 shape so migrations remain deliberate. This is not a
+/// restriction on what a future local visibility feature may store.
 #[test]
-fn the_session_table_holds_exactly_the_columns_the_data_policy_names() {
+fn the_v1_session_table_shape_is_stable() {
     let store = store();
     let connection = store.lock();
     let mut statement = connection
@@ -184,8 +182,6 @@ fn the_session_table_holds_exactly_the_columns_the_data_policy_names() {
             "source_kind",
             "source_label",
             "wsl_distro",
-            // The one declared free-text excerpt on this table. Everything else
-            // is identity, a location, or bookkeeping.
             "title",
             "title_source",
             "cwd",
@@ -199,7 +195,7 @@ fn the_session_table_holds_exactly_the_columns_the_data_policy_names() {
 }
 
 #[test]
-fn clearing_the_index_forgets_the_derived_records_and_keeps_the_readers_choices() {
+fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     let store = store();
     store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
     store
@@ -251,7 +247,7 @@ fn clearing_the_index_forgets_the_derived_records_and_keeps_the_readers_choices(
         }])
         .unwrap();
 
-    assert_eq!(store.clear_derived_index().unwrap(), 1);
+    assert_eq!(store.clear_local_session_data().unwrap(), 1);
 
     assert!(store.recent_sessions(0, 100).unwrap().is_empty());
     assert!(
@@ -286,8 +282,8 @@ fn clearing_the_index_forgets_the_derived_records_and_keeps_the_readers_choices(
 #[test]
 fn clearing_an_already_empty_index_is_a_no_op() {
     let store = store();
-    assert_eq!(store.clear_derived_index().unwrap(), 0);
-    assert_eq!(store.clear_derived_index().unwrap(), 0);
+    assert_eq!(store.clear_local_session_data().unwrap(), 0);
+    assert_eq!(store.clear_local_session_data().unwrap(), 0);
 }
 
 #[test]
@@ -515,18 +511,6 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
     assert!(store.relations(&key).unwrap().is_empty());
     // Deleting again is a no-op rather than an error.
     assert!(!store.delete_session(&key).unwrap());
-}
-
-#[test]
-fn pruning_drops_only_sessions_older_than_the_retention_horizon() {
-    let store = store();
-    store.upsert_sessions(&[session("old", 1_000)]).unwrap();
-    store.upsert_sessions(&[session("new", 5_000)]).unwrap();
-
-    assert_eq!(store.prune_sessions_before(2_000).unwrap(), 1);
-    let remaining = store.recent_sessions(0, 100).unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].key.session_id, "new");
 }
 
 #[test]

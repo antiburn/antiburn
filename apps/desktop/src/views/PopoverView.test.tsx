@@ -130,8 +130,6 @@ const PROVIDER_USAGE = {
     },
   ],
   generatedAt: '2027-01-15T08:00:00Z',
-  retentionDays: 14,
-  coverageSince: '2027-01-01T08:00:00Z',
 };
 
 const HEALTHY_STORAGE = { failing: false, message: null };
@@ -478,7 +476,7 @@ describe('PopoverView — attention banners', () => {
     emit('storage:health', { failing: false, message: null });
     emit('storage:health', {
       failing: true,
-      message: 'The retention prune could not be written: database is locked',
+      message: 'The scan bookkeeping could not be written: database is locked',
     });
 
     expect(await screen.findByRole('status')).toHaveTextContent(/database is locked/);

@@ -18,7 +18,6 @@ import type {
 import { EMPTY_LIVE_USAGE } from '../../lib/ipc';
 import { liveAuthNote, liveForProvider } from '../../lib/presentation/liveUsage';
 import {
-  coverageNote,
   providerWindow,
   rankByWindow,
   stalenessNote,
@@ -82,7 +81,6 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
   // section to render, so nothing consumes this.
   const at = now ?? (Date.parse(live.generatedAt) || 0);
   const { recent, rest } = sectioned(summary.providers);
-  const coverage = coverageNote(summary.coverageSince, summary.retentionDays);
   const empty = recent.length === 0 && rest.length === 0;
   const authNote = liveAuthNote(live);
 
@@ -138,7 +136,6 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
         </p>
         <p className="type-caption text-label-tertiary">
           Each session counts in the window of its most recent activity.
-          {coverage ? ` ${coverage}` : ''}
         </p>
       </footer>
     </div>

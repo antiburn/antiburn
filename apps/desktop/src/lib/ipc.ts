@@ -260,10 +260,6 @@ export interface ProviderUsagePayload {
 export interface ProviderUsageSummaryPayload {
   providers: ProviderUsagePayload[];
   generatedAt: string;
-  /** Days of session history the app keeps — shorter than a calendar month. */
-  retentionDays: number;
-  /** Earliest activity these windows can include. */
-  coverageSince: string;
 }
 
 /* -------------------------------------------------------------------------
@@ -742,8 +738,6 @@ export async function getProviderUsage(): Promise<ProviderUsageSummaryPayload> {
 export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
   providers: [],
   generatedAt: '',
-  retentionDays: 0,
-  coverageSince: '',
 };
 
 /**
@@ -796,7 +790,7 @@ export async function cancelScan(): Promise<ScanStatus | null> {
 }
 
 /**
- * Forget antiburn's entire derived index, returning how many sessions went.
+ * Forget all session data in antiburn's local store, returning how many sessions went.
  *
  * antiburn's own records only. The agents' transcripts are never touched, and a
  * later scan finds all of this again.

@@ -25,6 +25,11 @@ documented files, read-only databases, and bounded WSL paths only. The desktop a
 useful fully offline; its only internet exception is checking GitHub Releases for a
 newer version. There is no analytics or telemetry of any kind in this application.
 
+**Resource boundary:** antiburn is a background utility, so CPU, memory, and disk I/O
+are product constraints. Work must be lazy, bounded, and no more frequent or
+memory-intensive than the visible feature requires. It should not materially load a
+reader's machine merely because it is running.
+
 ## Repository layout
 
 ```text

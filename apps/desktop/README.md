@@ -158,14 +158,17 @@ Three independent checks, none of which relies on review:
   through immediately, so there is no Save button and no dirty state.
 - **Local store.** One SQLite database under the app data directory
   (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
-  build — see above) holds preferences, scan roots, a session metadata
-  cache, and the engine-derived analysis. **It never stores transcript
-  content** — see the contract in `src-tauri/src/store/schema.rs`. Migrations
-  are embedded and versioned by the `user_version` pragma.
+  build — see above) holds preferences, scan roots, and the local session data
+  needed for visibility and analysis. That data may include content copied
+  from a transcript, but remains on the device; the agent's source transcript
+  is never modified or deleted. Migrations are embedded and versioned by the
+  `user_version` pragma.
 - **Scanning.** A single background task refreshes what the app knows: once at
   launch (after onboarding), whenever the popover is opened, every 60s while it
   stays open, paused entirely while it is hidden, and on demand. Passes never
-  overlap and are bounded — see the policy at the top of `src-tauri/src/scan.rs`.
+  overlap and are bounded. CPU, memory, and disk I/O are product constraints:
+  background work must be no more frequent or intensive than the visible
+  feature requires. See the policy at the top of `src-tauri/src/scan.rs`.
 - **Notifications.** Six kinds, all posted by the shell and never by the webview
   (which is granted no notification permission): an available update, a failed
   scan, low disk space, a spend anomaly, a crossed usage milestone, and the

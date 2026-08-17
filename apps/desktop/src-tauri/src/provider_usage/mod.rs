@@ -23,17 +23,12 @@
 //! balance, and a reset time are all unavailable — and are therefore absent
 //! from the payload rather than estimated into it.
 //!
-//! # Two honest limitations, both surfaced rather than hidden
+//! # An honest limitation, surfaced rather than hidden
 //!
 //! 1. **A session lands in one window: the one its last activity falls in.**
 //!    The store keeps a per-session heartbeat, not a per-turn timeline, so a
 //!    session that ran across midnight counts entirely in the day it last
 //!    touched. The views say so.
-//! 2. **`month` is truncated by retention.** The app keeps
-//!    [`RETENTION_DAYS`](crate::scan::RETENTION_DAYS) of history, which is
-//!    shorter than a calendar month, so for most of every month the month
-//!    window starts later than the first. [`ProviderUsageSummary::coverage_since`]
-//!    carries the real start, and the views print it.
 
 pub mod live;
 pub mod providers;
@@ -51,7 +46,6 @@ use crate::dto::{
     ProviderUsage, ProviderUsageStaleness, ProviderUsageState, ProviderUsageSummary,
     ProviderUsageWindow, ProviderUsageWindows,
 };
-use crate::scan::RETENTION_DAYS;
 use crate::store::{UsageEvidenceRecord, iso_from_epoch};
 
 use providers::Route;
@@ -447,7 +441,5 @@ pub fn summarize(
     ProviderUsageSummary {
         providers,
         generated_at: iso_from_epoch(Some(now)),
-        retention_days: RETENTION_DAYS as u32,
-        coverage_since: iso_from_epoch(Some(bounds.earliest().max(now - RETENTION_DAYS * 86_400))),
     }
 }

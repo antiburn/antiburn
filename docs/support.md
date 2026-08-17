@@ -82,36 +82,27 @@ and when it resets. Those are the provider's numbers, not ours:
 
 ## What antiburn stores
 
-antiburn keeps one SQLite database in its own application data directory. Settings →
-About shows the exact path.
+antiburn keeps its own local data under the application's data directory. Settings →
+About shows the exact path. It may retain the session content and derived data it
+needs to provide visibility and analysis, including messages, tool activity, file
+content recorded in a transcript, session identity and locations, counts, durations,
+token totals, phase distributions, cost estimates, skill details, and session
+relations. This data stays on the device and is never uploaded.
 
-**It stores:** session identity (agent, session id, environment), the *path* of the
-agent's own transcript, the working directory and repository a session ran in, and
-values derived by the analysis — counts, durations, token totals, phase
-distributions, cost estimates, skill names, and sub-agent relations.
+The coding agents' source transcripts remain their files. antiburn may copy data from
+them into its own local store, but it never modifies or deletes the source files.
 
-**It does not store transcript bodies:** no message text, no tool arguments, and no
-file contents.
-
-**Two short derived excerpts are stored**, because a session with no title is not
-recognizable:
-
-- a session's **title**. Agents that record one supply it. For agents that do not,
-  the engine derives one from the opening of the first user message, capped at 200
-  characters.
-- each skill's **one-line description**, taken from the transcript's own skill
-  listing and capped at 300 characters.
-
-**Retention** is 14 days. Older sessions are dropped from the index automatically;
-the agents' own files are never touched. Settings → Privacy has a control that clears
-the entire derived index at once.
+**There is no age-based retention limit.** Once a session is indexed, antiburn keeps
+its local data until the reader explicitly clears it. The agents' own files are never
+touched. Settings → Privacy clears all locally stored session data at once.
 
 **Deletion.** antiburn removes only records it created itself. It cannot and will not
 delete a coding agent's own transcript — that is the agent's file, and removing a
 conversation belongs in the agent's own interface.
 
-**Exports** carry derived analysis, the paths a session ran in, and the two excerpts
-above. The export flow warns before it writes and always asks where to put the file.
+**Exports** currently carry derived analysis, the paths a session ran in, its title,
+and skill descriptions. They do not include transcript bodies. The export flow warns
+before it writes and always asks where to put the file.
 
 **Folder permissions (macOS).** macOS guards Documents, Desktop, and Downloads behind
 your explicit consent. antiburn never reads one of them until you have allowed it: a

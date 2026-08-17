@@ -153,7 +153,7 @@ pub fn summarize(
         .is_some_and(|settings| settings.live_usage_enabled);
     let collected = sources::collect(sources, online);
     let history = store
-        .map(|store| history::record(store, &collected.snapshots, now))
+        .map(|store| history::record(store, &collected.snapshots))
         .unwrap_or_default();
     let midnight = local_midnight(now, utc_offset_minutes);
     let at =

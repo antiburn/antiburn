@@ -454,16 +454,9 @@ fn providers_come_back_most_recently_used_first() {
  * ---------------------------------------------------------------------- */
 
 #[test]
-fn the_snapshot_says_how_far_back_it_can_actually_see() {
+fn an_empty_snapshot_is_dated_and_has_no_providers() {
     let summary = summarize(&[], NOW, 0);
     assert_eq!(summary.generated_at, "2027-01-15T08:00:00Z");
-    assert_eq!(summary.retention_days, RETENTION_DAYS as u32);
-    // Mid-January the month began before retention did, so coverage starts at
-    // the retention horizon and not at the first of the month. A view that
-    // printed "this month" without this would be quietly wrong.
-    let month_start = window_bounds(NOW, 0).month_start;
-    assert!(NOW - RETENTION_DAYS * 86_400 > month_start);
-    assert_eq!(summary.coverage_since, "2027-01-01T08:00:00Z");
     assert!(summary.providers.is_empty());
 }
 

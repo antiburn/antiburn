@@ -12,6 +12,11 @@
 //! a request that arrives while one is running is dropped rather than queued,
 //! because the next tick would produce the same answer.
 //!
+//! antiburn is an always-running background utility. CPU time, memory, open
+//! files, and disk I/O are therefore correctness constraints, not optional
+//! optimizations: a scan must do no more work, retain no more data in memory,
+//! and run no more often than the visible feature requires.
+//!
 //! When a pass runs:
 //!
 //! - **At launch**, once, if onboarding is finished. A first-run install has no
@@ -52,11 +57,13 @@
 //! a retry), and [`crate::notifications`] once per run of the app, for someone
 //! who is not looking at antiburn at all.
 //!
-//! Every pass is bounded: discovery is windowed to the retention horizon, the
+//! Every pass is bounded: discovery is windowed to the widest activity view, the
 //! per-session metadata reads run at a fixed concurrency, and analysis is
 //! capped at [`MAX_ANALYSES_PER_PASS`] sessions so one pass cannot grow with
-//! the size of the machine. The scheduler is a single task whose handle the app
-//! aborts on exit, so nothing outlives the process.
+//! the size of the machine. Sessions already indexed are retained until the
+//! reader explicitly clears them; the bounded discovery window is not a data
+//! expiry policy. The scheduler is a single task whose handle the app aborts on
+//! exit, so nothing outlives the process.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,11 +86,6 @@ use crate::store::{SessionKey, SessionRecord, Store};
 
 /// How often the scheduler wakes up.
 pub const TICK: Duration = Duration::from_secs(60);
-
-/// Days of session history the store retains, regardless of how narrow the
-/// user's activity window is. Widening the window then has data to show
-/// immediately instead of waiting for a scan.
-pub const RETENTION_DAYS: i64 = 14;
 
 /// How many session logs have their metadata read at once. Bounds open files
 /// and blocking-pool pressure during a whole-machine pass.
@@ -261,7 +263,10 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
     let store = app.state::<Store>();
     let settings = store.settings()?;
     let now = unix_now();
-    let window_days = i64::from(settings.activity_window_days).max(RETENTION_DAYS);
+    // Discovery always covers the widest list the UI can request, so changing
+    // the display window is instant. Previously indexed sessions outside this
+    // lookback remain in the store indefinitely.
+    let window_days = i64::from(crate::store::MAX_ACTIVITY_DAYS);
     let since_secs = window_days * 86_400;
 
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
@@ -293,7 +298,7 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
-    // left to mislead until retention ages it out.
+    // left to mislead indefinitely.
     for key in &rejected {
         checked(
             app,
@@ -309,12 +314,6 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
             store.record_agent_scan(&agent, cursor, seen),
         )?;
     }
-
-    checked(
-        app,
-        "The retention prune",
-        store.prune_sessions_before(now - RETENTION_DAYS * 86_400),
-    )?;
 
     // Everything discovered so far is already persisted, so a cancel here keeps
     // the reader's results and only skips the work still ahead.
@@ -1170,11 +1169,5 @@ mod tests {
         controller.running.store(true, Ordering::SeqCst);
         controller.request_cancel();
         assert!(controller.cancelled());
-    }
-
-    #[test]
-    fn retention_is_never_narrower_than_the_widest_activity_window() {
-        // The store must be able to answer a widened window without a rescan.
-        assert!(RETENTION_DAYS >= i64::from(crate::store::model::DEFAULT_ACTIVITY_DAYS));
     }
 }
