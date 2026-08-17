@@ -921,17 +921,22 @@ pub async fn request_folder_access(
         let _ = window.set_focus();
     }
 
-    let outcome = {
+    let (outcome, recorded) = {
         let store = app.state::<Store>();
         let consent = consent::StoreConsentGrants::new(&store);
         let outcome = consent.probe_and_record(&home.join(&dir)).await;
-        if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
-            consent.grant(&dir).map_err(fail)?;
-        }
-        outcome
+        let recorded = match outcome {
+            consent::ProbeOutcome::Granted { .. } => consent.grant(&dir),
+            _ => Ok(()),
+        };
+        (outcome, recorded)
     };
 
+    // Released before anything can fail. An early `?` between the two would
+    // leave the hold in place for the rest of the run, and the popover would
+    // stop dismissing on focus loss with nothing on screen to explain why.
     popover::end_focus_hold(&app);
+    recorded.map_err(fail)?;
 
     if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
         app.state::<ScanController>().request();

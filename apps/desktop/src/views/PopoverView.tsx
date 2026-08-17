@@ -34,6 +34,7 @@ import {
   listRepositories,
   getFolderPermissions,
   listScanRoots,
+  recheckFolderPermissions,
   onScanEvent,
   onSessionsInvalidated,
   onSettingsChanged,
@@ -394,6 +395,28 @@ export function PopoverView() {
     void handleRescan();
     void refreshRepositoryList();
   });
+  const [recheckingPermissions, setRecheckingPermissions] = useState(false);
+
+  /**
+   * Look for access granted in System Settings rather than through antiburn.
+   *
+   * The way out of a remembered refusal: macOS will not prompt again, so the
+   * only path is the system pane, and nothing notices that until something
+   * looks. Whatever it finds has to reach the surface the reader is on, or the
+   * control reads as broken in exactly the state it exists to fix.
+   */
+  const handleRecheckPermissions = useCallback(async () => {
+    setRecheckingPermissions(true);
+    const found = await recheckFolderPermissions().catch(() => []);
+    if (found.length > 0) {
+      await handleRescan();
+      await refreshRepositoryList();
+    } else {
+      const next = await getFolderPermissions().catch(() => null);
+      if (next) setPermissions(next);
+    }
+    setRecheckingPermissions(false);
+  }, [handleRescan, refreshRepositoryList]);
 
   /**
    * Default roots antiburn has not actually read, because the operating system
@@ -493,6 +516,8 @@ export function PopoverView() {
           blockedRoots={blockedRoots}
           permissions={permissions}
           permissionFlow={permissionFlow}
+          onRecheckPermissions={() => void handleRecheckPermissions()}
+          recheckingPermissions={recheckingPermissions}
           scanRoots={scanRoots}
           onAddScanRoot={() => void handleAddScanRoot()}
           onRemoveScanRoot={(path) => void handleRemoveScanRoot(path)}

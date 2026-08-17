@@ -12,12 +12,7 @@ import { LocalRepositoryList } from '../../components/repositories/LocalReposito
 import { PushButton } from '../../components/ui/PushButton';
 import { ScrollPane } from '../../components/ui/ScrollPane';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
-import {
-  getConsentDiagnostics,
-  openFolderAccessSettings,
-  recheckFolderPermissions,
-  type ScanStatus,
-} from '../../lib/ipc';
+import { getConsentDiagnostics, openFolderAccessSettings, type ScanStatus } from '../../lib/ipc';
 import type { FolderPermissions } from '../../lib/types/repository';
 import type { FolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
 import type { LocalRepositoryItem } from '../../lib/types/repository';
@@ -55,6 +50,10 @@ export interface OnboardingFlowProps {
   permissions: FolderPermissions;
   /** The sequential request flow the notice drives. */
   permissionFlow: FolderPermissionFlow;
+  /** Look for access granted in System Settings, and refresh what it changed. */
+  onRecheckPermissions: () => void;
+  /** Whether that re-check is in flight. */
+  recheckingPermissions: boolean;
   /** Extra directories the reader has added so far. */
   scanRoots: readonly string[];
   /** Open a directory picker and add the result. */
@@ -253,12 +252,16 @@ function Repositories({
   scanning,
   permissions,
   permissionFlow,
+  onRecheckPermissions,
+  recheckingPermissions,
 }: {
   repositories: readonly LocalRepositoryItem[];
   onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void;
   scanning: boolean;
   permissions: FolderPermissions;
   permissionFlow: FolderPermissionFlow;
+  onRecheckPermissions: () => void;
+  recheckingPermissions: boolean;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-5 pt-2">
@@ -280,7 +283,8 @@ function Repositories({
             recordedDenials={permissionFlow.recordedDenials}
             onRequest={permissionFlow.start}
             onOpenSettings={() => void openFolderAccessSettings()}
-            onRecheck={() => void recheckFolderPermissions()}
+            onRecheck={onRecheckPermissions}
+            rechecking={recheckingPermissions}
             onCopyDiagnostics={() => {
               void getConsentDiagnostics().then((probes) =>
                 navigator.clipboard.writeText(
@@ -425,6 +429,8 @@ export function OnboardingFlow({
   blockedRoots,
   permissions,
   permissionFlow,
+  onRecheckPermissions,
+  recheckingPermissions,
   scanRoots,
   onAddScanRoot,
   onRemoveScanRoot,
@@ -495,6 +501,8 @@ export function OnboardingFlow({
             scanning={running && repositories.length === 0}
             permissions={permissions}
             permissionFlow={permissionFlow}
+            onRecheckPermissions={onRecheckPermissions}
+            recheckingPermissions={recheckingPermissions}
           />
         )}
         {step === 'scan' && (
