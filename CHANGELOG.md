@@ -24,6 +24,16 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.1.0-rc.4] - 2026-08-17
+
+A release-candidate rehearsal build, not a supported release. The macOS and
+Windows binaries are **unsigned** — your operating system will warn you, and it
+is right to. Install it only if you are testing the release pipeline itself.
+
+On macOS, open the app for the first time with right-click → Open rather than a
+double-click. The build is sealed but has no Developer ID signature, so macOS
+shows its unidentified-developer warning.
+
 ### Added
 
 - **Your plan's limits, on the Usage screen.** When one of your agents has
@@ -76,9 +86,30 @@ CI changes, and documentation that no user acts on stay out — see
   because a milestone is a threshold being *crossed* and that needs readings
   that keep moving. With it off you still see your limits; antiburn just never
   interrupts you about them. The switch says both of these things.
-||||||| 37bd357
+
+- **Folder access asks before macOS does.** If sessions point into Documents,
+  Desktop, or Downloads, antiburn explains why it needs that folder and waits
+  for you to choose before it attempts a read. You can review deferred folders
+  and grant them later from Settings → Sources. If access is revoked outside
+  antiburn, the stale grant is noticed and the folder returns to the consent
+  flow instead of being treated as readable.
+
+- **Recognisable agent marks.** Codex and OpenAI now use their own marks, and
+  the agent palette has stronger, more consistent colours wherever agents are
+  identified.
+
+- **A popover that can stay put.** The tray menu can pin the popover open while
+  you work elsewhere, then unpin it to restore the usual click-away behaviour.
+
+- **A dedicated first-run window.** Setup now opens in a regular window rather
+  than borrowing the menu-bar popover. It explains that antiburn lives in the
+  menu bar after setup, and clicking the menu-bar item brings setup back while
+  it is unfinished.
 
 ### Changed
+
+- The menu-bar item remains highlighted for as long as the popover is visible,
+  including while it is pinned, so its open state is clear.
 
 - The legal documents in Settings → About now open as their own pages, with a
   back arrow, instead of expanding in place and burying the rest of the pane.
@@ -86,6 +117,11 @@ CI changes, and documentation that no user acts on stay out — see
   bundled third-party material have moved out of "Legal notices" onto a row of
   their own.
 
+### Fixed
+
+- Pinning is unavailable until first-run setup is complete, so setup cannot be
+  hidden behind an empty popover and always remains reachable from the menu
+  bar.
 
 ## [0.1.0-rc.3] - 2026-08-15
 

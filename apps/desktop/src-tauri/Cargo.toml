@@ -13,7 +13,7 @@ exclude = ["crates/nudge", "crates/sound"]
 
 [package]
 name = "antiburn"
-version = "0.1.0-rc.3"
+version = "0.1.0-rc.4"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
