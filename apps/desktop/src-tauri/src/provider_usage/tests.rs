@@ -454,7 +454,7 @@ fn providers_come_back_most_recently_used_first() {
  * ---------------------------------------------------------------------- */
 
 #[test]
-fn the_snapshot_is_dated_and_has_no_retention_contract() {
+fn an_empty_snapshot_is_dated_and_has_no_providers() {
     let summary = summarize(&[], NOW, 0);
     assert_eq!(summary.generated_at, "2027-01-15T08:00:00Z");
     assert!(summary.providers.is_empty());
