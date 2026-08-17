@@ -6,12 +6,16 @@
 
 How a version of antiburn gets from a commit to something a reader can install.
 
+The measured baseline, conservative after-model, output invariants, and
+post-merge ratification thresholds live in
+[`docs/ci-release-efficiency.md`](../ci-release-efficiency.md).
+
 There are two release trains, tagged separately and released separately:
 
-| Train | Tag | Workflow | What it produces |
-| --- | --- | --- | --- |
-| Desktop application | `antiburn-v<version>` | [`release-app.yml`](../../.github/workflows/release-app.yml) | Installers, updater bundles, signatures, checksums, inventories, provenance, `latest.json` |
-| Engine crate | `antiburn-local-v<version>` | [`release-engine.yml`](../../.github/workflows/release-engine.yml) | A source tarball, checksums, an inventory, provenance |
+| Train               | Tag                         | Workflow                                                           | What it produces                                                                           |
+| ------------------- | --------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Desktop application | `antiburn-v<version>`       | [`release-app.yml`](../../.github/workflows/release-app.yml)       | Installers, updater bundles, signatures, checksums, inventories, provenance, `latest.json` |
+| Engine crate        | `antiburn-local-v<version>` | [`release-engine.yml`](../../.github/workflows/release-engine.yml) | A source tarball, checksums, an inventory, provenance                                      |
 
 Both are **draft-first**. The workflow builds, signs, hashes, attests, and
 drafts; a person reads the draft and presses Publish. There is no auto-publish
@@ -40,11 +44,11 @@ only jobs that can reach them are the ones that ask for the environment by name
 
 Configure it as:
 
-- **Deployment branches and tags:** *Selected branches and tags* → add the tag
+- **Deployment branches and tags:** _Selected branches and tags_ → add the tag
   rule `antiburn-v*`. Nothing else can start a job that touches these secrets.
 - **Required reviewers:** optional. The draft-then-publish step is already a
   human gate; add reviewers here as well if you want the pause to happen
-  *before* the credentials are used rather than after.
+  _before_ the credentials are used rather than after.
 - **Wait timer:** not needed.
 
 Fork pull requests can never reach this: the release workflows have no
@@ -56,23 +60,23 @@ Fork pull requests can never reach this: the release workflows have no
 Add these to the **`release` environment** (not to repository-wide secrets).
 Placeholders below show the shape, never a real value.
 
-| Secret | Required | What it is | How to produce it |
-| --- | --- | --- | --- |
-| `TAURI_SIGNING_PRIVATE_KEY` | **Always** | The updater's private signing key. Signs every updater bundle; the app verifies against the public half compiled into it. | `pnpm --filter @antiburn/desktop exec tauri signer generate -w "$HOME/antiburn.key"` (absolute path — a relative one lands in the working tree), then paste the contents of `antiburn.key`. Placeholder: `dW50cnVzdGVkIGNvbW1lbnQ6…` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | If the key has one | The passphrase for the above. Give the key a passphrase. | Chosen when generating the key. Placeholder: `<passphrase>` |
-| `APPLE_CERTIFICATE` | For signed macOS builds | Base64 of the **Developer ID Application** certificate and its private key, exported as `.p12`. | `base64 -i DeveloperID.p12 \| pbcopy`. Placeholder: `MIIM…` |
-| `APPLE_CERTIFICATE_PASSWORD` | With the above | The `.p12` export passphrase. | Chosen during export. Placeholder: `<passphrase>` |
-| `APPLE_ID` | For notarization | The Apple ID that owns the notarization submission. | Placeholder: `releases@example.org` |
-| `APPLE_PASSWORD` | For notarization | An **app-specific password** for that Apple ID — never the account password. | appleid.apple.com → Sign-In and Security → App-Specific Passwords. Placeholder: `abcd-efgh-ijkl-mnop` |
-| `APPLE_TEAM_ID` | For notarization | The ten-character Apple Developer team identifier. | Apple Developer → Membership. Placeholder: `ABCDE12345` |
-| `WINDOWS_CERTIFICATE` | For signed Windows builds | Base64 of the Authenticode code-signing certificate exported as `.pfx`. | `base64 -w0 codesign.pfx`. Placeholder: `MIIM…` |
-| `WINDOWS_CERTIFICATE_PASSWORD` | With the above | The `.pfx` export passphrase. | Chosen during export. Placeholder: `<passphrase>` |
+| Secret                               | Required                  | What it is                                                                                                                | How to produce it                                                                                                                                                                                                                    |
+| ------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `TAURI_SIGNING_PRIVATE_KEY`          | **Always**                | The updater's private signing key. Signs every updater bundle; the app verifies against the public half compiled into it. | `pnpm --filter @antiburn/desktop exec tauri signer generate -w "$HOME/antiburn.key"` (absolute path — a relative one lands in the working tree), then paste the contents of `antiburn.key`. Placeholder: `dW50cnVzdGVkIGNvbW1lbnQ6…` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | If the key has one        | The passphrase for the above. Give the key a passphrase.                                                                  | Chosen when generating the key. Placeholder: `<passphrase>`                                                                                                                                                                          |
+| `APPLE_CERTIFICATE`                  | For signed macOS builds   | Base64 of the **Developer ID Application** certificate and its private key, exported as `.p12`.                           | `base64 -i DeveloperID.p12 \| pbcopy`. Placeholder: `MIIM…`                                                                                                                                                                          |
+| `APPLE_CERTIFICATE_PASSWORD`         | With the above            | The `.p12` export passphrase.                                                                                             | Chosen during export. Placeholder: `<passphrase>`                                                                                                                                                                                    |
+| `APPLE_ID`                           | For notarization          | The Apple ID that owns the notarization submission.                                                                       | Placeholder: `releases@example.org`                                                                                                                                                                                                  |
+| `APPLE_PASSWORD`                     | For notarization          | An **app-specific password** for that Apple ID — never the account password.                                              | appleid.apple.com → Sign-In and Security → App-Specific Passwords. Placeholder: `abcd-efgh-ijkl-mnop`                                                                                                                                |
+| `APPLE_TEAM_ID`                      | For notarization          | The ten-character Apple Developer team identifier.                                                                        | Apple Developer → Membership. Placeholder: `ABCDE12345`                                                                                                                                                                              |
+| `WINDOWS_CERTIFICATE`                | For signed Windows builds | Base64 of the Authenticode code-signing certificate exported as `.pfx`.                                                   | `base64 -w0 codesign.pfx`. Placeholder: `MIIM…`                                                                                                                                                                                      |
+| `WINDOWS_CERTIFICATE_PASSWORD`       | With the above            | The `.pfx` export passphrase.                                                                                             | Chosen during export. Placeholder: `<passphrase>`                                                                                                                                                                                    |
 
 `GITHUB_TOKEN` is provided by Actions; it is not configured and must not be
 replaced by a personal access token.
 
 **The updater key is not optional.** `release-app.yml` fails immediately if
-`TAURI_SIGNING_PRIVATE_KEY` is absent, and it fails *before that* if
+`TAURI_SIGNING_PRIVATE_KEY` is absent, and it fails _before that_ if
 `plugins.updater.pubkey` in `apps/desktop/src-tauri/tauri.conf.json` is still
 empty. Both halves have to exist for an update to be verifiable, and an update
 that cannot be verified is worse than no updater at all. See
@@ -82,11 +86,11 @@ that cannot be verified is worse than no updater at all. See
 
 Variables (Settings → Secrets and variables → Actions → Variables), not secrets:
 
-| Variable | Default when unset | Effect |
-| --- | --- | --- |
-| `ALLOW_UNSIGNED_MACOS` | unset (= build fails without Apple credentials) | `true` builds macOS artifacts **without** Developer ID signing or notarization; the app is sealed with an ad-hoc signature instead. Gatekeeper still warns on first launch — right-click → Open accepts it, or clear quarantine with `xattr -dr com.apple.quarantine /Applications/antiburn.app`. Only for a deliberate, clearly-labelled build. |
-| `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate) | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download. |
-| `WINDOWS_TIMESTAMP_URL` | `http://timestamp.digicert.com` | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate. |
+| Variable                 | Default when unset                              | Effect                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ALLOW_UNSIGNED_MACOS`   | unset (= build fails without Apple credentials) | `true` builds macOS artifacts **without** Developer ID signing or notarization; the app is sealed with an ad-hoc signature instead. Gatekeeper still warns on first launch — right-click → Open accepts it, or clear quarantine with `xattr -dr com.apple.quarantine /Applications/antiburn.app`. Only for a deliberate, clearly-labelled build. |
+| `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate)     | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download.                                                                                                                                                                                                                                        |
+| `WINDOWS_TIMESTAMP_URL`  | `http://timestamp.digicert.com`                 | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate.                                                                                                                                                                                                                                             |
 
 The two `ALLOW_UNSIGNED_*` variables exist because antiburn refuses to fake a
 signature. Until the certificates exist, the honest options are "no release" or
@@ -114,11 +118,20 @@ Also confirm, under Settings → Actions → General:
 
 ### 1.5 Branch protection and required checks
 
-Releases are cut from `main`, and `release-app.yml` re-runs the whole CI
-workflow against the tagged commit, so a tag that was never on a protected
-branch still cannot skip the gate. Protect `main` and require the CI jobs by
-name. (There is no aggregate `ci-required` check yet — recorded as D-13 in
-[`docs/deviations.md`](../deviations.md).)
+Releases are cut from `main`, and each release workflow accepts only a
+successful **push** run of `.github/workflows/ci.yml` whose SHA exactly equals
+the tag SHA. A pull-request check, a successful run for a neighboring commit,
+or an untested tag is refused before any signing job starts.
+
+Protect `main` with one required check named `ci-required`. Require pull
+requests and resolved conversations, and prohibit force-pushes and deletion.
+The aggregate check is deliberately stable while its platform jobs remain free
+to run or skip according to the semantic diff classifier.
+
+The current solo-maintainer repository requires zero independent approvals.
+That is not permission to bypass the pull request: the exact-SHA main run is the
+release trust record, and the release jobs query it through the read-only
+Actions API.
 
 ### 1.6 Attestations
 
@@ -169,7 +182,7 @@ Add a section to [`CHANGELOG.md`](../../CHANGELOG.md):
 ## [1.2.0] - 2026-09-01
 ```
 
-That section *is* the release notes, the body of the in-app update prompt, and
+That section _is_ the release notes, the body of the in-app update prompt, and
 the `notes` field of `latest.json`. Write it for somebody who is deciding
 whether to install this. Internal refactors, CI changes, and documentation
 nobody acts on stay out.
@@ -177,7 +190,17 @@ nobody acts on stay out.
 ### 2.4 Open a pull request, get it reviewed, merge it
 
 The version bump and the changelog entry go through the same review as anything
-else. Merge to `main`.
+else. A pure release bump gets the narrow release-metadata gate only when all
+three executable manifests changed **only** their package version, the lockfile
+changed only the `antiburn` package entry, and the changelog is the only other
+changed file. Any dependency or other content change falls back to the full
+platform matrix. Merge to `main`.
+
+The resulting main run compiles all four release targets with `tauri build
+--no-bundle`, in parallel with its required metadata and boundary checks. It has
+no release environment and no signing secret; its only durable output is a
+dependency cache that the tag build can restore. The cache is saved only by a
+trusted main push and release jobs are restore-only.
 
 ### 2.5 Tag the merged commit and push the tag
 
@@ -195,41 +218,37 @@ tag only after the commit is on `main`.
 1. **verify** — the tag agrees with all four manifests and the lockfile; the
    updater has a public key and produces artifacts; the changelog has a section
    for this version.
-2. **checks** — the entire CI workflow, re-run against the tagged commit.
+2. **trusted-main-ci** — waits for and verifies the successful main push run for
+   this exact tag SHA. It never substitutes a PR run and never re-runs the
+   matrix.
 3. **sbom** — CycloneDX inventories of the Rust tree (all targets) and of the
    frontend's production dependencies. No credentials are in scope for this job.
 4. **build** — four jobs (macOS ARM64, macOS x64, Windows x64, Linux x64), each
-   in the `release` environment, each producing an installer, an updater bundle,
-   a detached signature, and a fragment of `latest.json`. These are the only
-   jobs that can see a signing credential.
+   restoring the dependency cache prepared by main and then entering the
+   `release` environment to package and sign. Each produces an installer, an
+   updater bundle, a detached signature, and a fragment of `latest.json`. These
+   are the only jobs that can see a signing credential, and none may save a
+   cache after doing so.
 5. **draft** — merges the fragments into `latest.json` with immutable
-   tag-specific URLs, checks that every URL it advertises names a file actually
-   in the release, computes `SHA256SUMS`, attests provenance over every asset,
-   and creates the draft.
+   tag-specific URLs; verifies all four platform keys, asset presence, detached
+   signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
+   every asset; and creates the draft.
 
-Roughly: the whole thing takes as long as four platform builds, and any failure
-leaves nothing published.
+The main run and its cache warming finish before the exact-SHA gate opens, so
+the tag's critical path is packaging and signing rather than another test
+matrix followed by a cold compile. Any failure still leaves nothing published.
 
 ### 2.7 Review the draft
 
-Open the draft release. Work down this list; it is the reason the release is a
-draft.
+The workflow summary contains the exact main CI run, the signing mode reported
+by each target, and the complete checksum table. Before the draft exists, the
+workflow has already required the four platform keys, immutable URLs, matching
+detached signatures, present assets, and a successful `sha256sum --check`.
+Those are machine gates, not boxes for a person to repeat.
 
-- [ ] **Every asset is present.** Two macOS `.dmg`, one Windows `-setup.exe`,
-      one `.AppImage`, one `.deb`, four updater bundles, four `.sig` files,
-      `latest.json`, `SHA256SUMS`, `RELEASE-NOTES.md`, two `.cdx.json`
-      inventories, one `.intoto.jsonl` provenance bundle.
-- [ ] **No unsigned warning in the run log** — unless it was deliberate, in
-      which case say so in the release notes before publishing.
-- [ ] **`latest.json` is right.** Its `version` matches the tag. Every
-      `platforms[*].url` starts with
-      `https://github.com/antiburn/antiburn/releases/download/antiburn-v<version>/`
-      — the tag-specific, immutable path, never `releases/latest`. All four
-      platform keys are there: `darwin-aarch64`, `darwin-x86_64`,
-      `windows-x86_64`, `linux-x86_64`.
-- [ ] **Checksums match.** Download an asset and compare against `SHA256SUMS`.
-- [ ] **Provenance verifies:**
-      `gh attestation verify <asset> --repo antiburn/antiburn`
+Open the draft release and perform the checks that need a real reader or
+installed operating system:
+
 - [ ] **It installs and runs.** On each platform you can reach: install from the
       downloaded installer, launch it, confirm the tray item appears, open the
       popover, and check that Settings → About shows the new version. On macOS,
@@ -245,6 +264,10 @@ draft.
       reads `releases/latest/download/latest.json`; if this release is not the
       latest one, nobody is offered the update. The workflow sets this already —
       confirm it survived.
+- [ ] **The release notes and signing modes tell the truth.** Read the notes and
+      compare any Gatekeeper or SmartScreen behavior with the workflow summary.
+- [ ] **Provenance verifies where available:**
+      `gh attestation verify <asset> --repo antiburn/antiburn`.
 
 ### 2.8 Publish
 
@@ -282,11 +305,11 @@ and a provenance record.
    version, and the locked desktop CI legs and the license check fail on the
    mismatch otherwise.
 2. Review, merge, then tag `antiburn-local-v<version>` and push the tag.
-3. The workflow re-runs CI (which includes the engine's own network-free
-   boundary suite, the whole-tree boundary scan, and `cargo deny check bans
-   licenses`), packages a deterministic source tarball with `LICENSE` and
-   `NOTICE` alongside it, inventories the dependency tree, attests provenance,
-   and drafts the release.
+3. The workflow requires the successful main push run for the exact tag SHA,
+   then packages a deterministic source tarball with `LICENSE` and `NOTICE`
+   alongside it, inventories the dependency tree, verifies its checksums,
+   attests provenance, and drafts the release. The engine release does not
+   repeat the desktop platform matrix.
 4. Review the draft: the tarball extracts, `cargo test` passes inside it, the
    checksum matches, provenance verifies. (While the repository is private, the
    two provenance steps skip themselves — attestation persistence is plan-gated
@@ -299,6 +322,7 @@ and a provenance record.
    manifests, which deliberately do not ship in the tarball; without the
    variable, that one test fails with a "must ship with the repository"
    error while everything else passes.
+
 5. Publish. **Leave "Set as the latest release" unchecked** — the workflow
    already sets `--latest=false`, and for good reason: "latest" is a property of
    the repository, and the application's updater reads
@@ -347,12 +371,12 @@ becomes a no-op and everything else stays byte-identical.
 
 ## When a run fails
 
-| Failure | What it means | What to do |
-| --- | --- | --- |
-| `verify` rejects the tag | A manifest, the lockfile, or the changelog disagrees with the tag | Fix on `main`, delete the *unpublished* tag, re-tag. Deleting a tag that was never published is fine; deleting a published one is not. Deleting any release tag requires an admin to temporarily disable the tag-immutability ruleset (Settings → Rules → Rulesets), then re-enable it immediately after re-tagging — that friction is deliberate. |
-| `checks` fails | The tagged commit does not pass CI | Fix on `main` and cut a new version. Do not re-tag around a failing gate. |
-| A `build` job fails | Usually a credential or a platform toolchain | Fix, then re-run the failed jobs. The draft is rebuilt idempotently. |
-| `draft` refuses: "already published" | The tag has a published release | Stop. This is the immutability rule doing its job — go to [`rollback.md`](rollback.md). |
+| Failure                              | What it means                                                     | What to do                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verify` rejects the tag             | A manifest, the lockfile, or the changelog disagrees with the tag | Fix on `main`, delete the _unpublished_ tag, re-tag. Deleting a tag that was never published is fine; deleting a published one is not. Deleting any release tag requires an admin to temporarily disable the tag-immutability ruleset (Settings → Rules → Rulesets), then re-enable it immediately after re-tagging — that friction is deliberate. |
+| `trusted-main-ci` fails or times out | The exact tag SHA has no successful main push run                 | For a transient failure, re-run CI for that exact SHA, wait for success, then re-run the release workflow. For a code failure, fix it on `main` and cut a new version and tag; never move the failed tag to the corrected commit. Do not substitute a PR run.                                                                                      |
+| A `build` job fails                  | Usually a credential or a platform toolchain                      | Fix, then re-run the failed jobs. The draft is rebuilt idempotently.                                                                                                                                                                                                                                                                               |
+| `draft` refuses: "already published" | The tag has a published release                                   | Stop. This is the immutability rule doing its job — go to [`rollback.md`](rollback.md).                                                                                                                                                                                                                                                            |
 
 Re-running the workflow on an existing **draft** re-uploads every asset with
 `--clobber`, which is safe and expected. It refuses outright to touch a
@@ -368,5 +392,5 @@ published one.
 - Signing with anything but the credentials in the `release` environment. (The
   deliberate `ALLOW_UNSIGNED_*` builds are sealed with codesign's ad-hoc
   identity, which asserts no identity and uses no credential — a seal, not a
-  signature. The rule forbids any *identity-claiming* signature from outside
+  signature. The rule forbids any _identity-claiming_ signature from outside
   the environment.)

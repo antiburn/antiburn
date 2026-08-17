@@ -4,13 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Called by the release workflows so the release gate *is* the everyday gate
-  # rather than a copy of it that drifts. Nothing here reads a secret, so the
-  # call site grants none.
-  workflow_call:
 
-# Least privilege: nothing in CI writes to the repository, and fork pull
-# requests never see credentials (none are configured for this workflow).
 permissions:
   contents: read
 
@@ -18,9 +12,48 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  NODE_VERSION: "24"
+  RUST_TOOLCHAIN: "1.97.0"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
 jobs:
+  classify:
+    name: classify changes
+    runs-on: ubuntu-24.04
+    outputs:
+      docs_only: ${{ steps.changes.outputs.docs_only }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+      engine: ${{ steps.changes.outputs.engine }}
+      desktop_backend: ${{ steps.changes.outputs.desktop_backend }}
+      full: ${{ steps.changes.outputs.full }}
+      release_app: ${{ steps.changes.outputs.release_app }}
+      release_engine: ${{ steps.changes.outputs.release_engine }}
+    steps:
+      - name: Checkout with history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Test the CI control plane
+        run: node --test scripts/classify-ci-changes.test.mjs scripts/wait-for-main-ci.test.mjs
+
+      - name: Classify the diff
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/classify-ci-changes.mjs "$BASE_SHA" "$HEAD_SHA"
+
   engine:
     name: engine (${{ matrix.name }})
+    needs: classify
+    if: needs.classify.outputs.engine == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -33,15 +66,23 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      # Third-party actions are pinned by immutable commit SHA.
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
         with:
-          toolchain: 1.97.0
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: crates/antiburn-local -> target
+          shared-key: engine-ci
+          key: ${{ matrix.name }}
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install nextest
         uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
@@ -63,28 +104,17 @@ jobs:
 
   desktop-frontend:
     name: desktop app (frontend, ${{ matrix.name }})
+    needs: classify
+    if: needs.classify.outputs.frontend == 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux
             os: ubuntu-latest
-          # Windows too: the frontend suite covers path handling, line endings,
-          # and the platform-aware modifier logic, and those are exactly the
-          # places a Linux-only run cannot fail. macOS is left out on purpose —
-          # it is the slowest runner and shares its behaviour here with Linux.
-          # That stays true even though the settings window now renders
-          # macOS-only chrome (the title-bar drag strip): the suite is jsdom,
-          # which has no operating system, so those branches run under a
-          # mocked `isMacOS` and behave identically on every runner. The code
-          # that genuinely differs per OS is the shell, covered on all three
-          # below. Rationale mirrored in docs/deviations.md (D-12).
           - name: windows
             os: windows-latest
     runs-on: ${{ matrix.os }}
-    env:
-      # Corepack must never block CI on its interactive download prompt.
-      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -92,33 +122,40 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
 
-      # pnpm comes from the repository's `packageManager` pin via Corepack,
-      # so CI and local checkouts always agree on the version.
       - name: Enable Corepack
         run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Linting, formatting, types, and the Vite build are host-independent.
+      # Windows earns a test leg for path handling, line endings, and modifier
+      # behavior, but does not repeat those four identical checks.
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: pnpm --filter @antiburn/desktop format
+
       - name: Lint
+        if: runner.os == 'Linux'
         run: pnpm --filter @antiburn/desktop lint
 
       - name: Type-check
+        if: runner.os == 'Linux'
         run: pnpm --filter @antiburn/desktop type-check
 
       - name: Test
         run: pnpm --filter @antiburn/desktop test
 
       - name: Build
+        if: runner.os == 'Linux'
         run: pnpm --filter @antiburn/desktop build
 
   desktop-backend:
     name: desktop app (backend, ${{ matrix.name }})
-    # The shell owns every piece of platform-specific code in the application —
-    # tray item, popover anchoring, window policy, path handling — so it is
-    # built and tested on the whole release matrix rather than on Linux alone.
+    needs: classify
+    if: needs.classify.outputs.desktop_backend == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -134,11 +171,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # Tauri's Linux backend builds against the system WebKitGTK, GTK, and
-      # tray (AppIndicator) development packages; the notification chime's
-      # playback backend (rodio → alsa-sys) additionally needs the ALSA
-      # headers. Windows and macOS use the webview, tray, and audio output the
-      # operating system already ships.
       - name: Install Tauri system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -157,12 +189,18 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
         with:
-          toolchain: 1.97.0
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
 
-      # Debug builds resolve the frontend from the dev server, so the shell's
-      # checks need no Node toolchain. Release packaging (which embeds the
-      # built bundle) happens in the release workflow.
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          shared-key: desktop-backend-ci
+          key: ${{ matrix.name }}
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
       - name: Check formatting
         if: runner.os == 'Linux'
         working-directory: apps/desktop/src-tauri
@@ -176,6 +214,125 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked
 
+  release-metadata:
+    name: release metadata
+    needs: classify
+    if: needs.classify.outputs.release_app == 'true' || needs.classify.outputs.release_engine == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Verify application release metadata
+        if: needs.classify.outputs.release_app == 'true'
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          node scripts/verify-release-version.mjs app "antiburn-v${version}"
+          grep -q "^## \[${version}\] - " CHANGELOG.md
+          cargo metadata --locked --no-deps --format-version 1 \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml > /dev/null
+
+      - name: Verify engine release metadata
+        if: needs.classify.outputs.release_engine == 'true'
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
+            crates/antiburn-local/Cargo.toml)
+          node scripts/verify-release-version.mjs engine "antiburn-local-v${version}"
+          grep -q "^## \[${version}\] - " crates/antiburn-local/CHANGELOG.md
+          cargo metadata --locked --no-deps --format-version 1 \
+            --manifest-path crates/antiburn-local/Cargo.toml > /dev/null
+          cargo metadata --locked --no-deps --format-version 1 \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml > /dev/null
+
+  warm-release-cache:
+    name: warm release cache (${{ matrix.name }})
+    needs: classify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.classify.outputs.release_app == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macOS x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: Linux x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Restore and prepare release dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          shared-key: desktop-release
+          key: ${{ matrix.target }}
+          cache-bin: false
+          save-if: true
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Match the signed release job exactly so cached macOS objects cannot
+      # silently raise the application's deployment floor.
+      - name: Set the macOS deployment target
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Compile the release target without bundling or signing
+        env:
+          TARGET: ${{ matrix.target }}
+        run: pnpm --filter @antiburn/desktop exec tauri build --target "$TARGET" --no-bundle
+
   boundary:
     name: whole-tree source boundary
     runs-on: ubuntu-latest
@@ -186,13 +343,15 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Scan the tree for prohibited concepts
         run: node scripts/check-boundary.mjs
 
   licenses:
     name: dependency licenses
+    needs: classify
+    if: needs.classify.outputs.engine == 'true' || needs.classify.outputs.desktop_backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -203,16 +362,10 @@ jobs:
         with:
           tool: cargo-deny
 
-      # `check licenses` does not evaluate `[bans]`. The engine's deny.toml
-      # bans the HTTP clients, TLS stacks, and the app framework outright, so
-      # the ban list has to be run or it is inert configuration describing a
-      # boundary nothing enforces.
       - name: Check engine licenses and dependency bans
         working-directory: crates/antiburn-local
         run: cargo deny --locked check bans licenses
 
-      # The app crate has no `[bans]` block by design — it legitimately links
-      # Tauri and the updater plugin — so only its licenses are checked.
       - name: Check desktop app licenses
         working-directory: apps/desktop/src-tauri
         run: cargo deny --locked check licenses
@@ -241,3 +394,89 @@ jobs:
             fi
           done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
           exit "$missing"
+
+  ci-required:
+    name: ci-required
+    if: always()
+    needs:
+      - classify
+      - engine
+      - desktop-frontend
+      - desktop-backend
+      - release-metadata
+      - warm-release-cache
+      - boundary
+      - licenses
+      - dco
+    runs-on: ubuntu-24.04
+    env:
+      CLASSIFY_RESULT: ${{ needs.classify.result }}
+      ENGINE_RESULT: ${{ needs.engine.result }}
+      FRONTEND_RESULT: ${{ needs.desktop-frontend.result }}
+      BACKEND_RESULT: ${{ needs.desktop-backend.result }}
+      RELEASE_METADATA_RESULT: ${{ needs.release-metadata.result }}
+      WARM_RELEASE_RESULT: ${{ needs.warm-release-cache.result }}
+      BOUNDARY_RESULT: ${{ needs.boundary.result }}
+      LICENSES_RESULT: ${{ needs.licenses.result }}
+      DCO_RESULT: ${{ needs.dco.result }}
+      EVENT_NAME: ${{ github.event_name }}
+      ENGINE_SELECTED: ${{ needs.classify.outputs.engine }}
+      FRONTEND_SELECTED: ${{ needs.classify.outputs.frontend }}
+      BACKEND_SELECTED: ${{ needs.classify.outputs.desktop_backend }}
+      RELEASE_APP_SELECTED: ${{ needs.classify.outputs.release_app }}
+      RELEASE_ENGINE_SELECTED: ${{ needs.classify.outputs.release_engine }}
+    steps:
+      - name: Require every selected gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          require_success() {
+            local name="$1" result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::${name} finished with ${result}, expected success."
+              failed=1
+            fi
+          }
+          allow_skip() {
+            local name="$1" result="$2"
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "::error::${name} finished with ${result}."
+              failed=1
+            fi
+          }
+          require_if_selected() {
+            local name="$1" selected="$2" result="$3"
+            if [[ "$selected" == "true" ]]; then
+              require_success "$name" "$result"
+            else
+              allow_skip "$name" "$result"
+            fi
+          }
+
+          require_success classify "$CLASSIFY_RESULT"
+          require_success boundary "$BOUNDARY_RESULT"
+          require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
+          require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
+          require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
+          if [[ "$RELEASE_APP_SELECTED" == "true" || "$RELEASE_ENGINE_SELECTED" == "true" ]]; then
+            require_success release-metadata "$RELEASE_METADATA_RESULT"
+          else
+            allow_skip release-metadata "$RELEASE_METADATA_RESULT"
+          fi
+          if [[ "$EVENT_NAME" == "push" && "$RELEASE_APP_SELECTED" == "true" ]]; then
+            require_success warm-release-cache "$WARM_RELEASE_RESULT"
+          else
+            allow_skip warm-release-cache "$WARM_RELEASE_RESULT"
+          fi
+          if [[ "$ENGINE_SELECTED" == "true" || "$BACKEND_SELECTED" == "true" ]]; then
+            require_success licenses "$LICENSES_RESULT"
+          else
+            allow_skip licenses "$LICENSES_RESULT"
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            require_success dco "$DCO_RESULT"
+          else
+            allow_skip dco "$DCO_RESULT"
+          fi
+          exit "$failed"

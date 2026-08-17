@@ -76,18 +76,45 @@ jobs:
           path: RELEASE-NOTES.md
           if-no-files-found: error
 
-  # The everyday gate, re-run against the tagged commit: the engine suite (which
-  # contains its own `tests/boundary.rs` network-free contract), the whole-tree
-  # boundary scan, and `cargo deny check bans licenses` against the engine's own
-  # lockfile all live in this one workflow.
-  checks:
-    name: Checks
+  trusted-main-ci:
+    name: Trust exact main CI
     needs: verify
-    uses: ./.github/workflows/ci.yml
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_url: ${{ steps.ci.outputs.run_url }}
+      sha: ${{ steps.ci.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Wait for this exact SHA to pass main CI
+        id: ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/wait-for-main-ci.mjs "${{ github.repository }}" "${{ github.sha }}"
+
+      - name: Record the trusted gate
+        env:
+          RUN_URL: ${{ steps.ci.outputs.run_url }}
+          SHA: ${{ steps.ci.outputs.sha }}
+        run: |
+          {
+            echo "## Trusted main CI"
+            echo
+            echo "Release gate: [successful main run](${RUN_URL}) for \`${SHA}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   package:
     name: Package and draft
-    needs: [verify, checks]
+    needs: [verify, trusted-main-ci]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -174,6 +201,7 @@ jobs:
           (cd dist && find . -maxdepth 1 -type f -printf '%f\0' | sort -z \
             | xargs -0 sha256sum) > "${RUNNER_TEMP}/SHA256SUMS"
           mv "${RUNNER_TEMP}/SHA256SUMS" dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
           ls -l dist
 
       # Attestation persistence is plan-gated on private repositories, so while
@@ -235,6 +263,8 @@ jobs:
             echo "## Draft engine release ${TAG}"
             echo
             echo "Nothing is published yet. Follow \`docs/runbooks/release.md\`."
+            echo
+            echo "The workflow verified this exact main SHA, the deterministic source archive, inventory, and checksums. Manual review remains responsible for extracting the archive, running its consumer test, and reading the release notes."
             echo
             echo "| Asset | SHA-256 |"
             echo "| --- | --- |"
