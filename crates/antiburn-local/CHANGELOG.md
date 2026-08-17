@@ -21,6 +21,26 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-17
+
+### Added
+
+- `repositories::partition_cwds_by_grants` lets an embedding application split
+  working directories into immediately safe and consent-deferred paths without
+  touching the filesystem. `repositories::verify_dir_access` exposes the same
+  directory-read check discovery uses, including stale-grant revocation and
+  probe diagnostics.
+
+### Fixed
+
+- Repository resolution no longer starts `git` inside an ungranted macOS
+  protected directory. Working directories under Documents, Desktop, and
+  Downloads are deferred before any filesystem or child-process access, so a
+  background scan cannot raise the operating system's consent dialog.
+- A grant revoked outside the application is removed when a directory read is
+  denied, and its diagnostic probe now uses the same `denied` outcome vocabulary
+  as an application-requested consent check.
+
 ## [0.1.1] - 2026-08-14
 
 ### Fixed
