@@ -52,9 +52,13 @@ pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs"
 
 /// File name of the database inside the app data directory.
 ///
-/// Debug builds use their own file so running `pnpm tauri dev` against a
-/// half-finished migration cannot damage an installed copy — the same split the
-/// engine applies to its own state files.
+/// Debug builds use their own file so a half-finished migration cannot damage
+/// an installed copy — the same split the engine applies to its own state
+/// files. The `dev` scripts already land in a different *directory* (they carry
+/// `tauri.debug.conf.json`, which gives a development build its own bundle
+/// identifier), so this branch is the backstop for the one path that does not:
+/// a bare `cargo run` inside `src-tauri`, which compiles the release
+/// identifier.
 fn database_file() -> &'static str {
     if cfg!(debug_assertions) {
         "antiburn-debug.sqlite3"

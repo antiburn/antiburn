@@ -50,6 +50,7 @@ Run from the repository root:
 pnpm install
 pnpm --filter @antiburn/desktop dev          # Tauri dev build (tray + popover)
 pnpm --filter @antiburn/desktop dev:web      # frontend only, in a browser
+pnpm --filter @antiburn/desktop dev:bundle   # bundled debug .app / installer
 pnpm --filter @antiburn/desktop lint
 pnpm --filter @antiburn/desktop type-check
 pnpm --filter @antiburn/desktop test
@@ -71,6 +72,40 @@ not need a built bundle. Release packaging embeds `apps/desktop/dist`.
 
 `rusqlite` is compiled from bundled sources, so neither CI nor a checkout needs
 a system SQLite.
+
+## Development builds have their own identity
+
+Both `dev` scripts above pass
+[`src-tauri/tauri.debug.conf.json`](src-tauri/tauri.debug.conf.json), which
+overrides one field that has to differ: the bundle identifier becomes
+`ai.antiburn.desktop.debug`. That single override splits two things at once.
+
+- **The app data directory.** `app_data_dir()` is derived from the identifier,
+  so a development run reads and writes
+  `~/Library/Application Support/ai.antiburn.desktop.debug` (and the platform
+  equivalents) rather than the installed app's directory. Before this override
+  the split was partial: the store's own file name is branched on
+  `debug_assertions`, but everything beside it — the engine's state files, the
+  live-usage refresh directory — was shared, and a development run wrote into
+  an installed copy's folder.
+- **The platform's privacy identity.** On macOS, TCC keys folder-access grants
+  by bundle identifier. Sharing one identifier means a bundled debug build is
+  the _same privacy subject_ as an installed `/Applications/antiburn.app`: the
+  grants are pooled, and a `tccutil reset` aimed at `ai.antiburn.desktop`
+  during development revokes the installed app's access too. With the override
+  they are separate subjects, listed separately in System Settings → Privacy &
+  Security, and resettable independently.
+
+The file also turns `bundle.createUpdaterArtifacts` off, because a debug bundle
+is never distributed and therefore has no updater artifact worth signing — which
+is why `dev:bundle` needs no `TAURI_SIGNING_PRIVATE_KEY`.
+
+The override rides on the Tauri CLI's `--config`, so it reaches every build the
+`dev` scripts start, and only those. A bare `cargo run`/`cargo build` inside
+`src-tauri` still compiles the release identifier; it is not a path anyone runs
+the app from (the frontend would have to be served separately), and `cargo
+fmt`/`clippy`/`test` never launch the app. Reach for `pnpm dev` rather than
+`pnpm tauri dev`, which bypasses the flag.
 
 ## What keeps the app offline
 
@@ -103,7 +138,8 @@ Three independent checks, none of which relies on review:
   A source list on the left, one pane on the right; every control writes
   through immediately, so there is no Save button and no dirty state.
 - **Local store.** One SQLite database under the app data directory
-  (`ai.antiburn.desktop`) holds preferences, scan roots, a session metadata
+  (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
+  build — see above) holds preferences, scan roots, a session metadata
   cache, and the engine-derived analysis. **It never stores transcript
   content** — see the contract in `src-tauri/src/store/schema.rs`. Migrations
   are embedded and versioned by the `user_version` pragma.
@@ -152,8 +188,9 @@ build-level subset that a developer working in this directory runs into first:
 - `bundle.createUpdaterArtifacts` is `true`, which means a **bundle** build
   signs its updater artifact and therefore needs `TAURI_SIGNING_PRIVATE_KEY` in
   the environment. Nothing in CI or the everyday `cargo`/`pnpm` checks bundles,
-  so this only affects running `tauri build` by hand; to do that without a key,
-  pass `--config '{"bundle":{"createUpdaterArtifacts":false}}'`.
+  so this only affects running `tauri build` by hand; `dev:bundle` already turns
+  the artifact off through the debug config, and a release-profile bundle
+  without a key needs `--config '{"bundle":{"createUpdaterArtifacts":false}}'`.
 - Launch-at-login is recorded as a preference but not enforced: registering a
   login item needs the autostart plugin, which this build does not carry. The
   General pane says so next to the control rather than showing a switch that

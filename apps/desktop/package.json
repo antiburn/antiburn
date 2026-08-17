@@ -6,7 +6,8 @@
   "license": "MPL-2.0",
   "description": "antiburn desktop application: menu-bar/tray shell over the local antiburn engine.",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "tauri dev --config src-tauri/tauri.debug.conf.json",
+    "dev:bundle": "tauri build --debug --config src-tauri/tauri.debug.conf.json",
     "dev:web": "vite",
     "build": "vite build",
     "preview": "vite preview",
