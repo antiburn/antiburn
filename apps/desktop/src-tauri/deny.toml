@@ -2,9 +2,10 @@
 #
 # CI runs `cargo deny check licenses` against this crate's own lockfile; every
 # dependency must carry one of the allowed permissive licenses. Unlike the
-# engine's deny.toml, there is no network-stack ban here: the app shell
-# legitimately links Tauri and its updater plugin — the engine remains the
-# network-free boundary.
+# engine's deny.toml, there is no telemetry-SDK ban here: the app shell
+# links Tauri and its updater plugin freely, since neither is a telemetry or
+# analytics SDK — antiburn is local in that it needs no service of ours, not
+# that it opens no network connection.
 
 [licenses]
 allow = [

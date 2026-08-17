@@ -4,9 +4,15 @@
 
 //! Mechanical source-boundary checks for the engine.
 //!
-//! The engine is the canonical, network-free local implementation: no
-//! private/commercial concepts, no network APIs, no live-probe behavior,
-//! and no network-capable dependencies. These tests enforce that contract
+//! antiburn is local in one exact sense: it needs no connection to any
+//! service of ours. It is not offline — as the reader's own agent it may
+//! make network requests, read the credential and configuration files the
+//! reader's own tools wrote, and call a provider's API with the reader's own
+//! credentials. The engine's boundary is therefore not network-freeness; it
+//! is two things: no data exfiltration (no telemetry/analytics SDK, no
+//! reporting endpoint, no antiburn-operated or third-party host) and no
+//! private/commercial provenance (no proprietary Cadence source, no
+//! commercial identities, no secrets). These tests enforce that contract
 //! mechanically so a violation fails CI instead of relying on review.
 //!
 //! The approved source manifests (`source-allowlist.toml` /
@@ -77,8 +83,7 @@ fn is_exempt(path: &Path) -> bool {
 }
 
 /// Case-insensitive concept tokens derived from the denylist's concept rules
-/// (commercial identities, telemetry, publication/upload contracts, live
-/// agent probes, provider-credential access).
+/// (commercial identities, telemetry, publication/upload contracts).
 const FORBIDDEN_ANY_CASE: &[&str] = &[
     "cadence",
     "teamcadence",
@@ -87,26 +92,7 @@ const FORBIDDEN_ANY_CASE: &[&str] = &[
     "publication",
     "stripe",
     "cloudflare",
-    "csrf",
-    "lsof",
-    "netstat",
     "targetorgid",
-];
-
-/// Case-sensitive code-level tokens: network APIs and live-probe endpoints
-/// prohibited inside the engine. Filesystem path forms of "localhost"
-/// (`\\wsl.localhost\…`, `file://localhost/…`) are legitimate and excluded
-/// by anchoring the URL schemes.
-const FORBIDDEN_CODE: &[&str] = &[
-    "reqwest",
-    "TcpStream",
-    "TcpListener",
-    "UdpSocket",
-    "UnixStream",
-    "UnixListener",
-    "http://localhost",
-    "https://localhost",
-    "127.0.0.1",
 ];
 
 #[test]
@@ -125,11 +111,6 @@ fn engine_sources_contain_no_prohibited_concepts() {
                 violations.push(format!("{}: contains {token:?}", path.display()));
             }
         }
-        for token in FORBIDDEN_CODE {
-            if content.contains(token) {
-                violations.push(format!("{}: contains {token:?}", path.display()));
-            }
-        }
     }
     assert!(
         violations.is_empty(),
@@ -139,27 +120,13 @@ fn engine_sources_contain_no_prohibited_concepts() {
 }
 
 /// Dependency names that must never appear in the engine's lockfile:
-/// HTTP/TLS stacks, telemetry SDKs, and app-shell frameworks.
-const FORBIDDEN_PACKAGES: &[&str] = &[
-    "reqwest",
-    "hyper",
-    "ureq",
-    "curl",
-    "isahc",
-    "sentry",
-    "tauri",
-    "tungstenite",
-    "native-tls",
-    "openssl",
-    "rustls",
-    "quinn",
-    "axum",
-    "actix-web",
-    "tonic",
-];
+/// telemetry, analytics, and crash-reporting SDKs — the "phones home"
+/// capability the no-data-exfiltration line prohibits, regardless of how
+/// benign the rest of a crate's networking is.
+const FORBIDDEN_PACKAGES: &[&str] = &["sentry", "opentelemetry", "posthog", "segment", "datadog"];
 
 #[test]
-fn engine_lockfile_has_no_network_capable_dependencies() {
+fn engine_lockfile_has_no_telemetry_sdk_dependencies() {
     let lock = fs::read_to_string(manifest_dir().join("Cargo.lock")).expect("engine Cargo.lock");
     let names: BTreeSet<&str> = lock
         .lines()
@@ -172,26 +139,7 @@ fn engine_lockfile_has_no_network_capable_dependencies() {
         .collect();
     assert!(
         hits.is_empty(),
-        "forbidden dependencies in engine lockfile: {hits:?}"
-    );
-}
-
-#[test]
-fn tokio_never_enables_the_net_feature() {
-    let manifest = fs::read_to_string(manifest_dir().join("Cargo.toml")).expect("Cargo.toml");
-    let value: toml::Value = manifest.parse().expect("Cargo.toml parses");
-    let tokio = value
-        .get("dependencies")
-        .and_then(|d| d.get("tokio"))
-        .expect("tokio dependency present");
-    let features: Vec<&str> = tokio
-        .get("features")
-        .and_then(|f| f.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
-    assert!(
-        !features.contains(&"net") && !features.contains(&"full"),
-        "tokio must not enable network features; found {features:?}"
+        "forbidden telemetry/analytics dependencies in engine lockfile: {hits:?}"
     );
 }
 

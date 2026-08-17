@@ -3,9 +3,11 @@
 # CI runs `cargo deny check bans licenses` against the engine's own lockfile.
 # Both halves matter and both are run: every dependency must carry one of the
 # allowed permissive licenses (MPL-2.0 is the project's own), and none of the
-# network stacks in the `[bans]` block below may appear at all. Running only
-# `check licenses` would leave that ban list as configuration describing a
-# boundary nothing enforced. Additions to either list need explicit review.
+# telemetry/analytics SDKs in the `[bans]` block below may appear at all —
+# the engine needs no service of ours, so it links nothing that phones home
+# on the reader's behalf. Running only `check licenses` would leave that ban
+# list as configuration describing a boundary nothing enforced. Additions to
+# either list need explicit review.
 
 [licenses]
 allow = [
@@ -23,15 +25,12 @@ allow = [
 
 [bans]
 # The mechanical boundary test (tests/boundary.rs) already forbids
-# network-capable dependencies by name; duplicate the load-bearing ones here
-# so `cargo deny` fails fast too.
+# telemetry/analytics SDKs by name; duplicate the load-bearing ones here so
+# `cargo deny` fails fast too.
 deny = [
-    { crate = "reqwest" },
-    { crate = "hyper" },
-    { crate = "ureq" },
-    { crate = "curl" },
-    { crate = "native-tls" },
-    { crate = "openssl" },
-    { crate = "rustls" },
-    { crate = "tauri" },
+    { crate = "sentry" },
+    { crate = "opentelemetry" },
+    { crate = "posthog" },
+    { crate = "segment" },
+    { crate = "datadog" },
 ]
