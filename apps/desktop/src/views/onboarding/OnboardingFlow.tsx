@@ -150,16 +150,18 @@ function Welcome() {
           shows you what they cost and how they went. No account, nothing uploaded, and no usage
           data collected.
         </p>
-        {/* This sentence has to keep matching what the app actually opens. The
-            update check is antiburn's only socket (`src-tauri/src/lib.rs`), and
-            the second clause is D-21: one default-off setting runs your own
-            agent, which goes online — antiburn opens nothing, but it causes the
-            traffic, and "antiburn is offline" without that clause is true by
-            the letter and false by the point of the claim. */}
+        {/* This sentence has to keep matching what "local" actually promises.
+            It is not "offline": antiburn checks GitHub Releases for new
+            versions, and — D-21, one default-off setting turned on later —
+            can go online as your own agent to read a provider's current usage
+            figures. What makes it local is that none of that depends on any
+            service of ours, and nothing about you goes to one. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          The only thing antiburn puts on the network is a check for new versions, against
-          GitHub Releases. One setting you can turn on later asks your own coding agent to
-          refresh its usage figures — that traffic is the agent&rsquo;s, not antiburn&rsquo;s.
+          Local doesn&rsquo;t mean offline. antiburn checks GitHub Releases for new versions,
+          and one setting you can turn on later lets it go online as your own agent, to read a
+          provider&rsquo;s current usage figures with your own credentials. None of it needs an
+          antiburn account or an antiburn server — there isn&rsquo;t one — and nothing about you
+          or your sessions goes anywhere else.
         </p>
       </div>
     </div>

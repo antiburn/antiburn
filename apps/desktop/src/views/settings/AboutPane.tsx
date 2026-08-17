@@ -144,8 +144,9 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
           <Row
             label="Licence"
             // Stated and readable here, never linked. Keeping the full text in
-            // the app makes it checkable without a browser — which is the
-            // point of putting it in an offline app.
+            // the app makes it checkable without a browser — which matters for
+            // a local app that a reader may want to check without going
+            // online at all.
             description="antiburn is free software under the Mozilla Public License 2.0. The full text is readable here, and every source file carries its header."
             trailing={
               <div className="flex items-center gap-2">
@@ -163,7 +164,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
           {onOpenPane && (
             <Row
               label="Privacy and data handling"
-              description="What antiburn reads, what it stores, how long it keeps it, and the one time it uses the network. The long form lives in Privacy."
+              description="What antiburn reads, what it stores, how long it keeps it, and what it does and doesn't send online. The long form lives in Privacy."
               trailing={
                 <PushButton
                   ariaLabel="Open privacy and data handling"

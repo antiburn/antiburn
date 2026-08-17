@@ -130,9 +130,10 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
           another machine is not counted.
         </p>
         <p className="type-caption text-label-tertiary">
-          Plan limits are your provider&rsquo;s own figures, read from what your agent last
-          cached on this machine. antiburn fetches nothing; a limit is only as current as the
-          moment shown beside it.
+          Plan limits are your provider&rsquo;s own figures: read from what your agent last
+          cached on this machine, or, where you&rsquo;ve asked antiburn to go online for them,
+          fetched directly with your own credentials. Either way, a limit is only as current as
+          the moment shown beside it.
         </p>
         <p className="type-caption text-label-tertiary">
           Each session counts in the window of its most recent activity.
