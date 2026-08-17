@@ -31,18 +31,24 @@ mod schema;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::dto::DeferredPermissionDir;
+
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS,
     Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
     SessionRecord, ThemePreference, UsageEvidenceRecord,
 };
+
+/// Internal-scalar key holding the protected directories the last pass declined
+/// to read.
+pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
 
 /// File name of the database inside the app data directory.
 ///
@@ -406,6 +412,64 @@ impl Store {
         self.lock()
             .execute("DELETE FROM scan_root WHERE path = ?1", params![path])?;
         Ok(())
+    }
+
+    /* --------------------------------------------------------------------
+     * Consent grants
+     * ----------------------------------------------------------------- */
+
+    /// Protected directory names the user has granted access to.
+    ///
+    /// Read at the start of every pass that might touch the filesystem, and
+    /// trusted as-is: confirming a grant means reading the directory, which is
+    /// the very thing that prompts.
+    pub fn granted_dirs(&self) -> Result<HashSet<String>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare("SELECT dir_name FROM consent_grant")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
+    }
+
+    /// Record that the user granted access to a protected directory.
+    /// Idempotent; re-granting refreshes when the decision was made.
+    pub fn grant_dir(&self, dir_name: &str) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO consent_grant (dir_name, granted_at) VALUES (?1, ?2)
+             ON CONFLICT(dir_name) DO UPDATE SET granted_at = excluded.granted_at",
+            params![dir_name, now_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Drop a recorded grant, after a read under it came back denied.
+    /// Idempotent.
+    pub fn revoke_dir_grant(&self, dir_name: &str) -> Result<()> {
+        self.lock().execute(
+            "DELETE FROM consent_grant WHERE dir_name = ?1",
+            params![dir_name],
+        )?;
+        Ok(())
+    }
+
+    /// Record which protected directories the last pass declined to read.
+    ///
+    /// An internal scalar rather than a table: it is derived state, replaced
+    /// whole on every pass, and only ever read back as one list.
+    pub fn set_deferred_permission_dirs(&self, dirs: &[DeferredPermissionDir]) -> Result<()> {
+        self.set_internal_value(DEFERRED_PERMISSION_DIRS_KEY, &serde_json::to_string(dirs)?);
+        Ok(())
+    }
+
+    /// The protected directories the last pass declined to read.
+    ///
+    /// An unreadable or malformed value reads as "nothing deferred": the
+    /// consequence is a missing prompt, where the alternative — failing the
+    /// whole permissions query — would take the recovery interface down with it.
+    pub fn deferred_permission_dirs(&self) -> Result<Vec<DeferredPermissionDir>> {
+        Ok(self
+            .internal_value(DEFERRED_PERMISSION_DIRS_KEY)
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default())
     }
 
     /* --------------------------------------------------------------------

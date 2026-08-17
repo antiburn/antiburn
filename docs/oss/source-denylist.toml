@@ -23,7 +23,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023"]
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024"]
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # disk-space-monitor, tray-title-attributed-string, notification-sound-crate,
 # nudge-window-mechanics, and usage-milestone-engine, and amends the network
@@ -32,6 +32,15 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # credentials, and never call a private-app endpoint. The D-007 discovery
 # boundary (documented files, read-only databases, no credential/token access,
 # no loopback or local provider APIs) is unchanged.
+# D-024 (maintainer decision): authorizes the adapt ports named by allowlist rules
+# tcc-consent-commands and tcc-consent-frontend, for the single purpose of
+# replacing an unannounced operating-system permission dialog with an explained,
+# user-initiated consent flow. The consent-grant record is deliberately excluded:
+# the public implementation is written against the engine's public ConsentGrants
+# trait and carries Git/DCO provenance rather than a source rule. Organization
+# filtering, upload and publication coupling, private analytics, private
+# containers and stores, and every command binding outside the folder-access
+# slice remain denied. The D-007 discovery boundary is unchanged.
 default_action = "deny"
 glob_semantics = "* matches one path segment; ** matches recursively"
 approval_note = "Phase 0 complete; implementation checks run when their artifacts exist"
@@ -70,6 +79,7 @@ exceptions = [
   "Only the paths and content slices explicitly named by source-allowlist.toml rules desktop-style-foundation, radix-control-styles, analytics-color-tokens, generic-react-primitives, and skeleton-contract-replacement are exempt under D-020.",
   "Only the paths and content slices explicitly named by source-allowlist.toml rules local-presentation-support, local-environment-identity-replacement, local-session-analytics-shaping, local-session-cost-replacement, local-presentation-primitives, local-orchestration-presentation, local-session-analytics-leaves, local-session-analytics-decoupled-leaves, local-session-cost-badges, local-session-analytics-composition, local-recent-activity-presentation, and local-repository-list-replacement are additionally exempt under D-021.",
   "Only the notification-window component slice explicitly named by source-allowlist.toml rule nudge-window-mechanics is additionally exempt under D-023.",
+  "Only the folder-consent presentation slices explicitly named by source-allowlist.toml rule tcc-consent-frontend are additionally exempt under D-024, and only to the extent that rule's notes describe: the sequential per-directory state machine, the permission banner, and the permission slices of the discovery and repository-settings surfaces. Their containers, stores, command bindings, and organization-scoped filtering remain denied.",
   "An adapt exception authorizes only the behavior and exclusions recorded by its allowlist rule; it never authorizes copying an entire mixed file unchanged.",
 ]
 reason = "D-020 and D-021 approve exact, rights-cleared design, primitive, and local-domain presentation slices. Every other frontend file, package manifest, excluded mixed-file section, container, store, command binding, DTO, simulation, fixture, URL, and asset remains denied until separately reviewed."
@@ -101,6 +111,7 @@ patterns = [
 ]
 exceptions = [
   "Only the paths and content slices explicitly named by source-allowlist.toml rules disk-space-monitor, tray-title-attributed-string, and nudge-window-mechanics are exempt under D-023.",
+  "Only the folder-access command slice explicitly named by source-allowlist.toml rule tcc-consent-commands is additionally exempt under D-024. Every other command, state struct, and configuration in the private shell remains denied -- including the private consent-grant record, which is deliberately not exempted: the public implementation is written against the engine's public trait rather than ported.",
 ]
 reason = "The current Tauri shell remains denied while approved generic tray, window, theme, and updater mechanics are reviewed at file/module granularity under D-017; private commands, state, CLI, and configuration remain private."
 

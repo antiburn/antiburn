@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1];
+pub const MIGRATIONS: &[&str] = &[V1, V2];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -152,5 +152,25 @@ CREATE TABLE repository (
     wsl_distro     TEXT,
     enabled        INTEGER NOT NULL DEFAULT 1,
     last_seen_at   TEXT NOT NULL
+) STRICT;
+"#;
+
+/// v2 — the record of which operating-system-protected directories the user
+/// granted access to.
+///
+/// This is a record of the user's *decisions*, not of the operating system's
+/// state: the system is authoritative and can revoke a grant at any time
+/// without telling the application. A row here means "the user allowed this and
+/// a read succeeded at the time"; a read that later comes back denied drops the
+/// row again. The application never probes to fill this table, because probing
+/// without a recorded decision is precisely what raises the consent dialog.
+///
+/// One row per protected directory name (`Documents`, `Desktop`, `Downloads`),
+/// not per path: the operating system grants access at that granularity, so
+/// storing paths would imply a precision the grant does not have.
+const V2: &str = r#"
+CREATE TABLE consent_grant (
+    dir_name   TEXT PRIMARY KEY,
+    granted_at TEXT NOT NULL
 ) STRICT;
 "#;

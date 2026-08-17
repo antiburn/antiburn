@@ -31,12 +31,14 @@ use std::path::{Path, PathBuf};
 use antiburn_local::paths::{home_dir, ignored_paths, protected};
 use antiburn_local::platform::git;
 use antiburn_local::repositories::{
-    DeferredProtectedPath, LocatedRepo, NoConsentGrants, merge_located_repos, normalize_remote_url,
-    parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity, scan_roots_for_repos,
+    ConsentGrants, DeferredProtectedPath, LocatedRepo, dedup_deferred_by_cwd, merge_located_repos,
+    normalize_remote_url, parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity,
+    scan_roots_for_repos, verify_dir_access,
 };
 use tauri::{AppHandle, Manager};
 
-use crate::dto::RepositoryItem;
+use crate::consent::StoreConsentGrants;
+use crate::dto::{DeferredPermissionDir, RepositoryItem};
 use crate::scan::{IGNORE_SCOPE, RETENTION_DAYS, unix_now};
 use crate::store::{RepositoryRecord, Store};
 
@@ -62,22 +64,34 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     let known: Vec<RepositoryRecord> = store.repositories()?;
     let scan_roots: Vec<PathBuf> = store.scan_roots()?.into_iter().map(PathBuf::from).collect();
 
-    // Nothing is granted yet: the record of which protected directories the user
-    // allowed arrives with the consent flow. Until then this pass treats every
-    // one of them as off limits, which is the safe direction — a repository the
-    // user cannot see listed is a lesser problem than a permission dialog they
-    // never asked for.
-    let granted: HashSet<String> = HashSet::new();
+    // What the user has already allowed. Read, never probed: confirming a grant
+    // means reading the directory, which is the very thing that prompts.
+    let consent = StoreConsentGrants::new(&store);
+    let granted = consent.granted_dirs();
 
     let cwds: Vec<String> = distinct_cwds(&sessions);
     // `deferred` names the protected directories this pass deliberately left
-    // untouched. Offering the user a way to grant them is the consent flow's
-    // job; the guarantee that matters here is that none of them were read.
-    let (located, _deferred) = locate_from_cwds(&cwds, &known, &granted).await;
+    // untouched, so the interface can offer the user a way to grant them.
+    let (located, deferred) = locate_from_cwds(&cwds, &known, &granted, &consent).await;
     let counted = count_sessions(located, &sessions);
 
     let owners = top_owners(&counted);
-    let scanned = forward_scan(&owners, &scan_roots).await;
+    let (scanned, scan_deferred) = forward_scan(&owners, &scan_roots, &consent).await;
+    let mut deferred = merge_deferred(deferred, scan_deferred);
+
+    // A read this pass may have observed that a recorded grant is stale and
+    // dropped it. The deferred list was derived before that happened, so it
+    // still describes a world where the folder was reachable. Re-derive it
+    // against what is true now — partitioning is pure, so this costs nothing
+    // and saves the reader a pass spent wondering where their repositories
+    // went.
+    let granted_now = consent.granted_dirs();
+    if granted_now != granted
+        && let Some(home) = home_dir()
+    {
+        let (_, still_blocked) = partition_cwds_by_grants(&home, &cwds, &granted_now);
+        deferred = merge_deferred(deferred, still_blocked);
+    }
 
     let merged = merge_located_repos(counted.into_iter().map(|(repo, _)| repo).collect(), scanned);
     let mut records = Vec::with_capacity(merged.len());
@@ -87,7 +101,39 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     retain_disabled(&mut records, known);
     surface_orphaned_opt_outs(&mut records, store.state_dir(), &granted).await;
     store.replace_repositories(&records)?;
+    store.set_deferred_permission_dirs(&summarize_deferred(&deferred))?;
     Ok(())
+}
+
+/// Combine two deferred lists, keeping each working directory once.
+fn merge_deferred(
+    mut first: Vec<DeferredProtectedPath>,
+    second: Vec<DeferredProtectedPath>,
+) -> Vec<DeferredProtectedPath> {
+    first.extend(second);
+    dedup_deferred_by_cwd(&mut first);
+    first
+}
+
+/// Reduce deferred paths to one entry per protected directory, since that is
+/// the granularity the operating system grants at and therefore the only
+/// granularity worth asking the user about.
+fn summarize_deferred(deferred: &[DeferredProtectedPath]) -> Vec<DeferredPermissionDir> {
+    let mut order: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for entry in deferred {
+        if !counts.contains_key(&entry.protected_dir) {
+            order.push(entry.protected_dir.clone());
+        }
+        *counts.entry(entry.protected_dir.clone()).or_insert(0) += 1;
+    }
+    order
+        .into_iter()
+        .map(|dir| DeferredPermissionDir {
+            path_count: counts.get(&dir).copied().unwrap_or(0),
+            dir,
+        })
+        .collect()
 }
 
 /// Give every opted-out root a Settings row, even when its record is gone.
@@ -269,6 +315,30 @@ fn distinct_cwds(sessions: &[crate::store::SessionRecord]) -> Vec<String> {
     cwds
 }
 
+/// What may be done with a repository root an earlier pass already resolved.
+#[derive(Debug, PartialEq, Eq)]
+enum KnownRootAccess {
+    /// Outside every protected directory. Readable, nothing to ask.
+    Open,
+    /// Inside a directory the user granted. Read it — and let a denial, if the
+    /// grant has since been revoked, be what drops the grant.
+    Verify,
+    /// Inside a directory the user has *not* granted. Do not touch it: a record
+    /// can outlive the grant it was found under, and reading it then is exactly
+    /// the unannounced dialog this whole design exists to prevent.
+    Blocked(String),
+}
+
+/// Decide which of the three applies. Pure, and home-explicit so it behaves the
+/// same in a test on any platform.
+fn classify_known_root(home: &Path, root: &Path, granted: &HashSet<String>) -> KnownRootAccess {
+    match protected::protected_dir_name_in(home, root) {
+        None => KnownRootAccess::Open,
+        Some(dir) if granted.contains(&dir) => KnownRootAccess::Verify,
+        Some(dir) => KnownRootAccess::Blocked(dir),
+    }
+}
+
 /// Resolve working directories to canonical repository roots, reusing roots the
 /// last pass already established.
 ///
@@ -281,10 +351,15 @@ async fn locate_from_cwds(
     cwds: &[String],
     known: &[RepositoryRecord],
     granted: &HashSet<String>,
+    consent: &dyn ConsentGrants,
 ) -> (Vec<LocatedRepo>, Vec<DeferredProtectedPath>) {
     let mut by_key: HashMap<String, LocatedRepo> = HashMap::new();
+    let mut deferred: Vec<DeferredProtectedPath> = Vec::new();
     let mut resolved = 0usize;
     let mut unresolved: Vec<&str> = Vec::new();
+    // Without a home directory nothing can be classified as protected, which is
+    // how the engine's own guards fail open.
+    let home = home_dir();
 
     for cwd in cwds {
         // Already under a repository the last pass found: answered from the
@@ -298,15 +373,39 @@ async fn locate_from_cwds(
             let Some(root) = record.repo_root.as_deref() else {
                 continue;
             };
-            by_key
-                .entry(record.key.clone())
-                .or_insert_with(|| LocatedRepo {
+            if by_key.contains_key(&record.key) {
+                continue;
+            }
+            // A protected root is the one case the store cannot answer for:
+            // the grant it was found under can be revoked without telling us,
+            // and assuming otherwise keeps reporting a repository as readable
+            // long after the system stopped allowing it.
+            let root_path = PathBuf::from(root);
+            let access = match home.as_deref() {
+                Some(home) => classify_known_root(home, &root_path, granted),
+                None => KnownRootAccess::Open,
+            };
+            let dir_accessible = match access {
+                KnownRootAccess::Open => true,
+                KnownRootAccess::Verify => verify_dir_access(consent, &root_path).await,
+                KnownRootAccess::Blocked(protected_dir) => {
+                    deferred.push(DeferredProtectedPath {
+                        cwd: root_path.to_string_lossy().to_string(),
+                        protected_dir,
+                    });
+                    false
+                }
+            };
+            by_key.insert(
+                record.key.clone(),
+                LocatedRepo {
                     remote_url: String::new(),
-                    repo_root: PathBuf::from(root),
-                    dir_accessible: true,
+                    repo_root: root_path,
+                    dir_accessible,
                     worktree_count: record.worktree_count,
                     session_count: 0,
-                });
+                },
+            );
             continue;
         }
 
@@ -314,15 +413,14 @@ async fn locate_from_cwds(
     }
 
     // Everything past this point shells out to git, so consent is settled first.
-    // Without a home directory nothing can be classified as protected, which
-    // matches how the engine's own guards fail open.
-    let (admitted, mut deferred) = match home_dir() {
-        Some(home) => partition_cwds_by_grants(&home, unresolved, granted),
+    let (admitted, blocked) = match home.as_deref() {
+        Some(home) => partition_cwds_by_grants(home, unresolved, granted),
         None => (
             unresolved.into_iter().map(str::to_string).collect(),
             Vec::new(),
         ),
     };
+    deferred.extend(blocked);
 
     for cwd in &admitted {
         if resolved >= MAX_NEW_ROOTS_PER_PASS {
@@ -360,13 +458,14 @@ async fn locate_from_cwds(
             LocatedRepo {
                 remote_url: normalize_remote_url(&remote),
                 repo_root: root.clone(),
-                dir_accessible: tokio::fs::read_dir(&root).await.is_ok(),
+                dir_accessible: verify_dir_access(consent, &root).await,
                 worktree_count: git::worktree_count_at(&root).await,
                 session_count: 0,
             },
         );
     }
 
+    dedup_deferred_by_cwd(&mut deferred);
     (by_key.into_values().collect(), deferred)
 }
 
@@ -413,19 +512,25 @@ fn top_owners(located: &[(LocatedRepo, String)]) -> Vec<String> {
 
 /// The engine's owner-scoped forward walk, over the common code directories and
 /// the reader's declared scan roots.
-async fn forward_scan(owners: &[String], scan_roots: &[PathBuf]) -> Vec<LocatedRepo> {
+async fn forward_scan(
+    owners: &[String],
+    scan_roots: &[PathBuf],
+    consent: &StoreConsentGrants<'_>,
+) -> (Vec<LocatedRepo>, Vec<DeferredProtectedPath>) {
     let Some(home) = home_dir() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let mut located = Vec::new();
+    let mut deferred = Vec::new();
     for owner in owners {
         // `probe_protected: false` — a background pass must never be able to
-        // raise the operating system's consent dialog.
-        let (repos, _deferred) =
-            scan_roots_for_repos(&home, owner, false, scan_roots, &NoConsentGrants).await;
+        // raise the operating system's consent dialog. Roots the user has
+        // already granted are walked normally; the rest come back deferred.
+        let (repos, skipped) = scan_roots_for_repos(&home, owner, false, scan_roots, consent).await;
         located.extend(repos);
+        deferred.extend(skipped);
     }
-    located
+    (located, deferred)
 }
 
 /// Shape one located repository into the record the store keeps.
@@ -536,6 +641,45 @@ mod tests {
     /// An opted-out path whose record is gone entirely (an earlier build
     /// dropped it) is resurrected as a disabled row from the opt-out store,
     /// so the exclusion is always visible and reversible.
+    /// The rule a background pass must never break: a repository record can
+    /// outlive the grant it was found under, and reading it then is the
+    /// unannounced dialog this design exists to prevent.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_known_root_is_only_read_while_its_grant_still_stands() {
+        let home = Path::new("/Users/avery");
+        let documents = home.join("Documents/GitHub/repo");
+        let plain = home.join("dev/repo");
+
+        // Outside the protected directories the store's answer stands.
+        assert_eq!(
+            classify_known_root(home, &plain, &HashSet::new()),
+            KnownRootAccess::Open
+        );
+
+        // Granted: read it, so a revoked grant is observed and dropped.
+        assert_eq!(
+            classify_known_root(home, &documents, &HashSet::from(["Documents".to_string()])),
+            KnownRootAccess::Verify
+        );
+
+        // Not granted: never touched, however stale the record.
+        assert_eq!(
+            classify_known_root(home, &documents, &HashSet::new()),
+            KnownRootAccess::Blocked("Documents".to_string())
+        );
+
+        // A grant covers one directory, not every protected one.
+        assert_eq!(
+            classify_known_root(
+                home,
+                &home.join("Desktop/repo"),
+                &HashSet::from(["Documents".to_string()])
+            ),
+            KnownRootAccess::Blocked("Desktop".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn an_orphaned_opt_out_surfaces_as_a_disabled_row() {
         let dir = tempfile::TempDir::new().unwrap();

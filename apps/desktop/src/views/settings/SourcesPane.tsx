@@ -6,6 +6,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { FolderPlus, RefreshCw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
+import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
 import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
 import { Card } from '../../components/ui/Card';
 import { PaneHeader } from '../../components/ui/Pane';
@@ -14,10 +15,14 @@ import { SectionGroup } from '../../components/ui/SectionGroup';
 import { StatusText } from '../../components/ui/StatusText';
 import {
   addScanRoot,
+  getFolderPermissions,
   getScanStatus,
   listRepositories,
   listScanRoots,
+  getConsentDiagnostics,
   onScanEvent,
+  openFolderAccessSettings,
+  recheckFolderPermissions,
   refreshRepositories,
   removeScanRoot,
   scanNow,
@@ -25,7 +30,12 @@ import {
   type RepositoryItemPayload,
   type ScanStatus,
 } from '../../lib/ipc';
-import type { LocalRepositoryItem, LocalRepositoryStatus } from '../../lib/types/repository';
+import type {
+  FolderPermissions,
+  LocalRepositoryItem,
+  LocalRepositoryStatus,
+} from '../../lib/types/repository';
+import { useFolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
 import { scanStatusLabel } from '../popover/ScanStatusBar';
 import { useAppSettings } from './useAppSettings';
 
@@ -72,6 +82,11 @@ export function SourcesPane() {
   const [scanRoots, setScanRoots] = useState<string[]>([]);
   const [scanning, setScanning] = useState(true);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+  const [permissions, setPermissions] = useState<FolderPermissions>({
+    deferred: [],
+    granted: [],
+    supported: false,
+  });
 
   // The main view no longer carries a scan status line; this pane is where a
   // reader checks on and re-runs scanning, so it stays live via scan events.
@@ -111,11 +126,63 @@ export function SourcesPane() {
     };
   }, []);
 
+  const loadPermissions = useCallback(async () => {
+    const next = await getFolderPermissions().catch(() => null);
+    if (next) setPermissions(next);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void getFolderPermissions()
+      .then((next) => {
+        if (active && next) setPermissions(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const handleRefresh = useCallback(async () => {
     setScanning(true);
     const repos = await refreshRepositories().catch(() => []);
     setRepositories(toItems(repos));
     setScanning(false);
+    // A pass that just ran may have granted or lost access; the notice above
+    // the list has to agree with the list.
+    await loadPermissions();
+  }, [loadPermissions]);
+
+  // Granting is the one path that can add repositories the reader is waiting
+  // for, so each grant refreshes the list rather than making them wait for the
+  // whole queue.
+  const permissionFlow = useFolderPermissionFlow(permissions.deferred, () => {
+    void handleRefresh();
+  });
+  const [rechecking, setRechecking] = useState(false);
+
+  /**
+   * Look for access granted in System Settings rather than through antiburn.
+   *
+   * The way out of a remembered refusal: macOS will not prompt again, so the
+   * only path is the system pane, and nothing notices that until something
+   * looks. This is the looking.
+   */
+  const handleRecheck = useCallback(async () => {
+    setRechecking(true);
+    const found = await recheckFolderPermissions().catch(() => []);
+    if (found.length > 0) await handleRefresh();
+    else await loadPermissions();
+    setRechecking(false);
+  }, [handleRefresh, loadPermissions]);
+
+  /** Probe history, for a bug report. */
+  const handleCopyDiagnostics = useCallback(async () => {
+    const probes = await getConsentDiagnostics().catch(() => []);
+    const text = probes
+      .map((probe) => `${probe.outcome}\t${probe.elapsedMs}ms\t${probe.target}`)
+      .join('\n');
+    await navigator.clipboard.writeText(text || 'No folder-access probes this run.');
   }, []);
 
   const handleToggle = useCallback(async (item: LocalRepositoryItem, enabled: boolean) => {
@@ -146,6 +213,22 @@ export function SourcesPane() {
     <>
       <PaneHeader title="Sources" />
       <div className="space-y-6">
+        {permissions.supported && permissions.deferred.length > 0 ? (
+          <FolderPermissionNotice
+            deferred={permissions.deferred}
+            phase={permissionFlow.phase}
+            current={permissionFlow.current}
+            position={permissionFlow.position}
+            total={permissionFlow.total}
+            recordedDenials={permissionFlow.recordedDenials}
+            onRequest={permissionFlow.start}
+            onOpenSettings={() => void openFolderAccessSettings()}
+            onRecheck={() => void handleRecheck()}
+            onCopyDiagnostics={() => void handleCopyDiagnostics()}
+            rechecking={rechecking}
+          />
+        ) : null}
+
         <SectionGroup
           title="Scanning"
           trailing={

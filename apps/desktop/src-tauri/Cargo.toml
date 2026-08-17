@@ -46,6 +46,9 @@ antiburn-sound = { path = "crates/sound" }
 # Error plumbing inside the shell's own modules; never crosses the IPC edge,
 # where errors become plain strings.
 anyhow = "1"
+# Required to implement the engine's async ConsentGrants trait; the engine
+# declares it with the same macro.
+async-trait = "0.1"
 # The app-owned local database. `bundled` compiles SQLite from source, so the
 # app never depends on a system library and CI needs no extra packages.
 rusqlite = { version = "0.32.1", features = ["bundled"] }

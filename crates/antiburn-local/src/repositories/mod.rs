@@ -52,6 +52,7 @@ mod tests;
 use std::collections::HashSet;
 use std::path::Path;
 
+pub use access::verify_dir_access;
 pub use consent::{ConsentGrants, NoConsentGrants, partition_cwds_by_grants};
 pub use identity::{
     normalize_for_prefix, normalize_remote_url, parse_repo_name_from_url, repo_root_identity,

@@ -48,6 +48,7 @@
 mod agents;
 mod analytics;
 mod commands;
+mod consent;
 mod disk_monitor;
 mod dto;
 mod export;
@@ -109,6 +110,11 @@ pub fn run() {
             commands::get_provider_usage,
             commands::get_live_usage,
             commands::get_scan_status,
+            commands::get_folder_permissions,
+            commands::request_folder_access,
+            commands::open_folder_access_settings,
+            commands::get_consent_diagnostics,
+            commands::recheck_folder_permissions,
             commands::get_session_analytics,
             commands::get_settings,
             commands::get_storage_health,

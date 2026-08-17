@@ -89,6 +89,7 @@ dependencies = [
  "antiburn-nudge",
  "antiburn-sound",
  "anyhow",
+ "async-trait",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

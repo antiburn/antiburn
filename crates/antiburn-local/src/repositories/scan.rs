@@ -155,7 +155,7 @@ pub async fn scan_roots_for_repos(
                 Err(e) if e.kind() == ErrorKind::PermissionDenied => {
                     consent.record_probe(
                         &root.to_string_lossy(),
-                        "PermissionDenied",
+                        "denied",
                         t0.elapsed().as_millis() as u64,
                     );
                     if let Some(stale) = consent.revoke_grant_covering(root).await {

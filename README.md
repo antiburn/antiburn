@@ -40,6 +40,10 @@ docs/support.md          The v1 platform and agent support matrix, and what
                          antiburn stores about your sessions.
 docs/deviations.md       Every deliberate difference from the ratified feature
                          matrix, with its reason and revisit milestone.
+docs/macos-folder-access.md
+                         How antiburn asks for the folders macOS guards, and
+                         why discovery is shaped around never surprising you
+                         with a permission dialog.
 ```
 
 ## Build and test

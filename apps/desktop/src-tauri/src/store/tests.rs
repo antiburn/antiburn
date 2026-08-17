@@ -36,6 +36,52 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
 }
 
 #[test]
+fn consent_grants_round_trip_and_revoke_individually() {
+    let store = store();
+    assert!(store.granted_dirs().unwrap().is_empty());
+
+    store.grant_dir("Documents").unwrap();
+    store.grant_dir("Desktop").unwrap();
+    assert_eq!(store.granted_dirs().unwrap().len(), 2);
+
+    // Re-granting refreshes the row rather than adding a second one.
+    store.grant_dir("Documents").unwrap();
+    assert_eq!(store.granted_dirs().unwrap().len(), 2);
+
+    // Revoking is per directory, and revoking an absent one is a no-op.
+    store.revoke_dir_grant("Documents").unwrap();
+    store.revoke_dir_grant("Downloads").unwrap();
+    assert_eq!(
+        store.granted_dirs().unwrap(),
+        std::collections::HashSet::from(["Desktop".to_string()])
+    );
+}
+
+#[test]
+fn deferred_permission_dirs_replace_the_previous_pass() {
+    let store = store();
+
+    store
+        .set_deferred_permission_dirs(&[crate::dto::DeferredPermissionDir {
+            dir: "Documents".to_string(),
+            path_count: 3,
+        }])
+        .unwrap();
+    assert_eq!(
+        store.internal_value(super::DEFERRED_PERMISSION_DIRS_KEY),
+        Some(r#"[{"dir":"Documents","pathCount":3}]"#.to_string())
+    );
+
+    // A later pass that defers nothing clears the list rather than leaving a
+    // stale directory asking for permission it no longer needs.
+    store.set_deferred_permission_dirs(&[]).unwrap();
+    assert_eq!(
+        store.internal_value(super::DEFERRED_PERMISSION_DIRS_KEY),
+        Some("[]".to_string())
+    );
+}
+
+#[test]
 fn migrating_an_already_current_database_is_a_no_op() {
     let store = store();
     // `migrate` runs on open; running it again must neither fail nor re-apply.

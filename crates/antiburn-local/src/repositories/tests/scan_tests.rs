@@ -138,7 +138,7 @@ async fn scan_evicts_stale_grant_and_defers_dir() {
         consent
             .probes()
             .iter()
-            .any(|(_, outcome)| outcome == "PermissionDenied"),
+            .any(|(_, outcome)| outcome == "denied"),
         "the denial must be reported to the application for diagnostics"
     );
 
