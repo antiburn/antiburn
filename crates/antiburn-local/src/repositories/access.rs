@@ -43,9 +43,12 @@ pub async fn verify_dir_access(consent: &dyn ConsentGrants, path: &Path) -> bool
         Ok(_) => true,
         Err(e) => {
             if e.kind() == ErrorKind::PermissionDenied {
+                // Same vocabulary the application uses for a probe it asked
+                // for, so a pasted diagnostics blob reads as one scheme rather
+                // than betraying which layer happened to observe each line.
                 consent.record_probe(
                     &path.to_string_lossy(),
-                    "PermissionDenied",
+                    "denied",
                     t0.elapsed().as_millis() as u64,
                 );
                 ::tracing::debug!(

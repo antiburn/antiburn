@@ -31,7 +31,6 @@ export function FolderPermissionNotice({
   onRequest,
   onOpenSettings,
   onRecheck,
-  onOpenFullDiskAccess,
   onCopyDiagnostics,
   rechecking = false,
 }: {
@@ -45,7 +44,6 @@ export function FolderPermissionNotice({
   onOpenSettings: () => void;
   /** Look for access granted outside antiburn, in system settings. */
   onRecheck: () => void;
-  onOpenFullDiskAccess: () => void;
   onCopyDiagnostics: () => void;
   rechecking?: boolean;
 }) {
@@ -97,10 +95,6 @@ export function FolderPermissionNotice({
                 <PushButton onClick={onRecheck} disabled={rechecking}>
                   {rechecking ? 'Checking…' : 'Check again'}
                 </PushButton>
-                {/* The last resort: a reset can leave antiburn with no row to
-                    switch on under Files and Folders at all, and full disk
-                    access is then the only setting that exists. */}
-                <PushButton onClick={onOpenFullDiskAccess}>Full Disk Access…</PushButton>
                 <PushButton onClick={onCopyDiagnostics}>Copy diagnostics</PushButton>
               </>
             ) : (

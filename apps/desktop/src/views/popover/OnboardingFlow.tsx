@@ -15,7 +15,6 @@ import { SegmentedControl } from '../../components/ui/SegmentedControl';
 import {
   getConsentDiagnostics,
   openFolderAccessSettings,
-  openFullDiskAccessSettings,
   recheckFolderPermissions,
   type ScanStatus,
 } from '../../lib/ipc';
@@ -282,7 +281,6 @@ function Repositories({
             onRequest={permissionFlow.start}
             onOpenSettings={() => void openFolderAccessSettings()}
             onRecheck={() => void recheckFolderPermissions()}
-            onOpenFullDiskAccess={() => void openFullDiskAccessSettings()}
             onCopyDiagnostics={() => {
               void getConsentDiagnostics().then((probes) =>
                 navigator.clipboard.writeText(

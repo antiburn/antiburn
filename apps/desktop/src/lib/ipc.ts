@@ -1158,17 +1158,6 @@ export async function openFolderAccessSettings(): Promise<void> {
   await invoke('open_folder_access_settings');
 }
 
-/**
- * Open the system pane for full disk access.
- *
- * The escape hatch for the case the per-folder pane cannot fix: after a
- * permissions reset antiburn may have no row there to toggle at all.
- */
-export async function openFullDiskAccessSettings(): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('open_full_disk_access_settings');
-}
-
 /** Probe outcomes from this run, for a bug report. */
 export async function getConsentDiagnostics(): Promise<ProbeRecord[]> {
   if (!hasShell()) return [];

@@ -951,18 +951,11 @@ pub fn open_folder_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
     app.opener().open_url(url, None::<&str>).map_err(fail)
 }
 
-/// Open the system pane for full disk access.
-///
-/// The escape hatch for the case the per-folder pane cannot fix: after a
-/// permissions reset the app may have no row there to toggle at all.
-#[tauri::command]
-pub fn open_full_disk_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
-    let url = repositories_engine::full_disk_access_settings_url()
-        .ok_or_else(|| "no full disk access settings on this platform".to_string())?;
-    app.opener().open_url(url, None::<&str>).map_err(fail)
-}
-
 /// Probe outcomes from this run, for the reader to copy into a bug report.
+///
+/// Every entry uses the same vocabulary — `granted`, `denied`, `recorded-denial`
+/// — whichever layer observed it, because the reader pasting this into an issue
+/// should not have to know which one did.
 #[tauri::command]
 pub fn get_consent_diagnostics() -> Vec<consent::ProbeRecord> {
     consent::recent_probes()

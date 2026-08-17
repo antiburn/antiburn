@@ -24,7 +24,6 @@ function renderNotice(overrides: Partial<Parameters<typeof FolderPermissionNotic
     onRequest: vi.fn(),
     onOpenSettings: vi.fn(),
     onRecheck: vi.fn(),
-    onOpenFullDiskAccess: vi.fn(),
     onCopyDiagnostics: vi.fn(),
     ...overrides,
   };
@@ -45,7 +44,6 @@ describe('FolderPermissionNotice', () => {
         onRequest={vi.fn()}
         onOpenSettings={vi.fn()}
         onRecheck={vi.fn()}
-        onOpenFullDiskAccess={vi.fn()}
         onCopyDiagnostics={vi.fn()}
       />,
     );
@@ -88,14 +86,11 @@ describe('FolderPermissionNotice', () => {
   it('offers the whole recovery path once macOS will not ask again', () => {
     const props = renderNotice({ recordedDenials: ['Documents', 'Desktop'] });
 
-    // Re-checking is how access granted in System Settings gets noticed, and
-    // full disk access is the fallback when no per-folder row exists to switch
-    // on at all. Both were dead code in the implementation this came from.
+    // Re-checking is how access granted in System Settings gets noticed. There
+    // is deliberately no full-disk-access shortcut here: every blocked state
+    // this app can reach is recoverable through the per-folder control.
     fireEvent.click(screen.getByRole('button', { name: /check again/i }));
     expect(props.onRecheck).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole('button', { name: /full disk access/i }));
-    expect(props.onOpenFullDiskAccess).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: /copy diagnostics/i }));
     expect(props.onCopyDiagnostics).toHaveBeenCalledTimes(1);

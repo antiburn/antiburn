@@ -22,7 +22,6 @@ import {
   getConsentDiagnostics,
   onScanEvent,
   openFolderAccessSettings,
-  openFullDiskAccessSettings,
   recheckFolderPermissions,
   refreshRepositories,
   removeScanRoot,
@@ -225,7 +224,6 @@ export function SourcesPane() {
             onRequest={permissionFlow.start}
             onOpenSettings={() => void openFolderAccessSettings()}
             onRecheck={() => void handleRecheck()}
-            onOpenFullDiskAccess={() => void openFullDiskAccessSettings()}
             onCopyDiagnostics={() => void handleCopyDiagnostics()}
             rechecking={rechecking}
           />

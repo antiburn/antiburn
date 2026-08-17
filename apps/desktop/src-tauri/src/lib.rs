@@ -113,7 +113,6 @@ pub fn run() {
             commands::get_folder_permissions,
             commands::request_folder_access,
             commands::open_folder_access_settings,
-            commands::open_full_disk_access_settings,
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
             commands::get_session_analytics,
