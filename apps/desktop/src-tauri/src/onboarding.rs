@@ -109,11 +109,12 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
     let window = builder.build()?;
     center_on_active_monitor(&window, WIDTH, HEIGHT);
     window.show()?;
-    // The app is an accessory with no Dock icon (`ActivationPolicy::Accessory`),
-    // and this is the one window that opens without a click behind it. On macOS
-    // `set_focus` activates the application as well as ordering the window
-    // front, which is what stops a launch-time window opening behind whatever
-    // the reader was already looking at.
+    // This is the one window that opens without a click behind it, so nothing
+    // else is going to bring it forward. On macOS `set_focus` activates the
+    // application as well as ordering the window front — and by here the app is
+    // already `Regular` (see [`apply_activation_policy`], applied before this
+    // is called), so activating it means a Dock icon and a ⌘-Tab entry, not
+    // just a window that happens to be on top.
     window.set_focus()?;
 
     Ok(())
@@ -130,7 +131,56 @@ pub fn finish(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.hide();
     }
+    // The Dock icon goes at the same moment the notification says where the
+    // app went, which is the whole choreography: one presence is exchanged for
+    // the other in front of the reader rather than behind their back. The nudge
+    // is non-activating, so it survives the policy change instead of being
+    // ordered out by it — hence this line before that one, not after.
+    apply_activation_policy(app, false);
     crate::notifications::note_menu_bar_home(app);
+}
+
+/// Which kind of application antiburn is while the first run is pending.
+///
+/// The accessory policy — no Dock icon, no ⌘-Tab entry, no application menu —
+/// is right for a finished menu-bar app and a trap for this one. A reader on
+/// step two who clicks another application has no route back: not the Dock, not
+/// ⌘-Tab, not Mission Control, only the menu-bar glyph they have not been told
+/// about yet, because being told about it is what finishing this window *does*.
+///
+/// So antiburn is an ordinary application for exactly as long as it owes
+/// somebody the flow, and an accessory afterwards.
+///
+/// Pure, so the rule is testable without AppKit.
+#[cfg(target_os = "macos")]
+pub fn policy_for(pending: bool) -> tauri::ActivationPolicy {
+    if pending {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    }
+}
+
+/// Apply [`policy_for`].
+///
+/// Keyed on whether onboarding is *pending*, deliberately, and never on whether
+/// the window is visible: closing the window early hides rather than destroys
+/// it, and a visibility-keyed rule would take the Dock icon away at exactly the
+/// moment the reader most needs it to get back.
+///
+/// A no-op off macOS, where the window carries no `skip_taskbar` and is
+/// therefore already in the taskbar and already alt-tabbable.
+pub fn apply_activation_policy(app: &AppHandle, pending: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = app.set_activation_policy(policy_for(pending)) {
+            // Best-effort: the wrong Dock presence is a worse first run, not a
+            // broken one, and there is nothing useful to do about it here.
+            eprintln!("antiburn: could not set the activation policy ({error})");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, pending);
 }
 
 /// Whether the first-run flow still owes the reader something.
@@ -162,5 +212,17 @@ mod tests {
             LABEL, "onboarding",
             "also listed in capabilities/default.json"
         );
+    }
+
+    /// Small, but it is the whole rule: antiburn is an ordinary application
+    /// for as long as it owes somebody the first run, and an accessory after.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_app_has_a_dock_icon_for_exactly_as_long_as_the_flow_is_owed() {
+        assert!(matches!(policy_for(true), tauri::ActivationPolicy::Regular));
+        assert!(matches!(
+            policy_for(false),
+            tauri::ActivationPolicy::Accessory
+        ));
     }
 }

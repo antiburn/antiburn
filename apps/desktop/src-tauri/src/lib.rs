@@ -150,6 +150,11 @@ pub fn run() {
             // A menu-bar app owns no Dock icon and no application menu. The
             // bundle declares LSUIElement, but development runs are unbundled,
             // so the policy is also applied here.
+            //
+            // Unconditional on purpose, and applied before the store is even
+            // open: a completed install must never flash a Dock icon while its
+            // settings are being read. The first run overrides it a few lines
+            // below — see `onboarding::policy_for` for why it has to.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -188,10 +193,16 @@ pub fn run() {
             // Best-effort on purpose, unlike the four `?`s above: a window that
             // will not build is not a reason to refuse to start, and the
             // menu-bar item still reaches the flow (see `popover::toggle`).
-            if onboarding::is_pending(app.handle())
-                && let Err(error) = onboarding::open(app.handle())
-            {
-                eprintln!("antiburn: could not open the first-run window ({error})");
+            if onboarding::is_pending(app.handle()) {
+                // Before the window, not after: it should be born into an
+                // application that already has a Dock presence rather than
+                // acquiring one underneath it. The accessory policy applied
+                // above stands for every completed install, so nothing flashes
+                // a Dock icon while the store is being read.
+                onboarding::apply_activation_policy(app.handle(), true);
+                if let Err(error) = onboarding::open(app.handle()) {
+                    eprintln!("antiburn: could not open the first-run window ({error})");
+                }
             }
 
             // Registered before the update scheduler starts, so the first
@@ -231,16 +242,48 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build the antiburn application")
         .run(|app, event| match event {
-            // Closing the settings window must not quit a menu-bar app: the
-            // tray item is the app's real lifetime.
-            RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
+            RunEvent::ExitRequested { api, code, .. }
+                if should_prevent_exit(onboarding::is_pending(app), code) =>
+            {
                 api.prevent_exit();
             }
             // A deliberate quit: stop the background tasks before the store
             // they write to is dropped.
             RunEvent::Exit => abort_schedulers(app),
+            // Clicking the Dock icon. Only reachable while the first run is
+            // pending, because that is the only time antiburn has a Dock icon
+            // (see `onboarding::policy_for`) — and it is exactly then that
+            // somebody who closed the window early has no other way back to it.
+            // A visible affordance that did nothing would be a worse failure
+            // than the one the Dock icon is here to fix.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => {
+                if onboarding::is_pending(app)
+                    && let Err(error) = onboarding::open(app)
+                {
+                    eprintln!("antiburn: could not reopen the first-run window ({error})");
+                }
+            }
             _ => {}
         });
+}
+
+/// Whether an exit request should be swallowed.
+///
+/// A menu-bar app outlives its windows: closing settings, or the popover, must
+/// not quit antiburn, and those arrive here with no exit code. Only the shell's
+/// own `exit(0)` — the tray menu, the settings sidebar — carries one, which is
+/// what distinguishes a deliberate quit from a window close.
+///
+/// The exception is the first run. While it is pending antiburn is an ordinary
+/// Dock application (again, `onboarding::policy_for`), so it has an application
+/// menu and a Dock context menu, both offering Quit, and both arriving here
+/// with `code: None`. Swallowing those would give the reader a Quit item that
+/// silently does nothing at the one moment they have no other way to get rid of
+/// the app. During the first run it quits like the ordinary application it is
+/// pretending to be.
+fn should_prevent_exit(onboarding_pending: bool, code: Option<i32>) -> bool {
+    code.is_none() && !onboarding_pending
 }
 
 /// Stop every background task. Safe to call when none ever started.
@@ -310,5 +353,28 @@ fn install_updater(app: &tauri::AppHandle) {
         // The plugin is the only network-capable surface in the application;
         // a development run must not carry it at all.
         let _ = app;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_prevent_exit;
+
+    #[test]
+    fn a_window_close_never_quits_the_finished_menu_bar_app() {
+        // Settings and the popover both close with no exit code, and the tray
+        // item is the app's real lifetime.
+        assert!(should_prevent_exit(false, None));
+        // The shell's own `exit(0)` is the deliberate quit and always lands.
+        assert!(!should_prevent_exit(false, Some(0)));
+        assert!(!should_prevent_exit(true, Some(0)));
+    }
+
+    #[test]
+    fn cmd_q_works_while_the_first_run_owns_a_dock_icon() {
+        // The case that matters. A Regular app's application menu and Dock
+        // context menu both offer Quit and both arrive with no code; swallowing
+        // them would ship a Quit item that does nothing.
+        assert!(!should_prevent_exit(true, None));
     }
 }
