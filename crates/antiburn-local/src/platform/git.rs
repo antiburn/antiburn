@@ -234,6 +234,13 @@ pub struct RepoRootResolutionDiagnostics {
     pub alternative_repo_roots: Vec<PathBuf>,
     /// Which strategy produced the answer.
     pub resolved_via: Option<&'static str>,
+    /// Whether a probe was skipped because its path sits under a
+    /// consent-protected directory the user has not granted.
+    ///
+    /// A resolution can fail for this reason alone, which means the repository
+    /// is *unknown*, not absent: the caller should offer the user a way to grant
+    /// access rather than report a missing repository.
+    pub consent_blocked: bool,
 }
 
 /// A resolved repository root plus the diagnostics that produced it.
@@ -254,8 +261,13 @@ struct WorktreeEntry {
 /// ancestor and then to the repository that owns a since-deleted worktree.
 ///
 /// `granted` is the set of consent-protected directory names the user has
-/// already allowed (see [`crate::paths::protected`]); probing skips protected
-/// directories that are not in it.
+/// already allowed (see [`crate::paths::protected`]). Every strategy here is
+/// gated on it — including resolving `cwd` itself — so a working directory
+/// inside an ungranted protected directory runs no `git` process at all and
+/// comes back with
+/// [`consent_blocked`](RepoRootResolutionDiagnostics::consent_blocked) set.
+/// Resolution still succeeds when a *granted* ancestor or owning repository can
+/// answer for an ungranted `cwd`.
 pub async fn resolve_repo_root_with_fallbacks(
     cwd: &Path,
     granted: &HashSet<String>,
@@ -266,23 +278,10 @@ pub async fn resolve_repo_root_with_fallbacks(
         ..RepoRootResolutionDiagnostics::default()
     };
 
-    match repo_root_at(cwd).await {
-        Ok(repo_root) => {
-            diagnostics.resolved_via = Some("cwd");
-            diagnostics.alternative_repo_roots = alternative_repo_roots_for_repo(&repo_root).await;
-            return Ok(RepoRootResolution {
-                repo_root,
-                diagnostics,
-            });
-        }
-        Err(err) => diagnostics.direct_error = Some(err.to_string()),
-    }
-
-    if let Some(existing_ancestor) = nearest_existing_ancestor(cwd).await {
-        diagnostics.nearest_existing_ancestor = Some(existing_ancestor.clone());
-        match repo_root_at(&existing_ancestor).await {
+    if is_probe_allowed(cwd, granted) {
+        match repo_root_at(cwd).await {
             Ok(repo_root) => {
-                diagnostics.resolved_via = Some("existing_ancestor");
+                diagnostics.resolved_via = Some("cwd");
                 diagnostics.alternative_repo_roots =
                     alternative_repo_roots_for_repo(&repo_root).await;
                 return Ok(RepoRootResolution {
@@ -290,7 +289,32 @@ pub async fn resolve_repo_root_with_fallbacks(
                     diagnostics,
                 });
             }
-            Err(err) => diagnostics.ancestor_error = Some(err.to_string()),
+            Err(err) => diagnostics.direct_error = Some(err.to_string()),
+        }
+    } else {
+        diagnostics.consent_blocked = true;
+    }
+
+    // Walking up to the nearest existing ancestor only ever calls `try_exists`,
+    // which the consent controls permit; the `git` invocation that follows is
+    // the part that needs the gate.
+    if let Some(existing_ancestor) = nearest_existing_ancestor(cwd).await {
+        diagnostics.nearest_existing_ancestor = Some(existing_ancestor.clone());
+        if is_probe_allowed(&existing_ancestor, granted) {
+            match repo_root_at(&existing_ancestor).await {
+                Ok(repo_root) => {
+                    diagnostics.resolved_via = Some("existing_ancestor");
+                    diagnostics.alternative_repo_roots =
+                        alternative_repo_roots_for_repo(&repo_root).await;
+                    return Ok(RepoRootResolution {
+                        repo_root,
+                        diagnostics,
+                    });
+                }
+                Err(err) => diagnostics.ancestor_error = Some(err.to_string()),
+            }
+        } else {
+            diagnostics.consent_blocked = true;
         }
     }
 
@@ -490,26 +514,15 @@ async fn candidate_owner_repo_roots(
 }
 
 // Skip probing inside consent-protected directories (e.g. ~/Documents on macOS)
-// the user has not granted access to — a bare `try_exists` against those paths
-// can trip the native consent dialog on modern macOS and, if the file does
-// exist, the follow-up `git` invocation with `cwd` inside the protected
-// directory definitely will.
+// the user has not granted access to — a `git` invocation whose working
+// directory sits inside one raises the native consent dialog, and so does
+// reading the directory itself.
 //
-// The `None` arm falls through to `true` because `is_access_protected` and
-// `protected_dir_name` share one home-directory lookup and one protected-name
-// list. If one says "protected" but the other cannot map the path back to a
-// name, that is a list mismatch (e.g. a test environment where the home
-// directory shifts between calls) rather than a real protected path, so failing
-// open is safe.
+// See [`protected::cwd_resolution_blocked`] for why an unmappable protected
+// path fails open.
 #[must_use]
 fn is_probe_allowed(path: &Path, granted: &HashSet<String>) -> bool {
-    if !protected::is_access_protected(path) {
-        return true;
-    }
-    match protected::protected_dir_name(path) {
-        Some(name) => granted.contains(&name),
-        None => true,
-    }
+    !protected::cwd_resolution_blocked(path, granted)
 }
 
 /// Existing repositories under `home` that could own a since-deleted worktree
@@ -1770,6 +1783,62 @@ mod tests {
         );
 
         std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    /// The working directory is a real, resolvable repository. Only consent is
+    /// missing — so resolution must fail, and it must fail without having run
+    /// `git` at all. A recorded `direct_error` would mean a process ran inside
+    /// the protected directory, which is exactly what raises the consent dialog.
+    #[tokio::test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    async fn resolve_repo_root_with_fallbacks_refuses_an_ungranted_protected_cwd() {
+        let home_dir = TempDir::new().unwrap();
+        let home = home_dir.path();
+        let guard = EnvGuard::new("HOME");
+        guard.set_path(home);
+
+        let repo_root = home.join("Documents").join("GitHub").join("myrepo");
+        init_repo_with_branch(&repo_root, "myrepo").await;
+
+        let diagnostics = resolve_repo_root_with_fallbacks(&repo_root, &HashSet::new())
+            .await
+            .expect_err("an ungranted protected cwd must not resolve");
+
+        assert!(
+            diagnostics.consent_blocked,
+            "the refusal must be attributed to consent, not to a missing repository"
+        );
+        assert!(
+            diagnostics.direct_error.is_none(),
+            "no git process may run against an ungranted protected cwd; got {:?}",
+            diagnostics.direct_error
+        );
+        assert!(diagnostics.ancestor_error.is_none());
+        assert_eq!(diagnostics.resolved_via, None);
+    }
+
+    /// The same repository, once the user has granted its directory.
+    #[tokio::test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    async fn resolve_repo_root_with_fallbacks_resolves_a_granted_protected_cwd() {
+        let home_dir = TempDir::new().unwrap();
+        let home = home_dir.path();
+        let guard = EnvGuard::new("HOME");
+        guard.set_path(home);
+
+        let repo_root = home.join("Documents").join("GitHub").join("myrepo");
+        init_repo_with_branch(&repo_root, "myrepo").await;
+
+        let granted = HashSet::from(["Documents".to_string()]);
+        let resolution = resolve_repo_root_with_fallbacks(&repo_root, &granted)
+            .await
+            .expect("a granted protected cwd should resolve");
+
+        assert_eq!(resolution.repo_root, canonical_test_path(&repo_root).await);
+        assert_eq!(resolution.diagnostics.resolved_via, Some("cwd"));
+        assert!(!resolution.diagnostics.consent_blocked);
     }
 
     #[tokio::test]

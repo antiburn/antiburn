@@ -14,6 +14,7 @@
 //! list and never touch the filesystem. Persisting *which* directories the user
 //! granted is the embedding application's job.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Directory names, relative to the home directory, that the current platform
@@ -73,6 +74,44 @@ pub fn protected_dir_name_in(home: &Path, path: &Path) -> Option<String> {
         .map(|name| (*name).to_string())
 }
 
+/// Whether `path` must be left untouched because it sits under a
+/// consent-protected directory absent from `granted`.
+///
+/// This is the question to ask before *any* filesystem probe or `git`
+/// invocation aimed at a path the caller did not choose — a working directory
+/// recorded in a session, say. A `stat` against such a path is harmless, but a
+/// directory read or a `git` process whose working directory sits inside one is
+/// exactly what raises the consent dialog.
+///
+/// The `None` arm returns `false` because [`is_access_protected`] and
+/// [`protected_dir_name`] share one home-directory lookup and one protected-name
+/// list. If the first says "protected" but the second cannot map the path back
+/// to a name, that is a list mismatch — a test environment whose home directory
+/// shifted between the two calls, for instance — rather than a real protected
+/// path, so failing open is safe.
+#[must_use]
+pub fn cwd_resolution_blocked(path: &Path, granted: &HashSet<String>) -> bool {
+    if !is_access_protected(path) {
+        return false;
+    }
+    match protected_dir_name(path) {
+        Some(name) => !granted.contains(&name),
+        None => false,
+    }
+}
+
+/// [`cwd_resolution_blocked`] against an explicit home directory.
+///
+/// One lookup answers both halves here, so this has none of the fail-open
+/// ambiguity its home-resolving counterpart documents.
+#[must_use]
+pub fn cwd_resolution_blocked_in(home: &Path, path: &Path, granted: &HashSet<String>) -> bool {
+    match protected_dir_name_in(home, path) {
+        Some(name) => !granted.contains(&name),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +154,55 @@ mod tests {
             protected_dir_name_in(&home, &home.join("dev").join("repo")),
             None
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn resolution_is_blocked_only_inside_ungranted_protected_dirs() {
+        let home = PathBuf::from("/Users/avery");
+        let documents = home.join("Documents").join("GitHub").join("repo");
+        let unprotected = home.join("dev").join("repo");
+
+        let nothing_granted = HashSet::new();
+        assert!(cwd_resolution_blocked_in(
+            &home,
+            &documents,
+            &nothing_granted
+        ));
+        assert!(!cwd_resolution_blocked_in(
+            &home,
+            &unprotected,
+            &nothing_granted
+        ));
+
+        let documents_granted = HashSet::from(["Documents".to_string()]);
+        assert!(!cwd_resolution_blocked_in(
+            &home,
+            &documents,
+            &documents_granted
+        ));
+        // A grant covers one directory, not every protected directory.
+        assert!(cwd_resolution_blocked_in(
+            &home,
+            &home.join("Desktop").join("repo"),
+            &documents_granted
+        ));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn platforms_without_consent_controls_never_block_resolution() {
+        let home = PathBuf::from("/home/avery");
+
+        assert!(!cwd_resolution_blocked(
+            &home.join("Documents"),
+            &HashSet::new()
+        ));
+        assert!(!cwd_resolution_blocked_in(
+            &home,
+            &home.join("Documents"),
+            &HashSet::new()
+        ));
     }
 
     #[test]
