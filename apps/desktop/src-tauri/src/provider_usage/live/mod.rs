@@ -22,12 +22,15 @@
 //!
 //! # Where the numbers come from
 //!
-//! [`LiveUsageSource`] implementations, registered at startup. The one that
-//! ships today reads a file another application already wrote
-//! ([`sources::local_cache`]): no socket, no credential, no child process. It
-//! works with the machine disconnected, because the figures were fetched by
-//! the agent the last time *it* was online, and every window says how old it
-//! is rather than pretending to be current.
+//! [`LiveUsageSource`] implementations, registered at startup. By default,
+//! [`sources::local_cache`] reads a file another application already wrote —
+//! no service of ours involved, no child process — and it works with the
+//! machine disconnected, because the figures were fetched by the agent the
+//! last time *it* was online, and every window says how old it is rather
+//! than pretending to be current. One opt-in setting also registers
+//! [`sources::cli_refresh`], which runs the agent itself so that file is
+//! newer than whenever the reader last happened to use it — see that module
+//! for what running it does, and does not, do.
 //!
 //! # Fail closed, everywhere
 //!

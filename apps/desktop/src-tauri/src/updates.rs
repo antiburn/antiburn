@@ -4,9 +4,9 @@
 
 //! Update checks against the public GitHub Releases feed.
 //!
-//! The updater plugin is the only network-capable surface in the whole
-//! application, and this module owns every decision about when it is allowed to
-//! speak:
+//! The updater plugin is the only surface in the whole application that talks
+//! to a service of ours, and this module owns every decision about when it is
+//! allowed to speak:
 //!
 //! - **Whether it can speak at all.** [`supported`] answers from *real*
 //!   registration state — a flag set only after the plugin actually built and

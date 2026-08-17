@@ -4,10 +4,10 @@
 
 //! The engine's boundary with the local operating system.
 //!
-//! Everything that leaves the process lives here, and nothing here reaches the
-//! network. The engine runs exactly two local programs — the user's `git`, and
+//! Everything that leaves the process lives here, and everything here stays
+//! local. The engine runs exactly two local programs — the user's `git`, and
 //! `wsl.exe` on Windows to reach a mounted distribution — through a bounded,
-//! window-free child-process mechanism.
+//! window-free child-process mechanism; neither one reaches a network.
 //!
 //! # Modules
 //!

@@ -14,9 +14,10 @@
  * where no shell is attached. Every wrapper therefore reports *absence* rather
  * than throwing, so views render a degraded state instead of crashing.
  *
- * None of these payloads is fetched. They are produced on this machine by the
- * local engine — see `tests/offline.test.ts`, which enforces that no code in
- * this app opens a network connection.
+ * None of these payloads comes from a service of ours. They are produced on
+ * this machine by the local engine — see `tests/no-exfiltration.test.ts`,
+ * which enforces that no code in this app's webview opens a network
+ * connection on its own account.
  */
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -270,9 +271,11 @@ export interface ProviderUsageSummaryPayload {
  * that it carries no percentage, allowance, or reset, and a test proves it.
  * The views layer the two.
  *
- * Still nothing is fetched here. These figures were fetched by the *agent*,
- * which cached them on this machine; the shell reads that file and this module
- * receives it over IPC like everything else. See `tests/offline.test.ts`.
+ * Still nothing is fetched here, in the webview. These figures were fetched
+ * by the *agent* (optionally at antiburn's request — see Settings → Usage),
+ * which cached them on this machine; the shell reads that file and this
+ * module receives it over IPC like everything else. See
+ * `tests/no-exfiltration.test.ts`.
  * ---------------------------------------------------------------------- */
 
 /** How trustworthy a live reading is. Mirrors Rust `LiveUsageSupport`. */

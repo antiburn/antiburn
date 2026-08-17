@@ -12,12 +12,20 @@ release notes unless you prefer otherwise.
 
 ## Scope
 
-antiburn runs entirely on-device. Reports of particular interest:
+antiburn runs entirely on-device, as you: it needs no connection to any service
+of ours. Reports of particular interest:
 
-- any code path that could cause network egress from `antiburn-local`;
+- any code path that sends session content, credentials, or anything else
+  about you to a service of ours, or to any third party — the one hard line
+  antiburn holds; returning your own token to its issuing provider is not a
+  violation of this, but sending it anywhere else is;
+- any code path that could cause network egress from `antiburn-local`, which
+  is supposed to have none;
 - discovery escaping its documented provider roots, following symlinks out of
   an approved root, or writing to provider-owned stores;
-- reads of credential, cookie, token, account, or billing data;
+- a credential or token read for one purpose (calling its own issuing
+  provider, on your behalf) ending up logged, cached beyond that purpose, or
+  sent anywhere else;
 - transcript content leaving app-controlled local storage, appearing in logs,
   or being exposed outside a visibility or analysis feature that needs it.
 

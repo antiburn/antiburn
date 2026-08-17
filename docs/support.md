@@ -22,10 +22,9 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Agents
 
-antiburn reads what a coding agent has already written to disk. It never asks a
-provider's API, never reads credentials, and never probes a running process. One
-opt-in setting *runs* an agent — see [Network](#network) — but even then antiburn
-reads the file the agent writes, not the agent.
+antiburn reads what a coding agent has already written to disk. One opt-in
+setting *runs* an agent — see [Network](#network) — but even then antiburn
+reads the file the agent writes, not the agent's output.
 
 | Agent | Native (macOS / Windows / Linux) | WSL | Notes |
 | --- | --- | --- | --- |
@@ -41,9 +40,9 @@ reads the file the agent writes, not the agent.
 | Antigravity | Supported, **disk-only** | Not supported | Documented local files only |
 | Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
 
-**Disk-only** means sessions come from the agent's own documented local files. The
-live language-server APIs those two editors expose are deliberately not used, so a
-session that exists only in memory will not appear.
+**Disk-only** means sessions come from the agent's own documented local files; the
+live language-server APIs those two editors expose aren't read, so a session that
+exists only in memory will not appear.
 
 **Session analytics** — the timeline, phases, context, token, and cost views — need a
 transcript format antiburn understands in detail. Where it has only a generic parse,
@@ -70,9 +69,10 @@ has cached its own usage reading on this machine, antiburn reads that file and s
 the figures your provider stated — a percentage of a five-hour or weekly allowance,
 and when it resets. Those are the provider's numbers, not ours:
 
-- antiburn fetches nothing to get them. The agent fetched them when *it* was last
-  online, and antiburn reads the file it left behind, the same way it reads
-  everything else;
+- antiburn itself calls no provider to get them: by default it simply reads the
+  file the agent already wrote the last time *it* was online, the same way it
+  reads everything else. One opt-in setting can ask the agent to refresh that
+  file on antiburn's behalf — see [Network](#network);
 - every reading is shown with the moment the provider stated it, and a reading older
   than an hour is marked as such rather than ageing quietly on screen;
 - a figure the provider did not state is shown as unknown, never as zero;
@@ -116,9 +116,11 @@ the next time it looks.
 
 ## Network
 
-The engine performs no network or socket I/O at all, and this is enforced
-mechanically by its own test suite. The application itself opens exactly one kind of
-connection: the updater, which asks GitHub Releases whether a newer version exists.
+antiburn needs no connection to any service of ours — no antiburn account, server,
+or backend, ever. The engine (`antiburn-local`) performs no network or socket I/O
+at all, and this is enforced mechanically by its own test suite. The application's
+own connection to a service of ours is exactly one kind: the updater, which asks
+GitHub Releases whether a newer version exists, and which the app never depends on.
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can
