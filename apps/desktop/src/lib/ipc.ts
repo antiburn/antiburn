@@ -287,10 +287,12 @@ export type LiveUsageFreshness = 'fresh' | 'stale';
 /**
  * One provider-reported allowance.
  *
- * Every field is either something the provider stated or null. In particular
- * `usedPercent` is null — never 0 — when the provider did not say, because a
- * meter reading empty and a meter reading unknown are different facts and the
- * views render them differently.
+ * Every field through `resetsAt` is either something the provider stated or
+ * null. In particular `usedPercent` is null — never 0 — when the provider did
+ * not say, because a meter reading empty and a meter reading unknown are
+ * different facts and the views render them differently. The last two fields
+ * are the exception: both are derived from this window's own sample history
+ * rather than stated by anyone.
  */
 export interface LiveUsageWindowPayload {
   /** `five-hour`, `seven-day`, `weekly-<model>`, or the provider's own name. */
@@ -305,6 +307,12 @@ export interface LiveUsageWindowPayload {
   usedPercent: number | null;
   startsAt: string | null;
   resetsAt: string | null;
+  /**
+   * Whether trustworthy history shows non-zero usage anywhere in this
+   * window's current allowance period. Consulted only for a supplemental,
+   * model-scoped window — see `isUsageWindowVisible` in `liveUsage.ts`.
+   */
+  hasNonzeroUsageInCurrentPeriod: boolean;
   /** What this window's own history supports saying about it. */
   forecast: LiveUsageForecastPayload;
 }
