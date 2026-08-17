@@ -118,7 +118,7 @@ describe('UsageView', () => {
     expect(within(card!).getByText(/Easing · <0\.1×/)).toBeInTheDocument();
   });
 
-  it('states how sessions are assigned to windows without a retention disclaimer', () => {
+  it('explains how local spend estimates are calculated', () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />);
 
     expect(screen.getByText(/window of its most recent activity/)).toBeInTheDocument();
