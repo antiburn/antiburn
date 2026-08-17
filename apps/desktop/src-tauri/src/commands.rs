@@ -31,8 +31,8 @@ use crate::analytics;
 use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, LiveUsageSummary,
-    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics, SessionIdentity,
-    SessionRelation, SessionRelations, SubagentMember,
+    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics,
+    SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
 use crate::popover;

@@ -526,8 +526,7 @@ async fn forward_scan(
         // `probe_protected: false` — a background pass must never be able to
         // raise the operating system's consent dialog. Roots the user has
         // already granted are walked normally; the rest come back deferred.
-        let (repos, skipped) =
-            scan_roots_for_repos(&home, owner, false, scan_roots, consent).await;
+        let (repos, skipped) = scan_roots_for_repos(&home, owner, false, scan_roots, consent).await;
         located.extend(repos);
         deferred.extend(skipped);
     }
