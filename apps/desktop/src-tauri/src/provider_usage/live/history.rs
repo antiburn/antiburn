@@ -42,13 +42,6 @@ use crate::store::Store;
 /// Where the series live.
 const KEY: &str = "internal:liveUsageHistory";
 
-/// The calculation window for samples.
-///
-/// A week, because the longest window a provider reports is a week: history
-/// older than the window it describes cannot inform anything about it. This is
-/// an ephemeral forecast cache bound, not session-data retention.
-const EVIDENCE_WINDOW_SECS: i64 = 7 * 24 * 60 * 60;
-
 /// A ceiling on the whole forecast cache.
 ///
 /// Guards the pathological case — many providers, many windows, an agent
@@ -127,20 +120,16 @@ pub fn load(store: &Store) -> History {
         .unwrap_or_default()
 }
 
-/// Append anything new in `snapshots`, prune, and write back.
+/// Append anything new in `snapshots`, enforce the capacity ceiling, and write back.
 ///
 /// Returns the history *including* the new readings, so a caller that is
 /// about to compute a forecast does not have to read it back.
-pub fn record(store: &Store, snapshots: &[ProviderUsageSnapshot], now: i64) -> History {
+pub fn record(store: &Store, snapshots: &[ProviderUsageSnapshot]) -> History {
     let mut history = load(store);
     let mut changed = false;
 
     for snapshot in snapshots {
         let at = snapshot.observed_at.unix_timestamp();
-        // A reading outside the forecast window cannot inform a calculation.
-        if now.saturating_sub(at) > EVIDENCE_WINDOW_SECS {
-            continue;
-        }
         for window in &snapshot.windows {
             let series = history
                 .series
@@ -162,7 +151,7 @@ pub fn record(store: &Store, snapshots: &[ProviderUsageSnapshot], now: i64) -> H
         }
     }
 
-    if prune(&mut history, now) {
+    if enforce_ceiling(&mut history) {
         changed = true;
     }
     if changed {
@@ -174,18 +163,12 @@ pub fn record(store: &Store, snapshots: &[ProviderUsageSnapshot], now: i64) -> H
     history
 }
 
-/// Drop what is too old, then what is over the ceiling. Returns whether
+/// Drop the oldest samples until the cache is at its ceiling. Returns whether
 /// anything went.
-fn prune(history: &mut History, now: i64) -> bool {
-    let horizon = now - EVIDENCE_WINDOW_SECS;
+fn enforce_ceiling(history: &mut History) -> bool {
     let before: usize = history.series.values().map(Vec::len).sum();
 
-    for series in history.series.values_mut() {
-        series.retain(|sample| sample.at >= horizon);
-    }
-    history.series.retain(|_, series| !series.is_empty());
-
-    let mut total: usize = history.series.values().map(Vec::len).sum();
+    let mut total = before;
     while total > MAX_SAMPLES {
         // Oldest first, across every series: the ceiling is a property of the
         // whole cache, so one busy window must not evict a quiet window's
@@ -258,9 +241,9 @@ mod tests {
         let store = store();
         let key = window_key(&snapshot(NOW - 60, 40.0), "five-hour");
 
-        record(&store, &[snapshot(NOW - 60, 40.0)], NOW);
-        record(&store, &[snapshot(NOW - 60, 40.0)], NOW);
-        let history = record(&store, &[snapshot(NOW - 60, 40.0)], NOW);
+        record(&store, &[snapshot(NOW - 60, 40.0)]);
+        record(&store, &[snapshot(NOW - 60, 40.0)]);
+        let history = record(&store, &[snapshot(NOW - 60, 40.0)]);
 
         assert_eq!(history.samples(&key).len(), 1);
     }
@@ -271,9 +254,9 @@ mod tests {
         let key = window_key(&snapshot(NOW, 40.0), "five-hour");
 
         // Recorded out of order on purpose.
-        record(&store, &[snapshot(NOW - 60, 45.0)], NOW);
-        record(&store, &[snapshot(NOW - 3_600, 40.0)], NOW);
-        let history = record(&store, &[snapshot(NOW - 30, 50.0)], NOW);
+        record(&store, &[snapshot(NOW - 60, 45.0)]);
+        record(&store, &[snapshot(NOW - 3_600, 40.0)]);
+        let history = record(&store, &[snapshot(NOW - 30, 50.0)]);
 
         let samples = history.samples(&key);
         assert_eq!(samples.len(), 3);
@@ -290,28 +273,8 @@ mod tests {
     fn the_series_survives_a_reload_through_the_store() {
         let store = store();
         let key = window_key(&snapshot(NOW, 40.0), "five-hour");
-        record(&store, &[snapshot(NOW - 60, 40.0)], NOW);
+        record(&store, &[snapshot(NOW - 60, 40.0)]);
         assert_eq!(load(&store).samples(&key).len(), 1);
-    }
-
-    #[test]
-    fn readings_past_the_horizon_are_dropped_and_never_stored() {
-        let store = store();
-        let key = window_key(&snapshot(NOW, 40.0), "five-hour");
-
-        // Too old to store at all.
-        record(
-            &store,
-            &[snapshot(NOW - EVIDENCE_WINDOW_SECS - 1, 10.0)],
-            NOW,
-        );
-        assert!(load(&store).samples(&key).is_empty());
-
-        // Stored, then aged out by a later pass.
-        record(&store, &[snapshot(NOW - 60, 40.0)], NOW);
-        assert_eq!(load(&store).samples(&key).len(), 1);
-        let later = record(&store, &[], NOW + EVIDENCE_WINDOW_SECS + 120);
-        assert!(later.samples(&key).is_empty());
     }
 
     #[test]
@@ -319,7 +282,7 @@ mod tests {
         let mut other = snapshot(NOW - 60, 90.0);
         other.account = Some("account-b".into());
         let store = store();
-        let history = record(&store, &[snapshot(NOW - 60, 40.0), other.clone()], NOW);
+        let history = record(&store, &[snapshot(NOW - 60, 40.0), other.clone()]);
 
         assert_eq!(
             history.samples(&window_key(&snapshot(NOW, 0.0), "five-hour"))[0].used_percent,
@@ -355,7 +318,7 @@ mod tests {
             }],
         );
 
-        prune(&mut history, NOW);
+        enforce_ceiling(&mut history);
 
         assert_eq!(
             history.series.values().map(Vec::len).sum::<usize>(),
