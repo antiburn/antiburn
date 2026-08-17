@@ -129,13 +129,18 @@ Three independent checks, none of which relies on review:
   same Quit action — an agent application has no Dock icon and no application
   menu, so those two are the only places a reader can look for the way out.
   Both go through the shell's `exit(0)`, which is what distinguishes a
-  deliberate quit from the window closes the shell suppresses.
+  deliberate quit from the window closes the shell suppresses. On macOS the
+  item stays highlighted for as long as the popover is open: the system's own
+  highlight is momentary and lets go on mouse-up, so the shell drives it, and
+  clears it again on every path that puts the popover away.
 - **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
   It is created once at startup and anchored under its menu-bar item on each
   open, flipping above the item and clamping to the display when there is no
-  room below. It hides when it loses focus, when Escape is pressed, and on a
-  second click of the menu-bar item.
-- **Pin.** The tray menu's first item suspends all three of those dismissals,
+  room below. It hides when it loses focus, when Escape is pressed, on a
+  second click of the menu-bar item, and — on macOS — on a click anywhere
+  outside the app, which catches the Finder desktop: clicking it makes no
+  window key, so no focus change is reported at all.
+- **Pin.** The tray menu's first item suspends all four of those dismissals,
   and reads Unpin Window while it does. The state is in memory only: a pin
   means "keep this on screen while I work", and a relaunch ends that work.
   Pinning also re-shows the popover, because opening the tray menu is what

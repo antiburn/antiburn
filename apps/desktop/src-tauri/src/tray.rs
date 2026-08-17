@@ -138,6 +138,73 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     }
 }
 
+/// Light the menu-bar item, or put it out.
+///
+/// macOS only draws a *momentary* highlight on a status item: it appears on
+/// mouse-down and lets go on mouse-up. So the icon would go flat the instant
+/// the popover appeared, and the popover would read as a window floating near
+/// the menu bar rather than as this item's surface. Every native menu-bar
+/// popover stays lit for as long as it is open; this is how antiburn does the
+/// same.
+///
+/// The state has to stay paired with the popover's visibility, and the pairing
+/// lives in [`crate::popover`]: lit in `note_shown`, cleared in `note_hidden`.
+/// Every open and every close already runs through that pair, so no caller —
+/// including the tray menu's own pin — has to remember the icon separately.
+///
+/// # A known flicker on the opening click
+///
+/// tray-icon's `mouseUp:` calls `highlight(false)` and only then hands the
+/// click on, so this function re-lights a button that went dark ~185µs
+/// earlier. That gap is visible: `NSCell`'s highlight drawing is immediate and
+/// flushed, not deferred to the next frame, so the dark state reaches the
+/// screen as its own paint. Opening the popover therefore blinks once.
+///
+/// Measured, not guessed — Tauri delivers the tray event ~13µs after
+/// `mouseUp:` begins, so this is not event-loop latency and no reordering on
+/// this side can close it. Two alternatives were tried and rejected against
+/// the running app: driving the button's `state` instead (a status button is
+/// momentary, so `state` has no rendering at all), and forcing
+/// `PushOnPushOff` so `state` would paint a background (it still does not).
+/// `highlight(_:)` is the only property that renders, and tray-icon clears it
+/// on every mouse-up.
+///
+/// Removing the blink means stopping that call, which means carrying a fork of
+/// tray-icon rather than tracking the upstream revision already pinned in
+/// `Cargo.toml`. Judged not worth it for one frame, deliberately rather than by
+/// omission; the `[patch.crates-io]` note records the same decision.
+///
+/// macOS-only; a no-op elsewhere. Stateless — the caller says what the icon
+/// should look like, not what to change.
+#[cfg(target_os = "macos")]
+pub fn set_highlight(app: &AppHandle, on: bool) {
+    use objc2::MainThreadMarker;
+
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    // Tauri marshals the closure onto the main thread either way: inline when
+    // the caller is already there (the tray click, the window-event handler,
+    // the global click monitor), or via a blocking event-loop round-trip when
+    // it isn't (the `hide_popover` command, which runs on the async runtime).
+    // The closure takes no lock, so neither path can deadlock.
+    let _ = tray.with_inner_tray_icon(move |inner| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(item) = inner.ns_status_item() else {
+            return;
+        };
+        let Some(button) = item.button(mtm) else {
+            return;
+        };
+        button.highlight(on);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_highlight(_app: &AppHandle, _on: bool) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,11 +25,17 @@
 //!
 //! # Dismissal
 //!
-//! Three things put the popover away: looking at something else
+//! Three things put the popover away everywhere: looking at something else
 //! ([`hide_on_focus_loss`]), Escape ([`hide`], reached from the webview), and a
-//! second click on the menu-bar item ([`toggle`]). All three answer to
-//! [`set_pinned`] — while the popover is pinned none of them fire, and the tray
-//! menu's Unpin item is what gives them back.
+//! second click on the menu-bar item ([`toggle`]). On macOS a fourth joins
+//! them — a click anywhere outside the application (`hide_on_outside_click`,
+//! driven by [`crate::global_click`]), which is the one case that reports no
+//! focus change at all, because clicking the Finder desktop makes no window
+//! key. All of them answer to [`set_pinned`]: while the popover is pinned none
+//! fire, and the tray menu's Unpin item is what gives them back.
+//!
+//! Whichever way it goes, it leaves through [`note_hidden`], which is also
+//! where the menu-bar item is unlit; [`note_shown`] is the other half.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -405,14 +411,58 @@ fn apply_height(window: &WebviewWindow, height: f64) {
 /// Both cases return *before* recording the dismissal: nothing was dismissed,
 /// so the next tray click is a fresh open and must not be suppressed.
 pub fn hide_on_focus_loss(window: &Window) {
-    if let Some(state) = window.app_handle().try_state::<PopoverState>() {
+    dismiss(window.app_handle());
+}
+
+/// Hides the popover after a click somewhere else on the desktop.
+///
+/// Focus loss is not enough on its own. Clicking the Finder desktop makes no
+/// window key, so Tauri reports no focus change and the popover would stay on
+/// screen — with, now, the menu-bar item stranded lit. The global click
+/// monitor in [`crate::global_click`] closes that gap and lands here.
+///
+/// Answers to the pin like the other three dismissals, through [`dismiss`].
+///
+/// Only acts on a popover that is actually on screen. Nothing here should
+/// touch the reopen suppression on a popover that is already away: the tray
+/// click that just closed it must still be able to reopen it on the press
+/// after next.
+///
+/// macOS-only, because its caller is: the monitor that drives it exists
+/// nowhere else, and an uncalled dismissal on the other platforms is dead code
+/// rather than a dormant feature.
+#[cfg(target_os = "macos")]
+pub fn hide_on_outside_click(app: &AppHandle) {
+    let visible = app
+        .get_webview_window(LABEL)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if !visible {
+        return;
+    }
+    dismiss(app);
+}
+
+/// Puts the popover away because the reader looked elsewhere, and records when
+/// — so the tray click that may have caused it is not read as a fresh open.
+///
+/// No-op while a focus hold is active: a native dialog the popover opened is
+/// about to take (or has taken) focus, and the popover must survive it. Also a
+/// no-op while pinned — looking away is exactly what a pin is for.
+///
+/// Both cases return *before* recording the dismissal: nothing was dismissed,
+/// so the next tray click is a fresh open and must not be suppressed.
+fn dismiss(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
         if state.holds_focus() || state.is_pinned() {
             return;
         }
         state.record_auto_hide();
     }
-    let _ = window.hide();
-    note_hidden(window.app_handle());
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.hide();
+    }
+    note_hidden(app);
 }
 
 /// Begin a focus hold. Paired with [`end_focus_hold`] around a native dialog.
@@ -502,12 +552,19 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
     }
 }
 
-/// Tell the scan scheduler the popover is on screen.
+/// Everything that has to happen when the popover reaches the screen, whichever
+/// way it got there.
 ///
 /// The popover *is* the view of the scanned data, so its visibility is what
 /// gates the periodic rescan (see [`crate::scan`]). Reported from here rather
 /// than inferred from window events, because a hidden window that was never
 /// shown produces no event at all.
+///
+/// The menu-bar highlight is lit here for the same reason [`note_hidden`]
+/// clears it: both open paths already run through this one — the toggle, and a
+/// pin re-showing a window the tray menu had dismissed — so pairing the
+/// highlight with visibility is structural rather than something each caller
+/// has to remember.
 fn note_shown(app: &AppHandle) {
     if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
         controller.set_popover_visible(true);
@@ -515,13 +572,24 @@ fn note_shown(app: &AppHandle) {
         // looking, so refresh immediately instead of waiting out a tick.
         controller.request();
     }
+    crate::tray::set_highlight(app, true);
 }
 
-/// Tell the scan scheduler the popover is gone.
+/// The close-side counterpart: everything that has to happen when the popover
+/// leaves the screen, whichever way it left.
+///
+/// Every close path already runs through here — the toggle, the webview's
+/// Escape, dismissal on focus loss or an outside click, and the shell's
+/// suppressed window close — which is why the menu-bar highlight is cleared
+/// here rather than at each of them.
+///
+/// Unconditional: clearing a highlight that is already off costs nothing, and
+/// a state that somehow drifted out of step is corrected rather than kept.
 pub fn note_hidden(app: &AppHandle) {
     if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
         controller.set_popover_visible(false);
     }
+    crate::tray::set_highlight(app, false);
 }
 
 /// Records the menu-bar item's rectangle and places the popover against it.

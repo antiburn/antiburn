@@ -72,13 +72,19 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The menu-bar free-space readout (`src/tray_title.rs`, `src/disk_monitor.rs`):
-# an attributed-string title on the status item's button, and the startup
-# volume's available capacity as Finder reports it. Feature lists are the
-# exact set those two files touch.
+# Three pieces of AppKit the shell reaches for directly: the menu-bar
+# free-space readout (`src/tray_title.rs`, `src/disk_monitor.rs`) — an
+# attributed-string title on the status item's button, and the startup volume's
+# available capacity as Finder reports it; the persistent highlight on that same
+# button (`src/tray.rs`); and the global click monitor that dismisses the
+# popover (`src/global_click.rs`). Feature lists are the exact set those files
+# touch.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString"] }
-objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError"] }
+# Block construction for the global monitor and the resign-active observer
+# (the `block2` features below).
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSEvent", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2"] }
 
 [dev-dependencies]
 # Synthetic agent stores for the scan-pipeline tests.
@@ -90,3 +96,35 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Temporary, and the whole reason it exists is one line of AppKit.
+#
+# tray-icon attaches the status item's `NSMenu` once, at construction, and
+# leaves it attached. Through macOS 26 that is harmless — the item's primary
+# button still delivers its clicks and the menu only opens on the secondary
+# one. On **macOS 27** an always-attached menu swallows the primary click
+# outright, so antiburn's menu-bar item would stop opening the popover at all:
+# a menu-bar app with no way into it. The pinned revision moves the attachment
+# to the moment the menu is actually being shown and detaches it again straight
+# after (upstream https://github.com/tauri-apps/tray-icon/pull/341).
+#
+# The revision is 0.24.1 plus that change, and it is the *only* change: diffed
+# against the 0.24.2 this replaces, `platform_impl/macos/mod.rs` is the sole
+# differing file and this fix is its entire delta. So the version going
+# backwards costs nothing.
+#
+# Remove this — do not bump the rev — as soon as the fix ships in a release,
+# and keep whatever replaces it on the same major/minor line as Tauri's own
+# transitive tray-icon.
+#
+# One thing this deliberately does *not* fix. tray-icon's `mouseUp:` calls
+# `NSStatusBarButton.highlight(false)` unconditionally, before handing the
+# click on, so `tray::set_highlight` re-lights a button that went dark ~185µs
+# earlier — a single visible blink when the popover opens, because AppKit's
+# highlight drawing is flushed immediately rather than deferred to the next
+# frame. Removing it would mean carrying a fork rather than tracking upstream,
+# which is a bigger commitment than a one-frame blink is worth. Decided
+# knowingly; see the note on `tray::set_highlight` for the measurements and
+# for the two alternatives that were tried and did not work.
+[patch.crates-io]
+tray-icon = { git = "https://github.com/tauri-apps/tray-icon.git", rev = "0ada43072646fe4454b1f969f4f446dc401fa1aa" }

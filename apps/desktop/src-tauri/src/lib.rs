@@ -17,6 +17,7 @@
 //! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
 //! - [`export`] — the derived-only session export document.
+//! - [`global_click`] — dismissing the popover on clicks outside the app.
 //! - [`notifications`] — the policy on what may interrupt a reader.
 //! - [`nudges`] — presentation glue between that policy and the window.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
@@ -52,6 +53,7 @@ mod consent;
 mod disk_monitor;
 mod dto;
 mod export;
+mod global_click;
 mod notifications;
 mod nudges;
 mod popover;
@@ -175,6 +177,10 @@ pub fn run() {
 
             popover::create(app.handle())?;
             tray::create(app.handle())?;
+            // After both, and on the main thread: the monitor dismisses the
+            // popover and reaches the menu-bar item to unlight it, so neither
+            // may be missing by the time a click can arrive.
+            global_click::install(app.handle());
 
             // Registered before the update scheduler starts, so the first
             // automatic check can see whether there is anything to check with.
