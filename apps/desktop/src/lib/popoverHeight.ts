@@ -6,9 +6,13 @@
  * How tall the popover is for each of its surfaces.
  *
  * The window is 380px wide and never resizable, so height is the only degree of
- * freedom a view has. Four numbers rather than one fixed height: onboarding is
- * a short, centred flow that looks abandoned in a full-height window, while the
- * activity list, a session's analytics, and the usage breakdown want room.
+ * freedom a view has. Three numbers rather than one fixed height: the activity
+ * list and a session's analytics rest at the contract's height, and the usage
+ * breakdown asks for more.
+ *
+ * There was a fourth, shorter than all of them, for the first-run flow. That
+ * flow has its own window now (`src-tauri/src/onboarding.rs`, D-25) and is no
+ * longer a popover surface at all.
  *
  * Two ceilings, not one, and the difference matters. [`DEFAULT_POPOVER_HEIGHT`]
  * is the app-shell contract's 700 — the size the window is created at and the
@@ -19,7 +23,7 @@
  */
 
 /** Every surface the popover can be showing. */
-export type PopoverSurface = 'onboarding' | 'activity' | 'session' | 'usage';
+export type PopoverSurface = 'activity' | 'session' | 'usage';
 
 /**
  * Ceiling shared with the shell (`popover::MAX_HEIGHT`).
@@ -37,9 +41,6 @@ export const DEFAULT_POPOVER_HEIGHT = 700;
 
 /** Height, in logical pixels, of each surface. */
 export const POPOVER_HEIGHTS: Record<PopoverSurface, number> = {
-  // Three short centred screens and a source list. At full height the copy
-  // floats in the middle of an empty window.
-  onboarding: 520,
   // Unchanged by the ceiling moving: nothing about these two got taller, and
   // growing them is a separate decision nobody has made.
   activity: DEFAULT_POPOVER_HEIGHT,

@@ -19,6 +19,7 @@
 //! - [`export`] — the derived-only session export document.
 //! - [`notifications`] — the policy on what may interrupt a reader.
 //! - [`nudges`] — presentation glue between that policy and the window.
+//! - [`onboarding`] — the standalone first-run window.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
 //! - [`provider_usage`] — per-provider totals derived from local sessions.
 //! - [`repositories`] — which repositories on this machine antiburn watches.
@@ -30,6 +31,7 @@
 //! - [`tray_title`] — the attributed-string text beside the tray glyph.
 //! - [`updates`] — whether, and when, the release feed may be contacted.
 //! - [`usage_alerts`] — the spend-anomaly and milestone monitor.
+//! - [`window_placement`] — where the app's ordinary windows open.
 //!
 //! # Offline by construction
 //!
@@ -54,6 +56,7 @@ mod dto;
 mod export;
 mod notifications;
 mod nudges;
+mod onboarding;
 mod popover;
 mod provider_usage;
 mod repositories;
@@ -65,6 +68,7 @@ mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
+mod window_placement;
 
 use std::sync::Mutex;
 
@@ -172,9 +176,23 @@ pub fn run() {
             app.manage(notifications::NotificationState::default());
             app.manage(storage_health::StorageHealth::default());
             app.manage(settings::PendingPane::default());
+            app.manage(nudges::AnchorOverride::default());
 
             popover::create(app.handle())?;
             tray::create(app.handle())?;
+
+            // The first run gets a window rather than silence. Everything above
+            // is in place by now, so the flow's first paint can already read
+            // settings and ask the engine for its default roots.
+            //
+            // Best-effort on purpose, unlike the four `?`s above: a window that
+            // will not build is not a reason to refuse to start, and the
+            // menu-bar item still reaches the flow (see `popover::toggle`).
+            if onboarding::is_pending(app.handle())
+                && let Err(error) = onboarding::open(app.handle())
+            {
+                eprintln!("antiburn: could not open the first-run window ({error})");
+            }
 
             // Registered before the update scheduler starts, so the first
             // automatic check can see whether there is anything to check with.

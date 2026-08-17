@@ -273,6 +273,18 @@ pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
 ///
 /// `anchor` is the item's screen rectangle as reported by the tray backend.
 pub fn toggle(app: &AppHandle, anchor: Rect) {
+    // Before the first run is finished the popover has nothing to show — the
+    // activity list is empty by construction, because the scan scheduler is
+    // gated on the same flag (see [`crate::scan`]). Send the click to the flow
+    // that is actually owed the reader, which also gets the window back for
+    // anyone who closed it partway through.
+    if crate::onboarding::is_pending(app) {
+        if let Err(error) = crate::onboarding::open(app) {
+            eprintln!("antiburn: could not open the first-run window ({error})");
+        }
+        return;
+    }
+
     let Some(window) = app.get_webview_window(LABEL) else {
         return;
     };

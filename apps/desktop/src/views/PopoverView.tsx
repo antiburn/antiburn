@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { open } from '@tauri-apps/plugin-dialog';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AlertTriangle } from 'lucide-react';
 
@@ -17,39 +16,27 @@ import { indexOfSession, toActivityEntries } from '../lib/activityEntries';
 import { applyTheme } from '../lib/appearance';
 import { attentionBanners, type AttentionKind } from '../lib/attention';
 import {
-  addScanRoot,
-  cancelScan,
-  defaultScanRoots,
   DEFAULT_SETTINGS,
   EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
   getLiveUsage,
   getProviderUsage,
-  getScanStatus,
   getSettings,
   getStorageHealth,
   HEALTHY_STORAGE,
   hidePopover,
   listRecentSessions,
   listRepositories,
-  getFolderPermissions,
-  listScanRoots,
-  recheckFolderPermissions,
   onScanEvent,
   onSessionsInvalidated,
   onSettingsChanged,
   onStorageHealth,
   openSettingsWindow,
-  removeScanRoot,
   scanNow,
   setPopoverHeight,
-  setRepositoryEnabled,
-  setSettings,
-  withPopoverHold,
   type AppSettings,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
-  type ScanStatus,
   type StorageHealthPayload,
 } from '../lib/ipc';
 import {
@@ -57,23 +44,23 @@ import {
   prefersReducedMotion,
   type PopoverSurface,
 } from '../lib/popoverHeight';
-import type {
-  FolderPermissions,
-  LocalRepositoryItem,
-  LocalRepositoryStatus,
-} from '../lib/types/repository';
-import { useFolderPermissionFlow } from '../lib/useFolderPermissionFlow';
-import { OnboardingFlow } from './popover/OnboardingFlow';
+import type { LocalRepositoryItem, LocalRepositoryStatus } from '../lib/types/repository';
 import { SessionPane, type SessionSubject } from './popover/SessionPane';
 import { UsageView } from './popover/UsageView';
 
 /**
  * The tray popover.
  *
- * Four surfaces share one 380px window: the first-run flow, the activity list,
- * one session's analytics, and local provider usage. There is no router — a
- * popover is a single place, and a stack of "where I came from" is all the
- * navigation it needs.
+ * Three surfaces share one 380px window: the activity list, one session's
+ * analytics, and local provider usage. There is no router — a popover is a
+ * single place, and a stack of "where I came from" is all the navigation it
+ * needs.
+ *
+ * There used to be a fourth. The first-run flow now has its own window
+ * (`views/OnboardingView.tsx`, `src-tauri/src/onboarding.rs`, D-25), and with
+ * it went the scan roots, folder permissions, and repository toggling this
+ * component carried for one surface out of four. What is left of that here is
+ * only what the attention banners genuinely read.
  *
  * Three things are owned here rather than by any one surface, because they are
  * properties of *the window*:
@@ -128,15 +115,7 @@ function repositoryStatus(status: string): LocalRepositoryStatus {
 export function PopoverView() {
   const [settings, setSettingsState] = useState<AppSettings | null>(null);
   const [entries, setEntries] = useState<LocalActivityEntry[] | null>(null);
-  const [scanRoots, setScanRoots] = useState<string[]>([]);
-  const [defaultRoots, setDefaultRoots] = useState<string[]>([]);
-  const [permissions, setPermissions] = useState<FolderPermissions>({
-    deferred: [],
-    granted: [],
-    supported: false,
-  });
   const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
-  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   /** Navigation stack. Empty means the activity list is showing. */
   const [stack, setStack] = useState<SessionSubject[]>([]);
   /**
@@ -160,7 +139,6 @@ export function PopoverView() {
 
   const current = stack.at(-1) ?? null;
   const windowDays = settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
-  const onboarding = settings != null && !settings.onboardingCompleted;
 
   // The settings-changed subscription compares against the days it last saw
   // without re-subscribing on every change.
@@ -202,30 +180,20 @@ export function PopoverView() {
       if (!active) return;
       applyTheme(stored.theme);
       setSettingsState(stored);
-      const [roots, defaults, status, health] = await Promise.all([
-        listScanRoots().catch(() => []),
-        defaultScanRoots().catch(() => []),
-        getScanStatus().catch(() => null),
-        getStorageHealth().catch(() => HEALTHY_STORAGE),
-      ]);
+      const health = await getStorageHealth().catch(() => HEALTHY_STORAGE);
       if (!active) return;
-      setScanRoots(roots);
-      setDefaultRoots(defaults);
-      setScanStatus(status);
       setStorage(health);
       // The repository list is read on first paint rather than waiting for a
-      // scan to finish: onboarding's Repositories step needs it, and so does
-      // the source-access banner — a blocked repository is exactly the case
-      // where no scan will ever complete to deliver the news. Not awaited: it
-      // is a store read that nothing below depends on, and the activity list
-      // is what a reader opened the popover for.
+      // scan to finish, because the source-access banner needs it — a blocked
+      // repository is exactly the case where no scan will ever complete to
+      // deliver the news. Not awaited: it is a store read that nothing below
+      // depends on, and the activity list is what a reader opened the popover
+      // for.
       void refreshRepositoryList();
-      if (stored.onboardingCompleted) {
-        await Promise.all([
-          refreshEntries(stored.activityWindowDays).catch(() => setEntries([])),
-          refreshUsage(),
-        ]);
-      }
+      await Promise.all([
+        refreshEntries(stored.activityWindowDays).catch(() => setEntries([])),
+        refreshUsage(),
+      ]);
     })();
     return () => {
       active = false;
@@ -291,13 +259,12 @@ export function PopoverView() {
 
   // The scan is the only thing that changes what is on screen behind the
   // reader's back, so that is what the list listens for rather than polling.
-  // Every phase is kept, not just `finished`: the status line's whole job is to
-  // show the pass while it runs.
+  // Only `finished` matters here: no surface in this window draws a pass in
+  // progress, so the intermediate phases have nothing to say.
   useEffect(() => {
     let active = true;
-    const pending = onScanEvent((status, phase) => {
+    const pending = onScanEvent((_status, phase) => {
       if (!active) return;
-      setScanStatus(status);
       if (phase !== 'finished') return;
       void refreshEntries(windowDays).catch(() => {});
       void refreshUsage();
@@ -313,13 +280,8 @@ export function PopoverView() {
    * Window behaviour: which surface is showing, how tall it is, and Escape
    * ------------------------------------------------------------------ */
 
-  const surface: PopoverSurface = onboarding
-    ? 'onboarding'
-    : showUsage && usage
-      ? 'usage'
-      : current
-        ? 'session'
-        : 'activity';
+  const surface: PopoverSurface =
+    showUsage && usage ? 'usage' : current ? 'session' : 'activity';
 
   useEffect(() => {
     // Reduced motion is a webview preference, so the decision is made here and
@@ -370,65 +332,10 @@ export function PopoverView() {
    * Actions
    * ------------------------------------------------------------------ */
 
-  const handleAddScanRoot = useCallback(async () => {
-    const picked = await withPopoverHold(() => open({ directory: true, multiple: false }));
-    if (typeof picked !== 'string') return;
-    setScanRoots(await addScanRoot(picked));
-  }, []);
-
-  const handleRemoveScanRoot = useCallback(async (path: string) => {
-    setScanRoots(await removeScanRoot(path));
-  }, []);
-
+  /** Run a discovery pass. The source-access banner's only action. */
   const handleRescan = useCallback(async () => {
-    const status = await scanNow().catch(() => null);
-    if (status) setScanStatus(status);
-    // A pass settles which folders are still out of reach; onboarding shows
-    // that directly, so it has to be re-read rather than assumed.
-    const next = await getFolderPermissions().catch(() => null);
-    if (next) setPermissions(next);
+    await scanNow().catch(() => null);
   }, []);
-
-  // Each grant refreshes the repository list the reader is watching, rather
-  // than making them wait for every folder in the queue.
-  const permissionFlow = useFolderPermissionFlow(permissions.deferred, () => {
-    void handleRescan();
-    void refreshRepositoryList();
-  });
-  const [recheckingPermissions, setRecheckingPermissions] = useState(false);
-
-  /**
-   * Look for access granted in System Settings rather than through antiburn.
-   *
-   * The way out of a remembered refusal: macOS will not prompt again, so the
-   * only path is the system pane, and nothing notices that until something
-   * looks. Whatever it finds has to reach the surface the reader is on, or the
-   * control reads as broken in exactly the state it exists to fix.
-   */
-  const handleRecheckPermissions = useCallback(async () => {
-    setRecheckingPermissions(true);
-    const found = await recheckFolderPermissions().catch(() => []);
-    if (found.length > 0) {
-      await handleRescan();
-      await refreshRepositoryList();
-    } else {
-      const next = await getFolderPermissions().catch(() => null);
-      if (next) setPermissions(next);
-    }
-    setRecheckingPermissions(false);
-  }, [handleRescan, refreshRepositoryList]);
-
-  /**
-   * Default roots antiburn has not actually read, because the operating system
-   * is still guarding the folder they sit in.
-   */
-  const blockedRoots = useMemo(() => {
-    if (!permissions.supported || permissions.deferred.length === 0) return [];
-    const blocked = permissions.deferred.map((entry) => entry.dir);
-    return defaultRoots.filter((root) =>
-      blocked.some((dir) => root.split(/[\\/]/).includes(dir)),
-    );
-  }, [defaultRoots, permissions]);
 
   /* ---------------------------------------------------------------------
    * Attention banners
@@ -441,44 +348,6 @@ export function PopoverView() {
   const dismissBanner = useCallback((id: AttentionKind) => {
     setDismissed((previous) => (previous.includes(id) ? previous : [...previous, id]));
   }, []);
-
-  const handleCancelScan = useCallback(async () => {
-    const status = await cancelScan().catch(() => null);
-    if (status) setScanStatus(status);
-  }, []);
-
-  const applySettings = useCallback(
-    async (change: Partial<AppSettings>) => {
-      const base = settings ?? DEFAULT_SETTINGS;
-      const saved = await setSettings({ ...base, ...change }).catch(() => ({
-        ...base,
-        ...change,
-      }));
-      setSettingsState(saved);
-      return saved;
-    },
-    [settings],
-  );
-
-  const handleToggleRepository = useCallback(
-    async (item: LocalRepositoryItem, enabled: boolean) => {
-      const payloads = await setRepositoryEnabled(item.key, enabled).catch(() => []);
-      if (payloads.length === 0) return;
-      setRepositories(
-        payloads.map((payload) => ({ ...payload, status: repositoryStatus(payload.status) })),
-      );
-    },
-    [],
-  );
-
-  const handleFinishOnboarding = useCallback(async () => {
-    const saved = await applySettings({ onboardingCompleted: true });
-    setEntries(null);
-    await Promise.all([
-      refreshEntries(saved.activityWindowDays).catch(() => setEntries([])),
-      refreshUsage(),
-    ]);
-  }, [applySettings, refreshEntries, refreshUsage]);
 
   const openSession = useCallback((subject: SessionSubject) => {
     setStack((previous) => [...previous, subject]);
@@ -508,37 +377,10 @@ export function PopoverView() {
    * ------------------------------------------------------------------ */
 
   function body() {
-    // Onboarding gates everything: without it there is nothing scanned to show.
-    if (onboarding) {
-      return (
-        <OnboardingFlow
-          defaultRoots={defaultRoots}
-          blockedRoots={blockedRoots}
-          permissions={permissions}
-          permissionFlow={permissionFlow}
-          onRecheckPermissions={() => void handleRecheckPermissions()}
-          recheckingPermissions={recheckingPermissions}
-          scanRoots={scanRoots}
-          onAddScanRoot={() => void handleAddScanRoot()}
-          onRemoveScanRoot={(path) => void handleRemoveScanRoot(path)}
-          repositories={repositories}
-          onToggleRepository={(item, enabled) => void handleToggleRepository(item, enabled)}
-          onDiscover={() => void handleRescan()}
-          onCancelScan={() => void handleCancelScan()}
-          scanStatus={scanStatus}
-          windowDays={windowDays}
-          onWindowDaysChange={(days) => void applySettings({ activityWindowDays: days })}
-          onFinish={() => void handleFinishOnboarding()}
-        />
-      );
-    }
-
     // Usage sits over the list rather than in the session stack: it is a second
     // way of reading the same activity, not a place a session leads to.
     if (showUsage && usage) {
-      return (
-        <UsageView summary={usage} live={liveUsage} onBack={() => setShowUsage(false)} />
-      );
+      return <UsageView summary={usage} live={liveUsage} onBack={() => setShowUsage(false)} />;
     }
 
     if (current) {

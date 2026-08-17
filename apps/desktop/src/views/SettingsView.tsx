@@ -18,7 +18,7 @@ import { ScrollPane } from '../components/ui/ScrollPane';
 import { SidebarNav, type SidebarNavItem } from '../components/ui/SidebarNav';
 import {
   appInfo,
-  closeSettingsWindow,
+  closeCurrentWindow,
   onSettingsPaneRequest,
   quitApp,
   takeSettingsPane,
@@ -123,7 +123,7 @@ export function SettingsView() {
         event.key.toLowerCase() === 'w'
       ) {
         event.preventDefault();
-        void closeSettingsWindow();
+        void closeCurrentWindow();
       }
     }
     document.addEventListener('keydown', onKeyDown);

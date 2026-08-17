@@ -4,6 +4,7 @@
 
 import { useRoute } from './lib/route';
 import { NudgeView } from './views/NudgeView';
+import { OnboardingView } from './views/OnboardingView';
 import { PopoverView } from './views/PopoverView';
 import { SettingsView } from './views/SettingsView';
 
@@ -14,6 +15,8 @@ export function App() {
       return <SettingsView />;
     case 'nudge':
       return <NudgeView />;
+    case 'onboarding':
+      return <OnboardingView />;
     default:
       return <PopoverView />;
   }

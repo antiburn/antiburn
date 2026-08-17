@@ -7,12 +7,18 @@ import { Check, FolderPlus, Lock, X } from 'lucide-react';
 import appIcon from '../../assets/app-icon.png';
 import { useEffect, useRef, useState } from 'react';
 
+import { isMacOS } from '../../lib/platform';
+
 import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
 import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
 import { PushButton } from '../../components/ui/PushButton';
 import { ScrollPane } from '../../components/ui/ScrollPane';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
-import { getConsentDiagnostics, openFolderAccessSettings, type ScanStatus } from '../../lib/ipc';
+import {
+  getConsentDiagnostics,
+  openFolderAccessSettings,
+  type ScanStatus,
+} from '../../lib/ipc';
 import type { FolderPermissions } from '../../lib/types/repository';
 import type { FolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
 import type { LocalRepositoryItem } from '../../lib/types/repository';
@@ -26,6 +32,15 @@ import type { LocalRepositoryItem } from '../../lib/types/repository';
  * confirm a usable result. What each step *does* is local: there is no account
  * to create and nothing is uploaded, so the steps carry local jobs and local
  * copy.
+ *
+ * ## The window
+ *
+ * This runs in its own 680×480 window (`src-tauri/src/onboarding.rs`), not in
+ * the popover it used to be a surface of — recorded as D-25 in
+ * `docs/deviations.md`. Two consequences show up in the markup below. The
+ * centred screens cap their copy column rather than running to 680pt, and the
+ * header carries a `data-tauri-drag-region` strip on macOS, where the window's
+ * title bar is an overlay and the webview covers its area.
  *
  * ## Deliberate copy deviation
  *
@@ -105,30 +120,48 @@ function StepDots({ step }: { step: Step }) {
   );
 }
 
+/**
+ * The copy column on the two centred screens.
+ *
+ * The window is 680pt wide because the *list* steps needed it; balanced prose
+ * at that measure reads as a banner rather than a paragraph, so the centred
+ * screens keep roughly the column they were written for.
+ */
+const CENTRED_COLUMN = 'mx-auto flex max-w-[440px] flex-col items-center';
+
 function Welcome() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-      <img
-        src={appIcon}
-        alt=""
-        aria-hidden="true"
-        width={96}
-        height={96}
-        className="mb-5 h-24 w-24 select-none drop-shadow-md"
-        draggable={false}
-      />
-      <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
-        Everything stays on this machine
-      </h2>
-      <p className="mt-2 text-balance type-callout text-label-secondary">
-        antiburn reads the coding-agent sessions already on your disk, analyzes them here, and
-        shows you what they cost and how they went. No account, nothing uploaded, and no usage
-        data collected.
-      </p>
-      <p className="mt-2 text-balance type-footnote text-label-tertiary">
-        The only time antiburn uses the network is when it checks GitHub Releases for a new
-        version.
-      </p>
+      <div className={CENTRED_COLUMN}>
+        <img
+          src={appIcon}
+          alt=""
+          aria-hidden="true"
+          width={96}
+          height={96}
+          className="mb-5 h-24 w-24 select-none drop-shadow-md"
+          draggable={false}
+        />
+        <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
+          Everything stays on this machine
+        </h2>
+        <p className="mt-2 text-balance type-callout text-label-secondary">
+          antiburn reads the coding-agent sessions already on your disk, analyzes them here, and
+          shows you what they cost and how they went. No account, nothing uploaded, and no usage
+          data collected.
+        </p>
+        {/* This sentence has to keep matching what the app actually opens. The
+            update check is antiburn's only socket (`src-tauri/src/lib.rs`), and
+            the second clause is D-21: one default-off setting runs your own
+            agent, which goes online — antiburn opens nothing, but it causes the
+            traffic, and "antiburn is offline" without that clause is true by
+            the letter and false by the point of the claim. */}
+        <p className="mt-2 text-balance type-footnote text-label-tertiary">
+          The only thing antiburn puts on the network is a check for new versions, against
+          GitHub Releases. One setting you can turn on later asks your own coding agent to
+          refresh its usage figures — that traffic is the agent&rsquo;s, not antiburn&rsquo;s.
+        </p>
+      </div>
     </div>
   );
 }
@@ -137,14 +170,12 @@ function Sources({
   defaultRoots,
   blockedRoots,
   scanRoots,
-  onAddScanRoot,
   onRemoveScanRoot,
-}: Pick<
-  OnboardingFlowProps,
-  'defaultRoots' | 'scanRoots' | 'onAddScanRoot' | 'onRemoveScanRoot'
-> & { blockedRoots: readonly string[] }) {
+}: Pick<OnboardingFlowProps, 'defaultRoots' | 'scanRoots' | 'onRemoveScanRoot'> & {
+  blockedRoots: readonly string[];
+}) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col px-5 pt-2">
+    <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
       <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
         Where to look
       </h2>
@@ -228,14 +259,25 @@ function Sources({
           </ul>
         )}
       </ScrollPane>
-
-      <div className="pt-1 pb-1">
-        <PushButton className="gap-1.5" onClick={onAddScanRoot}>
-          <FolderPlus size={12} aria-hidden="true" />
-          Add a folder…
-        </PushButton>
-      </div>
     </div>
+  );
+}
+
+/**
+ * "Add a folder…", which lives in the flow's footer rather than in the Sources
+ * step it belongs to.
+ *
+ * It is the one step-level action in the flow, and putting it inline left it
+ * stranded under a scroll region with the real controls a row below. In the
+ * footer it sits where the reader's hand already is, next to Continue, and the
+ * step's body is nothing but the list it is about.
+ */
+function AddFolderButton({ onAddScanRoot }: Pick<OnboardingFlowProps, 'onAddScanRoot'>) {
+  return (
+    <PushButton className="gap-1.5" onClick={onAddScanRoot}>
+      <FolderPlus size={12} aria-hidden="true" />
+      Add a folder…
+    </PushButton>
   );
 }
 
@@ -264,7 +306,7 @@ function Repositories({
   recheckingPermissions: boolean;
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col px-5 pt-2">
+    <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
       <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
         What to include
       </h2>
@@ -333,7 +375,7 @@ function HistoricalScan({
   const found = scanStatus?.sessions ?? 0;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col px-5 pt-2">
+    <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
       <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
         Historical scan
       </h2>
@@ -342,8 +384,10 @@ function HistoricalScan({
         can change this later.
       </p>
 
+      {/* Capped rather than `w-full`: two options stretched across 680pt read
+          as a pair of buttons that happen to touch, not as one control. */}
       <SegmentedControl
-        className="mt-3 w-full"
+        className="mt-3 w-full max-w-[280px]"
         options={WINDOW_OPTIONS}
         value={String(windowDays) === '14' ? '14' : '7'}
         onChange={(days) => onWindowDaysChange(Number(days))}
@@ -404,20 +448,27 @@ function HistoricalScan({
 function Ready({ sessions }: { sessions: number }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-secondary text-label-secondary">
-        <Check size={22} strokeWidth={2} aria-hidden="true" />
+      <div className={CENTRED_COLUMN}>
+        <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-secondary text-label-secondary">
+          <Check size={22} strokeWidth={2} aria-hidden="true" />
+        </div>
+        <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
+          Ready
+        </h2>
+        <p className="mt-2 text-balance type-callout text-label-secondary">
+          {sessions > 0
+            ? `${sessions} ${sessions === 1 ? 'session is' : 'sessions are'} indexed and waiting in the menu bar.`
+            : 'Nothing is indexed yet — antiburn keeps looking in the background as you work.'}
+        </p>
+        {/* This window is about to close, and the app has no Dock icon to
+            close *to*. Saying where it goes here as well as in the
+            notification that follows means the answer survives a reader who
+            has notifications turned off at the system level. */}
+        <p className="mt-2 text-balance type-footnote text-label-tertiary">
+          antiburn is in the menu bar from here on — click its icon any time. Session files are
+          read only; your repositories are never modified.
+        </p>
       </div>
-      <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
-        Ready
-      </h2>
-      <p className="mt-2 text-balance type-callout text-label-secondary">
-        {sessions > 0
-          ? `${sessions} ${sessions === 1 ? 'session is' : 'sessions are'} indexed and waiting in the menu bar.`
-          : 'Nothing is indexed yet — antiburn keeps looking in the background as you work.'}
-      </p>
-      <p className="mt-2 text-balance type-footnote text-label-tertiary">
-        Session files are read only; your repositories are never modified.
-      </p>
     </div>
   );
 }
@@ -473,9 +524,29 @@ export function OnboardingFlow({
   }, [needsDiscovery, discovered, running, onDiscover]);
 
   return (
-    <div className="flex h-full flex-col" aria-label="Set up antiburn" role="region">
+    <div className="relative flex h-full flex-col" aria-label="Set up antiburn" role="region">
+      {isMacOS() && (
+        // The native title bar is an overlay here (`src-tauri/src/onboarding.rs`),
+        // so this transparent strip is the window's drag handle. Same treatment
+        // as the settings window: h-10 is a more forgiving grab target than the
+        // 28pt bar itself, and any future child must be pointer-events-none,
+        // since `data-tauri-drag-region` only starts a drag when the mousedown
+        // lands on this element. Double-click no-ops — the window is neither
+        // resizable nor maximizable.
+        <div
+          data-tauri-drag-region
+          className="absolute inset-x-0 top-0 z-10 h-10"
+          aria-hidden="true"
+        />
+      )}
+      {/* On macOS the header IS the drag strip, and the traffic lights live in
+          it. The wordmark is hidden there rather than inset past them: an
+          inset is a number that has to keep matching AppKit's button
+          placement, and it buys nothing — the window is already named by its
+          title bar, by the app icon on the Welcome step, and by every step's
+          own heading. Windows and Linux keep the native bar and show it. */}
       <header className="flex h-11 shrink-0 items-center px-4">
-        <h1 className="type-headline text-label">antiburn</h1>
+        <h1 className={`type-headline text-label ${isMacOS() ? 'sr-only' : ''}`}>antiburn</h1>
         {/* The step is announced as text rather than left to the dots, which
             are decorative and hidden. */}
         <p className="sr-only" aria-live="polite">
@@ -490,7 +561,6 @@ export function OnboardingFlow({
             defaultRoots={defaultRoots}
             blockedRoots={blockedRoots}
             scanRoots={scanRoots}
-            onAddScanRoot={onAddScanRoot}
             onRemoveScanRoot={onRemoveScanRoot}
           />
         )}
@@ -524,7 +594,10 @@ export function OnboardingFlow({
           )}
         </div>
         <StepDots step={step} />
-        <div className="flex flex-1 justify-end">
+        <div className="flex flex-1 items-center justify-end gap-2">
+          {/* Left of Continue, so the ordinary way forward stays the rightmost
+              button on every step. */}
+          {step === 'sources' && <AddFolderButton onAddScanRoot={onAddScanRoot} />}
           <PushButton
             variant="primary"
             onClick={() => (last ? onFinish() : setStep(STEPS[index + 1] ?? 'ready'))}

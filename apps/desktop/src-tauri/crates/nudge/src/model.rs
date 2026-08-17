@@ -37,6 +37,9 @@ pub enum NudgeKind {
     UsageAnomaly,
     /// A provider quota window crossed a configured usage milestone.
     UsageMilestone,
+    /// The first run just finished, and the app is about to become a glyph in
+    /// the menu bar the reader has never had reason to look at.
+    MenuBarLocation,
     /// User-triggered preview from notification settings.
     Test,
 }
