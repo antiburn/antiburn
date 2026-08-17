@@ -90,15 +90,21 @@ Three independent checks, none of which relies on review:
 ## Shell behavior
 
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
-  menu with Settings and Quit. The Settings sidebar ends in the same Quit
-  action — an agent application has no Dock icon and no application menu, so
-  those two are the only places a reader can look for the way out. Both go
-  through the shell's `exit(0)`, which is what distinguishes a deliberate quit
-  from the window closes the shell suppresses.
+  menu with Pin Window, Settings, and Quit. The Settings sidebar ends in the
+  same Quit action — an agent application has no Dock icon and no application
+  menu, so those two are the only places a reader can look for the way out.
+  Both go through the shell's `exit(0)`, which is what distinguishes a
+  deliberate quit from the window closes the shell suppresses.
 - **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
   It is created once at startup and anchored under its menu-bar item on each
   open, flipping above the item and clamping to the display when there is no
-  room below. It hides when it loses focus.
+  room below. It hides when it loses focus, when Escape is pressed, and on a
+  second click of the menu-bar item.
+- **Pin.** The tray menu's first item suspends all three of those dismissals,
+  and reads Unpin Window while it does. The state is in memory only: a pin
+  means "keep this on screen while I work", and a relaunch ends that work.
+  Pinning also re-shows the popover, because opening the tray menu is what
+  took focus away from it in the first place.
 - **Settings.** An ordinary decorated window, created on first use and reused.
   A source list on the left, one pane on the right; every control writes
   through immediately, so there is no Save button and no dirty state.
