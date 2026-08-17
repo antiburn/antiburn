@@ -10,15 +10,16 @@
 //! so the whole policy is here rather than spread across the callers:
 //!
 //! - **Every kind is enumerated here.** A newer version, a failed scan, low
-//!   disk space, unusually fast spend, a crossed usage milestone, and the
-//!   settings pane's own test. Each is something a reader would act on (or,
-//!   for the test, explicitly asked for); none is a progress report. Nothing
-//!   else in the app posts a notification.
+//!   disk space, unusually fast spend, a crossed usage milestone, where the app
+//!   went when the first run finished, and the settings pane's own test. Each is
+//!   something a reader would act on (or, for the test, explicitly asked for);
+//!   none is a progress report. Nothing else in the app posts a notification.
 //! - **Every kind is gated twice** — once by the master preference and once by
 //!   its own ([`allowed`]). All default on, because a notification surface
 //!   that has to be discovered before it says anything is a surface nobody
-//!   discovers. The one exception is [`Kind::Test`], which bypasses the
-//!   master switch: pressing "Show test" is the reader asking to see one.
+//!   discovers. Two kinds bypass the master switch, both because the reader
+//!   just pressed the button that causes them: [`Kind::Test`] ("Show test") and
+//!   [`Kind::MenuBarHome`] ("Start using antiburn").
 //! - **Nothing repeats.** A scan failure is announced once per run of the app,
 //!   not once per tick ([`NotificationState::claim_scan_failure`]), and a
 //!   version is announced once, not every six hours
@@ -60,6 +61,9 @@ pub enum Kind {
     UsageAnomaly,
     /// A live usage window crossed a milestone the reader asked about.
     UsageMilestone,
+    /// The first run finished and its window went away. Says where the app is
+    /// now, once, in the reader's whole time with it.
+    MenuBarHome,
     /// The settings pane's "Show test" button.
     Test,
 }
@@ -69,11 +73,18 @@ pub enum Kind {
 /// The master switch wins: turning notifications off turns *all* of them off,
 /// without the per-kind preferences having to be rewritten (so turning the
 /// master back on restores the reader's earlier choices rather than a
-/// default). [`Kind::Test`] alone ignores the master switch — it exists so a
-/// reader can see what a notification looks like *before* deciding to allow
-/// them.
+/// default).
+///
+/// Two kinds ignore it, and for the same reason: they are the direct
+/// consequence of a button the reader pressed a second earlier, not something
+/// antiburn decided to say. [`Kind::Test`] exists so a reader can see what a
+/// notification looks like *before* deciding to allow them. [`Kind::MenuBarHome`]
+/// fires once in the app's whole life, as the first-run window closes, and it
+/// is the only thing that says where the application just went — suppressing it
+/// would leave a reader who turned notifications off mid-onboarding with no
+/// window, no Dock icon, and no explanation.
 pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
-    if kind == Kind::Test {
+    if kind == Kind::Test || kind == Kind::MenuBarHome {
         return true;
     }
     settings.notifications_enabled
@@ -87,7 +98,7 @@ pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
             Kind::UsageMilestone => {
                 settings.milestones_5h.any() || settings.milestones_weekly.any()
             }
-            Kind::Test => true,
+            Kind::MenuBarHome | Kind::Test => true,
         }
 }
 
@@ -153,6 +164,7 @@ fn deliver(
         Kind::DiskSpaceLow => (NudgeKind::DiskSpaceLow, NudgeTone::Warning),
         Kind::UsageAnomaly => (NudgeKind::UsageAnomaly, NudgeTone::Warning),
         Kind::UsageMilestone => (NudgeKind::UsageMilestone, NudgeTone::Info),
+        Kind::MenuBarHome => (NudgeKind::MenuBarLocation, NudgeTone::Success),
         Kind::Test => (NudgeKind::Test, NudgeTone::Info),
     };
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -244,6 +256,37 @@ pub fn usage_milestone_message(
              Settings → Notifications chooses which milestones speak.",
             content.provider
         ),
+    )
+}
+
+/// What the reader's platform calls the strip the app now lives in.
+///
+/// A single word, branched once, because the whole notification is about
+/// telling somebody where to look and "menu bar" is not where a Windows reader
+/// should be looking. Linux panels vary enough that "system tray" is the
+/// closest true thing to say.
+#[cfg(target_os = "macos")]
+const HOME_NOUN: &str = "menu bar";
+#[cfg(not(target_os = "macos"))]
+const HOME_NOUN: &str = "system tray";
+
+/// The title and body of the "this is where antiburn lives now" notification.
+///
+/// One sentence each: the title carries the place, the body carries what
+/// clicking there does. The notification renders antiburn's own icon beside
+/// them, which is the cue that matches the glyph the reader is about to hunt
+/// for, so the copy does not describe it.
+///
+/// Deliberately no direction — no "above", no "up there". This notice is
+/// normally anchored right under the menu-bar item, but the anchor is
+/// macOS-only and needs a tray rectangle the backend will not always report; on
+/// the fallback path it appears at the platform's notification corner instead,
+/// and any wording that pointed somewhere would be wrong exactly there. A test
+/// below pins that.
+pub fn menu_bar_home_message() -> (String, String) {
+    (
+        format!("antiburn is in your {HOME_NOUN}"),
+        "Click it any time to see what your coding agents have been doing.".to_string(),
     )
 }
 
@@ -341,6 +384,27 @@ pub fn note_usage_milestone(
     true
 }
 
+/// Say where antiburn went, once, as the first-run window closes.
+///
+/// Ungated (see [`allowed`]) and forced to hang off the menu-bar item whatever
+/// the reader's placement preference says: a notification that answers "where
+/// is it" by appearing in the opposite corner of the screen from the answer
+/// would be worse than none. Called only from [`crate::onboarding::finish`],
+/// which the one onboarding-completed transition in
+/// [`crate::commands::set_settings`] reaches — so "once" is a property of that
+/// transition, not a flag anything has to remember.
+pub fn note_menu_bar_home(app: &AppHandle) {
+    let (title, body) = menu_bar_home_message();
+    crate::nudges::anchor_next_to_the_tray(app);
+    deliver(
+        app,
+        Kind::MenuBarHome,
+        title,
+        body,
+        Some(("show", "Show me")),
+    );
+}
+
 /// Post the settings pane's test notification. Bypasses the master switch —
 /// the reader pressed the button — but is otherwise the same delivery path as
 /// every real kind, so what they see is what they will get.
@@ -397,12 +461,15 @@ mod tests {
     }
 
     #[test]
-    fn the_test_kind_bypasses_the_master_switch_and_nothing_else_does() {
+    fn only_the_two_reader_pressed_kinds_bypass_the_master_switch() {
         let settings = AppSettings {
             notifications_enabled: false,
             ..settings()
         };
+        // Both are the direct consequence of a button pressed a second
+        // earlier: "Show test", and "Start using antiburn".
         assert!(allowed(&settings, Kind::Test));
+        assert!(allowed(&settings, Kind::MenuBarHome));
         for kind in [
             Kind::UpdateAvailable,
             Kind::ScanFailure,
@@ -412,6 +479,30 @@ mod tests {
         ] {
             assert!(!allowed(&settings, kind));
         }
+    }
+
+    #[test]
+    fn the_menu_bar_copy_names_the_place_once_and_says_what_clicking_does() {
+        let (title, body) = menu_bar_home_message();
+        assert!(title.contains("antiburn"));
+        assert!(title.contains(HOME_NOUN), "title was {title}");
+        assert!(
+            body.contains("Click it"),
+            "a reader who has never noticed the glyph needs to be told what it does"
+        );
+        // Said once. The title carries the place; a body that repeats it reads
+        // as two sentences about the same fact.
+        assert!(!body.contains(HOME_NOUN), "body was {body}");
+        // And no direction, because the anchored placement is not guaranteed —
+        // on the corner fallback "above" or "up there" would be a lie.
+        for direction in ["above", "up there", "top of", "pointing"] {
+            assert!(!body.contains(direction), "body claims a direction: {body}");
+        }
+        // The platform's own word, not macOS's everywhere.
+        #[cfg(target_os = "macos")]
+        assert_eq!(HOME_NOUN, "menu bar");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(HOME_NOUN, "system tray");
     }
 
     #[test]

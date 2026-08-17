@@ -192,14 +192,28 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     let previous = store.settings().map_err(fail)?;
     let saved = store.save_settings(&settings).map_err(fail)?;
 
+    // The one transition that means the first run is over. Named rather than
+    // inlined because two things now hang off it, and because it is the app's
+    // only "exactly once, ever" event: nothing writes this flag back to false,
+    // so neither consequence below needs a marker of its own to avoid repeating.
+    let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
+
     // Finishing onboarding, widening the window past what the store holds, and
     // resuming discovery all want fresh data immediately rather than at the
     // next tick.
-    let wants_scan = (!previous.onboarding_completed && saved.onboarding_completed)
+    let wants_scan = finished_onboarding
         || saved.activity_window_days > previous.activity_window_days
         || (previous.discovery_paused && !saved.discovery_paused);
     if wants_scan && !saved.discovery_paused {
         app.state::<ScanController>().request();
+    }
+
+    // Put the first-run window away and say where the app went. Done here
+    // rather than in the webview because the window closing and the
+    // notification arriving are one gesture, and only the shell can perform
+    // both halves of it.
+    if finished_onboarding {
+        crate::onboarding::finish(&app);
     }
 
     // The webviews restyle themselves from the event; the native side of the

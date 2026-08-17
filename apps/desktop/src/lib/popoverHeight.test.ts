@@ -33,7 +33,16 @@ describe('popover heights', () => {
     expect(popoverHeightFor('usage')).toBe(MAX_POPOVER_HEIGHT);
     expect(popoverHeightFor('activity')).toBe(DEFAULT_POPOVER_HEIGHT);
     expect(popoverHeightFor('session')).toBe(DEFAULT_POPOVER_HEIGHT);
-    expect(popoverHeightFor('onboarding')).toBeLessThan(DEFAULT_POPOVER_HEIGHT);
+  });
+
+  it('has no surface left that wants less than the contract', () => {
+    // The short one was the first-run flow, and it has its own window now
+    // (D-25). Nothing else in this popover is a centred screen, so a height
+    // below the resting size would mean a surface is being under-served
+    // rather than deliberately compact.
+    for (const height of Object.values(POPOVER_HEIGHTS)) {
+      expect(height).toBeGreaterThanOrEqual(DEFAULT_POPOVER_HEIGHT);
+    }
   });
 });
 

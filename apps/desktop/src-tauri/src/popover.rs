@@ -279,6 +279,18 @@ pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
 ///
 /// `anchor` is the item's screen rectangle as reported by the tray backend.
 pub fn toggle(app: &AppHandle, anchor: Rect) {
+    // Before the first run is finished the popover has nothing to show — the
+    // activity list is empty by construction, because the scan scheduler is
+    // gated on the same flag (see [`crate::scan`]). Send the click to the flow
+    // that is actually owed the reader, which also gets the window back for
+    // anyone who closed it partway through.
+    if crate::onboarding::is_pending(app) {
+        if let Err(error) = crate::onboarding::open(app) {
+            eprintln!("antiburn: could not open the first-run window ({error})");
+        }
+        return;
+    }
+
     let Some(window) = app.get_webview_window(LABEL) else {
         return;
     };
@@ -506,7 +518,19 @@ pub fn is_pinned(app: &AppHandle) -> bool {
 /// [`end_focus_hold`] does. The window sat there unfocused for as long as the
 /// menu was up, so without this there is no focus left to lose and the next
 /// click on another application would dismiss nothing.
+///
+/// Refused outright while the first run is unfinished. Re-showing is the whole
+/// point of a pin, and this is the one period where the popover must not be
+/// shown at all — [`toggle`] sends the menu-bar click to the first-run window
+/// for the same reason, and a pin that reached around that gate would put an
+/// empty activity list on screen (the scan scheduler is gated on the same flag)
+/// while the flow it belongs behind is still open. The tray reads the pin state
+/// back after asking rather than trusting the request, so refusing here leaves
+/// its menu item correctly reading "Pin Window".
 pub fn set_pinned(app: &AppHandle, pinned: bool) {
+    if crate::onboarding::is_pending(app) {
+        return;
+    }
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };

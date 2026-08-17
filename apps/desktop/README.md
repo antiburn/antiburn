@@ -145,6 +145,14 @@ Three independent checks, none of which relies on review:
   means "keep this on screen while I work", and a relaunch ends that work.
   Pinning also re-shows the popover, because opening the tray menu is what
   took focus away from it in the first place.
+- **First run.** A 680×480 decorated window of its own, opened at launch while
+  onboarding is unfinished — a fresh install should not have to discover the
+  menu-bar glyph before it is told anything (`docs/deviations.md`, D-25). While
+  it is unfinished the tray click goes here rather than to the popover, which
+  has nothing to show yet, and antiburn is an ordinary Dock application so the
+  window can be reached again once something else takes focus. Finishing it
+  puts the window away, drops the Dock icon, and posts the one notification
+  that says where the app now lives, anchored under that glyph.
 - **Settings.** An ordinary decorated window, created on first use and reused.
   A source list on the left, one pane on the right; every control writes
   through immediately, so there is no Save button and no dirty state.
@@ -179,8 +187,9 @@ Three independent checks, none of which relies on review:
   makes the bundled app an agent; the shell applies the equivalent accessory
   activation policy at runtime so unbundled development runs match.
 
-Both windows load the same bundle and select their view from the URL fragment.
-There is no router: each window owns one route for its whole lifetime.
+Every window loads the same bundle and selects its view from the URL fragment —
+`#/settings`, `#/onboarding`, `#/nudge`, and the popover as the default. There
+is no router: each window owns one route for its whole lifetime.
 
 ## Known gaps
 

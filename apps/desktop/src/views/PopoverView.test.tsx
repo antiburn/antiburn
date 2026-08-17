@@ -340,74 +340,17 @@ describe('PopoverView', () => {
     expect(screen.getByText('No provider usage today')).toBeInTheDocument();
   });
 
-  it('runs the five-step first-run flow and enters the activity view', async () => {
-    mockCommands({
-      get_settings: { ...SETTINGS, onboardingCompleted: false },
-      default_scan_roots: ['/home/avery/code'],
-      // A fresh install: nothing has been scanned, so the repository step has
-      // to ask for a pass before it has anything to show.
-      get_scan_status: null,
-    });
+  it('never renders the first-run flow, whatever the flag says', async () => {
+    // The flow has its own window now (D-25, `views/OnboardingView.tsx`), and
+    // the shell sends the tray click there instead of here. A popover that
+    // could still draw it would be a second, unreachable copy.
+    mockCommands({ get_settings: { ...SETTINGS, onboardingCompleted: false } });
     render(<PopoverView />);
 
-    // 1 — Welcome. No account, and no promise of analytics this build does not
-    // ship.
+    await screen.findByText('Wire the tray popover');
     expect(
-      await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/no usage data collected/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-    // 2 — Sources. The engine's own default roots are listed, so the reader can
-    // see the common cases are already covered.
-    expect(await screen.findByRole('heading', { name: 'Where to look' })).toBeInTheDocument();
-    expect(screen.getByText('/home/avery/code')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-    // 3 — Repositories, which needs a discovery pass to have something to show.
-    expect(await screen.findByRole('heading', { name: 'What to include' })).toBeInTheDocument();
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('scan_now'));
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-    // 4 — Historical scan: the window choice, and the pass with a way out.
-    expect(await screen.findByRole('heading', { name: 'Historical scan' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('radio', { name: '14 days' }));
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, onboardingCompleted: false, activityWindowDays: 14 },
-      }),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-    // 5 — Ready.
-    expect(await screen.findByRole('heading', { name: 'Ready' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, activityWindowDays: 14, onboardingCompleted: true },
-      }),
-    );
-  });
-
-  it('announces each onboarding step and moves focus to its heading', async () => {
-    mockCommands({
-      get_settings: { ...SETTINGS, onboardingCompleted: false },
-      get_scan_status: null,
-    });
-    render(<PopoverView />);
-
-    const welcome = await screen.findByRole('heading', {
-      name: 'Everything stays on this machine',
-    });
-    await waitFor(() => expect(welcome).toHaveFocus());
-    expect(screen.getByText('Step 1 of 5')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-
-    const sources = await screen.findByRole('heading', { name: 'Where to look' });
-    await waitFor(() => expect(sources).toHaveFocus());
-    expect(screen.getByText('Step 2 of 5')).toBeInTheDocument();
+      screen.queryByRole('heading', { name: 'Everything stays on this machine' }),
+    ).not.toBeInTheDocument();
   });
 });
 

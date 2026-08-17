@@ -584,15 +584,19 @@ export async function takeSettingsPane(): Promise<string | null> {
 }
 
 /**
- * Asks the shell to close the settings window (⌘W).
+ * Asks the shell to close whichever window is calling (⌘W).
  *
  * A close *request*, not a destroy: the shell intercepts `CloseRequested` for
  * every window and hides instead (see `src-tauri/src/lib.rs`), so this takes
  * exactly the same path as the title-bar close button. Needs
  * `core:window:allow-close` in `capabilities/default.json` — the ACL's
  * `core:window:default` set is read-only.
+ *
+ * Used by the two windows that own a ⌘W: settings, and the first-run flow.
+ * Both are accessory-app windows with no application menu, so the standard
+ * shortcut has no owner unless the view handles it.
  */
-export async function closeSettingsWindow(): Promise<void> {
+export async function closeCurrentWindow(): Promise<void> {
   if (!hasShell()) return;
   const { getCurrentWindow } = await import('@tauri-apps/api/window');
   await getCurrentWindow().close();

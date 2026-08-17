@@ -50,13 +50,30 @@ describe('App', () => {
     delete document.documentElement.dataset['theme'];
   });
 
-  it('opens the first-run flow in the popover before onboarding is finished', async () => {
+  it('renders the first-run window for the onboarding fragment', async () => {
+    window.location.hash = '#/onboarding';
+
     render(<App />);
 
     expect(
       await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
     ).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('get_settings');
+  });
+
+  it('renders the popover for an unknown fragment, not the first-run flow', async () => {
+    // The default route is the popover on purpose, so a fragment nothing
+    // recognizes lands somewhere real. Since onboarding moved to its own
+    // window (D-25) that fallback must not draw the flow, whatever the
+    // onboarding flag says.
+    window.location.hash = '#/not-a-window';
+
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'antiburn' });
+    expect(
+      screen.queryByRole('heading', { name: 'Everything stays on this machine' }),
+    ).not.toBeInTheDocument();
   });
 
   it('renders the settings window for the settings fragment', async () => {
