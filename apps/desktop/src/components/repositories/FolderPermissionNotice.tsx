@@ -64,9 +64,7 @@ export function FolderPermissionNotice({
         <FolderLock aria-hidden className="mt-0.5 size-4 shrink-0 text-label-secondary" />
         <div className="min-w-0 flex-1 space-y-2">
           <p className="type-footnote text-label-primary">
-            {allStuck
-              ? headlineForStuck(deferred)
-              : headlineForPending(deferred)}
+            {allStuck ? headlineForStuck(deferred) : headlineForPending(deferred)}
           </p>
           <p className="type-caption text-label-secondary">
             {allStuck

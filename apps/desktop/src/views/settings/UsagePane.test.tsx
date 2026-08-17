@@ -24,11 +24,7 @@ function summary(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSum
 
 function pane(settings: Partial<AppSettings> = {}, update = vi.fn()) {
   render(
-    <UsagePane
-      settings={{ ...SETTINGS, ...settings } as AppSettings}
-      update={update}
-      loaded
-    />,
+    <UsagePane settings={{ ...SETTINGS, ...settings } as AppSettings} update={update} loaded />,
   );
   return update;
 }
@@ -74,9 +70,7 @@ describe('UsagePane', () => {
       summary({ errors: [{ source: 'claude-cli-refresh', category: 'authentication' }] }),
     );
     pane();
-    await waitFor(() =>
-      expect(screen.getByText(/sign in again there/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/sign in again there/i)).toBeInTheDocument());
     // And it is not reported as "nothing found", which would send the reader
     // to use their agent when the problem is that they are signed out of it.
     expect(screen.queryByText('No plan limits found')).not.toBeInTheDocument();

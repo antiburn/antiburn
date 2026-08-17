@@ -14,9 +14,9 @@ name: Release app
 #   verify  cheapest possible failure first: does the tag agree with every
 #           manifest in the tree, is there a changelog entry, is the updater
 #           actually configured to produce verifiable artifacts
-#   checks  the full CI gate, re-run against the tagged commit rather than
-#           trusted from a branch build (it is the same workflow file, called,
-#           so the release gate cannot drift from the everyday one)
+#   trusted-main-ci
+#           proves that this exact tag SHA passed the protected main-branch CI
+#           run; a release never spends another full matrix proving the same SHA
 #   sbom    dependency inventories, generated with no credentials in scope
 #   build   the only jobs that see signing credentials, one per release target
 #   draft   assembles, hashes, attests, and drafts — the only job that can
@@ -118,13 +118,44 @@ jobs:
           path: RELEASE-NOTES.md
           if-no-files-found: error
 
-  # The everyday gate, re-run against the tagged commit. Calling the CI
-  # workflow rather than restating it means "the release passed CI" is true by
-  # construction instead of by resemblance.
-  checks:
-    name: Checks
+  trusted-main-ci:
+    name: Trust exact main CI
     needs: verify
-    uses: ./.github/workflows/ci.yml
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_url: ${{ steps.ci.outputs.run_url }}
+      sha: ${{ steps.ci.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # A tag can be pushed as soon as the release PR merges. If the trusted
+      # main run is still in flight, wait for it rather than starting a second
+      # copy of the matrix or asking a maintainer to time the tag by hand.
+      - name: Wait for this exact SHA to pass main CI
+        id: ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/wait-for-main-ci.mjs "${{ github.repository }}" "${{ github.sha }}"
+
+      - name: Record the trusted gate
+        env:
+          RUN_URL: ${{ steps.ci.outputs.run_url }}
+          SHA: ${{ steps.ci.outputs.sha }}
+        run: |
+          {
+            echo "## Trusted main CI"
+            echo
+            echo "Release gate: [successful main run](${RUN_URL}) for \`${SHA}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   sbom:
     name: Software bill of materials
@@ -207,7 +238,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.name }}
-    needs: [verify, checks]
+    needs: [verify, trusted-main-ci]
     # Every signing credential lives in this protected environment, and only a
     # tag push in this repository can reach it. Restrict the environment's
     # deployment branches/tags to `antiburn-v*` as well — see
@@ -282,6 +313,18 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
+
+      # The version-bump main run compiled this same target without access to
+      # signing credentials. Release jobs restore that dependency cache but
+      # never save after secrets have entered scope.
+      - name: Restore warmed release dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          shared-key: desktop-release
+          key: ${{ matrix.target }}
+          cache-bin: false
+          save-if: false
 
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -574,6 +617,7 @@ jobs:
           ARCH_LABEL: ${{ matrix.arch_label }}
           UPDATER_PLATFORM: ${{ matrix.updater_platform }}
           ARTIFACT: ${{ matrix.artifact }}
+          PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
           TAG: ${{ github.ref_name }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -636,6 +680,20 @@ jobs:
             '{($platform): {signature: $signature, url: $url}}' \
             > "${staging}/updater-${ARTIFACT}.json"
 
+          # Review evidence is consumed by the draft job, not published as an
+          # asset. It turns log-diving for signing mode and produced filenames
+          # into a table while keeping the install checks human-owned.
+          files=$(find "$staging" -maxdepth 1 -type f ! -name 'updater-*.json' -print \
+            | while IFS= read -r file; do basename "$file"; done | sort)
+          jq -n \
+            --arg artifact "$ARTIFACT" \
+            --arg target "$TARGET" \
+            --arg platform "$UPDATER_PLATFORM" \
+            --arg signing "$PLATFORM_SIGNING" \
+            --arg files "$files" \
+            '{artifact: $artifact, target: $target, platform: $platform, signing: $signing, files: ($files | split("\n") | map(select(length > 0)))}' \
+            > "${staging}/evidence-${ARTIFACT}.json"
+
           echo "Collected for ${ARTIFACT}:"
           ls -l "$staging"
 
@@ -684,7 +742,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          find incoming -type f ! -name 'updater-*.json' -exec cp {} dist/ \;
+          find incoming -type f ! -name 'updater-*.json' ! -name 'evidence-*.json' \
+            -exec cp {} dist/ \;
           cp notes/RELEASE-NOTES.md dist/
 
           mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
@@ -692,6 +751,33 @@ jobs:
             echo "::error::Expected 4 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
             exit 1
           fi
+
+          mapfile -t evidence < <(find incoming -type f -name 'evidence-*.json' | sort)
+          if [[ "${#evidence[@]}" -ne 4 ]]; then
+            echo "::error::Expected 4 build-evidence records, found ${#evidence[@]}."
+            exit 1
+          fi
+          jq -e -s '
+            (map(.platform) | sort) ==
+              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64", "windows-x86_64"] and
+            all(.[]; (.signing | length) > 0 and (.files | length) >= 2)
+          ' "${evidence[@]}" > /dev/null
+
+          require_count() {
+            local pattern="$1" expected="$2" found
+            found=$(find dist -maxdepth 1 -type f -name "$pattern" | wc -l | tr -d ' ')
+            if [[ "$found" != "$expected" ]]; then
+              echo "::error::Expected ${expected} release asset(s) matching ${pattern}, found ${found}."
+              exit 1
+            fi
+          }
+          require_count '*.dmg' 2
+          require_count '*.exe' 1
+          require_count '*.AppImage' 1
+          require_count '*.deb' 1
+          require_count '*.app.tar.gz' 2
+          require_count '*.sig' 4
+          require_count '*.cdx.json' 2
 
           platforms=$(jq -s 'add' "${manifests[@]}")
           jq -n \
@@ -701,6 +787,11 @@ jobs:
             --argjson platforms "$platforms" \
             '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' \
             > dist/latest.json
+
+          jq -e '
+            (.platforms | keys | sort) ==
+              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64", "windows-x86_64"]
+          ' dist/latest.json > /dev/null
 
           # Every URL the manifest advertises must be immutable, point at this
           # tag, and name a file that is actually in this release.
@@ -714,6 +805,14 @@ jobs:
               echo "::error::latest.json advertises ${url}, which is not among the built assets."
               exit 1
             fi
+            asset="${url#"$prefix"}"
+            signature=$(jq -r --arg url "$url" '.platforms[] | select(.url == $url) | .signature' \
+              dist/latest.json)
+            if [[ -z "$signature" || "$signature" != "$(cat "dist/${asset}.sig")" ]]; then
+              echo "::error::latest.json does not carry the detached signature for ${asset}."
+              exit 1
+            fi
+            printf '%s' "$signature" | base64 --decode > /dev/null
           done < <(jq -r '.platforms[].url' dist/latest.json)
 
           # Two identical macOS updater bundles means one architecture was
@@ -734,6 +833,7 @@ jobs:
           (cd dist && find . -maxdepth 1 -type f -printf '%f\0' | sort -z \
             | xargs -0 sha256sum) > "${RUNNER_TEMP}/SHA256SUMS"
           mv "${RUNNER_TEMP}/SHA256SUMS" dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
           echo "Release contents:"
           ls -l dist
 
@@ -809,6 +909,15 @@ jobs:
             echo
             echo "Nothing is published yet. Follow \`docs/runbooks/release.md\` and, when the checks below pass, press **Publish**."
             echo
+            echo "### Automated evidence"
+            echo
+            echo "The workflow verified the exact main CI SHA, four updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
+            echo
+            echo "| Platform | Target | Signing mode |"
+            echo "| --- | --- | --- |"
+            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' \
+              incoming/*/evidence-*.json
+            echo
             echo "| Asset | SHA-256 |"
             echo "| --- | --- |"
             while read -r sum name; do
@@ -820,4 +929,11 @@ jobs:
             echo '```'
             echo "gh attestation verify <downloaded asset> --repo ${REPOSITORY}"
             echo '```'
+            echo
+            echo "### Manual acceptance"
+            echo
+            echo "- Install and launch on every reachable platform."
+            echo "- Confirm Gatekeeper or SmartScreen behavior matches the signing mode above."
+            echo "- Confirm a previous version can discover this update."
+            echo "- Read the release notes and confirm the Latest/prerelease setting before publishing."
           } >> "$GITHUB_STEP_SUMMARY"

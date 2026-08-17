@@ -50,3 +50,12 @@ cargo test
 
 All three must be clean before review. Behavior suites live in `tests/`;
 keep inline `#[cfg(test)]` modules small and tightly scoped.
+
+## Pull request boundaries
+
+Prefer one pull request per independently reviewable and reversible change.
+Corrections found while rehearsing one unpublished release belong in that
+release-hardening pull request rather than a new pull request per correction;
+split one out only when it can be released or rolled back independently. Small
+documentation-only changes may remain separate because CI recognizes them and
+does not compile unrelated application code.
