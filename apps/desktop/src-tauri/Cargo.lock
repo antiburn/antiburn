@@ -90,6 +90,7 @@ dependencies = [
  "antiburn-sound",
  "anyhow",
  "async-trait",
+ "block2",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -987,7 +988,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2571,7 +2572,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4148,7 +4149,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5319,9 +5320,8 @@ dependencies = [
 
 [[package]]
 name = "tray-icon"
-version = "0.24.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "045979e3f037cd18ad1cb2a419dfda133c5c29c9f3453370079f2255d46c257e"
+version = "0.24.1"
+source = "git+https://github.com/tauri-apps/tray-icon.git?rev=0ada43072646fe4454b1f969f4f446dc401fa1aa#0ada43072646fe4454b1f969f4f446dc401fa1aa"
 dependencies = [
  "crossbeam-channel",
  "dirs",
@@ -5336,7 +5336,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.20",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5365,7 +5365,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
