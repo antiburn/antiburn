@@ -9,14 +9,14 @@
 //! the scanner at, a metadata cache of the sessions discovery has seen, and the
 //! analysis the engine derived from them.
 //!
-//! # What is *not* here
-//!
-//! Transcript bodies. No message text, no tool arguments, no file contents. The
-//! database stores identities, locations, derived numbers, and two short
-//! derived excerpts — a session's title and each skill's one-line description,
-//! both length-capped before they are written. A session's messages stay in the
-//! file its vendor wrote and are re-read on demand. [`schema`] states that as a
-//! schema-level contract, and [`crate::export`] honors the same rule.
+//! The database is allowed to retain any local session content needed for
+//! visibility and analysis. The current schema stores identities, locations,
+//! derived numbers, a session title, and capped skill descriptions; future
+//! migrations may add transcript content deliberately. All such data remains
+//! app-controlled and on-device, and clear/delete paths apply to it. Provider
+//! source transcripts are never modified or deleted. [`schema`] carries the
+//! detailed contract. Exports have their own, narrower content policy in
+//! [`crate::export`].
 //!
 //! # Concurrency
 //!
@@ -539,42 +539,16 @@ impl Store {
             .optional()?)
     }
 
-    /// Drop sessions whose heartbeat predates `before_epoch` and everything
-    /// derived from them.
-    ///
-    /// Retention, not deletion-on-behalf: these rows describe transcripts that
-    /// have aged out of every window the app can show. The provider's own files
-    /// are untouched.
-    pub fn prune_sessions_before(&self, before_epoch: i64) -> Result<usize> {
-        let mut connection = self.lock();
-        let tx = connection.transaction()?;
-        let stale: Vec<(String, String, String)> = {
-            let mut statement = tx.prepare(
-                "SELECT environment_key, agent, session_id FROM session
-                  WHERE COALESCE(updated_at_epoch, 0) < ?1",
-            )?;
-            let rows = statement.query_map(params![before_epoch], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        for (environment_key, agent, session_id) in &stale {
-            delete_session_in(&tx, &SessionKey::new(environment_key, agent, session_id))?;
-        }
-        tx.commit()?;
-        Ok(stale.len())
-    }
-
-    /// Forget the entire derived index: every session, its analysis, its
+    /// Forget all locally stored session data: every session, its analysis, its
     /// relations, and the per-agent scan bookkeeping. Returns how many sessions
     /// were dropped.
     ///
     /// **antiburn's own tables only.** Not one provider file is opened, let
-    /// alone written — the transcripts this index was derived *from* are the
-    /// agents' files and stay exactly where they are, which is why a later scan
-    /// finds all of it again.
+    /// alone written — the agents' source transcripts stay exactly where they
+    /// are, which is why a later scan finds all of it again.
     ///
-    /// Deliberately spared, because none of it is derived data:
+    /// Deliberately spared, because it represents preferences and source
+    /// configuration rather than indexed session data:
     ///
     /// - `setting` — the reader's preferences, including whether onboarding is
     ///   done. Clearing the index is not a factory reset.
@@ -582,7 +556,7 @@ impl Store {
     /// - `repository` — the include/ignore choices the reader made. Their
     ///   session counts *are* derived, so those are zeroed here and refilled by
     ///   the next pass.
-    pub fn clear_derived_index(&self) -> Result<usize> {
+    pub fn clear_local_session_data(&self) -> Result<usize> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;

@@ -30,8 +30,8 @@ Reports arrive as private GitHub security advisories. On arrival:
    - discovery escaping its documented provider roots, following a symlink out
      of an approved root, or writing to a provider-owned store;
    - reads of credential, cookie, token, account, or billing data;
-   - transcript content reaching logs, derived storage, or an export that did
-     not ask;
+   - transcript content leaving app-controlled local storage, reaching logs,
+     or appearing in an export that did not ask;
    - anything reachable through the updater, which is the one channel that can
      cause code to run on someone else's machine.
 

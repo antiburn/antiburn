@@ -36,6 +36,10 @@ antiburn is local-first by contract, and CI enforces it mechanically:
 - Test fixtures must be **synthetic**: no real transcripts, usernames, home
   paths, repository names, or captured machine output — redaction is not
   sufficient.
+- **Performance and memory use are product constraints.** antiburn is an
+  always-running background utility: avoid eager or repeated work, keep reads,
+  allocations, concurrency, and retained data bounded, and do not load the
+  reader's machine beyond what the visible feature actually needs.
 - The source-boundary manifests in `docs/oss/` are governance records; changes
   to them require a maintainer-approved governance decision, not a routine PR.
 

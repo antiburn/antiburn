@@ -18,7 +18,8 @@ antiburn runs entirely on-device. Reports of particular interest:
 - discovery escaping its documented provider roots, following symlinks out of
   an approved root, or writing to provider-owned stores;
 - reads of credential, cookie, token, account, or billing data;
-- transcript content leaking into logs, derived storage, or analytics.
+- transcript content leaving app-controlled local storage, appearing in logs,
+  or being exposed outside a visibility or analysis feature that needs it.
 
 ## Supported versions
 

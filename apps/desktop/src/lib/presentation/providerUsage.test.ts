@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { ProviderUsagePayload, ProviderUsageWindowPayload } from '../ipc';
 import {
-  coverageNote,
   EMPTY_WINDOW,
   providerInitial,
   providersForWindow,
@@ -185,20 +184,6 @@ describe('ranking and totals', () => {
 
   it('reads a window off a provider without the caller indexing it', () => {
     expect(providerWindow(openai, 'month').estimatedUsd).toBe(4);
-  });
-});
-
-describe('coverage', () => {
-  it('says how far back the windows can actually see', () => {
-    const note = coverageNote('2027-01-01T08:00:00Z', 14);
-    expect(note).toMatch(/keeps 14 days of session history/);
-    expect(note).toMatch(/start at/);
-  });
-
-  it('says nothing when the shell reported no coverage', () => {
-    expect(coverageNote('', 14)).toBeNull();
-    expect(coverageNote('2027-01-01T08:00:00Z', 0)).toBeNull();
-    expect(coverageNote('not a date', 14)).toBeNull();
   });
 });
 

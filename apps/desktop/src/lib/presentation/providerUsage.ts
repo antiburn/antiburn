@@ -207,22 +207,6 @@ export function totalForWindow(
   }, EMPTY_WINDOW);
 }
 
-/**
- * How far back the snapshot can actually see, as a sentence — or null when the
- * shell reported no coverage at all.
- *
- * This exists because the month window is a lie without it: the app keeps two
- * weeks of session history, so for most of any month "this month" starts later
- * than the first.
- */
-export function coverageNote(coverageSince: string, retentionDays: number): string | null {
-  if (!coverageSince || retentionDays <= 0) return null;
-  const since = new Date(coverageSince);
-  if (Number.isNaN(since.getTime())) return null;
-  const day = since.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  return `antiburn keeps ${retentionDays} days of session history, so these windows start at ${day}.`;
-}
-
 /** The token rows a detail panel lists, in a fixed order. */
 export function tokenRows(
   window: ProviderUsageWindowPayload,

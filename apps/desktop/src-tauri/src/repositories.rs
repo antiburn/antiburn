@@ -39,7 +39,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::consent::StoreConsentGrants;
 use crate::dto::{DeferredPermissionDir, RepositoryItem};
-use crate::scan::{IGNORE_SCOPE, RETENTION_DAYS, unix_now};
+use crate::scan::IGNORE_SCOPE;
 use crate::store::{RepositoryRecord, Store};
 
 /// Owners the forward scan runs for, most sessions first. A machine that works
@@ -59,8 +59,10 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     let store = app.state::<Store>();
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
 
-    let since = unix_now() - RETENTION_DAYS * 86_400;
-    let sessions = store.recent_sessions(since, MAX_SESSIONS_CONSIDERED)?;
+    // Repository counts use the newest bounded slice of everything indexed,
+    // with no age-based expiry. The cap protects an always-running utility
+    // from loading an unbounded history into memory at once.
+    let sessions = store.recent_sessions(0, MAX_SESSIONS_CONSIDERED)?;
     let known: Vec<RepositoryRecord> = store.repositories()?;
     let scan_roots: Vec<PathBuf> = store.scan_roots()?.into_iter().map(PathBuf::from).collect();
 
@@ -267,8 +269,8 @@ pub async fn set_enabled(store: &Store, key: &str, enabled: bool) -> anyhow::Res
         } else {
             ignored_paths::ignore_path(store.state_dir(), IGNORE_SCOPE, path).await?;
             // Excluded means excluded: rows already indexed for this
-            // repository leave the store now, not at the next retention
-            // prune. Re-checked against the full opt-out set as the scan
+            // repository leave the store now rather than remaining stale.
+            // Re-checked against the full opt-out set as the scan
             // does, so normalization matches exactly — which also sweeps any
             // stragglers from earlier opt-outs.
             purge_ignored_sessions(store)?;

@@ -123,11 +123,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
           />
           <Row
             label="Local database"
-            // Narrower than "never transcript content", because that was not
-            // true: the store keeps a session's title and each skill's
-            // one-line description, both capped. Privacy settings carry the
-            // long form; this says enough to not mislead.
-            description="Schema version of antiburn's own store. It holds derived analysis, plus short capped excerpts for titles and skill descriptions — no message text, tool arguments, or file contents. See Privacy."
+            description="Schema version of antiburn's own store. It keeps local session data needed for visibility and analysis; nothing in it is uploaded. See Privacy."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 v{info?.schemaVersion ?? '—'}

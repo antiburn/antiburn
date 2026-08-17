@@ -42,13 +42,14 @@ use crate::store::Store;
 /// Where the series live.
 const KEY: &str = "internal:liveUsageHistory";
 
-/// How far back samples are kept.
+/// The calculation window for samples.
 ///
 /// A week, because the longest window a provider reports is a week: history
-/// older than the window it describes cannot inform anything about it.
-const RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
+/// older than the window it describes cannot inform anything about it. This is
+/// an ephemeral forecast cache bound, not session-data retention.
+const EVIDENCE_WINDOW_SECS: i64 = 7 * 24 * 60 * 60;
 
-/// A ceiling on the whole store, whatever the retention says.
+/// A ceiling on the whole forecast cache.
 ///
 /// Guards the pathological case — many providers, many windows, an agent
 /// refetching constantly — from turning a convenience cache into an unbounded
@@ -136,8 +137,8 @@ pub fn record(store: &Store, snapshots: &[ProviderUsageSnapshot], now: i64) -> H
 
     for snapshot in snapshots {
         let at = snapshot.observed_at.unix_timestamp();
-        // A reading older than retention is not worth storing even once.
-        if now.saturating_sub(at) > RETENTION_SECS {
+        // A reading outside the forecast window cannot inform a calculation.
+        if now.saturating_sub(at) > EVIDENCE_WINDOW_SECS {
             continue;
         }
         for window in &snapshot.windows {
@@ -176,7 +177,7 @@ pub fn record(store: &Store, snapshots: &[ProviderUsageSnapshot], now: i64) -> H
 /// Drop what is too old, then what is over the ceiling. Returns whether
 /// anything went.
 fn prune(history: &mut History, now: i64) -> bool {
-    let horizon = now - RETENTION_SECS;
+    let horizon = now - EVIDENCE_WINDOW_SECS;
     let before: usize = history.series.values().map(Vec::len).sum();
 
     for series in history.series.values_mut() {
@@ -299,13 +300,17 @@ mod tests {
         let key = window_key(&snapshot(NOW, 40.0), "five-hour");
 
         // Too old to store at all.
-        record(&store, &[snapshot(NOW - RETENTION_SECS - 1, 10.0)], NOW);
+        record(
+            &store,
+            &[snapshot(NOW - EVIDENCE_WINDOW_SECS - 1, 10.0)],
+            NOW,
+        );
         assert!(load(&store).samples(&key).is_empty());
 
         // Stored, then aged out by a later pass.
         record(&store, &[snapshot(NOW - 60, 40.0)], NOW);
         assert_eq!(load(&store).samples(&key).len(), 1);
-        let later = record(&store, &[], NOW + RETENTION_SECS + 120);
+        let later = record(&store, &[], NOW + EVIDENCE_WINDOW_SECS + 120);
         assert!(later.samples(&key).is_empty());
     }
 

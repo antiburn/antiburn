@@ -22,9 +22,9 @@ import {
 import { relativeTime } from '../../lib/presentation/relativeTime';
 import type { AppSettingsController } from './useAppSettings';
 
-/** Narrowest and widest activity windows, mirroring the store's own clamp. */
+/** Narrowest and widest activity-list windows, mirroring the store's clamp. */
 // Mirrors the shell's MIN/MAX_ACTIVITY_DAYS: the ceiling equals the store's
-// two-week retention, so the slider can never promise days that cannot exist.
+// display range only; indexed sessions outside it remain stored.
 const MIN_DAYS = 1;
 const MAX_DAYS = 14;
 
@@ -135,7 +135,7 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
             label="Show the last"
             description={`The popover lists sessions from the last ${dayLabel(
               settings.activityWindowDays,
-            )}. antiburn keeps two weeks of history; widening this shows it right away and asks the next scan to fill anything missing.`}
+            )}. This changes the list, not storage; indexed sessions outside the window remain on this machine.`}
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 {dayLabel(settings.activityWindowDays)}
@@ -159,7 +159,7 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
         <Card>
           <Row
             label="Indexed sessions"
-            description="What antiburn currently has on this machine. Sessions older than two weeks are dropped automatically; your agents' own files are never touched. Settings → Privacy can clear all of it."
+            description="What antiburn currently has on this machine. Indexed sessions do not expire based on age; Settings → Privacy can clear them. Your agents' own files are never touched."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 {info ? `${info.indexedSessions} · ${byteLabel(info.databaseBytes)}` : '—'}

@@ -150,7 +150,7 @@ mod tests {
         // A *different* failure is news again, because it names something else.
         let other = StorageHealthStatus {
             failing: true,
-            message: Some("the retention prune could not be written: database is locked".into()),
+            message: Some("the scan bookkeeping could not be written: database is locked".into()),
         };
         assert!(health.replace(other).is_some());
 
