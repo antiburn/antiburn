@@ -65,6 +65,17 @@ Recorded so the next reader does not have to re-derive them.
   the row being implemented, not a departure from it. The Usage surface is the
   one exception and it is *not* filed here — it exceeds 700 and is recorded as
   D-22 above.
+- **The pinned popover.** The tray menu can suspend all three of the popover's
+  dismissals — focus loss, Escape, and a second click of the menu-bar item —
+  and nothing else about the window changes: it is created once, anchored, and
+  bounded exactly as before, and the pin is in memory only, so no state
+  survives a relaunch. Filed here rather than as a deviation because the matrix
+  row being implemented is the popover itself; a reader-controlled suspension
+  of its dismissal is an affordance on top of that row, not a departure from
+  it. Worth stating because the shipped behaviour now has a mode in which
+  "hides when it loses focus" is untrue, and the next reader should find that
+  recorded rather than surprising. If a pin ever persists across launches, or
+  ever becomes the default, that is a different decision and belongs above.
 - **The private-only rows.** Authentication, accounts, organizations, upload,
   publication, and the private commercial enrichment features have no public
   control, route, cache, command, simulation, or placeholder. That is the

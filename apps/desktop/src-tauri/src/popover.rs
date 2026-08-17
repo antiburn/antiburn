@@ -22,9 +22,17 @@
 //! Every height change re-runs the anchoring maths against the menu-bar item's
 //! last known rectangle, because a taller popover on a bottom-anchored panel
 //! (Windows, most Linux panels) has to move as well as grow.
+//!
+//! # Dismissal
+//!
+//! Three things put the popover away: looking at something else
+//! ([`hide_on_focus_loss`]), Escape ([`hide`], reached from the webview), and a
+//! second click on the menu-bar item ([`toggle`]). All three answer to
+//! [`set_pinned`] — while the popover is pinned none of them fire, and the tray
+//! menu's Unpin item is what gives them back.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::{
@@ -109,6 +117,13 @@ pub struct PopoverState {
     /// takes focus by design, and hiding would tear down the surface the
     /// reader is in the middle of using.
     focus_hold: AtomicU64,
+    /// Latched by the tray's Pin item. A focus hold is a moment; this is a
+    /// decision, and it holds until the reader takes it back — nothing puts
+    /// the popover away while it is set except an explicit unpin or a quit.
+    ///
+    /// Deliberately not persisted: a pin means "keep this on screen while I
+    /// work", and a relaunch is the end of that work.
+    pinned: AtomicBool,
 }
 
 impl Default for PopoverState {
@@ -119,6 +134,7 @@ impl Default for PopoverState {
             height: Mutex::new(DEFAULT_HEIGHT),
             resize_generation: AtomicU64::new(0),
             focus_hold: AtomicU64::new(0),
+            pinned: AtomicBool::new(false),
         }
     }
 }
@@ -127,6 +143,16 @@ impl PopoverState {
     fn record_auto_hide(&self) {
         if let Ok(mut slot) = self.auto_hidden_at.lock() {
             *slot = Some(Instant::now());
+        }
+    }
+
+    /// Forget any automatic dismissal, so the next open is treated as a fresh
+    /// one. Used when pinning: the tray right-click that opened the menu is
+    /// what hid the popover, and the pin must not be swallowed as the second
+    /// half of that gesture.
+    fn clear_auto_hide(&self) {
+        if let Ok(mut slot) = self.auto_hidden_at.lock() {
+            *slot = None;
         }
     }
 
@@ -161,6 +187,14 @@ impl PopoverState {
 
     fn holds_focus(&self) -> bool {
         self.focus_hold.load(Ordering::SeqCst) > 0
+    }
+
+    fn is_pinned(&self) -> bool {
+        self.pinned.load(Ordering::SeqCst)
+    }
+
+    fn set_pinned(&self, pinned: bool) {
+        self.pinned.store(pinned, Ordering::SeqCst);
     }
 
     fn record_anchor(&self, anchor: AnchorRect) {
@@ -244,6 +278,16 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     };
 
     if window.is_visible().unwrap_or(false) {
+        // A pinned popover has no hide half to its toggle. Raise it instead of
+        // doing nothing: a menu-bar item that swallows a click reads as broken,
+        // and re-anchoring picks up a menu bar that has since moved display.
+        if is_pinned(app) {
+            if let Err(error) = anchor_to(&window, anchor) {
+                eprintln!("antiburn: could not anchor the popover ({error})");
+            }
+            let _ = window.set_focus();
+            return;
+        }
         let _ = window.hide();
         note_hidden(app);
         return;
@@ -272,7 +316,13 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 /// Deliberately a shell command rather than `getCurrentWindow().hide()`: the
 /// scan scheduler is gated on the popover being on screen, and a window hidden
 /// behind the shell's back would leave that gate stuck open.
+///
+/// No-op while pinned. The webview still asks — the decision is the shell's,
+/// so every dismissal answers to the same gate.
 pub fn hide(app: &AppHandle) {
+    if is_pinned(app) {
+        return;
+    }
     let Some(window) = app.get_webview_window(LABEL) else {
         return;
     };
@@ -349,10 +399,14 @@ fn apply_height(window: &WebviewWindow, height: f64) {
 /// Hides the popover after it loses focus, remembering when it happened.
 ///
 /// No-op while a focus hold is active: a native dialog the popover opened is
-/// about to take (or has taken) focus, and the popover must survive it.
+/// about to take (or has taken) focus, and the popover must survive it. Also a
+/// no-op while pinned — looking away is exactly what a pin is for.
+///
+/// Both cases return *before* recording the dismissal: nothing was dismissed,
+/// so the next tray click is a fresh open and must not be suppressed.
 pub fn hide_on_focus_loss(window: &Window) {
     if let Some(state) = window.app_handle().try_state::<PopoverState>() {
-        if state.holds_focus() {
+        if state.holds_focus() || state.is_pinned() {
             return;
         }
         state.record_auto_hide();
@@ -381,6 +435,69 @@ pub fn end_focus_hold(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL)
         && window.is_visible().unwrap_or(false)
     {
+        let _ = window.set_focus();
+    }
+}
+
+/// Whether the popover is currently pinned open.
+pub fn is_pinned(app: &AppHandle) -> bool {
+    app.try_state::<PopoverState>()
+        .is_some_and(|state| state.is_pinned())
+}
+
+/// Sets the pin, and either way hands focus back to the popover.
+///
+/// Pinning has to re-show the window, not just set a flag: the tray right-click
+/// that opened the menu took focus, so by the time this runs the popover has
+/// already hidden itself.
+///
+/// Unpinning does not hide anything — it restores ordinary dismissal rather
+/// than performing one — but it *must* refocus, for the same reason
+/// [`end_focus_hold`] does. The window sat there unfocused for as long as the
+/// menu was up, so without this there is no focus left to lose and the next
+/// click on another application would dismiss nothing.
+pub fn set_pinned(app: &AppHandle, pinned: bool) {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    state.set_pinned(pinned);
+
+    // Only a pin re-opens, and only from hidden: re-anchoring a window already
+    // on screen would move it for no reason the reader asked for.
+    if pinned && !window.is_visible().unwrap_or(false) {
+        // The dismissal this pin is undoing armed the reopen suppression;
+        // leaving it armed would let the next tray click be swallowed.
+        state.clear_auto_hide();
+
+        // The menu-bar item's live rectangle is the truth, and the only source
+        // that works on a cold start where the popover has never been opened.
+        // The remembered anchor covers a tray backend that reports none.
+        let placed = match app
+            .tray_by_id(crate::tray::TRAY_ID)
+            .and_then(|tray| tray.rect().ok().flatten())
+        {
+            Some(rect) => anchor_to(&window, rect),
+            None => match state.anchor() {
+                Some(anchor) => place(&window, anchor, WIDTH, state.height()),
+                None => Ok(()),
+            },
+        };
+        if let Err(error) = placed {
+            // Best-effort, as everywhere else: a popover in the wrong place
+            // still beats a pin that appears to do nothing.
+            eprintln!("antiburn: could not anchor the popover ({error})");
+        }
+
+        let _ = window.show();
+        note_shown(app);
+    }
+
+    // Guarded exactly as `end_focus_hold` is: focusing a hidden window would
+    // order it front, and an unpin is not a request to open anything.
+    if window.is_visible().unwrap_or(false) {
         let _ = window.set_focus();
     }
 }
@@ -662,6 +779,32 @@ mod tests {
         let state = PopoverState::default();
         state.record_auto_hide();
         assert!(state.suppresses_reopen());
+        assert!(!state.suppresses_reopen());
+    }
+
+    #[test]
+    fn a_fresh_popover_is_not_pinned() {
+        let state = PopoverState::default();
+        assert!(!state.is_pinned());
+    }
+
+    #[test]
+    fn the_pin_is_a_latch_the_reader_can_take_back() {
+        let state = PopoverState::default();
+        state.set_pinned(true);
+        assert!(state.is_pinned());
+        state.set_pinned(false);
+        assert!(!state.is_pinned());
+    }
+
+    /// The tray right-click that opens the menu hides the popover, arming the
+    /// reopen suppression. Pinning clears it, or the next tray click would be
+    /// swallowed as the second half of a dismissal that no longer stands.
+    #[test]
+    fn clearing_a_dismissal_leaves_no_suppression_behind() {
+        let state = PopoverState::default();
+        state.record_auto_hide();
+        state.clear_auto_hide();
         assert!(!state.suppresses_reopen());
     }
 

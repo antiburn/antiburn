@@ -250,9 +250,12 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         // the settings window is reused on the next open.
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
-            let _ = window.hide();
             if window.label() == popover::LABEL {
-                popover::note_hidden(window.app_handle());
+                // Through `popover::hide` rather than `window.hide()`, so this
+                // path answers to the pin like every other dismissal does.
+                popover::hide(window.app_handle());
+            } else {
+                let _ = window.hide();
             }
         }
         _ => {}
