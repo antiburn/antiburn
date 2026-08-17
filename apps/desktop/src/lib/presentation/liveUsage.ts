@@ -346,10 +346,7 @@ export interface LiveMetricRow {
  * figure is unavailable still appears, carrying the reason: a row that
  * vanishes takes the question with it.
  */
-export function liveMetricRows(
-  window: LiveUsageWindowPayload,
-  now: number,
-): LiveMetricRow[] {
+export function liveMetricRows(window: LiveUsageWindowPayload, now: number): LiveMetricRow[] {
   const { forecast } = window;
   const unavailable = forecastUnavailableNote(window);
   const muted = 'text-label-tertiary';
@@ -391,7 +388,8 @@ export function liveMetricRows(
   const runwayNote = runwayLabel(window, now);
   if (runwayNote) {
     runway.value = runwayNote;
-    runway.toneClass = forecast.paceRatio != null && forecast.paceRatio > 1 ? 'text-system-orange' : muted;
+    runway.toneClass =
+      forecast.paceRatio != null && forecast.paceRatio > 1 ? 'text-system-orange' : muted;
   }
 
   const rows = [pace, trend, runway];

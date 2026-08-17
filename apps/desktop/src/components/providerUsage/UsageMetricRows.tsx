@@ -45,17 +45,17 @@ export function UsageMetricRows({ provider }: { provider: ProviderUsagePayload }
         <UsageStateBadge state={provider.state} />
       </div>
       <dl className="space-y-1.5">
-      {usageMetricRows(provider).map((row) => {
-        const Icon = icons[row.key] ?? Gauge;
-        return (
-          <div key={row.key} className="flex items-baseline justify-between gap-3">
-            <dt className="flex items-center gap-1.5 type-footnote text-label-secondary">
-              <Icon size={12} strokeWidth={1.75} aria-hidden="true" className="shrink-0" />
-              {row.label}
-            </dt>
-            <dd className="type-footnote tabular-nums text-label">{row.value}</dd>
-          </div>
-        );
+        {usageMetricRows(provider).map((row) => {
+          const Icon = icons[row.key] ?? Gauge;
+          return (
+            <div key={row.key} className="flex items-baseline justify-between gap-3">
+              <dt className="flex items-center gap-1.5 type-footnote text-label-secondary">
+                <Icon size={12} strokeWidth={1.75} aria-hidden="true" className="shrink-0" />
+                {row.label}
+              </dt>
+              <dd className="type-footnote tabular-nums text-label">{row.value}</dd>
+            </div>
+          );
         })}
       </dl>
     </div>

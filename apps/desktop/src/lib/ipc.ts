@@ -23,11 +23,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type { SettingsPane } from './settingsPanes';
-import type {
-  FolderAccessOutcome,
-  FolderPermissions,
-  ProbeRecord,
-} from './types/repository';
+import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from './types/repository';
 import type {
   ActiveSessionsSummary,
   SessionCostComponents,

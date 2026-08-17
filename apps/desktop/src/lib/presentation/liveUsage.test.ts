@@ -47,9 +47,7 @@ const NO_FORECAST: LiveUsageForecastPayload = {
   usedToday: null,
 };
 
-function forecast(
-  overrides: Partial<LiveUsageForecastPayload> = {},
-): LiveUsageForecastPayload {
+function forecast(overrides: Partial<LiveUsageForecastPayload> = {}): LiveUsageForecastPayload {
   return { ...NO_FORECAST, unavailableReason: null, ...overrides };
 }
 
@@ -114,9 +112,9 @@ describe('window labels', () => {
   });
 
   it('falls back to a neutral name rather than guessing at an unknown role', () => {
-    expect(liveWindowLabel(window({ role: 'some_future_limit', kind: 'some_future_limit' }))).toBe(
-      'Usage limit',
-    );
+    expect(
+      liveWindowLabel(window({ role: 'some_future_limit', kind: 'some_future_limit' })),
+    ).toBe('Usage limit');
   });
 
   it('reads an absent percentage as unknown, never as zero', () => {
@@ -146,7 +144,9 @@ describe('the elapsed marker', () => {
     expect(
       liveWindowElapsed(window({ id: 'seven-day', role: 'primaryLong', startsAt: null }), NOW),
     ).toBeNull();
-    expect(liveWindowElapsed(window({ id: 'weekly-some-model', startsAt: null }), NOW)).toBeNull();
+    expect(
+      liveWindowElapsed(window({ id: 'weekly-some-model', startsAt: null }), NOW),
+    ).toBeNull();
     expect(liveWindowElapsed(window({ resetsAt: null }), NOW)).toBeNull();
   });
 
@@ -302,9 +302,9 @@ describe('extra usage', () => {
       currency: 'USD',
     };
     expect(liveExtraUsageLabel(provider({ extraUsage: extra }))).toBe('25% of extra usage');
-    expect(
-      liveExtraUsageLabel(provider({ extraUsage: { ...extra, usedPercent: null } })),
-    ).toBe('5.00 USD of extra usage');
+    expect(liveExtraUsageLabel(provider({ extraUsage: { ...extra, usedPercent: null } }))).toBe(
+      '5.00 USD of extra usage',
+    );
     expect(
       liveExtraUsageLabel(
         provider({ extraUsage: { ...extra, usedPercent: null, used: null, currency: null } }),
@@ -341,7 +341,9 @@ describe('why a forecast is missing', () => {
     // Come back later / the numbers are fine and too new / go use the agent.
     expect(forecastUnavailableNote(window())).toBe('Not enough history');
     expect(
-      forecastUnavailableNote(window({ forecast: forecast({ unavailableReason: 'transition' }) })),
+      forecastUnavailableNote(
+        window({ forecast: forecast({ unavailableReason: 'transition' }) }),
+      ),
     ).toBe('Just reset');
     expect(
       forecastUnavailableNote(window({ forecast: forecast({ unavailableReason: 'stale' }) })),
@@ -495,7 +497,9 @@ describe('the headline window', () => {
   it('has nothing to show when no window carries a figure or a role', () => {
     expect(
       headlineWindow(
-        provider({ windows: [window({ id: 'five-hour', role: 'primaryShort', usedPercent: null })] }),
+        provider({
+          windows: [window({ id: 'five-hour', role: 'primaryShort', usedPercent: null })],
+        }),
       ),
     ).toBeNull();
   });

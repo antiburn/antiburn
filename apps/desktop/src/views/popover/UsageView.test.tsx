@@ -172,9 +172,7 @@ export const NO_FORECAST: LiveUsageForecastPayload = {
   usedToday: null,
 };
 
-function liveWindow(
-  overrides: Partial<LiveUsageWindowPayload> = {},
-): LiveUsageWindowPayload {
+function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindowPayload {
   return {
     id: 'five-hour',
     role: 'primaryShort',
@@ -211,9 +209,7 @@ function liveProvider(): LiveProviderUsagePayload {
   };
 }
 
-function live(
-  overrides: Partial<LiveUsageSummaryPayload> = {},
-): LiveUsageSummaryPayload {
+function live(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSummaryPayload {
   return {
     providers: [liveProvider()],
     errors: [],
@@ -253,7 +249,9 @@ describe('UsageView — plan limits layered over local estimates', () => {
     const bar = screen.getByRole('progressbar', { name: '5-hour limit' });
     expect(bar).toHaveAttribute('aria-valuenow', '81');
     expect(bar).toHaveAttribute('aria-valuetext', '81% used; 50% of the period elapsed');
-    expect(within(bar).getByTestId('live-usage-elapsed-five-hour')).toHaveStyle({ left: '50%' });
+    expect(within(bar).getByTestId('live-usage-elapsed-five-hour')).toHaveStyle({
+      left: '50%',
+    });
   });
 
   it('renders an unknown percentage as indeterminate rather than empty', () => {
@@ -277,7 +275,12 @@ describe('UsageView — plan limits layered over local estimates', () => {
         {
           ...liveProvider(),
           windows: [
-            liveWindow({ id: 'seven-day', role: 'primaryLong', kind: 'weekly', startsAt: null }),
+            liveWindow({
+              id: 'seven-day',
+              role: 'primaryLong',
+              kind: 'weekly',
+              startsAt: null,
+            }),
           ],
         },
       ],
@@ -311,7 +314,9 @@ describe('UsageView — plan limits layered over local estimates', () => {
 
     // Anthropic has a live reading; OpenAI does not, and gets no empty frame.
     const openai = screen.getByText('OpenAI').closest('li')!;
-    expect(within(openai).queryByRole('region', { name: /plan limits/ })).not.toBeInTheDocument();
+    expect(
+      within(openai).queryByRole('region', { name: /plan limits/ }),
+    ).not.toBeInTheDocument();
     expect(within(openai).getByText('Last 7 days')).toBeInTheDocument();
   });
 
