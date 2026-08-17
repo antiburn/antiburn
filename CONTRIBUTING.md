@@ -19,23 +19,46 @@ Thanks for your interest in contributing!
 
 ## Boundaries that pull requests must respect
 
-antiburn is local-first by contract, and CI enforces it mechanically:
+antiburn is a **local** application in one exact sense: it needs no connection
+to any service of ours. There is no antiburn account, server, or backend, and
+there never has to be one — everything antiburn does happens on the reader's own
+machine, as the reader. That is the whole of what "local" claims, and CI
+enforces exactly that much and no more.
 
-- `antiburn-local` performs **no network or socket I/O** and gains no
-  network-capable dependencies.
-- Discovery reads **documented files, read-only databases, and bounded WSL
-  paths only** — no process probing, port scanning, credential/token access,
-  loopback HTTP, or provider IPC.
-- One opt-in setting, default off, **runs a coding agent** so that the agent
-  refreshes its own usage file, which antiburn then reads. That agent goes
-  online; antiburn opens no connection of its own, reads no credential, and
-  parses nothing the agent prints. Any future source of the same shape must
-  keep all four of those properties, and must be recorded in
-  `docs/deviations.md` before it ships. Reading a credential to talk to a
-  provider directly remains prohibited by the rule above.
+Being local is not the same as being offline. antiburn is the reader's own
+agent, running in the reader's own security context, and may do anything the
+reader could do on their machine: read the credential and configuration files
+the reader's tools wrote, call a provider's API with the reader's own
+credentials, inspect local processes and ports, call a locally-running agent
+over loopback, run the reader's tools as child processes. None of that is fenced
+off, because none of it depends on us or discloses anything the reader has not
+already disclosed. A pull request needs no ceremony to add such a capability —
+technique is not the boundary.
+
+- **The one hard line is that antiburn reaches no service of ours, and hands the
+  reader's data to no one who does not already have it.** It sends nothing to an
+  antiburn-operated server (there is none), nothing to a third party, and
+  nothing to a telemetry or analytics endpoint. Returning the reader's own
+  credential to the provider that issued it, to read that provider's own
+  figures, is not a disclosure: the provider already holds both. This is the
+  boundary CI keeps mechanically (`crates/antiburn-local/tests/boundary.rs`,
+  `scripts/check-boundary.mjs`, `apps/desktop/tests/no-exfiltration.test.ts`):
+  no telemetry or analytics SDK, no reporting endpoint, no first-party host may
+  enter the tree. The update check — antiburn's own release feed, carrying
+  nothing about the reader — is the one call to a service, and it is a
+  convenience the app never depends on, not a service it needs to function.
+- **Genuinely risky local operations still earn care.** Deleting or modifying
+  the reader's files, terminating processes, or anything that could damage the
+  machine or the reader's standing with a provider needs clear, present intent —
+  an explicit action, never a silent background pass. A credential, once read,
+  stays in memory: never written somewhere new, logged, or left where a crash
+  report could carry it off. When a capability could plausibly cost the reader
+  something, the pull request names the cost and how it is bounded, and a
+  decision of that shape is recorded in `docs/deviations.md`.
 - Test fixtures must be **synthetic**: no real transcripts, usernames, home
   paths, repository names, or captured machine output — redaction is not
-  sufficient.
+  sufficient. The more antiburn is trusted to read, the less any of it belongs
+  in the repository.
 - **Performance and memory use are product constraints.** antiburn is an
   always-running background utility: avoid eager or repeated work, keep reads,
   allocations, concurrency, and retained data bounded, and do not load the
