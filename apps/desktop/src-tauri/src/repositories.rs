@@ -315,6 +315,30 @@ fn distinct_cwds(sessions: &[crate::store::SessionRecord]) -> Vec<String> {
     cwds
 }
 
+/// What may be done with a repository root an earlier pass already resolved.
+#[derive(Debug, PartialEq, Eq)]
+enum KnownRootAccess {
+    /// Outside every protected directory. Readable, nothing to ask.
+    Open,
+    /// Inside a directory the user granted. Read it — and let a denial, if the
+    /// grant has since been revoked, be what drops the grant.
+    Verify,
+    /// Inside a directory the user has *not* granted. Do not touch it: a record
+    /// can outlive the grant it was found under, and reading it then is exactly
+    /// the unannounced dialog this whole design exists to prevent.
+    Blocked(String),
+}
+
+/// Decide which of the three applies. Pure, and home-explicit so it behaves the
+/// same in a test on any platform.
+fn classify_known_root(home: &Path, root: &Path, granted: &HashSet<String>) -> KnownRootAccess {
+    match protected::protected_dir_name_in(home, root) {
+        None => KnownRootAccess::Open,
+        Some(dir) if granted.contains(&dir) => KnownRootAccess::Verify,
+        Some(dir) => KnownRootAccess::Blocked(dir),
+    }
+}
+
 /// Resolve working directories to canonical repository roots, reusing roots the
 /// last pass already established.
 ///
@@ -330,8 +354,12 @@ async fn locate_from_cwds(
     consent: &dyn ConsentGrants,
 ) -> (Vec<LocatedRepo>, Vec<DeferredProtectedPath>) {
     let mut by_key: HashMap<String, LocatedRepo> = HashMap::new();
+    let mut deferred: Vec<DeferredProtectedPath> = Vec::new();
     let mut resolved = 0usize;
     let mut unresolved: Vec<&str> = Vec::new();
+    // Without a home directory nothing can be classified as protected, which is
+    // how the engine's own guards fail open.
+    let home = home_dir();
 
     for cwd in cwds {
         // Already under a repository the last pass found: answered from the
@@ -348,17 +376,25 @@ async fn locate_from_cwds(
             if by_key.contains_key(&record.key) {
                 continue;
             }
-            // A root inside a protected directory is the one case where the
-            // store cannot answer for us. The grant it was found under can be
-            // revoked at any time without telling us, and assuming otherwise
-            // would keep reporting a repository as readable long after the
-            // system stopped allowing it. Verifying also *observes* the denial,
-            // which is what drops the stale grant.
+            // A protected root is the one case the store cannot answer for:
+            // the grant it was found under can be revoked without telling us,
+            // and assuming otherwise keeps reporting a repository as readable
+            // long after the system stopped allowing it.
             let root_path = PathBuf::from(root);
-            let dir_accessible = if protected::is_access_protected(&root_path) {
-                verify_dir_access(consent, &root_path).await
-            } else {
-                true
+            let access = match home.as_deref() {
+                Some(home) => classify_known_root(home, &root_path, granted),
+                None => KnownRootAccess::Open,
+            };
+            let dir_accessible = match access {
+                KnownRootAccess::Open => true,
+                KnownRootAccess::Verify => verify_dir_access(consent, &root_path).await,
+                KnownRootAccess::Blocked(protected_dir) => {
+                    deferred.push(DeferredProtectedPath {
+                        cwd: root_path.to_string_lossy().to_string(),
+                        protected_dir,
+                    });
+                    false
+                }
             };
             by_key.insert(
                 record.key.clone(),
@@ -377,15 +413,14 @@ async fn locate_from_cwds(
     }
 
     // Everything past this point shells out to git, so consent is settled first.
-    // Without a home directory nothing can be classified as protected, which
-    // matches how the engine's own guards fail open.
-    let (admitted, mut deferred) = match home_dir() {
-        Some(home) => partition_cwds_by_grants(&home, unresolved, granted),
+    let (admitted, blocked) = match home.as_deref() {
+        Some(home) => partition_cwds_by_grants(home, unresolved, granted),
         None => (
             unresolved.into_iter().map(str::to_string).collect(),
             Vec::new(),
         ),
     };
+    deferred.extend(blocked);
 
     for cwd in &admitted {
         if resolved >= MAX_NEW_ROOTS_PER_PASS {
@@ -430,6 +465,7 @@ async fn locate_from_cwds(
         );
     }
 
+    dedup_deferred_by_cwd(&mut deferred);
     (by_key.into_values().collect(), deferred)
 }
 
@@ -606,6 +642,45 @@ mod tests {
     /// An opted-out path whose record is gone entirely (an earlier build
     /// dropped it) is resurrected as a disabled row from the opt-out store,
     /// so the exclusion is always visible and reversible.
+    /// The rule a background pass must never break: a repository record can
+    /// outlive the grant it was found under, and reading it then is the
+    /// unannounced dialog this design exists to prevent.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_known_root_is_only_read_while_its_grant_still_stands() {
+        let home = Path::new("/Users/avery");
+        let documents = home.join("Documents/GitHub/repo");
+        let plain = home.join("dev/repo");
+
+        // Outside the protected directories the store's answer stands.
+        assert_eq!(
+            classify_known_root(home, &plain, &HashSet::new()),
+            KnownRootAccess::Open
+        );
+
+        // Granted: read it, so a revoked grant is observed and dropped.
+        assert_eq!(
+            classify_known_root(home, &documents, &HashSet::from(["Documents".to_string()])),
+            KnownRootAccess::Verify
+        );
+
+        // Not granted: never touched, however stale the record.
+        assert_eq!(
+            classify_known_root(home, &documents, &HashSet::new()),
+            KnownRootAccess::Blocked("Documents".to_string())
+        );
+
+        // A grant covers one directory, not every protected one.
+        assert_eq!(
+            classify_known_root(
+                home,
+                &home.join("Desktop/repo"),
+                &HashSet::from(["Documents".to_string()])
+            ),
+            KnownRootAccess::Blocked("Desktop".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn an_orphaned_opt_out_surfaces_as_a_disabled_row() {
         let dir = tempfile::TempDir::new().unwrap();
