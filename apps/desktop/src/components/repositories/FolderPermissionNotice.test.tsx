@@ -23,6 +23,9 @@ function renderNotice(overrides: Partial<Parameters<typeof FolderPermissionNotic
     recordedDenials: [] as string[],
     onRequest: vi.fn(),
     onOpenSettings: vi.fn(),
+    onRecheck: vi.fn(),
+    onOpenFullDiskAccess: vi.fn(),
+    onCopyDiagnostics: vi.fn(),
     ...overrides,
   };
   render(<FolderPermissionNotice {...props} />);
@@ -41,6 +44,9 @@ describe('FolderPermissionNotice', () => {
         recordedDenials={[]}
         onRequest={vi.fn()}
         onOpenSettings={vi.fn()}
+        onRecheck={vi.fn()}
+        onOpenFullDiskAccess={vi.fn()}
+        onCopyDiagnostics={vi.fn()}
       />,
     );
     expect(container).toBeEmptyDOMElement();
@@ -77,6 +83,28 @@ describe('FolderPermissionNotice', () => {
     expect(screen.queryByRole('button', { name: /grant access/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /open system settings/i })).toBeInTheDocument();
     expect(screen.getByText(/remembers an earlier/i)).toBeInTheDocument();
+  });
+
+  it('offers the whole recovery path once macOS will not ask again', () => {
+    const props = renderNotice({ recordedDenials: ['Documents', 'Desktop'] });
+
+    // Re-checking is how access granted in System Settings gets noticed, and
+    // full disk access is the fallback when no per-folder row exists to switch
+    // on at all. Both were dead code in the implementation this came from.
+    fireEvent.click(screen.getByRole('button', { name: /check again/i }));
+    expect(props.onRecheck).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /full disk access/i }));
+    expect(props.onOpenFullDiskAccess).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /copy diagnostics/i }));
+    expect(props.onCopyDiagnostics).toHaveBeenCalledTimes(1);
+  });
+
+  it('can re-check before anything has been refused', () => {
+    const props = renderNotice();
+    fireEvent.click(screen.getByRole('button', { name: /check again/i }));
+    expect(props.onRecheck).toHaveBeenCalledTimes(1);
   });
 
   it('keeps offering to ask while any folder can still be prompted for', () => {

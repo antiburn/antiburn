@@ -30,6 +30,10 @@ export function FolderPermissionNotice({
   recordedDenials,
   onRequest,
   onOpenSettings,
+  onRecheck,
+  onOpenFullDiskAccess,
+  onCopyDiagnostics,
+  rechecking = false,
 }: {
   deferred: DeferredPermissionDir[];
   phase: FlowPhase;
@@ -39,6 +43,11 @@ export function FolderPermissionNotice({
   recordedDenials: string[];
   onRequest: () => void;
   onOpenSettings: () => void;
+  /** Look for access granted outside antiburn, in system settings. */
+  onRecheck: () => void;
+  onOpenFullDiskAccess: () => void;
+  onCopyDiagnostics: () => void;
+  rechecking?: boolean;
 }) {
   if (deferred.length === 0) return null;
 
@@ -78,15 +87,31 @@ export function FolderPermissionNotice({
 
           <div className="flex flex-wrap items-center gap-2 pt-0.5">
             {allStuck ? (
-              <PushButton onClick={onOpenSettings} variant="primary">
-                Open System Settings
-              </PushButton>
+              <>
+                <PushButton onClick={onOpenSettings} variant="primary">
+                  Open System Settings
+                </PushButton>
+                {/* Turning antiburn on in System Settings changes nothing here
+                    until something looks again, and nothing may look for an
+                    hour. This is that "look again". */}
+                <PushButton onClick={onRecheck} disabled={rechecking}>
+                  {rechecking ? 'Checking…' : 'Check again'}
+                </PushButton>
+                {/* The last resort: a reset can leave antiburn with no row to
+                    switch on under Files and Folders at all, and full disk
+                    access is then the only setting that exists. */}
+                <PushButton onClick={onOpenFullDiskAccess}>Full Disk Access…</PushButton>
+                <PushButton onClick={onCopyDiagnostics}>Copy diagnostics</PushButton>
+              </>
             ) : (
               <>
                 <PushButton onClick={onRequest} variant="primary" disabled={busy}>
                   {busy ? 'Waiting for macOS…' : 'Grant access'}
                 </PushButton>
                 <PushButton onClick={onOpenSettings}>Open System Settings</PushButton>
+                <PushButton onClick={onRecheck} disabled={busy || rechecking}>
+                  {rechecking ? 'Checking…' : 'Check again'}
+                </PushButton>
               </>
             )}
           </div>

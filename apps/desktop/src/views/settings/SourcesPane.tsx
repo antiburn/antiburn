@@ -19,8 +19,11 @@ import {
   getScanStatus,
   listRepositories,
   listScanRoots,
+  getConsentDiagnostics,
   onScanEvent,
   openFolderAccessSettings,
+  openFullDiskAccessSettings,
+  recheckFolderPermissions,
   refreshRepositories,
   removeScanRoot,
   scanNow,
@@ -157,6 +160,31 @@ export function SourcesPane() {
   const permissionFlow = useFolderPermissionFlow(permissions.deferred, () => {
     void handleRefresh();
   });
+  const [rechecking, setRechecking] = useState(false);
+
+  /**
+   * Look for access granted in System Settings rather than through antiburn.
+   *
+   * The way out of a remembered refusal: macOS will not prompt again, so the
+   * only path is the system pane, and nothing notices that until something
+   * looks. This is the looking.
+   */
+  const handleRecheck = useCallback(async () => {
+    setRechecking(true);
+    const found = await recheckFolderPermissions().catch(() => []);
+    if (found.length > 0) await handleRefresh();
+    else await loadPermissions();
+    setRechecking(false);
+  }, [handleRefresh, loadPermissions]);
+
+  /** Probe history, for a bug report. */
+  const handleCopyDiagnostics = useCallback(async () => {
+    const probes = await getConsentDiagnostics().catch(() => []);
+    const text = probes
+      .map((probe) => `${probe.outcome}\t${probe.elapsedMs}ms\t${probe.target}`)
+      .join('\n');
+    await navigator.clipboard.writeText(text || 'No folder-access probes this run.');
+  }, []);
 
   const handleToggle = useCallback(async (item: LocalRepositoryItem, enabled: boolean) => {
     const repos = await setRepositoryEnabled(item.key, enabled).catch(
@@ -196,6 +224,10 @@ export function SourcesPane() {
             recordedDenials={permissionFlow.recordedDenials}
             onRequest={permissionFlow.start}
             onOpenSettings={() => void openFolderAccessSettings()}
+            onRecheck={() => void handleRecheck()}
+            onOpenFullDiskAccess={() => void openFullDiskAccessSettings()}
+            onCopyDiagnostics={() => void handleCopyDiagnostics()}
+            rechecking={rechecking}
           />
         ) : null}
 

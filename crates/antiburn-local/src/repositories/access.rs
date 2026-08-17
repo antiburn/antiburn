@@ -37,7 +37,7 @@ pub(super) async fn path_exists_without_prompting(path: &Path) -> bool {
 /// the next run defer the directory instead of trusting the record. This
 /// observes a denial that already happened; it never probes an ungranted path,
 /// so it cannot raise a consent dialog.
-pub(super) async fn verify_dir_access(consent: &dyn ConsentGrants, path: &Path) -> bool {
+pub async fn verify_dir_access(consent: &dyn ConsentGrants, path: &Path) -> bool {
     let t0 = std::time::Instant::now();
     match tokio::fs::read_dir(path).await {
         Ok(_) => true,

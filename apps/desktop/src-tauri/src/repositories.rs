@@ -31,11 +31,10 @@ use std::path::{Path, PathBuf};
 use antiburn_local::paths::{home_dir, ignored_paths, protected};
 use antiburn_local::platform::git;
 use antiburn_local::repositories::{
-    DeferredProtectedPath, LocatedRepo, dedup_deferred_by_cwd, merge_located_repos,
+    ConsentGrants, DeferredProtectedPath, LocatedRepo, dedup_deferred_by_cwd, merge_located_repos,
     normalize_remote_url, parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity,
-    scan_roots_for_repos,
+    scan_roots_for_repos, verify_dir_access,
 };
-use antiburn_local::repositories::ConsentGrants as _;
 use tauri::{AppHandle, Manager};
 
 use crate::consent::StoreConsentGrants;
@@ -73,12 +72,26 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     let cwds: Vec<String> = distinct_cwds(&sessions);
     // `deferred` names the protected directories this pass deliberately left
     // untouched, so the interface can offer the user a way to grant them.
-    let (located, deferred) = locate_from_cwds(&cwds, &known, &granted).await;
+    let (located, deferred) = locate_from_cwds(&cwds, &known, &granted, &consent).await;
     let counted = count_sessions(located, &sessions);
 
     let owners = top_owners(&counted);
     let (scanned, scan_deferred) = forward_scan(&owners, &scan_roots, &consent).await;
-    let deferred = merge_deferred(deferred, scan_deferred);
+    let mut deferred = merge_deferred(deferred, scan_deferred);
+
+    // A read this pass may have observed that a recorded grant is stale and
+    // dropped it. The deferred list was derived before that happened, so it
+    // still describes a world where the folder was reachable. Re-derive it
+    // against what is true now — partitioning is pure, so this costs nothing
+    // and saves the reader a pass spent wondering where their repositories
+    // went.
+    let granted_now = consent.granted_dirs();
+    if granted_now != granted
+        && let Some(home) = home_dir()
+    {
+        let (_, still_blocked) = partition_cwds_by_grants(&home, &cwds, &granted_now);
+        deferred = merge_deferred(deferred, still_blocked);
+    }
 
     let merged = merge_located_repos(counted.into_iter().map(|(repo, _)| repo).collect(), scanned);
     let mut records = Vec::with_capacity(merged.len());
@@ -314,6 +327,7 @@ async fn locate_from_cwds(
     cwds: &[String],
     known: &[RepositoryRecord],
     granted: &HashSet<String>,
+    consent: &dyn ConsentGrants,
 ) -> (Vec<LocatedRepo>, Vec<DeferredProtectedPath>) {
     let mut by_key: HashMap<String, LocatedRepo> = HashMap::new();
     let mut resolved = 0usize;
@@ -331,15 +345,31 @@ async fn locate_from_cwds(
             let Some(root) = record.repo_root.as_deref() else {
                 continue;
             };
-            by_key
-                .entry(record.key.clone())
-                .or_insert_with(|| LocatedRepo {
+            if by_key.contains_key(&record.key) {
+                continue;
+            }
+            // A root inside a protected directory is the one case where the
+            // store cannot answer for us. The grant it was found under can be
+            // revoked at any time without telling us, and assuming otherwise
+            // would keep reporting a repository as readable long after the
+            // system stopped allowing it. Verifying also *observes* the denial,
+            // which is what drops the stale grant.
+            let root_path = PathBuf::from(root);
+            let dir_accessible = if protected::is_access_protected(&root_path) {
+                verify_dir_access(consent, &root_path).await
+            } else {
+                true
+            };
+            by_key.insert(
+                record.key.clone(),
+                LocatedRepo {
                     remote_url: String::new(),
-                    repo_root: PathBuf::from(root),
-                    dir_accessible: true,
+                    repo_root: root_path,
+                    dir_accessible,
                     worktree_count: record.worktree_count,
                     session_count: 0,
-                });
+                },
+            );
             continue;
         }
 
@@ -393,7 +423,7 @@ async fn locate_from_cwds(
             LocatedRepo {
                 remote_url: normalize_remote_url(&remote),
                 repo_root: root.clone(),
-                dir_accessible: tokio::fs::read_dir(&root).await.is_ok(),
+                dir_accessible: verify_dir_access(consent, &root).await,
                 worktree_count: git::worktree_count_at(&root).await,
                 session_count: 0,
             },

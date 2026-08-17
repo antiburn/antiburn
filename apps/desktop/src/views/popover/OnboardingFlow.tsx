@@ -12,7 +12,13 @@ import { LocalRepositoryList } from '../../components/repositories/LocalReposito
 import { PushButton } from '../../components/ui/PushButton';
 import { ScrollPane } from '../../components/ui/ScrollPane';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
-import { openFolderAccessSettings, type ScanStatus } from '../../lib/ipc';
+import {
+  getConsentDiagnostics,
+  openFolderAccessSettings,
+  openFullDiskAccessSettings,
+  recheckFolderPermissions,
+  type ScanStatus,
+} from '../../lib/ipc';
 import type { FolderPermissions } from '../../lib/types/repository';
 import type { FolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
 import type { LocalRepositoryItem } from '../../lib/types/repository';
@@ -275,6 +281,17 @@ function Repositories({
             recordedDenials={permissionFlow.recordedDenials}
             onRequest={permissionFlow.start}
             onOpenSettings={() => void openFolderAccessSettings()}
+            onRecheck={() => void recheckFolderPermissions()}
+            onOpenFullDiskAccess={() => void openFullDiskAccessSettings()}
+            onCopyDiagnostics={() => {
+              void getConsentDiagnostics().then((probes) =>
+                navigator.clipboard.writeText(
+                  probes
+                    .map((probe) => `${probe.outcome}\t${probe.elapsedMs}ms\t${probe.target}`)
+                    .join('\n') || 'No folder-access probes this run.',
+                ),
+              );
+            }}
           />
         </div>
       ) : null}
