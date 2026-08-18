@@ -40,11 +40,11 @@
 //! antiburn needs no connection to any service of ours — no antiburn account,
 //! server, or backend, ever. Everything runs on this machine, as the reader.
 //! The provider limit figures on the Usage
-//! surface are read from a file an agent already wrote, and one opt-in
-//! setting, default off, runs that agent so it refreshes the file — the agent
-//! goes online on its own account, exactly as it would if the reader ran it,
-//! and this crate still only reads the file it leaves behind
-//! (`docs/deviations.md`, D-20 and D-21). Notifications are antiburn's own
+//! surface are read from a file an agent already wrote, and one switch, on
+//! by default once first-run setup is complete, runs that agent so it
+//! refreshes the file — the agent goes online on its own account, exactly as
+//! it would if the reader ran it, and this crate still only reads the file it
+//! leaves behind (`docs/deviations.md`, D-20 and D-21). Notifications are antiburn's own
 //! window, fed by a local event; nothing about one leaves the machine. The one
 //! call this crate makes to a service of ours is the updater plugin —
 //! registered in release builds only, so a development run makes no such

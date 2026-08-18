@@ -477,6 +477,50 @@ fn a_source_is_ungated_by_default() {
     assert!(!Fixed("ungated", Vec::new()).requires_online_opt_in());
 }
 
+#[test]
+fn a_gated_source_stays_uncalled_before_onboarding_finishes_even_with_the_switch_on() {
+    // `liveUsageEnabled` now defaults to true, but the credential read this
+    // unlocks — and the macOS Keychain prompt it can trigger — must never
+    // land before the reader has gotten through first-run setup. Exercised
+    // through `summarize`'s real store, not the bare `online: bool` collect
+    // gate, so the onboarding half of `AppSettings::live_usage_active` is
+    // actually proven, not merely assumed.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Counted(Arc::clone(&calls)))];
+    let store = crate::store::Store::open_in_memory(std::path::Path::new(
+        "/tmp/antiburn-live-usage-onboarding-test",
+    ))
+    .expect("in-memory store");
+
+    store
+        .save_settings(&crate::store::AppSettings {
+            live_usage_enabled: true,
+            onboarding_completed: false,
+            ..crate::store::AppSettings::default()
+        })
+        .unwrap();
+    summarize(&sources, Some(&store), NOW, 0);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the switch alone is not enough before onboarding completes"
+    );
+
+    store
+        .save_settings(&crate::store::AppSettings {
+            live_usage_enabled: true,
+            onboarding_completed: true,
+            ..crate::store::AppSettings::default()
+        })
+        .unwrap();
+    summarize(&sources, Some(&store), NOW, 0);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "once onboarding is done, the already-on switch is enough on its own"
+    );
+}
+
 /* -------------------------------------------------------------------------
  * Whether a supplemental, model-scoped window is worth showing
  *

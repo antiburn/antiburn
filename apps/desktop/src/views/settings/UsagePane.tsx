@@ -14,19 +14,22 @@ import { liveSourceNote } from '../../lib/presentation/liveUsage';
 import type { AppSettingsController } from './useAppSettings';
 
 /**
- * Usage: where the plan limits come from, and the one switch that changes it.
+ * Usage: where the plan limits come from, and the one switch that turns it
+ * off.
  *
- * Plan limits are never read without asking first — there is nothing cached
- * on this machine for antiburn to read on its own. The switch below is what
- * turns that reading on: with it on, antiburn asks each provider directly for
- * your current usage, using the credentials your own coding tools already
- * hold, entirely over your own connection. With it off, this pane has nothing
- * to show.
+ * The switch below is on by default: antiburn asks each provider directly for
+ * your current usage, about every ten minutes, using the credentials your own
+ * coding tools already hold, entirely over your own connection. That is
+ * ordinary traffic — your own usage, from a provider you already use, with a
+ * credential you already hold — so it runs without asking first, the same way
+ * every other local reading in this app does. The switch exists for a reader
+ * who wants none of it: turn it off and this pane has nothing to show, no
+ * request is made, and no credential is read.
  *
- * The copy says what turning it on does in both directions — it makes
- * readings possible at all, *and* it lets milestone notifications fire —
- * because one switch with two consequences has to name both or it is not
- * consent.
+ * The copy names both things the switch controls — it is what makes readings
+ * possible at all, *and* it is what lets milestone notifications fire —
+ * because a switch with two consequences has to say both or a reader turning
+ * it off for one reason is surprised by the other.
  */
 
 export type UsagePaneProps = AppSettingsController;
@@ -73,13 +76,13 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         <Card>
           <ToggleRow
             label="Keep my plan limits current"
-            description="Asks each provider directly for your current usage, about every ten minutes, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this on also lets usage milestone notifications fire, since they need readings that keep moving."
+            description="Asks each provider directly for your current usage, about every ten minutes, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this off also stops usage milestone notifications, since they need readings that keep moving."
             checked={on}
             onChange={(next) => void update({ liveUsageEnabled: next })}
           />
           <Row
-            label="Without this"
-            description="antiburn shows no plan limits at all — there is nothing cached here for it to read on its own, and it makes no request for you until you turn this on."
+            label="With this off"
+            description="antiburn makes none of these requests and shows no plan limits at all."
           />
         </Card>
       </SectionGroup>
@@ -92,7 +95,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               description={
                 on
                   ? 'No provider credentials were found on this machine yet. Sign in with a coding tool and this fills in.'
-                  : 'Turn the switch above on to ask your providers for current plan limits.'
+                  : 'Turn the switch above back on to ask your providers for current plan limits.'
               }
             />
           )}

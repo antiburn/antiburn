@@ -97,13 +97,16 @@ export interface AppSettings {
   /** Weekly-window milestones. */
   milestonesWeekly: Milestones;
   /**
-   * The per-feature online opt-in for live usage limits. Off by default.
+   * The per-feature online opt-out for live usage limits. On by default, once
+   * first-run setup is complete.
    *
    * On, antiburn asks each provider directly for the reader's current usage,
    * periodically, using the credentials the reader's own coding tools already
-   * hold — that is antiburn going online as the reader, not a server of ours —
-   * and milestone notifications become able to fire. Off, antiburn makes none
-   * of these requests and has no plan limits to show.
+   * hold — that is antiburn going online as the reader, not a server of ours,
+   * and it is ordinary traffic rather than something that needs a separate
+   * go-ahead — and milestone notifications become able to fire. Off, antiburn
+   * makes none of these requests and has no plan limits to show; this is the
+   * setting for a reader who wants no background traffic at all.
    */
   liveUsageEnabled: boolean;
 }
@@ -546,7 +549,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyUsageAnomalies: true,
   milestones5h: { at50: true, at75: true, at90: true },
   milestonesWeekly: { at50: true, at75: true, at90: true },
-  liveUsageEnabled: false,
+  liveUsageEnabled: true,
 };
 
 /* -------------------------------------------------------------------------
