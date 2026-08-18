@@ -533,6 +533,18 @@ describe('SettingsView', () => {
     );
   });
 
+  it('resets the shared content viewport to the top when the pane changes', async () => {
+    const { container } = render(<SettingsView />);
+
+    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    const viewport = container.querySelector('.ui-scroll-viewport') as HTMLDivElement;
+    viewport.scrollTop = 240;
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+
+    expect(viewport.scrollTop).toBe(0);
+  });
+
   it('ignores a pane id it does not recognize rather than rendering nothing', async () => {
     render(<SettingsView />);
 
