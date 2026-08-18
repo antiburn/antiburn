@@ -59,18 +59,45 @@ export function liveWindowValueLabel(window: LiveUsageWindowPayload): string {
 }
 
 /**
- * The length of a window whose own name states it, in milliseconds.
+ * The length of a window whose own *id* states it, in milliseconds, keyed by
+ * that id.
  *
- * This is arithmetic, not inference. A window identified as `five-hour` has a
+ * This is arithmetic, not inference: a window identified as `five-hour` has a
  * five-hour period by definition, so its start is five hours before its reset
- * — that is not a fact we are missing, it is one the id already gave us.
- * Anything whose duration is *not* stated by its identity is absent from this
- * table on purpose: a weekly window's boundary is the provider's own, and
- * "seven days before the reset" would be a guess dressed as a measurement.
+ * — that is not a fact we are missing, it is one the id already gave us. The
+ * broader case — a period implied by the window's `kind` rather than its
+ * specific id — is handled separately below, in `impliedPeriodMs`; this table
+ * only covers the recurrence that does not fit that pattern.
  */
 const IMPLIED_PERIOD_MS: Readonly<Record<string, number>> = {
   'five-hour': 5 * 3_600_000,
 };
+
+const DAY_MS = 24 * 3_600_000;
+const WEEK_MS = 7 * DAY_MS;
+
+/**
+ * The length of a window's period implied by its own identity, in
+ * milliseconds, or null when nothing about the window states one.
+ *
+ * An id-keyed period (`IMPLIED_PERIOD_MS`) wins when there is one, since it is
+ * the more specific fact. Failing that, a window's `kind` still states a
+ * recurrence for two of the four kinds the provider sends: `weekly` is seven
+ * days and `daily` is twenty-four hours by definition of what those words
+ * mean, the same way `five-hour` is five hours — this is reading the window's
+ * own name, not assuming a period nobody stated. `monthly` and
+ * `billingCycle` are deliberately excluded: a month's length genuinely
+ * varies (28 to 31 days, and a billing cycle can be shorter still), so
+ * "thirty days before the reset" would be a guess dressed as a measurement,
+ * exactly the thing this module exists to avoid.
+ */
+function impliedPeriodMs(window: LiveUsageWindowPayload): number | null {
+  const byId = IMPLIED_PERIOD_MS[window.id];
+  if (byId != null) return byId;
+  if (window.kind === 'weekly') return WEEK_MS;
+  if (window.kind === 'daily') return DAY_MS;
+  return null;
+}
 
 /**
  * How far into the window's own period the clock has travelled, 0–1, or null
@@ -82,7 +109,7 @@ const IMPLIED_PERIOD_MS: Readonly<Record<string, number>> = {
  *
  * It needs both ends of the window. The provider states the reset but usually
  * not the start, so the start comes from the window's own stated duration
- * where it has one — see `IMPLIED_PERIOD_MS`. A window with neither a stated
+ * where it has one — see `impliedPeriodMs`. A window with neither a stated
  * start nor an implied duration gets no marker at all, rather than one drawn
  * from an assumed period.
  */
@@ -92,7 +119,7 @@ export function liveWindowElapsed(window: LiveUsageWindowPayload, now: number): 
   if (Number.isNaN(end)) return null;
 
   const stated = window.startsAt ? new Date(window.startsAt).getTime() : Number.NaN;
-  const implied = IMPLIED_PERIOD_MS[window.id];
+  const implied = impliedPeriodMs(window);
   const start = Number.isNaN(stated) ? (implied == null ? Number.NaN : end - implied) : stated;
   if (Number.isNaN(start) || end <= start) return null;
 
