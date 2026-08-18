@@ -26,6 +26,7 @@
 //! - [`repositories`] — which repositories on this machine antiburn watches.
 //! - [`scan`] — the background scan and its scheduling policy.
 //! - [`settings`] — the standalone settings window.
+//! - [`startup_registration`] — applying the packaged app's launch-at-login preference.
 //! - [`storage_health`] — whether the local database still accepts writes.
 //! - [`store`] — the app's local SQLite database.
 //! - [`tray`] — the menu-bar item and its click and menu handling.
@@ -64,6 +65,7 @@ mod provider_usage;
 mod repositories;
 mod scan;
 mod settings;
+mod startup_registration;
 mod storage_health;
 mod store;
 mod tray;
@@ -175,6 +177,9 @@ pub fn run() {
                     "dark" => Some(tauri::Theme::Dark),
                     _ => None,
                 });
+                if settings.onboarding_completed {
+                    startup_registration::reconcile(app.handle(), settings.launch_at_login);
+                }
             }
             app.manage(scan::ScanController::default());
             app.manage(Schedulers::default());

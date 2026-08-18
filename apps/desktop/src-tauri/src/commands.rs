@@ -174,11 +174,6 @@ pub fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
     app.state::<Store>().settings().map_err(fail)
 }
 
-/// Replace every preference, returning what was actually stored.
-///
-/// `launchAtLogin` is recorded but not enforced: registering a login item needs
-/// the autostart plugin, which this build does not carry. The settings pane
-/// says so next to the control rather than silently doing nothing.
 /// Event carrying the stored settings to every window after a write.
 ///
 /// Preferences are written from the settings window but *rendered* in the
@@ -197,6 +192,10 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     // only "exactly once, ever" event: nothing writes this flag back to false,
     // so neither consequence below needs a marker of its own to avoid repeating.
     let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
+
+    if crate::startup_registration::should_reconcile_after_save(&previous, &saved) {
+        crate::startup_registration::reconcile(&app, saved.launch_at_login);
+    }
 
     // Finishing onboarding, widening the window past what the store holds, and
     // resuming discovery all want fresh data immediately rather than at the

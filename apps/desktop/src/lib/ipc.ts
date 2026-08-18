@@ -523,7 +523,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   activityWindowDays: 7,
   onboardingCompleted: false,
-  launchAtLogin: false,
+  launchAtLogin: true,
   autoUpdate: true,
   discoveryPaused: false,
   notificationsEnabled: true,

@@ -358,8 +358,7 @@ pub struct AppSettings {
     /// False until the first-run flow finishes; gates onboarding and the
     /// automatic first scan.
     pub onboarding_completed: bool,
-    /// Recorded, and applied by the platform at next launch. See
-    /// [`crate::commands::set_settings`] for why it is inert today.
+    /// Whether the packaged app should register itself to start after sign-in.
     pub launch_at_login: bool,
     /// Whether the updater may check on its own. Read by
     /// [`crate::updates::spawn_scheduler`], which is what makes it real.
@@ -407,7 +406,7 @@ impl Default for AppSettings {
             theme: ThemePreference::System,
             activity_window_days: DEFAULT_ACTIVITY_DAYS,
             onboarding_completed: false,
-            launch_at_login: false,
+            launch_at_login: true,
             auto_update: true,
             discovery_paused: false,
             // On by default, and the per-kind switches with them: each kind

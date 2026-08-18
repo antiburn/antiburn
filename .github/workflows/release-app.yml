@@ -540,10 +540,10 @@ jobs:
           done
           if [[ -n "${TAURI_SIGNING_CONFIG:-}" ]]; then
             pnpm --filter @antiburn/desktop exec tauri build \
-              --target "$TARGET" --bundles "$BUNDLES" --config "$TAURI_SIGNING_CONFIG"
+              --features distribution --target "$TARGET" --bundles "$BUNDLES" --config "$TAURI_SIGNING_CONFIG"
           else
             pnpm --filter @antiburn/desktop exec tauri build \
-              --target "$TARGET" --bundles "$BUNDLES"
+              --features distribution --target "$TARGET" --bundles "$BUNDLES"
           fi
 
       # Signing that is not verified is a claim, not a fact.

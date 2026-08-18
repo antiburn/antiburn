@@ -99,6 +99,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     let defaults = store.settings().unwrap();
     assert_eq!(defaults, AppSettings::default());
     assert!(!defaults.onboarding_completed);
+    assert!(defaults.launch_at_login);
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -156,6 +157,21 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(!saved.notifications_enabled);
     assert!(!saved.notify_update_available);
     assert!(saved.notify_scan_failure);
+}
+
+#[test]
+fn an_explicit_launch_at_login_opt_out_overrides_the_default() {
+    let store = store();
+    let saved = store
+        .save_settings(&AppSettings {
+            onboarding_completed: true,
+            launch_at_login: false,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert!(!saved.launch_at_login);
+    assert!(!store.settings().unwrap().launch_at_login);
 }
 
 /// The schema's data policy says which columns may hold free text. This is the

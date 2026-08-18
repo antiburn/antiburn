@@ -214,10 +214,12 @@ build-level subset that a developer working in this directory runs into first:
   so this only affects running `tauri build` by hand; `dev:bundle` already turns
   the artifact off through the debug config, and a release-profile bundle
   without a key needs `--config '{"bundle":{"createUpdaterArtifacts":false}}'`.
-- Launch-at-login is recorded as a preference but not enforced: registering a
-  login item needs the autostart plugin, which this build does not carry. The
-  General pane says so next to the control rather than showing a switch that
-  silently does nothing.
+- Launch at login is applied only by builds carrying the Cargo `distribution`
+  feature, which CI sets for packaged releases. macOS 13+ uses the system's
+  main-app service, Windows uses the per-user Run key, and Linux writes an
+  escaped Desktop Entry. New installs are asked on the Ready step (default on),
+  General reflects the same preference, and development runs — including
+  `cargo run --release` — never change the machine's login items.
 - Agent icons are a single neutral glyph for every agent. Vendor logos are the
   vendors' marks; original per-agent artwork is a later stream, and
   `src/lib/agentIcon.tsx` already carries the icon-name seam it will key off.
