@@ -69,8 +69,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use antiburn_local::discovery::scanner::TitleSource;
 use antiburn_local::discovery::{
-    Explorers, SessionLog, SessionSource, session_log_metadata, session_source_preview,
+    Explorers, ResolvedTitle, SessionLog, SessionSource, TitleLookupKind, session_log_metadata,
+    session_source_preview,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
@@ -348,6 +350,7 @@ async fn describe(
     home: &std::path::Path,
     ignored: &std::collections::HashSet<String>,
 ) -> Described {
+    let indexed_titles = indexed_titles_for_logs(&logs).await;
     let mut records = Vec::with_capacity(logs.len());
     let mut rejected = Vec::new();
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
@@ -355,7 +358,9 @@ async fn describe(
         for log in chunk {
             let log = log.clone();
             let home = home.to_path_buf();
-            set.spawn(async move { describe_one(log, &home).await });
+            let indexed_title = recovered_id(&log)
+                .and_then(|session_id| indexed_titles.get(&(log.agent_type, session_id)).cloned());
+            set.spawn(async move { describe_one(log, &home, indexed_title).await });
         }
         while let Some(joined) = set.join_next().await {
             match joined {
@@ -376,6 +381,34 @@ async fn describe(
     Described { records, rejected }
 }
 
+/// Read each durable vendor title store once for the sessions in this pass.
+/// Transcript fallback stays inside `describe_one`, which already has bounded
+/// metadata and preview reads for the same log.
+async fn indexed_titles_for_logs(
+    logs: &[SessionLog],
+) -> std::collections::HashMap<(AgentKind, String), ResolvedTitle> {
+    let mut indexed = std::collections::HashMap::new();
+    for agent in AgentKind::ALL {
+        let mut session_ids: Vec<String> = logs
+            .iter()
+            .filter(|log| log.agent_type == *agent && should_lookup_indexed_title(log))
+            .filter_map(recovered_id)
+            .collect();
+        session_ids.sort_unstable();
+        session_ids.dedup();
+        if session_ids.is_empty() {
+            continue;
+        }
+        for (session_id, title) in Explorers::DISK
+            .indexed_session_titles_for(agent, &session_ids)
+            .await
+        {
+            indexed.insert((*agent, session_id), title);
+        }
+    }
+    indexed
+}
+
 enum DescribeOutcome {
     Session(Box<SessionRecord>),
     /// A sub-agent transcript: never listed, and evicted if an earlier,
@@ -384,7 +417,11 @@ enum DescribeOutcome {
     Skip,
 }
 
-async fn describe_one(log: SessionLog, home: &std::path::Path) -> DescribeOutcome {
+async fn describe_one(
+    log: SessionLog,
+    home: &std::path::Path,
+    indexed_title: Option<ResolvedTitle>,
+) -> DescribeOutcome {
     let metadata = session_log_metadata(&log).await;
     let Some(session_id) = metadata
         .as_ref()
@@ -411,10 +448,17 @@ async fn describe_one(log: SessionLog, home: &std::path::Path) -> DescribeOutcom
         return DescribeOutcome::Subagent(key);
     }
 
-    let title = sanitized_title(
+    let resolved_title = if should_lookup_indexed_title(&log) {
+        indexed_title
+    } else {
+        None
+    };
+    let (title, title_source) = select_title_pair(
+        resolved_title,
         metadata
             .as_ref()
             .and_then(|metadata| metadata.title.clone()),
+        metadata.as_ref().and_then(|metadata| metadata.title_source),
         &log.agent_type,
         preview.as_deref(),
     );
@@ -435,10 +479,7 @@ async fn describe_one(log: SessionLog, home: &std::path::Path) -> DescribeOutcom
         source_label: log.source_label(),
         wsl_distro: log.environment.wsl_distro().map(str::to_string),
         title,
-        title_source: metadata
-            .as_ref()
-            .and_then(|metadata| metadata.title_source)
-            .map(|source| source.as_str().to_string()),
+        title_source,
         cwd: metadata.and_then(|metadata| metadata.cwd),
         surface: log.surface_label(home).to_string(),
         updated_at_epoch: log.updated_at,
@@ -448,6 +489,47 @@ async fn describe_one(log: SessionLog, home: &std::path::Path) -> DescribeOutcom
         // would cost far more than the relationship is worth here.
         fork_parent_session_id: None,
     }))
+}
+
+/// Native stores with a point-query index are authoritative for session names.
+/// Mounted WSL sessions deliberately stay on their transcript-local metadata:
+/// a native store may contain the same vendor id but belongs to another
+/// environment.
+fn should_lookup_indexed_title(log: &SessionLog) -> bool {
+    log.environment.is_native()
+        && matches!(
+            Explorers::DISK.title_lookup_kind_for(&log.agent_type),
+            TitleLookupKind::Direct
+        )
+}
+
+/// Keep the title and its provenance coupled. Indexed, renamed, and explicit
+/// vendor titles win directly; first-message provenance remains transcript
+/// fallback and still passes through sanitization.
+fn select_title_pair(
+    resolved: Option<ResolvedTitle>,
+    fallback_title: Option<String>,
+    fallback_source: Option<TitleSource>,
+    agent: &AgentKind,
+    preview: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    if let Some(resolved) = resolved {
+        let source = resolved.source;
+        let title = if source == TitleSource::FirstMessage {
+            sanitized_title(Some(resolved.text), agent, preview)
+        } else {
+            Some(resolved.text)
+        };
+        let source = title.as_ref().map(|_| source.as_str().to_string());
+        return (title, source);
+    }
+
+    let title = sanitized_title(fallback_title, agent, preview);
+    let source = title
+        .as_ref()
+        .and(fallback_source)
+        .map(|source| source.as_str().to_string());
+    (title, source)
 }
 
 /// Whether this transcript belongs to a sub-agent rather than a top-level
@@ -744,6 +826,8 @@ mod tests {
                     r#"{{"timestamp":"2026-08-01T10:00:00Z","type":"session_meta","#,
                     r#""payload":{{"id":"{id}","cwd":"/home/avery/code/gadgets"}}}}"#,
                     "\n",
+                    r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Fallback transcript request"}}]}}}}"#,
+                    "\n",
                 ),
                 id = session_id
             ),
@@ -759,6 +843,174 @@ mod tests {
             updated_at: Some(updated_at),
             environment: DiscoveryEnvironment::Native,
         }
+    }
+
+    #[test]
+    fn only_native_direct_agents_are_eligible_for_indexed_title_lookups() {
+        let direct = [AgentKind::Claude, AgentKind::Codex, AgentKind::OpenCode];
+        for agent in AgentKind::ALL {
+            let native = SessionLog {
+                agent_type: *agent,
+                source: SessionSource::Inline {
+                    label: "synthetic".into(),
+                    content: String::new(),
+                },
+                updated_at: None,
+                environment: DiscoveryEnvironment::Native,
+            };
+            assert_eq!(
+                should_lookup_indexed_title(&native),
+                direct.contains(agent),
+                "unexpected lookup route for {agent}"
+            );
+
+            let in_wsl = SessionLog {
+                environment: DiscoveryEnvironment::Wsl {
+                    distribution: "SyntheticLinux".into(),
+                    user: "avery".into(),
+                },
+                ..native
+            };
+            assert!(
+                !should_lookup_indexed_title(&in_wsl),
+                "WSL {agent} must not query native stores"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_titles_are_authoritative_and_keep_their_source() {
+        let first = select_title_pair(
+            Some(ResolvedTitle::new(
+                "Generated session name",
+                TitleSource::AiGenerated,
+            )),
+            Some("<injected transcript context>".into()),
+            Some(TitleSource::FirstMessage),
+            &AgentKind::Codex,
+            None,
+        );
+        assert_eq!(
+            first,
+            (
+                Some("Generated session name".into()),
+                Some("aiGenerated".into())
+            )
+        );
+
+        let renamed = select_title_pair(
+            Some(ResolvedTitle::new(
+                "Reader renamed session",
+                TitleSource::UserRename,
+            )),
+            Some("old transcript fallback".into()),
+            Some(TitleSource::FirstMessage),
+            &AgentKind::Codex,
+            None,
+        );
+        assert_eq!(
+            renamed,
+            (
+                Some("Reader renamed session".into()),
+                Some("userRename".into())
+            )
+        );
+
+        let transcript_fallback = select_title_pair(
+            Some(ResolvedTitle::new(
+                "<recommended_plugins> injected context",
+                TitleSource::FirstMessage,
+            )),
+            None,
+            None,
+            &AgentKind::Claude,
+            Some(concat!(
+                r#"{"type":"user","message":{"role":"user","content":"<recommended_plugins> injected context"}}"#,
+                "\n",
+                r#"{"type":"user","message":{"role":"user","content":"Reader's actual request"}}"#,
+                "\n",
+            )),
+        );
+        assert_eq!(
+            transcript_fallback,
+            (
+                Some("Reader's actual request".into()),
+                Some("firstMessage".into())
+            )
+        );
+    }
+
+    #[test]
+    fn a_direct_lookup_miss_keeps_the_transcript_fallback_pair() {
+        assert_eq!(
+            select_title_pair(
+                None,
+                Some("First reader request".into()),
+                Some(TitleSource::FirstMessage),
+                &AgentKind::Codex,
+                None,
+            ),
+            (
+                Some("First reader request".into()),
+                Some("firstMessage".into())
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_codex_title_refreshes_while_wsl_keeps_its_own_fallback() {
+        let home = tempfile::TempDir::new().unwrap();
+        let session_id = "same-id-in-two-environments";
+        let path = write_codex_session(home.path(), session_id);
+        let native_log = log(AgentKind::Codex, path.clone(), 1_800_000_000);
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+
+        for (title, source) in [
+            ("Indexed session name", TitleSource::AiGenerated),
+            ("Reader renamed session", TitleSource::UserRename),
+        ] {
+            let DescribeOutcome::Session(record) = describe_one(
+                native_log.clone(),
+                home.path(),
+                Some(ResolvedTitle::new(title, source)),
+            )
+            .await
+            else {
+                panic!("native Codex session should be described");
+            };
+            store.upsert_sessions(&[*record]).unwrap();
+        }
+
+        let native = store
+            .session(&SessionKey::new("native", "codex", session_id))
+            .unwrap()
+            .expect("native session");
+        assert_eq!(native.title.as_deref(), Some("Reader renamed session"));
+        assert_eq!(native.title_source.as_deref(), Some("userRename"));
+
+        let wsl_log = SessionLog {
+            environment: DiscoveryEnvironment::Wsl {
+                distribution: "SyntheticLinux".into(),
+                user: "avery".into(),
+            },
+            ..log(AgentKind::Codex, path, 1_800_000_100)
+        };
+        let DescribeOutcome::Session(wsl) = describe_one(
+            wsl_log,
+            home.path(),
+            // A same-id native hit is available but must be ignored for WSL.
+            Some(ResolvedTitle::new(
+                "Native title must not leak",
+                TitleSource::UserRename,
+            )),
+        )
+        .await
+        else {
+            panic!("WSL Codex session should be described");
+        };
+        assert_eq!(wsl.key.environment_key, "wsl:syntheticlinux");
+        assert_eq!(wsl.title.as_deref(), Some("Fallback transcript request"));
+        assert_eq!(wsl.title_source.as_deref(), Some("firstMessage"));
     }
 
     #[tokio::test]
@@ -1037,6 +1289,30 @@ mod tests {
             ),
             None
         );
+
+        let home = tempfile::TempDir::new().unwrap();
+        let project = home
+            .path()
+            .join(".claude/projects/-home-avery-code-widgets");
+        std::fs::create_dir_all(&project).unwrap();
+        let path = project.join("only-context.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"sessionId":"only-context","cwd":"/home/avery/code/widgets","type":"user","message":{"role":"user","content":"<recommended_plugins> list"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let described = describe(
+            vec![log(AgentKind::Claude, path, 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+        )
+        .await;
+        assert_eq!(described.records.len(), 1);
+        assert_eq!(described.records[0].title, None);
+        assert_eq!(described.records[0].title_source, None);
     }
 
     #[tokio::test]
@@ -1141,6 +1417,24 @@ mod tests {
             environment: Default::default(),
         };
         assert_eq!(recovered_id(&log).as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn a_codex_rollout_recovers_its_canonical_uuid_before_title_prefetch() {
+        let session_id = "01a01251-9875-7121-ac24-0d99fd8ccbe1";
+        let log = SessionLog {
+            agent_type: AgentKind::Codex,
+            source: SessionSource::File(
+                format!(
+                    "/home/avery/.codex/sessions/2026/08/18/rollout-2026-08-18T10-42-12-{session_id}.jsonl"
+                )
+                .into(),
+            ),
+            updated_at: Some(1_000),
+            environment: Default::default(),
+        };
+
+        assert_eq!(recovered_id(&log).as_deref(), Some(session_id));
     }
 
     #[test]

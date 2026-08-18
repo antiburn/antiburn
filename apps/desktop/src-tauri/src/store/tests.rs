@@ -335,6 +335,61 @@ fn a_session_round_trips_and_a_rescan_updates_it_in_place() {
 }
 
 #[test]
+fn title_and_source_are_replaced_or_preserved_as_one_pair() {
+    let store = store();
+
+    let mut source_without_title = session("orphan-source", 500);
+    source_without_title.title = None;
+    source_without_title.title_source = Some("firstMessage".into());
+    store.upsert_sessions(&[source_without_title]).unwrap();
+    let stored = store
+        .session(&SessionKey::new("native", "claude-code", "orphan-source"))
+        .unwrap()
+        .expect("session");
+    assert_eq!((stored.title, stored.title_source), (None, None));
+
+    // Heal rows written by the older independent-COALESCE upsert, where a
+    // sanitized-away title could leave provenance behind.
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET title_source = 'firstMessage'\
+             WHERE environment_key = 'native' AND agent = 'claude-code'\
+               AND session_id = 'orphan-source'",
+            [],
+        )
+        .unwrap();
+    let mut no_title_again = session("orphan-source", 750);
+    no_title_again.title = None;
+    no_title_again.title_source = None;
+    store.upsert_sessions(&[no_title_again]).unwrap();
+    let healed = store
+        .session(&SessionKey::new("native", "claude-code", "orphan-source"))
+        .unwrap()
+        .expect("session");
+    assert_eq!((healed.title, healed.title_source), (None, None));
+
+    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+
+    let mut renamed = session("abc", 2_000);
+    renamed.title = Some("Reader supplied title".into());
+    renamed.title_source = Some("userRename".into());
+    store.upsert_sessions(&[renamed]).unwrap();
+
+    let mut missing = session("abc", 3_000);
+    missing.title = None;
+    missing.title_source = Some("firstMessage".into());
+    store.upsert_sessions(&[missing]).unwrap();
+
+    let stored = store
+        .session(&SessionKey::new("native", "claude-code", "abc"))
+        .unwrap()
+        .expect("session");
+    assert_eq!(stored.title.as_deref(), Some("Reader supplied title"));
+    assert_eq!(stored.title_source.as_deref(), Some("userRename"));
+}
+
+#[test]
 fn the_same_session_id_in_two_environments_stays_two_sessions() {
     let store = store();
     store.upsert_sessions(&[session("abc", 1_000)]).unwrap();

@@ -21,6 +21,14 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- `AgentExplorer::indexed_session_titles` and
+  `Explorers::indexed_session_titles_for` batch title lookups from durable
+  vendor indexes without falling through to transcript content. Shared indexes
+  are opened once per batch, so background discovery can reuse its bounded
+  transcript metadata on misses.
+
 ## [0.1.2] - 2026-08-17
 
 ### Added

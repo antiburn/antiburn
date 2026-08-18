@@ -110,7 +110,7 @@ impl TitleSource {
     }
 }
 
-const TITLE_MAX_CHARS: usize = 200;
+pub(super) const TITLE_MAX_CHARS: usize = 200;
 
 // The Claude-flavored hyphenated-path decoder lives in `agents::path_codec`.
 // Re-exported here so `scanner::…` stays the single import for callers that
@@ -732,7 +732,7 @@ fn extract_content_text(content: Option<&serde_json::Value>) -> Option<String> {
     None
 }
 
-fn normalize_title(raw: &str) -> String {
+pub(super) fn normalize_title(raw: &str) -> String {
     let collapsed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() > TITLE_MAX_CHARS {
         collapsed.chars().take(TITLE_MAX_CHARS).collect()
