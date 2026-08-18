@@ -7,7 +7,7 @@
 //! The shell owns windows, the menu-bar item, local persistence, and the IPC
 //! surface; every analysis, discovery, and pricing decision belongs to the
 //! [`antiburn_local`] engine. Keeping that split sharp is what lets the engine
-//! stay network-free and independently testable.
+//! stay independent of any service of ours, and independently testable.
 //!
 //! # Modules
 //!
@@ -35,19 +35,21 @@
 //! - [`usage_alerts`] — the spend-anomaly and milestone monitor.
 //! - [`window_placement`] — where the app's ordinary windows open.
 //!
-//! # Offline by construction
+//! # Local by construction
 //!
-//! Nothing in this crate opens a socket. The engine is network-free by its own
-//! contract, the shell adds no HTTP client, and the only network-capable
-//! surface in the whole application is the updater plugin — registered in
-//! release builds only, so a development run performs no network requests at
-//! all. Notifications are antiburn's own window, fed by a local event.
-//! The provider limit figures on the Usage surface are read from a file an
-//! agent already wrote, never fetched. One opt-in setting, default off, runs
-//! that agent so it refreshes the file — the agent goes online, this crate
-//! still opens nothing, and nothing the agent prints is read
-//! (`docs/deviations.md`, D-20 and D-21). The webview side is held to the same
-//! rule by a test (`apps/desktop/tests/offline.test.ts`).
+//! antiburn needs no connection to any service of ours — no antiburn account,
+//! server, or backend, ever. Everything runs on this machine, as the reader.
+//! The provider limit figures on the Usage
+//! surface are read from a file an agent already wrote, and one opt-in
+//! setting, default off, runs that agent so it refreshes the file — the agent
+//! goes online on its own account, exactly as it would if the reader ran it,
+//! and this crate still only reads the file it leaves behind
+//! (`docs/deviations.md`, D-20 and D-21). Notifications are antiburn's own
+//! window, fed by a local event; nothing about one leaves the machine. The one
+//! call this crate makes to a service of ours is the updater plugin —
+//! registered in release builds only, so a development run makes no such
+//! request at all — and the app never depends on it. The webview side is held
+//! to the same boundary by a test (`apps/desktop/tests/no-exfiltration.test.ts`).
 
 mod agents;
 mod analytics;
@@ -336,8 +338,8 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
 
 /// Registers the GitHub Releases updater.
 ///
-/// Development builds never install it, so `pnpm dev` performs no network
-/// requests at all. A release build without a configured signing public key
+/// Development builds never install it, so `pnpm dev` makes no request to a
+/// service of ours at all. A release build without a configured signing public key
 /// does not install it either: an updater that cannot verify what it downloads
 /// is worse than none. Either way the app starts, and
 /// [`updates::supported`] reports the truth — it is set from *here*, on the one
@@ -361,7 +363,7 @@ fn install_updater(app: &tauri::AppHandle) {
     }
     #[cfg(debug_assertions)]
     {
-        // The plugin is the only network-capable surface in the application;
+        // The plugin is the only surface that talks to a service of ours;
         // a development run must not carry it at all.
         let _ = app;
     }

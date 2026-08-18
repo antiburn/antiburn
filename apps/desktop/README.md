@@ -5,9 +5,11 @@ local [`antiburn-local`](../../crates/antiburn-local) engine.
 
 The app discovers the coding-agent sessions already on this machine, analyzes
 them with the engine, and shows activity, per-session analytics, and
-API-equivalent cost estimates. Everything runs on the device: nothing is
-uploaded, and the only network-capable surface in the whole application is the
-updater plugin, which is registered in release builds only.
+API-equivalent cost estimates. Everything runs on the device, as you: antiburn
+needs no antiburn account, server, or backend of any kind, and nothing about
+your sessions is uploaded. The one call it makes to a service of ours is an
+optional convenience the app never depends on — the updater plugin, registered
+in release builds only, asking whether a newer version exists.
 
 ## Layout
 
@@ -32,8 +34,8 @@ semantic Tailwind utilities it defines (`bg-surface`, `text-label`,
 
 `src-tauri` is a **standalone Cargo workspace** with its own `Cargo.lock`. It is
 deliberately not joined with the engine's workspace: the engine resolves under
-its own network-free dependency boundary, and the shell's app-framework
-dependencies must not leak into that resolution.
+its own dependency boundary that keeps it free of any service of ours, and the
+shell's app-framework dependencies must not leak into that resolution.
 
 ## Prerequisites
 
@@ -107,20 +109,22 @@ the app from (the frontend would have to be served separately), and `cargo
 fmt`/`clippy`/`test` never launch the app. Reach for `pnpm dev` rather than
 `pnpm tauri dev`, which bypasses the flag.
 
-## What keeps the app offline
+## What keeps the app local
 
 Three independent checks, none of which relies on review:
 
-1. The engine's own `tests/boundary.rs` keeps `antiburn-local` free of network
-   and socket dependencies.
+1. The engine's own `tests/boundary.rs` keeps `antiburn-local` free of any
+   dependency on a service of ours — it opens no network or socket connection
+   of its own.
 2. The repository-wide [`scripts/check-boundary.mjs`](../../scripts/check-boundary.mjs)
-   scans every file for prohibited concepts, including telemetry SDKs and raw
-   socket types.
-3. [`tests/offline.test.ts`](tests/offline.test.ts) walks `src/` and fails on
-   any browser networking API (`fetch`, `XMLHttpRequest`, `WebSocket`,
-   `EventSource`, `sendBeacon`, remote dynamic imports). It lives outside `src/`
-   on purpose: it names every API it bans, so a guard inside the tree it checks
-   would trip its own check.
+   scans every file for prohibited concepts, including telemetry SDKs,
+   commercial identifiers, and raw socket types.
+3. [`tests/no-exfiltration.test.ts`](tests/no-exfiltration.test.ts) walks
+   `src/` and fails on any browser networking API (`fetch`, `XMLHttpRequest`,
+   `WebSocket`, `EventSource`, `sendBeacon`, remote dynamic imports): the
+   webview itself talks to nothing. It lives outside `src/` on purpose: it
+   names every API it bans, so a guard inside the tree it checks would trip
+   its own check.
 
 ## Shell behavior
 
@@ -158,14 +162,17 @@ Three independent checks, none of which relies on review:
   through immediately, so there is no Save button and no dirty state.
 - **Local store.** One SQLite database under the app data directory
   (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
-  build — see above) holds preferences, scan roots, a session metadata
-  cache, and the engine-derived analysis. **It never stores transcript
-  content** — see the contract in `src-tauri/src/store/schema.rs`. Migrations
-  are embedded and versioned by the `user_version` pragma.
+  build — see above) holds preferences, scan roots, and the local session data
+  needed for visibility and analysis. That data may include content copied
+  from a transcript, but remains on the device; the agent's source transcript
+  is never modified or deleted. Migrations are embedded and versioned by the
+  `user_version` pragma.
 - **Scanning.** A single background task refreshes what the app knows: once at
   launch (after onboarding), whenever the popover is opened, every 60s while it
   stays open, paused entirely while it is hidden, and on demand. Passes never
-  overlap and are bounded — see the policy at the top of `src-tauri/src/scan.rs`.
+  overlap and are bounded. CPU, memory, and disk I/O are product constraints:
+  background work must be no more frequent or intensive than the visible
+  feature requires. See the policy at the top of `src-tauri/src/scan.rs`.
 - **Notifications.** Six kinds, all posted by the shell and never by the webview
   (which is granted no notification permission): an available update, a failed
   scan, low disk space, a spend anomaly, a crossed usage milestone, and the

@@ -174,12 +174,10 @@ fn an_explicit_launch_at_login_opt_out_overrides_the_default() {
     assert!(!store.settings().unwrap().launch_at_login);
 }
 
-/// The schema's data policy says which columns may hold free text. This is the
-/// mechanical half of that promise: a column added to `session` without a
-/// deliberate decision fails here rather than quietly becoming the place
-/// transcript text ends up.
+/// Pin the shipped v1 shape so migrations remain deliberate. This is not a
+/// restriction on what a future local visibility feature may store.
 #[test]
-fn the_session_table_holds_exactly_the_columns_the_data_policy_names() {
+fn the_v1_session_table_shape_is_stable() {
     let store = store();
     let connection = store.lock();
     let mut statement = connection
@@ -200,8 +198,6 @@ fn the_session_table_holds_exactly_the_columns_the_data_policy_names() {
             "source_kind",
             "source_label",
             "wsl_distro",
-            // The one declared free-text excerpt on this table. Everything else
-            // is identity, a location, or bookkeeping.
             "title",
             "title_source",
             "cwd",
@@ -215,7 +211,7 @@ fn the_session_table_holds_exactly_the_columns_the_data_policy_names() {
 }
 
 #[test]
-fn clearing_the_index_forgets_the_derived_records_and_keeps_the_readers_choices() {
+fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     let store = store();
     store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
     store
@@ -267,7 +263,7 @@ fn clearing_the_index_forgets_the_derived_records_and_keeps_the_readers_choices(
         }])
         .unwrap();
 
-    assert_eq!(store.clear_derived_index().unwrap(), 1);
+    assert_eq!(store.clear_local_session_data().unwrap(), 1);
 
     assert!(store.recent_sessions(0, 100).unwrap().is_empty());
     assert!(
@@ -302,8 +298,8 @@ fn clearing_the_index_forgets_the_derived_records_and_keeps_the_readers_choices(
 #[test]
 fn clearing_an_already_empty_index_is_a_no_op() {
     let store = store();
-    assert_eq!(store.clear_derived_index().unwrap(), 0);
-    assert_eq!(store.clear_derived_index().unwrap(), 0);
+    assert_eq!(store.clear_local_session_data().unwrap(), 0);
+    assert_eq!(store.clear_local_session_data().unwrap(), 0);
 }
 
 #[test]
@@ -352,6 +348,61 @@ fn a_session_round_trips_and_a_rescan_updates_it_in_place() {
     assert_eq!(stored.updated_at_epoch, Some(2_000));
     assert_eq!(stored.subagent_count, 0, "the last scan saw no sub-agents");
     assert_eq!(stored.title.as_deref(), Some("Wire the popover"));
+}
+
+#[test]
+fn title_and_source_are_replaced_or_preserved_as_one_pair() {
+    let store = store();
+
+    let mut source_without_title = session("orphan-source", 500);
+    source_without_title.title = None;
+    source_without_title.title_source = Some("firstMessage".into());
+    store.upsert_sessions(&[source_without_title]).unwrap();
+    let stored = store
+        .session(&SessionKey::new("native", "claude-code", "orphan-source"))
+        .unwrap()
+        .expect("session");
+    assert_eq!((stored.title, stored.title_source), (None, None));
+
+    // Heal rows written by the older independent-COALESCE upsert, where a
+    // sanitized-away title could leave provenance behind.
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET title_source = 'firstMessage'\
+             WHERE environment_key = 'native' AND agent = 'claude-code'\
+               AND session_id = 'orphan-source'",
+            [],
+        )
+        .unwrap();
+    let mut no_title_again = session("orphan-source", 750);
+    no_title_again.title = None;
+    no_title_again.title_source = None;
+    store.upsert_sessions(&[no_title_again]).unwrap();
+    let healed = store
+        .session(&SessionKey::new("native", "claude-code", "orphan-source"))
+        .unwrap()
+        .expect("session");
+    assert_eq!((healed.title, healed.title_source), (None, None));
+
+    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+
+    let mut renamed = session("abc", 2_000);
+    renamed.title = Some("Reader supplied title".into());
+    renamed.title_source = Some("userRename".into());
+    store.upsert_sessions(&[renamed]).unwrap();
+
+    let mut missing = session("abc", 3_000);
+    missing.title = None;
+    missing.title_source = Some("firstMessage".into());
+    store.upsert_sessions(&[missing]).unwrap();
+
+    let stored = store
+        .session(&SessionKey::new("native", "claude-code", "abc"))
+        .unwrap()
+        .expect("session");
+    assert_eq!(stored.title.as_deref(), Some("Reader supplied title"));
+    assert_eq!(stored.title_source.as_deref(), Some("userRename"));
 }
 
 #[test]
@@ -531,18 +582,6 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
     assert!(store.relations(&key).unwrap().is_empty());
     // Deleting again is a no-op rather than an error.
     assert!(!store.delete_session(&key).unwrap());
-}
-
-#[test]
-fn pruning_drops_only_sessions_older_than_the_retention_horizon() {
-    let store = store();
-    store.upsert_sessions(&[session("old", 1_000)]).unwrap();
-    store.upsert_sessions(&[session("new", 5_000)]).unwrap();
-
-    assert_eq!(store.prune_sessions_before(2_000).unwrap(), 1);
-    let remaining = store.recent_sessions(0, 100).unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].key.session_id, "new");
 }
 
 #[test]

@@ -58,8 +58,8 @@ pub fn environment_key(wsl_distro: Option<&str>) -> String {
     }
 }
 
-/// Cached metadata for one discovered session. No transcript content: the
-/// `source_*` pair points at the provider's own file rather than copying it.
+/// Cached metadata for one discovered session. The `source_*` pair identifies
+/// the provider's source even if other session content is also cached locally.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRecord {
     pub key: SessionKey,
@@ -327,8 +327,8 @@ impl Milestones {
 }
 
 /// Narrowest and widest activity windows the settings pane offers, in days.
-/// The ceiling equals the store's retention window: offering more days than
-/// the store keeps would render a header over data that cannot exist.
+/// These control presentation and recent discovery, not storage: sessions
+/// already indexed remain until the reader clears them.
 pub const MIN_ACTIVITY_DAYS: u32 = 1;
 pub const MAX_ACTIVITY_DAYS: u32 = 14;
 /// Days of activity a fresh install shows.
@@ -425,8 +425,10 @@ impl Default for AppSettings {
             notify_usage_anomalies: true,
             milestones_5h: Milestones::default(),
             milestones_weekly: Milestones::default(),
-            // The one default-off switch: turning it on is what authorizes
-            // the app's only non-update network use.
+            // The one default-off switch: turning it on is what lets antiburn
+            // ask the agent to go online, on its own account, to refresh its
+            // usage reading — the only traffic beyond the update check, and
+            // traffic that's the agent's and its provider's, not ours.
             live_usage_enabled: false,
         }
     }

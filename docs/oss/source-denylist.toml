@@ -23,16 +23,27 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024"]
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025"]
+# D-025 (maintainer decision, 2026-08-18; definition of "local" in docs/deviations.md D-27):
+# fixes the boundary this manifest draws around what the installed app may DO.
+# antiburn is local in that it needs no service of antiburn's; as the reader's
+# own agent it may otherwise do anything the reader could do on their machine —
+# network requests, reading the credential and configuration files the reader's
+# tools wrote, calling a provider's API with the reader's credentials, inspecting
+# local processes and ports, and calling a locally-running agent over loopback.
+# The boundary is dependence and disclosure, not technique: the one behavioral
+# rule this manifest keeps is no-data-exfiltration, below, enforced with
+# boundary.rs and check-boundary.mjs — no antiburn server, third party, telemetry
+# SDK, or reporting endpoint. (This is why the manifest's concept-token set names
+# commercial hosts and telemetry SDKs but no network or process-inspection
+# technique.) Every IP/licensing and synthetic-fixture rule here — which governs
+# what SOURCE may enter the repository, a separate question from what the app may
+# do — stands unchanged.
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # startup-registration, disk-space-monitor, tray-title-attributed-string,
-# notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine,
-# and amends the network
-# posture: the public app is offline-first; online features are per-feature
-# opt-in, default off, call provider endpoints directly with user-supplied
-# credentials, and never call a private-app endpoint. The D-007 discovery
-# boundary (documented files, read-only databases, no credential/token access,
-# no loopback or local provider APIs) is unchanged.
+# notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine.
+# Its network-posture and discovery-boundary clauses are carried by D-025, which
+# governs both.
 # D-024 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # tcc-consent-commands and tcc-consent-frontend, for the single purpose of
 # replacing an unannounced operating-system permission dialog with an explained,
@@ -179,29 +190,16 @@ patterns = [
 reason = "Provider-plan detection and authenticated/backend pricing refinement are not part of local API-equivalent cost estimation."
 
 [[rule]]
-id = "live-agent-probe-storage"
-kind = "path"
-patterns = [
-  "desktop/src-tauri/src/core/agents/local_api_cache.rs",
-  "desktop/src-tauri/src/core/antigravity_store.rs",
-]
-reason = "These modules cache or derive live/provider observations outside the D-007 disk-only contract."
-
-[[rule]]
-id = "live-agent-probe-behavior"
+id = "no-data-exfiltration"
 kind = "concept"
 patterns = [
-  "loopback HTTP or HTTPS",
-  "localhost or 127.0.0.1 provider requests",
-  "generic port discovery",
-  "lsof or netstat agent-port enumeration",
-  "provider process command-line inspection",
-  "CSRF, cookie, session-token, or provider-token extraction",
-  "Windsurf or Antigravity language-server RPC",
-  "provider local-API response caches",
-  "subprocess network egress inside the engine (git push or any network-capable child command)",
+  "telemetry, analytics, crash-reporting, or product-metrics SDK",
+  "reporting the reader's sessions, usage, prompts, or credentials to an antiburn-operated server",
+  "sending session, transcript, usage, or credential data to any party that did not issue it",
+  "a first-party or third-party reporting, ingest, or beacon endpoint",
+  "phoning home on launch, on schedule, or on error with machine-identifying data",
 ]
-reason = "D-007 permits documented files, read-only databases, and bounded WSL operations only."
+reason = "D-025 permits any local capability but draws one hard line: antiburn discloses the reader's data to no party that does not already hold it. Returning the reader's own credential to the provider that issued it, to read that provider's own figures, is not exfiltration and is allowed; disclosure to antiburn or to a stranger is the harm this rule names. Enforced mechanically by boundary.rs, check-boundary.mjs, and apps/desktop/tests/no-exfiltration.test.ts. The update check (a release feed carrying no reader data) is the one permitted first-party call and is exempt."
 
 [[rule]]
 id = "cue-and-realtime-integrations"

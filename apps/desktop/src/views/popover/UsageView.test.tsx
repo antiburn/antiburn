@@ -62,8 +62,6 @@ function summary(
   return {
     providers: [ANTHROPIC, OPENAI],
     generatedAt: '2027-01-15T08:00:00Z',
-    retentionDays: 14,
-    coverageSince: '2027-01-01T08:00:00Z',
     ...overrides,
   };
 }
@@ -120,10 +118,9 @@ describe('UsageView', () => {
     expect(within(card!).getByText(/Easing · <0\.1×/)).toBeInTheDocument();
   });
 
-  it('says how far back the windows can see, because retention is shorter than a month', () => {
+  it('explains how local spend estimates are calculated', () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />);
 
-    expect(screen.getByText(/keeps 14 days of session history/)).toBeInTheDocument();
     expect(screen.getByText(/window of its most recent activity/)).toBeInTheDocument();
     expect(screen.getByText(/Not a bill/)).toBeInTheDocument();
   });
@@ -181,6 +178,7 @@ function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageW
     usedPercent: 81,
     startsAt: '2027-01-15T09:30:00Z',
     resetsAt: '2027-01-15T14:30:00Z',
+    hasNonzeroUsageInCurrentPeriod: false,
     forecast: NO_FORECAST,
     ...overrides,
   };
@@ -344,7 +342,7 @@ describe('UsageView — plan limits layered over local estimates', () => {
     render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />);
 
     expect(screen.getByText(/Spend figures are local estimates/)).toBeInTheDocument();
-    expect(screen.getByText(/antiburn fetches nothing/)).toBeInTheDocument();
+    expect(screen.getByText(/Plan limits are your provider.s own figures/)).toBeInTheDocument();
   });
 });
 

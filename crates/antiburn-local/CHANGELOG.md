@@ -12,14 +12,22 @@ versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 The audience here is different from the application's: this file is read by
 somebody who depends on the crate from their own code, so it states API and
-behaviour changes — including anything that moves the network-free boundary,
-the discovery roots, or the persistence and export contracts, each of which is
+behaviour changes — including anything that moves the local boundary, the
+discovery roots, or the persistence and export contracts, each of which is
 a compatibility fact rather than a feature note.
 
 `.github/workflows/release-engine.yml` reads the section matching the tagged
 version and refuses the release if there is none.
 
 ## [Unreleased]
+
+### Added
+
+- `AgentExplorer::indexed_session_titles` and
+  `Explorers::indexed_session_titles_for` batch title lookups from durable
+  vendor indexes without falling through to transcript content. Shared indexes
+  are opened once per batch, so background discovery can reuse its bounded
+  transcript metadata on misses.
 
 ## [0.1.2] - 2026-08-17
 
@@ -69,7 +77,7 @@ version and refuses the release if there is none.
   - `model`, `paths`, `platform` — shared local data model, filesystem roots,
     and platform handling.
   - Versioned local persistence and export contracts.
-- The network-free boundary as a compatibility contract: no network or socket
-  I/O, no private dependencies, and a public API that carries no
+- The crate's local boundary as a compatibility contract: no dependency on any
+  service of ours, no private dependencies, and a public API that carries no
   authentication, organization, remote-sharing, enrichment, or telemetry
   concepts. Enforced mechanically by the crate's boundary test suite.

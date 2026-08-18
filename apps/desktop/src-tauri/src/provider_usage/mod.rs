@@ -12,28 +12,22 @@
 //! calendar windows, prices them against the engine's bundled catalog, and
 //! reports how confident the result is.
 //!
-//! # Where the numbers do *not* come from
+//! # Its ceiling, and why
 //!
-//! No credential is read, no provider account API is called, no port is
-//! discovered, no socket or loopback connection is opened, and no provider IPC
-//! is used. This module's whole input is a `Vec` of rows the caller already
-//! read out of the app's own SQLite file, plus a clock. That is what makes the
-//! feature honest offline, and it is also its hard ceiling: a transcript
-//! records what was *spent*, so an allowance, a percentage, a remaining
-//! balance, and a reset time are all unavailable — and are therefore absent
-//! from the payload rather than estimated into it.
+//! This module's whole input is a `Vec` of rows the caller already read out
+//! of the app's own SQLite file, plus a clock: it derives spend purely from
+//! local transcript rows. It needs no provider figure, no credential, and no
+//! call of any kind, because a transcript already records what was *spent*.
+//! That is also its hard ceiling: an allowance, a percentage, a remaining
+//! balance, and a reset time are none of them things a transcript states, so
+//! they are absent from the payload rather than estimated into it.
 //!
-//! # Two honest limitations, both surfaced rather than hidden
+//! # An honest limitation, surfaced rather than hidden
 //!
 //! 1. **A session lands in one window: the one its last activity falls in.**
 //!    The store keeps a per-session heartbeat, not a per-turn timeline, so a
 //!    session that ran across midnight counts entirely in the day it last
 //!    touched. The views say so.
-//! 2. **`month` is truncated by retention.** The app keeps
-//!    [`RETENTION_DAYS`](crate::scan::RETENTION_DAYS) of history, which is
-//!    shorter than a calendar month, so for most of every month the month
-//!    window starts later than the first. [`ProviderUsageSummary::coverage_since`]
-//!    carries the real start, and the views print it.
 
 pub mod live;
 pub mod providers;
@@ -51,7 +45,6 @@ use crate::dto::{
     ProviderUsage, ProviderUsageStaleness, ProviderUsageState, ProviderUsageSummary,
     ProviderUsageWindow, ProviderUsageWindows,
 };
-use crate::scan::RETENTION_DAYS;
 use crate::store::{UsageEvidenceRecord, iso_from_epoch};
 
 use providers::Route;
@@ -447,7 +440,5 @@ pub fn summarize(
     ProviderUsageSummary {
         providers,
         generated_at: iso_from_epoch(Some(now)),
-        retention_days: RETENTION_DAYS as u32,
-        coverage_since: iso_from_epoch(Some(bounds.earliest().max(now - RETENTION_DAYS * 86_400))),
     }
 }

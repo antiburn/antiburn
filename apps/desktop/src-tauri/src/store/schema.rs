@@ -20,32 +20,17 @@ pub const MIGRATIONS: &[&str] = &[V1, V2];
 ///
 /// # Data policy (schema-level contract)
 ///
-/// **No transcript bodies are stored in this database: no message text, no tool
-/// arguments, and no file contents.** Every table below holds normalized
-/// identity (agent, session id, environment), locations (paths that point *at*
-/// the provider's own file), or values derived by the engine's analysis (counts,
-/// durations, token totals, phase distributions, cost estimates). The
-/// transcripts themselves stay where their vendor wrote them and are re-read on
-/// demand.
+/// This is app-controlled, on-device storage. The schema may retain session
+/// content as well as derived values when a visibility or analysis feature
+/// needs it. Keeping a local copy never transfers ownership of the source:
+/// provider files are not modified or deleted.
 ///
-/// Two columns carry a **short derived excerpt** of a transcript, and they are
-/// named here rather than left to be discovered, because a contract that
-/// overstates itself is worse than one that admits its edges:
-///
-/// - `session.title` — the session's own title. Vendors that record one supply
-///   it; where none exists the engine derives one from the first user message,
-///   capped at 200 characters (`title_source` says which happened, and
-///   `firstMessage` is the derived case).
-/// - `session_analysis.metrics_json` → each `skillUses[].description` — the
-///   one-line description a transcript's own skill listing carries, capped at
-///   [`crate::analytics::SKILL_DESCRIPTION_MAX_CHARS`] characters before it is
-///   ever written.
-///
-/// Everything else in `metrics_json` is
-/// `antiburn_local::analysis::SessionMetrics`: counts, timings, distributions,
-/// token totals, and skill *names*. Beyond those two bounded excerpts, a column
-/// carrying message text, prompts, tool arguments, or file contents does not
-/// belong in this schema.
+/// The v1 schema below stores normalized identity, provider-file locations,
+/// derived metrics, a session title, and capped skill descriptions. That is its
+/// current shape, not a prohibition on future migrations storing messages,
+/// tool activity, or file content recorded in a transcript. Any such migration
+/// must still be deliberate, bounded, covered by the local-data clear/delete
+/// paths, and must not create a network or logging path for the content.
 const V1: &str = r#"
 -- App settings, one row per key. Values are JSON scalars so a new preference
 -- is additive and needs no migration.
@@ -69,8 +54,7 @@ CREATE TABLE session (
     environment_key  TEXT NOT NULL,
     agent            TEXT NOT NULL,
     session_id       TEXT NOT NULL,
-    -- Where the transcript lives. A REFERENCE to the provider's file, never a
-    -- copy of it.
+    -- Where the provider's source transcript lives.
     source_kind      TEXT NOT NULL,
     source_label     TEXT NOT NULL,
     wsl_distro       TEXT,
@@ -118,7 +102,7 @@ CREATE TABLE session_analysis (
 
 -- Local relationships between sessions: orchestration (a session's sub-agents)
 -- and lineage (the session a fork branched from). Labels are the vendor's own
--- short display label, not transcript content.
+-- short display label.
 CREATE TABLE session_relation (
     environment_key TEXT NOT NULL,
     agent           TEXT NOT NULL,

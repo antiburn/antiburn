@@ -839,11 +839,11 @@ pub fn delete_session_data(
     app.state::<Store>().delete_session(&key).map_err(fail)
 }
 
-/// Forget antiburn's entire derived index.
+/// Forget all session data in antiburn's local store.
 ///
 /// **antiburn's own records only.** Not one provider file is touched: the
-/// transcripts this index was derived from are the agents' files, they stay
-/// exactly where they are, and a later scan rebuilds everything this removed.
+/// the agents' source transcripts stay exactly where they are, and a later
+/// scan rebuilds everything this removed.
 /// Preferences, scan folders, and repository include choices are kept — this is
 /// "forget what you worked out", not "forget who I am".
 ///
@@ -851,7 +851,10 @@ pub fn delete_session_data(
 /// number rather than a shrug.
 #[tauri::command]
 pub fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
-    let removed = app.state::<Store>().clear_derived_index().map_err(fail)?;
+    let removed = app
+        .state::<Store>()
+        .clear_local_session_data()
+        .map_err(fail)?;
     // The index is empty and the popover is showing it. Refill it rather than
     // leaving a reader looking at an empty list until the next tick.
     app.state::<ScanController>().request();

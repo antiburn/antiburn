@@ -319,7 +319,7 @@ describe('SettingsView', () => {
     expect(screen.getByText(/last checked/i)).toBeInTheDocument();
   });
 
-  it('clears the derived index after confirming, and says what went', async () => {
+  it('clears local session data after confirming, and says what went', async () => {
     confirmDialog.mockResolvedValue(true);
     mockCommands({ clear_local_index: 12 });
     render(<SettingsView />);
@@ -348,14 +348,14 @@ describe('SettingsView', () => {
     expect(invoke).not.toHaveBeenCalledWith('clear_local_index');
   });
 
-  it('states the data-handling contract, including the two derived excerpts', async () => {
+  it('states the local data-handling contract', async () => {
     render(<SettingsView />);
 
     fireEvent.click(screen.getByRole('tab', { name: 'Privacy' }));
 
     // The contract's headlines are always on screen as disclosure labels…
     const stored = await screen.findByRole('button', {
-      name: 'Only derived analysis is stored',
+      name: 'Visibility data stays on this machine',
     });
     expect(screen.getByRole('button', { name: 'Nothing is uploaded' })).toBeInTheDocument();
 
@@ -363,10 +363,9 @@ describe('SettingsView', () => {
     // the specifics genuinely appear on expansion rather than being hidden.
     fireEvent.click(stored);
     expect(
-      await screen.findByText(/no message text, no tool arguments, no file contents/i),
+      await screen.findByText(/may keep session content and derived analysis/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/capped at 200 characters/i)).toBeInTheDocument();
-    expect(screen.getByText(/capped at 300 characters/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing in this store is uploaded/i)).toBeInTheDocument();
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
     expect(screen.getByText(/antiburn cannot do this, by design/i)).toBeInTheDocument();
@@ -494,7 +493,7 @@ describe('SettingsView', () => {
     );
 
     expect(
-      await screen.findByRole('button', { name: 'Only derived analysis is stored' }),
+      await screen.findByRole('button', { name: 'Visibility data stays on this machine' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Privacy' })).toHaveAttribute(
       'aria-selected',
@@ -547,6 +546,18 @@ describe('SettingsView', () => {
         'true',
       ),
     );
+  });
+
+  it('resets the shared content viewport to the top when the pane changes', async () => {
+    const { container } = render(<SettingsView />);
+
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
+    const viewport = container.querySelector('.ui-scroll-viewport') as HTMLDivElement;
+    viewport.scrollTop = 240;
+
+    fireEvent.click(screen.getByRole('tab', { name: 'About' }));
+
+    expect(viewport.scrollTop).toBe(0);
   });
 
   it('ignores a pane id it does not recognize rather than rendering nothing', async () => {

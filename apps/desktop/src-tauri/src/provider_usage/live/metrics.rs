@@ -320,6 +320,46 @@ pub fn estimated_exhaustion_at(
     ))
 }
 
+/// Whether trustworthy history shows non-zero usage anywhere in a window's
+/// current allowance period.
+///
+/// This exists for one purpose: a supplemental, model-scoped weekly window
+/// (a per-model limit alongside the account-wide one) sits at 0% for most
+/// readers, who never touch that model. The views hide such a window until
+/// it has something to say and, once it does, keep showing it for the rest
+/// of that period even if a later reading comes back unknown — see
+/// `liveUsage.ts::isUsageWindowVisible` on the frontend, which this feeds.
+///
+/// "Current period" reuses exactly what [`usage_forecast`] already means by
+/// it — the tail of the series since the most recent percentage drop
+/// ([`latest_stable_segment`]) — rather than inventing a second definition.
+/// That choice is deliberate: a [`UsageSample`] here carries no reset
+/// timestamp of its own, so there is only one place "which period is this"
+/// can be answered, and no second copy to drift out of sync with it. (A
+/// sibling app that shipped this same behaviour kept a `reset_epoch` on each
+/// stored sample and matched it against the window's `resets_at`; the two
+/// independently-derived answers disagreed and hid windows that were
+/// genuinely in use.)
+///
+/// `resets_at` still earns a role, as a sanity check rather than a boundary:
+/// a reset already behind `now` means the provider's own account of this
+/// window has rolled, or gone stale, since anything below was read, and no
+/// percentage-drop in the history can be trusted to describe the period that
+/// is current *now*. Missing reset metadata is treated the same way, for the
+/// same reason — there is no period here to bound.
+pub fn has_nonzero_usage_in_current_period(
+    samples: &[UsageSample],
+    resets_at: Option<OffsetDateTime>,
+    now: OffsetDateTime,
+) -> bool {
+    if resets_at.is_none_or(|reset| reset <= now) {
+        return false;
+    }
+    latest_stable_segment(samples)
+        .iter()
+        .any(|sample| sample.used_percent.is_some_and(|percent| percent > 0.0))
+}
+
 /// How many percentage points of a window were consumed since local midnight.
 ///
 /// Only fresh, non-decreasing pairs count. A pair spanning a reset
@@ -578,5 +618,80 @@ mod tests {
         // "10 more then a reset", which would over-count exactly when the
         // provider's reset metadata is least stable.
         assert_eq!(used_since(&samples, at(-10_800)), Some(7.0));
+    }
+
+    /* ---------------------------------------------------------------------
+     * Whether a window's current period has shown any usage
+     * ------------------------------------------------------------------- */
+
+    #[test]
+    fn hides_a_window_whose_current_period_never_showed_usage() {
+        let samples = [sample(-7_200, 0.0), sample(-3_600, 0.0), sample(0, 0.0)];
+        assert!(!has_nonzero_usage_in_current_period(
+            &samples,
+            Some(at(3_600)),
+            at(0)
+        ));
+    }
+
+    #[test]
+    fn shows_a_window_once_its_current_period_has_any_nonzero_reading() {
+        let samples = [sample(-7_200, 0.0), sample(-3_600, 4.0), sample(0, 4.0)];
+        assert!(has_nonzero_usage_in_current_period(
+            &samples,
+            Some(at(3_600)),
+            at(0)
+        ));
+    }
+
+    #[test]
+    fn a_reset_since_the_nonzero_reading_drops_it_from_the_current_period() {
+        // Used 20 points last period, then reset to 0. This period alone has
+        // shown nothing yet, so last period's usage must not leak forward.
+        let samples = [sample(-7_200, 20.0), sample(-3_600, 0.0), sample(0, 0.0)];
+        assert!(!has_nonzero_usage_in_current_period(
+            &samples,
+            Some(at(3_600)),
+            at(0)
+        ));
+    }
+
+    #[test]
+    fn stays_visible_when_the_latest_reading_in_the_period_is_unknown() {
+        // The sticky case this feature exists for: a later reading with no
+        // percentage must not erase what an earlier one in the same period
+        // already proved.
+        let samples = [
+            sample(-3_600, 12.0),
+            UsageSample {
+                observed_at: at(0),
+                used_percent: None,
+                freshness: Freshness::Fresh,
+            },
+        ];
+        assert!(has_nonzero_usage_in_current_period(
+            &samples,
+            Some(at(3_600)),
+            at(0)
+        ));
+    }
+
+    #[test]
+    fn a_reset_already_behind_now_cannot_be_trusted() {
+        // The provider's own account of this window has rolled (or gone
+        // stale) since the sample was read; no drop in the history can prove
+        // which period is current now.
+        let samples = [sample(-3_600, 40.0)];
+        assert!(!has_nonzero_usage_in_current_period(
+            &samples,
+            Some(at(-1)),
+            at(0)
+        ));
+    }
+
+    #[test]
+    fn missing_reset_metadata_cannot_be_trusted_either() {
+        let samples = [sample(-3_600, 40.0)];
+        assert!(!has_nonzero_usage_in_current_period(&samples, None, at(0)));
     }
 }

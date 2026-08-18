@@ -150,7 +150,7 @@ current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
   "Retain documented disk and immutable/read-only database discovery only.",
-  "Delete process enumeration, CSRF extraction, port discovery, loopback HTTP, API caching, and related tests.",
+  "Adapt process enumeration, CSRF extraction, port discovery, loopback HTTP, and API caching only if a feature actually needs them; provenance still forbids copying the private collectors and telemetry wholesale.",
 ]
 
 [[rule]]
@@ -164,7 +164,7 @@ current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
   "Retain documented workspaceStorage/chatSessions file discovery only.",
-  "Delete process enumeration, CSRF extraction, port discovery, loopback HTTP, API caching, and related tests.",
+  "Adapt process enumeration, CSRF extraction, port discovery, loopback HTTP, and API caching only if a feature actually needs them; provenance still forbids copying the private collectors and telemetry wholesale.",
 ]
 
 [[rule]]
@@ -848,7 +848,7 @@ notes = [
   "From providers/anthropic.rs take parse_oauth_usage, parse_oauth_window, parse_extra, window_semantics, and model_slug. Do not take parse_attributions, parse_status_line, or any pricing-signal coupling.",
   "NOT TAKEN: the /usage text parser, its ANSI sanitizer, and its reset parsing. Believing that text needs a timezone database, which provider_usage/mod.rs records a deliberate decision against; and running the agent refreshes its own cache file as a side effect, so the public refresh source discards the agent's output entirely and re-reads the cache. Reinstate only if a provider stops caching locally.",
   "From providers/mod.rs take only parse_transport_error and the small JSON accessors it shares. Do not take SnapshotContext's account plumbing or any sibling provider module.",
-  "Do not copy probe.rs's ProviderUsageProbe trait or ProviderAccountContext: the public app fetches through its own LiveUsageSource seam and carries no credential-isolating probe registry.",
+  "Do not copy probe.rs's ProviderUsageProbe trait or ProviderAccountContext: those are Cadence-authored provenance, not a capability the public app is barred from — it fetches through its own LiveUsageSource seam instead.",
   "Do not copy metrics.rs's callers, only the arithmetic; the public app has no upload, account-proving, or telemetry inputs to gate a forecast on.",
   "Do not copy anomaly.rs: the public app already ships its own spend-anomaly rule in usage_alerts.rs, recorded in the deviations register as D-7.",
   "Do not copy identity.rs: the public app uploads nothing, so no opaque account key is needed and the provider's own local account id may key the milestone ledger.",

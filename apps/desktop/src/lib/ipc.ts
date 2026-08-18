@@ -14,9 +14,10 @@
  * where no shell is attached. Every wrapper therefore reports *absence* rather
  * than throwing, so views render a degraded state instead of crashing.
  *
- * None of these payloads is fetched. They are produced on this machine by the
- * local engine — see `tests/offline.test.ts`, which enforces that no code in
- * this app opens a network connection.
+ * None of these payloads comes from a service of ours. They are produced on
+ * this machine by the local engine — see `tests/no-exfiltration.test.ts`,
+ * which enforces that no code in this app's webview opens a network
+ * connection on its own account.
  */
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -260,10 +261,6 @@ export interface ProviderUsagePayload {
 export interface ProviderUsageSummaryPayload {
   providers: ProviderUsagePayload[];
   generatedAt: string;
-  /** Days of session history the app keeps — shorter than a calendar month. */
-  retentionDays: number;
-  /** Earliest activity these windows can include. */
-  coverageSince: string;
 }
 
 /* -------------------------------------------------------------------------
@@ -274,9 +271,11 @@ export interface ProviderUsageSummaryPayload {
  * that it carries no percentage, allowance, or reset, and a test proves it.
  * The views layer the two.
  *
- * Still nothing is fetched here. These figures were fetched by the *agent*,
- * which cached them on this machine; the shell reads that file and this module
- * receives it over IPC like everything else. See `tests/offline.test.ts`.
+ * Still nothing is fetched here, in the webview. These figures were fetched
+ * by the *agent* (optionally at antiburn's request — see Settings → Usage),
+ * which cached them on this machine; the shell reads that file and this
+ * module receives it over IPC like everything else. See
+ * `tests/no-exfiltration.test.ts`.
  * ---------------------------------------------------------------------- */
 
 /** How trustworthy a live reading is. Mirrors Rust `LiveUsageSupport`. */
@@ -288,10 +287,12 @@ export type LiveUsageFreshness = 'fresh' | 'stale';
 /**
  * One provider-reported allowance.
  *
- * Every field is either something the provider stated or null. In particular
- * `usedPercent` is null — never 0 — when the provider did not say, because a
- * meter reading empty and a meter reading unknown are different facts and the
- * views render them differently.
+ * Every field through `resetsAt` is either something the provider stated or
+ * null. In particular `usedPercent` is null — never 0 — when the provider did
+ * not say, because a meter reading empty and a meter reading unknown are
+ * different facts and the views render them differently. The last two fields
+ * are the exception: both are derived from this window's own sample history
+ * rather than stated by anyone.
  */
 export interface LiveUsageWindowPayload {
   /** `five-hour`, `seven-day`, `weekly-<model>`, or the provider's own name. */
@@ -306,6 +307,12 @@ export interface LiveUsageWindowPayload {
   usedPercent: number | null;
   startsAt: string | null;
   resetsAt: string | null;
+  /**
+   * Whether trustworthy history shows non-zero usage anywhere in this
+   * window's current allowance period. Consulted only for a supplemental,
+   * model-scoped window — see `isUsageWindowVisible` in `liveUsage.ts`.
+   */
+  hasNonzeroUsageInCurrentPeriod: boolean;
   /** What this window's own history supports saying about it. */
   forecast: LiveUsageForecastPayload;
 }
@@ -742,8 +749,6 @@ export async function getProviderUsage(): Promise<ProviderUsageSummaryPayload> {
 export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
   providers: [],
   generatedAt: '',
-  retentionDays: 0,
-  coverageSince: '',
 };
 
 /**
@@ -796,7 +801,7 @@ export async function cancelScan(): Promise<ScanStatus | null> {
 }
 
 /**
- * Forget antiburn's entire derived index, returning how many sessions went.
+ * Forget all session data in antiburn's local store, returning how many sessions went.
  *
  * antiburn's own records only. The agents' transcripts are never touched, and a
  * later scan finds all of this again.

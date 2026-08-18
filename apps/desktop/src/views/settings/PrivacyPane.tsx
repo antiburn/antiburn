@@ -19,10 +19,13 @@ import { clearLocalIndex } from '../../lib/ipc';
  * to make it forget.
  *
  * This pane is the long form of a promise the rest of the app only has room to
- * gesture at. It is deliberately specific — naming the two derived excerpts,
- * the retention horizon, and the single network exception — because a
- * local-first app's privacy page is worth nothing if it is written in the same
- * reassuring generalities as everyone else's.
+ * gesture at. It is deliberately specific — naming what can be stored, the
+ * absence of automatic expiry, and exactly what goes online and why — because
+ * a local-first app's privacy page is worth nothing if it is written in the
+ * same reassuring generalities as everyone else's. antiburn goes online as
+ * the reader's own agent, with the reader's own credentials. What it never
+ * does is need a service of ours, or hand what it
+ * finds to one.
  */
 
 /** What the "forget everything" action is currently doing. */
@@ -61,8 +64,8 @@ export function PrivacyPane() {
       <div className="space-y-3">
         <p className="type-body text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine,
-          stores only derived analysis, and uploads nothing. Each promise below opens into the
-          specifics a reader could reasonably want to check.
+          keeps the data it needs locally, and uploads nothing. Each promise below opens into
+          the specifics a reader could reasonably want to check.
         </p>
         {/* Disclosures rather than Card rows: this is explanatory prose, and a
             card of five paragraph-length rows read as settings that could not
@@ -71,33 +74,36 @@ export function PrivacyPane() {
         <DisclosureGroup>
           <Disclosure label="Sources are read, never written">
             antiburn reads the session files and read-only databases your coding agents already
-            keep on this machine. It never modifies them, never deletes them, and never copies a
-            transcript anywhere.
+            keep on this machine. It may copy data into its own local store, but it never
+            modifies or deletes the source transcripts.
           </Disclosure>
-          <Disclosure label="Only derived analysis is stored">
-            The local database holds identities, file locations, and numbers the analysis
-            produced — counts, durations, token totals, cost estimates. It holds no transcript
-            bodies: no message text, no tool arguments, no file contents. Two short excerpts are
-            kept so sessions are recognizable: a session&rsquo;s title (for agents that record
-            none, the opening of your first message, capped at 200 characters) and each
-            skill&rsquo;s one-line description, capped at 300 characters.
+          <Disclosure label="Visibility data stays on this machine">
+            antiburn may keep session content and derived analysis in its own local store when
+            they are needed for visibility or analysis. That can include messages, tool
+            activity, file content recorded in a transcript, identities, paths, counts,
+            durations, token totals, and cost estimates. Nothing in this store is uploaded.
           </Disclosure>
-          <Disclosure label="History is kept for two weeks">
-            Sessions older than 14 days are dropped from the index automatically. The
-            agents&rsquo; own files are left exactly where they are — antiburn simply stops
-            describing them.
+          <Disclosure label="History stays until you clear it">
+            Indexed sessions do not expire based on age. antiburn keeps its local session data
+            until you clear it; the agents&rsquo; own source files are left exactly where they
+            are.
           </Disclosure>
           <Disclosure label="Nothing is uploaded">
-            There is no account, no server, and no usage data collected. antiburn itself opens
-            one kind of connection: it asks GitHub Releases whether a newer version exists, and
-            that check sends nothing about you or your sessions.
+            There is no antiburn account and no antiburn server — there is nothing of ours for
+            your data to reach. antiburn does make requests of its own: it asks GitHub Releases
+            whether a newer version exists, and, where a source is enabled, it can ask a
+            provider for your current plan limits using the credentials your own tools already
+            stored. Handing a provider back a credential it issued you is not a disclosure — it
+            already has it. No third party sees any of it, and no antiburn server exists to see
+            it either.
           </Disclosure>
-          <Disclosure label="One setting lets your agent go online">
-            Settings &rarr; Usage has a switch, off by default, that lets antiburn run your
-            coding agent in the background to refresh its own usage reading. Your agent goes
-            online when it does that, exactly as it does when you use it yourself; antiburn
-            reads the file it writes and opens no connection of its own. With the switch off,
-            plan limits are read from whatever your agent last cached here and nothing runs.
+          <Disclosure label="One setting lets antiburn go online for current figures">
+            Settings &rarr; Usage has a switch, off by default, for keeping plan limits current.
+            Turned on, antiburn can run your coding agent in the background to refresh its own
+            usage reading, or read a provider&rsquo;s figures directly with the credentials your
+            tools already have — either way, that is antiburn acting as you, online with what
+            you already have access to. With the switch off, plan limits are read from whatever
+            was last cached here, and nothing runs in the background to update them.
           </Disclosure>
           <Disclosure label="Exports describe real work">
             An exported session carries derived analysis plus the session&rsquo;s title and the

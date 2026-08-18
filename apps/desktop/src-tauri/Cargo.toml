@@ -1,7 +1,8 @@
 # Standalone workspace root. The shell is deliberately *not* a member of any
 # other workspace: the engine (`crates/antiburn-local`) resolves with its own
-# lockfile and its own network-free dependency boundary, and joining the two
-# would let the shell's app-framework dependencies leak into that resolution.
+# lockfile and its own local-dependence boundary (no service of ours; only
+# the network a feature needs), and joining the two would let the shell's
+# app-framework dependencies leak into that resolution.
 #
 # The in-tree crates below are path dependencies with their own `[workspace]`
 # roots and lockfiles, on the same reasoning. They sit inside this directory,
@@ -67,8 +68,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # RFC 3339 stamps for the store's own timestamps.
 time = { version = "0.3", features = ["formatting", "parsing"] }
-# The scan scheduler. Deliberately excludes `net`: the shell opens no sockets
-# either — the updater plugin is the only network-capable surface.
+# The scan scheduler. Excludes `net`: nothing here needs a socket of its own
+# — the updater plugin is the shell's only network-capable surface, and it
+# talks to antiburn's own release feed over its own Tauri-managed client.
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

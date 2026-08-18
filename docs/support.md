@@ -22,10 +22,9 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Agents
 
-antiburn reads what a coding agent has already written to disk. It never asks a
-provider's API, never reads credentials, and never probes a running process. One
-opt-in setting *runs* an agent — see [Network](#network) — but even then antiburn
-reads the file the agent writes, not the agent.
+antiburn reads what a coding agent has already written to disk. One opt-in
+setting *runs* an agent — see [Network](#network) — but even then antiburn
+reads the file the agent writes, not the agent's output.
 
 | Agent | Native (macOS / Windows / Linux) | WSL | Notes |
 | --- | --- | --- | --- |
@@ -41,9 +40,9 @@ reads the file the agent writes, not the agent.
 | Antigravity | Supported, **disk-only** | Not supported | Documented local files only |
 | Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
 
-**Disk-only** means sessions come from the agent's own documented local files. The
-live language-server APIs those two editors expose are deliberately not used, so a
-session that exists only in memory will not appear.
+**Disk-only** means sessions come from the agent's own documented local files; the
+live language-server APIs those two editors expose aren't read, so a session that
+exists only in memory will not appear.
 
 **Session analytics** — the timeline, phases, context, token, and cost views — need a
 transcript format antiburn understands in detail. Where it has only a generic parse,
@@ -70,9 +69,10 @@ has cached its own usage reading on this machine, antiburn reads that file and s
 the figures your provider stated — a percentage of a five-hour or weekly allowance,
 and when it resets. Those are the provider's numbers, not ours:
 
-- antiburn fetches nothing to get them. The agent fetched them when *it* was last
-  online, and antiburn reads the file it left behind, the same way it reads
-  everything else;
+- antiburn itself calls no provider to get them: by default it simply reads the
+  file the agent already wrote the last time *it* was online, the same way it
+  reads everything else. One opt-in setting can ask the agent to refresh that
+  file on antiburn's behalf — see [Network](#network);
 - every reading is shown with the moment the provider stated it, and a reading older
   than an hour is marked as such rather than ageing quietly on screen;
 - a figure the provider did not state is shown as unknown, never as zero;
@@ -82,36 +82,27 @@ and when it resets. Those are the provider's numbers, not ours:
 
 ## What antiburn stores
 
-antiburn keeps one SQLite database in its own application data directory. Settings →
-About shows the exact path.
+antiburn keeps its own local data under the application's data directory. Settings →
+About shows the exact path. It may retain the session content and derived data it
+needs to provide visibility and analysis, including messages, tool activity, file
+content recorded in a transcript, session identity and locations, counts, durations,
+token totals, phase distributions, cost estimates, skill details, and session
+relations. This data stays on the device and is never uploaded.
 
-**It stores:** session identity (agent, session id, environment), the *path* of the
-agent's own transcript, the working directory and repository a session ran in, and
-values derived by the analysis — counts, durations, token totals, phase
-distributions, cost estimates, skill names, and sub-agent relations.
+The coding agents' source transcripts remain their files. antiburn may copy data from
+them into its own local store, but it never modifies or deletes the source files.
 
-**It does not store transcript bodies:** no message text, no tool arguments, and no
-file contents.
-
-**Two short derived excerpts are stored**, because a session with no title is not
-recognizable:
-
-- a session's **title**. Agents that record one supply it. For agents that do not,
-  the engine derives one from the opening of the first user message, capped at 200
-  characters.
-- each skill's **one-line description**, taken from the transcript's own skill
-  listing and capped at 300 characters.
-
-**Retention** is 14 days. Older sessions are dropped from the index automatically;
-the agents' own files are never touched. Settings → Privacy has a control that clears
-the entire derived index at once.
+**There is no age-based retention limit.** Once a session is indexed, antiburn keeps
+its local data until the reader explicitly clears it. The agents' own files are never
+touched. Settings → Privacy clears all locally stored session data at once.
 
 **Deletion.** antiburn removes only records it created itself. It cannot and will not
 delete a coding agent's own transcript — that is the agent's file, and removing a
 conversation belongs in the agent's own interface.
 
-**Exports** carry derived analysis, the paths a session ran in, and the two excerpts
-above. The export flow warns before it writes and always asks where to put the file.
+**Exports** currently carry derived analysis, the paths a session ran in, its title,
+and skill descriptions. They do not include transcript bodies. The export flow warns
+before it writes and always asks where to put the file.
 
 **Folder permissions (macOS).** macOS guards Documents, Desktop, and Downloads behind
 your explicit consent. antiburn never reads one of them until you have allowed it: a
@@ -125,9 +116,12 @@ the next time it looks.
 
 ## Network
 
-The engine performs no network or socket I/O at all, and this is enforced
-mechanically by its own test suite. The application itself opens exactly one kind of
-connection: the updater, which asks GitHub Releases whether a newer version exists.
+antiburn needs no connection to any service of ours — no antiburn account, server,
+or backend, ever. The connections it makes beyond that are yours, not ours: reading
+a provider's own figures with your own credentials is traffic between this machine
+and a provider you already use. The application's own connection to a service of
+ours is exactly one kind: the updater, which asks GitHub Releases whether a newer
+version exists, and which the app never depends on.
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can

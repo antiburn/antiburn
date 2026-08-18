@@ -221,11 +221,10 @@ impl AgentExplorer for OpenCodeExplorer {
         TitleLookupKind::Direct
     }
 
-    /// Point-query lookup against `opencode.db#session.title` keyed by id.
-    /// Avoids the default's full-table scan when the frontend only needs a
-    /// handful of titles. OpenCode has no rename concept, so every hit is
-    /// tagged [`TitleSource::Explicit`].
-    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
+    /// Point-query lookup against `opencode.db#session.title` keyed by id,
+    /// without opening transcript content. OpenCode has no rename concept, so
+    /// every hit is tagged [`TitleSource::Explicit`].
+    async fn indexed_session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
         for root in data_roots() {
             let db_path = root.join("opencode.db");
             if !tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
@@ -243,6 +242,39 @@ impl AgentExplorer for OpenCodeExplorer {
             }
         }
         None
+    }
+
+    async fn indexed_session_titles(
+        &self,
+        agent_session_ids: &[String],
+    ) -> HashMap<String, ResolvedTitle> {
+        let wanted: HashSet<String> = agent_session_ids.iter().cloned().collect();
+        let mut resolved = HashMap::new();
+        for root in data_roots() {
+            let db_path = root.join("opencode.db");
+            if !tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
+                continue;
+            }
+            let rows =
+                tokio::task::spawn_blocking(move || query_all_session_titles_from_db(&db_path))
+                    .await
+                    .unwrap_or_default();
+            for (session_id, title) in rows {
+                if !wanted.contains(&session_id) {
+                    continue;
+                }
+                if let Some(text) = title {
+                    resolved
+                        .entry(session_id)
+                        .or_insert_with(|| ResolvedTitle::new(text, TitleSource::Explicit));
+                }
+            }
+        }
+        resolved
+    }
+
+    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
+        self.indexed_session_title(agent_session_id).await
     }
 
     /// Owns the per-platform OpenCode data dir (XDG `share/opencode/`, macOS

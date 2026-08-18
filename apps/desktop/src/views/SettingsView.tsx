@@ -12,7 +12,7 @@ import {
   FolderGit2,
   Gauge,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { ScrollPane } from '../components/ui/ScrollPane';
 import { SidebarNav, type SidebarNavItem } from '../components/ui/SidebarNav';
@@ -73,7 +73,12 @@ const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
 export function SettingsView() {
   const [pane, setPane] = useState<SettingsPane>('general');
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const controller = useAppSettings();
+
+  useLayoutEffect(() => {
+    if (viewportRef.current) viewportRef.current.scrollTop = 0;
+  }, [pane]);
 
   useEffect(() => {
     let active = true;
@@ -179,7 +184,7 @@ export function SettingsView() {
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ScrollPane viewportClassName={contentPadding}>
+        <ScrollPane viewportClassName={contentPadding} viewportRef={viewportRef}>
           {/* Keyed by pane so a section switch remounts the panel and plays
               the entrance once; the global reduced-motion clamp in
               styles/motion.css neutralizes it for readers who asked. */}

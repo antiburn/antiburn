@@ -9,8 +9,8 @@
 //! Claude Code fetches its own usage and writes the provider's answer into
 //! `~/.claude.json`. Reading that file is the same kind of act as everything
 //! else this application does: open a documented location an agent wrote,
-//! read what is there, close it. No socket, no credential, no child process,
-//! no port. It therefore works with the machine disconnected — the numbers
+//! read what is there, close it — no service of ours involved, no child
+//! process. It therefore works with the machine disconnected — the numbers
 //! were fetched when the agent last had a connection, and every window says
 //! how old it is instead of pretending to be current.
 //!

@@ -37,7 +37,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     // `tests/` holds checks that must not live inside the tree they check
-    // (see tests/offline.test.ts).
+    // (see tests/no-exfiltration.test.ts).
     include: ['src/**/*.{test,spec}.{ts,tsx}', 'tests/**/*.{test,spec}.ts'],
   },
 });

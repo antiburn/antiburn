@@ -22,12 +22,15 @@
 //!
 //! # Where the numbers come from
 //!
-//! [`LiveUsageSource`] implementations, registered at startup. The one that
-//! ships today reads a file another application already wrote
-//! ([`sources::local_cache`]): no socket, no credential, no child process. It
-//! works with the machine disconnected, because the figures were fetched by
-//! the agent the last time *it* was online, and every window says how old it
-//! is rather than pretending to be current.
+//! [`LiveUsageSource`] implementations, registered at startup. By default,
+//! [`sources::local_cache`] reads a file another application already wrote —
+//! no service of ours involved, no child process — and it works with the
+//! machine disconnected, because the figures were fetched by the agent the
+//! last time *it* was online, and every window says how old it is rather
+//! than pretending to be current. One opt-in setting also registers
+//! [`sources::cli_refresh`], which runs the agent itself so that file is
+//! newer than whenever the reader last happened to use it — see that module
+//! for what running it does, and does not, do.
 //!
 //! # Fail closed, everywhere
 //!
@@ -153,7 +156,7 @@ pub fn summarize(
         .is_some_and(|settings| settings.live_usage_enabled);
     let collected = sources::collect(sources, online);
     let history = store
-        .map(|store| history::record(store, &collected.snapshots, now))
+        .map(|store| history::record(store, &collected.snapshots))
         .unwrap_or_default();
     let midnight = local_midnight(now, utc_offset_minutes);
     let at =
@@ -229,6 +232,8 @@ fn window(
         snapshot.source.freshness,
         snapshot.source.confidence,
     );
+    let has_nonzero_usage_in_current_period =
+        metrics::has_nonzero_usage_in_current_period(samples, window.resets_at, now);
     // Only on a window longer than a day. "How much of your five-hour limit
     // you used today" is a question about a period that has already rolled
     // several times, and the answer would be nonsense dressed as a metric.
@@ -263,6 +268,7 @@ fn window(
         used_percent: window.used_percent,
         starts_at: window.starts_at.map(iso),
         resets_at: window.resets_at.map(iso),
+        has_nonzero_usage_in_current_period,
         forecast: LiveUsageForecast {
             unavailable_reason: forecast
                 .unavailable_reason

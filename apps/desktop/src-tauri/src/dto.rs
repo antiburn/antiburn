@@ -322,15 +322,6 @@ pub struct ProviderUsageSummary {
     pub providers: Vec<ProviderUsage>,
     /// ISO-8601 stamp of the moment this snapshot was computed.
     pub generated_at: String,
-    /// How many days of session history the app keeps.
-    ///
-    /// Load-bearing, not trivia: it is shorter than a calendar month, so the
-    /// `month` window is truncated for most of every month and a view that did
-    /// not say so would be quietly wrong.
-    pub retention_days: u32,
-    /// ISO-8601 stamp of the earliest activity these windows can include.
-    /// Later than the start of the month whenever retention bites.
-    pub coverage_since: String,
 }
 
 /// Where the app came from and what it is running against.
@@ -393,10 +384,13 @@ pub enum LiveUsageFreshness {
 
 /// One provider-reported allowance.
 ///
-/// Every field is either something the provider stated or `null`. Nothing here
-/// is derived, interpolated, or defaulted — in particular `used_percent` is
-/// `null` rather than `0.0` when the provider did not say, because a meter
-/// reading empty and a meter reading unknown are different facts.
+/// Every field through `resets_at` is either something the provider stated or
+/// `null`. Nothing there is derived, interpolated, or defaulted — in
+/// particular `used_percent` is `null` rather than `0.0` when the provider did
+/// not say, because a meter reading empty and a meter reading unknown are
+/// different facts. The last two fields are the exception, and both are
+/// derived from this window's own sample history rather than stated by
+/// anyone.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveUsageWindow {
@@ -414,6 +408,13 @@ pub struct LiveUsageWindow {
     pub starts_at: Option<String>,
     /// ISO-8601 reset, when the provider stated one.
     pub resets_at: Option<String>,
+    /// Whether trustworthy history shows non-zero usage anywhere in this
+    /// window's current allowance period. The views consult this only for a
+    /// supplemental, model-scoped window — most readers never touch that
+    /// model, so it stays hidden until this turns true, then stays visible
+    /// for the rest of the period even past a reading that comes back with
+    /// no percentage at all.
+    pub has_nonzero_usage_in_current_period: bool,
     /// What this window's own history supports saying about it.
     pub forecast: LiveUsageForecast,
 }

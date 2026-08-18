@@ -331,6 +331,7 @@ function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
             usedPercent: 12,
             startsAt: null,
             resetsAt: null,
+            hasNonzeroUsageInCurrentPeriod: false,
             forecast,
           },
           {
@@ -341,6 +342,7 @@ function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
             usedPercent,
             startsAt: null,
             resetsAt: null,
+            hasNonzeroUsageInCurrentPeriod: false,
             forecast,
           },
         ],

@@ -102,8 +102,8 @@ type Step = (typeof STEPS)[number];
 /** Steps that want a discovery pass to have run by the time they are read. */
 const STEPS_NEEDING_DISCOVERY: readonly Step[] = ['repositories', 'scan'];
 
-/** The two history windows the flow offers. Both fit inside the two weeks the
- *  store retains, so neither is a promise the app cannot keep. */
+/** The two recent-activity windows the popover offers. They affect the list,
+ *  not how long indexed sessions remain stored. */
 const WINDOW_OPTIONS = [
   { value: '7', label: '7 days' },
   { value: '14', label: '14 days' },
@@ -155,16 +155,17 @@ function Welcome() {
           shows you what they cost and how they went. No account, nothing uploaded, and no usage
           data collected.
         </p>
-        {/* This sentence has to keep matching what the app actually opens. The
-            update check is antiburn's only socket (`src-tauri/src/lib.rs`), and
-            the second clause is D-21: one default-off setting runs your own
-            agent, which goes online — antiburn opens nothing, but it causes the
-            traffic, and "antiburn is offline" without that clause is true by
-            the letter and false by the point of the claim. */}
+        {/* This sentence has to keep matching what "local" actually promises:
+            antiburn goes online as your own agent — reading a provider's
+            current usage figures with your credentials, checking GitHub
+            Releases for new versions — and what makes it local is that none
+            of that depends on any service of ours, and nothing about you
+            goes to one. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          The only thing antiburn puts on the network is a check for new versions, against
-          GitHub Releases. One setting you can turn on later asks your own coding agent to
-          refresh its usage figures — that traffic is the agent&rsquo;s, not antiburn&rsquo;s.
+          antiburn goes online as your own agent — to read a provider&rsquo;s current usage
+          figures with your own credentials, and to check GitHub Releases for new versions. None
+          of it needs an antiburn account or an antiburn server — there isn&rsquo;t one — and
+          nothing about you or your sessions goes anywhere else.
         </p>
       </div>
     </div>
@@ -362,9 +363,8 @@ function Repositories({
  * pass run, and stop it if it is taking too long.
  *
  * The window choice is deliberately described as what it *is* — how far back
- * the list reaches — rather than as how far back the scan goes. antiburn keeps
- * two weeks of history whichever option is picked, and saying otherwise would
- * be a nicer sentence about a thing that is not true.
+ * the list reaches — rather than as a retention policy. Indexed sessions remain
+ * stored until the reader explicitly clears them.
  */
 function HistoricalScan({
   scanStatus,
@@ -385,8 +385,8 @@ function HistoricalScan({
         Historical scan
       </h2>
       <p className="mt-1 type-footnote text-label-secondary">
-        antiburn keeps two weeks of local history. Choose how much of it the popover lists — you
-        can change this later.
+        Choose how much recent activity the popover lists. Indexed sessions stay on this machine
+        until you clear them; you can change this view later.
       </p>
 
       {/* Capped rather than `w-full`: two options stretched across 680pt read

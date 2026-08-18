@@ -74,13 +74,13 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         <Card>
           <ToggleRow
             label="Ask my agent to refresh"
-            description="Runs your coding agent in the background about every ten minutes to refresh its own usage reading, then reads the file it writes. Your agent goes online to do this — antiburn still opens no connection of its own. Turning this on also lets usage milestone notifications fire, since they need readings that keep moving."
+            description="Runs your coding agent in the background about every ten minutes to refresh its own usage reading, then reads the file it writes — or reads a provider's figures directly, using the credentials your tools already have. Either way, that's your own connection, made as you; no antiburn server is involved. Turning this on also lets usage milestone notifications fire, since they need readings that keep moving."
             checked={on}
             onChange={(next) => void update({ liveUsageEnabled: next })}
           />
           <Row
             label="Without this"
-            description="antiburn reads whatever usage figure your agent last cached on this machine. Nothing goes online, and every reading on the Usage screen says how old it is."
+            description="antiburn reads whatever usage figure your agent last cached on this machine. Nothing runs in the background to update it, and every reading on the Usage screen says how old it is."
           />
         </Card>
       </SectionGroup>

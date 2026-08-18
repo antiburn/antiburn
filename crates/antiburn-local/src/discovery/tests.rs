@@ -12,6 +12,17 @@ use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 
 #[test]
+fn resolved_titles_are_normalized_and_unicode_safely_bounded() {
+    let raw = format!("  Reader\n\trequest  {}  ", "🧪".repeat(250));
+    let resolved = ResolvedTitle::new(raw, TitleSource::AiGenerated);
+
+    assert_eq!(resolved.text.chars().count(), 200);
+    assert!(resolved.text.starts_with("Reader request 🧪"));
+    assert!(!resolved.text.contains('\n'));
+    assert!(!resolved.text.contains('\t'));
+}
+
+#[test]
 fn cwd_occurrences_merge_native_and_wsl_counts() {
     let mut counts = std::collections::HashMap::new();
     add_cwd_occurrences(&mut counts, ["/repo".into(), "/repo".into()]);

@@ -24,6 +24,34 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- **What "local" means, spelled out.** antiburn needs no antiburn account,
+  server, or backend — everything runs on your machine, as you. The
+  connections it makes are yours: reading your provider's own current usage
+  figures with your own credentials, traffic between this machine and a
+  provider you already use. Its one call to a service of ours — checking
+  whether a newer version exists — is a convenience it never depends on, and
+  it hands your data to no one who doesn't already have it.
+
+### Changed
+
+- **A per-model weekly limit stays out of the way until you use that
+  model.** Your provider can report a supplemental weekly allowance scoped to
+  one model alongside your account-wide limits. Most readers never touch that
+  model, so its row used to sit at the bottom of the Usage screen reading 0%
+  forever. It is now hidden until you actually use the model it tracks, and
+  once it shows real usage it stays on screen for the rest of that week —
+  even past a reading that comes back without a percentage — so a limit you
+  are genuinely drawing on never looks like it disappeared.
+
+### Fixed
+
+- **Session names in recent activity.** antiburn now reads authoritative names
+  from each agent's indexed session store when available, while keeping mounted
+  WSL sessions isolated from native stores. Renames appear on the next scan,
+  and a missing title can no longer leave mismatched title provenance behind.
+
 ## [0.1.0-rc.4] - 2026-08-17
 
 A release-candidate rehearsal build, not a supported release. The macOS and

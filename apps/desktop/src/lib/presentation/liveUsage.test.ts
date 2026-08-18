@@ -27,6 +27,8 @@ import {
   liveWindows,
   forecastUnavailableNote,
   headlineWindow,
+  isConditionallyVisibleUsageWindow,
+  isUsageWindowVisible,
   paceState,
   paceStateLabel,
   runwayLabel,
@@ -60,6 +62,7 @@ function window(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindo
     usedPercent: 81,
     startsAt: null,
     resetsAt: '2027-01-15T14:30:00Z',
+    hasNonzeroUsageInCurrentPeriod: false,
     forecast: NO_FORECAST,
     ...overrides,
   };
@@ -253,6 +256,76 @@ describe('ordering and lookup', () => {
   it('joins to the estimate payload by provider id', () => {
     expect(liveForProvider(summary(), 'anthropic')?.displayName).toBe('Anthropic');
     expect(liveForProvider(summary(), 'openai')).toBeNull();
+  });
+});
+
+describe('hiding unused model quota limits', () => {
+  it('only treats a supplemental window naming a model as conditionally visible', () => {
+    expect(
+      isConditionallyVisibleUsageWindow(window({ role: 'supplemental', scopeModel: 'Fable' })),
+    ).toBe(true);
+    // The account-wide windows describe overall standing and are never
+    // conditional, whatever role or scope they otherwise carry.
+    expect(isConditionallyVisibleUsageWindow(window({ role: 'primaryShort' }))).toBe(false);
+    expect(isConditionallyVisibleUsageWindow(window({ role: 'primaryLong' }))).toBe(false);
+    // A supplemental window with no model to name is not what this hides.
+    expect(
+      isConditionallyVisibleUsageWindow(window({ role: 'supplemental', scopeModel: null })),
+    ).toBe(false);
+  });
+
+  it('hides a quiet per-model limit and shows one that has actually been used', () => {
+    const quiet = window({ role: 'supplemental', scopeModel: 'Fable', usedPercent: 0 });
+    expect(isUsageWindowVisible(quiet)).toBe(false);
+    expect(isUsageWindowVisible({ ...quiet, usedPercent: null })).toBe(false);
+    expect(isUsageWindowVisible({ ...quiet, usedPercent: 0.1 })).toBe(true);
+    expect(isUsageWindowVisible({ ...quiet, usedPercent: 14 })).toBe(true);
+  });
+
+  it('never hides a primary window, however empty', () => {
+    expect(isUsageWindowVisible(window({ role: 'primaryShort', usedPercent: 0 }))).toBe(true);
+    expect(isUsageWindowVisible(window({ role: 'primaryLong', usedPercent: null }))).toBe(true);
+  });
+
+  it('keeps a per-model limit visible for the rest of a period it has already used', () => {
+    // The reading this pass carries no percentage at all, but the window's
+    // own history already proved this period is not the quiet case — it must
+    // not disappear just because the latest reading came back unknown.
+    const usedEarlierThisPeriod = window({
+      role: 'supplemental',
+      scopeModel: 'Fable',
+      usedPercent: null,
+      hasNonzeroUsageInCurrentPeriod: true,
+    });
+    expect(isUsageWindowVisible(usedEarlierThisPeriod)).toBe(true);
+  });
+
+  it('drops a hidden per-model limit out of the rendered list, and restores it once used', () => {
+    const provider_ = provider({
+      windows: [
+        window({ id: 'five-hour', role: 'primaryShort' }),
+        window({ id: 'seven-day', role: 'primaryLong' }),
+        window({
+          id: 'weekly-fable',
+          role: 'supplemental',
+          scopeModel: 'Fable',
+          usedPercent: 0,
+        }),
+      ],
+    });
+    expect(liveWindows(provider_).map((entry) => entry.id)).toEqual(['five-hour', 'seven-day']);
+
+    const used = {
+      ...provider_,
+      windows: provider_.windows.map((entry) =>
+        entry.id === 'weekly-fable' ? { ...entry, usedPercent: 3 } : entry,
+      ),
+    };
+    expect(liveWindows(used).map((entry) => entry.id)).toEqual([
+      'five-hour',
+      'seven-day',
+      'weekly-fable',
+    ]);
   });
 });
 
