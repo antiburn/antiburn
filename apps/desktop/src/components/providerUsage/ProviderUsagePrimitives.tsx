@@ -65,7 +65,7 @@ const PROVIDER_MARKS: Record<string, BrandMark> = {
   mistral: fromSimpleIcons(siMistralai),
 };
 
-export interface ProviderGlyphProps {
+interface ProviderGlyphProps {
   displayName: string;
   /** Canonical provider id. Without it, every provider gets a letter. */
   provider?: string;
@@ -120,7 +120,7 @@ export function providerMark(provider: string): BrandMark | undefined {
   return PROVIDER_MARKS[provider];
 }
 
-export interface UsageStateBadgeProps {
+interface UsageStateBadgeProps {
   state: ProviderUsageState;
   className?: string;
 }

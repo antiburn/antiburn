@@ -12,7 +12,7 @@ import { ATTRIBUTIONS, LICENSE_TEXT, NOTICE_TEXT } from '../../lib/legalNotices'
 export type AboutDocumentId = 'licence' | 'notices' | 'attributions';
 
 /** Titles, shared so a row and the view it opens can never drift apart. */
-export const ABOUT_DOCUMENTS: Record<AboutDocumentId, { title: string }> = {
+const ABOUT_DOCUMENTS: Record<AboutDocumentId, { title: string }> = {
   licence: { title: 'Licence text' },
   notices: { title: 'Legal notices' },
   attributions: { title: 'Third-party attributions' },

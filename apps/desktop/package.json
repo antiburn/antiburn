@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
+    "knip": "knip --no-progress",
     "icons": "node scripts/generate-icons.mjs",
     "tauri": "tauri"
   },
@@ -27,7 +28,6 @@
     "@radix-ui/react-tooltip": "1.2.16",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.2",
-    "@tauri-apps/plugin-opener": "2.5.4",
     "@tauri-apps/plugin-updater": "2.10.1",
     "lucide-react": "1.31.0",
     "react": "19.2.8",
@@ -51,6 +51,7 @@
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.9.0",
     "jsdom": "30.0.1",
+    "knip": "6.32.2",
     "prettier": "3.9.6",
     "tailwindcss": "4.3.3",
     "typescript": "6.0.3",

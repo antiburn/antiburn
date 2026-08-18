@@ -44,7 +44,7 @@ import '../../styles/session-rows.css';
  * Renders the icon for an agent, optionally marked with the surface the
  * session came from. An injected slot, so this layer ships no artwork.
  */
-export type ActivityAgentIconRenderer = (
+type ActivityAgentIconRenderer = (
   slug: string,
   size: number,
   surface?: AgentSurface,
@@ -84,7 +84,7 @@ export interface LocalActivityEntry {
 }
 
 /** One option in the list's filter control. */
-export interface LocalActivityFilter {
+interface LocalActivityFilter {
   value: string;
   label: string;
 }
@@ -249,7 +249,7 @@ function EmptyActivity({ title, description }: { title: string; description: str
   );
 }
 
-export interface SessionActivityRowProps {
+interface SessionActivityRowProps {
   entry: LocalActivityEntry;
   /** Opens this session's analytics. Omitted leaves the row inert. */
   onOpen?: () => void;
@@ -267,7 +267,7 @@ export interface SessionActivityRowProps {
  * engine cannot analyze — those land on the analytics view's own empty state,
  * which explains why, rather than being silently unclickable here.
  */
-export function SessionActivityRow({
+function SessionActivityRow({
   entry,
   onOpen,
   onOpenOrchestration,

@@ -145,6 +145,10 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm --filter @antiburn/desktop type-check
 
+      - name: Check for unused frontend code
+        if: runner.os == 'Linux'
+        run: pnpm --filter @antiburn/desktop knip
+
       - name: Test
         run: pnpm --filter @antiburn/desktop test
 

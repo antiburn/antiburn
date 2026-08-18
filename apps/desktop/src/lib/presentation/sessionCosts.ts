@@ -21,17 +21,6 @@
 
 import { environmentKey } from './localIdentity';
 
-/** Which transcript, or which aggregate, a cost figure describes. */
-export type LocalCostScope =
-  /** The named session's own transcript, excluding anything it launched. */
-  | 'topLevel'
-  /** Every sub-agent the named session launched, together. */
-  | 'subagents'
-  /** The named session plus every sub-agent it launched. */
-  | 'inclusive'
-  /** One named sub-agent of the named session. */
-  | 'subagent';
-
 /** The transcript or aggregate one cost result describes. */
 export type LocalCostSubject =
   | {
@@ -49,7 +38,7 @@ export type LocalCostSubject =
     };
 
 /** Billable token counts for one model within a result. */
-export interface LocalModelTokens {
+interface LocalModelTokens {
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;

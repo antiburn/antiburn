@@ -66,7 +66,7 @@ const SKELETON_DELAY_MS = 200;
 const SKELETON_MIN_VISIBLE_MS = 400;
 
 /** Which session this view is scoped to. Absent means the live aggregate. */
-export interface SessionAnalyticsSubject {
+interface SessionAnalyticsSubject {
   agent: string;
   sessionId: string;
   title?: string;

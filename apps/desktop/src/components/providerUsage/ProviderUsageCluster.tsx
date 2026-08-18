@@ -27,9 +27,9 @@ import { ProviderGlyph, providerMark } from './ProviderUsagePrimitives';
 import { UsageRing } from './UsageRing';
 
 /** Chips shown before the rest collapse into a single overflow affordance. */
-export const DEFAULT_MAX_CHIPS = 3;
+const DEFAULT_MAX_CHIPS = 3;
 
-export interface ProviderUsageClusterProps {
+interface ProviderUsageClusterProps {
   providers: readonly ProviderUsagePayload[];
   /** The provider's own limit figures, when a source could prove any. */
   live?: LiveUsageSummaryPayload;

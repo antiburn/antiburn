@@ -13,7 +13,7 @@ import { ScrollPane } from '../ui/ScrollPane';
 import { Skeleton } from '../ui/Skeleton';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 
-export interface RepositoryUndo {
+interface RepositoryUndo {
   /** What was just changed, phrased as a completed action. */
   label: string;
   onUndo: () => void;
