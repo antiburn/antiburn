@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OnboardingView } from './OnboardingView';
@@ -12,7 +12,7 @@ import { OnboardingView } from './OnboardingView';
  *
  * These moved here from `PopoverView.test.tsx` when the flow moved out of the
  * popover (D-25). They assert the same things they always did — every step
- * appears, each is announced and takes focus, and the two settings writes go
+ * appears, each is announced and takes focus, and the final settings write goes
  * out with the arguments the shell expects — because none of that changed;
  * only which window it happens in.
  */
@@ -88,12 +88,6 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
   });
 }
 
-function emit(name: string, payload: unknown) {
-  act(() => {
-    for (const handler of listeners.get(name) ?? []) handler({ payload });
-  });
-}
-
 async function advanceToReady() {
   await screen.findByRole('heading', { name: 'Everything stays on this machine' });
   for (let step = 0; step < 4; step += 1) {
@@ -136,11 +130,7 @@ describe('OnboardingView', () => {
     // 4 — Historical scan: the window choice, and the pass with a way out.
     expect(await screen.findByRole('heading', { name: 'Historical scan' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: '14 days' }));
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, onboardingCompleted: false, activityWindowDays: 14 },
-      }),
-    );
+    expect(invoke).not.toHaveBeenCalledWith('set_settings', expect.anything());
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     // 5 — Ready.
@@ -154,6 +144,7 @@ describe('OnboardingView', () => {
         settings: { ...SETTINGS, activityWindowDays: 14, onboardingCompleted: true },
       }),
     );
+    expect(invoke.mock.calls.filter(([command]) => command === 'set_settings')).toHaveLength(1);
   });
 
   it('persists an opt-out before finishing onboarding', async () => {
@@ -163,8 +154,8 @@ describe('OnboardingView', () => {
     const launchAtLogin = screen.getByRole('switch', { name: 'Launch antiburn on startup' });
     expect(launchAtLogin).toBeChecked();
     fireEvent.click(launchAtLogin);
-    // Finishing immediately must carry the choice even if the first settings
-    // round-trip has not caused a render yet.
+    expect(invoke).not.toHaveBeenCalledWith('set_settings', expect.anything());
+    // Finishing immediately must carry the locally drafted choice.
     fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
@@ -172,52 +163,37 @@ describe('OnboardingView', () => {
         settings: { ...SETTINGS, launchAtLogin: false, onboardingCompleted: true },
       }),
     );
+    expect(invoke.mock.calls.filter(([command]) => command === 'set_settings')).toHaveLength(1);
   });
 
-  it('reflects a launch-at-login change made from another window', async () => {
-    render(<OnboardingView />);
-    await advanceToReady();
-
-    emit('settings:changed', { ...SETTINGS, launchAtLogin: false });
-
-    expect(
-      screen.getByRole('switch', { name: 'Launch antiburn on startup' }),
-    ).not.toBeChecked();
-  });
-
-  it('does not let an older initial read overwrite a newer settings event', async () => {
-    let resolveInitialSettings!: (settings: typeof SETTINGS) => void;
-    const initialSettings = new Promise<typeof SETTINGS>((resolve) => {
-      resolveInitialSettings = resolve;
-    });
-    mockCommands({ get_settings: initialSettings });
-    render(<OnboardingView />);
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_settings'));
-    emit('settings:changed', { ...SETTINGS, launchAtLogin: false });
-    resolveInitialSettings(SETTINGS);
-    await advanceToReady();
-
-    expect(
-      screen.getByRole('switch', { name: 'Launch antiburn on startup' }),
-    ).not.toBeChecked();
-  });
-
-  it('restores the confirmed choice when persistence fails', async () => {
+  it('preserves settings changed elsewhere while onboarding is open', async () => {
     const commands = invoke.getMockImplementation();
-    invoke.mockImplementation((command: string, args?: unknown) =>
-      command === 'set_settings'
-        ? Promise.reject(new Error('store unavailable'))
-        : commands?.(command, args),
-    );
+    let settingsReads = 0;
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === 'get_settings') {
+        settingsReads += 1;
+        return Promise.resolve(
+          settingsReads === 1 ? SETTINGS : { ...SETTINGS, autoUpdate: false },
+        );
+      }
+      return commands?.(command, args);
+    });
     render(<OnboardingView />);
     await advanceToReady();
 
-    const launchAtLogin = screen.getByRole('switch', { name: 'Launch antiburn on startup' });
-    fireEvent.click(launchAtLogin);
-    expect(launchAtLogin).not.toBeChecked();
+    fireEvent.click(screen.getByRole('switch', { name: 'Launch antiburn on startup' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
-    await waitFor(() => expect(launchAtLogin).toBeChecked());
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: {
+          ...SETTINGS,
+          autoUpdate: false,
+          launchAtLogin: false,
+          onboardingCompleted: true,
+        },
+      }),
+    );
   });
 
   it('announces each step and moves focus to its heading', async () => {

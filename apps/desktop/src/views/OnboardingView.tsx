@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { open } from '@tauri-apps/plugin-dialog';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   addScanRoot,
@@ -16,7 +16,6 @@ import {
   getSettings,
   listRepositories,
   listScanRoots,
-  onSettingsChanged,
   onScanEvent,
   recheckFolderPermissions,
   removeScanRoot,
@@ -61,12 +60,12 @@ import { OnboardingFlow } from './onboarding/OnboardingFlow';
  *   decorated window has no such rule, so the picker is opened plainly.
  */
 export function OnboardingView() {
-  const [settings, setSettingsState] = useState<AppSettings | null>(null);
-  const settingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
-  const confirmedSettingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
-  const settingsWriteTail = useRef<Promise<void>>(Promise.resolve());
-  const pendingSettingsWrites = useRef(0);
-  const latestSettingsWrite = useRef(0);
+  // Onboarding is a form: its choices remain local until Finish commits one
+  // complete settings value. Keeping a draft makes rapid changes deterministic
+  // without coordinating multiple asynchronous writes.
+  const [settingsDraft, setSettingsDraft] = useState<
+    Pick<AppSettings, 'activityWindowDays' | 'launchAtLogin'> | undefined
+  >();
   const [scanRoots, setScanRoots] = useState<string[]>([]);
   const [defaultRoots, setDefaultRoots] = useState<string[]>([]);
   const [permissions, setPermissions] = useState<FolderPermissions>({
@@ -77,8 +76,6 @@ export function OnboardingView() {
   const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   const [recheckingPermissions, setRecheckingPermissions] = useState(false);
-
-  const windowDays = settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
 
   const refreshRepositoryList = useCallback(async () => {
     const payloads = await listRepositories().catch(() => []);
@@ -91,31 +88,14 @@ export function OnboardingView() {
   // them; the rest settles together because no step reads another's answer.
   useEffect(() => {
     let active = true;
-    let sawSettingsEvent = false;
-    const pendingSettings = onSettingsChanged((stored) => {
-      sawSettingsEvent = true;
-      // A local write emits this event before its invoke promise resolves. An
-      // older event must not overwrite a newer optimistic choice queued behind
-      // it; the final local response below becomes authoritative instead.
-      if (!active || pendingSettingsWrites.current > 0) return;
-      settingsRef.current = stored;
-      confirmedSettingsRef.current = stored;
-      applyTheme(stored.theme);
-      setSettingsState(stored);
-    });
     void (async () => {
-      // Establish the event subscription before taking the initial snapshot;
-      // otherwise a write from Settings can land between those two operations
-      // and be replaced by the older read.
-      await pendingSettings.catch(() => null);
       const stored = await getSettings().catch(() => DEFAULT_SETTINGS);
       if (!active) return;
-      if (!sawSettingsEvent && pendingSettingsWrites.current === 0) {
-        settingsRef.current = stored;
-        confirmedSettingsRef.current = stored;
-        applyTheme(stored.theme);
-        setSettingsState(stored);
-      }
+      applyTheme(stored.theme);
+      setSettingsDraft({
+        activityWindowDays: stored.activityWindowDays,
+        launchAtLogin: stored.launchAtLogin,
+      });
       const [roots, defaults, status, folders] = await Promise.all([
         listScanRoots().catch(() => []),
         defaultScanRoots().catch(() => []),
@@ -133,7 +113,6 @@ export function OnboardingView() {
     })();
     return () => {
       active = false;
-      void pendingSettings.then((unlisten) => unlisten());
     };
   }, [refreshRepositoryList]);
 
@@ -170,36 +149,6 @@ export function OnboardingView() {
     }
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, []);
-
-  const applySettings = useCallback((change: Partial<AppSettings>) => {
-    const next = { ...settingsRef.current, ...change };
-    settingsRef.current = next;
-    setSettingsState(next);
-
-    const writeNumber = latestSettingsWrite.current + 1;
-    latestSettingsWrite.current = writeNumber;
-    pendingSettingsWrites.current += 1;
-
-    const write = settingsWriteTail.current.then(async () => {
-      try {
-        return { saved: await setSettings(next), persisted: true };
-      } catch {
-        return { saved: confirmedSettingsRef.current, persisted: false };
-      }
-    });
-    const settled = write.then(({ saved, persisted }) => {
-      if (persisted) confirmedSettingsRef.current = saved;
-      pendingSettingsWrites.current -= 1;
-      if (writeNumber === latestSettingsWrite.current) {
-        settingsRef.current = saved;
-        applyTheme(saved.theme);
-        setSettingsState(saved);
-      }
-      return saved;
-    });
-    settingsWriteTail.current = settled.then(() => undefined);
-    return settled;
   }, []);
 
   const handleAddScanRoot = useCallback(async () => {
@@ -269,15 +218,28 @@ export function OnboardingView() {
   /**
    * Finish.
    *
-   * Only the flag is written here. Everything else the transition causes —
-   * putting this window away, the notification that says where the app went,
-   * the first scan — is the shell's, keyed off the same write in
-   * `commands::set_settings`. A window cannot both close itself and be sure the
-   * notification that replaces it arrived.
+   * The draft preferences and completion flag are written together. Everything
+   * else the transition causes — putting this window away, the notification
+   * that says where the app went, the first scan — is the shell's, keyed off
+   * the same write in `commands::set_settings`. A window cannot both close
+   * itself and be sure the notification that replaces it arrived.
    */
   const handleFinish = useCallback(async () => {
-    await applySettings({ onboardingCompleted: true });
-  }, [applySettings]);
+    if (!settingsDraft) return;
+    const current = await getSettings().catch(() => null);
+    if (!current) return;
+    const saved = await setSettings({
+      ...current,
+      ...settingsDraft,
+      onboardingCompleted: true,
+    }).catch(() => null);
+    if (saved) {
+      setSettingsDraft({
+        activityWindowDays: saved.activityWindowDays,
+        launchAtLogin: saved.launchAtLogin,
+      });
+    }
+  }, [settingsDraft]);
 
   /**
    * Default roots antiburn has not actually read, because the operating system
@@ -290,6 +252,8 @@ export function OnboardingView() {
       blocked.some((dir) => root.split(/[\\/]/).includes(dir)),
     );
   }, [defaultRoots, permissions]);
+
+  if (!settingsDraft) return null;
 
   return (
     <div className="h-full">
@@ -308,10 +272,20 @@ export function OnboardingView() {
         onDiscover={() => void handleRescan()}
         onCancelScan={() => void handleCancelScan()}
         scanStatus={scanStatus}
-        windowDays={windowDays}
-        onWindowDaysChange={(days) => void applySettings({ activityWindowDays: days })}
-        launchAtLogin={settings?.launchAtLogin ?? DEFAULT_SETTINGS.launchAtLogin}
-        onLaunchAtLoginChange={(enabled) => void applySettings({ launchAtLogin: enabled })}
+        windowDays={settingsDraft.activityWindowDays}
+        onWindowDaysChange={(days) =>
+          setSettingsDraft({
+            ...settingsDraft,
+            activityWindowDays: days,
+          })
+        }
+        launchAtLogin={settingsDraft.launchAtLogin}
+        onLaunchAtLoginChange={(enabled) =>
+          setSettingsDraft({
+            ...settingsDraft,
+            launchAtLogin: enabled,
+          })
+        }
         onFinish={() => void handleFinish()}
       />
     </div>
