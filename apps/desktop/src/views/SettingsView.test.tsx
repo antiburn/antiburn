@@ -160,11 +160,11 @@ describe('SettingsView', () => {
     await waitFor(() => expect(document.documentElement.dataset['theme']).toBeUndefined());
   });
 
-  it('persists the launch-at-login preference and says it is not enforced yet', async () => {
+  it('persists the launch-at-login preference and describes the applied behavior', async () => {
     render(<SettingsView />);
 
-    const toggle = await screen.findByRole('switch', { name: 'Open antiburn at login' });
-    expect(screen.getByText(/This build does not install one yet/i)).toBeInTheDocument();
+    const toggle = await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
+    expect(screen.getByText('Starts automatically in the menu bar.')).toBeInTheDocument();
 
     fireEvent.click(toggle);
 
@@ -173,6 +173,21 @@ describe('SettingsView', () => {
         settings: { ...SETTINGS, launchAtLogin: true },
       }),
     );
+  });
+
+  it('reflects the launch-at-login choice made during onboarding', async () => {
+    render(<SettingsView />);
+
+    const toggle = await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
+    expect(toggle).not.toBeChecked();
+
+    emit('settings:changed', {
+      ...SETTINGS,
+      onboardingCompleted: false,
+      launchAtLogin: true,
+    });
+
+    expect(toggle).toBeChecked();
   });
 
   it('persists the monitoring switch as the same preference the popover pauses', async () => {
@@ -523,7 +538,7 @@ describe('SettingsView', () => {
   it('moves an already-open window to a requested pane', async () => {
     render(<SettingsView />);
 
-    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
     emit('settings:pane', 'sources');
 
     await waitFor(() =>
@@ -537,7 +552,7 @@ describe('SettingsView', () => {
   it('ignores a pane id it does not recognize rather than rendering nothing', async () => {
     render(<SettingsView />);
 
-    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
     emit('settings:pane', 'account');
 
     expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute(
@@ -570,7 +585,7 @@ describe('SettingsView — window chrome', () => {
   it('renders the drag strip on macOS, empty and inert', async () => {
     platform.mac = true;
     const { container } = render(<SettingsView />);
-    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
 
     const strip = container.querySelector('[data-tauri-drag-region]');
     expect(strip).not.toBeNull();
@@ -582,14 +597,14 @@ describe('SettingsView — window chrome', () => {
 
   it('renders no drag strip where the native title bar exists', async () => {
     const { container } = render(<SettingsView />);
-    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
 
     expect(container.querySelector('[data-tauri-drag-region]')).toBeNull();
   });
 
   it('closes the window on ⌘W, as a request the shell may turn into a hide', async () => {
     render(<SettingsView />);
-    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
 
     fireEvent.keyDown(document, { key: 'w', metaKey: true });
 
@@ -598,7 +613,7 @@ describe('SettingsView — window chrome', () => {
 
   it('does not close on Escape: a settings window is not a modal', async () => {
     render(<SettingsView />);
-    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
 
     fireEvent.keyDown(document, { key: 'Escape' });
 
@@ -607,7 +622,7 @@ describe('SettingsView — window chrome', () => {
 
   it('orders the sidebar with everyday panes first and provenance last', async () => {
     render(<SettingsView />);
-    await screen.findByRole('switch', { name: 'Open antiburn at login' });
+    await screen.findByRole('switch', { name: 'Launch antiburn on startup' });
 
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'General',

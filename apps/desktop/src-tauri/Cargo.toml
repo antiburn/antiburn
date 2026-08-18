@@ -26,6 +26,11 @@ publish = false
 name = "antiburn_desktop"
 path = "src/lib.rs"
 
+[features]
+# Set only by packaged distribution builds. Release-profile development runs
+# deliberately omit it so they cannot change the machine's login items.
+distribution = []
+
 [[bin]]
 name = "antiburn"
 path = "src/main.rs"
@@ -72,6 +77,9 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# macOS 13+ login-item registration for the main application. Unlike the
+# cross-platform plugin, this uses Apple's current System Settings-visible API.
+smappservice-rs = "0.1"
 # Three pieces of AppKit the shell reaches for directly: the menu-bar
 # free-space readout (`src/tray_title.rs`, `src/disk_monitor.rs`) — an
 # attributed-string title on the status item's button, and the startup volume's
@@ -85,6 +93,11 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSEvent", "block2"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Per-user Run-key registration. Kept in Rust so executable paths are quoted
+# correctly and stale entries can be refreshed after an update.
+winreg = "0.55"
 
 [dev-dependencies]
 # Synthetic agent stores for the scan-pipeline tests.

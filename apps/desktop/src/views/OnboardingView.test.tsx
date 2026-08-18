@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OnboardingView } from './OnboardingView';
@@ -41,7 +41,7 @@ const SETTINGS = {
   theme: 'system' as const,
   activityWindowDays: 7,
   onboardingCompleted: false,
-  launchAtLogin: false,
+  launchAtLogin: true,
   autoUpdate: true,
   discoveryPaused: false,
 };
@@ -88,6 +88,20 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function emit(name: string, payload: unknown) {
+  act(() => {
+    for (const handler of listeners.get(name) ?? []) handler({ payload });
+  });
+}
+
+async function advanceToReady() {
+  await screen.findByRole('heading', { name: 'Everything stays on this machine' });
+  for (let step = 0; step < 4; step += 1) {
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  }
+  await screen.findByRole('heading', { name: 'Ready' });
+}
+
 describe('OnboardingView', () => {
   beforeEach(() => {
     invoke.mockReset();
@@ -129,10 +143,10 @@ describe('OnboardingView', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    // 5 — Ready, which says where the app is about to go. The notification that
-    // repeats it is the shell's, keyed off the write below.
+    // 5 — Ready.
     expect(await screen.findByRole('heading', { name: 'Ready' })).toBeInTheDocument();
-    expect(screen.getByText(/in the menu bar from here on/i)).toBeInTheDocument();
+    expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Launch antiburn on startup' })).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
@@ -140,6 +154,70 @@ describe('OnboardingView', () => {
         settings: { ...SETTINGS, activityWindowDays: 14, onboardingCompleted: true },
       }),
     );
+  });
+
+  it('persists an opt-out before finishing onboarding', async () => {
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    const launchAtLogin = screen.getByRole('switch', { name: 'Launch antiburn on startup' });
+    expect(launchAtLogin).toBeChecked();
+    fireEvent.click(launchAtLogin);
+    // Finishing immediately must carry the choice even if the first settings
+    // round-trip has not caused a render yet.
+    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_settings', {
+        settings: { ...SETTINGS, launchAtLogin: false, onboardingCompleted: true },
+      }),
+    );
+  });
+
+  it('reflects a launch-at-login change made from another window', async () => {
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    emit('settings:changed', { ...SETTINGS, launchAtLogin: false });
+
+    expect(
+      screen.getByRole('switch', { name: 'Launch antiburn on startup' }),
+    ).not.toBeChecked();
+  });
+
+  it('does not let an older initial read overwrite a newer settings event', async () => {
+    let resolveInitialSettings!: (settings: typeof SETTINGS) => void;
+    const initialSettings = new Promise<typeof SETTINGS>((resolve) => {
+      resolveInitialSettings = resolve;
+    });
+    mockCommands({ get_settings: initialSettings });
+    render(<OnboardingView />);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_settings'));
+    emit('settings:changed', { ...SETTINGS, launchAtLogin: false });
+    resolveInitialSettings(SETTINGS);
+    await advanceToReady();
+
+    expect(
+      screen.getByRole('switch', { name: 'Launch antiburn on startup' }),
+    ).not.toBeChecked();
+  });
+
+  it('restores the confirmed choice when persistence fails', async () => {
+    const commands = invoke.getMockImplementation();
+    invoke.mockImplementation((command: string, args?: unknown) =>
+      command === 'set_settings'
+        ? Promise.reject(new Error('store unavailable'))
+        : commands?.(command, args),
+    );
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    const launchAtLogin = screen.getByRole('switch', { name: 'Launch antiburn on startup' });
+    fireEvent.click(launchAtLogin);
+    expect(launchAtLogin).not.toBeChecked();
+
+    await waitFor(() => expect(launchAtLogin).toBeChecked());
   });
 
   it('announces each step and moves focus to its heading', async () => {

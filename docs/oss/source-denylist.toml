@@ -25,8 +25,9 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 intended_future_private_repository = "antiburn/antiburn-cloud"
 governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024"]
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
-# disk-space-monitor, tray-title-attributed-string, notification-sound-crate,
-# nudge-window-mechanics, and usage-milestone-engine, and amends the network
+# startup-registration, disk-space-monitor, tray-title-attributed-string,
+# notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine,
+# and amends the network
 # posture: the public app is offline-first; online features are per-feature
 # opt-in, default off, call provider endpoints directly with user-supplied
 # credentials, and never call a private-app endpoint. The D-007 discovery

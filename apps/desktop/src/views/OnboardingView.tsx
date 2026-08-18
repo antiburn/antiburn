@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { open } from '@tauri-apps/plugin-dialog';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   addScanRoot,
@@ -16,6 +16,7 @@ import {
   getSettings,
   listRepositories,
   listScanRoots,
+  onSettingsChanged,
   onScanEvent,
   recheckFolderPermissions,
   removeScanRoot,
@@ -61,6 +62,11 @@ import { OnboardingFlow } from './onboarding/OnboardingFlow';
  */
 export function OnboardingView() {
   const [settings, setSettingsState] = useState<AppSettings | null>(null);
+  const settingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
+  const confirmedSettingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
+  const settingsWriteTail = useRef<Promise<void>>(Promise.resolve());
+  const pendingSettingsWrites = useRef(0);
+  const latestSettingsWrite = useRef(0);
   const [scanRoots, setScanRoots] = useState<string[]>([]);
   const [defaultRoots, setDefaultRoots] = useState<string[]>([]);
   const [permissions, setPermissions] = useState<FolderPermissions>({
@@ -85,11 +91,31 @@ export function OnboardingView() {
   // them; the rest settles together because no step reads another's answer.
   useEffect(() => {
     let active = true;
-    void (async () => {
-      const stored = await getSettings().catch(() => DEFAULT_SETTINGS);
-      if (!active) return;
+    let sawSettingsEvent = false;
+    const pendingSettings = onSettingsChanged((stored) => {
+      sawSettingsEvent = true;
+      // A local write emits this event before its invoke promise resolves. An
+      // older event must not overwrite a newer optimistic choice queued behind
+      // it; the final local response below becomes authoritative instead.
+      if (!active || pendingSettingsWrites.current > 0) return;
+      settingsRef.current = stored;
+      confirmedSettingsRef.current = stored;
       applyTheme(stored.theme);
       setSettingsState(stored);
+    });
+    void (async () => {
+      // Establish the event subscription before taking the initial snapshot;
+      // otherwise a write from Settings can land between those two operations
+      // and be replaced by the older read.
+      await pendingSettings.catch(() => null);
+      const stored = await getSettings().catch(() => DEFAULT_SETTINGS);
+      if (!active) return;
+      if (!sawSettingsEvent && pendingSettingsWrites.current === 0) {
+        settingsRef.current = stored;
+        confirmedSettingsRef.current = stored;
+        applyTheme(stored.theme);
+        setSettingsState(stored);
+      }
       const [roots, defaults, status, folders] = await Promise.all([
         listScanRoots().catch(() => []),
         defaultScanRoots().catch(() => []),
@@ -107,6 +133,7 @@ export function OnboardingView() {
     })();
     return () => {
       active = false;
+      void pendingSettings.then((unlisten) => unlisten());
     };
   }, [refreshRepositoryList]);
 
@@ -145,18 +172,35 @@ export function OnboardingView() {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const applySettings = useCallback(
-    async (change: Partial<AppSettings>) => {
-      const base = settings ?? DEFAULT_SETTINGS;
-      const saved = await setSettings({ ...base, ...change }).catch(() => ({
-        ...base,
-        ...change,
-      }));
-      setSettingsState(saved);
+  const applySettings = useCallback((change: Partial<AppSettings>) => {
+    const next = { ...settingsRef.current, ...change };
+    settingsRef.current = next;
+    setSettingsState(next);
+
+    const writeNumber = latestSettingsWrite.current + 1;
+    latestSettingsWrite.current = writeNumber;
+    pendingSettingsWrites.current += 1;
+
+    const write = settingsWriteTail.current.then(async () => {
+      try {
+        return { saved: await setSettings(next), persisted: true };
+      } catch {
+        return { saved: confirmedSettingsRef.current, persisted: false };
+      }
+    });
+    const settled = write.then(({ saved, persisted }) => {
+      if (persisted) confirmedSettingsRef.current = saved;
+      pendingSettingsWrites.current -= 1;
+      if (writeNumber === latestSettingsWrite.current) {
+        settingsRef.current = saved;
+        applyTheme(saved.theme);
+        setSettingsState(saved);
+      }
       return saved;
-    },
-    [settings],
-  );
+    });
+    settingsWriteTail.current = settled.then(() => undefined);
+    return settled;
+  }, []);
 
   const handleAddScanRoot = useCallback(async () => {
     const picked = await open({ directory: true, multiple: false });
@@ -266,6 +310,8 @@ export function OnboardingView() {
         scanStatus={scanStatus}
         windowDays={windowDays}
         onWindowDaysChange={(days) => void applySettings({ activityWindowDays: days })}
+        launchAtLogin={settings?.launchAtLogin ?? DEFAULT_SETTINGS.launchAtLogin}
+        onLaunchAtLoginChange={(enabled) => void applySettings({ launchAtLogin: enabled })}
         onFinish={() => void handleFinish()}
       />
     </div>

@@ -11,9 +11,11 @@ import { isMacOS } from '../../lib/platform';
 
 import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
 import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
+import { Card } from '../../components/ui/Card';
 import { PushButton } from '../../components/ui/PushButton';
 import { ScrollPane } from '../../components/ui/ScrollPane';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
+import { ToggleRow } from '../../components/ui/ToggleRow';
 import {
   getConsentDiagnostics,
   openFolderAccessSettings,
@@ -87,6 +89,9 @@ export interface OnboardingFlowProps {
   /** How many days of history the popover will list. */
   windowDays: number;
   onWindowDaysChange: (days: number) => void;
+  /** Whether the installed app should start after the reader signs in. */
+  launchAtLogin: boolean;
+  onLaunchAtLoginChange: (enabled: boolean) => void;
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void;
 }
@@ -445,7 +450,15 @@ function HistoricalScan({
   );
 }
 
-function Ready({ sessions }: { sessions: number }) {
+function Ready({
+  sessions,
+  launchAtLogin,
+  onLaunchAtLoginChange,
+}: {
+  sessions: number;
+  launchAtLogin: boolean;
+  onLaunchAtLoginChange: (enabled: boolean) => void;
+}) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
@@ -460,14 +473,17 @@ function Ready({ sessions }: { sessions: number }) {
             ? `${sessions} ${sessions === 1 ? 'session is' : 'sessions are'} indexed and waiting in the menu bar.`
             : 'Nothing is indexed yet — antiburn keeps looking in the background as you work.'}
         </p>
-        {/* This window is about to close, and the app has no Dock icon to
-            close *to*. Saying where it goes here as well as in the
-            notification that follows means the answer survives a reader who
-            has notifications turned off at the system level. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          antiburn is in the menu bar from here on — click its icon any time. Session files are
-          read only; your repositories are never modified.
+          Session files are read only; your repositories are never modified.
         </p>
+        <Card className="mt-5 w-full text-left">
+          <ToggleRow
+            label="Launch antiburn on startup"
+            description="Starts automatically in the menu bar. Change anytime in Settings."
+            checked={launchAtLogin}
+            onChange={onLaunchAtLoginChange}
+          />
+        </Card>
       </div>
     </div>
   );
@@ -492,6 +508,8 @@ export function OnboardingFlow({
   scanStatus,
   windowDays,
   onWindowDaysChange,
+  launchAtLogin,
+  onLaunchAtLoginChange,
   onFinish,
 }: OnboardingFlowProps) {
   const [step, setStep] = useState<Step>('welcome');
@@ -584,7 +602,13 @@ export function OnboardingFlow({
             onCancelScan={onCancelScan}
           />
         )}
-        {step === 'ready' && <Ready sessions={scanStatus?.sessions ?? 0} />}
+        {step === 'ready' && (
+          <Ready
+            sessions={scanStatus?.sessions ?? 0}
+            launchAtLogin={launchAtLogin}
+            onLaunchAtLoginChange={onLaunchAtLoginChange}
+          />
+        )}
       </div>
 
       <footer className="flex shrink-0 items-center gap-2 border-t border-separator px-4 py-3">
