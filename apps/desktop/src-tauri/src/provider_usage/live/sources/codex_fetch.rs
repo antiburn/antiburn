@@ -281,11 +281,12 @@ impl LiveUsageSource for CodexDirectFetch {
         let Some(path) = &self.auth_path else {
             return SourceOutcome::absent();
         };
-        let Some(auth) = read_auth(path) else {
-            return SourceOutcome::absent();
-        };
-
+        // Read inside the cooldown gate, mirroring the Claude source: a tick
+        // the cooldown is going to skip should not touch the disk either.
         self.cooldown.poll(now, || {
+            let Some(auth) = read_auth(path) else {
+                return Ok(None);
+            };
             match fetch_direct(self.transport.as_ref(), &self.cached_refresh, &auth, now) {
                 Ok(snapshot) => Ok(Some(snapshot)),
                 Err(direct_error) => match codex_app_server::fetch(now) {
@@ -363,7 +364,7 @@ fn build_snapshot(
     account_id: Option<String>,
     now: OffsetDateTime,
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
-    let usage = codex::parse_wham_usage(body)?;
+    let usage = codex::parse_wham_usage(body, now)?;
     Ok(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::OPENAI,
         account: account_id,

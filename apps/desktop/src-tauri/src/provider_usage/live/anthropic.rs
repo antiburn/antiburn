@@ -39,7 +39,7 @@ use super::model::{
     CreditBalance, ProviderUsageError, SchemaReason, SupplementalUsage, SupplementalUsageKind,
     UsageScope, UsageUnit, UsageWindow, UsageWindowKind, WindowRole,
 };
-use super::normalize::{used_percent, used_percent_or_fraction};
+use super::normalize::{slugify, used_percent, used_percent_or_fraction};
 
 /// What a well-formed payload yielded.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -159,7 +159,7 @@ fn window(
             "seven-day".to_string()
         }
         (WindowRole::Supplemental, UsageWindowKind::Weekly, UsageScope::Model(model)) => {
-            format!("weekly-{}", model_slug(model))
+            format!("weekly-{}", slugify(model))
         }
         _ => name.replace('_', "-"),
     };
@@ -179,18 +179,6 @@ fn window(
         resets_at: reset_at(value.get("resets_at"))?,
         authoritative: true,
     })
-}
-
-fn model_slug(model: &str) -> String {
-    let mut slug = String::new();
-    for character in model.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-        } else if !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_matches('-').to_string()
 }
 
 /// Metered usage beyond the subscription allowance.

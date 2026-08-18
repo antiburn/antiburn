@@ -101,6 +101,27 @@ fn validate_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageErro
     Ok(Some(value))
 }
 
+/// Turn a provider's free-text display name into a lowercase, hyphenated
+/// identifier fragment: alphanumeric runs are kept and lowercased, every run
+/// of anything else collapses into one hyphen, and the ends are trimmed.
+///
+/// Shared by every parser that builds a model-scoped window id out of a
+/// display name the provider could re-punctuate at any time (a space instead
+/// of a dash, different capitalization) — the id has to stay stable across
+/// those changes because it is what the sample history and the milestone
+/// ledger join on, and the display name itself is not.
+pub fn slugify(text: &str) -> String {
+    let mut slug = String::new();
+    for character in text.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +169,18 @@ mod tests {
         assert_eq!(used_percent_or_fraction(Some(-0.5)), Err(INVALID));
         assert_eq!(used_percent_or_fraction(Some(f64::NAN)), Err(INVALID));
         assert_eq!(used_percent_or_fraction(None), Ok(None));
+    }
+
+    #[test]
+    fn slugify_lowercases_and_hyphenates_punctuation_runs() {
+        assert_eq!(slugify("Claude Opus 4.5"), "claude-opus-4-5");
+        assert_eq!(slugify("GPT-5.3-Codex-Spark"), "gpt-5-3-codex-spark");
+    }
+
+    #[test]
+    fn slugify_trims_leading_and_trailing_hyphens() {
+        assert_eq!(slugify("  Fable  "), "fable");
+        assert_eq!(slugify("--already--hyphenated--"), "already-hyphenated");
     }
 
     #[test]

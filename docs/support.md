@@ -130,13 +130,13 @@ version exists, and which the app never depends on.
 - There is **no analytics and no telemetry** in this application — no client, no
   consent screen, and no endpoint.
 
-**One setting causes traffic that is not antiburn's, though it is antiburn making
-it.** Settings → Usage has a switch, off by default, that lets antiburn ask each
-provider directly for your current plan usage — about every ten minutes — using
-the credential your coding tool already keeps on this machine (for example, the
-Claude CLI's own OAuth credential, or the Codex CLI's own). That is antiburn going
-online as you, with what you already have access to; no antiburn server sees the
-request or the response. When a provider's endpoint cannot be reached directly,
+**One setting makes antiburn go online as you.** Settings → Usage has a switch,
+off by default, that lets antiburn ask each provider directly for your current
+plan usage — about every ten minutes — using the credential your coding tool
+already keeps on this machine (for example, the Claude CLI's own OAuth
+credential, or the Codex CLI's own). The traffic goes only between this machine
+and a provider you already use; no antiburn server sees the request or the
+response. When a provider's endpoint cannot be reached directly,
 antiburn falls back to asking your coding tool's own local process the same
 question, over its own protocol, rather than leaving the reading blank. With the
 switch off, none of this runs, no credential is read, and antiburn has no plan

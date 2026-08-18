@@ -53,6 +53,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
+use crate::provider_usage::live::codex::is_sliding_reset_projection;
 use crate::provider_usage::live::model::{
     Confidence, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, SupportTier, UsageScope,
     UsageSource, UsageWindow, UsageWindowKind, WindowRole,
@@ -81,13 +82,13 @@ const NO_RATE_LIMIT_ACCOUNT_TYPES: [&str; 2] = ["apiKey", "amazonBedrock"];
 
 /// Ask the local `codex` app-server for the reader's own rate limits.
 ///
-/// `Ok(None)` covers both "the `codex` binary is not the reader's problem to
-/// fix" — no, wait: it covers exactly one case, an account type with no rate
-/// limit to report (see the module doc). Every other absence — the
-/// executable missing, the process refusing to talk, a malformed response —
-/// is an error, because unlike a merely-unconfigured file, a reader who
-/// reaches this fallback already has Codex installed and signed in from the
-/// direct fetch having found `auth.json` in the first place.
+/// `Ok(None)` covers exactly one case: an account type with no rate limit to
+/// report (see the module doc's "What 'no rate limits' means"). Every other
+/// absence — the executable missing, the process refusing to talk, a
+/// malformed response — is an error, because unlike a merely-unconfigured
+/// file, a reader who reaches this fallback already has Codex installed and
+/// signed in: the direct fetch only calls here after finding `auth.json` in
+/// the first place.
 pub fn fetch(now: OffsetDateTime) -> Result<Option<ProviderUsageSnapshot>, ProviderUsageError> {
     let deadline = Instant::now() + TIMEOUT;
     let mut child = spawn()?;
@@ -386,7 +387,7 @@ fn parse_bucket(
         let resets_at = raw_reset
             .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
             .filter(|reset| {
-                !is_sliding_reset_projection(*reset, observed_at, minutes, used_percent)
+                !is_sliding_reset_projection(*reset, observed_at, minutes * 60, used_percent)
             });
 
         let weekly = minutes == 10_080;
@@ -435,25 +436,6 @@ fn raw_epoch_seconds(value: Option<&Value>) -> Result<Option<i64>, ProviderUsage
         .as_i64()
         .map(Some)
         .ok_or(ProviderUsageError::Schema(SchemaReason::InvalidValue))
-}
-
-/// Whether a stated reset is a rolling projection rather than a committed
-/// one: unused (`usedPercent == 0`) and landing within two minutes of
-/// exactly `observed_at + windowDurationMins` — the shape a server produces
-/// when it is reporting "a window this long, currently empty" rather than an
-/// actual scheduled reset. Keeping a timestamp like that would let the
-/// runway math treat a rolling estimate as a hard deadline.
-fn is_sliding_reset_projection(
-    reset: OffsetDateTime,
-    observed_at: OffsetDateTime,
-    window_minutes: i64,
-    used_percent: f64,
-) -> bool {
-    if used_percent != 0.0 {
-        return false;
-    }
-    let projected = observed_at + time::Duration::minutes(window_minutes);
-    (reset - projected).abs() <= time::Duration::minutes(2)
 }
 
 #[cfg(test)]
@@ -553,15 +535,18 @@ mod tests {
 
     #[test]
     fn a_zero_usage_reset_landing_on_the_projected_boundary_is_dropped() {
-        // Five-hour (300-minute) window, currently unused, whose stated reset
-        // lands almost exactly 300 minutes from now: a rolling projection,
-        // not a commitment.
+        // Five-hour (18,000-second) window, currently unused, whose stated
+        // reset lands almost exactly 18,000 seconds from now: a rolling
+        // projection, not a commitment. This is the shared helper
+        // `codex.rs` also exercises against its own account-wide windows —
+        // covered here as well because `parse_bucket` calls it with a
+        // minutes-to-seconds conversion this test is also checking.
         let observed_at = at(NOW);
-        let projected = observed_at + time::Duration::minutes(300);
+        let projected = observed_at + time::Duration::seconds(18_000);
         assert!(is_sliding_reset_projection(
             projected + time::Duration::seconds(30),
             observed_at,
-            300,
+            18_000,
             0.0
         ));
     }
@@ -573,7 +558,7 @@ mod tests {
         assert!(!is_sliding_reset_projection(
             real_reset,
             observed_at,
-            300,
+            18_000,
             0.0
         ));
     }
@@ -584,11 +569,11 @@ mod tests {
         // actually been used has a real reset, whatever its timing looks
         // like.
         let observed_at = at(NOW);
-        let projected = observed_at + time::Duration::minutes(300);
+        let projected = observed_at + time::Duration::seconds(18_000);
         assert!(!is_sliding_reset_projection(
             projected,
             observed_at,
-            300,
+            18_000,
             4.0
         ));
     }

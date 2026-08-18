@@ -6,25 +6,38 @@
 //!
 //! # The credential
 //!
-//! The Claude CLI keeps its OAuth tokens in `$CLAUDE_CONFIG_DIR/.credentials.json`
-//! when that variable is set, and `~/.claude/.credentials.json` otherwise —
-//! the same file and the same lifecycle it already owns for every other
-//! request it makes. This source reads the access token out of it and calls
-//! the provider's own usage endpoint with the reader's own credential, the
-//! same request the CLI itself would make. No key of ours, no service of
-//! ours in between.
+//! The Claude CLI keeps its OAuth tokens in one of two places, depending on
+//! platform, and this source tries both:
+//!
+//! - **The macOS Keychain**, first, on macOS only — the same generic-password
+//!   item the CLI itself reads and writes, service name
+//!   `"Claude Code-credentials"`. Read by spawning `security
+//!   find-generic-password`, exactly as if the reader had typed it
+//!   themselves — the operating system applies the same access control to
+//!   that subprocess as it would to the reader's own terminal; see
+//!   [`macos_keychain`] for the deadline that keeps a stuck read from ever
+//!   hanging the scheduler.
+//! - **`$CLAUDE_CONFIG_DIR/.credentials.json`** when that variable is set,
+//!   and `~/.claude/.credentials.json` otherwise — on every platform, and as
+//!   the fallback on macOS when the Keychain carrier answers nothing.
+//!
+//! Both carriers hold the identical JSON shape, `{"claudeAiOauth": {...}}`,
+//! so one parser reads whichever one this source obtained. This source reads
+//! the access token out of it and calls the provider's own usage endpoint
+//! with the reader's own credential, the same request the CLI itself would
+//! make. No key of ours, no service of ours in between.
 //!
 //! **This source never refreshes that token.** Refreshing is a lifecycle
 //! decision — issuing a new credential under the reader's account — and it
 //! belongs to the tool that owns the token's lifecycle, which is the CLI, not
-//! a background reader of its credential file. If `expiresAt` has already
-//! passed, that is reported as an authentication failure without a network
-//! call: the fix is signing in again with the CLI, not a retry from here.
+//! a background reader of its credential. If `expiresAt` has already passed,
+//! that is reported as an authentication failure without a network call: the
+//! fix is signing in again with the CLI, not a retry from here.
 //!
-//! A missing or unparseable credentials file is not an error — it is the
-//! ordinary state of a machine where the CLI has never signed in, or keeps
-//! its tokens somewhere this file format does not describe (the system
-//! keychain, on some platforms). The source simply has nothing to report.
+//! Finding neither carrier — no Keychain item, no credentials file, or
+//! either one in a shape this parser does not recognize — is not an error.
+//! It is the ordinary state of a machine where the CLI has never signed in.
+//! The source simply has nothing to report.
 //!
 //! # Retrying and going quiet
 //!
@@ -79,13 +92,21 @@ struct ClaudeCredentials {
 /// Read and parse the credentials file. `None` covers both "no file" and "a
 /// file that is not this shape" — see the module doc for why neither is an
 /// error here.
-fn read_credentials(path: &Path) -> Option<ClaudeCredentials> {
+fn read_credentials_file(path: &Path) -> Option<ClaudeCredentials> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() > MAX_CREDENTIAL_BYTES {
         return None;
     }
     let contents = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&contents).ok()?;
+    parse_credentials_json(&contents)
+}
+
+/// Parse the `{"claudeAiOauth": {...}}` shape both carriers hold — the
+/// Keychain's raw value and the credentials file's contents are the same
+/// JSON, so one function reads either. `None` covers every way the input is
+/// not this shape; see the module doc for why that is not an error.
+fn parse_credentials_json(contents: &str) -> Option<ClaudeCredentials> {
+    let value: Value = serde_json::from_str(contents).ok()?;
     let oauth = value.get("claudeAiOauth")?;
     Some(ClaudeCredentials {
         access_token: oauth.get("accessToken")?.as_str()?.to_owned(),
@@ -98,9 +119,101 @@ fn read_credentials(path: &Path) -> Option<ClaudeCredentials> {
     })
 }
 
+/// The macOS Keychain carrier.
+///
+/// On macOS, the Claude CLI does not always write
+/// `~/.claude/.credentials.json` — its credential can instead live only in
+/// the login keychain, as a generic-password item this module reads the same
+/// way the reader themselves would: by spawning `security
+/// find-generic-password`. The operating system applies its own access
+/// control to that read exactly as it would to the reader typing the same
+/// command, prompting if it judges a prompt is owed — the subprocess is the
+/// ordinary way to ask, not a way around being asked.
+#[cfg(target_os = "macos")]
+mod macos_keychain {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// A Keychain read is normally instant. The one way it is not is a
+    /// stale access-control prompt waiting on a person who is not there to
+    /// answer it — this is a background scheduler, not an interactive
+    /// terminal — so this carrier is abandoned, not awaited, past this
+    /// deadline, and the file carrier is tried instead.
+    const TIMEOUT: Duration = Duration::from_secs(3);
+
+    /// Matches the credentials-file cap: this is a small OAuth token store
+    /// wherever it lives, not a reason to trust an unbounded read.
+    const MAX_BYTES: usize = super::MAX_CREDENTIAL_BYTES as usize;
+
+    const SERVICE_NAME: &str = "Claude Code-credentials";
+
+    /// The raw JSON `security` printed to stdout, or `None` for every way
+    /// this can fail to produce one — the item does not exist, `security`
+    /// is not on this machine, a nonzero exit, an empty answer, a timeout.
+    /// All of it reads as "nothing to report from this carrier", exactly
+    /// like a missing file: this carrier says nothing about whether the
+    /// account itself has usage to report.
+    pub fn read() -> Option<String> {
+        let mut child = antiburn_local::platform::process::headless_std_command("security")
+            .args(["find-generic-password", "-s", SERVICE_NAME, "-w"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+
+        let mut stdout = child.stdout.take()?;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buffer = Vec::with_capacity(4096);
+            let mut chunk = [0_u8; 4096];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        buffer.extend_from_slice(&chunk[..read]);
+                        if buffer.len() > MAX_BYTES {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(buffer);
+        });
+
+        let bytes = match rx.recv_timeout(TIMEOUT) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                // Abandoned, not awaited further: kill it, and do not wait
+                // for the reader thread — it will unblock on its own once
+                // the pipe closes and simply have nowhere left to send.
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        };
+        let status = child.wait().ok()?;
+        if !status.success() || bytes.is_empty() || bytes.len() > MAX_BYTES {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
+    }
+}
+
 /// Asks `GET /api/oauth/usage` with the CLI's own access token.
 pub struct ClaudeDirectFetch {
     credentials_path: Option<PathBuf>,
+    /// Whether to consult the macOS Keychain before falling back to the
+    /// credentials file. Always true in production; the `at()` test
+    /// constructor disables it so a test exercises the file it names
+    /// deterministically, rather than depending on — and risking a live
+    /// network call through — whatever this machine's own Keychain happens
+    /// to hold. Unused, and absent from the struct, on every other platform.
+    #[cfg(target_os = "macos")]
+    try_keychain: bool,
     cooldown: Cooldown,
 }
 
@@ -108,17 +221,36 @@ impl ClaudeDirectFetch {
     pub fn new() -> ClaudeDirectFetch {
         ClaudeDirectFetch {
             credentials_path: default_credentials_path(),
+            #[cfg(target_os = "macos")]
+            try_keychain: true,
             cooldown: Cooldown::new(),
         }
     }
 
-    /// A source rooted at an explicit path, for tests.
+    /// A source rooted at an explicit path, with the Keychain carrier
+    /// disabled — see the `try_keychain` field doc for why tests need that.
     #[cfg(test)]
     pub fn at(path: PathBuf) -> ClaudeDirectFetch {
         ClaudeDirectFetch {
             credentials_path: Some(path),
+            #[cfg(target_os = "macos")]
+            try_keychain: false,
             cooldown: Cooldown::new(),
         }
+    }
+
+    /// The credential from whichever carrier answers first: the Keychain,
+    /// where this source is built to try it, then the credentials file.
+    fn read_credentials(&self) -> Option<ClaudeCredentials> {
+        #[cfg(target_os = "macos")]
+        if self.try_keychain
+            && let Some(credentials) = macos_keychain::read()
+                .as_deref()
+                .and_then(parse_credentials_json)
+        {
+            return Some(credentials);
+        }
+        read_credentials_file(self.credentials_path.as_deref()?)
     }
 }
 
@@ -141,15 +273,16 @@ impl LiveUsageSource for ClaudeDirectFetch {
 
     fn fetch(&self) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
-        let Some(path) = &self.credentials_path else {
-            return SourceOutcome::absent();
-        };
-        let Some(credentials) = read_credentials(path) else {
-            return SourceOutcome::absent();
-        };
-
-        self.cooldown
-            .poll(now, || fetch_live(&credentials, now).map(Some))
+        // The credential read sits inside the cooldown gate on purpose: on
+        // macOS it spawns a `security` subprocess, and a scheduler tick that
+        // the cooldown is going to skip anyway should not pay for one — nor
+        // re-raise a Keychain access prompt the reader has already seen.
+        self.cooldown.poll(now, || {
+            let Some(credentials) = self.read_credentials() else {
+                return Ok(None);
+            };
+            fetch_live(&credentials, now).map(Some)
+        })
     }
 }
 
@@ -267,7 +400,7 @@ mod tests {
         let path = dir.path().join(".credentials.json");
         let padding = "x".repeat((MAX_CREDENTIAL_BYTES + 1) as usize);
         fs::write(&path, format!(r#"{{"pad": "{padding}"}}"#)).expect("write");
-        assert!(read_credentials(&path).is_none());
+        assert!(read_credentials_file(&path).is_none());
     }
 
     #[test]
@@ -275,9 +408,37 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".credentials.json");
         fs::write(&path, credentials_file(NOW * 1_000, "max")).expect("write");
-        let credentials = read_credentials(&path).expect("parses");
+        let credentials = read_credentials_file(&path).expect("parses");
         assert_eq!(credentials.access_token, "synthetic-token");
         assert_eq!(credentials.expires_at_ms, NOW * 1_000);
         assert_eq!(credentials.subscription_type.as_deref(), Some("max"));
+    }
+
+    /// The Keychain and the file carrier hold the identical JSON shape, so
+    /// this exercises `parse_credentials_json` directly against a synthetic
+    /// value shaped exactly like what `security find-generic-password -w`
+    /// prints — including the fields this source never reads
+    /// (`refreshTokenExpiresAt`, `scopes`, `rateLimitTier`), to confirm they
+    /// are ignored rather than tripping the parser.
+    #[test]
+    fn keychain_shaped_json_parses_through_the_same_function_as_the_file() {
+        let keychain_value = format!(
+            r#"{{"claudeAiOauth": {{"accessToken": "synthetic-token",
+              "refreshToken": "synthetic-refresh", "expiresAt": {},
+              "refreshTokenExpiresAt": {}, "scopes": ["user:inference"],
+              "subscriptionType": "max", "rateLimitTier": "default_claude_max_5x"}}}}"#,
+            NOW * 1_000,
+            (NOW + 30_000_000) * 1_000
+        );
+        let credentials = parse_credentials_json(&keychain_value).expect("parses");
+        assert_eq!(credentials.access_token, "synthetic-token");
+        assert_eq!(credentials.expires_at_ms, NOW * 1_000);
+        assert_eq!(credentials.subscription_type.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn unparseable_keychain_shaped_text_reads_as_absent() {
+        assert!(parse_credentials_json("not json at all").is_none());
+        assert!(parse_credentials_json(r#"{"somethingElse": true}"#).is_none());
     }
 }

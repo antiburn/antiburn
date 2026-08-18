@@ -282,6 +282,27 @@ describe('hiding unused model quota limits', () => {
     expect(isUsageWindowVisible({ ...quiet, usedPercent: 14 })).toBe(true);
   });
 
+  it('hides a quiet Codex model-scoped window the same way, and shows a used one', () => {
+    // Codex's `additional_rate_limits` produce the identical
+    // role/scopeModel shape as Anthropic's `weekly_scoped` windows — this
+    // proves the hide-until-used rule needs no provider-specific branch to
+    // cover it.
+    const quiet = window({
+      id: 'weekly-nightjar',
+      role: 'supplemental',
+      scopeModel: 'Nightjar',
+      usedPercent: 0,
+    });
+    const codexProvider = provider({ provider: 'openai', windows: [quiet] });
+    expect(liveWindows(codexProvider)).toEqual([]);
+
+    const used = provider({
+      provider: 'openai',
+      windows: [{ ...quiet, usedPercent: 6 }],
+    });
+    expect(liveWindows(used).map((entry) => entry.id)).toEqual(['weekly-nightjar']);
+  });
+
   it('never hides a primary window, however empty', () => {
     expect(isUsageWindowVisible(window({ role: 'primaryShort', usedPercent: 0 }))).toBe(true);
     expect(isUsageWindowVisible(window({ role: 'primaryLong', usedPercent: null }))).toBe(true);
