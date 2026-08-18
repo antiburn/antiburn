@@ -20,9 +20,12 @@ import { clearLocalIndex } from '../../lib/ipc';
  *
  * This pane is the long form of a promise the rest of the app only has room to
  * gesture at. It is deliberately specific — naming what can be stored, the
- * absence of automatic expiry, and the single network exception — because a
- * local-first app's privacy page is worth nothing if it is written in the same
- * reassuring generalities as everyone else's.
+ * absence of automatic expiry, and exactly what goes online and why — because
+ * a local-first app's privacy page is worth nothing if it is written in the
+ * same reassuring generalities as everyone else's. antiburn goes online as
+ * the reader's own agent, with the reader's own credentials. What it never
+ * does is need a service of ours, or hand what it
+ * finds to one.
  */
 
 /** What the "forget everything" action is currently doing. */
@@ -86,16 +89,21 @@ export function PrivacyPane() {
             are.
           </Disclosure>
           <Disclosure label="Nothing is uploaded">
-            There is no account, no server, and no usage data collected. antiburn itself opens
-            one kind of connection: it asks GitHub Releases whether a newer version exists, and
-            that check sends nothing about you or your sessions.
+            There is no antiburn account and no antiburn server — there is nothing of ours for
+            your data to reach. antiburn does make requests of its own: it asks GitHub Releases
+            whether a newer version exists, and, where a source is enabled, it can ask a
+            provider for your current plan limits using the credentials your own tools already
+            stored. Handing a provider back a credential it issued you is not a disclosure — it
+            already has it. No third party sees any of it, and no antiburn server exists to see
+            it either.
           </Disclosure>
-          <Disclosure label="One setting lets your agent go online">
-            Settings &rarr; Usage has a switch, off by default, that lets antiburn run your
-            coding agent in the background to refresh its own usage reading. Your agent goes
-            online when it does that, exactly as it does when you use it yourself; antiburn
-            reads the file it writes and opens no connection of its own. With the switch off,
-            plan limits are read from whatever your agent last cached here and nothing runs.
+          <Disclosure label="One setting lets antiburn go online for current figures">
+            Settings &rarr; Usage has a switch, off by default, for keeping plan limits current.
+            Turned on, antiburn can run your coding agent in the background to refresh its own
+            usage reading, or read a provider&rsquo;s figures directly with the credentials your
+            tools already have — either way, that is antiburn acting as you, online with what
+            you already have access to. With the switch off, plan limits are read from whatever
+            was last cached here, and nothing runs in the background to update them.
           </Disclosure>
           <Disclosure label="Exports describe real work">
             An exported session carries derived analysis plus the session&rsquo;s title and the

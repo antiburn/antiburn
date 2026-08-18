@@ -10,8 +10,9 @@ cost estimates. Everything runs on your device.
 Kiro, and Amp are discovered from their documented local files on every supported
 platform. Three carry qualifications:
 
-- **Antigravity** and **Windsurf** are *disk-only*: sessions are read from documented
-  local files, and their live language-server APIs are deliberately not used.
+- **Antigravity** and **Windsurf** read only documented local files: their live
+  language-server APIs aren't read, so a session that exists only in that live
+  state won't appear.
 - **Pi** is not supported on Windows.
 - **WSL** discovery covers **Claude Code, Codex, and OpenCode** only. Other agents are
   found in the native environment only.
@@ -20,10 +21,14 @@ Supported platforms are macOS 13 or later, Windows 11, and mainstream x86-64 Lin
 desktops. See [`docs/support.md`](docs/support.md) for the full matrix and for what
 antiburn stores.
 
-**Network boundary:** the engine performs no network or socket I/O — discovery reads
-documented files, read-only databases, and bounded WSL paths only. The desktop app is
-useful fully offline; its only internet exception is checking GitHub Releases for a
-newer version. There is no analytics or telemetry of any kind in this application.
+**Local boundary:** antiburn needs no connection to any service of ours — no antiburn
+account, server, or backend, ever. Everything runs on this machine, as you. The
+connections it makes beyond that are yours: it can read your provider's own current
+usage figures with your own credentials — traffic between this machine and a provider
+you already use, never us. The one call antiburn makes to a service of ours is the update check, against
+GitHub Releases, and the app never depends on it. There is no analytics or telemetry
+of any kind in this application, and antiburn hands your data to no one who doesn't
+already have it.
 
 **Resource boundary:** antiburn is a background utility, so CPU, memory, and disk I/O
 are product constraints. Work must be lazy, bounded, and no more frequent or
@@ -64,8 +69,9 @@ cargo test
 ```
 
 The test suite includes mechanical source-boundary checks (`tests/boundary.rs`)
-that enforce the network-free, local-only contract: prohibited concepts,
-network-capable dependencies, and manifest integrity all fail the build.
+that enforce the engine's local contract: no dependency on any service of ours,
+prohibited concepts (telemetry, commercial identifiers), and manifest integrity
+all fail the build.
 
 ### Desktop application
 

@@ -426,8 +426,10 @@ impl Default for AppSettings {
             notify_usage_anomalies: true,
             milestones_5h: Milestones::default(),
             milestones_weekly: Milestones::default(),
-            // The one default-off switch: turning it on is what authorizes
-            // the app's only non-update network use.
+            // The one default-off switch: turning it on is what lets antiburn
+            // ask the agent to go online, on its own account, to refresh its
+            // usage reading — the only traffic beyond the update check, and
+            // traffic that's the agent's and its provider's, not ours.
             live_usage_enabled: false,
         }
     }

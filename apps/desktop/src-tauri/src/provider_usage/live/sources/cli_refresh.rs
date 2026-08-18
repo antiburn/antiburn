@@ -12,8 +12,9 @@
 //! way to improve it.
 //!
 //! This source is the way to improve it, and it is the only part of the
-//! feature that causes any network traffic at all — indirectly, through a
-//! child process. It is therefore opt-in and default off
+//! feature that causes any network traffic at all — the agent's own, on its
+//! own account, made indirectly through a child process this module starts.
+//! It is therefore opt-in and default off
 //! ([`crate::store::AppSettings::live_usage_enabled`]), and the settings row
 //! says in as many words what turning it on does.
 //!

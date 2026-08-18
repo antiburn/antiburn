@@ -24,6 +24,16 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- **What "local" means, spelled out.** antiburn needs no antiburn account,
+  server, or backend — everything runs on your machine, as you. The
+  connections it makes are yours: reading your provider's own current usage
+  figures with your own credentials, traffic between this machine and a
+  provider you already use. Its one call to a service of ours — checking
+  whether a newer version exists — is a convenience it never depends on, and
+  it hands your data to no one who doesn't already have it.
+
 ## [0.1.0-rc.4] - 2026-08-17
 
 A release-candidate rehearsal build, not a supported release. The macOS and

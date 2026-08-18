@@ -5,15 +5,23 @@
 
 // Whole-tree source-boundary check.
 //
-// The engine's `tests/boundary.rs` enforces the network-free contract for
-// `crates/antiburn-local`; this script extends the prohibited-concept scan to
-// the ENTIRE repository tree (app, docs, CI), so commercial identities,
-// telemetry SDKs, and live-probe concepts cannot land anywhere.
+// antiburn is local in one exact sense: it needs no connection to any
+// service of ours. It is not offline — as the reader's own agent it may make
+// network requests, read the credential and configuration files the
+// reader's own tools wrote, and call a provider's API with the reader's own
+// credentials. The one hard line is disclosure, not technique: no data
+// exfiltration, and no private/commercial provenance. The engine's
+// `tests/boundary.rs` enforces that contract for `crates/antiburn-local`;
+// this script extends the same prohibited-concept scan to the ENTIRE
+// repository tree (app, docs, CI), so commercial identities and telemetry
+// SDKs cannot land anywhere.
 //
 // Exemptions (each is a place that legitimately names the concepts):
 // - docs/oss/*  — the governance manifests' own rule text
 // - NOTICE      — the copyright holder's legal name
 // - crates/antiburn-local/tests/boundary.rs — the engine's pattern table
+// - crates/antiburn-local/deny.toml — its own telemetry-SDK ban list
+// - apps/desktop/tests/no-exfiltration.test.ts — its own pattern table
 // - this script — its own pattern table
 //
 // Conformance audits that must name prohibited concepts are governance
@@ -30,6 +38,8 @@ const EXEMPT = new Set([
   'docs/oss/source-allowlist.toml',
   'docs/oss/source-denylist.toml',
   'crates/antiburn-local/tests/boundary.rs',
+  'crates/antiburn-local/deny.toml',
+  'apps/desktop/tests/no-exfiltration.test.ts',
   'scripts/check-boundary.mjs',
 ]);
 
@@ -45,28 +55,21 @@ const TEXT_EXTENSIONS = new Set([
   '.toml', '.yml', '.yaml', '.html', '.txt', '.plist',
 ]);
 
-// Case-insensitive concept tokens derived from the denylist's concept rules.
+// Case-insensitive concept tokens derived from the denylist's concept rules:
+// commercial identities and telemetry/analytics SDKs — the "phones home"
+// surface the no-data-exfiltration line prohibits.
 const FORBIDDEN_ANY_CASE = [
   'cadence',
   'teamcadence',
   'sentry',
   'litellm',
   'stripe',
-  'csrf',
-  'lsof',
-  'netstat',
   'targetorgid',
   'radar',
   'tune-up',
+  'posthog',
+  'datadog',
 ];
-
-// Case-sensitive code tokens. `127.0.0.1` is allowed ONLY in the two dev-server
-// config files (Vite bind address), never in engine or runtime code.
-const FORBIDDEN_CODE = ['reqwest::', 'TcpListener', 'UdpSocket'];
-const DEV_SERVER_FILES = new Set([
-  'apps/desktop/vite.config.ts',
-  'apps/desktop/src-tauri/tauri.conf.json',
-]);
 
 function walk(dir, files = []) {
   for (const entry of readdirSync(dir)) {
@@ -90,12 +93,6 @@ for (const rel of walk(ROOT)) {
   const lower = content.toLowerCase();
   for (const token of FORBIDDEN_ANY_CASE) {
     if (lower.includes(token)) violations.push(`${rel}: contains ${JSON.stringify(token)}`);
-  }
-  for (const token of FORBIDDEN_CODE) {
-    if (content.includes(token)) violations.push(`${rel}: contains ${JSON.stringify(token)}`);
-  }
-  if (content.includes('127.0.0.1') && !DEV_SERVER_FILES.has(rel)) {
-    violations.push(`${rel}: contains "127.0.0.1" outside the dev-server configs`);
   }
 }
 

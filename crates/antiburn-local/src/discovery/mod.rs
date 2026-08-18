@@ -7,9 +7,11 @@
 //! Discovery answers three questions about the machine it runs on: which agent
 //! sessions exist, where each one ran, and what to call it. Everything here
 //! reads documented on-disk layouts, read-only vendor databases, and bounded
-//! WSL paths. Nothing here opens a socket, probes a running process, or talks
-//! to a vendor's local API — an embedding application that wants live
-//! enrichment layers it on top (see [`SessionMirror`]).
+//! WSL paths — discovery itself opens no socket, probes no running process,
+//! and calls no vendor's local API. That is a property of this module, not a
+//! rule antiburn holds everywhere: an embedding application that wants live
+//! enrichment (inspecting a running agent, calling it over loopback) layers
+//! that on top (see [`SessionMirror`]).
 //!
 //! # Layout
 //!

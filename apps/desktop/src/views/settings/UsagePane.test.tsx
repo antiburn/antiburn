@@ -40,15 +40,15 @@ describe('UsagePane', () => {
     // makes readings current *and* it lets milestone notifications fire.
     pane();
     const row = screen.getByText('Ask my agent to refresh').closest('div')!;
-    expect(row).toHaveTextContent(/your agent goes online/i);
-    expect(row).toHaveTextContent(/antiburn still opens no connection of its own/i);
+    expect(row).toHaveTextContent(/that.s your own connection, made as you/i);
+    expect(row).toHaveTextContent(/no antiburn server is involved/i);
     expect(row).toHaveTextContent(/milestone notifications fire/i);
   });
 
   it('says what happens with the switch off, rather than leaving it implied', async () => {
     pane();
     expect(screen.getByText('Without this').closest('div')).toHaveTextContent(
-      /nothing goes online/i,
+      /nothing runs in the background/i,
     );
   });
 

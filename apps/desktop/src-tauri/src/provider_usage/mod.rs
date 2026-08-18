@@ -12,16 +12,15 @@
 //! calendar windows, prices them against the engine's bundled catalog, and
 //! reports how confident the result is.
 //!
-//! # Where the numbers do *not* come from
+//! # Its ceiling, and why
 //!
-//! No credential is read, no provider account API is called, no port is
-//! discovered, no socket or loopback connection is opened, and no provider IPC
-//! is used. This module's whole input is a `Vec` of rows the caller already
-//! read out of the app's own SQLite file, plus a clock. That is what makes the
-//! feature honest offline, and it is also its hard ceiling: a transcript
-//! records what was *spent*, so an allowance, a percentage, a remaining
-//! balance, and a reset time are all unavailable — and are therefore absent
-//! from the payload rather than estimated into it.
+//! This module's whole input is a `Vec` of rows the caller already read out
+//! of the app's own SQLite file, plus a clock: it derives spend purely from
+//! local transcript rows. It needs no provider figure, no credential, and no
+//! call of any kind, because a transcript already records what was *spent*.
+//! That is also its hard ceiling: an allowance, a percentage, a remaining
+//! balance, and a reset time are none of them things a transcript states, so
+//! they are absent from the payload rather than estimated into it.
 //!
 //! # An honest limitation, surfaced rather than hidden
 //!

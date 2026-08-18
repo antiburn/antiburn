@@ -14,9 +14,10 @@ repository = "https://github.com/antiburn/antiburn"
 name = "antiburn_local"
 path = "src/lib.rs"
 
-# Self-containment contract: this crate performs no network or socket I/O and
-# depends on no private workspace packages. Every dependency added here must
-# pass the D-010 license check against the crate's own lockfile.
+# Local-dependence contract: this crate needs no service of ours and depends
+# on no private workspace packages. It uses only the network a feature
+# actually needs — none, today. Every dependency added here must pass the
+# D-010 license check against the crate's own lockfile.
 [dependencies]
 anyhow = "1"
 # Async trait methods on the per-agent discovery adapter contract.
@@ -28,7 +29,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # Async runtime pieces used by local persistence and the bounded child-process
-# mechanism. Deliberately excludes `net`: the engine opens no sockets.
+# mechanism. Excludes `net`: nothing in the engine needs it yet, not that the
+# engine may not open a socket.
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 # Logging facade only. Emits nothing unless the embedding application installs
 # a subscriber, and performs no I/O of its own.

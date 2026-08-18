@@ -23,13 +23,17 @@ Reports arrive as private GitHub security advisories. On arrival:
 2. **Reproduce it**, and say whether you could. A report you cannot reproduce is
    not a report you can dismiss — ask for the missing detail.
 3. **Decide the severity in terms of this application.** antiburn runs
-   on-device, reads files the reader already has, and makes exactly one network
-   request. The classes that matter most, from `SECURITY.md`:
+   on-device, as the reader, and needs no connection to any service of ours;
+   the one call it makes on its own account is the update check. The classes
+   that matter most, from `SECURITY.md`:
+   - anything that sends session content, credentials, or anything else about
+     the reader to a service of ours, or to any third party;
    - anything that causes network egress from `antiburn-local`, which is
      supposed to have none;
    - discovery escaping its documented provider roots, following a symlink out
      of an approved root, or writing to a provider-owned store;
-   - reads of credential, cookie, token, account, or billing data;
+   - a credential or token read for one purpose ending up logged, cached
+     beyond that purpose, or sent anywhere but its issuing provider;
    - transcript content leaving app-controlled local storage, reaching logs,
      or appearing in an export that did not ask;
    - anything reachable through the updater, which is the one channel that can
@@ -50,9 +54,9 @@ the reader has to take the whole thing.
 Write a test that fails without the fix. If the fault crossed one of the
 mechanical boundaries this repository already enforces — the engine's
 `tests/boundary.rs`, the whole-tree `scripts/check-boundary.mjs`, the frontend's
-`tests/offline.test.ts` — extend that check as part of the fix. A boundary that
-was crossed once had a gap in it, and the test is what closes the gap rather
-than the patch.
+`tests/no-exfiltration.test.ts` — extend that check as part of the fix. A
+boundary that was crossed once had a gap in it, and the test is what closes
+the gap rather than the patch.
 
 ## Releasing it
 

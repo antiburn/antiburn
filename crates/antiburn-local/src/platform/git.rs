@@ -10,7 +10,8 @@
 //! translated back to host-readable paths.
 //!
 //! The engine only *reads* local repository state. It runs no command that
-//! contacts a network: no `fetch`, no `push`, no `clone`.
+//! changes the repository or contacts its remote: no `fetch`, no `push`, no
+//! `clone`.
 
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashSet};

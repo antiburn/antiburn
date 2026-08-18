@@ -341,7 +341,7 @@ describe('UsageView — plan limits layered over local estimates', () => {
     render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />);
 
     expect(screen.getByText(/Spend figures are local estimates/)).toBeInTheDocument();
-    expect(screen.getByText(/antiburn fetches nothing/)).toBeInTheDocument();
+    expect(screen.getByText(/Plan limits are your provider.s own figures/)).toBeInTheDocument();
   });
 });
 

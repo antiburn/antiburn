@@ -34,9 +34,10 @@
 //! over settings and state, and presentation — placement, auto-dismiss, the
 //! chime — is applied at the seam, never decided here.
 //!
-//! Nothing here is network-capable. A nudge is an event emitted to a local
-//! webview, and antiburn's notification bodies carry a version string, a scan
-//! error, or a locally-estimated figure — never session content.
+//! Every notification here is generated on this machine; none of it comes
+//! from a service of ours. A nudge is an event emitted to a local webview,
+//! and antiburn's notification bodies carry a version string, a scan error,
+//! or a locally-estimated figure — never session content.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
