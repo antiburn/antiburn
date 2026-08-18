@@ -22,15 +22,6 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: openDialog }));
 
-const SETTINGS = {
-  theme: 'system' as const,
-  activityWindowDays: 7,
-  onboardingCompleted: true,
-  launchAtLogin: false,
-  autoUpdate: true,
-  discoveryPaused: false,
-};
-
 const SCAN_STATUS = {
   running: false,
   completedAgents: 11,
@@ -46,8 +37,6 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string) => {
     if (command in overrides) return Promise.resolve(overrides[command]);
     switch (command) {
-      case 'get_settings':
-        return Promise.resolve(SETTINGS);
       case 'get_scan_status':
       case 'scan_now':
         return Promise.resolve(SCAN_STATUS);
@@ -67,7 +56,7 @@ beforeEach(() => {
 
 describe('SourcesPane scanning', () => {
   it('shows when the index was last refreshed and can rescan on demand', async () => {
-    render(<SourcesPane />);
+    render(<SourcesPane discoveryPaused={false} />);
 
     expect(await screen.findByText(/scanned 2m ago/i)).toBeInTheDocument();
 
@@ -76,8 +65,7 @@ describe('SourcesPane scanning', () => {
   });
 
   it('says so plainly while discovery is paused', async () => {
-    mockCommands({ get_settings: { ...SETTINGS, discoveryPaused: true } });
-    render(<SourcesPane />);
+    render(<SourcesPane discoveryPaused />);
 
     expect(await screen.findByText('Scanning paused')).toBeInTheDocument();
     // Pausing background work never removes the way to ask for a pass.
@@ -88,7 +76,7 @@ describe('SourcesPane scanning', () => {
     mockCommands({
       get_scan_status: { ...SCAN_STATUS, running: true, finishedAt: null },
     });
-    render(<SourcesPane />);
+    render(<SourcesPane discoveryPaused={false} />);
 
     const button = await screen.findByRole('button', { name: /scanning/i });
     expect(button).toBeDisabled();

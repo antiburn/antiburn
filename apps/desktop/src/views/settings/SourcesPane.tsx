@@ -37,7 +37,6 @@ import type {
 } from '../../lib/types/repository';
 import { useFolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
 import { scanStatusLabel } from '../popover/ScanStatusBar';
-import { useAppSettings } from './useAppSettings';
 
 /**
  * Sources: which repositories antiburn watches, and where it looks for them.
@@ -76,8 +75,11 @@ function toItems(payloads: readonly RepositoryItemPayload[]): LocalRepositoryIte
   }));
 }
 
-export function SourcesPane() {
-  const { settings: appSettings } = useAppSettings();
+export interface SourcesPaneProps {
+  discoveryPaused: boolean;
+}
+
+export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
   const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
   const [scanRoots, setScanRoots] = useState<string[]>([]);
   const [scanning, setScanning] = useState(true);
@@ -233,7 +235,7 @@ export function SourcesPane() {
           title="Scanning"
           trailing={
             <StatusText tone="secondary">
-              {scanStatusLabel(scanStatus, appSettings.discoveryPaused)}
+              {scanStatusLabel(scanStatus, discoveryPaused)}
             </StatusText>
           }
         >
