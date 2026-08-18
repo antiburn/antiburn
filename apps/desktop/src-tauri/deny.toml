@@ -1,11 +1,44 @@
 # cargo-deny configuration for the antiburn desktop app crate.
 #
-# CI runs `cargo deny check licenses` against this crate's own lockfile; every
-# dependency must carry one of the allowed permissive licenses. Unlike the
+# CI runs `cargo deny --locked check licenses` and
+# `cargo deny --locked check advisories` against this crate's own lockfile;
+# every dependency must carry one of the allowed permissive licenses. Unlike the
 # engine's deny.toml, there is no telemetry-SDK ban here: the app shell
 # links Tauri and its updater plugin freely, since neither is a telemetry or
 # analytics SDK — antiburn is local in that it needs no service of ours, not
 # that it opens no network connection.
+
+[advisories]
+# These dependencies are unavoidable transitive parts of the current Tauri
+# desktop stack. Each advisory is ignored by its exact RustSec ID (rather than
+# by crate or advisory class), so a new advisory still fails CI. GTK3 has no
+# safe upgrade and is pulled by Tauri's Linux webview/tray stack; migration to
+# GTK4 requires an upstream Tauri/wry/tray-icon transition. proc-macro-error is
+# pulled by the GTK3 macro stack and also has no safe upgrade. The unic-* crates
+# are pulled by Tauri's urlpattern dependency and likewise have no safe upgrade.
+ignore = [
+    # GTK3 bindings (Tauri/wry/tray-icon/libappindicator transitive chain).
+    "RUSTSEC-2024-0411", # gdkwayland-sys
+    "RUSTSEC-2024-0412", # gdk
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # gdkx11-sys
+    "RUSTSEC-2024-0415", # gtk-sys
+    "RUSTSEC-2024-0416", # atk-sys
+    "RUSTSEC-2024-0417", # gdkx11
+    "RUSTSEC-2024-0418", # gdk-sys
+    "RUSTSEC-2024-0419", # gtk
+    "RUSTSEC-2024-0420", # gtk3-macros
+
+    # GTK3 macro dependency; no safe upgrade is available.
+    "RUSTSEC-2024-0370", # proc-macro-error
+
+    # Tauri's urlpattern dependency; no safe upgrade is available.
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+]
 
 [licenses]
 allow = [
