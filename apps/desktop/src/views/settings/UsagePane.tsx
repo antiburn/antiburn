@@ -16,18 +16,17 @@ import type { AppSettingsController } from './useAppSettings';
 /**
  * Usage: where the plan limits come from, and the one switch that changes it.
  *
- * The pane exists because this feature has two tiers with genuinely different
- * costs, and a reader cannot consent to the second without being told which is
- * which:
+ * Plan limits are never read without asking first — there is nothing cached
+ * on this machine for antiburn to read on its own. The switch below is what
+ * turns that reading on: with it on, antiburn asks each provider directly for
+ * your current usage, using the credentials your own coding tools already
+ * hold, entirely over your own connection. With it off, this pane has nothing
+ * to show.
  *
- * - **Reading what your agent cached** happens always. It is a file on this
- *   disk, and it needs no permission any more than the session index does.
- * - **Asking your agent to refresh** runs the agent, which goes online. That
- *   is the switch below, and it is off until a reader turns it on.
- *
- * The copy says what turning it on does in both directions — it makes readings
- * current, *and* it lets milestone notifications fire — because one switch
- * with two consequences has to name both or it is not consent.
+ * The copy says what turning it on does in both directions — it makes
+ * readings possible at all, *and* it lets milestone notifications fire —
+ * because one switch with two consequences has to name both or it is not
+ * consent.
  */
 
 export type UsagePaneProps = AppSettingsController;
@@ -36,13 +35,13 @@ export type UsagePaneProps = AppSettingsController;
 function errorNote(category: string): string {
   switch (category) {
     case 'authentication':
-      return 'Your agent could not read your plan usage. Sign in again there.';
+      return 'antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view.';
     case 'rateLimited':
       return 'Your provider asked antiburn to slow down. It will try again later.';
     case 'schema':
-      return 'Your agent reported usage in a shape antiburn does not recognise.';
+      return 'Your provider reported usage in a shape antiburn does not recognise.';
     default:
-      return 'antiburn could not reach your agent’s usage. It will try again later.';
+      return 'antiburn could not reach your provider for usage. It will try again later.';
   }
 }
 
@@ -73,14 +72,14 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
       <SectionGroup title="Keeping limits current">
         <Card>
           <ToggleRow
-            label="Ask my agent to refresh"
-            description="Runs your coding agent in the background about every ten minutes to refresh its own usage reading, then reads the file it writes — or reads a provider's figures directly, using the credentials your tools already have. Either way, that's your own connection, made as you; no antiburn server is involved. Turning this on also lets usage milestone notifications fire, since they need readings that keep moving."
+            label="Keep my plan limits current"
+            description="Asks each provider directly for your current usage, about every ten minutes, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this on also lets usage milestone notifications fire, since they need readings that keep moving."
             checked={on}
             onChange={(next) => void update({ liveUsageEnabled: next })}
           />
           <Row
             label="Without this"
-            description="antiburn reads whatever usage figure your agent last cached on this machine. Nothing runs in the background to update it, and every reading on the Usage screen says how old it is."
+            description="antiburn shows no plan limits at all — there is nothing cached here for it to read on its own, and it makes no request for you until you turn this on."
           />
         </Card>
       </SectionGroup>
@@ -90,7 +89,11 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
           {live.providers.length === 0 && live.errors.length === 0 && (
             <Row
               label="No plan limits found"
-              description="No agent on this machine has cached a usage reading yet. Use your agent once and this fills in."
+              description={
+                on
+                  ? 'No provider credentials were found on this machine yet. Sign in with a coding tool and this fills in.'
+                  : 'Turn the switch above on to ask your providers for current plan limits.'
+              }
             />
           )}
           {live.providers.map((provider) => (

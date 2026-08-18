@@ -22,15 +22,18 @@
 //!
 //! # Where the numbers come from
 //!
-//! [`LiveUsageSource`] implementations, registered at startup. By default,
-//! [`sources::local_cache`] reads a file another application already wrote —
-//! no service of ours involved, no child process — and it works with the
-//! machine disconnected, because the figures were fetched by the agent the
-//! last time *it* was online, and every window says how old it is rather
-//! than pretending to be current. One opt-in setting also registers
-//! [`sources::cli_refresh`], which runs the agent itself so that file is
-//! newer than whenever the reader last happened to use it — see that module
-//! for what running it does, and does not, do.
+//! [`LiveUsageSource`] implementations, registered at startup —
+//! [`sources::anthropic_fetch`] and [`sources::codex_fetch`]. Each asks its
+//! provider's own usage endpoint directly, with a credential the reader's own
+//! CLI already keeps on this machine: the same request that CLI would make of
+//! its own account, made by this application instead, over this
+//! application's own connection. No service of ours sits in between, and
+//! nothing read from a credential file is ever written anywhere new. Both are
+//! gated behind the single online opt-in
+//! ([`crate::store::AppSettings::live_usage_enabled`]), because both are the
+//! only traffic in this feature that is not the reader's own agent talking to
+//! its own provider on the reader's own initiative — see [`sources`] for what
+//! is registered and why.
 //!
 //! # Fail closed, everywhere
 //!
@@ -41,6 +44,7 @@
 //! are looking at.
 
 pub mod anthropic;
+pub mod codex;
 pub mod history;
 pub mod metrics;
 pub mod milestones;
@@ -66,8 +70,10 @@ use crate::dto::{
 ///
 /// Implementations either read a local artefact another application wrote, or
 /// — under the D-023 network policy, per-feature opt-in and default off —
-/// call a provider endpoint with a credential the reader supplied. Never a
-/// private-app endpoint.
+/// call a provider endpoint directly with a credential the reader's own
+/// tooling already stored, or spawn the reader's own installed CLI and ask it
+/// over its own protocol. Never a private-app endpoint, and never a
+/// credential written anywhere new.
 ///
 /// `fetch` returns what the source can prove right now. An empty vector means
 /// "nothing to say", which is a normal state and not an error; a source that

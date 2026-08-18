@@ -99,11 +99,12 @@ export function PrivacyPane() {
           </Disclosure>
           <Disclosure label="One setting lets antiburn go online for current figures">
             Settings &rarr; Usage has a switch, off by default, for keeping plan limits current.
-            Turned on, antiburn can run your coding agent in the background to refresh its own
-            usage reading, or read a provider&rsquo;s figures directly with the credentials your
-            tools already have — either way, that is antiburn acting as you, online with what
-            you already have access to. With the switch off, plan limits are read from whatever
-            was last cached here, and nothing runs in the background to update them.
+            Turned on, antiburn asks each provider directly for your current usage, using the
+            credentials your own coding tools already have — that is antiburn acting as you,
+            online with what you already have access to. When a provider cannot be reached
+            directly, antiburn falls back to asking your coding tool&rsquo;s own local process
+            the same question, over its own protocol. With the switch off, antiburn makes none
+            of these requests and shows no plan limits at all.
           </Disclosure>
           <Disclosure label="Exports describe real work">
             An exported session carries derived analysis plus the session&rsquo;s title and the

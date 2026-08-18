@@ -10,17 +10,18 @@
 //!
 //! # Why a stamp, not a tick
 //!
-//! The offline source reads a file another application wrote. Polling it
-//! every five minutes yields the *same* reading five minutes later — the
-//! provider's figures only move when the agent refetches them. So a sample is
-//! keyed on the moment the provider stated it, and a reading whose stamp we
-//! already hold is discarded rather than appended.
+//! A source is asked every five minutes, but it does not go back to its
+//! provider that often — see `sources::cooldown` — and even when it does, the
+//! provider's own figures only move on the provider's own schedule. So a
+//! sample is keyed on the moment the provider stated it, not on the moment
+//! antiburn asked, and a reading whose stamp is already held is discarded
+//! rather than appended.
 //!
-//! The consequence is worth stating plainly: history grows when the agent
-//! runs, not when antiburn looks. A reader who has not used their agent for
-//! an hour has one sample, and every forecast will honestly say there is not
-//! enough history. That is better than a series of duplicated points, which
-//! would compute a confident rate of exactly zero.
+//! The consequence is worth stating plainly: history grows when a source
+//! actually refetches, not on every scheduler tick. A reader who just turned
+//! the online opt-in on has one sample, and every forecast will honestly say
+//! there is not enough history yet. That is better than a series of
+//! duplicated points, which would compute a confident rate of exactly zero.
 //!
 //! # Where it lives
 //!

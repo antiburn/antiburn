@@ -24,16 +24,16 @@
 //!
 //! The milestone engine ([`crate::provider_usage::live::milestones`])
 //! evaluates whatever the registered sources report — and those now report
-//! something: the Usage surface shows a provider's own limits, read from what
-//! an agent cached on this machine.
+//! something: the Usage surface shows a provider's own limits, asked for
+//! directly with the reader's own credentials.
 //!
 //! Milestone notifications are gated on `live_usage_enabled` — the Settings →
 //! Usage switch, default off — and that pairing is deliberate rather than
-//! leftover. A milestone is a statement about a threshold being *crossed*, so
-//! it needs readings that keep moving, and only the refresh source makes them
-//! move: without it the cached reading sits still until the reader next uses
-//! their agent, and a crossing would be announced whenever that happened to
-//! be. So the one switch buys both, and its copy names both.
+//! leftover. Both consequences of the switch depend on the same traffic: a
+//! milestone is a statement about a threshold being *crossed*, which needs
+//! readings that keep moving, and only the sources this switch unlocks ever
+//! make a request to find out whether one has. So the one switch buys both,
+//! and its copy names both.
 
 use std::time::Duration;
 
@@ -91,14 +91,17 @@ pub struct LiveUsage {
 }
 
 impl LiveUsage {
-    /// `workspace` is a directory under the app's own data directory, for the
-    /// refresh source's private scratch space. Passed in rather than derived
-    /// here so the shell keeps one answer to "where does this app write".
-    pub fn new(workspace: std::path::PathBuf) -> LiveUsage {
+    pub fn new() -> LiveUsage {
         LiveUsage {
-            sources: provider_usage::live::sources::registered(workspace),
+            sources: provider_usage::live::sources::registered(),
             ledger: std::sync::Mutex::default(),
         }
+    }
+}
+
+impl Default for LiveUsage {
+    fn default() -> LiveUsage {
+        LiveUsage::new()
     }
 }
 

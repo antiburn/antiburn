@@ -74,7 +74,7 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
     displayName: 'Anthropic',
     support: 'live',
     freshness: 'fresh',
-    sourceLabel: "Claude's cached usage",
+    sourceLabel: 'Asked Claude directly',
     // Relative to the real clock, not to `NOW`: `relativeTime` phrases an age
     // against the moment it runs, while the window helpers take their `now` as
     // an argument. Only the former needs a real-world stamp.

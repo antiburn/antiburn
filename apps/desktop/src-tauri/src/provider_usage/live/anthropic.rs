@@ -8,24 +8,29 @@
 //! `usage-limit-domain`): the quota parsers only. The attribution parsers,
 //! the status-line parser, and every pricing-signal coupling stay behind.
 //!
-//! # One shape, two carriers
+//! # What this parses
 //!
-//! The provider's usage response and the copy of it the agent caches on disk
-//! are the same JSON. That is why this module takes a `&str` and knows
-//! nothing about where it came from: the offline source reads the cached copy
-//! and the opt-in online source would read the response, and both arrive
-//! here. A second parser for the second carrier would be two places for the
-//! same bug.
+//! The body `GET https://api.anthropic.com/api/oauth/usage` returns —
+//! [`sources::anthropic_fetch`](super::sources::anthropic_fetch) is this
+//! module's only caller. It takes a bare `&str` regardless, so a fixture in a
+//! test does not need to pretend to be an HTTP response.
 //!
 //! # What the payload looks like
 //!
 //! Newer payloads carry a `limits` array, each entry naming its `kind`
-//! (`session`, `weekly_all`, `weekly_scoped`), a `percent`, a `resets_at`,
-//! and — for a model-scoped weekly limit — a `scope.model.display_name`.
-//! Older ones carry flat `five_hour` and `seven_day` objects with a
-//! `utilization` key instead. The array wins when present; the flat keys are
-//! the fallback, never a supplement, so one payload never yields the same
-//! window twice.
+//! (`session`, `weekly_all`, `weekly_scoped`), a `percent` or `utilization`
+//! value, a `resets_at`, and — for a model-scoped weekly limit — a
+//! `scope.model.display_name`. Older ones carry flat `five_hour` and
+//! `seven_day` objects with a `utilization` key instead. The array wins when
+//! present; the flat keys are the fallback, never a supplement, so one
+//! payload never yields the same window twice.
+//!
+//! Two more shape inconsistencies are absorbed rather than treated as errors,
+//! because the provider is not consistent about either across its own
+//! payload family: a usage figure may be a `0..=1` fraction or an
+//! already-multiplied percent (see
+//! [`normalize::used_percent_or_fraction`](super::normalize::used_percent_or_fraction)),
+//! and `resets_at` may be epoch seconds or an RFC 3339 string.
 
 use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -34,7 +39,7 @@ use super::model::{
     CreditBalance, ProviderUsageError, SchemaReason, SupplementalUsage, SupplementalUsageKind,
     UsageScope, UsageUnit, UsageWindow, UsageWindowKind, WindowRole,
 };
-use super::normalize::used_percent;
+use super::normalize::{used_percent, used_percent_or_fraction};
 
 /// What a well-formed payload yielded.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -164,14 +169,14 @@ fn window(
         role,
         kind,
         scope,
-        used_percent: used_percent(
+        used_percent: used_percent_or_fraction(
             value
                 .get("percent")
                 .or_else(|| value.get("utilization"))
                 .and_then(Value::as_f64),
         )?,
         starts_at: None,
-        resets_at: rfc3339(value.get("resets_at"))?,
+        resets_at: reset_at(value.get("resets_at"))?,
         authoritative: true,
     })
 }
@@ -244,14 +249,25 @@ fn nonnegative(value: Option<&Value>) -> Result<Option<f64>, ProviderUsageError>
         .ok_or(ProviderUsageError::Schema(SchemaReason::InvalidValue))
 }
 
-fn rfc3339(value: Option<&Value>) -> Result<Option<OffsetDateTime>, ProviderUsageError> {
+/// A reset timestamp, in either shape the endpoint uses: an RFC 3339 string
+/// (the `limits` array) or epoch seconds (the legacy flat objects, and
+/// occasionally the array too). Anything else — the wrong JSON type, a string
+/// that is neither shape — rejects the payload rather than dropping the
+/// field, the same as every other malformed value in this module.
+fn reset_at(value: Option<&Value>) -> Result<Option<OffsetDateTime>, ProviderUsageError> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(None);
     };
-    let raw = value
-        .as_str()
-        .ok_or(ProviderUsageError::Schema(SchemaReason::InvalidValue))?;
-    OffsetDateTime::parse(raw, &Rfc3339)
-        .map(Some)
-        .map_err(|_| ProviderUsageError::Schema(SchemaReason::InvalidValue))
+    let invalid = || ProviderUsageError::Schema(SchemaReason::InvalidValue);
+    if let Some(raw) = value.as_str() {
+        return OffsetDateTime::parse(raw, &Rfc3339)
+            .map(Some)
+            .map_err(|_| invalid());
+    }
+    if let Some(seconds) = value.as_f64().filter(|seconds| seconds.is_finite()) {
+        return OffsetDateTime::from_unix_timestamp(seconds.trunc() as i64)
+            .map(Some)
+            .map_err(|_| invalid());
+    }
+    Err(invalid())
 }

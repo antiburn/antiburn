@@ -42,6 +42,34 @@ pub fn remaining_fraction(value: Option<f64>) -> Result<Option<f64>, ProviderUsa
     Ok(Some((1.0 - value) * 100.0))
 }
 
+/// Convert a value that might be a `0..=1` fraction or an already-consumed
+/// percentage into the `0..=100` domain this module stores.
+///
+/// A provider's own usage endpoint is not always consistent about which shape
+/// it emits — sometimes across the very same payload family, depending on
+/// which field carried the figure. A value at or below `1.0` is read as a
+/// fraction and scaled up; anything above is already a percent. The one input
+/// this cannot disambiguate — a genuine one-percent reading spelled as the
+/// bare integer `1` — reads as 100% instead of 1%, but every payload this
+/// module has seen states single-digit-and-up percentages as two digits or a
+/// larger fraction, so the cost is theoretical, and it is the cheaper mistake
+/// to risk: the alternative is guessing wrong on the shape that is actually
+/// common.
+pub fn used_percent_or_fraction(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !value.is_finite() {
+        return Err(ProviderUsageError::Schema(SchemaReason::InvalidValue));
+    }
+    let percent = if (0.0..=1.0).contains(&value) {
+        value * 100.0
+    } else {
+        value
+    };
+    used_percent(Some(percent))
+}
+
 /// Derive a consumed percentage, but only when both a non-negative usage and
 /// a positive limit are known.
 ///
@@ -99,6 +127,27 @@ mod tests {
         assert_eq!(remaining_percent(Some(25.0)), Ok(Some(75.0)));
         assert_eq!(remaining_fraction(Some(0.25)), Ok(Some(75.0)));
         assert_eq!(remaining_fraction(Some(1.5)), Err(INVALID));
+    }
+
+    #[test]
+    fn a_fraction_at_or_below_one_is_scaled_up_into_a_percent() {
+        assert_eq!(used_percent_or_fraction(Some(0.81)), Ok(Some(81.0)));
+        assert_eq!(used_percent_or_fraction(Some(0.0)), Ok(Some(0.0)));
+        assert_eq!(used_percent_or_fraction(Some(1.0)), Ok(Some(100.0)));
+    }
+
+    #[test]
+    fn a_value_above_one_is_read_as_an_already_stated_percent() {
+        assert_eq!(used_percent_or_fraction(Some(81.0)), Ok(Some(81.0)));
+        assert_eq!(used_percent_or_fraction(Some(100.0)), Ok(Some(100.0)));
+    }
+
+    #[test]
+    fn a_fraction_or_percent_out_of_domain_still_fails_closed() {
+        assert_eq!(used_percent_or_fraction(Some(140.0)), Err(INVALID));
+        assert_eq!(used_percent_or_fraction(Some(-0.5)), Err(INVALID));
+        assert_eq!(used_percent_or_fraction(Some(f64::NAN)), Err(INVALID));
+        assert_eq!(used_percent_or_fraction(None), Ok(None));
     }
 
     #[test]

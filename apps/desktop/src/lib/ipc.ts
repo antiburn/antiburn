@@ -99,10 +99,11 @@ export interface AppSettings {
   /**
    * The per-feature online opt-in for live usage limits. Off by default.
    *
-   * On, antiburn runs the reader's coding agent periodically so the agent
-   * refreshes its own usage file — the agent goes online, antiburn does not —
-   * and milestone notifications become able to fire. Off, plan limits are read
-   * from whatever the agent last cached and nothing runs.
+   * On, antiburn asks each provider directly for the reader's current usage,
+   * periodically, using the credentials the reader's own coding tools already
+   * hold — that is antiburn going online as the reader, not a server of ours —
+   * and milestone notifications become able to fire. Off, antiburn makes none
+   * of these requests and has no plan limits to show.
    */
   liveUsageEnabled: boolean;
 }

@@ -206,6 +206,35 @@ fn raw_amounts_without_a_currency_fail_closed() {
     assert_eq!(balance.currency.as_deref(), Some("USD"));
 }
 
+#[test]
+fn a_fraction_shaped_utilization_is_scaled_the_same_as_an_already_stated_percent() {
+    // The endpoint is not consistent about which shape it emits: this fixture
+    // states the session window as a `0..=1` fraction and the weekly window
+    // as an already-multiplied percent, in the same payload.
+    let mixed = r#"{"limits": [
+      {"kind": "session", "utilization": 0.42, "resets_at": null, "scope": null},
+      {"kind": "weekly_all", "percent": 65, "resets_at": null, "scope": null}
+    ]}"#;
+    let usage = anthropic::parse_usage(mixed).expect("parses");
+    assert_eq!(usage.windows[0].used_percent, Some(42.0));
+    assert_eq!(usage.windows[1].used_percent, Some(65.0));
+}
+
+#[test]
+fn resets_at_is_read_whether_it_is_epoch_seconds_or_rfc_3339() {
+    let mixed = r#"{"limits": [
+      {"kind": "session", "percent": 10, "resets_at": 1800003600, "scope": null},
+      {"kind": "weekly_all", "percent": 20,
+       "resets_at": "2027-01-15T02:19:59+00:00", "scope": null}
+    ]}"#;
+    let usage = anthropic::parse_usage(mixed).expect("parses");
+    assert_eq!(
+        usage.windows[0].resets_at,
+        OffsetDateTime::from_unix_timestamp(1_800_003_600).ok()
+    );
+    assert!(usage.windows[1].resets_at.is_some());
+}
+
 /* -------------------------------------------------------------------------
  * The source ladder
  * ---------------------------------------------------------------------- */
@@ -422,7 +451,7 @@ fn a_gated_source_is_never_called_while_the_opt_in_is_off() {
     let calls = Arc::new(AtomicUsize::new(0));
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![
         Box::new(Fixed(
-            "offline",
+            "ungated",
             vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 40.0)],
         )),
         Box::new(Counted(Arc::clone(&calls))),
@@ -431,7 +460,7 @@ fn a_gated_source_is_never_called_while_the_opt_in_is_off() {
     let off = sources::collect(&sources, false);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     // The ungated source still ran, so turning the opt-in off costs the
-    // reader the refresh and nothing else.
+    // reader the gated source's readings and nothing else.
     assert_eq!(off.snapshots.len(), 1);
     assert_eq!(off.snapshots[0].windows[0].used_percent, Some(40.0));
 
@@ -440,11 +469,12 @@ fn a_gated_source_is_never_called_while_the_opt_in_is_off() {
 }
 
 #[test]
-fn an_offline_source_is_ungated_by_default() {
+fn a_source_is_ungated_by_default() {
     // The default is what a new source inherits, so it has to be the right
-    // answer for a file read and the wrong one loudly for anything else —
-    // which is why the refresh source overrides it explicitly.
-    assert!(!Fixed("offline", Vec::new()).requires_online_opt_in());
+    // answer for a source that only reads local state and the wrong one
+    // loudly for anything that makes a request — which is why every
+    // direct-fetch source overrides it explicitly.
+    assert!(!Fixed("ungated", Vec::new()).requires_online_opt_in());
 }
 
 /* -------------------------------------------------------------------------

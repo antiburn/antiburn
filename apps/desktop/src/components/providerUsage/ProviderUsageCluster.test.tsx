@@ -320,7 +320,7 @@ function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
         displayName: 'Anthropic',
         support: 'live',
         freshness: 'fresh',
-        sourceLabel: "Claude's cached usage",
+        sourceLabel: 'Asked Claude directly',
         observedAt: new Date().toISOString(),
         windows: [
           {

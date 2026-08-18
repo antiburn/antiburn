@@ -11,29 +11,49 @@
 //! (rule `provider-usage`); what is shared with it is the domain model those
 //! sources produce, which is a separate, allowlisted slice.
 //!
+//! # What is registered
+//!
+//! [`anthropic_fetch`] asks Claude's own usage endpoint with the credential
+//! the Claude CLI already keeps on this machine; [`codex_fetch`] does the
+//! same for Codex, retrying once with a token it refreshes itself before
+//! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
+//! over its own protocol — when neither attempt lands. Both are gated behind
+//! [`super::LiveUsageSource::requires_online_opt_in`]: neither makes a
+//! request until the reader turns Settings → Usage's switch on. [`http`] is
+//! the plumbing they share — one client, one response cap, one mapping from
+//! an HTTP status to this module's error taxonomy — and [`cooldown`] is the
+//! retry-and-last-good-reading contract both sources are built on.
+//!
 //! # The ladder
 //!
 //! Sources are ranked, not merged. When two of them describe the same
 //! provider account, the better one wins outright and the other is discarded
 //! — a snapshot is one coherent reading of one moment, and splicing a fresh
 //! five-hour window onto a stale weekly one produces a picture that was never
-//! true at any instant.
+//! true at any instant. In practice this build registers at most one source
+//! per provider, so the ladder's real job today is picking between a fresh
+//! reading and network the reader just turned off — see [`preferred`].
 
-pub mod cli_refresh;
-pub mod local_cache;
+pub mod anthropic_fetch;
+mod codex_app_server;
+pub mod codex_fetch;
+mod cooldown;
+mod http;
 
 use super::LiveUsageSource;
 use super::model::{Freshness, ProviderUsageSnapshot, SupportTier};
 
+/// The stable id both [`codex_fetch`] and [`codex_app_server`] stamp their
+/// snapshots with. One registered source, two ways of answering for it — the
+/// reader sees one row in the source registry either way.
+const CODEX_SOURCE_ID: &str = "codex-usage-fetch";
+
 /// Every source this build registers, in no particular order — ranking is
 /// [`preferred`]'s job, not registration order's.
-///
-/// `workspace` is a directory the app owns, for any source that needs a
-/// private place to work.
-pub fn registered(workspace: std::path::PathBuf) -> Vec<Box<dyn LiveUsageSource>> {
+pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
     vec![
-        Box::new(local_cache::ClaudeLocalCache::new()),
-        Box::new(cli_refresh::ClaudeCliRefresh::new(workspace)),
+        Box::new(anthropic_fetch::ClaudeDirectFetch::new()),
+        Box::new(codex_fetch::CodexDirectFetch::new()),
     ]
 }
 

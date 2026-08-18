@@ -225,7 +225,7 @@ pub fn run() {
             // provider's own limit figures, and the milestone ledger they
             // feed. Registered before the schedulers so the first pass sees
             // a populated registry rather than an empty one.
-            app.manage(usage_alerts::LiveUsage::new(data_dir.join("usage-refresh")));
+            app.manage(usage_alerts::LiveUsage::new());
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
