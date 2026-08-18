@@ -131,16 +131,18 @@ version exists, and which the app never depends on.
   consent screen, and no endpoint.
 
 **One setting makes antiburn go online as you.** Settings → Usage has a switch,
-off by default, that lets antiburn ask each provider directly for your current
-plan usage — about every ten minutes — using the credential your coding tool
-already keeps on this machine (for example, the Claude CLI's own OAuth
-credential, or the Codex CLI's own). The traffic goes only between this machine
-and a provider you already use; no antiburn server sees the request or the
-response. When a provider's endpoint cannot be reached directly,
-antiburn falls back to asking your coding tool's own local process the same
-question, over its own protocol, rather than leaving the reading blank. With the
-switch off, none of this runs, no credential is read, and antiburn has no plan
-limits to show.
+on by default once first-run setup is complete, that lets antiburn ask each
+provider directly for your current plan usage — about every ten minutes — using
+the credential your coding tool already keeps on this machine (for example, the
+Claude CLI's own OAuth credential, or the Codex CLI's own). It runs by default
+because this is your own traffic: your usage, from a provider you already use,
+with a credential you already hold, over your own connection — no antiburn
+server sees the request or the response. When a provider's endpoint cannot be
+reached directly, antiburn falls back to asking your coding tool's own local
+process the same question, over its own protocol, rather than leaving the
+reading blank. Turn the switch off if you want none of this — no background
+traffic at all, whatever the reason — and antiburn stops asking, reads no
+credential, and has no plan limits to show.
 
 **Notifications are local.** antiburn shows them in its own small notification
 window and posts exactly these: an update check that found a newer version, the

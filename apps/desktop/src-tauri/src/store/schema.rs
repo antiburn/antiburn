@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -157,4 +157,26 @@ CREATE TABLE consent_grant (
     dir_name   TEXT PRIMARY KEY,
     granted_at TEXT NOT NULL
 ) STRICT;
+"#;
+
+/// v3 — drop any stored `liveUsageEnabled` row, so every install picks up the
+/// flipped default.
+///
+/// `liveUsageEnabled` used to default to `false`. It does not merely default
+/// that way for keys nobody ever touched: [`super::write_settings`] writes
+/// every settings key on every save, so any install that has ever saved
+/// settings at all — finishing onboarding is enough — already has an
+/// explicit `liveUsageEnabled|false` row from that old default, indistinguishable
+/// from a reader who deliberately switched it off. There is no way to tell
+/// the two apart from the row alone.
+///
+/// antiburn has not shipped to a public audience yet, so there is no real
+/// installed base whose deliberate opt-out this could be silently
+/// overturning. Dropping the row is what lets every existing install fall
+/// through to the new default (`true`) the same way a fresh install does,
+/// rather than being permanently stuck on the old one. A later default
+/// change, after a real public release, would need an actual migration
+/// strategy instead of this one.
+const V3: &str = r#"
+DELETE FROM setting WHERE key = 'liveUsageEnabled';
 "#;

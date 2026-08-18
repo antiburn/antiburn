@@ -27,13 +27,16 @@
 //! something: the Usage surface shows a provider's own limits, asked for
 //! directly with the reader's own credentials.
 //!
-//! Milestone notifications are gated on `live_usage_enabled` — the Settings →
-//! Usage switch, default off — and that pairing is deliberate rather than
-//! leftover. Both consequences of the switch depend on the same traffic: a
-//! milestone is a statement about a threshold being *crossed*, which needs
-//! readings that keep moving, and only the sources this switch unlocks ever
-//! make a request to find out whether one has. So the one switch buys both,
-//! and its copy names both.
+//! Milestone notifications are gated on `AppSettings::live_usage_active` —
+//! the Settings → Usage switch (on by default) *and* onboarding having
+//! finished — and that pairing is deliberate rather than leftover. Both
+//! consequences of the switch depend on the same traffic: a milestone is a
+//! statement about a threshold being *crossed*, which needs readings that
+//! keep moving, and only the sources this switch unlocks ever make a request
+//! to find out whether one has. So the one switch buys both, and its copy
+//! names both. The onboarding half of the gate holds even while the switch
+//! itself defaults on: no credential is read, and no request or subprocess
+//! runs, until the reader has actually seen this app once.
 
 use std::time::Duration;
 
@@ -147,8 +150,11 @@ fn anomaly_pass(app: &AppHandle, store: &Store, settings: &crate::store::AppSett
 fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     // Gate *before* evaluating: selection is destructive (a chosen crossing
     // is recorded as delivered), so a crossing selected while notifications
-    // were off would be silently consumed.
-    if !settings.live_usage_enabled
+    // were off would be silently consumed. `live_usage_active` folds in both
+    // the reader's switch and onboarding having finished, so this can never
+    // fire — and never even collect, which is what would read a credential —
+    // before onboarding is done, whatever the switch's default is.
+    if !settings.live_usage_active()
         || !crate::notifications::allowed(settings, crate::notifications::Kind::UsageMilestone)
     {
         return;
@@ -157,7 +163,7 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
         return;
     };
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
-        provider_usage::live::sources::collect(&live.sources, settings.live_usage_enabled)
+        provider_usage::live::sources::collect(&live.sources, settings.live_usage_active())
             .snapshots
             .iter()
             .map(milestone_snapshot)

@@ -131,8 +131,8 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
         </p>
         <p className="type-caption text-label-tertiary">
           Plan limits are your provider&rsquo;s own figures, fetched directly with your own
-          credentials where you&rsquo;ve asked antiburn to go online for them. A limit is only
-          as current as the moment shown beside it.
+          credentials while Settings &rarr; Usage&rsquo;s switch is on. A limit is only as
+          current as the moment shown beside it.
         </p>
         <p className="type-caption text-label-tertiary">
           Each session counts in the window of its most recent activity.

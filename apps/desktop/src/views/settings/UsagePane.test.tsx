@@ -36,19 +36,20 @@ describe('UsagePane', () => {
   });
 
   it('names both consequences of the one switch', async () => {
-    // A switch with two effects has to say both, or it is not consent: it
-    // makes readings possible at all *and* it lets milestone notifications fire.
+    // A switch with two effects has to say both, or turning it off for one
+    // reason surprises the reader with the other: it makes readings possible
+    // at all *and* it lets milestone notifications fire.
     pane();
     const row = screen.getByText('Keep my plan limits current').closest('div')!;
     expect(row).toHaveTextContent(/that.s your own connection, made as you/i);
     expect(row).toHaveTextContent(/no antiburn server is involved/i);
-    expect(row).toHaveTextContent(/milestone notifications fire/i);
+    expect(row).toHaveTextContent(/milestone notifications/i);
   });
 
   it('says what happens with the switch off, rather than leaving it implied', async () => {
     pane();
-    expect(screen.getByText('Without this').closest('div')).toHaveTextContent(
-      /makes no request for you until you turn this on/i,
+    expect(screen.getByText('With this off').closest('div')).toHaveTextContent(
+      /makes none of these requests and shows no plan limits/i,
     );
   });
 

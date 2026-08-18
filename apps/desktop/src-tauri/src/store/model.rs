@@ -275,10 +275,11 @@ pub struct Milestones {
 impl Default for Milestones {
     fn default() -> Self {
         // All three on, because they are not the consent point: nothing
-        // fires until the reader turns on Settings → Usage → refresh, whose
+        // fires until onboarding has finished and Settings → Usage's switch
+        // (on by default) lets a source actually run, and that switch's own
         // copy names milestones as one of its two consequences. Asking a
-        // second time, in a second place, for permission already given is how
-        // a preference screen becomes a form.
+        // second time, in a second place, for permission the default already
+        // implies is how a preference screen becomes a form.
         Self {
             at50: true,
             at75: true,
@@ -395,8 +396,15 @@ pub struct AppSettings {
     pub milestones_5h: Milestones,
     /// Weekly-window usage milestones that notify.
     pub milestones_weekly: Milestones,
-    /// The per-feature online opt-in for live usage limits. Off by default:
-    /// the app calls no provider endpoint until the reader turns this on.
+    /// The per-feature online opt-out for live usage limits. On by default:
+    /// fetching the reader's own usage from a provider they already use,
+    /// with a credential they already hold, is an ordinary operation, not a
+    /// risky one, so antiburn does not gate it behind a first-run choice.
+    /// Turning this off is how a reader who wants no background traffic
+    /// (a corporate or metered network, or plain preference) says so; it is
+    /// not permission antiburn was waiting for. See
+    /// [`AppSettings::live_usage_active`] for the second, unconditional gate
+    /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
 }
 
@@ -425,16 +433,32 @@ impl Default for AppSettings {
             notify_usage_anomalies: true,
             milestones_5h: Milestones::default(),
             milestones_weekly: Milestones::default(),
-            // The one default-off switch: turning it on is what lets antiburn
-            // ask the agent to go online, on its own account, to refresh its
-            // usage reading — the only traffic beyond the update check, and
-            // traffic that's the agent's and its provider's, not ours.
-            live_usage_enabled: false,
+            // On by default. This is antiburn's own agent asking a provider
+            // the reader already uses about usage the reader already has a
+            // credential for — ordinary traffic, not a risky one, so it does
+            // not sit behind a first-run choice. The switch is the opt-out
+            // for a reader who wants no background traffic at all.
+            live_usage_enabled: true,
         }
     }
 }
 
 impl AppSettings {
+    /// Whether live usage collection may actually run right now.
+    ///
+    /// Two gates, both required, and both checked fresh on every pass rather
+    /// than latched: [`Self::live_usage_enabled`] (on by default; the
+    /// reader's opt-out) and [`Self::onboarding_completed`]. The onboarding
+    /// half exists so the credential read this feature depends on — and, on
+    /// macOS, the Keychain prompt that read can trigger — never happens
+    /// before the reader has seen what this app is. Every call site that
+    /// might collect or fetch a live usage source must go through this
+    /// rather than reading `live_usage_enabled` alone; see
+    /// `provider_usage::live::summarize` and `usage_alerts::milestone_pass`.
+    pub fn live_usage_active(&self) -> bool {
+        self.live_usage_enabled && self.onboarding_completed
+    }
+
     /// Clamp anything a caller could get wrong. Called on both read and write,
     /// so a hand-edited database cannot produce an unrenderable window.
     pub fn normalized(mut self) -> Self {

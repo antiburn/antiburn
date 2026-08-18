@@ -18,11 +18,13 @@
 //! same for Codex, retrying once with a token it refreshes itself before
 //! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
 //! over its own protocol — when neither attempt lands. Both are gated behind
-//! [`super::LiveUsageSource::requires_online_opt_in`]: neither makes a
-//! request until the reader turns Settings → Usage's switch on. [`http`] is
-//! the plumbing they share — one client, one response cap, one mapping from
-//! an HTTP status to this module's error taxonomy — and [`cooldown`] is the
-//! retry-and-last-good-reading contract both sources are built on.
+//! [`super::LiveUsageSource::requires_online_opt_in`]: [`collect`] never
+//! calls them unless its caller says live usage is active, which folds in
+//! Settings → Usage's switch (on by default) *and* onboarding having
+//! finished — see [`crate::store::AppSettings::live_usage_active`]. [`http`]
+//! is the plumbing they share — one client, one response cap, one mapping
+//! from an HTTP status to this module's error taxonomy — and [`cooldown`] is
+//! the retry-and-last-good-reading contract both sources are built on.
 //!
 //! # The ladder
 //!
@@ -59,9 +61,11 @@ pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
 
 /// Collect from every permitted source and keep the best reading per account.
 ///
-/// `online` is the reader's per-feature opt-in. A source that declared
-/// [`LiveUsageSource::requires_online_opt_in`] is not merely ignored while it
-/// is off — it is never called, so nothing it would do can happen.
+/// `online` is whether live usage is active right now — the reader's switch
+/// *and* onboarding having finished, already folded together by the caller
+/// (see [`crate::store::AppSettings::live_usage_active`]). A source that
+/// declared [`LiveUsageSource::requires_online_opt_in`] is not merely ignored
+/// while it is false — it is never called, so nothing it would do can happen.
 pub fn collect(sources: &[Box<dyn LiveUsageSource>], online: bool) -> Collected {
     let mut collected = Collected::default();
     for source in sources {

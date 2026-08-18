@@ -28,12 +28,15 @@
 //! CLI already keeps on this machine: the same request that CLI would make of
 //! its own account, made by this application instead, over this
 //! application's own connection. No service of ours sits in between, and
-//! nothing read from a credential file is ever written anywhere new. Both are
-//! gated behind the single online opt-in
-//! ([`crate::store::AppSettings::live_usage_enabled`]), because both are the
-//! only traffic in this feature that is not the reader's own agent talking to
-//! its own provider on the reader's own initiative — see [`sources`] for what
-//! is registered and why.
+//! nothing read from a credential file is ever written anywhere new. Fetching
+//! the reader's own usage from a provider they already use, with a
+//! credential they already hold, is ordinary traffic, not a risky one — so it
+//! runs by default rather than behind a first-run choice. Both sources still
+//! check [`crate::store::AppSettings::live_usage_active`] before doing
+//! anything: the reader's own opt-out switch, *and* onboarding having
+//! finished, so the credential read — and the macOS Keychain prompt it can
+//! trigger — never happens before the reader has seen what this app is. See
+//! [`sources`] for what is registered and why.
 //!
 //! # Fail closed, everywhere
 //!
@@ -69,11 +72,12 @@ use crate::dto::{
 /// A source of provider-reported usage snapshots.
 ///
 /// Implementations either read a local artefact another application wrote, or
-/// — under the D-023 network policy, per-feature opt-in and default off —
-/// call a provider endpoint directly with a credential the reader's own
-/// tooling already stored, or spawn the reader's own installed CLI and ask it
-/// over its own protocol. Never a private-app endpoint, and never a
-/// credential written anywhere new.
+/// — under the D-023 network policy, per-feature and gated on
+/// [`crate::store::AppSettings::live_usage_active`] (an opt-out switch, on
+/// by default, and onboarding having finished) — call a provider endpoint
+/// directly with a credential the reader's own tooling already stored, or
+/// spawn the reader's own installed CLI and ask it over its own protocol.
+/// Never a private-app endpoint, and never a credential written anywhere new.
 ///
 /// `fetch` returns what the source can prove right now. An empty vector means
 /// "nothing to say", which is a normal state and not an error; a source that
@@ -89,9 +93,10 @@ pub trait LiveUsageSource: Send + Sync {
     /// Declared by the source rather than known by the caller, so adding one
     /// cannot accidentally leave it ungated: a source that causes any traffic
     /// — directly or through a child process — says so here, and
-    /// [`sources::collect`] never calls it while the preference is off. The
-    /// default is `false`, which is correct for a source that only reads a
-    /// file already on the disk.
+    /// [`sources::collect`] never calls it while live usage is not active
+    /// (see [`crate::store::AppSettings::live_usage_active`]). The default is
+    /// `false`, which is correct for a source that only reads a file already
+    /// on the disk.
     fn requires_online_opt_in(&self) -> bool {
         false
     }
@@ -156,10 +161,13 @@ pub fn summarize(
     utc_offset_minutes: i32,
 ) -> LiveUsageSummary {
     // Read fresh, and default to *not* acting: an unreadable preference is not
-    // permission, the same rule every notifier in this app follows.
+    // permission, the same rule every notifier in this app follows. Both
+    // gates — the reader's switch and onboarding having finished — are folded
+    // into `live_usage_active` so this can never fetch pre-onboarding even
+    // though the switch itself now defaults on.
     let online = store
         .and_then(|store| store.settings().ok())
-        .is_some_and(|settings| settings.live_usage_enabled);
+        .is_some_and(|settings| settings.live_usage_active());
     let collected = sources::collect(sources, online);
     let history = store
         .map(|store| history::record(store, &collected.snapshots))
