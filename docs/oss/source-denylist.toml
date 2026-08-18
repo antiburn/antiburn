@@ -40,9 +40,10 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # what SOURCE may enter the repository, a separate question from what the app may
 # do — stands unchanged.
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
-# disk-space-monitor, tray-title-attributed-string, notification-sound-crate,
-# nudge-window-mechanics, and usage-milestone-engine. Its network-posture and
-# discovery-boundary clauses are carried by D-025, which governs both.
+# startup-registration, disk-space-monitor, tray-title-attributed-string,
+# notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine.
+# Its network-posture and discovery-boundary clauses are carried by D-025, which
+# governs both.
 # D-024 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # tcc-consent-commands and tcc-consent-frontend, for the single purpose of
 # replacing an unannounced operating-system permission dialog with an explained,

@@ -331,7 +331,7 @@ jobs:
       - name: Compile the release target without bundling or signing
         env:
           TARGET: ${{ matrix.target }}
-        run: pnpm --filter @antiburn/desktop exec tauri build --target "$TARGET" --no-bundle
+        run: pnpm --filter @antiburn/desktop exec tauri build --features distribution --target "$TARGET" --no-bundle
 
   boundary:
     name: whole-tree source boundary

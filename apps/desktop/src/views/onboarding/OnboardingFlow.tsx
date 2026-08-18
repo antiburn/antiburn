@@ -5,15 +5,17 @@
 import { Check, FolderPlus, Lock, X } from 'lucide-react';
 
 import appIcon from '../../assets/app-icon.png';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 
 import { isMacOS } from '../../lib/platform';
 
 import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
 import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
+import { Card } from '../../components/ui/Card';
 import { PushButton } from '../../components/ui/PushButton';
 import { ScrollPane } from '../../components/ui/ScrollPane';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
+import { ToggleRow } from '../../components/ui/ToggleRow';
 import {
   getConsentDiagnostics,
   openFolderAccessSettings,
@@ -87,8 +89,13 @@ export interface OnboardingFlowProps {
   /** How many days of history the popover will list. */
   windowDays: number;
   onWindowDaysChange: (days: number) => void;
+  /** Whether the installed app should start after the reader signs in. */
+  launchAtLogin: boolean;
+  onLaunchAtLoginChange: (enabled: boolean) => void;
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void;
+  finishing: boolean;
+  finishError: string | null;
 }
 
 const STEPS = ['welcome', 'sources', 'repositories', 'scan', 'ready'] as const;
@@ -103,6 +110,11 @@ const WINDOW_OPTIONS = [
   { value: '7', label: '7 days' },
   { value: '14', label: '14 days' },
 ] as const;
+
+/** A newly mounted step announces itself without a lifecycle effect. */
+function focusHeading(heading: HTMLHeadingElement | null): void {
+  heading?.focus();
+}
 
 function StepDots({ step }: { step: Step }) {
   const index = STEPS.indexOf(step);
@@ -142,7 +154,7 @@ function Welcome() {
           className="mb-5 h-24 w-24 select-none drop-shadow-md"
           draggable={false}
         />
-        <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
+        <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
           Everything stays on this machine
         </h2>
         <p className="mt-2 text-balance type-callout text-label-secondary">
@@ -177,7 +189,7 @@ function Sources({
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
-      <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
+      <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
         Where to look
       </h2>
       <p className="mt-1 type-footnote text-label-secondary">
@@ -308,7 +320,7 @@ function Repositories({
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
-      <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
+      <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
         What to include
       </h2>
       <p className="mt-1 type-footnote text-label-secondary">
@@ -376,7 +388,7 @@ function HistoricalScan({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
-      <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
+      <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
         Historical scan
       </h2>
       <p className="mt-1 type-footnote text-label-secondary">
@@ -445,14 +457,24 @@ function HistoricalScan({
   );
 }
 
-function Ready({ sessions }: { sessions: number }) {
+function Ready({
+  sessions,
+  launchAtLogin,
+  onLaunchAtLoginChange,
+  finishError,
+}: {
+  sessions: number;
+  launchAtLogin: boolean;
+  onLaunchAtLoginChange: (enabled: boolean) => void;
+  finishError: string | null;
+}) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
         <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-secondary text-label-secondary">
           <Check size={22} strokeWidth={2} aria-hidden="true" />
         </div>
-        <h2 data-step-heading tabIndex={-1} className="type-title-3 text-label outline-none">
+        <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
           Ready
         </h2>
         <p className="mt-2 text-balance type-callout text-label-secondary">
@@ -460,14 +482,22 @@ function Ready({ sessions }: { sessions: number }) {
             ? `${sessions} ${sessions === 1 ? 'session is' : 'sessions are'} indexed and waiting in the menu bar.`
             : 'Nothing is indexed yet — antiburn keeps looking in the background as you work.'}
         </p>
-        {/* This window is about to close, and the app has no Dock icon to
-            close *to*. Saying where it goes here as well as in the
-            notification that follows means the answer survives a reader who
-            has notifications turned off at the system level. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          antiburn is in the menu bar from here on — click its icon any time. Session files are
-          read only; your repositories are never modified.
+          Session files are read only; your repositories are never modified.
         </p>
+        <Card className="mt-5 w-full text-left">
+          <ToggleRow
+            label="Launch antiburn on startup"
+            description="Starts automatically in the menu bar. Change anytime in Settings."
+            checked={launchAtLogin}
+            onChange={onLaunchAtLoginChange}
+          />
+        </Card>
+        {finishError ? (
+          <p className="mt-3 type-footnote text-system-red" role="alert">
+            {finishError}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -492,36 +522,32 @@ export function OnboardingFlow({
   scanStatus,
   windowDays,
   onWindowDaysChange,
+  launchAtLogin,
+  onLaunchAtLoginChange,
   onFinish,
+  finishing,
+  finishError,
 }: OnboardingFlowProps) {
   const [step, setStep] = useState<Step>('welcome');
-  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [discoveryRequested, setDiscoveryRequested] = useState(false);
   const index = STEPS.indexOf(step);
   const last = index === STEPS.length - 1;
-
-  // A step change swaps the whole body, so focus has to be moved deliberately;
-  // left alone it falls back to <body> and a screen-reader user is told
-  // nothing at all about where they now are.
-  useEffect(() => {
-    bodyRef.current?.querySelector<HTMLElement>('[data-step-heading]')?.focus();
-  }, [step]);
-
-  // Reaching the repository or scan step with nothing discovered yet means the
-  // step has nothing to show. Ask for a pass rather than presenting an empty
-  // list as an answer.
-  //
-  // The ref is what keeps that to *one* request: `onDiscover` is a fresh arrow
-  // from the host on every render, and the status it will eventually change is
-  // not back yet, so a plain dependency list re-fires until it lands.
-  const requested = useRef(false);
-  const needsDiscovery = STEPS_NEEDING_DISCOVERY.includes(step);
   const discovered = scanStatus?.finishedAt != null;
   const running = scanStatus?.running ?? false;
-  useEffect(() => {
-    if (!needsDiscovery || discovered || running || requested.current) return;
-    requested.current = true;
-    onDiscover();
-  }, [needsDiscovery, discovered, running, onDiscover]);
+
+  const advance = () => {
+    const next = STEPS[index + 1] ?? 'ready';
+    if (
+      STEPS_NEEDING_DISCOVERY.includes(next) &&
+      !discovered &&
+      !running &&
+      !discoveryRequested
+    ) {
+      setDiscoveryRequested(true);
+      onDiscover();
+    }
+    setStep(next);
+  };
 
   return (
     <div className="relative flex h-full flex-col" aria-label="Set up antiburn" role="region">
@@ -554,7 +580,7 @@ export function OnboardingFlow({
         </p>
       </header>
 
-      <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         {step === 'welcome' && <Welcome />}
         {step === 'sources' && (
           <Sources
@@ -584,7 +610,14 @@ export function OnboardingFlow({
             onCancelScan={onCancelScan}
           />
         )}
-        {step === 'ready' && <Ready sessions={scanStatus?.sessions ?? 0} />}
+        {step === 'ready' && (
+          <Ready
+            sessions={scanStatus?.sessions ?? 0}
+            launchAtLogin={launchAtLogin}
+            onLaunchAtLoginChange={onLaunchAtLoginChange}
+            finishError={finishError}
+          />
+        )}
       </div>
 
       <footer className="flex shrink-0 items-center gap-2 border-t border-separator px-4 py-3">
@@ -600,9 +633,10 @@ export function OnboardingFlow({
           {step === 'sources' && <AddFolderButton onAddScanRoot={onAddScanRoot} />}
           <PushButton
             variant="primary"
-            onClick={() => (last ? onFinish() : setStep(STEPS[index + 1] ?? 'ready'))}
+            onClick={() => (last ? onFinish() : advance())}
+            disabled={last && finishing}
           >
-            {last ? 'Start using antiburn' : 'Continue'}
+            {last ? (finishing ? 'Finishing…' : 'Start using antiburn') : 'Continue'}
           </PushButton>
         </div>
       </footer>

@@ -99,6 +99,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     let defaults = store.settings().unwrap();
     assert_eq!(defaults, AppSettings::default());
     assert!(!defaults.onboarding_completed);
+    assert!(defaults.launch_at_login);
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -156,6 +157,50 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(!saved.notifications_enabled);
     assert!(!saved.notify_update_available);
     assert!(saved.notify_scan_failure);
+}
+
+#[test]
+fn an_explicit_launch_at_login_opt_out_overrides_the_default() {
+    let store = store();
+    let saved = store
+        .save_settings(&AppSettings {
+            onboarding_completed: true,
+            launch_at_login: false,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert!(!saved.launch_at_login);
+    assert!(!store.settings().unwrap().launch_at_login);
+}
+
+#[test]
+fn updating_settings_merges_against_the_latest_stored_value() {
+    let store = store();
+    store
+        .save_settings(&AppSettings {
+            theme: ThemePreference::Dark,
+            auto_update: false,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    let (previous, saved) = store
+        .update_settings(|settings| {
+            settings.activity_window_days = 14;
+            settings.launch_at_login = false;
+            settings.onboarding_completed = true;
+        })
+        .unwrap();
+
+    assert_eq!(previous.theme, ThemePreference::Dark);
+    assert!(!previous.auto_update);
+    assert_eq!(saved.theme, ThemePreference::Dark);
+    assert!(!saved.auto_update);
+    assert_eq!(saved.activity_window_days, 14);
+    assert!(!saved.launch_at_login);
+    assert!(saved.onboarding_completed);
+    assert_eq!(store.settings().unwrap(), saved);
 }
 
 /// Pin the shipped v1 shape so migrations remain deliberate. This is not a

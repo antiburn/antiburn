@@ -172,11 +172,8 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
       <SectionGroup title="Startup">
         <Card>
           <ToggleRow
-            label="Open antiburn at login"
-            // Stated plainly rather than hidden: the preference is recorded, and
-            // this build has no login-item registration behind it. Saying so is
-            // better than a switch that silently does nothing.
-            description="Recorded now and applied the next time login items are registered. This build does not install one yet."
+            label="Launch antiburn on startup"
+            description="Starts automatically in the menu bar."
             checked={settings.launchAtLogin}
             onChange={(next) => void update({ launchAtLogin: next })}
           />

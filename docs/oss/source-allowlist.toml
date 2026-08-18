@@ -720,6 +720,26 @@ notes = [
 ]
 
 [[rule]]
+id = "startup-registration"
+source_paths = [
+  "src-tauri/src/login_item.rs",
+  "src-tauri/src/platform_startup.rs",
+]
+path_kind = "file"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/startup_registration.rs"
+provenance = "Cadence company-authored; D-023 maintainer decision authorizes the adapted port; reviewed at private commit 1e3c0e247d3ac7fec6abb315c3bae3f762b49ff1 (startup implementation last changed at 96c8c3fcad202dd32fc27bf2bed5496e84ccff40)"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Keep the macOS SMAppService main-app status/register behavior and the platform-adapter split.",
+  "Implement Windows and Linux registration locally rather than inheriting the source plugin's unescaped paths and stale-entry checks.",
+  "Add preference-driven disable support, onboarding gating, launch reconciliation, a distribution-build gate, and main-thread marshalling for runtime macOS settings writes.",
+  "Do not copy legacy LaunchAgent cleanup, always-enable policy, private logging infrastructure, or a webview autostart capability.",
+  "Rename product identifiers and user-facing diagnostics; add an MPL-2.0 header.",
+]
+
+[[rule]]
 id = "disk-space-monitor"
 source_paths = ["desktop/src-tauri/src/disk_monitor.rs"]
 path_kind = "file"

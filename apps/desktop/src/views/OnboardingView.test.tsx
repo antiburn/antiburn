@@ -41,7 +41,7 @@ const SETTINGS = {
   theme: 'system' as const,
   activityWindowDays: 7,
   onboardingCompleted: false,
-  launchAtLogin: false,
+  launchAtLogin: true,
   autoUpdate: true,
   discoveryPaused: false,
 };
@@ -72,6 +72,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(null);
       case 'set_settings':
         return Promise.resolve((args as Record<string, unknown> | undefined)?.['settings']);
+      case 'finish_onboarding':
+        return Promise.resolve({ ...SETTINGS, onboardingCompleted: true });
       case 'list_scan_roots':
       case 'default_scan_roots':
       case 'list_repositories':
@@ -88,12 +90,57 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
   });
 }
 
+async function advanceToReady() {
+  await screen.findByRole('heading', { name: 'Everything stays on this machine' });
+  for (let step = 0; step < 4; step += 1) {
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  }
+  await screen.findByRole('heading', { name: 'Ready' });
+}
+
 describe('OnboardingView', () => {
   beforeEach(() => {
     invoke.mockReset();
     openDialog.mockReset();
     listeners.clear();
     mockCommands();
+  });
+
+  it('does not expose controls backed by defaults while settings are loading', async () => {
+    let resolveSettings!: (settings: typeof SETTINGS) => void;
+    const pendingSettings = new Promise<typeof SETTINGS>((resolve) => {
+      resolveSettings = resolve;
+    });
+    mockCommands({ get_settings: pendingSettings });
+
+    render(<OnboardingView />);
+
+    expect(await screen.findByText('Preparing antiburn…')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Everything stays on this machine' }),
+    ).not.toBeInTheDocument();
+
+    resolveSettings(SETTINGS);
+    expect(
+      await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
+    ).toBeInTheDocument();
+  });
+
+  it('releases its shell subscriptions when the window view unmounts', async () => {
+    const { unmount } = render(<OnboardingView />);
+    await screen.findByRole('heading', { name: 'Everything stays on this machine' });
+
+    expect(listeners.get('scan:started')).toHaveLength(1);
+    expect(listeners.get('scan:progress')).toHaveLength(1);
+    expect(listeners.get('scan:finished')).toHaveLength(1);
+
+    unmount();
+
+    await waitFor(() => {
+      expect(listeners.get('scan:started')).toHaveLength(0);
+      expect(listeners.get('scan:progress')).toHaveLength(0);
+      expect(listeners.get('scan:finished')).toHaveLength(0);
+    });
   });
 
   it('runs the five-step first-run flow and records that it finished', async () => {
@@ -116,30 +163,85 @@ describe('OnboardingView', () => {
 
     // 3 — Repositories, which needs a discovery pass to have something to show.
     expect(await screen.findByRole('heading', { name: 'What to include' })).toBeInTheDocument();
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('scan_now'));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('scan_now', { activityWindowDays: 7 }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     // 4 — Historical scan: the window choice, and the pass with a way out.
     expect(await screen.findByRole('heading', { name: 'Historical scan' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: '14 days' }));
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, onboardingCompleted: false, activityWindowDays: 14 },
-      }),
-    );
+    expect(invoke).not.toHaveBeenCalledWith('set_settings', expect.anything());
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    // 5 — Ready, which says where the app is about to go. The notification that
-    // repeats it is the shell's, keyed off the write below.
+    // 5 — Ready.
     expect(await screen.findByRole('heading', { name: 'Ready' })).toBeInTheDocument();
-    expect(screen.getByText(/in the menu bar from here on/i)).toBeInTheDocument();
+    expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Launch antiburn on startup' })).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, activityWindowDays: 14, onboardingCompleted: true },
+      expect(invoke).toHaveBeenCalledWith('finish_onboarding', {
+        activityWindowDays: 14,
+        launchAtLogin: true,
       }),
     );
+  });
+
+  it('persists an opt-out before finishing onboarding', async () => {
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    const launchAtLogin = screen.getByRole('switch', { name: 'Launch antiburn on startup' });
+    expect(launchAtLogin).toBeChecked();
+    fireEvent.click(launchAtLogin);
+    // The choice is a draft until Finish, so there is no earlier settings
+    // round-trip for this click to race.
+    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('finish_onboarding', {
+        activityWindowDays: 7,
+        launchAtLogin: false,
+      }),
+    );
+  });
+
+  it('keeps onboarding open with an actionable error when finishing fails', async () => {
+    const commands = invoke.getMockImplementation();
+    invoke.mockImplementation((command: string, args?: unknown) =>
+      command === 'finish_onboarding'
+        ? Promise.reject(new Error('store unavailable'))
+        : commands?.(command, args),
+    );
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    const finish = screen.getByRole('button', { name: 'Start using antiburn' });
+    fireEvent.click(finish);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('store unavailable');
+    expect(screen.getByRole('button', { name: 'Start using antiburn' })).toBeEnabled();
+  });
+
+  it('submits the finish transition only once', async () => {
+    let resolveFinish!: (settings: typeof SETTINGS) => void;
+    const pendingFinish = new Promise<typeof SETTINGS>((resolve) => {
+      resolveFinish = resolve;
+    });
+    mockCommands({ finish_onboarding: pendingFinish });
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
+    const finishing = screen.getByRole('button', { name: 'Finishing…' });
+    expect(finishing).toBeDisabled();
+    fireEvent.click(finishing);
+
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'finish_onboarding'),
+    ).toHaveLength(1);
+    resolveFinish({ ...SETTINGS, onboardingCompleted: true });
   });
 
   it('announces each step and moves focus to its heading', async () => {
