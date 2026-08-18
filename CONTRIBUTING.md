@@ -25,10 +25,11 @@ there never has to be one — everything antiburn does happens on the reader's o
 machine, as the reader. That is the whole of what "local" claims, and CI
 enforces exactly that much and no more.
 
-Being local is not the same as being offline. antiburn is the reader's own
-agent, running in the reader's own security context, and may do anything the
-reader could do on their machine: read the credential and configuration files
-the reader's tools wrote, call a provider's API with the reader's own
+antiburn watches cloud coding agents — tools that only work connected to
+their model providers — so it is an ordinary online application about online
+tools. It is the reader's own agent, running in the reader's own security
+context, and may do anything the reader could do on their machine: read the
+credential and configuration files the reader's tools wrote, call a provider's API with the reader's own
 credentials, inspect local processes and ports, call a locally-running agent
 over loopback, run the reader's tools as child processes. None of that is fenced
 off, because none of it depends on us or discloses anything the reader has not

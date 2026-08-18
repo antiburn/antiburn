@@ -22,11 +22,10 @@ desktops. See [`docs/support.md`](docs/support.md) for the full matrix and for w
 antiburn stores.
 
 **Local boundary:** antiburn needs no connection to any service of ours — no antiburn
-account, server, or backend, ever. Everything runs on this machine, as you. That is
-not the same as offline: an optional Settings → Usage switch lets antiburn run your
-own coding agent in the background so it refreshes its own usage reading, exactly as
-it does when you use it yourself — that traffic is the agent's and its provider's, not
-ours. The one call antiburn makes to a service of ours is the update check, against
+account, server, or backend, ever. Everything runs on this machine, as you. The
+connections it makes beyond that are yours: it can read your provider's own current
+usage figures with your own credentials — traffic between this machine and a provider
+you already use, never us. The one call antiburn makes to a service of ours is the update check, against
 GitHub Releases, and the app never depends on it. There is no analytics or telemetry
 of any kind in this application, and antiburn hands your data to no one who doesn't
 already have it.

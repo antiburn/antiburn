@@ -31,7 +31,7 @@
 //! Usage switch, default off — and that pairing is deliberate rather than
 //! leftover. A milestone is a statement about a threshold being *crossed*, so
 //! it needs readings that keep moving, and only the refresh source makes them
-//! move: without it the offline reading sits still until the reader next uses
+//! move: without it the cached reading sits still until the reader next uses
 //! their agent, and a crossing would be announced whenever that happened to
 //! be. So the one switch buys both, and its copy names both.
 

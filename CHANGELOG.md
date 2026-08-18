@@ -27,13 +27,12 @@ CI changes, and documentation that no user acts on stay out — see
 ### Added
 
 - **What "local" means, spelled out.** antiburn needs no antiburn account,
-  server, or backend — everything runs on your machine, as you. That is not
-  the same as offline: Settings → Usage can, with your permission, run your
-  coding agent in the background so it refreshes its own usage reading, using
-  the agent's own connection and your own credentials, the same as if you had
-  run it yourself. antiburn's own connections stay limited to one convenience
-  it never depends on — checking whether a newer version exists — and it hands
-  your data to no one who doesn't already have it.
+  server, or backend — everything runs on your machine, as you. The
+  connections it makes are yours: reading your provider's own current usage
+  figures with your own credentials, traffic between this machine and a
+  provider you already use. Its one call to a service of ours — checking
+  whether a newer version exists — is a convenience it never depends on, and
+  it hands your data to no one who doesn't already have it.
 
 ## [0.1.0-rc.4] - 2026-08-17
 

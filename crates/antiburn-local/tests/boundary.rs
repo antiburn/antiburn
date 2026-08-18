@@ -5,8 +5,8 @@
 //! Mechanical source-boundary checks for the engine.
 //!
 //! antiburn is local in one exact sense: it needs no connection to any
-//! service of ours. It is not offline — as the reader's own agent it may
-//! make network requests, read the credential and configuration files the
+//! service of ours. As the reader's own agent it may make network
+//! requests, read the credential and configuration files the
 //! reader's own tools wrote, and call a provider's API with the reader's own
 //! credentials. The engine's boundary is therefore not network-freeness; it
 //! is two things: no data exfiltration (no telemetry/analytics SDK, no

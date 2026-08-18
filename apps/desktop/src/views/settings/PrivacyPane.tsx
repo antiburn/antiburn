@@ -22,9 +22,9 @@ import { clearLocalIndex } from '../../lib/ipc';
  * gesture at. It is deliberately specific — naming what can be stored, the
  * absence of automatic expiry, and exactly what goes online and why — because
  * a local-first app's privacy page is worth nothing if it is written in the
- * same reassuring generalities as everyone else's. Local is not offline:
- * antiburn may go online as the reader's own agent, with the reader's own
- * credentials. What it never does is need a service of ours, or hand what it
+ * same reassuring generalities as everyone else's. antiburn goes online as
+ * the reader's own agent, with the reader's own credentials. What it never
+ * does is need a service of ours, or hand what it
  * finds to one.
  */
 

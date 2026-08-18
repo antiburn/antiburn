@@ -6,9 +6,9 @@
  * The no-exfiltration guarantee, enforced mechanically.
  *
  * antiburn is local in one exact sense: it needs no connection to any
- * service of ours. It is not offline — the renderer may call a provider's
- * API with the reader's own credentials, and `fetch`/`XMLHttpRequest`/
- * `WebSocket` are ordinary, permitted capabilities. The one hard line is
+ * service of ours. The renderer may call a provider's API with the
+ * reader's own credentials, and `fetch`/`XMLHttpRequest`/`WebSocket` are
+ * ordinary, permitted capabilities. The one hard line is
  * disclosure: the renderer reaches no service of ours. Three layers hold
  * that up:
  *

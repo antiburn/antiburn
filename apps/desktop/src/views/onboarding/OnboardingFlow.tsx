@@ -150,18 +150,17 @@ function Welcome() {
           shows you what they cost and how they went. No account, nothing uploaded, and no usage
           data collected.
         </p>
-        {/* This sentence has to keep matching what "local" actually promises.
-            It is not "offline": antiburn checks GitHub Releases for new
-            versions, and — D-21, one default-off setting turned on later —
-            can go online as your own agent to read a provider's current usage
-            figures. What makes it local is that none of that depends on any
-            service of ours, and nothing about you goes to one. */}
+        {/* This sentence has to keep matching what "local" actually promises:
+            antiburn goes online as your own agent — reading a provider's
+            current usage figures with your credentials, checking GitHub
+            Releases for new versions — and what makes it local is that none
+            of that depends on any service of ours, and nothing about you
+            goes to one. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          Local doesn&rsquo;t mean offline. antiburn checks GitHub Releases for new versions,
-          and one setting you can turn on later lets it go online as your own agent, to read a
-          provider&rsquo;s current usage figures with your own credentials. None of it needs an
-          antiburn account or an antiburn server — there isn&rsquo;t one — and nothing about you
-          or your sessions goes anywhere else.
+          antiburn goes online as your own agent — to read a provider&rsquo;s current usage
+          figures with your own credentials, and to check GitHub Releases for new versions. None
+          of it needs an antiburn account or an antiburn server — there isn&rsquo;t one — and
+          nothing about you or your sessions goes anywhere else.
         </p>
       </div>
     </div>

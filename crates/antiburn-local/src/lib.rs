@@ -8,9 +8,9 @@
 //! analysis, repository identity, API-equivalent pricing, and the versioned
 //! local persistence/export contracts. It is deliberately self-contained:
 //!
-//! - **No dependency on any service.** This crate opens no network or socket
-//!   connection of its own: discovery reads documented files, read-only
-//!   databases, and bounded WSL paths only.
+//! - **No dependency on any service.** Nothing in this crate talks to a
+//!   service of ours or carries telemetry; discovery reads documented files,
+//!   read-only databases, and bounded WSL paths.
 //! - **No private dependencies.** The crate builds and tests standalone with
 //!   its own manifest and lockfile.
 //! - **Local concepts only.** The public API carries no authentication,

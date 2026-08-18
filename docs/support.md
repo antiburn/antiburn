@@ -117,10 +117,11 @@ the next time it looks.
 ## Network
 
 antiburn needs no connection to any service of ours — no antiburn account, server,
-or backend, ever. The engine (`antiburn-local`) performs no network or socket I/O
-at all, and this is enforced mechanically by its own test suite. The application's
-own connection to a service of ours is exactly one kind: the updater, which asks
-GitHub Releases whether a newer version exists, and which the app never depends on.
+or backend, ever. The connections it makes beyond that are yours, not ours: reading
+a provider's own figures with your own credentials is traffic between this machine
+and a provider you already use. The application's own connection to a service of
+ours is exactly one kind: the updater, which asks GitHub Releases whether a newer
+version exists, and which the app never depends on.
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can

@@ -70,7 +70,6 @@ version and refuses the release if there is none.
     and platform handling.
   - Versioned local persistence and export contracts.
 - The crate's local boundary as a compatibility contract: no dependency on any
-  service of ours — this crate itself opens no network or socket connection —
-  no private dependencies, and a public API that carries no authentication,
-  organization, remote-sharing, enrichment, or telemetry concepts. Enforced
-  mechanically by the crate's boundary test suite.
+  service of ours, no private dependencies, and a public API that carries no
+  authentication, organization, remote-sharing, enrichment, or telemetry
+  concepts. Enforced mechanically by the crate's boundary test suite.

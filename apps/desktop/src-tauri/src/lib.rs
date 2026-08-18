@@ -38,7 +38,7 @@
 //!
 //! antiburn needs no connection to any service of ours — no antiburn account,
 //! server, or backend, ever. Everything runs on this machine, as the reader.
-//! That is not the same as offline: the provider limit figures on the Usage
+//! The provider limit figures on the Usage
 //! surface are read from a file an agent already wrote, and one opt-in
 //! setting, default off, runs that agent so it refreshes the file — the agent
 //! goes online on its own account, exactly as it would if the reader ran it,
