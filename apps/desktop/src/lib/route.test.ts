@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { NUDGE_FRAGMENT, routeFromHash, SETTINGS_FRAGMENT } from './route';
+import { NUDGE_FRAGMENT, OVERLAY_FRAGMENT, routeFromHash, SETTINGS_FRAGMENT } from './route';
 
 /**
  * The fragment is the only thing that distinguishes one window from another,
@@ -16,6 +16,7 @@ describe('routeFromHash', () => {
   it('resolves the fragments the shell opens windows with', () => {
     expect(routeFromHash(SETTINGS_FRAGMENT)).toBe('settings');
     expect(routeFromHash(NUDGE_FRAGMENT)).toBe('nudge');
+    expect(routeFromHash(OVERLAY_FRAGMENT)).toBe('overlay');
   });
 
   it('accepts a fragment with or without the leading slash', () => {

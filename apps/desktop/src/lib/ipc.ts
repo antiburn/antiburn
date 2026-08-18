@@ -794,6 +794,17 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   generatedAt: '',
 };
 
+/**
+ * Epoch seconds of the most recent transcript write across all locally
+ * discovered sessions, or null when nothing wrote recently. The overlay
+ * window polls this to drive its live-session LED blink; the shell memoizes
+ * the answer, so polling is cheap.
+ */
+export async function getLatestSessionActivity(): Promise<number | null> {
+  if (!hasShell()) return null;
+  return invoke<number | null>('get_latest_session_activity');
+}
+
 /** Run a scan now, unless one is already in flight. */
 export async function scanNow(activityWindowDays?: number): Promise<ScanStatus | null> {
   if (!hasShell()) return null;

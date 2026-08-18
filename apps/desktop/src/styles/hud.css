@@ -1,0 +1,132 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* ==========================================================================
+   The floating usage HUD's look: the Bitcount dot-matrix display face, the
+   burn-orange LED palette, the session-live blink, and the raised bevel.
+   Ported with the HUD under the `hud-window-mechanics` allowlist rule
+   (docs/oss/source-allowlist.toml, D-026); scoped here rather than folded
+   into tokens.css because only the HUD wears this styling today.
+
+   The display face is for numbers, captions, and the wordmark only — body
+   text stays in the system font.
+   ========================================================================== */
+
+@import '@fontsource-variable/bitcount-prop-single/index.css';
+
+@theme {
+  /* HUD display face — registers the `font-bitcount` utility. */
+  --font-bitcount:
+    'Bitcount Prop Single Variable', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+    system-ui, sans-serif;
+  /* The burn orange: the brand accent the LED bars light up in. */
+  --color-burn: var(--color-burn-val);
+  /* Muted companion to burn: the same hot orange backed off a smidge, for
+     solid fills that should read burn without shouting. */
+  --color-burn-muted: var(--color-burn-muted-val);
+  /* Opaque panel surface the expanded HUD paints over its transparent
+     window frame. */
+  --color-bg-hud: var(--color-bg-hud-val);
+}
+
+/* Raw palette values, per theme branch — same resolution order as
+   tokens.css: light defaults, media dark, explicit [data-theme] override. */
+:root {
+  --color-burn-val: rgb(255 77 0);
+  --color-burn-muted-val: rgb(240 88 22);
+  --color-bg-hud-val: rgb(246 246 246);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-burn-val: rgb(255 106 0);
+    --color-burn-muted-val: rgb(242 113 34);
+    --color-bg-hud-val: rgb(40 40 40);
+  }
+}
+
+:root[data-theme='light'] {
+  --color-burn-val: rgb(255 77 0);
+  --color-burn-muted-val: rgb(240 88 22);
+  --color-bg-hud-val: rgb(246 246 246);
+}
+
+:root[data-theme='dark'] {
+  --color-burn-val: rgb(255 106 0);
+  --color-burn-muted-val: rgb(242 113 34);
+  --color-bg-hud-val: rgb(32 32 32);
+}
+
+/* The HUD's document ground. styles.css paints every body with the window
+   surface; the overlay window is drawn on a transparent OS window, so its
+   view opts out by setting this attribute on mount. */
+body[data-transparent-window] {
+  background-color: transparent;
+}
+
+/* Big numbers (usage percentages). Bitcount's dot grid is wider than the
+   system face at the same size, so let letter-spacing breathe slightly. */
+.stats-number {
+  font-family: var(--font-bitcount);
+  letter-spacing: 0.02em;
+}
+
+/* Small utility text in the LED look: Bitcount in true uppercase glyphs
+   (text-transform, not synthesized small caps) — limit labels, reset
+   captions. */
+.led-caption {
+  font-family: var(--font-bitcount);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Session-live blink: the leading LED dot flips once a second between its lit
+   color (--led-on, set inline by LedBar) and the dim unused-slot color — never
+   to fully transparent, so the dot reads as an LED going dark, not vanishing. */
+.led-blink {
+  animation: led-blink 3s steps(1, end) infinite;
+}
+
+@keyframes led-blink {
+  0%,
+  49.9% {
+    background-color: var(--led-on);
+  }
+
+  50%,
+  100% {
+    background-color: var(--color-surface-tertiary);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .led-blink {
+    animation: none;
+  }
+}
+
+/* Subtle raised bevel: a light top edge and dark bottom edge, over whatever
+   border the element already draws. Kept faint — it should read as machined
+   chrome, not a beveled push button. */
+.bevel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    inset 0 -1px 0 rgb(0 0 0 / 0.06);
+}
+
+:root[data-theme='dark'] .bevel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    inset 0 -1px 0 rgb(0 0 0 / 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .bevel {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.08),
+      inset 0 -1px 0 rgb(0 0 0 / 0.35);
+  }
+}
