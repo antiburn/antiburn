@@ -12,7 +12,7 @@ import {
   type LocalSessionCost,
 } from '../../../lib/presentation/sessionCosts';
 
-export interface CostBreakdownSplit {
+interface CostBreakdownSplit {
   /** The orchestrator's own transcript. */
   parent: LocalSessionCost;
   /** Every sub-agent it launched, together. */

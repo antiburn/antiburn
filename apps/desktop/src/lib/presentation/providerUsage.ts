@@ -230,7 +230,7 @@ export function sessionCountLabel(count: number): string {
  * the kind of figure these surfaces refuse to show.
  * ---------------------------------------------------------------------- */
 
-export type PaceTrendKind = 'picking-up' | 'steady' | 'easing' | 'insufficient';
+type PaceTrendKind = 'picking-up' | 'steady' | 'easing' | 'insufficient';
 
 export interface PaceTrend {
   kind: PaceTrendKind;
@@ -267,7 +267,7 @@ export function paceTrend(provider: ProviderUsagePayload): PaceTrend {
  * day — and a reader who has spent 28 cents against a 17-dollar average has
  * not used *nothing*, they have used very little.
  */
-export function paceTrendLabel(trend: PaceTrend): string {
+function paceTrendLabel(trend: PaceTrend): string {
   if (trend.kind === 'insufficient' || trend.ratio == null) return 'Not enough history';
   const word =
     trend.kind === 'picking-up' ? 'Picking up' : trend.kind === 'easing' ? 'Easing' : 'Steady';

@@ -18,9 +18,6 @@ export const SETTINGS_FRAGMENT = '#/settings';
 /** Fragment the nudge crate opens the notification window with. */
 export const NUDGE_FRAGMENT = '#/nudge';
 
-/** Fragment the Rust shell opens the first-run window with. */
-export const ONBOARDING_FRAGMENT = '#/onboarding';
-
 /**
  * Every fragment that names a window other than the popover. The popover is the
  * default rather than an entry, so an unknown fragment lands somewhere real

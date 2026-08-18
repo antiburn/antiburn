@@ -51,7 +51,7 @@ export interface UpdatesSectionProps extends AppSettingsController {
 }
 
 /** Fold a shell-reported check outcome into the section's own state. */
-export function stateFromEvent(status: UpdateStatusPayload): CheckState {
+function stateFromEvent(status: UpdateStatusPayload): CheckState {
   switch (status.kind) {
     case 'available':
       return { kind: 'available', version: status.version ?? '' };

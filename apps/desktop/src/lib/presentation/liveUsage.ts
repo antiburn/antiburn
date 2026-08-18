@@ -313,7 +313,7 @@ export function paceStateLabel(state: PaceState): string {
 }
 
 /** Tailwind colour for a band. Green through red, in that order. */
-export function paceStateToneClass(state: PaceState): string {
+function paceStateToneClass(state: PaceState): string {
   switch (state) {
     case 'comfortable':
       return 'text-system-green';

@@ -36,7 +36,7 @@ export interface PhaseDistribution {
 }
 
 /** Tool-call counts by category. Mirrors engine `ToolMix`. */
-export interface ToolMix {
+interface ToolMix {
   edit: number;
   read: number;
   search: number;
@@ -83,7 +83,7 @@ export type InitialContextSource =
   | 'unattributed';
 
 /** One source/source-name token count in the initial-context breakdown. */
-export interface InitialContextSourceCount {
+interface InitialContextSourceCount {
   source: InitialContextSource;
   /** Skill name, MCP server name, or instruction file — `null` when unnamed. */
   sourceName: string | null;
@@ -115,7 +115,7 @@ export interface SessionCostComponents {
 }
 
 /** Billable token counts retained per normalized model key. */
-export interface ModelTokens {
+interface ModelTokens {
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;
@@ -197,7 +197,7 @@ export interface ActiveSessionsSummary {
 export type SkillScope = 'global' | 'project' | 'plugin' | 'unknown';
 
 /** One skill invocation extracted from a transcript. Mirrors engine `SkillUse`. */
-export interface SkillUse {
+interface SkillUse {
   name: string;
   /** 0..1 position on the session's active-time axis (the hypnogram x-axis). */
   progress: number;

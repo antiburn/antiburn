@@ -30,7 +30,7 @@ import type { SettingsPane } from './settingsPanes';
 export type AttentionKind = 'storage' | 'sourceAccess';
 
 /** What pressing a banner's action does. */
-export type AttentionAction = { kind: 'openSettings'; pane: SettingsPane } | { kind: 'rescan' };
+type AttentionAction = { kind: 'openSettings'; pane: SettingsPane } | { kind: 'rescan' };
 
 export interface AttentionBanner {
   id: AttentionKind;
@@ -46,7 +46,7 @@ export interface AttentionBanner {
 }
 
 /** The subset of a repository row this derivation reads. */
-export interface AttentionRepository {
+interface AttentionRepository {
   repoName: string;
   /** `accessible`, `permission_denied`, `not_cloned`, or `disabled`. */
   status: string;

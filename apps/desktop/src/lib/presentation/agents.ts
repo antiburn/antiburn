@@ -19,7 +19,7 @@
 export type AgentSurface = 'cli' | 'ide_desktop' | 'unknown';
 
 /** Everything the presentation layer knows about one agent. */
-export interface AgentInfo {
+interface AgentInfo {
   displayName: string;
   /** Icon slot name. A name, not an asset — see the module comment. */
   icon: string;
@@ -111,11 +111,6 @@ const AGENTS: Record<string, AgentInfo> = {
 
 /** Every agent slug the registry knows, in declaration order. */
 export const AGENT_SLUGS: readonly string[] = Object.keys(AGENTS);
-
-/** The full registry entry for a slug, or undefined when it is unknown. */
-export function agentInfo(slug: string): AgentInfo | undefined {
-  return AGENTS[slug];
-}
 
 /**
  * A user-friendly display name for a slug.

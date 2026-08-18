@@ -10,12 +10,6 @@
  * to mean for the list to make sense at 00:30.
  */
 
-/** Days of activity a list shows unless the reader chooses otherwise. */
-export const DEFAULT_ACTIVITY_DAYS = 7;
-
-/** Days a caller should retain, so widening the window has data to show. */
-export const ACTIVITY_RESERVE_DAYS = 14;
-
 function localDayOrdinal(date: Date): number {
   return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
 }

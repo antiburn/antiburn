@@ -17,7 +17,7 @@ import { UsageMetricRows } from './UsageMetricRows';
 import { UsageWindowRows } from './UsageWindowRows';
 import { ProviderGlyph } from './ProviderUsagePrimitives';
 
-export interface ProviderUsageDetailProps {
+interface ProviderUsageDetailProps {
   provider: ProviderUsagePayload;
   /** The provider's own limits, when a source could prove any. */
   live?: LiveProviderUsagePayload | null;

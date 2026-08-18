@@ -11,7 +11,7 @@
  * renamed pane is a type error at every call site instead of a link that
  * quietly lands nowhere.
  */
-export const SETTINGS_PANE_IDS = [
+const SETTINGS_PANE_IDS = [
   'general',
   'appearance',
   'sources',

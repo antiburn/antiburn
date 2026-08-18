@@ -22,7 +22,7 @@ function darkQuery(): MediaQueryList | null {
 }
 
 /** True when the app is currently rendering in dark mode. */
-export function isDarkTheme(): boolean {
+function isDarkTheme(): boolean {
   if (typeof document !== 'undefined') {
     const theme = document.documentElement.dataset['theme'];
     if (theme === 'dark') return true;

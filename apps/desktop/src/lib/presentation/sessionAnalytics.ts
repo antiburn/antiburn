@@ -88,9 +88,9 @@ export function phaseLabel(phase: SessionPhase): string {
  * ---------------------------------------------------------------------- */
 
 /** Score at or above which a session reads as "Healthy". */
-export const HEALTHY_SCORE_THRESHOLD = 75;
+const HEALTHY_SCORE_THRESHOLD = 75;
 /** Score at or above which a session reads as "Drifting"; below it, "Thrashing". */
-export const DRIFTING_SCORE_THRESHOLD = 50;
+const DRIFTING_SCORE_THRESHOLD = 50;
 
 /**
  * A 0–100 session-health score to its swatch color: green healthy, amber
@@ -115,7 +115,7 @@ export function scoreLabel(score: number): string {
  * ---------------------------------------------------------------------- */
 
 /** Whether a phase sits outside its healthy reference band. */
-export type ReferenceFlag = 'high' | 'low' | null;
+type ReferenceFlag = 'high' | 'low' | null;
 
 export interface PhaseBreakdownRow extends PhaseMeta {
   fraction: number;
@@ -248,7 +248,7 @@ export function toolMixSlices(summary: ActiveSessionsSummary): ToolSlice[] {
  * Initial context
  * ---------------------------------------------------------------------- */
 
-export interface InitialContextSourceMeta {
+interface InitialContextSourceMeta {
   key: InitialContextSource;
   label: string;
   colorVar: string;
@@ -263,7 +263,7 @@ export interface InitialContextSourceMeta {
  * a session "mode" hue, so the largest slice reads as inert baseline rather
  * than as an alarm.
  */
-export const INITIAL_CONTEXT_SOURCES: readonly InitialContextSourceMeta[] = [
+const INITIAL_CONTEXT_SOURCES: readonly InitialContextSourceMeta[] = [
   {
     key: 'skill_instructions',
     label: 'Skills',
