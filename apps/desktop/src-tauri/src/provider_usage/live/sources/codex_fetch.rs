@@ -275,14 +275,14 @@ impl LiveUsageSource for CodexDirectFetch {
         true
     }
 
-    fn fetch(&self) -> SourceOutcome {
+    fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
         let Some(path) = &self.auth_path else {
             return SourceOutcome::absent();
         };
-        // Read inside the cooldown gate, mirroring the Claude source: a tick
+        // Read inside the cooldown gate, mirroring the Claude source: a poll
         // the cooldown is going to skip should not touch the disk either.
-        self.cooldown.poll(now, || {
+        self.cooldown.poll(now, max_age, || {
             let Some(auth) = read_auth(path) else {
                 return Ok(None);
             };
@@ -387,6 +387,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const NOW: i64 = 1_800_000_000;
+
+    /// A background-caller-shaped `max_age` for tests that only exercise
+    /// whether a reading is found, not the cooldown's freshness budget —
+    /// `cooldown.rs`'s own suite owns that.
+    const TEST_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
     const WHAM_BODY: &str = r#"{"rate_limit": {
       "primary_window": {"used_percent": 20, "limit_window_seconds": 18000},
       "secondary_window": {"used_percent": 55, "limit_window_seconds": 604800},
@@ -497,7 +503,7 @@ mod tests {
     #[test]
     fn a_missing_credential_file_is_absent_not_an_error() {
         let source = CodexDirectFetch::at(PathBuf::from("/nonexistent/auth.json"));
-        let outcome = source.fetch();
+        let outcome = source.fetch(TEST_MAX_AGE);
         assert!(outcome.snapshots.is_empty());
         assert_eq!(outcome.error, None);
     }
@@ -507,7 +513,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("auth.json");
         fs::write(&path, "not json").expect("write");
-        let outcome = CodexDirectFetch::at(path).fetch();
+        let outcome = CodexDirectFetch::at(path).fetch(TEST_MAX_AGE);
         assert!(outcome.snapshots.is_empty());
         assert_eq!(outcome.error, None);
     }
@@ -533,7 +539,7 @@ mod tests {
         }
 
         let source = CodexDirectFetch::with_transport(path, Box::new(WorksFirstTry));
-        let outcome = source.fetch();
+        let outcome = source.fetch(TEST_MAX_AGE);
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.snapshots.len(), 1);
         assert_eq!(

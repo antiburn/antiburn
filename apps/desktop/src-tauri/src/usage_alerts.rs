@@ -69,6 +69,18 @@ const EPISODE_SECS: i64 = 6 * 60 * 60;
 /// Where the last-fired moment survives a relaunch.
 const FIRED_KEY: &str = "internal:usageAnomalyFiredEpoch";
 
+/// How fresh a reading the milestone pass asks each source's cooldown for.
+///
+/// This pass is not shown to anyone — it runs on [`TICK`], whether or not the
+/// popover is even open — so there is no reason to pay for a fetch more
+/// often than the pass itself runs, and every reason not to: it is exactly
+/// the traffic the sources' cooldown (`provider_usage::live::sources::cooldown`)
+/// exists to keep to a small, predictable trickle. Ten minutes matches what
+/// every source's cooldown fixed unconditionally before `max_age` existed,
+/// so this pass's background traffic is unchanged by the popover's own,
+/// much shorter, `max_age` — see `crate::commands::POPOVER_LIVE_USAGE_MAX_AGE`.
+const MILESTONE_MAX_AGE: Duration = Duration::from_secs(600);
+
 /// Spawn the monitor loop; the handle joins the shell's scheduler registry.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
@@ -163,11 +175,15 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
         return;
     };
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
-        provider_usage::live::sources::collect(&live.sources, settings.live_usage_active())
-            .snapshots
-            .iter()
-            .map(milestone_snapshot)
-            .collect();
+        provider_usage::live::sources::collect(
+            &live.sources,
+            settings.live_usage_active(),
+            MILESTONE_MAX_AGE,
+        )
+        .snapshots
+        .iter()
+        .map(milestone_snapshot)
+        .collect();
     let mut ledger = live
         .ledger
         .lock()
