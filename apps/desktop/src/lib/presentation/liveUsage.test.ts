@@ -74,7 +74,7 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
     displayName: 'Anthropic',
     support: 'live',
     freshness: 'fresh',
-    sourceLabel: "Claude's cached usage",
+    sourceLabel: 'Asked Claude directly',
     // Relative to the real clock, not to `NOW`: `relativeTime` phrases an age
     // against the moment it runs, while the window helpers take their `now` as
     // an argument. Only the former needs a real-world stamp.
@@ -280,6 +280,27 @@ describe('hiding unused model quota limits', () => {
     expect(isUsageWindowVisible({ ...quiet, usedPercent: null })).toBe(false);
     expect(isUsageWindowVisible({ ...quiet, usedPercent: 0.1 })).toBe(true);
     expect(isUsageWindowVisible({ ...quiet, usedPercent: 14 })).toBe(true);
+  });
+
+  it('hides a quiet Codex model-scoped window the same way, and shows a used one', () => {
+    // Codex's `additional_rate_limits` produce the identical
+    // role/scopeModel shape as Anthropic's `weekly_scoped` windows — this
+    // proves the hide-until-used rule needs no provider-specific branch to
+    // cover it.
+    const quiet = window({
+      id: 'weekly-nightjar',
+      role: 'supplemental',
+      scopeModel: 'Nightjar',
+      usedPercent: 0,
+    });
+    const codexProvider = provider({ provider: 'openai', windows: [quiet] });
+    expect(liveWindows(codexProvider)).toEqual([]);
+
+    const used = provider({
+      provider: 'openai',
+      windows: [{ ...quiet, usedPercent: 6 }],
+    });
+    expect(liveWindows(used).map((entry) => entry.id)).toEqual(['weekly-nightjar']);
   });
 
   it('never hides a primary window, however empty', () => {

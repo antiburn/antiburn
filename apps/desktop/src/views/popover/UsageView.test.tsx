@@ -190,7 +190,7 @@ function liveProvider(): LiveProviderUsagePayload {
     displayName: 'Anthropic',
     support: 'live',
     freshness: 'fresh',
-    sourceLabel: "Claude's cached usage",
+    sourceLabel: 'Asked Claude directly',
     observedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
     windows: [
       liveWindow(),
@@ -326,11 +326,11 @@ describe('UsageView — plan limits layered over local estimates', () => {
     expect(screen.getAllByText('Last 7 days')).toHaveLength(2);
   });
 
-  it('banners a signed-out agent, and only that failure', () => {
+  it('banners a signed-out source, and only that failure', () => {
     render(
       <UsageView
         summary={summary()}
-        live={live({ errors: [{ source: 'claude-local-cache', category: 'authentication' }] })}
+        live={live({ errors: [{ source: 'claude-usage-fetch', category: 'authentication' }] })}
         now={NOW}
         onBack={vi.fn()}
       />,

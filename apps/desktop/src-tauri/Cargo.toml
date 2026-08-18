@@ -55,9 +55,31 @@ anyhow = "1"
 # Required to implement the engine's async ConsentGrants trait; the engine
 # declares it with the same macro.
 async-trait = "0.1"
+# Already resolved transitively (`reqwest`'s own dependency tree); declared
+# directly so `provider_usage::live::sources::codex_fetch` can decode the
+# unsigned payload segment of Codex's own JWT to read the account id claim
+# when `auth.json` did not state one plainly. Decoding only — nothing here
+# verifies a signature or should be trusted as anything more than a hint the
+# provider's own response can still reject.
+base64 = "0.22"
+# Direct provider usage fetch (`provider_usage::live::sources`): a plain
+# HTTPS request to the provider's own endpoint, with the reader's own
+# credential — a `GET` for the usage reading itself, and, for Codex, the
+# occasional token-refresh `POST` (`form`, for its `application/`
+# `x-www-form-urlencoded` body). Blocking, so every source's `fetch` stays
+# the synchronous call the trait already declares. `rustls-no-provider`
+# rather than `rustls`: the latter drags in a second TLS cryptography stack
+# (`aws-lc-rs`) alongside the `ring` one `tauri-plugin-updater` already
+# resolves rustls to below; the explicit `rustls` dependency installs that
+# same provider instead of a competing one.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 # The app-owned local database. `bundled` compiles SQLite from source, so the
 # app never depends on a system library and CI needs no extra packages.
 rusqlite = { version = "0.32.1", features = ["bundled"] }
+# Only to install the process-wide crypto provider `reqwest`'s
+# `rustls-no-provider` feature leaves unset — `ring`, matching what
+# `tauri-plugin-updater`'s own rustls dependency already resolves to.
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 # Required by `tauri::generate_context!`, which expands to code in this crate.
 serde_json = "1"
@@ -68,9 +90,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # RFC 3339 stamps for the store's own timestamps.
 time = { version = "0.3", features = ["formatting", "parsing"] }
-# The scan scheduler. Excludes `net`: nothing here needs a socket of its own
-# — the updater plugin is the shell's only network-capable surface, and it
-# talks to antiburn's own release feed over its own Tauri-managed client.
+# The scan scheduler. Excludes `net` and `process`: this crate never opens a
+# socket or spawns a child directly. The direct-fetch usage sources reach the
+# network through `reqwest`'s own bundled runtime instead, and the Codex
+# app-server fallback spawns synchronously through `std::process` — so this
+# feature list still names only what this crate's own async code needs.
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

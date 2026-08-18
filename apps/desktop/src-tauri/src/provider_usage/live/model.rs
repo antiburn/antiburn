@@ -22,12 +22,12 @@
 //!    questions and the surfaces answer them separately.
 
 // The vocabulary is the contract, and it is wider than any one source. The
-// offline source that ships today states five-hour and weekly percentages and
+// two sources that ship today state five-hour and weekly percentages and
 // nothing else, so most of the tiers, units, and failure modes below are
 // declared and not yet constructed — which is the point: a view must already
 // render `Estimated`, and the error surface must already group
 // `Authentication`, on the day a source produces one. Narrowing these enums to
-// what the first source happens to emit would make the second source a
+// what the first sources happen to emit would make the next source a
 // refactor rather than a registration.
 //
 // The allow is module-wide because these are pure data types with no logic to

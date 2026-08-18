@@ -246,7 +246,7 @@ export function liveForProvider(
 export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
   const failed = summary.errors.some((error) => error.category === 'authentication');
   if (!failed) return null;
-  return 'Your agent could not read your plan usage. Sign in again there, then reopen this view.';
+  return 'antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view.';
 }
 
 /**
