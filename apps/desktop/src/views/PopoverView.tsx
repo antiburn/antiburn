@@ -39,6 +39,8 @@ import {
   type ProviderUsageSummaryPayload,
   type StorageHealthPayload,
 } from '../lib/ipc';
+import { isFloatingHudEnabled, openOverlayWindow } from '../lib/overlayWindow';
+import { isMacOS } from '../lib/platform';
 import {
   popoverHeightFor,
   prefersReducedMotion,
@@ -199,6 +201,14 @@ export function PopoverView() {
       active = false;
     };
   }, [refreshEntries, refreshUsage, refreshRepositoryList]);
+
+  // Restore the floating HUD on startup when its preference is on. The
+  // popover is the one webview that exists from launch, so it is the window
+  // that restores it; macOS-only for now, like the window itself
+  // (docs/deviations.md D-28).
+  useEffect(() => {
+    if (isMacOS() && isFloatingHudEnabled()) void openOverlayWindow().catch(() => {});
+  }, []);
 
   // Settings are written in the settings window but rendered here: the theme,
   // the day window, and the pause state all change what this window shows.

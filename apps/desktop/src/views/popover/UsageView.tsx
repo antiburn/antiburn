@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronLeft } from 'lucide-react';
+import { useEffect, useState } from 'react';
+
+import { ChevronLeft, PictureInPicture2 } from 'lucide-react';
 
 import { ProviderGlyph } from '../../components/providerUsage';
 import { LiveUsageDetail } from '../../components/providerUsage/LiveUsageDetail';
@@ -16,6 +18,13 @@ import type {
   ProviderUsageSummaryPayload,
 } from '../../lib/ipc';
 import { EMPTY_LIVE_USAGE } from '../../lib/ipc';
+import {
+  hideOverlayWindow,
+  isOverlayWindowVisible,
+  openOverlayWindow,
+  setFloatingHudEnabled,
+} from '../../lib/overlayWindow';
+import { isMacOS } from '../../lib/platform';
 import { liveAuthNote, liveForProvider } from '../../lib/presentation/liveUsage';
 import {
   providerWindow,
@@ -100,6 +109,9 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
         <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
           Usage
         </h1>
+        {/* macOS-only for now: the overlay window is only registered there
+            (docs/deviations.md D-28). */}
+        {isMacOS() && <HudPopOutButton />}
       </header>
 
       <ScrollPane viewportClassName="px-3 pb-2">
@@ -139,6 +151,56 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
         </p>
       </footer>
     </div>
+  );
+}
+
+/**
+ * Pop the usage bars out into the floating HUD, or bring them back in.
+ *
+ * Whether the HUD is on screen is asked of the window itself, not the stored
+ * preference: the HUD's own ✕ can close it while this popover is hidden, and
+ * nothing tells this webview. The answer is read on mount and re-read each
+ * time the popover takes focus — which is once per opening, since the tray
+ * window keeps its webview alive between openings.
+ */
+function HudPopOutButton() {
+  const [hudShown, setHudShown] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const read = () => {
+      void isOverlayWindowVisible().then((visible) => {
+        if (!cancelled) setHudShown(visible);
+      });
+    };
+    read();
+    window.addEventListener('focus', read);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', read);
+    };
+  }, []);
+
+  const label = hudShown ? 'Hide the floating usage HUD' : 'Show the floating usage HUD';
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-pressed={hudShown}
+      onClick={() => {
+        const next = !hudShown;
+        setHudShown(next);
+        setFloatingHudEnabled(next);
+        void (next ? openOverlayWindow() : hideOverlayWindow()).catch(() => {});
+      }}
+      /* Burn orange means the HUD is out there; the muted state means it
+         isn't. */
+      className={`ml-auto inline-flex h-6 shrink-0 items-center rounded-control px-1 hover:bg-surface-hover ${
+        hudShown ? 'text-burn' : 'text-label-secondary'
+      }`}
+    >
+      <PictureInPicture2 size={14} strokeWidth={2} aria-hidden="true" />
+    </button>
   );
 }
 

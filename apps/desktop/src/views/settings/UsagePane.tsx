@@ -10,6 +10,13 @@ import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
 import { ToggleRow } from '../../components/ui/ToggleRow';
 import { getLiveUsage, EMPTY_LIVE_USAGE, type LiveUsageSummaryPayload } from '../../lib/ipc';
+import {
+  hideOverlayWindow,
+  isFloatingHudEnabled,
+  openOverlayWindow,
+  setFloatingHudEnabled,
+} from '../../lib/overlayWindow';
+import { isMacOS } from '../../lib/platform';
 import { liveSourceNote } from '../../lib/presentation/liveUsage';
 import type { AppSettingsController } from './useAppSettings';
 
@@ -47,6 +54,16 @@ function errorNote(category: string): string {
 
 export function UsagePane({ settings, update }: UsagePaneProps) {
   const [live, setLive] = useState<LiveUsageSummaryPayload>(EMPTY_LIVE_USAGE);
+  // The HUD preference lives in localStorage, not AppSettings (see
+  // lib/overlayWindow.ts), so this pane reads it once on open rather than
+  // through the settings controller.
+  const [hudShown, setHudShown] = useState(() => isFloatingHudEnabled());
+
+  function handleHudChange(next: boolean) {
+    setHudShown(next);
+    setFloatingHudEnabled(next);
+    void (next ? openOverlayWindow() : hideOverlayWindow()).catch(() => {});
+  }
 
   // One read on open, and one after the switch moves. Not a subscription: this
   // pane is a place a reader visits deliberately, and a limit figure that
@@ -83,6 +100,23 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
           />
         </Card>
       </SectionGroup>
+
+      {/* The HUD belongs in this pane because it renders the figures this pane
+          governs: the toggle sits under the refresh opt-in it depends on, and
+          the copy links the two preferences. macOS-only for now — the window
+          itself is only registered there (docs/deviations.md D-28). */}
+      {isMacOS() && (
+        <SectionGroup title="Floating HUD">
+          <Card>
+            <ToggleRow
+              label="Show floating usage HUD"
+              description="A small always-on-top readout of your plan limits. It expands when you hover over it, and you can drag it anywhere on screen. It shows the same figures as this pane, so it is only as current as they are — the refresh switch above is what keeps them moving."
+              checked={hudShown}
+              onChange={handleHudChange}
+            />
+          </Card>
+        </SectionGroup>
+      )}
 
       <SectionGroup title="What antiburn can currently see">
         <Card>
