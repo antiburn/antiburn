@@ -130,6 +130,7 @@ pub fn run() {
             commands::get_storage_health,
             commands::get_subagent_analytics,
             commands::hide_popover,
+            commands::finish_onboarding,
             commands::list_recent_sessions,
             commands::list_repositories,
             commands::list_scan_roots,

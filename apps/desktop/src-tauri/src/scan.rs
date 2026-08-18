@@ -171,7 +171,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     tauri::async_runtime::spawn(async move {
         // A fresh install has nothing to scan until the reader picks sources.
         if scheduled_scanning_allowed(&app) {
-            run_pass(&app).await;
+            run_pass(&app, None).await;
         }
         loop {
             let controller = app.state::<ScanController>();
@@ -189,7 +189,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             if !scheduled_scanning_allowed(&app) {
                 continue;
             }
-            run_pass(&app).await;
+            run_pass(&app, None).await;
         }
     })
 }
@@ -207,7 +207,7 @@ fn scheduled_scanning_allowed(app: &AppHandle) -> bool {
 }
 
 /// Run one pass, unless one is already in flight.
-pub async fn run_pass(app: &AppHandle) -> ScanStatus {
+pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> ScanStatus {
     {
         let controller = app.state::<ScanController>();
         if controller.running.swap(true, Ordering::SeqCst) {
@@ -226,7 +226,7 @@ pub async fn run_pass(app: &AppHandle) -> ScanStatus {
         let _ = app.emit(EVENT_STARTED, started);
     }
 
-    let outcome = pass(app).await;
+    let outcome = pass(app, activity_window_days).await;
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
@@ -261,7 +261,7 @@ pub async fn run_pass(app: &AppHandle) -> ScanStatus {
 
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
-async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
+async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Result<usize> {
     let store = app.state::<Store>();
     let settings = store.settings()?;
     let now = unix_now();
@@ -325,7 +325,13 @@ async fn pass(app: &AppHandle) -> anyhow::Result<usize> {
 
     // Derived analysis for the newest sessions in the visible window, so the
     // list's cost and time pills are populated without opening every row.
-    top_up_analysis(app, now, i64::from(settings.activity_window_days)).await?;
+    let activity_window_days = activity_window_days
+        .unwrap_or(settings.activity_window_days)
+        .clamp(
+            crate::store::MIN_ACTIVITY_DAYS,
+            crate::store::MAX_ACTIVITY_DAYS,
+        );
+    top_up_analysis(app, now, i64::from(activity_window_days)).await?;
 
     if app.state::<ScanController>().cancelled() {
         return Ok(records.len());

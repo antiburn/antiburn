@@ -174,6 +174,35 @@ fn an_explicit_launch_at_login_opt_out_overrides_the_default() {
     assert!(!store.settings().unwrap().launch_at_login);
 }
 
+#[test]
+fn updating_settings_merges_against_the_latest_stored_value() {
+    let store = store();
+    store
+        .save_settings(&AppSettings {
+            theme: ThemePreference::Dark,
+            auto_update: false,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    let (previous, saved) = store
+        .update_settings(|settings| {
+            settings.activity_window_days = 14;
+            settings.launch_at_login = false;
+            settings.onboarding_completed = true;
+        })
+        .unwrap();
+
+    assert_eq!(previous.theme, ThemePreference::Dark);
+    assert!(!previous.auto_update);
+    assert_eq!(saved.theme, ThemePreference::Dark);
+    assert!(!saved.auto_update);
+    assert_eq!(saved.activity_window_days, 14);
+    assert!(!saved.launch_at_login);
+    assert!(saved.onboarding_completed);
+    assert_eq!(store.settings().unwrap(), saved);
+}
+
 /// Pin the shipped v1 shape so migrations remain deliberate. This is not a
 /// restriction on what a future local visibility feature may store.
 #[test]

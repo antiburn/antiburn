@@ -212,175 +212,38 @@ impl Store {
     /// Every preference, with defaults filled in for keys never written.
     pub fn settings(&self) -> Result<AppSettings> {
         let connection = self.lock();
-        let mut statement = connection.prepare("SELECT key, value FROM setting")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let mut stored: HashMap<String, String> = HashMap::new();
-        for row in rows {
-            let (key, value) = row?;
-            stored.insert(key, value);
-        }
+        read_settings(&connection)
+    }
 
-        let defaults = AppSettings::default();
-        let settings = AppSettings {
-            theme: stored
-                .get("theme")
-                .and_then(|value| ThemePreference::parse(value))
-                .unwrap_or(defaults.theme),
-            activity_window_days: stored
-                .get("activityWindowDays")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(defaults.activity_window_days),
-            onboarding_completed: stored
-                .get("onboardingCompleted")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.onboarding_completed),
-            launch_at_login: stored
-                .get("launchAtLogin")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.launch_at_login),
-            auto_update: stored
-                .get("autoUpdate")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.auto_update),
-            discovery_paused: stored
-                .get("discoveryPaused")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.discovery_paused),
-            notifications_enabled: stored
-                .get("notificationsEnabled")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.notifications_enabled),
-            notify_update_available: stored
-                .get("notifyUpdateAvailable")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.notify_update_available),
-            notify_scan_failure: stored
-                .get("notifyScanFailure")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.notify_scan_failure),
-            nudge_placement: stored
-                .get("nudgePlacement")
-                .and_then(|value| NudgePlacement::parse(value))
-                .unwrap_or(defaults.nudge_placement),
-            nudge_auto_dismiss_secs: stored
-                .get("nudgeAutoDismissSecs")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(defaults.nudge_auto_dismiss_secs),
-            notification_sound: stored
-                .get("notificationSound")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.notification_sound),
-            disk_space_display: stored
-                .get("diskSpaceDisplay")
-                .and_then(|value| DiskSpaceDisplay::parse(value))
-                .unwrap_or(defaults.disk_space_display),
-            disk_space_threshold_gb: stored
-                .get("diskSpaceThresholdGb")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(defaults.disk_space_threshold_gb),
-            notify_disk_space_low: stored
-                .get("notifyDiskSpaceLow")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.notify_disk_space_low),
-            notify_usage_anomalies: stored
-                .get("notifyUsageAnomalies")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.notify_usage_anomalies),
-            milestones_5h: stored
-                .get("milestones5h")
-                .map(|value| Milestones::parse(value))
-                .unwrap_or(defaults.milestones_5h),
-            milestones_weekly: stored
-                .get("milestonesWeekly")
-                .map(|value| Milestones::parse(value))
-                .unwrap_or(defaults.milestones_weekly),
-            live_usage_enabled: stored
-                .get("liveUsageEnabled")
-                .map(|value| value == "true")
-                .unwrap_or(defaults.live_usage_enabled),
-        };
-        Ok(settings.normalized())
+    /// Replace every preference, returning what was there and what was stored.
+    ///
+    /// Reading and writing share one transaction so callers can decide which
+    /// shell side effects a transition owes without another writer changing the
+    /// answer between the two operations.
+    pub fn replace_settings(&self, settings: &AppSettings) -> Result<(AppSettings, AppSettings)> {
+        self.update_settings(|current| *current = settings.clone())
+    }
+
+    /// Change preferences against the latest stored value in one transaction.
+    pub fn update_settings(
+        &self,
+        update: impl FnOnce(&mut AppSettings),
+    ) -> Result<(AppSettings, AppSettings)> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let previous = read_settings(&tx)?;
+        let mut saved = previous.clone();
+        update(&mut saved);
+        let saved = saved.normalized();
+        write_settings(&tx, &saved)?;
+        tx.commit()?;
+        Ok((previous, saved))
     }
 
     /// Replace every preference, returning what was actually stored (clamped).
+    #[cfg(test)]
     pub fn save_settings(&self, settings: &AppSettings) -> Result<AppSettings> {
-        let settings = settings.clone().normalized();
-        let mut connection = self.lock();
-        let tx = connection.transaction()?;
-        {
-            let mut put = tx.prepare(
-                "INSERT INTO setting (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            )?;
-            put.execute(params!["theme", settings.theme.as_str()])?;
-            put.execute(params![
-                "activityWindowDays",
-                settings.activity_window_days.to_string()
-            ])?;
-            put.execute(params![
-                "onboardingCompleted",
-                bool_text(settings.onboarding_completed)
-            ])?;
-            put.execute(params![
-                "launchAtLogin",
-                bool_text(settings.launch_at_login)
-            ])?;
-            put.execute(params!["autoUpdate", bool_text(settings.auto_update)])?;
-            put.execute(params![
-                "discoveryPaused",
-                bool_text(settings.discovery_paused)
-            ])?;
-            put.execute(params![
-                "notificationsEnabled",
-                bool_text(settings.notifications_enabled)
-            ])?;
-            put.execute(params![
-                "notifyUpdateAvailable",
-                bool_text(settings.notify_update_available)
-            ])?;
-            put.execute(params![
-                "notifyScanFailure",
-                bool_text(settings.notify_scan_failure)
-            ])?;
-            put.execute(params!["nudgePlacement", settings.nudge_placement.as_str()])?;
-            put.execute(params![
-                "nudgeAutoDismissSecs",
-                settings.nudge_auto_dismiss_secs.to_string()
-            ])?;
-            put.execute(params![
-                "notificationSound",
-                bool_text(settings.notification_sound)
-            ])?;
-            put.execute(params![
-                "diskSpaceDisplay",
-                settings.disk_space_display.as_str()
-            ])?;
-            put.execute(params![
-                "diskSpaceThresholdGb",
-                settings.disk_space_threshold_gb.to_string()
-            ])?;
-            put.execute(params![
-                "notifyDiskSpaceLow",
-                bool_text(settings.notify_disk_space_low)
-            ])?;
-            put.execute(params![
-                "notifyUsageAnomalies",
-                bool_text(settings.notify_usage_anomalies)
-            ])?;
-            put.execute(params!["milestones5h", settings.milestones_5h.as_str()])?;
-            put.execute(params![
-                "milestonesWeekly",
-                settings.milestones_weekly.as_str()
-            ])?;
-            put.execute(params![
-                "liveUsageEnabled",
-                bool_text(settings.live_usage_enabled)
-            ])?;
-        }
-        tx.commit()?;
-        Ok(settings)
+        self.replace_settings(settings).map(|(_, saved)| saved)
     }
 
     /* --------------------------------------------------------------------
@@ -896,6 +759,173 @@ impl Store {
         )?;
         Ok(changed > 0)
     }
+}
+
+/// Read every preference through one already-held connection or transaction.
+fn read_settings(connection: &Connection) -> Result<AppSettings> {
+    let mut statement = connection.prepare("SELECT key, value FROM setting")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut stored: HashMap<String, String> = HashMap::new();
+    for row in rows {
+        let (key, value) = row?;
+        stored.insert(key, value);
+    }
+
+    let defaults = AppSettings::default();
+    Ok(AppSettings {
+        theme: stored
+            .get("theme")
+            .and_then(|value| ThemePreference::parse(value))
+            .unwrap_or(defaults.theme),
+        activity_window_days: stored
+            .get("activityWindowDays")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(defaults.activity_window_days),
+        onboarding_completed: stored
+            .get("onboardingCompleted")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.onboarding_completed),
+        launch_at_login: stored
+            .get("launchAtLogin")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.launch_at_login),
+        auto_update: stored
+            .get("autoUpdate")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.auto_update),
+        discovery_paused: stored
+            .get("discoveryPaused")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.discovery_paused),
+        notifications_enabled: stored
+            .get("notificationsEnabled")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.notifications_enabled),
+        notify_update_available: stored
+            .get("notifyUpdateAvailable")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.notify_update_available),
+        notify_scan_failure: stored
+            .get("notifyScanFailure")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.notify_scan_failure),
+        nudge_placement: stored
+            .get("nudgePlacement")
+            .and_then(|value| NudgePlacement::parse(value))
+            .unwrap_or(defaults.nudge_placement),
+        nudge_auto_dismiss_secs: stored
+            .get("nudgeAutoDismissSecs")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(defaults.nudge_auto_dismiss_secs),
+        notification_sound: stored
+            .get("notificationSound")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.notification_sound),
+        disk_space_display: stored
+            .get("diskSpaceDisplay")
+            .and_then(|value| DiskSpaceDisplay::parse(value))
+            .unwrap_or(defaults.disk_space_display),
+        disk_space_threshold_gb: stored
+            .get("diskSpaceThresholdGb")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(defaults.disk_space_threshold_gb),
+        notify_disk_space_low: stored
+            .get("notifyDiskSpaceLow")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.notify_disk_space_low),
+        notify_usage_anomalies: stored
+            .get("notifyUsageAnomalies")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.notify_usage_anomalies),
+        milestones_5h: stored
+            .get("milestones5h")
+            .map(|value| Milestones::parse(value))
+            .unwrap_or(defaults.milestones_5h),
+        milestones_weekly: stored
+            .get("milestonesWeekly")
+            .map(|value| Milestones::parse(value))
+            .unwrap_or(defaults.milestones_weekly),
+        live_usage_enabled: stored
+            .get("liveUsageEnabled")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.live_usage_enabled),
+    }
+    .normalized())
+}
+
+/// Write every normalized preference through one transaction.
+fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()> {
+    let mut put = connection.prepare(
+        "INSERT INTO setting (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )?;
+    put.execute(params!["theme", settings.theme.as_str()])?;
+    put.execute(params![
+        "activityWindowDays",
+        settings.activity_window_days.to_string()
+    ])?;
+    put.execute(params![
+        "onboardingCompleted",
+        bool_text(settings.onboarding_completed)
+    ])?;
+    put.execute(params![
+        "launchAtLogin",
+        bool_text(settings.launch_at_login)
+    ])?;
+    put.execute(params!["autoUpdate", bool_text(settings.auto_update)])?;
+    put.execute(params![
+        "discoveryPaused",
+        bool_text(settings.discovery_paused)
+    ])?;
+    put.execute(params![
+        "notificationsEnabled",
+        bool_text(settings.notifications_enabled)
+    ])?;
+    put.execute(params![
+        "notifyUpdateAvailable",
+        bool_text(settings.notify_update_available)
+    ])?;
+    put.execute(params![
+        "notifyScanFailure",
+        bool_text(settings.notify_scan_failure)
+    ])?;
+    put.execute(params!["nudgePlacement", settings.nudge_placement.as_str()])?;
+    put.execute(params![
+        "nudgeAutoDismissSecs",
+        settings.nudge_auto_dismiss_secs.to_string()
+    ])?;
+    put.execute(params![
+        "notificationSound",
+        bool_text(settings.notification_sound)
+    ])?;
+    put.execute(params![
+        "diskSpaceDisplay",
+        settings.disk_space_display.as_str()
+    ])?;
+    put.execute(params![
+        "diskSpaceThresholdGb",
+        settings.disk_space_threshold_gb.to_string()
+    ])?;
+    put.execute(params![
+        "notifyDiskSpaceLow",
+        bool_text(settings.notify_disk_space_low)
+    ])?;
+    put.execute(params![
+        "notifyUsageAnomalies",
+        bool_text(settings.notify_usage_anomalies)
+    ])?;
+    put.execute(params!["milestones5h", settings.milestones_5h.as_str()])?;
+    put.execute(params![
+        "milestonesWeekly",
+        settings.milestones_weekly.as_str()
+    ])?;
+    put.execute(params![
+        "liveUsageEnabled",
+        bool_text(settings.live_usage_enabled)
+    ])?;
+    Ok(())
 }
 
 /// `true`/`false` as the text the setting table stores.

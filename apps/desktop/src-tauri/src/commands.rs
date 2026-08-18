@@ -184,17 +184,43 @@ pub const SETTINGS_CHANGED_EVENT: &str = "settings:changed";
 #[tauri::command]
 pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
-    let previous = store.settings().map_err(fail)?;
-    let saved = store.save_settings(&settings).map_err(fail)?;
+    let (previous, saved) = store.replace_settings(&settings).map_err(fail)?;
+    apply_settings_transition(&app, &previous, &saved);
+    Ok(saved)
+}
 
+/// Commit the first-run choices and finish onboarding as one transition.
+///
+/// The webview treats these values as a draft until the final button. Keeping
+/// the merge here means an unrelated preference written elsewhere cannot be
+/// replaced by an older whole-settings snapshot from the onboarding window.
+#[tauri::command]
+pub fn finish_onboarding(
+    app: tauri::AppHandle,
+    activity_window_days: u32,
+    launch_at_login: bool,
+) -> CommandResult<AppSettings> {
+    let store = app.state::<Store>();
+    let (previous, saved) = store
+        .update_settings(|settings| {
+            settings.activity_window_days = activity_window_days;
+            settings.launch_at_login = launch_at_login;
+            settings.onboarding_completed = true;
+        })
+        .map_err(fail)?;
+    apply_settings_transition(&app, &previous, &saved);
+    Ok(saved)
+}
+
+fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
     // The one transition that means the first run is over. Named rather than
     // inlined because two things now hang off it, and because it is the app's
     // only "exactly once, ever" event: nothing writes this flag back to false,
     // so neither consequence below needs a marker of its own to avoid repeating.
     let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
 
-    if crate::startup_registration::should_reconcile_after_save(&previous, &saved) {
-        crate::startup_registration::reconcile(&app, saved.launch_at_login);
+    if crate::startup_registration::should_reconcile_after_save(previous, saved) {
+        crate::startup_registration::reconcile(app, saved.launch_at_login);
     }
 
     // Finishing onboarding, widening the window past what the store holds, and
@@ -212,7 +238,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     // notification arriving are one gesture, and only the shell can perform
     // both halves of it.
     if finished_onboarding {
-        crate::onboarding::finish(&app);
+        crate::onboarding::finish(app);
     }
 
     // The webviews restyle themselves from the event; the native side of the
@@ -233,12 +259,10 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     if saved.disk_space_display != previous.disk_space_display
         || saved.disk_space_threshold_gb != previous.disk_space_threshold_gb
     {
-        crate::disk_monitor::refresh_title(&app);
+        crate::disk_monitor::refresh_title(app);
     }
 
     let _ = app.emit(SETTINGS_CHANGED_EVENT, &saved);
-
-    Ok(saved)
 }
 
 /* -------------------------------------------------------------------------
@@ -633,8 +657,11 @@ async fn resolve_lineage(
 /// Explicit, so it runs even while background discovery is paused: pausing
 /// stops antiburn from scanning on its own, not from being asked.
 #[tauri::command]
-pub async fn scan_now(app: tauri::AppHandle) -> CommandResult<ScanStatus> {
-    Ok(scan::run_pass(&app).await)
+pub async fn scan_now(
+    app: tauri::AppHandle,
+    activity_window_days: Option<u32>,
+) -> CommandResult<ScanStatus> {
+    Ok(scan::run_pass(&app, activity_window_days).await)
 }
 
 /// Ask the scan in flight to stop at its next phase boundary.

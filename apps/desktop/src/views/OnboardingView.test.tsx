@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OnboardingView } from './OnboardingView';
@@ -72,6 +72,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(null);
       case 'set_settings':
         return Promise.resolve((args as Record<string, unknown> | undefined)?.['settings']);
+      case 'finish_onboarding':
+        return Promise.resolve({ ...SETTINGS, onboardingCompleted: true });
       case 'list_scan_roots':
       case 'default_scan_roots':
       case 'list_repositories':
@@ -85,12 +87,6 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       default:
         return Promise.resolve(null);
     }
-  });
-}
-
-function emit(name: string, payload: unknown) {
-  act(() => {
-    for (const handler of listeners.get(name) ?? []) handler({ payload });
   });
 }
 
@@ -108,6 +104,43 @@ describe('OnboardingView', () => {
     openDialog.mockReset();
     listeners.clear();
     mockCommands();
+  });
+
+  it('does not expose controls backed by defaults while settings are loading', async () => {
+    let resolveSettings!: (settings: typeof SETTINGS) => void;
+    const pendingSettings = new Promise<typeof SETTINGS>((resolve) => {
+      resolveSettings = resolve;
+    });
+    mockCommands({ get_settings: pendingSettings });
+
+    render(<OnboardingView />);
+
+    expect(await screen.findByText('Preparing antiburn…')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Everything stays on this machine' }),
+    ).not.toBeInTheDocument();
+
+    resolveSettings(SETTINGS);
+    expect(
+      await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
+    ).toBeInTheDocument();
+  });
+
+  it('releases its shell subscriptions when the window view unmounts', async () => {
+    const { unmount } = render(<OnboardingView />);
+    await screen.findByRole('heading', { name: 'Everything stays on this machine' });
+
+    expect(listeners.get('scan:started')).toHaveLength(1);
+    expect(listeners.get('scan:progress')).toHaveLength(1);
+    expect(listeners.get('scan:finished')).toHaveLength(1);
+
+    unmount();
+
+    await waitFor(() => {
+      expect(listeners.get('scan:started')).toHaveLength(0);
+      expect(listeners.get('scan:progress')).toHaveLength(0);
+      expect(listeners.get('scan:finished')).toHaveLength(0);
+    });
   });
 
   it('runs the five-step first-run flow and records that it finished', async () => {
@@ -130,17 +163,15 @@ describe('OnboardingView', () => {
 
     // 3 — Repositories, which needs a discovery pass to have something to show.
     expect(await screen.findByRole('heading', { name: 'What to include' })).toBeInTheDocument();
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('scan_now'));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('scan_now', { activityWindowDays: 7 }),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     // 4 — Historical scan: the window choice, and the pass with a way out.
     expect(await screen.findByRole('heading', { name: 'Historical scan' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: '14 days' }));
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, onboardingCompleted: false, activityWindowDays: 14 },
-      }),
-    );
+    expect(invoke).not.toHaveBeenCalledWith('set_settings', expect.anything());
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     // 5 — Ready.
@@ -150,8 +181,9 @@ describe('OnboardingView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, activityWindowDays: 14, onboardingCompleted: true },
+      expect(invoke).toHaveBeenCalledWith('finish_onboarding', {
+        activityWindowDays: 14,
+        launchAtLogin: true,
       }),
     );
   });
@@ -163,61 +195,53 @@ describe('OnboardingView', () => {
     const launchAtLogin = screen.getByRole('switch', { name: 'Launch antiburn on startup' });
     expect(launchAtLogin).toBeChecked();
     fireEvent.click(launchAtLogin);
-    // Finishing immediately must carry the choice even if the first settings
-    // round-trip has not caused a render yet.
+    // The choice is a draft until Finish, so there is no earlier settings
+    // round-trip for this click to race.
     fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_settings', {
-        settings: { ...SETTINGS, launchAtLogin: false, onboardingCompleted: true },
+      expect(invoke).toHaveBeenCalledWith('finish_onboarding', {
+        activityWindowDays: 7,
+        launchAtLogin: false,
       }),
     );
   });
 
-  it('reflects a launch-at-login change made from another window', async () => {
-    render(<OnboardingView />);
-    await advanceToReady();
-
-    emit('settings:changed', { ...SETTINGS, launchAtLogin: false });
-
-    expect(
-      screen.getByRole('switch', { name: 'Launch antiburn on startup' }),
-    ).not.toBeChecked();
-  });
-
-  it('does not let an older initial read overwrite a newer settings event', async () => {
-    let resolveInitialSettings!: (settings: typeof SETTINGS) => void;
-    const initialSettings = new Promise<typeof SETTINGS>((resolve) => {
-      resolveInitialSettings = resolve;
-    });
-    mockCommands({ get_settings: initialSettings });
-    render(<OnboardingView />);
-
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_settings'));
-    emit('settings:changed', { ...SETTINGS, launchAtLogin: false });
-    resolveInitialSettings(SETTINGS);
-    await advanceToReady();
-
-    expect(
-      screen.getByRole('switch', { name: 'Launch antiburn on startup' }),
-    ).not.toBeChecked();
-  });
-
-  it('restores the confirmed choice when persistence fails', async () => {
+  it('keeps onboarding open with an actionable error when finishing fails', async () => {
     const commands = invoke.getMockImplementation();
     invoke.mockImplementation((command: string, args?: unknown) =>
-      command === 'set_settings'
+      command === 'finish_onboarding'
         ? Promise.reject(new Error('store unavailable'))
         : commands?.(command, args),
     );
     render(<OnboardingView />);
     await advanceToReady();
 
-    const launchAtLogin = screen.getByRole('switch', { name: 'Launch antiburn on startup' });
-    fireEvent.click(launchAtLogin);
-    expect(launchAtLogin).not.toBeChecked();
+    const finish = screen.getByRole('button', { name: 'Start using antiburn' });
+    fireEvent.click(finish);
 
-    await waitFor(() => expect(launchAtLogin).toBeChecked());
+    expect(await screen.findByRole('alert')).toHaveTextContent('store unavailable');
+    expect(screen.getByRole('button', { name: 'Start using antiburn' })).toBeEnabled();
+  });
+
+  it('submits the finish transition only once', async () => {
+    let resolveFinish!: (settings: typeof SETTINGS) => void;
+    const pendingFinish = new Promise<typeof SETTINGS>((resolve) => {
+      resolveFinish = resolve;
+    });
+    mockCommands({ finish_onboarding: pendingFinish });
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
+    const finishing = screen.getByRole('button', { name: 'Finishing…' });
+    expect(finishing).toBeDisabled();
+    fireEvent.click(finishing);
+
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'finish_onboarding'),
+    ).toHaveLength(1);
+    resolveFinish({ ...SETTINGS, onboardingCompleted: true });
   });
 
   it('announces each step and moves focus to its heading', async () => {

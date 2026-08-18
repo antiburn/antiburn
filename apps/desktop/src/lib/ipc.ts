@@ -689,6 +689,22 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>('set_settings', { settings });
 }
 
+/** Commit the first-run choices and finish onboarding in one shell transition. */
+export async function finishOnboarding(
+  activityWindowDays: number,
+  launchAtLogin: boolean,
+): Promise<AppSettings> {
+  if (!hasShell()) {
+    return {
+      ...DEFAULT_SETTINGS,
+      activityWindowDays,
+      launchAtLogin,
+      onboardingCompleted: true,
+    };
+  }
+  return invoke<AppSettings>('finish_onboarding', { activityWindowDays, launchAtLogin });
+}
+
 /** The sessions to show in the popover, newest first. */
 export async function listRecentSessions(windowDays?: number): Promise<ActivityEntryPayload[]> {
   if (!hasShell()) return [];
@@ -778,9 +794,11 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
 };
 
 /** Run a scan now, unless one is already in flight. */
-export async function scanNow(): Promise<ScanStatus | null> {
+export async function scanNow(activityWindowDays?: number): Promise<ScanStatus | null> {
   if (!hasShell()) return null;
-  return invoke<ScanStatus>('scan_now');
+  return activityWindowDays === undefined
+    ? invoke<ScanStatus>('scan_now')
+    : invoke<ScanStatus>('scan_now', { activityWindowDays });
 }
 
 /** What the current or last scan is doing. */
