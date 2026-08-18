@@ -3,6 +3,9 @@
 node_modules/
 .DS_Store
 
+# Local agent worktrees and metadata are not repository content.
+/.claude/
+
 # Signing material must never enter the tree. The updater keypair is minted
 # with an absolute path outside the repository (see
 # docs/runbooks/updater-key-recovery.md); this is the backstop.
