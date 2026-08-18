@@ -17,6 +17,7 @@ use tauri::Manager;
 
 use crate::store::AppSettings;
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegistrationState {
     Unregistered,
@@ -24,6 +25,7 @@ enum RegistrationState {
     RequiresApproval,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegistrationAction {
     None,
@@ -32,6 +34,7 @@ enum RegistrationAction {
     AwaitApproval,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn action_for(desired: bool, state: RegistrationState) -> RegistrationAction {
     match (desired, state) {
         (true, RegistrationState::Enabled) | (false, RegistrationState::Unregistered) => {
