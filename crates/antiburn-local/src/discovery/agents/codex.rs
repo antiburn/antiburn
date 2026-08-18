@@ -9,6 +9,7 @@
 //! specific repo path -- all sessions live in a flat directory.
 
 use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -93,6 +94,33 @@ impl AgentExplorer for CodexExplorer {
         TitleLookupKind::Direct
     }
 
+    fn recover_session_id_from_path(&self, file: &Path) -> Option<String> {
+        super::codex_subagents::thread_id_from_rollout_path(file)
+    }
+
+    /// Resolve from Codex's indexed stores without opening a rollout:
+    /// `state_5.sqlite#threads.title`, then `session_index.jsonl#thread_name`.
+    async fn indexed_session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
+        if let Some(text) = session_title_from_sqlite(agent_session_id).await {
+            return Some(ResolvedTitle::new(text, TitleSource::UserRename));
+        }
+        if let Some(text) = session_title_from_index(agent_session_id).await {
+            return Some(ResolvedTitle::new(text, TitleSource::AiGenerated));
+        }
+        None
+    }
+
+    async fn indexed_session_titles(
+        &self,
+        agent_session_ids: &[String],
+    ) -> HashMap<String, ResolvedTitle> {
+        let Some(home) = home_dir() else {
+            return HashMap::new();
+        };
+        let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
+        indexed_session_titles_in(&home, codex_home.as_deref(), agent_session_ids).await
+    }
+
     /// Resolve a Codex session title from Codex's own stores, in order of
     /// authority:
     ///
@@ -104,11 +132,8 @@ impl AgentExplorer for CodexExplorer {
     /// 3. Rollout JSONL scan — last-resort fallback for CLI-only users with
     ///    neither store. Source provenance flows through from the scanner.
     async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        if let Some(text) = session_title_from_sqlite(agent_session_id).await {
-            return Some(ResolvedTitle::new(text, TitleSource::UserRename));
-        }
-        if let Some(text) = session_title_from_index(agent_session_id).await {
-            return Some(ResolvedTitle::new(text, TitleSource::AiGenerated));
+        if let Some(title) = self.indexed_session_title(agent_session_id).await {
+            return Some(title);
         }
 
         let dirs = all_log_dirs().await;
@@ -721,6 +746,31 @@ fn query_thread_title(path: &Path, session_id: &str) -> Option<String> {
     }
 }
 
+fn query_thread_titles(path: &Path, session_ids: &[String]) -> HashMap<String, String> {
+    let Ok(conn) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return HashMap::new();
+    };
+    let _ = conn.busy_timeout(Duration::from_millis(200));
+    let Ok(mut statement) = conn.prepare("SELECT title FROM threads WHERE id = ?1 LIMIT 1") else {
+        return HashMap::new();
+    };
+    let mut titles = HashMap::new();
+    for session_id in session_ids {
+        let Ok(title) = statement.query_row(params![session_id], |row| row.get::<_, String>(0))
+        else {
+            continue;
+        };
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            titles.insert(session_id.clone(), trimmed.to_string());
+        }
+    }
+    titles
+}
+
 async fn session_title_from_index(session_id: &str) -> Option<String> {
     let home = home_dir()?;
     let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
@@ -776,6 +826,70 @@ async fn read_session_title_from_index(path: &Path, session_id: &str) -> Option<
     }
 
     latest_title
+}
+
+async fn indexed_session_titles_in(
+    home: &Path,
+    codex_home: Option<&Path>,
+    session_ids: &[String],
+) -> HashMap<String, ResolvedTitle> {
+    let mut resolved = HashMap::new();
+    for path in state_db_paths(home, codex_home) {
+        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            continue;
+        }
+        let ids = session_ids.to_vec();
+        let titles = tokio::task::spawn_blocking(move || query_thread_titles(&path, &ids))
+            .await
+            .unwrap_or_default();
+        for (session_id, text) in titles {
+            resolved
+                .entry(session_id)
+                .or_insert_with(|| ResolvedTitle::new(text, TitleSource::UserRename));
+        }
+    }
+
+    let wanted: HashSet<String> = session_ids.iter().cloned().collect();
+    for path in session_index_paths(home, codex_home) {
+        let wanted = wanted.clone();
+        let latest = tokio::task::spawn_blocking(move || query_index_titles(&path, &wanted))
+            .await
+            .unwrap_or_default();
+        for (session_id, text) in latest {
+            resolved
+                .entry(session_id)
+                .or_insert_with(|| ResolvedTitle::new(text, TitleSource::AiGenerated));
+        }
+    }
+    resolved
+}
+
+fn query_index_titles(path: &Path, wanted: &HashSet<String>) -> HashMap<String, String> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return HashMap::new();
+    };
+    let mut latest = HashMap::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(row) = serde_json::from_str::<SessionIndexRow>(&line) else {
+            continue;
+        };
+        if !wanted.contains(&row.id) {
+            continue;
+        }
+        let title = row
+            .thread_name
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty());
+        match title {
+            Some(title) => {
+                latest.insert(row.id, title);
+            }
+            None => {
+                latest.remove(&row.id);
+            }
+        }
+    }
+    latest
 }
 
 /// Find the rollout file for a given Codex session UUID by filename suffix.
@@ -1219,6 +1333,78 @@ mod tests {
             session_title_from_sqlite_in(home.path(), None, "33333333-aaaa-bbbb-cccc-444444444444")
                 .await;
         assert!(title.is_none());
+    }
+
+    #[test]
+    fn explorer_recovers_the_canonical_thread_id_from_a_rollout_path() {
+        let session_id = "01a01251-9875-7121-ac24-0d99fd8ccbe1";
+        let path = PathBuf::from(format!(
+            "/home/avery/.codex/sessions/2026/08/18/rollout-2026-08-18T10-42-12-{session_id}.jsonl"
+        ));
+
+        assert_eq!(
+            CodexExplorer.recover_session_id_from_path(&path).as_deref(),
+            Some(session_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn indexed_title_batch_reads_stores_once_and_keeps_precedence() {
+        let home = TempDir::new().unwrap();
+        let codex_dir = home.path().join(".codex");
+        tokio::fs::create_dir_all(&codex_dir).await.unwrap();
+        seed_state_db(
+            &codex_dir.join("state_5.sqlite"),
+            &[("renamed", "Reader rename")],
+        );
+        tokio::fs::write(
+            codex_dir.join("session_index.jsonl"),
+            concat!(
+                r#"{"id":"renamed","thread_name":"Generated name"}"#,
+                "\n",
+                r#"{"id":"indexed","thread_name":"Old generated name"}"#,
+                "\n",
+                r#"{"id":"ignored","thread_name":"Not requested"}"#,
+                "\n",
+                r#"{"id":"indexed","thread_name":"Latest generated name"}"#,
+                "\n",
+                r#"{"id":"cleared","thread_name":"Old generated name"}"#,
+                "\n",
+                r#"{"id":"cleared","thread_name":null}"#,
+                "\n",
+            ),
+        )
+        .await
+        .unwrap();
+
+        let titles = indexed_session_titles_in(
+            home.path(),
+            None,
+            &[
+                "renamed".into(),
+                "indexed".into(),
+                "cleared".into(),
+                "missing".into(),
+            ],
+        )
+        .await;
+        assert_eq!(
+            titles.get("renamed"),
+            Some(&ResolvedTitle::new(
+                "Reader rename",
+                TitleSource::UserRename
+            ))
+        );
+        assert_eq!(
+            titles.get("indexed"),
+            Some(&ResolvedTitle::new(
+                "Latest generated name",
+                TitleSource::AiGenerated
+            ))
+        );
+        assert!(!titles.contains_key("ignored"));
+        assert!(!titles.contains_key("cleared"));
+        assert!(!titles.contains_key("missing"));
     }
 
     #[test]

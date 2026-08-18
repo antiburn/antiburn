@@ -173,9 +173,12 @@ pub struct ResolvedTitle {
 }
 
 impl ResolvedTitle {
+    /// Construct a title through the same whitespace and length policy used by
+    /// transcript-derived metadata. Vendor indexes can contain full prompts,
+    /// so every resolved-title path must enforce the boundary here as well.
     pub fn new(text: impl Into<String>, source: TitleSource) -> Self {
         Self {
-            text: text.into(),
+            text: scanner::normalize_title(&text.into()),
             source,
         }
     }
@@ -298,6 +301,30 @@ pub trait AgentExplorer: Send + Sync {
     /// behavior without an explicit override.
     fn title_lookup_kind(&self) -> TitleLookupKind {
         TitleLookupKind::Scan
+    }
+
+    /// Resolve a title only from a durable vendor index or database, without
+    /// opening transcript content. Background scanners can combine this with
+    /// metadata they already read, avoiding a second unbounded transcript
+    /// pass when an index has no row. Agents without a separate title store
+    /// return `None`.
+    async fn indexed_session_title(&self, _agent_session_id: &str) -> Option<ResolvedTitle> {
+        None
+    }
+
+    /// Batch variant of [`Self::indexed_session_title`]. Adapters backed by a
+    /// shared index should override this so the index is opened once per scan.
+    async fn indexed_session_titles(
+        &self,
+        agent_session_ids: &[String],
+    ) -> std::collections::HashMap<String, ResolvedTitle> {
+        let mut titles = std::collections::HashMap::new();
+        for session_id in agent_session_ids {
+            if let Some(title) = self.indexed_session_title(session_id).await {
+                titles.insert(session_id.clone(), title);
+            }
+        }
+        titles
     }
 
     /// Resolve a single session's title by id, returning a [`ResolvedTitle`]
@@ -759,6 +786,15 @@ impl Explorers {
         session_id: &str,
     ) -> Option<ResolvedTitle> {
         self.get(agent).session_title(session_id).await
+    }
+
+    /// Resolve a batch from one agent's durable index or database only.
+    pub async fn indexed_session_titles_for(
+        &self,
+        agent: &AgentKind,
+        session_ids: &[String],
+    ) -> std::collections::HashMap<String, ResolvedTitle> {
+        self.get(agent).indexed_session_titles(session_ids).await
     }
 
     /// The lookup-kind hint, so a caller can route between per-id point queries

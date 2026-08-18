@@ -45,6 +45,13 @@ CI changes, and documentation that no user acts on stay out — see
   even past a reading that comes back without a percentage — so a limit you
   are genuinely drawing on never looks like it disappeared.
 
+### Fixed
+
+- **Session names in recent activity.** antiburn now reads authoritative names
+  from each agent's indexed session store when available, while keeping mounted
+  WSL sessions isolated from native stores. Renames appear on the next scan,
+  and a missing title can no longer leave mismatched title provenance behind.
+
 ## [0.1.0-rc.4] - 2026-08-17
 
 A release-candidate rehearsal build, not a supported release. The macOS and

@@ -934,13 +934,19 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
              environment_key, agent, session_id, source_kind, source_label, wsl_distro,
              title, title_source, cwd, surface, updated_at_epoch, subagent_count,
              first_seen_at, last_seen_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                 CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END,
+                 ?9, ?10, ?11, ?12, ?13, ?13)
          ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
              source_kind = excluded.source_kind,
              source_label = excluded.source_label,
              wsl_distro = excluded.wsl_distro,
              title = COALESCE(excluded.title, session.title),
-             title_source = COALESCE(excluded.title_source, session.title_source),
+             title_source = CASE
+                 WHEN excluded.title IS NOT NULL THEN excluded.title_source
+                 WHEN session.title IS NOT NULL THEN session.title_source
+                 ELSE NULL
+             END,
              cwd = COALESCE(excluded.cwd, session.cwd),
              surface = excluded.surface,
              updated_at_epoch = MAX(COALESCE(excluded.updated_at_epoch, 0),
