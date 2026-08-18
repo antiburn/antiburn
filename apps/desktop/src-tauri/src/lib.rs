@@ -21,6 +21,7 @@
 //! - [`notifications`] — the policy on what may interrupt a reader.
 //! - [`nudges`] — presentation glue between that policy and the window.
 //! - [`onboarding`] — the standalone first-run window.
+//! - [`overlay_window`] — the floating always-on-top usage HUD.
 //! - [`popover`] — the tray-anchored popover window and its show/hide policy.
 //! - [`provider_usage`] — per-provider totals derived from local sessions.
 //! - [`repositories`] — which repositories on this machine antiburn watches.
@@ -62,6 +63,7 @@ mod global_click;
 mod notifications;
 mod nudges;
 mod onboarding;
+mod overlay_window;
 mod popover;
 mod provider_usage;
 mod repositories;
@@ -129,13 +131,16 @@ pub fn run() {
             commands::get_settings,
             commands::get_storage_health,
             commands::get_subagent_analytics,
+            commands::get_latest_session_activity,
             commands::hide_popover,
             commands::finish_onboarding,
             commands::list_recent_sessions,
             commands::list_repositories,
             commands::list_scan_roots,
+            commands::open_overlay_window,
             commands::open_settings_window,
             commands::post_test_notification,
+            commands::set_overlay_hover_region,
             commands::quit_app,
             commands::refresh_repositories,
             commands::remove_scan_root,

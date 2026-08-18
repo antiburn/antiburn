@@ -145,6 +145,41 @@ pub fn end_popover_hold(app: tauri::AppHandle) {
     popover::end_focus_hold(&app);
 }
 
+/* -------------------------------------------------------------------------
+ * Overlay window (the floating usage HUD)
+ * ---------------------------------------------------------------------- */
+
+/// Open (or re-show) the always-on-top usage overlay.
+///
+/// Async on purpose: building a second webview from a synchronous IPC handler
+/// can deadlock on WebView2, and this command may outlive v1's macOS-only
+/// gate (`docs/deviations.md`, D-28 — the gate itself lives in
+/// [`crate::overlay_window::open`]).
+#[tauri::command]
+pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    crate::overlay_window::open(&app).map_err(fail)
+}
+
+/// The overlay webview reports the top and bottom edges of its drawn panel
+/// (logical px from the window top) so the hover watcher only triggers over
+/// visible pixels, not the transparent remainder of the fixed frame — which
+/// reaches well above the panel so it can expand upward.
+#[tauri::command]
+pub fn set_overlay_hover_region(top: f64, bottom: f64) {
+    crate::overlay_window::set_hover_region(top, bottom);
+}
+
+/// Epoch seconds of the most recent transcript write across all locally
+/// discovered sessions, or `None` when nothing wrote within the active
+/// window. The overlay polls this to drive the live-session LED blink from
+/// real file mtimes — the one signal that moves while a session works and
+/// freezes the moment it stops. Memoized in the overlay module so polling is
+/// bounded.
+#[tauri::command]
+pub async fn get_latest_session_activity() -> Option<i64> {
+    crate::overlay_window::latest_session_activity().await
+}
+
 /// Where the app came from and what it is running against.
 #[tauri::command]
 pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
