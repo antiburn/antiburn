@@ -42,12 +42,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Window,
 };
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "popover";
+
+/// Emitted the moment the popover reaches the screen, following the same
+/// `module:event` naming [`crate::scan`]'s events use. The webview listens
+/// for this to refresh live usage — see [`note_shown`] for why that refresh
+/// does not simply ride the scan events this same function also kicks.
+pub const EVENT_SHOWN: &str = "popover:shown";
 
 /// Popover width in logical pixels. Fixed: the views size themselves to it.
 const WIDTH: f64 = 380.0;
@@ -596,6 +602,21 @@ fn note_shown(app: &AppHandle) {
         // looking, so refresh immediately instead of waiting out a tick.
         controller.request();
     }
+    // A separate signal from the scan kick just above, on purpose, rather
+    // than something the webview infers from `scan:finished`. Two things
+    // about the scan kick make it the wrong vehicle for a usage refresh:
+    // `request()` itself always wakes the scheduler loop, but the pass that
+    // wake-up would run is silently skipped whenever discovery is paused or
+    // onboarding has not finished (`scheduled_scanning_allowed` in
+    // `crate::scan`), which would leave usage silently stuck too even
+    // though nothing about reading a provider's own limits depends on
+    // whether local disk discovery is allowed to run; and even when a scan
+    // does run, it is a full disk walk, so gating the usage refresh on its
+    // completion would make "reopen the popover" mean "wait out a scan" for
+    // a figure that has nothing to do with what is on disk. Emitting this
+    // unconditionally, the instant the popover is on screen, keeps the two
+    // refreshes independent the way the data they show already is.
+    let _ = app.emit(EVENT_SHOWN, ());
     crate::tray::set_highlight(app, true);
 }
 

@@ -20,6 +20,7 @@ import {
   hidePopover,
   listRecentSessions,
   listRepositories,
+  onPopoverShown,
   onScanEvent,
   onSessionsInvalidated,
   onSettingsChanged,
@@ -142,6 +143,7 @@ export class PopoverSession {
   private stopSessionsInvalidatedListening: (() => void) | null = null;
   private stopStorageHealthListening: (() => void) | null = null;
   private stopScanListening: (() => void) | null = null;
+  private stopPopoverShownListening: (() => void) | null = null;
 
   private snapshot: PopoverSnapshot = {
     settings: null,
@@ -225,6 +227,7 @@ export class PopoverSession {
     void this.listenSessionsInvalidated(generation);
     void this.listenStorageHealth(generation);
     void this.listenScanEvent(generation);
+    void this.listenPopoverShown(generation);
 
     // ⌘, opens Settings — the platform's standard preferences shortcut, which
     // an accessory app with no application menu has to own itself. Bound
@@ -245,6 +248,8 @@ export class PopoverSession {
     this.stopStorageHealthListening = null;
     this.stopScanListening?.();
     this.stopScanListening = null;
+    this.stopPopoverShownListening?.();
+    this.stopPopoverShownListening = null;
     window.removeEventListener('keydown', this.onWindowKeyDown);
   }
 
@@ -346,6 +351,26 @@ export class PopoverSession {
       return;
     }
     this.stopScanListening = unlisten;
+  };
+
+  // The shell's own signal that the popover just reached the screen —
+  // separate from the scan events above on purpose. `note_shown` also kicks
+  // a disk scan, but that kick is silently skipped while discovery is
+  // paused or onboarding is unfinished, and even a scan that does run can
+  // take a while to finish. Neither has any bearing on a provider's own
+  // stated limits, so usage gets its own refresh here rather than waiting on
+  // — or being silenced by — the scan pipeline. Only usage: entries and the
+  // repository list are already covered by `listenScanEvent` above.
+  private listenPopoverShown = async (generation: number): Promise<void> => {
+    const unlisten = await onPopoverShown(() => {
+      if (generation !== this.generation) return;
+      void this.refreshUsage();
+    });
+    if (generation !== this.generation) {
+      unlisten();
+      return;
+    }
+    this.stopPopoverShownListening = unlisten;
   };
 
   private onWindowKeyDown = (event: KeyboardEvent): void => {
