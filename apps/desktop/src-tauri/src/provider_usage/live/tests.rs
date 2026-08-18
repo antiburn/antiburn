@@ -15,8 +15,8 @@ use time::OffsetDateTime;
 
 use super::anthropic;
 use super::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, SupportTier,
-    UsageScope, UsageSource, UsageWindowKind, WindowRole,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageScope,
+    UsageSource, UsageWindowKind, WindowRole,
 };
 use super::{LiveUsageSource, SourceOutcome, sources, summarize};
 
@@ -261,12 +261,7 @@ impl LiveUsageSource for Broken {
     }
 }
 
-fn snapshot(
-    support: SupportTier,
-    freshness: Freshness,
-    observed: i64,
-    percent: f64,
-) -> ProviderUsageSnapshot {
+fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
@@ -278,7 +273,6 @@ fn snapshot(
             confidence: Confidence::High,
             freshness,
         },
-        support,
         windows: vec![super::UsageWindow {
             id: "five-hour".into(),
             role: WindowRole::PrimaryShort,
@@ -294,49 +288,13 @@ fn snapshot(
 }
 
 #[test]
-fn a_stated_figure_beats_a_fresher_modelled_one() {
-    // Old news about the truth beats fresh news about a guess.
-    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
-        Box::new(Fixed(
-            "modelled",
-            vec![snapshot(
-                SupportTier::Estimated,
-                Freshness::Fresh,
-                NOW,
-                10.0,
-            )],
-        )),
-        Box::new(Fixed(
-            "stated",
-            vec![snapshot(
-                SupportTier::Live,
-                Freshness::Stale,
-                NOW - 7_200,
-                81.0,
-            )],
-        )),
-    ];
-    let summary = summarize(&sources, None, NOW, 0);
-    assert_eq!(summary.providers.len(), 1);
-    assert_eq!(summary.providers[0].windows[0].used_percent, Some(81.0));
-}
-
-#[test]
 fn between_two_stated_figures_the_fresher_one_wins() {
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![
         Box::new(Fixed(
             "old",
-            vec![snapshot(
-                SupportTier::Live,
-                Freshness::Stale,
-                NOW - 7_200,
-                40.0,
-            )],
+            vec![snapshot(Freshness::Stale, NOW - 7_200, 40.0)],
         )),
-        Box::new(Fixed(
-            "new",
-            vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
-        )),
+        Box::new(Fixed("new", vec![snapshot(Freshness::Fresh, NOW, 81.0)])),
     ];
     let summary = summarize(&sources, None, NOW, 0);
     assert_eq!(summary.providers[0].windows[0].used_percent, Some(81.0));
@@ -344,14 +302,11 @@ fn between_two_stated_figures_the_fresher_one_wins() {
 
 #[test]
 fn two_accounts_at_one_provider_never_merge() {
-    let mut other = snapshot(SupportTier::Live, Freshness::Fresh, NOW, 12.0);
+    let mut other = snapshot(Freshness::Fresh, NOW, 12.0);
     other.account = Some("account-b".into());
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
         "both",
-        vec![
-            snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0),
-            other,
-        ],
+        vec![snapshot(Freshness::Fresh, NOW, 81.0), other],
     ))];
     let collected = sources::collect(&sources, true);
     assert_eq!(collected.snapshots.len(), 2);
@@ -362,7 +317,7 @@ fn a_failed_source_reports_its_category_without_erasing_a_working_one() {
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![
         Box::new(Fixed(
             "working",
-            vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
+            vec![snapshot(Freshness::Fresh, NOW, 81.0)],
         )),
         Box::new(Broken("signed-out", ProviderUsageError::Authentication)),
     ];
@@ -392,7 +347,7 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
     // with the provenance that makes them readable.
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
         "fixture",
-        vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
+        vec![snapshot(Freshness::Fresh, NOW, 81.0)],
     ))];
     let json = serde_json::to_string(&summarize(&sources, None, NOW, 0)).unwrap();
 
@@ -433,12 +388,7 @@ impl LiveUsageSource for Counted {
     }
     fn fetch(&self) -> SourceOutcome {
         self.0.fetch_add(1, Ordering::SeqCst);
-        SourceOutcome::found(vec![snapshot(
-            SupportTier::Live,
-            Freshness::Fresh,
-            NOW,
-            99.0,
-        )])
+        SourceOutcome::found(vec![snapshot(Freshness::Fresh, NOW, 99.0)])
     }
 }
 
@@ -452,7 +402,7 @@ fn a_gated_source_is_never_called_while_the_opt_in_is_off() {
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![
         Box::new(Fixed(
             "ungated",
-            vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 40.0)],
+            vec![snapshot(Freshness::Fresh, NOW, 40.0)],
         )),
         Box::new(Counted(Arc::clone(&calls))),
     ];
@@ -548,7 +498,6 @@ fn weekly_scoped_snapshot(
             confidence: Confidence::High,
             freshness: Freshness::Fresh,
         },
-        support: SupportTier::Live,
         windows: vec![super::UsageWindow {
             id: "weekly-some-model".into(),
             role: WindowRole::Supplemental,

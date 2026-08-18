@@ -312,7 +312,6 @@ export function ProviderUsageCluster({
               // whose is a worse trade than the ring is worth.
               <UsageRing
                 percent={headline.usedPercent}
-                estimated={limits?.support === 'estimated'}
                 mark={providerMark(provider.provider)}
                 glyph={providerInitial(provider.displayName)}
                 size={22}
