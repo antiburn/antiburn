@@ -34,8 +34,8 @@ describe('routeFromHash', () => {
   });
 
   it('does not resolve a route from an inherited object property', () => {
-    // The table is a plain object, so a fragment like "constructor" must not
-    // resolve to anything just because `Object.prototype` has that key.
+    // A fragment like "constructor" must not resolve to anything just because
+    // it is an inherited object property rather than a known route.
     expect(routeFromHash('#/constructor')).toBe('popover');
     expect(routeFromHash('#/toString')).toBe('popover');
   });

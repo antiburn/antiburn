@@ -48,8 +48,9 @@ export function useAppSettings(): AppSettingsController {
       .catch(() => {
         if (active) setLoaded(true);
       });
-    // Writes can come from another window (onboarding runs in the popover);
-    // the broadcast keeps this window's copy — and its theme — current too.
+    // Writes can come from another window (onboarding and the popover share the
+    // same settings store); the broadcast keeps this window's copy — and its
+    // theme — current too.
     const pending = onSettingsChanged((stored) => {
       if (!active) return;
       applyTheme(stored.theme);
