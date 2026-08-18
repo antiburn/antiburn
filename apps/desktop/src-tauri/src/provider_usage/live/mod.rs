@@ -232,6 +232,8 @@ fn window(
         snapshot.source.freshness,
         snapshot.source.confidence,
     );
+    let has_nonzero_usage_in_current_period =
+        metrics::has_nonzero_usage_in_current_period(samples, window.resets_at, now);
     // Only on a window longer than a day. "How much of your five-hour limit
     // you used today" is a question about a period that has already rolled
     // several times, and the answer would be nonsense dressed as a metric.
@@ -266,6 +268,7 @@ fn window(
         used_percent: window.used_percent,
         starts_at: window.starts_at.map(iso),
         resets_at: window.resets_at.map(iso),
+        has_nonzero_usage_in_current_period,
         forecast: LiveUsageForecast {
             unavailable_reason: forecast
                 .unavailable_reason

@@ -446,3 +446,105 @@ fn an_offline_source_is_ungated_by_default() {
     // which is why the refresh source overrides it explicitly.
     assert!(!Fixed("offline", Vec::new()).requires_online_opt_in());
 }
+
+/* -------------------------------------------------------------------------
+ * Whether a supplemental, model-scoped window is worth showing
+ *
+ * `has_nonzero_usage_in_current_period` (see `metrics.rs`) is what the
+ * frontend consults to hide a per-model weekly limit until it has something
+ * to say. Exercised here end to end, through `summarize`'s real store, so
+ * the wiring — not just the arithmetic underneath it — is covered.
+ * ---------------------------------------------------------------------- */
+
+use crate::store::Store;
+
+fn weekly_scoped_snapshot(
+    observed: i64,
+    percent: Option<f64>,
+    resets_at: i64,
+) -> ProviderUsageSnapshot {
+    ProviderUsageSnapshot {
+        provider: crate::provider_usage::providers::ANTHROPIC,
+        account: Some("account-a".into()),
+        plan: None,
+        observed_at: at(observed),
+        source: UsageSource {
+            id: "fixture",
+            label: "fixture".into(),
+            confidence: Confidence::High,
+            freshness: Freshness::Fresh,
+        },
+        support: SupportTier::Live,
+        windows: vec![super::UsageWindow {
+            id: "weekly-some-model".into(),
+            role: WindowRole::Supplemental,
+            kind: UsageWindowKind::Weekly,
+            scope: UsageScope::Model("Some Model".into()),
+            used_percent: percent,
+            starts_at: None,
+            resets_at: Some(at(resets_at)),
+            authoritative: true,
+        }],
+        supplemental: None,
+    }
+}
+
+fn in_memory_store() -> Store {
+    Store::open_in_memory(std::path::Path::new("/tmp/antiburn-live-usage-test"))
+        .expect("in-memory store")
+}
+
+#[test]
+fn a_supplemental_window_turns_on_and_stays_on_through_the_period() {
+    let store = in_memory_store();
+    let reset = NOW + 3_600;
+
+    // Sits at 0%, same as most readers who never touch this model.
+    let quiet: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
+        "fixture",
+        vec![weekly_scoped_snapshot(NOW - 7_200, Some(0.0), reset)],
+    ))];
+    let summary = summarize(&quiet, Some(&store), NOW - 7_200, 0);
+    assert!(!summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
+
+    // A real reading arrives.
+    let used: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
+        "fixture",
+        vec![weekly_scoped_snapshot(NOW - 3_600, Some(6.0), reset)],
+    ))];
+    let summary = summarize(&used, Some(&store), NOW - 3_600, 0);
+    assert!(summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
+
+    // A later reading with no percentage at all must not erase what the
+    // period already proved — sticky for the rest of the period.
+    let unknown: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
+        "fixture",
+        vec![weekly_scoped_snapshot(NOW, None, reset)],
+    ))];
+    let summary = summarize(&unknown, Some(&store), NOW, 0);
+    assert!(summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
+}
+
+#[test]
+fn a_reset_clears_the_flag_for_the_new_period() {
+    let store = in_memory_store();
+    let first_reset = NOW + 3_600;
+
+    let used: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
+        "fixture",
+        vec![weekly_scoped_snapshot(NOW - 3_600, Some(30.0), first_reset)],
+    ))];
+    let summary = summarize(&used, Some(&store), NOW - 3_600, 0);
+    assert!(summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
+
+    // The window reset: the percentage dropped, and the provider now states a
+    // reset further out than before. Nothing this period has used anything
+    // yet, so the flag must not still be reporting last period's usage.
+    let second_reset = NOW + 604_800;
+    let rolled: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
+        "fixture",
+        vec![weekly_scoped_snapshot(NOW, Some(0.0), second_reset)],
+    ))];
+    let summary = summarize(&rolled, Some(&store), NOW, 0);
+    assert!(!summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
+}

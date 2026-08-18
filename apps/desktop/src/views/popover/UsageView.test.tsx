@@ -178,6 +178,7 @@ function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageW
     usedPercent: 81,
     startsAt: '2027-01-15T09:30:00Z',
     resetsAt: '2027-01-15T14:30:00Z',
+    hasNonzeroUsageInCurrentPeriod: false,
     forecast: NO_FORECAST,
     ...overrides,
   };

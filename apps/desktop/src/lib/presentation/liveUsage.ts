@@ -186,6 +186,36 @@ export function liveStalenessNote(provider: LiveProviderUsagePayload): string | 
   return `These figures are from ${relativeTime(provider.observedAt)} and may have moved since.`;
 }
 
+/**
+ * Whether a window is a supplemental, model-scoped limit — the kind that
+ * sits at 0% for most readers because it tracks a model they never touch.
+ *
+ * The account-wide primary windows (session, weekly-all-models) are never
+ * conditional: they describe the account's overall standing and belong on
+ * screen unconditionally, whatever they read.
+ */
+export function isConditionallyVisibleUsageWindow(window: LiveUsageWindowPayload): boolean {
+  return window.role === 'supplemental' && window.scopeModel != null;
+}
+
+/**
+ * Whether a window belongs on screen at all.
+ *
+ * A supplemental per-model weekly limit is noise beside the limits a reader
+ * actually hits until they touch that model, so it stays hidden until then.
+ * Once it shows non-zero usage — this reading or an earlier one in the same
+ * allowance period — it stays visible for the rest of that period, even past
+ * a reading that comes back with no percentage at all: a window that was
+ * genuinely in use must never look like it vanished.
+ */
+export function isUsageWindowVisible(window: LiveUsageWindowPayload): boolean {
+  return (
+    !isConditionallyVisibleUsageWindow(window) ||
+    (window.usedPercent ?? 0) > 0 ||
+    window.hasNonzeroUsageInCurrentPeriod
+  );
+}
+
 /** Windows worth rendering, primary ones first. */
 export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindowPayload[] {
   const rank = (window: LiveUsageWindowPayload) => {
@@ -195,7 +225,7 @@ export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindow
   };
   // A stable sort over a copy, so the provider's own order breaks ties and two
   // supplemental windows never swap places between renders.
-  return [...provider.windows].sort((a, b) => rank(a) - rank(b));
+  return provider.windows.filter(isUsageWindowVisible).sort((a, b) => rank(a) - rank(b));
 }
 
 /** The live reading for one provider id, or null when there is none. */
