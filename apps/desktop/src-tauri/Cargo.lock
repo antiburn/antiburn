@@ -135,7 +135,7 @@ name = "antiburn-nudge"
 version = "0.1.0"
 dependencies = [
  "core-foundation",
- "core-graphics 0.25.0",
+ "core-graphics",
  "gtk",
  "serde",
  "tauri",
@@ -384,12 +384,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -606,35 +600,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cocoa"
-version = "0.26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad36507aeb7e16159dfe68db81ccc27571c3ccd4b76fb2fb72fc59e7a4b1b64c"
-dependencies = [
- "bitflags 2.13.1",
- "block",
- "cocoa-foundation",
- "core-foundation",
- "core-graphics 0.24.0",
- "foreign-types",
- "libc",
- "objc",
-]
-
-[[package]]
-name = "cocoa-foundation"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81411967c50ee9a1fc11365f8c585f863a22a9697c89239c452292c40ba79b0d"
-dependencies = [
- "bitflags 2.13.1",
- "block",
- "core-foundation",
- "core-graphics-types",
- "objc",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -678,19 +643,6 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "core-graphics"
-version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa95a34622365fa5bbf40b20b75dba8dfa8c94c734aea8ac9a5ca38af14316f1"
-dependencies = [
- "bitflags 2.13.1",
- "core-foundation",
- "core-graphics-types",
- "foreign-types",
- "libc",
-]
 
 [[package]]
 name = "core-graphics"
@@ -2472,15 +2424,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "malloc_buf"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "markup5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2723,26 +2666,6 @@ checksum = "60a6096447d657bfba01c49d38338b6c8e68e0e34d595360345375b798a4a765"
 dependencies = [
  "generic-array 1.4.5",
  "num-traits",
-]
-
-[[package]]
-name = "objc"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
-dependencies = [
- "malloc_buf",
-]
-
-[[package]]
-name = "objc-foundation"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1add1b659e36c9607c7aab864a76c7a4c2760cd0cd2e120f3fb8b952c7e22bf9"
-dependencies = [
- "block",
- "objc",
- "objc_id",
 ]
 
 [[package]]
@@ -3050,15 +2973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc_id"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c92d4ddb4bd7b50d730c215ff871754d0da6b2178849f8a2a2ab69712d0c073b"
-dependencies = [
- "objc",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3164,6 +3078,12 @@ dependencies = [
  "smallvec",
  "windows-link 0.2.1",
 ]
+
+[[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "percent-encoding"
@@ -4596,7 +4516,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2",
  "core-foundation",
- "core-graphics 0.25.0",
+ "core-graphics",
  "crossbeam-channel",
  "dbus",
  "dispatch2",
@@ -4771,17 +4691,13 @@ dependencies = [
 
 [[package]]
 name = "tauri-nspanel"
-version = "2.0.1"
-source = "git+https://github.com/ahkohd/tauri-nspanel?rev=18ffb9a201fbf6fedfaa382fd4b92315ea30ab1a#18ffb9a201fbf6fedfaa382fd4b92315ea30ab1a"
+version = "2.1.0"
+source = "git+https://github.com/ahkohd/tauri-nspanel?rev=a3122e894383aa068ec5365a42994e3ac94ba1b6#a3122e894383aa068ec5365a42994e3ac94ba1b6"
 dependencies = [
- "bitflags 2.13.1",
- "block",
- "cocoa",
- "core-foundation",
- "core-graphics 0.25.0",
- "objc",
- "objc-foundation",
- "objc_id",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "pastey",
  "tauri",
 ]
 

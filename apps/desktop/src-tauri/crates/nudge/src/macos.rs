@@ -13,12 +13,6 @@
 //! thread-safe, and [`crate::NudgeManager::reveal`] calls them from the IPC
 //! command thread.
 //!
-//! `tauri-nspanel`'s `set_collection_behaviour` takes the (now-deprecated)
-//! `cocoa::appkit::NSWindowCollectionBehavior`, so interfacing with its API
-//! unavoidably touches deprecated items — the crate itself does the same. Scope
-//! the allow here rather than chasing a type the upstream API doesn't accept.
-#![allow(deprecated)]
-
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -35,44 +29,48 @@ use core_graphics::window::{
     kCGWindowOwnerPID,
 };
 use tauri::{Emitter, Manager, WebviewWindow};
-use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
-use tauri_nspanel::cocoa::base::{BOOL, id};
-use tauri_nspanel::cocoa::foundation::{NSPoint, NSRect, NSSize};
-use tauri_nspanel::objc::runtime::YES;
-use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
+use tauri_nspanel::objc2_app_kit::{NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace};
+use tauri_nspanel::objc2_foundation::NSThread;
 use tauri_nspanel::{ManagerExt, WebviewPanelManager, WebviewWindowExt};
 
 use crate::geometry::{self, Point, Rect};
 
-/// `NSWindowStyleMaskNonactivatingPanel` (`1 << 7`). Keeps the panel borderless
-/// while ensuring that becoming key never activates antiburn — clicks on the CTAs
-/// work without pulling focus from the user's active app.
-const STYLE_MASK_NONACTIVATING_PANEL: i32 = 1 << 7;
+tauri_nspanel::tauri_panel! {
+    panel!(NudgePanel {
+        config: {
+            can_become_key_window: true,
+            can_become_main_window: false
+        }
+    })
+}
 
 /// `NSStatusWindowLevel` — float above normal and floating windows (still below
 /// menus / pop-ups), so the notification reliably sits on top.
-const STATUS_WINDOW_LEVEL: i32 = 25;
+const STATUS_WINDOW_LEVEL: i64 = 25;
 
 /// Convert the notification window into a non-activating floating panel and
 /// apply the notification behaviors. Requires the nspanel plugin (registered via
 /// [`crate::register`]); a no-op if it isn't present. Safe to call from any
 /// thread — the work is marshaled onto the main thread.
 pub(crate) fn to_nonactivating_panel(window: &WebviewWindow) {
-    if window.try_state::<WebviewPanelManager>().is_none() {
+    if window
+        .try_state::<WebviewPanelManager<tauri::Wry>>()
+        .is_none()
+    {
         return;
     }
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
-        let Ok(panel) = window.to_panel() else {
+        let Ok(panel) = window.to_panel::<NudgePanel>() else {
             return;
         };
         // Borderless + never activate the app on key.
-        panel.set_style_mask(STYLE_MASK_NONACTIVATING_PANEL);
+        panel.set_style_mask(NSWindowStyleMask::NonactivatingPanel);
         // Float above other windows; show on every Space and above fullscreen apps.
         panel.set_level(STATUS_WINDOW_LEVEL);
-        panel.set_collection_behaviour(
-            NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
-                | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+        panel.set_collection_behavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary,
         );
     });
 }
@@ -84,9 +82,10 @@ pub(crate) fn to_nonactivating_panel(window: &WebviewWindow) {
 /// AppKit still lets a nonactivating panel hold real key-window status and
 /// receive genuine keyboard input while some other app stays frontmost — so a
 /// forced `makeKeyWindow` on every show could swallow keystrokes the user is
-/// mid-typing into their editor or terminal. `RawNSPanel::show()` calls
-/// `makeKeyWindow` unconditionally, so this calls the lower-level
-/// `order_front_regardless()` instead — visually front, key status untouched.
+/// mid-typing into their editor or terminal. `tauri-nspanel` v2.0's
+/// `RawNSPanel::show()` called `makeKeyWindow` unconditionally, so this calls
+/// the lower-level `order_front_regardless()` instead — visually front, key
+/// status untouched.
 /// Key is acquired later, lazily, only once the user's mouse has genuinely
 /// entered the notification (see [`set_hovered`]), by which point their
 /// attention has already shifted there.
@@ -102,12 +101,11 @@ pub(crate) fn show(window: &WebviewWindow) {
                 // `window.show()` here would make the window key and steal focus
                 // from the user's frontmost app, the very thing this crate avoids.
                 if let Ok(ptr) = window.ns_window() {
-                    let ns_window = ptr as id;
                     // SAFETY: on the main thread; `ns_window` is the live NSWindow
                     // backing the notification. `orderFrontRegardless` takes no
                     // arguments and returns void.
                     unsafe {
-                        let _: () = msg_send![ns_window, orderFrontRegardless];
+                        (&*ptr.cast::<NSWindow>()).orderFrontRegardless();
                     }
                 }
             }
@@ -140,7 +138,8 @@ pub(crate) fn set_hovered(window: &WebviewWindow, hovered: bool) {
     let _ = window.clone().run_on_main_thread(move || {
         if let Ok(panel) = window.get_webview_panel(crate::NUDGE_LABEL) {
             if hovered {
-                panel.make_first_responder(Some(panel.content_view()));
+                let content_view = panel.content_view();
+                panel.make_first_responder(Some(&content_view));
                 panel.make_key_window();
             } else if is_key(&window) {
                 // Only resign key we actually hold. `resignKeyWindow` is
@@ -275,19 +274,15 @@ pub(crate) fn is_key(window: &WebviewWindow) -> bool {
     let Ok(ptr) = window.ns_window() else {
         return false;
     };
-    let ns_window = ptr as id;
     unsafe {
-        // SAFETY: `isMainThread` takes no arguments and returns BOOL.
-        let on_main_thread: BOOL = msg_send![class!(NSThread), isMainThread];
         debug_assert!(
-            on_main_thread == YES,
+            NSThread::isMainThread_class(),
             "antiburn_nudge::macos::is_key called off the main thread — AppKit calls are undefined behavior there"
         );
         // SAFETY: on the main thread (asserted above); `ns_window` is the live
         // NSWindow backing the notification. `isKeyWindow` takes no arguments
         // and returns BOOL.
-        let is_key: BOOL = msg_send![ns_window, isKeyWindow];
-        is_key == YES
+        (&*ptr.cast::<NSWindow>()).isKeyWindow()
     }
 }
 
@@ -306,21 +301,21 @@ pub(crate) fn animate_resize(window: &WebviewWindow, height: f64) {
         let Ok(ptr) = window.ns_window() else {
             return;
         };
-        let ns_window = ptr as id;
         let new_h = height.max(1.0);
         // SAFETY: on the main thread; `ns_window` is the live NSWindow backing the
         // notification. Reading `frame` and messaging the `animator` proxy are
         // standard AppKit calls with fixed, well-typed signatures.
         unsafe {
-            let frame: NSRect = msg_send![ns_window, frame];
+            let ns_window = &*ptr.cast::<NSWindow>();
+            let frame = ns_window.frame();
             // AppKit is y-up: `origin.y + height` is the top edge — keep it fixed.
             let max_y = frame.origin.y + frame.size.height;
             let new_frame = NSRect::new(
                 NSPoint::new(frame.origin.x, max_y - new_h),
                 NSSize::new(frame.size.width, new_h),
             );
-            let animator: id = msg_send![ns_window, animator];
-            let _: () = msg_send![animator, setFrame: new_frame display: YES];
+            let animator: Retained<NSWindow> = msg_send![ns_window, animator];
+            animator.setFrame_display(new_frame, true);
         }
     });
 }
@@ -330,7 +325,7 @@ pub(crate) fn hide(window: &WebviewWindow) {
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
         match window.get_webview_panel(crate::NUDGE_LABEL) {
-            Ok(panel) => panel.order_out(None),
+            Ok(panel) => panel.hide(),
             Err(_) => {
                 let _ = window.hide();
             }
@@ -428,21 +423,10 @@ fn frontmost_app_window_center() -> Option<Point> {
 
 /// PID of `NSWorkspace.frontmostApplication`.
 fn frontmost_app_pid() -> Option<i64> {
-    // SAFETY: `sharedWorkspace` and `frontmostApplication` are standard AppKit
-    // accessors with fixed signatures; both may return nil, which we check.
-    // `processIdentifier` returns `pid_t` (`i32`).
-    unsafe {
-        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-        if workspace.is_null() {
-            return None;
-        }
-        let app: id = msg_send![workspace, frontmostApplication];
-        if app.is_null() {
-            return None;
-        }
-        let pid: i32 = msg_send![app, processIdentifier];
-        (pid > 0).then_some(pid as i64)
-    }
+    let workspace = NSWorkspace::sharedWorkspace();
+    let app = workspace.frontmostApplication()?;
+    let pid = app.processIdentifier();
+    (pid > 0).then_some(pid as i64)
 }
 
 /// The cursor, in global screen space (top-left origin, points). Always
@@ -455,9 +439,9 @@ fn frontmost_app_pid() -> Option<i64> {
 /// different coordinate spaces and the hit-test silently fails.
 fn cursor_point() -> Point {
     let main_height = CGDisplay::main().bounds().size.height;
-    // SAFETY: `+[NSEvent mouseLocation]` is a thread-safe class method returning
-    // an `NSPoint` in AppKit's bottom-left-origin global screen space.
-    let location: NSPoint = unsafe { msg_send![class!(NSEvent), mouseLocation] };
+    // `+[NSEvent mouseLocation]` is a thread-safe class method returning an
+    // `NSPoint` in AppKit's bottom-left-origin global screen space.
+    let location = NSEvent::mouseLocation();
     Point {
         x: location.x,
         y: main_height - location.y,
