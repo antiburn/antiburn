@@ -42,6 +42,14 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: openDialog,
 }));
 
+/** `isMacOS` is mocked mutably because jsdom has no operating system to ask;
+ * the HUD restore is the popover's one platform branch. */
+const platform = vi.hoisted(() => ({ mac: false }));
+vi.mock('../lib/platform', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isMacOS: () => platform.mac };
+});
+
 /** Push a shell event at whatever subscribed to it. */
 function emit(name: string, payload: unknown) {
   act(() => (listeners.get(name) ?? []).forEach((handler) => handler({ payload })));
@@ -572,5 +580,41 @@ describe('PopoverView — window behaviour', () => {
 
     const usage = await screen.findByRole('heading', { name: 'Usage' });
     await waitFor(() => expect(usage).toHaveFocus());
+  });
+});
+
+describe('PopoverView — floating HUD restore', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    confirmDialog.mockReset();
+    saveDialog.mockReset();
+    openDialog.mockReset();
+    listeners.clear();
+    mockCommands();
+    localStorage.clear();
+    platform.mac = false;
+  });
+
+  it('re-opens the HUD at launch when the stored preference is on', async () => {
+    platform.mac = true;
+    localStorage.setItem('antiburn.showFloatingHud', '1');
+    render(<PopoverView />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_overlay_window'));
+  });
+
+  it('leaves the HUD closed when the preference is off', async () => {
+    platform.mac = true;
+    render(<PopoverView />);
+    await screen.findByText('Wire the tray popover');
+    expect(invoke).not.toHaveBeenCalledWith('open_overlay_window');
+  });
+
+  it('never restores it off macOS, whatever the preference says', async () => {
+    // The shell registers the overlay window on macOS only for v1
+    // (docs/deviations.md D-28).
+    localStorage.setItem('antiburn.showFloatingHud', '1');
+    render(<PopoverView />);
+    await screen.findByText('Wire the tray popover');
+    expect(invoke).not.toHaveBeenCalledWith('open_overlay_window');
   });
 });

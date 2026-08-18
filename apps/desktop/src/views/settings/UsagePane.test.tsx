@@ -16,6 +16,22 @@ vi.mock('../../lib/ipc', async () => {
   return { ...actual, getLiveUsage };
 });
 
+/** `isMacOS` is mocked mutably because jsdom has no operating system to ask. */
+const platform = vi.hoisted(() => ({ mac: false }));
+vi.mock('../../lib/platform', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isMacOS: () => platform.mac };
+});
+
+/* The preference reads and writes go through the real localStorage-backed
+ * helpers; only the window calls are stubbed, since jsdom has no windows. */
+const openOverlayWindow = vi.hoisted(() => vi.fn(async () => {}));
+const hideOverlayWindow = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../../lib/overlayWindow', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, openOverlayWindow, hideOverlayWindow };
+});
+
 const SETTINGS = { liveUsageEnabled: false } as unknown as AppSettings;
 
 function summary(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSummaryPayload {
@@ -33,6 +49,7 @@ describe('UsagePane', () => {
   beforeEach(() => {
     getLiveUsage.mockReset();
     getLiveUsage.mockResolvedValue(summary());
+    platform.mac = false;
   });
 
   it('names both consequences of the one switch', async () => {
@@ -105,5 +122,41 @@ describe('UsagePane', () => {
     getLiveUsage.mockRejectedValue(new Error('no shell'));
     pane();
     await waitFor(() => expect(screen.getByText('No plan limits found')).toBeInTheDocument());
+  });
+});
+
+describe('UsagePane — floating HUD toggle', () => {
+  beforeEach(() => {
+    getLiveUsage.mockReset();
+    getLiveUsage.mockResolvedValue(summary());
+    platform.mac = true;
+    localStorage.clear();
+    openOverlayWindow.mockClear();
+    hideOverlayWindow.mockClear();
+  });
+
+  it('offers the HUD only where its window exists', () => {
+    // macOS-only for v1 (docs/deviations.md D-28): elsewhere the toggle would
+    // promise a window the shell never registers.
+    platform.mac = false;
+    pane();
+    expect(screen.queryByText('Floating HUD')).not.toBeInTheDocument();
+  });
+
+  it('opens the HUD and stores the preference when switched on', () => {
+    pane();
+    fireEvent.click(screen.getByRole('switch', { name: /show floating usage hud/i }));
+    expect(localStorage.getItem('antiburn.showFloatingHud')).toBe('1');
+    expect(openOverlayWindow).toHaveBeenCalled();
+  });
+
+  it('hides the HUD and clears the preference when switched off', () => {
+    localStorage.setItem('antiburn.showFloatingHud', '1');
+    pane();
+    const toggle = screen.getByRole('switch', { name: /show floating usage hud/i });
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(localStorage.getItem('antiburn.showFloatingHud')).toBe('0');
+    expect(hideOverlayWindow).toHaveBeenCalled();
   });
 });

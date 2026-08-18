@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   LiveProviderUsagePayload,
@@ -15,6 +15,23 @@ import type {
   ProviderUsageWindowPayload,
 } from '../../lib/ipc';
 import { UsageView } from './UsageView';
+
+/** `isMacOS` is mocked mutably because jsdom has no operating system to ask. */
+const platform = vi.hoisted(() => ({ mac: false }));
+vi.mock('../../lib/platform', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isMacOS: () => platform.mac };
+});
+
+/* Preference reads and writes go through the real localStorage-backed helpers;
+ * the window calls are stubbed, since jsdom has no windows to ask. */
+const openOverlayWindow = vi.hoisted(() => vi.fn(async () => {}));
+const hideOverlayWindow = vi.hoisted(() => vi.fn(async () => {}));
+const isOverlayWindowVisible = vi.hoisted(() => vi.fn(async () => false));
+vi.mock('../../lib/overlayWindow', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, openOverlayWindow, hideOverlayWindow, isOverlayWindowVisible };
+});
 
 function usageWindow(
   overrides: Partial<ProviderUsageWindowPayload> = {},
@@ -408,5 +425,46 @@ describe('UsageView — what history says about a limit', () => {
     // The numbers are fine and simply too new — a different message from
     // "come back later", and a different one again from "go use your agent".
     expect(screen.getAllByText('Just reset').length).toBeGreaterThan(0);
+  });
+});
+
+describe('UsageView — HUD pop-out', () => {
+  beforeEach(() => {
+    platform.mac = true;
+    localStorage.clear();
+    openOverlayWindow.mockClear();
+    hideOverlayWindow.mockClear();
+    isOverlayWindowVisible.mockReset();
+    isOverlayWindowVisible.mockResolvedValue(false);
+  });
+
+  it('offers the pop-out only where the overlay window exists', () => {
+    // macOS-only for v1 (docs/deviations.md D-28).
+    platform.mac = false;
+    render(<UsageView summary={summary()} onBack={vi.fn()} />);
+    expect(
+      screen.queryByRole('button', { name: /floating usage hud/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('opens the HUD and stores the preference', async () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} />);
+    const button = await screen.findByRole('button', { name: 'Show the floating usage HUD' });
+    fireEvent.click(button);
+    expect(openOverlayWindow).toHaveBeenCalled();
+    expect(localStorage.getItem('antiburn.showFloatingHud')).toBe('1');
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('reflects a HUD already on screen, and hides it on the second press', async () => {
+    // The real visibility is asked of the window, not the stored preference:
+    // the HUD's own ✕ can close it without this webview hearing anything.
+    isOverlayWindowVisible.mockResolvedValue(true);
+    render(<UsageView summary={summary()} onBack={vi.fn()} />);
+    const button = await screen.findByRole('button', { name: 'Hide the floating usage HUD' });
+    fireEvent.click(button);
+    expect(hideOverlayWindow).toHaveBeenCalled();
+    expect(localStorage.getItem('antiburn.showFloatingHud')).toBe('0');
+    await waitFor(() => expect(button).toHaveAttribute('aria-pressed', 'false'));
   });
 });

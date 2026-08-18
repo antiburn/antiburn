@@ -280,6 +280,7 @@ export function OverlayWindow() {
       }).catch(() => {});
     };
     report();
+    if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(report);
     observer.observe(panel);
     return () => observer.disconnect();
