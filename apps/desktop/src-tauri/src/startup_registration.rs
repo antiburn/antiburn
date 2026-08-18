@@ -193,7 +193,10 @@ fn reconcile_linux<R: Runtime>(app: &tauri::AppHandle<R>, desired: bool) -> anyh
         .ok_or_else(|| anyhow::anyhow!("application path is not valid UTF-8"))?;
     let contents = linux_desktop_entry(executable);
 
-    if std::fs::read_to_string(&file).as_deref() == Ok(contents.as_str()) {
+    if std::fs::read_to_string(&file)
+        .as_deref()
+        .is_ok_and(|current| current == contents.as_str())
+    {
         return Ok(());
     }
     if let Some(parent) = file.parent() {
