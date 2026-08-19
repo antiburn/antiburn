@@ -177,7 +177,12 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   is counting items against that struct, and thirteen clauses
                   separated by semicolons cannot be counted. */}
               <p>Thirteen fields, and these are all of them:</p>
-              <ul className="mt-2 list-disc space-y-0.5 pl-4">
+              {/* `pl-7`, not the `pl-4` this started as. Root font-size here
+                  is 13px, so `pl-4` is 13px of padding — less than the disc
+                  marker's own 17.5px advance, which left the bullets painting
+                  4.5px *left* of the paragraph above and reading as an
+                  unindented list. 22.75px clears the marker and indents it. */}
+              <ul className="mt-2 list-disc space-y-0.5 pl-7">
                 <li>The word &ldquo;desktop&rdquo;.</li>
                 <li>A random id for the message, so a retry is not counted twice.</li>
                 <li>A random installation id.</li>
