@@ -30,7 +30,8 @@ button,
 }
 
 input:not([type="range"]),
-textarea {
+textarea,
+[contenteditable] {
   cursor: text;
 }
 
@@ -47,6 +48,7 @@ textarea {
 
 /* UI chrome is not selectable text; inputs and editable regions still are. */
 body {
+  cursor: default;
   user-select: none;
   -webkit-user-select: none;
 }

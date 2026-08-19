@@ -109,8 +109,8 @@ describe("window labels", () => {
   it("reads an absent percentage as unknown, never as zero", () => {
     // An empty meter is a claim, and this one would be a claim nobody made.
     expect(liveWindowValueLabel(window({ usedPercent: null }))).toBe("Unknown")
-    expect(liveWindowValueLabel(window({ usedPercent: 0 }))).toBe("0% used")
-    expect(liveWindowValueLabel(window({ usedPercent: 80.6 }))).toBe("81% used")
+    expect(liveWindowValueLabel(window({ usedPercent: 0 }))).toBe("0%")
+    expect(liveWindowValueLabel(window({ usedPercent: 80.6 }))).toBe("81%")
   })
 })
 
@@ -233,30 +233,30 @@ describe("the elapsed marker", () => {
 describe("reset labels", () => {
   it("counts down within the day and names the day beyond it", () => {
     expect(liveResetLabel(window({ resetsAt: "2027-01-15T14:30:00Z" }), NOW)).toBe(
-      "Resets in 2h 30m",
+      "resets in 2h 30m",
     )
     expect(liveResetLabel(window({ resetsAt: "2027-01-15T12:45:00Z" }), NOW)).toBe(
-      "Resets in 45m",
+      "resets in 45m",
     )
     // Beyond a day, "resets in 76h" is not a sentence anyone reads as a time.
     expect(liveResetLabel(window({ resetsAt: "2027-01-19T18:00:00Z" }), NOW)).toMatch(
-      /^Resets \w{3} /,
+      /^resets \w{3} /,
     )
   })
 
   it("says so when the provider gave no reset, and distinguishes that from a passed one", () => {
-    expect(liveResetLabel(window({ resetsAt: null }), NOW)).toBe("Reset unavailable")
-    expect(liveResetLabel(window({ resetsAt: "not a date" }), NOW)).toBe("Reset unavailable")
+    expect(liveResetLabel(window({ resetsAt: null }), NOW)).toBe("reset unavailable")
+    expect(liveResetLabel(window({ resetsAt: "not a date" }), NOW)).toBe("reset unavailable")
     // Past, because the window rolls on the provider's clock and not ours.
     expect(liveResetLabel(window({ resetsAt: "2027-01-15T11:00:00Z" }), NOW)).toBe(
-      "Reset pending",
+      "reset pending",
     )
   })
 })
 
 describe("provenance", () => {
   it("says what kind of reading it is and when it was stated", () => {
-    expect(liveSourceNote(provider())).toBe("Live · stated 5m ago")
+    expect(liveSourceNote(provider())).toBe("Live 5m ago")
   })
 
   it("marks a stale reading and leaves a fresh one alone", () => {

@@ -48,14 +48,14 @@ export function liveWindowLabel(window: LiveUsageWindowPayload): string {
 }
 
 /**
- * `"81% used"`, or that we do not know.
+ * `"81%"`, or that we do not know.
  *
  * Deliberately not `"0% used"` when the figure is missing: an empty meter is a
  * claim, and this one would be a claim nobody made.
  */
 export function liveWindowValueLabel(window: LiveUsageWindowPayload): string {
   if (window.usedPercent == null) return "Unknown"
-  return `${Math.round(window.usedPercent)}% used`
+  return `${Math.round(window.usedPercent)}%`
 }
 
 /**
@@ -127,29 +127,29 @@ export function liveWindowElapsed(window: LiveUsageWindowPayload, now: number): 
 }
 
 /**
- * `"Resets in 3h 12m"` for something imminent, `"Resets Tue 15:00"` further
+ * `"resets in 3h 12m"` for something imminent, `"resets Tue 15:00"` further
  * out, and an honest admission when the provider did not say.
  *
  * The switch is at a day because "resets in 76h" is not a sentence anyone
  * reads as a time, and a weekday and clock time is.
  */
 export function liveResetLabel(window: LiveUsageWindowPayload, now: number): string {
-  if (!window.resetsAt) return "Reset unavailable"
+  if (!window.resetsAt) return "reset unavailable"
   const at = new Date(window.resetsAt).getTime()
-  if (Number.isNaN(at)) return "Reset unavailable"
+  if (Number.isNaN(at)) return "reset unavailable"
   const remaining = at - now
   // Already past, and the provider has not published the next one yet. Not an
   // error: a rolling window resets on the provider's clock, not ours.
-  if (remaining <= 0) return "Reset pending"
+  if (remaining <= 0) return "reset pending"
   if (remaining < 86_400_000) {
     const hours = Math.floor(remaining / 3_600_000)
     const minutes = Math.floor((remaining % 3_600_000) / 60_000)
-    return hours > 0 ? `Resets in ${hours}h ${minutes}m` : `Resets in ${minutes}m`
+    return hours > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`
   }
   const date = new Date(at)
   const day = date.toLocaleDateString(undefined, { weekday: "short" })
   const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-  return `Resets ${day} ${time}`
+  return `resets ${day} ${time}`
 }
 
 /**
@@ -161,7 +161,7 @@ export function liveResetLabel(window: LiveUsageWindowPayload, now: number): str
  */
 export function liveSourceNote(provider: LiveProviderUsagePayload): string {
   if (!provider.observedAt) return "Live"
-  return `Live · stated ${relativeTime(provider.observedAt)}`
+  return `Live ${relativeTime(provider.observedAt)}`
 }
 
 /**

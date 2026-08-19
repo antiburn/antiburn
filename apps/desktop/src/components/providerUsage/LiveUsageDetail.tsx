@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { cn } from "../../lib/cn"
 import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
   liveExtraUsageLabel,
@@ -46,13 +47,18 @@ export function LiveUsageDetail({
   return (
     <section
       aria-label={`${live.displayName} plan limits`}
-      className={`space-y-1.5 ${className}`.trim()}
+      className={cn("space-y-2", className)}
     >
-      <div className="flex items-baseline justify-between gap-2">
+      <div className="flex items-baseline justify-between gap-2 group">
         <h4 className="type-caption font-medium tracking-wide uppercase text-label-tertiary">
           Plan limits
         </h4>
-        <span className={`type-caption ${liveFreshnessToneClass(live.freshness)}`}>
+        <span
+          className={cn(
+            "type-caption hidden group-hover:inline",
+            liveFreshnessToneClass(live.freshness),
+          )}
+        >
           {liveSourceNote(live)}
         </span>
       </div>

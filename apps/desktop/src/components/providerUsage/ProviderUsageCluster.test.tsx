@@ -374,7 +374,7 @@ describe("ProviderUsageCluster — the limit ring", () => {
     // The ring is a shape with no text, so the figure has to reach the
     // accessible name or a screen-reader user simply does not get it.
     expect(
-      screen.getByRole("button", { name: /anthropic.*weekly limit 88% used/i }),
+      screen.getByRole("button", { name: /anthropic.*weekly limit 88%/i }),
     ).toBeInTheDocument()
   })
 
@@ -405,7 +405,7 @@ describe("ProviderUsageCluster — the limit ring", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Anthropic,/ }))
     const panel = screen.getByRole("dialog")
     expect(panel).toHaveTextContent("Plan limits")
-    expect(panel).toHaveTextContent("88% used")
+    expect(panel).toHaveTextContent("88%")
     // And the spend half is still there, below it.
     expect(panel).toHaveTextContent("Last 7 days")
   })
