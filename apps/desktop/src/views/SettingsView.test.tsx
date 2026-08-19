@@ -382,12 +382,35 @@ describe('SettingsView', () => {
     expect(
       await screen.findByRole('switch', { name: 'Send anonymised usage analytics' }),
     ).toBeInTheDocument();
+
+    // What a reader sees without clicking anything: the seven headlines, and
+    // the one line that survives them all being shut. Collapsed disclosures
+    // are unmounted, so this is the entire always-visible contract — worth an
+    // assertion of its own, because a label quietly renamed or dropped would
+    // otherwise only show up as a missing body far below.
+    for (const headline of [
+      'Exactly what is sent',
+      'What the timestamps make possible',
+      'What is never sent',
+      'Where this starts switched off',
+      'The identifier is not you',
+      'The second identifier is weaker still',
+      'What happens after it arrives',
+    ]) {
+      expect(screen.getByRole('button', { name: headline })).toBeInTheDocument();
+    }
+    expect(
+      screen.getByText(/thirteen fields, and none of them is your work/i),
+    ).toBeInTheDocument();
+
     // The complete enumeration, one assertion per field on the wire. The
     // earlier version of this test sampled two of them, which is how five
     // fields went unnamed in the pane while the copy claimed to list them all.
     // `usage_analytics::event::Event` is the other half of this pair, and its
     // `the_wire_payload_is_exactly_these_thirteen_fields` pins the same number
     // from the Rust side.
+    const enumeration = screen.getByRole('button', { name: 'Exactly what is sent' });
+    fireEvent.click(enumeration);
     for (const field of [
       /the word .desktop./i,
       /a random id for the message itself/i,
@@ -409,18 +432,32 @@ describe('SettingsView', () => {
     // the payload without a line here leaves the pane saying "thirteen" over a
     // list of fourteen, which is the one way this enumeration can lie while
     // every individual assertion above still passes.
-    const enumeration = screen.getByText(/thirteen fields, and these are all of them/i);
-    expect(enumeration.parentElement?.querySelectorAll('li')).toHaveLength(13);
+    //
+    // Anchored on the disclosure's own `aria-controls` rather than on a
+    // neighbouring paragraph: the body is a sibling of nothing predictable,
+    // and the id is the component's actual contract.
+    const body = document.getElementById(enumeration.getAttribute('aria-controls') ?? '');
+    expect(body?.querySelectorAll('li')).toHaveLength(13);
+
+    // The rest of the receipts, each behind its own label. Opening them is the
+    // assertion as much as the text is — a body that failed to mount would
+    // read here as missing copy.
+    const open = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
+
     // What the timestamps enable is stated rather than left to be worked out.
+    open('What the timestamps make possible');
     expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument();
+    open('The identifier is not you');
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument();
     // The exclusions are stated in the reader's own terms rather than left as
     // an absence they would have to notice.
+    open('What is never sent');
     expect(
       screen.getByText(/file paths, repository or branch names, token counts/i),
     ).toBeInTheDocument();
     // Retention is the operator's, and the pane says so rather than promising
     // something this build cannot keep.
+    open('What happens after it arrives');
     expect(
       screen.getByText(/are the operator’s decisions rather than the app’s/i),
     ).toBeInTheDocument();
