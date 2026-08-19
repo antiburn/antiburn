@@ -183,8 +183,9 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
             and this is the first screen anyone sees. Settings → Privacy
             remains the long form. */}
         <p className="mt-2 text-balance type-callout text-label-secondary">
-          antiburn reads the coding-agent sessions already on your disk and shows what they cost
-          and how they went. No account, and nothing from your sessions is ever uploaded.{' '}
+          antiburn reads the coding-agent sessions already on your disk and shows what they
+          cost, how they went, and how close your limits are. No account, and nothing from your
+          sessions is ever uploaded.{' '}
           {usageAnalyticsSupported
             ? // The opt-out gets its own sentence. Trailing the list, "which you
               // can opt out of" modified all three items — and a reader cannot
