@@ -90,9 +90,49 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            run_pass(&app);
+            let app = app.clone();
+            blocking::run(move |blocking| run_pass(&app, blocking)).await;
         }
     })
+}
+
+/// The hop off the async runtime, and the proof that it happened.
+///
+/// A pass is blocking work end to end: it reads the store, and — through
+/// [`provider_usage::live::sources`] — it asks a provider's endpoint with
+/// `reqwest::blocking`. The second of those is not merely impolite on a
+/// runtime worker, it is a panic: a blocking `reqwest` call builds and drops
+/// a `tokio` runtime on the calling thread, and dropping a runtime from
+/// inside an asynchronous context aborts with "Cannot drop a runtime in a
+/// context where blocking is not allowed". Called inline, that panic unwound
+/// the spawned task itself, so one tick took the whole monitor — anomalies
+/// and milestones alike — down for the rest of the process while the app
+/// carried on looking healthy.
+///
+/// So the hop is what makes a pass *correct*, not just what keeps a
+/// fifteen-second request from stalling a worker — which is why it is a type
+/// and not a convention. [`blocking::Thread`] has a private field and this
+/// module is the only place that fills it, so [`run_pass`] cannot be reached
+/// from the scheduler's task without going through [`blocking::run`] first.
+/// A later refactor that drops the hop does not reintroduce the panic
+/// quietly; it stops the crate compiling.
+mod blocking {
+    /// Proof that the holder is running where blocking is allowed.
+    pub struct Thread(());
+
+    /// Run `pass` on a blocking thread, and survive it failing.
+    ///
+    /// Awaiting the handle keeps ticks serialized the way calling the pass
+    /// inline did, and folding the join error away means a pass that panics
+    /// anyway costs one pass rather than every pass after it.
+    pub async fn run<F: FnOnce(Thread) + Send + 'static>(pass: F) {
+        if tauri::async_runtime::spawn_blocking(move || pass(Thread(())))
+            .await
+            .is_err()
+        {
+            eprintln!("antiburn: a usage-alert pass failed; the monitor continues");
+        }
+    }
 }
 
 /// The registered live usage sources and the milestone engine's ledger.
@@ -103,6 +143,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
 pub struct LiveUsage {
     pub sources: Vec<Box<dyn provider_usage::live::LiveUsageSource>>,
     ledger: std::sync::Mutex<provider_usage::live::MilestoneLedger>,
+    summarizing: std::sync::Mutex<()>,
 }
 
 impl LiveUsage {
@@ -110,7 +151,27 @@ impl LiveUsage {
         LiveUsage {
             sources: provider_usage::live::sources::registered(),
             ledger: std::sync::Mutex::default(),
+            summarizing: std::sync::Mutex::default(),
         }
+    }
+
+    /// Hold this for one whole summarization, and no two can overlap.
+    ///
+    /// `provider_usage::live::history::record` appends a pass's readings by
+    /// loading the stored series, adding to it, and writing the whole thing
+    /// back. That is safe while only one caller is ever mid-pass, which used
+    /// to be guaranteed for free: [`crate::commands::get_live_usage`] was the
+    /// only caller that records, and a synchronous command runs inline on the
+    /// thread that delivered the IPC message, so two of them could not
+    /// interleave. Now that the command hands its work to a blocking thread,
+    /// they can — the popover and Settings → Usage each ask on their own
+    /// schedule — and an interleaved read-modify-write silently drops one
+    /// pass's samples. This restores the guarantee explicitly, and spares the
+    /// providers a second identical request while it is at it.
+    pub fn summarizing(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.summarizing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -120,7 +181,7 @@ impl Default for LiveUsage {
     }
 }
 
-fn run_pass(app: &AppHandle) {
+fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
     let Some(store) = app.try_state::<Store>() else {
         return;
     };
@@ -267,6 +328,37 @@ fn anomaly(evidence: &[crate::store::UsageEvidenceRecord], now: i64) -> Option<(
 mod tests {
     use super::*;
     use crate::store::UsageEvidenceRecord;
+
+    /// A pass must land somewhere blocking is allowed.
+    ///
+    /// The type system already refuses a pass that skips [`blocking::run`] —
+    /// [`blocking::Thread`] cannot be built outside that module — so what is
+    /// left to prove is that the destination is real. The closure does
+    /// exactly what `reqwest::blocking` does on the calling thread before a
+    /// request: build a runtime, and drop it. That is the step that panics on
+    /// a runtime worker, so a pass that gets through it is a pass that can
+    /// reach a provider.
+    #[test]
+    fn a_pass_runs_where_blocking_is_allowed() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime with no driver enabled always builds");
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ran);
+        runtime.block_on(blocking::run(move |_thread| {
+            drop(
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .expect("a runtime with no driver enabled always builds"),
+            );
+            flag.store(true, Ordering::SeqCst);
+        }));
+
+        assert!(ran.load(Ordering::SeqCst));
+    }
 
     fn record(epoch: i64, output_tokens: u64) -> UsageEvidenceRecord {
         UsageEvidenceRecord {
