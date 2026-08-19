@@ -136,8 +136,15 @@ impl Store {
                 continue;
             }
             let tx = guard.transaction()?;
+            // The SQLite error is in the source chain either way, but a caller
+            // that formats with `{}` rather than `{:#}` prints this line alone
+            // — and tauri's setup hook is such a caller. A bare "migration 4
+            // failed" is exactly what a developer saw when a database built
+            // from an earlier numbering of these migrations met a table that
+            // already existed; naming the conflict is what makes it
+            // actionable rather than a trip to this file to guess.
             tx.execute_batch(sql)
-                .with_context(|| format!("migration {version} failed"))?;
+                .map_err(|error| anyhow::anyhow!("migration {version} failed: {error}"))?;
             // `pragma_update` cannot be parameterized, and `version` is derived
             // from the compiled-in migration list, never from input.
             tx.pragma_update(None, "user_version", version)?;

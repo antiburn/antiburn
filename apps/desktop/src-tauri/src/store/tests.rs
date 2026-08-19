@@ -965,6 +965,59 @@ fn a_database_already_at_v3_still_gets_the_analytics_tables() {
 }
 
 #[test]
+fn a_database_at_the_other_v3_refuses_to_open_rather_than_diverging() {
+    // The *other* v3, and the one the test above cannot reach. Both branches
+    // numbered a migration V3; `MIGRATIONS[..3]` reconstructs the one that won
+    // the number — main's `liveUsageEnabled` delete — so the test above builds
+    // the harmless side and passes while this shape panics. That gap is not
+    // theoretical: it hid a startup crash until someone ran the app.
+    //
+    // This builds the losing side: V1, V2, and the two tables that are V4
+    // today, stamped 3. Only machines that built the analytics branch before
+    // the merge have it, so it never reached a release — but it did reach a
+    // developer, as `migration 4 failed` and an abort, because index 3 runs
+    // `CREATE TABLE usage_analytics_event` against a table already sitting
+    // there.
+    //
+    // Failing is the intended outcome, not a defect to patch away. Adding
+    // `IF NOT EXISTS` to V4 would let such a database stamp itself 4 and look
+    // fully migrated while having silently skipped main's V3 — carrying a
+    // stale `liveUsageEnabled` row with nothing left to detect it, on every
+    // machine at once. A refusal a developer can read beats a divergence
+    // nobody can see. The repair is to rewind the database to 2 and let the
+    // ladder run in order.
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..2] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute_batch(super::schema::MIGRATIONS[3])
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 3i64)
+        .unwrap();
+
+    // Matched rather than `expect_err`, which would need `Debug` on `Store` —
+    // a trait the type has no other reason to carry.
+    let error = match Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-other-v3-migration-test").to_path_buf(),
+    ) {
+        Ok(_) => panic!("a database carrying the other branch's v3 must not open"),
+        Err(error) => error,
+    };
+
+    // Formatted with `{}`, not `{:#}`, because that is what the caller that
+    // surfaced this to a human used. The migration number alone explains
+    // nothing; the message has to name the table it collided with.
+    let message = format!("{error}");
+    assert!(
+        message.contains("usage_analytics_event") && message.contains("already exists"),
+        "the failure names the actual conflict, got: {message}"
+    );
+}
+
+#[test]
 fn internal_values_round_trip_and_stay_out_of_settings() {
     let store = store();
     assert_eq!(store.internal_value("internal:diskSpaceLowFiredMs"), None);
