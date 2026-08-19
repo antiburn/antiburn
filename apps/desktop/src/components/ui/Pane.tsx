@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ReactNode, Ref } from 'react';
+import type { ReactNode, Ref } from "react"
 
 /** Title bar of a content pane: an optional leading control (a back arrow, say),
  *  the pane title, and an optional trailing action.
@@ -20,25 +20,25 @@ export function PaneHeader({
   leading,
   trailing,
   headingRef,
-  className = '',
+  className = "",
 }: {
-  title: string;
-  leading?: ReactNode;
-  trailing?: ReactNode;
+  title: string
+  leading?: ReactNode
+  trailing?: ReactNode
   /** Set by a pane that pushes a subview, so it can move focus to the new
    *  title when the surface changes. Taking the ref is what makes the heading
    *  programmatically focusable — `tabIndex={-1}` follows it rather than
    *  sitting on every pane title, since a pane nobody navigates *into* has no
    *  reason to be a focus target. */
-  headingRef?: Ref<HTMLHeadingElement>;
-  className?: string;
+  headingRef?: Ref<HTMLHeadingElement>
+  className?: string
 }) {
   return (
     <div className={`mb-6 flex items-center gap-2 ${className}`.trimEnd()}>
       {leading}
       <h1
         ref={headingRef}
-        data-view-heading={headingRef ? '' : undefined}
+        data-view-heading={headingRef ? "" : undefined}
         tabIndex={headingRef ? -1 : undefined}
         className="type-title-2 min-w-0 flex-1 text-balance text-label outline-none"
       >
@@ -46,7 +46,7 @@ export function PaneHeader({
       </h1>
       {trailing}
     </div>
-  );
+  )
 }
 
 /** A content pane: a `PaneHeader` over a vertical stack of groups.
@@ -60,17 +60,17 @@ export function Pane({
   title,
   trailing,
   children,
-  className = '',
+  className = "",
 }: {
-  title: string;
-  trailing?: ReactNode;
-  children: ReactNode;
-  className?: string;
+  title: string
+  trailing?: ReactNode
+  children: ReactNode
+  className?: string
 }) {
   return (
     <>
       <PaneHeader title={title} trailing={trailing} />
       <div className={`space-y-6 ${className}`.trimEnd()}>{children}</div>
     </>
-  );
+  )
 }

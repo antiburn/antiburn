@@ -2,17 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useState, useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from "react"
 
-import { Card } from '../../components/ui/Card';
-import { Pane } from '../../components/ui/Pane';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { ToggleRow } from '../../components/ui/ToggleRow';
-import { createExternalStore } from '../../lib/externalStore';
-import { getLiveUsage, EMPTY_LIVE_USAGE } from '../../lib/ipc';
-import { liveSourceNote } from '../../lib/presentation/liveUsage';
-import type { AppSettingsController } from './useAppSettings';
+import { Card } from "../../components/ui/Card"
+import { Pane } from "../../components/ui/Pane"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { ToggleRow } from "../../components/ui/ToggleRow"
+import { createExternalStore } from "../../lib/externalStore"
+import { getLiveUsage, EMPTY_LIVE_USAGE } from "../../lib/ipc"
+import { liveSourceNote } from "../../lib/presentation/liveUsage"
+import type { AppSettingsController } from "./useAppSettings"
 
 /**
  * Usage: where the plan limits come from, and the one switch that turns it
@@ -33,19 +33,19 @@ import type { AppSettingsController } from './useAppSettings';
  * it off for one reason is surprised by the other.
  */
 
-export type UsagePaneProps = AppSettingsController;
+export type UsagePaneProps = AppSettingsController
 
 /** What a failed source means, phrased as something a reader could act on. */
 function errorNote(category: string): string {
   switch (category) {
-    case 'authentication':
-      return 'antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view.';
-    case 'rateLimited':
-      return 'Your provider asked antiburn to slow down. It will try again later.';
-    case 'schema':
-      return 'Your provider reported usage in a shape antiburn does not recognise.';
+    case "authentication":
+      return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
+    case "rateLimited":
+      return "Your provider asked antiburn to slow down. It will try again later."
+    case "schema":
+      return "Your provider reported usage in a shape antiburn does not recognise."
     default:
-      return 'antiburn could not reach your provider for usage. It will try again later.';
+      return "antiburn could not reach your provider for usage. It will try again later."
   }
 }
 
@@ -61,10 +61,10 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
       initial: EMPTY_LIVE_USAGE,
       load: () => getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
     }),
-  );
-  const live = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  )
+  const live = useSyncExternalStore(store.subscribe, store.getSnapshot)
 
-  const on = settings?.liveUsageEnabled ?? false;
+  const on = settings?.liveUsageEnabled ?? false
 
   return (
     <Pane title="Usage">
@@ -94,8 +94,8 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               label="No plan limits found"
               description={
                 on
-                  ? 'No provider credentials were found on this machine yet. Sign in with a coding tool and this fills in.'
-                  : 'Turn the switch above back on to ask your providers for current plan limits.'
+                  ? "No provider credentials were found on this machine yet. Sign in with a coding tool and this fills in."
+                  : "Turn the switch above back on to ask your providers for current plan limits."
               }
             />
           )}
@@ -104,7 +104,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               key={provider.provider}
               label={provider.displayName}
               description={`${provider.sourceLabel}. ${provider.windows.length} limit${
-                provider.windows.length === 1 ? '' : 's'
+                provider.windows.length === 1 ? "" : "s"
               } reported.`}
               trailing={
                 <span className="type-caption tabular-nums text-label-tertiary">
@@ -123,5 +123,5 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         </Card>
       </SectionGroup>
     </Pane>
-  );
+  )
 }

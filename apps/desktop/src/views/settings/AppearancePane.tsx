@@ -2,19 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Card } from '../../components/ui/Card';
-import { Pane } from '../../components/ui/Pane';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { SegmentedControl } from '../../components/ui/SegmentedControl';
-import type { ThemePreference } from '../../lib/ipc';
-import type { AppSettingsController } from './useAppSettings';
+import { Card } from "../../components/ui/Card"
+import { Pane } from "../../components/ui/Pane"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { SegmentedControl } from "../../components/ui/SegmentedControl"
+import type { ThemePreference } from "../../lib/ipc"
+import type { AppSettingsController } from "./useAppSettings"
 
 const THEMES: ReadonlyArray<{ value: ThemePreference; label: string }> = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-];
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+]
 
 /**
  * Appearance: the one theme choice.
@@ -43,5 +43,5 @@ export function AppearancePane({ settings, update }: AppSettingsController) {
         </Card>
       </SectionGroup>
     </Pane>
-  );
+  )
 }

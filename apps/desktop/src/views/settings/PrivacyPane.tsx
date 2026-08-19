@@ -2,17 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { confirm } from '@tauri-apps/plugin-dialog';
-import { useCallback, useState } from 'react';
+import { confirm } from "@tauri-apps/plugin-dialog"
+import { useCallback, useState } from "react"
 
-import { Card } from '../../components/ui/Card';
-import { Disclosure, DisclosureGroup } from '../../components/ui/Disclosure';
-import { Pane } from '../../components/ui/Pane';
-import { PushButton } from '../../components/ui/PushButton';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { StatusText } from '../../components/ui/StatusText';
-import { clearLocalIndex } from '../../lib/ipc';
+import { Card } from "../../components/ui/Card"
+import { Disclosure, DisclosureGroup } from "../../components/ui/Disclosure"
+import { Pane } from "../../components/ui/Pane"
+import { PushButton } from "../../components/ui/PushButton"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { StatusText } from "../../components/ui/StatusText"
+import { clearLocalIndex } from "../../lib/ipc"
 
 /**
  * Privacy: what antiburn reads, what it keeps, what leaves the machine, and how
@@ -30,13 +30,13 @@ import { clearLocalIndex } from '../../lib/ipc';
 
 /** What the "forget everything" action is currently doing. */
 type ClearState =
-  | { kind: 'idle' }
-  | { kind: 'clearing' }
-  | { kind: 'cleared'; sessions: number }
-  | { kind: 'failed' };
+  | { kind: "idle" }
+  | { kind: "clearing" }
+  | { kind: "cleared"; sessions: number }
+  | { kind: "failed" }
 
 export function PrivacyPane() {
-  const [clearState, setClearState] = useState<ClearState>({ kind: 'idle' });
+  const [clearState, setClearState] = useState<ClearState>({ kind: "idle" })
 
   /**
    * Clearing the index is confirmed first, and the confirmation says the two
@@ -45,19 +45,19 @@ export function PrivacyPane() {
    */
   const handleClear = useCallback(async () => {
     const proceed = await confirm(
-      'This removes every session, analysis, and scan record antiburn has stored on this machine. Your agents’ own transcript files are not touched, and antiburn will rediscover them the next time it scans.',
-      { title: 'Clear the local index?', kind: 'warning', okLabel: 'Clear index' },
-    );
-    if (!proceed) return;
+      "This removes every session, analysis, and scan record antiburn has stored on this machine. Your agents’ own transcript files are not touched, and antiburn will rediscover them the next time it scans.",
+      { title: "Clear the local index?", kind: "warning", okLabel: "Clear index" },
+    )
+    if (!proceed) return
 
-    setClearState({ kind: 'clearing' });
+    setClearState({ kind: "clearing" })
     try {
-      const sessions = await clearLocalIndex();
-      setClearState({ kind: 'cleared', sessions });
+      const sessions = await clearLocalIndex()
+      setClearState({ kind: "cleared", sessions })
     } catch {
-      setClearState({ kind: 'failed' });
+      setClearState({ kind: "failed" })
     }
-  }, []);
+  }, [])
 
   return (
     <Pane title="Privacy">
@@ -124,20 +124,20 @@ export function PrivacyPane() {
             trailing={
               <PushButton
                 onClick={() => void handleClear()}
-                disabled={clearState.kind === 'clearing'}
+                disabled={clearState.kind === "clearing"}
               >
-                {clearState.kind === 'clearing' ? 'Clearing…' : 'Clear index…'}
+                {clearState.kind === "clearing" ? "Clearing…" : "Clear index…"}
               </PushButton>
             }
           >
-            {clearState.kind !== 'idle' && clearState.kind !== 'clearing' && (
+            {clearState.kind !== "idle" && clearState.kind !== "clearing" && (
               <div className="mt-1.5" aria-live="polite">
-                {clearState.kind === 'cleared' ? (
+                {clearState.kind === "cleared" ? (
                   <StatusText tone="secondary">
                     {clearState.sessions === 0
-                      ? 'There was nothing stored to clear.'
+                      ? "There was nothing stored to clear."
                       : `Cleared ${clearState.sessions} ${
-                          clearState.sessions === 1 ? 'session' : 'sessions'
+                          clearState.sessions === 1 ? "session" : "sessions"
                         }. A scan is running to find them again.`}
                   </StatusText>
                 ) : (
@@ -156,5 +156,5 @@ export function PrivacyPane() {
         </Card>
       </SectionGroup>
     </Pane>
-  );
+  )
 }

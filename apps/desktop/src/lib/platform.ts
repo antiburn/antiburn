@@ -15,10 +15,10 @@
  * cannot carry it.
  */
 
-export type Platform = 'macos' | 'windows' | 'linux' | 'unknown';
+export type Platform = "macos" | "windows" | "linux" | "unknown"
 
 /** Minimal shape of the User-Agent Client Hints API, where it exists. */
-type PlatformHint = { platform?: string };
+type PlatformHint = { platform?: string }
 
 /**
  * Best-effort platform identity.
@@ -27,18 +27,18 @@ type PlatformHint = { platform?: string };
  * string is the fallback for the webviews that do not implement them.
  */
 export function detectPlatform(nav: Navigator = navigator): Platform {
-  const hint = (nav as Navigator & { userAgentData?: PlatformHint }).userAgentData?.platform;
-  const subject = (hint ?? nav.userAgent ?? '').toLowerCase();
+  const hint = (nav as Navigator & { userAgentData?: PlatformHint }).userAgentData?.platform
+  const subject = (hint ?? nav.userAgent ?? "").toLowerCase()
 
-  if (subject.includes('mac')) return 'macos';
-  if (subject.includes('win')) return 'windows';
-  if (subject.includes('linux') || subject.includes('x11')) return 'linux';
-  return 'unknown';
+  if (subject.includes("mac")) return "macos"
+  if (subject.includes("win")) return "windows"
+  if (subject.includes("linux") || subject.includes("x11")) return "linux"
+  return "unknown"
 }
 
 /** True on macOS, for the rare case a component has to branch in TypeScript. */
 export function isMacOS(): boolean {
-  return detectPlatform() === 'macos';
+  return detectPlatform() === "macos"
 }
 
 /**
@@ -49,5 +49,5 @@ export function applyPlatformAttribute(
   root: HTMLElement = document.documentElement,
   platform: Platform = detectPlatform(),
 ): void {
-  root.setAttribute('data-platform', platform);
+  root.setAttribute("data-platform", platform)
 }

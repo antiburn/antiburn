@@ -2,15 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Flame } from 'lucide-react';
+import { Flame } from "lucide-react"
 
 import {
   formatCost,
   HIGH_COST_MEDIAN_MULTIPLE,
   type CostRow,
-} from '../../../lib/presentation/sessionAnalytics';
-import { Tooltip } from '../../presentation/Tooltip';
-import { TextRoll } from '../../ui/TextRoll';
+} from "../../../lib/presentation/sessionAnalytics"
+import { Tooltip } from "../../presentation/Tooltip"
+import { TextRoll } from "../../ui/TextRoll"
 
 /**
  * Geometry and typography of the cost pill, without its color scheme. Exported
@@ -18,37 +18,37 @@ import { TextRoll } from '../../ui/TextRoll';
  * than by copying the string.
  */
 export const COST_PILL_CLASS =
-  'flex items-center gap-0.5 shrink-0 px-1.5 py-px rounded-full type-caption tabular-nums font-medium leading-[13px]';
+  "flex items-center gap-0.5 shrink-0 px-1.5 py-px rounded-full type-caption tabular-nums font-medium leading-[13px]"
 
 export interface SessionCostBadgeProps {
   /** The headline figure, in USD. */
-  totalUsd: number;
+  totalUsd: number
   /**
    * What the figure *is* — "Projected cost" while a session is live,
    * "Estimated cost" once it settles. Leads the tooltip and carries the
    * accessible name.
    */
-  figureLabel: string;
+  figureLabel: string
   /** Every model that contributed billable tokens, as a muted subtitle. */
-  models?: string[];
+  models?: string[]
   /**
    * Unusually expensive against comparable sessions. Paints the pill red with
    * a flame, and is never hidden behind {@link revealClassName}.
    */
-  isHighCost?: boolean;
+  isHighCost?: boolean
   /** Billable component rows (input / output / cache read / cache write). */
-  breakdownRows?: CostRow[];
+  breakdownRows?: CostRow[]
   /**
    * Extra classes for the pill — a `relative top-px` nudge to optically align
    * with adjacent baseline text in a row, say. Omit on a centered flex line.
    */
-  className?: string;
+  className?: string
   /**
    * Hover-reveal classes applied by a list row that keeps secondary detail
    * hidden until hover or focus. A **high-cost** badge ignores this and stays
    * visible: an outlier must be surfaced even at rest.
    */
-  revealClassName?: string;
+  revealClassName?: string
 }
 
 /**
@@ -64,8 +64,8 @@ export function SessionCostBadge({
   models = [],
   isHighCost = false,
   breakdownRows = [],
-  className = '',
-  revealClassName = '',
+  className = "",
+  revealClassName = "",
 }: SessionCostBadgeProps) {
   const badge = (
     <Tooltip
@@ -118,15 +118,15 @@ export function SessionCostBadge({
         }
         className={`${COST_PILL_CLASS} ${
           isHighCost
-            ? 'bg-system-red/15 text-system-red-text'
-            : 'bg-system-gold/15 text-system-gold-text'
-        }${className ? ` ${className}` : ''}`}
+            ? "bg-system-red/15 text-system-red-text"
+            : "bg-system-gold/15 text-system-gold-text"
+        }${className ? ` ${className}` : ""}`}
       >
         {isHighCost && <Flame size={11} className="shrink-0" aria-hidden="true" />}
         <TextRoll text={formatCost(totalUsd)} />
       </span>
     </Tooltip>
-  );
+  )
 
   // In a list row the badge hides until hover, to keep the resting list
   // uncluttered — but a high-cost outlier must always be surfaced, so it skips
@@ -135,7 +135,7 @@ export function SessionCostBadge({
   // tooltip is open, and the trigger sets that attribute on the pill, which has
   // to be a *descendant* for `:has` to match.
   if (revealClassName && !isHighCost) {
-    return <span className={`flex shrink-0 ${revealClassName}`}>{badge}</span>;
+    return <span className={`flex shrink-0 ${revealClassName}`}>{badge}</span>
   }
-  return badge;
+  return badge
 }

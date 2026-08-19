@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
   Bot,
   Check,
@@ -11,22 +11,22 @@ import {
   GitFork,
   Settings2,
   SquareTerminal,
-} from 'lucide-react';
-import type { ReactNode } from 'react';
+} from "lucide-react"
+import type { ReactNode } from "react"
 
-import { agentDisplayName } from '../../lib/presentation/agents';
-import type { AgentSurface } from '../../lib/presentation/agents';
-import { localSessionKey } from '../../lib/presentation/localIdentity';
-import { Tooltip } from '../presentation/Tooltip';
-import { WslOriginBadge } from '../presentation/WslOriginBadge';
-import { MIN_ORCHESTRATED_SUBAGENTS } from '../../lib/types/session';
-import { SessionActiveTimeBadge } from '../session/metrics/SessionActiveTimeBadge';
+import { agentDisplayName } from "../../lib/presentation/agents"
+import type { AgentSurface } from "../../lib/presentation/agents"
+import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { Tooltip } from "../presentation/Tooltip"
+import { WslOriginBadge } from "../presentation/WslOriginBadge"
+import { MIN_ORCHESTRATED_SUBAGENTS } from "../../lib/types/session"
+import { SessionActiveTimeBadge } from "../session/metrics/SessionActiveTimeBadge"
 import {
   SessionCostBadge,
   type SessionCostBadgeProps,
-} from '../session/metrics/SessionCostBadge';
-import { ScrollPane } from '../ui/ScrollPane';
-import { RowTimeCorner, TruncatedText } from './ActivityRowPrimitives';
+} from "../session/metrics/SessionCostBadge"
+import { ScrollPane } from "../ui/ScrollPane"
+import { RowTimeCorner, TruncatedText } from "./ActivityRowPrimitives"
 import {
   ROW_ACTIVE_CLASS,
   ROW_CLASS,
@@ -34,11 +34,11 @@ import {
   ROW_LAYOUT_CLASS,
   ROW_TITLE_CLASS,
   SECONDARY_DETAIL_REVEAL_CLASS,
-} from './activityRow';
-import { countGroupedItems, groupActivityByDay } from './activityFeedGrouping';
-import { useActivityGroupPinning } from './useActivityGroupPinning';
+} from "./activityRow"
+import { countGroupedItems, groupActivityByDay } from "./activityFeedGrouping"
+import { useActivityGroupPinning } from "./useActivityGroupPinning"
 
-import '../../styles/session-rows.css';
+import "../../styles/session-rows.css"
 
 /**
  * Renders the icon for an agent, optionally marked with the surface the
@@ -48,91 +48,91 @@ type ActivityAgentIconRenderer = (
   slug: string,
   size: number,
   surface?: AgentSurface,
-) => ReactNode;
+) => ReactNode
 
 /** One local coding session in the list. */
 export interface LocalActivityEntry {
-  agent: string;
+  agent: string
   /** Absent for a session whose transcript id could not be read. */
-  sessionId?: string | undefined;
+  sessionId?: string | undefined
   /** Repository the session ran in; empty when it could not be resolved. */
-  repo: string;
+  repo: string
   /** Other repositories the same session touched. */
-  additionalRepos?: string[] | undefined;
-  branch?: string | undefined;
+  additionalRepos?: string[] | undefined
+  branch?: string | undefined
   /** ISO timestamp of the session's most recent activity. */
-  timestamp: string;
+  timestamp: string
   /** Whether the transcript is still being written. */
-  isActive: boolean;
+  isActive: boolean
   /** Where the session was discovered from. */
-  surface?: AgentSurface | undefined;
-  wslDistro?: string | null | undefined;
+  surface?: AgentSurface | undefined
+  wslDistro?: string | null | undefined
   /** Resolved session title; falls back to a short id, then the agent name. */
-  title?: string | undefined;
+  title?: string | undefined
   /** Whether this session was forked from another. */
-  hasForkParent?: boolean | undefined;
+  hasForkParent?: boolean | undefined
   /** How many sessions were forked from this one. */
-  forkChildCount?: number | undefined;
+  forkChildCount?: number | undefined
   /** Sub-agents this session launched; 0 or absent when it launched none. */
-  subagentCount?: number | undefined;
+  subagentCount?: number | undefined
   /** Display values for the cost pill; omit when nothing priced the session. */
-  cost?: SessionCostBadgeProps | null | undefined;
+  cost?: SessionCostBadgeProps | null | undefined
   /** Active/overall time for the time pill; omit when unmeasured. */
-  activeTime?: { activeSecs: number; durationSecs?: number | null } | null | undefined;
+  activeTime?: { activeSecs: number; durationSecs?: number | null } | null | undefined
   /** What the corner timestamp means. Defaults to "Last activity". */
-  timeLabel?: string | undefined;
+  timeLabel?: string | undefined
 }
 
 /** One option in the list's filter control. */
 interface LocalActivityFilter {
-  value: string;
-  label: string;
+  value: string
+  label: string
 }
 
 export interface LocalActivityListProps {
   /** Sessions to show. Ordering and grouping are this component's job. */
-  entries: LocalActivityEntry[];
+  entries: LocalActivityEntry[]
   /** Header title, used when no filter control is shown. */
-  title?: string;
+  title?: string
   /** Visible calendar-day window. Also drives the range label and empty copy. */
-  days: number;
+  days: number
   /** Override the default "Last N days" range label. */
-  rangeLabel?: string;
+  rangeLabel?: string
   /** Open wherever the day range is configured. Omitted makes it plain text. */
-  onOpenSettings?: () => void;
+  onOpenSettings?: () => void
   /** Filter options. Fewer than two renders the plain title instead. */
-  filters?: readonly LocalActivityFilter[];
-  selectedFilter?: string;
-  onFilterChange?: (value: string) => void;
+  filters?: readonly LocalActivityFilter[]
+  selectedFilter?: string
+  onFilterChange?: (value: string) => void
   /** Headline for the empty state; defaults to the range-aware wording. */
-  emptyTitle?: string;
-  emptyDescription?: string;
+  emptyTitle?: string
+  emptyDescription?: string
   /** Open a session's analytics. Omitted leaves rows inert. */
-  onOpenSession?: (entry: LocalActivityEntry) => void;
+  onOpenSession?: (entry: LocalActivityEntry) => void
   /**
    * Open a session's sub-agent roster from the fan-out pill. Falls back to
    * {@link onOpenSession}, which is where the roster lives.
    */
-  onOpenOrchestration?: (entry: LocalActivityEntry) => void;
+  onOpenOrchestration?: (entry: LocalActivityEntry) => void
   /** The scrolling viewport, for a host that needs to observe it. */
-  viewportRef?: (node: HTMLDivElement | null) => void;
+  viewportRef?: (node: HTMLDivElement | null) => void
   /** Frozen clock, for tests. */
-  now?: Date;
-  renderAgentIcon?: ActivityAgentIconRenderer;
+  now?: Date
+  renderAgentIcon?: ActivityAgentIconRenderer
   /** Glyph for the WSL-origin badge. */
-  wslIcon?: ReactNode;
+  wslIcon?: ReactNode
 }
 
 /** Title for a row: the resolved title, then a short id, then the agent name. */
 function primaryLine(entry: LocalActivityEntry): string {
-  const title = entry.title?.trim();
-  if (title) return title;
-  if (entry.sessionId) return `Session ${entry.sessionId.slice(0, 7)}`;
-  return agentDisplayName(entry.agent);
+  const title = entry.title?.trim()
+  if (title) return title
+  if (entry.sessionId) return `Session ${entry.sessionId.slice(0, 7)}`
+  return agentDisplayName(entry.agent)
 }
 
 function rangeText(days: number): string {
-  return `Last ${days} ${days === 1 ? 'day' : 'days'}`;
+  return `Last ${days} ${days === 1 ? "day" : "days"}`
 }
 
 function ActivityHeader({
@@ -144,18 +144,18 @@ function ActivityHeader({
   onFilterChange,
   onOpenSettings,
 }: {
-  title: string;
-  days: number;
-  rangeLabel?: string;
-  filters?: readonly LocalActivityFilter[];
-  selectedFilter?: string;
-  onFilterChange?: (value: string) => void;
-  onOpenSettings?: () => void;
+  title: string
+  days: number
+  rangeLabel?: string
+  filters?: readonly LocalActivityFilter[]
+  selectedFilter?: string
+  onFilterChange?: (value: string) => void
+  onOpenSettings?: () => void
 }) {
-  const showFilter = !!filters && filters.length > 1 && !!onFilterChange;
+  const showFilter = !!filters && filters.length > 1 && !!onFilterChange
   const currentLabel =
-    filters?.find((option) => option.value === selectedFilter)?.label ?? title;
-  const range = rangeLabel ?? rangeText(days);
+    filters?.find((option) => option.value === selectedFilter)?.label ?? title
+  const range = rangeLabel ?? rangeText(days)
 
   return (
     <div className="flex h-6 items-center gap-3 px-4 whitespace-nowrap">
@@ -184,7 +184,7 @@ function ActivityHeader({
               sideOffset={4}
             >
               <DropdownMenu.RadioGroup
-                value={selectedFilter ?? ''}
+                value={selectedFilter ?? ""}
                 onValueChange={(value) => onFilterChange?.(value)}
               >
                 {filters.map((option) => (
@@ -232,7 +232,7 @@ function ActivityHeader({
         </span>
       )}
     </div>
-  );
+  )
 }
 
 function EmptyActivity({ title, description }: { title: string; description: string }) {
@@ -246,17 +246,17 @@ function EmptyActivity({ title, description }: { title: string; description: str
         <p className="mt-1.5 max-w-[230px] type-footnote text-label-tertiary">{description}</p>
       </div>
     </div>
-  );
+  )
 }
 
 interface SessionActivityRowProps {
-  entry: LocalActivityEntry;
+  entry: LocalActivityEntry
   /** Opens this session's analytics. Omitted leaves the row inert. */
-  onOpen?: () => void;
+  onOpen?: () => void
   /** Opens the sub-agent roster from the fan-out pill. */
-  onOpenOrchestration?: () => void;
-  renderAgentIcon?: ActivityAgentIconRenderer | undefined;
-  wslIcon?: ReactNode | undefined;
+  onOpenOrchestration?: () => void
+  renderAgentIcon?: ActivityAgentIconRenderer | undefined
+  wslIcon?: ReactNode | undefined
 }
 
 /**
@@ -274,23 +274,23 @@ function SessionActivityRow({
   renderAgentIcon,
   wslIcon,
 }: SessionActivityRowProps) {
-  const clickable = !!entry.sessionId && !!onOpen;
-  const primary = primaryLine(entry);
-  const hasRepo = entry.repo !== '';
-  const subagentCount = entry.subagentCount ?? 0;
-  const isOrchestrator = subagentCount >= MIN_ORCHESTRATED_SUBAGENTS && !!onOpen;
-  const openRoster = onOpenOrchestration ?? onOpen;
+  const clickable = !!entry.sessionId && !!onOpen
+  const primary = primaryLine(entry)
+  const hasRepo = entry.repo !== ""
+  const subagentCount = entry.subagentCount ?? 0
+  const isOrchestrator = subagentCount >= MIN_ORCHESTRATED_SUBAGENTS && !!onOpen
+  const openRoster = onOpenOrchestration ?? onOpen
 
   return (
     <div
-      className={`${ROW_CLASS}${entry.isActive ? ` ${ROW_ACTIVE_CLASS} isolate` : ''} ${ROW_LAYOUT_CLASS} transition-colors duration-[120ms] ${
+      className={`${ROW_CLASS}${entry.isActive ? ` ${ROW_ACTIVE_CLASS} isolate` : ""} ${ROW_LAYOUT_CLASS} transition-colors duration-[120ms] ${
         clickable
-          ? 'cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover'
-          : ''
+          ? "cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover"
+          : ""
       }`}
       {...(clickable
         ? {
-            role: 'button' as const,
+            role: "button" as const,
             tabIndex: 0,
             onClick: onOpen,
             onKeyDown: (event: React.KeyboardEvent) => {
@@ -298,10 +298,10 @@ function SessionActivityRow({
               // belongs to that control, not to the card behind it.
               if (
                 event.currentTarget === event.target &&
-                (event.key === 'Enter' || event.key === ' ')
+                (event.key === "Enter" || event.key === " ")
               ) {
-                event.preventDefault();
-                onOpen?.();
+                event.preventDefault()
+                onOpen?.()
               }
             },
           }
@@ -312,7 +312,7 @@ function SessionActivityRow({
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className={`${ROW_CORNER_GUTTER_CLASS} flex min-w-0 items-center gap-1`}>
           <TruncatedText
-            className={`${ROW_TITLE_CLASS} min-w-0 truncate type-callout ${entry.isActive ? '' : 'text-label'}`}
+            className={`${ROW_TITLE_CLASS} min-w-0 truncate type-callout ${entry.isActive ? "" : "text-label"}`}
             text={primary}
             shimmer={entry.isActive}
           />
@@ -328,12 +328,12 @@ function SessionActivityRow({
           )}
           {!!entry.forkChildCount && (
             <Tooltip
-              label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? 'fork' : 'forks'}`}
+              label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
               delayMs={500}
             >
               <span
                 className="inline-flex shrink-0 text-label-tertiary"
-                aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? 'fork' : 'forks'}`}
+                aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
               >
                 <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
               </span>
@@ -347,14 +347,14 @@ function SessionActivityRow({
               <Tooltip
                 label={
                   entry.additionalRepos?.length
-                    ? `Also observed: ${entry.additionalRepos.join(', ')}`
+                    ? `Also observed: ${entry.additionalRepos.join(", ")}`
                     : entry.repo
                 }
               >
                 <span className="inline-flex h-[15px] max-w-[55%] shrink-0 items-center rounded bg-label/[0.06] px-1.5">
                   <TruncatedText
                     className="min-w-0 truncate type-footnote leading-[13px] font-medium tracking-wide text-label-secondary"
-                    text={`${entry.repo}${entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ''}`}
+                    text={`${entry.repo}${entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}`}
                   />
                 </span>
               </Tooltip>
@@ -393,8 +393,8 @@ function SessionActivityRow({
                     onClick={(event) => {
                       // The card behind this also opens something; without
                       // this the click would fire both.
-                      event.stopPropagation();
-                      openRoster();
+                      event.stopPropagation()
+                      openRoster()
                     }}
                     className="flex shrink-0 items-center gap-0.5 rounded-full bg-system-indigo/15 px-1.5 py-px leading-[13px] text-system-indigo-text transition-colors hover:bg-system-indigo/25"
                     aria-label={`Orchestrated ${subagentCount} sub-agents, view roster`}
@@ -413,11 +413,11 @@ function SessionActivityRow({
 
       <RowTimeCorner
         timestamp={entry.timestamp}
-        label={entry.timeLabel ?? 'Last activity'}
+        label={entry.timeLabel ?? "Last activity"}
         revealClassName={SECONDARY_DETAIL_REVEAL_CLASS}
       />
     </div>
-  );
+  )
 }
 
 /**
@@ -429,7 +429,7 @@ function SessionActivityRow({
  */
 export function LocalActivityList({
   entries,
-  title = 'Activity',
+  title = "Activity",
   days,
   rangeLabel,
   onOpenSettings,
@@ -437,7 +437,7 @@ export function LocalActivityList({
   selectedFilter,
   onFilterChange,
   emptyTitle,
-  emptyDescription = 'Coding sessions appear here as they are discovered on this machine.',
+  emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
   onOpenSession,
   onOpenOrchestration,
   viewportRef,
@@ -454,18 +454,18 @@ export function LocalActivityList({
     key: entry.sessionId
       ? localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
       : `${entry.agent}|${index}`,
-  }));
+  }))
 
-  const groups = groupActivityByDay(items, { days, ...(now ? { now } : {}) });
-  const visibleCount = countGroupedItems(groups);
+  const groups = groupActivityByDay(items, { days, ...(now ? { now } : {}) })
+  const visibleCount = countGroupedItems(groups)
 
   const { assignViewportRef, registerHeading, pinnedLabel } = useActivityGroupPinning(
     groups.map((group) => group.label),
     viewportRef,
-  );
+  )
 
   const resolvedEmptyTitle =
-    emptyTitle ?? (days === 1 ? 'No sessions today' : `No sessions in the last ${days} days`);
+    emptyTitle ?? (days === 1 ? "No sessions today" : `No sessions in the last ${days} days`)
 
   return (
     <div className="flex h-full flex-col">
@@ -485,7 +485,7 @@ export function LocalActivityList({
         {/* One live-region announcement for the whole list, rather than a
             placeholder per row. */}
         <span className="sr-only" aria-live="polite" aria-atomic="true">
-          {visibleCount === 0 ? resolvedEmptyTitle : ''}
+          {visibleCount === 0 ? resolvedEmptyTitle : ""}
         </span>
 
         {pinnedLabel && (
@@ -501,14 +501,14 @@ export function LocalActivityList({
         <ScrollPane
           topEdgeFade
           viewportRef={assignViewportRef}
-          viewportClassName={`px-2${visibleCount === 0 ? ' [&>div]:h-full' : ''}`}
+          viewportClassName={`px-2${visibleCount === 0 ? " [&>div]:h-full" : ""}`}
         >
           {visibleCount === 0 ? (
             <EmptyActivity title={resolvedEmptyTitle} description={emptyDescription} />
           ) : (
             <div className="space-y-3 pb-3">
               {groups.map((group, groupIndex) => {
-                const headingId = `activity-${group.label.replaceAll(' ', '-').toLowerCase()}`;
+                const headingId = `activity-${group.label.replaceAll(" ", "-").toLowerCase()}`
                 return (
                   <section key={group.label} aria-labelledby={headingId}>
                     <h3
@@ -519,8 +519,8 @@ export function LocalActivityList({
                       // painted twice.
                       className={
                         groupIndex === 0
-                          ? 'sr-only'
-                          : 'px-2 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary'
+                          ? "sr-only"
+                          : "px-2 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
                       }
                     >
                       {group.label}
@@ -542,12 +542,12 @@ export function LocalActivityList({
                       ))}
                     </div>
                   </section>
-                );
+                )
               })}
             </div>
           )}
         </ScrollPane>
       </section>
     </div>
-  );
+  )
 }

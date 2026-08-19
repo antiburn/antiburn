@@ -2,12 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { LucideIcon } from "lucide-react"
+import type { ReactNode } from "react"
 
 /** `primary` is the plain label color, `secondary` the quieter one used for a
  *  trailing status word next to a row label. */
-export type StatusTextTone = 'primary' | 'secondary';
+export type StatusTextTone = "primary" | "secondary"
 
 /** One line of status: an optional 12px glyph and a footnote-sized message.
  *
@@ -17,24 +17,24 @@ export type StatusTextTone = 'primary' | 'secondary';
  *  the message carries the meaning. */
 export function StatusText({
   icon: Icon,
-  iconClassName = '',
+  iconClassName = "",
   iconStrokeWidth = 2,
-  tone = 'primary',
-  className = '',
+  tone = "primary",
+  className = "",
   children,
 }: {
-  icon?: LucideIcon;
-  iconClassName?: string;
+  icon?: LucideIcon
+  iconClassName?: string
   /** Bumped to 2.5–3 for tiny marks such as a check, per the icon guidance. */
-  iconStrokeWidth?: number;
-  tone?: StatusTextTone;
-  className?: string;
-  children: ReactNode;
+  iconStrokeWidth?: number
+  tone?: StatusTextTone
+  className?: string
+  children: ReactNode
 }) {
   return (
     <span
       className={`type-footnote inline-flex items-center gap-1.5 ${
-        tone === 'secondary' ? 'text-label-secondary' : 'text-label'
+        tone === "secondary" ? "text-label-secondary" : "text-label"
       } ${className}`.trimEnd()}
     >
       {Icon && (
@@ -47,5 +47,5 @@ export function StatusText({
       )}
       {children}
     </span>
-  );
+  )
 }

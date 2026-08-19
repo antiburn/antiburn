@@ -12,18 +12,18 @@
  * quietly lands nowhere.
  */
 const SETTINGS_PANE_IDS = [
-  'general',
-  'appearance',
-  'sources',
-  'privacy',
-  'notifications',
-  'usage',
-  'about',
-] as const;
+  "general",
+  "appearance",
+  "sources",
+  "privacy",
+  "notifications",
+  "usage",
+  "about",
+] as const
 
-export type SettingsPane = (typeof SETTINGS_PANE_IDS)[number];
+export type SettingsPane = (typeof SETTINGS_PANE_IDS)[number]
 
 /** Whether an arbitrary value — a shell payload, say — names a real pane. */
 export function isSettingsPane(value: unknown): value is SettingsPane {
-  return typeof value === 'string' && (SETTINGS_PANE_IDS as readonly string[]).includes(value);
+  return typeof value === "string" && (SETTINGS_PANE_IDS as readonly string[]).includes(value)
 }

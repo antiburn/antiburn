@@ -2,19 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Terminal } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { Terminal } from "lucide-react"
+import type { ReactNode } from "react"
 
-import { Tooltip } from './Tooltip';
+import { Tooltip } from "./Tooltip"
 
 export interface WslOriginBadgeProps {
   /** WSL distribution the session or clone was found in. */
-  distro?: string | null | undefined;
+  distro?: string | null | undefined
   /**
    * Glyph painted inside the badge. Defaults to a neutral terminal mark; pass
    * a slot to use whatever artwork the surrounding app ships.
    */
-  icon?: ReactNode | undefined;
+  icon?: ReactNode | undefined
 }
 
 /**
@@ -27,8 +27,8 @@ export interface WslOriginBadgeProps {
  * lost to the abbreviation — the glyph itself is decorative.
  */
 export function WslOriginBadge({ distro, icon }: WslOriginBadgeProps) {
-  if (!distro) return null;
-  const label = `Found in ${distro} on Windows Subsystem for Linux`;
+  if (!distro) return null
+  const label = `Found in ${distro} on Windows Subsystem for Linux`
   return (
     <Tooltip label={label}>
       <span
@@ -38,5 +38,5 @@ export function WslOriginBadge({ distro, icon }: WslOriginBadgeProps) {
         {icon ?? <Terminal size={11} aria-hidden="true" />}
       </span>
     </Tooltip>
-  );
+  )
 }

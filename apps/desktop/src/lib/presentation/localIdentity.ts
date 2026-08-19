@@ -22,10 +22,10 @@
  * nothing to be scoped to.
  */
 
-import type { LocalSessionIdentity } from '../types/session';
+import type { LocalSessionIdentity } from "../types/session"
 
 /** The key for the native (non-WSL) environment. */
-export const NATIVE_ENVIRONMENT_KEY = 'native';
+export const NATIVE_ENVIRONMENT_KEY = "native"
 
 /**
  * Identity of the execution environment a session or clone lives in: the
@@ -36,13 +36,13 @@ export const NATIVE_ENVIRONMENT_KEY = 'native';
  * (the Turkish dotless-i is the classic way that goes wrong).
  */
 export function environmentKey(wslDistro?: string | null): string {
-  const distro = wslDistro?.trim();
-  return distro ? `wsl:${distro.toLocaleLowerCase('en-US')}` : NATIVE_ENVIRONMENT_KEY;
+  const distro = wslDistro?.trim()
+  return distro ? `wsl:${distro.toLocaleLowerCase("en-US")}` : NATIVE_ENVIRONMENT_KEY
 }
 
 /** True when two environments are the same, ignoring distribution-name case. */
 export function sameEnvironment(a?: string | null, b?: string | null): boolean {
-  return environmentKey(a) === environmentKey(b);
+  return environmentKey(a) === environmentKey(b)
 }
 
 /**
@@ -56,17 +56,17 @@ export function localSessionKey(
   sessionId: string,
   wslDistro?: string | null,
 ): string {
-  return JSON.stringify([environmentKey(wslDistro), agent, sessionId]);
+  return JSON.stringify([environmentKey(wslDistro), agent, sessionId])
 }
 
 /** {@link localSessionKey} for an identity record. */
 export function sessionIdentityKey(identity: LocalSessionIdentity): string {
-  return localSessionKey(identity.agent, identity.sessionId, identity.wslDistro);
+  return localSessionKey(identity.agent, identity.sessionId, identity.wslDistro)
 }
 
 /** True when two session identities name the same local transcript. */
 export function sameLocalSession(a: LocalSessionIdentity, b: LocalSessionIdentity): boolean {
-  return sessionIdentityKey(a) === sessionIdentityKey(b);
+  return sessionIdentityKey(a) === sessionIdentityKey(b)
 }
 
 /**
@@ -83,7 +83,7 @@ export function localRepositoryKey(
   wslDistro?: string | null,
   stableKey?: string | null,
 ): string {
-  const stable = stableKey?.trim();
-  if (stable) return JSON.stringify(['stable', stable]);
-  return JSON.stringify(['repo', environmentKey(wslDistro), repo]);
+  const stable = stableKey?.trim()
+  if (stable) return JSON.stringify(["stable", stable])
+  return JSON.stringify(["repo", environmentKey(wslDistro), repo])
 }

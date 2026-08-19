@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ReactNode } from 'react';
+import type { ReactNode } from "react"
 
 /** A single row inside a `Card`: label on the left, an optional trailing
  *  control on the right, and a full-width description underneath.
@@ -18,20 +18,20 @@ export function Row({
   dimmed,
   children,
 }: {
-  label: string;
+  label: string
   // `| undefined` on the forwarded props is deliberate: under
   // `exactOptionalPropertyTypes` a wrapper such as `ToggleRow` cannot pass its
   // own optional value through unless the target accepts an explicit undefined.
-  description?: string | undefined;
-  trailing?: ReactNode;
-  dimmed?: boolean | undefined;
+  description?: string | undefined
+  trailing?: ReactNode
+  dimmed?: boolean | undefined
   /** Extra full-width content rendered below the description, e.g. a slider track. */
-  children?: ReactNode;
+  children?: ReactNode
 }) {
   return (
     <div
       className={`grid min-h-[58px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3 ${
-        dimmed ? 'opacity-50' : ''
+        dimmed ? "opacity-50" : ""
       }`}
     >
       <p className="type-body min-w-0 truncate text-label">{label}</p>
@@ -43,5 +43,5 @@ export function Row({
       )}
       {children && <div className="col-span-2 w-full">{children}</div>}
     </div>
-  );
+  )
 }

@@ -2,21 +2,21 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Clock } from 'lucide-react';
+import { Clock } from "lucide-react"
 
-import { formatDuration } from '../../../lib/presentation/sessionAnalytics';
-import { Tooltip } from '../../presentation/Tooltip';
+import { formatDuration } from "../../../lib/presentation/sessionAnalytics"
+import { Tooltip } from "../../presentation/Tooltip"
 
 export interface SessionActiveTimeBadgeProps {
   /** Working time with idle gaps removed — the headline figure. */
-  activeSecs: number;
+  activeSecs: number
   /**
    * Wall-clock span, shown as the tooltip's "Overall" row. Omit when unknown;
    * the row then disappears rather than showing a figure nobody computed.
    */
-  durationSecs?: number | null;
+  durationSecs?: number | null
   /** Extra classes for the pill. Omit on a centered flex line. */
-  className?: string;
+  className?: string
 }
 
 /**
@@ -32,7 +32,7 @@ export interface SessionActiveTimeBadgeProps {
 export function SessionActiveTimeBadge({
   activeSecs,
   durationSecs,
-  className = '',
+  className = "",
 }: SessionActiveTimeBadgeProps) {
   return (
     <Tooltip
@@ -56,12 +56,12 @@ export function SessionActiveTimeBadge({
     >
       <span
         className={`flex shrink-0 items-center gap-0.5 rounded-full bg-label/[0.06] px-1.5 py-px type-caption font-medium leading-[13px] text-label-secondary tabular-nums${
-          className ? ` ${className}` : ''
+          className ? ` ${className}` : ""
         }`}
       >
         <Clock size={11} className="shrink-0" aria-hidden="true" />
         {formatDuration(activeSecs)}
       </span>
     </Tooltip>
-  );
+  )
 }

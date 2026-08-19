@@ -50,7 +50,7 @@
    row that establishes its own stacking context (the component pairs this
    class with `isolate`), so the tint cannot cover the row's own content. */
 .activity-row-active::before {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
   z-index: -1;
@@ -160,7 +160,7 @@
 .reveal-host:hover .activity-row-secondary-detail,
 .reveal-host:focus-visible .activity-row-secondary-detail,
 .reveal-host:has(:focus-visible) .activity-row-secondary-detail,
-.activity-row-secondary-detail:has([data-state*='open']) {
+.activity-row-secondary-detail:has([data-state*="open"]) {
   visibility: visible;
   opacity: 1;
   pointer-events: auto;
@@ -195,7 +195,7 @@
 .activity-row:hover .activity-row-corner-gutter,
 .activity-row:focus-visible .activity-row-corner-gutter,
 .activity-row:has(:focus-visible) .activity-row-corner-gutter,
-.activity-row:has([data-row-corner] [data-state*='open']) .activity-row-corner-gutter,
+.activity-row:has([data-row-corner] [data-state*="open"]) .activity-row-corner-gutter,
 .activity-row:has([data-row-corner-pinned]) .activity-row-corner-gutter {
   padding-right: var(--activity-row-corner-gutter);
 }

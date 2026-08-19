@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ReactNode } from 'react';
+import type { ReactNode } from "react"
 
 /** A labelled group of cards. The header sits a step above the row labels
  *  inside those cards (15px vs 13px, full-contrast vs secondary), so a pane
@@ -20,14 +20,14 @@ export function SectionGroup({
   title,
   trailing,
   children,
-  className = '',
+  className = "",
 }: {
-  title?: string;
+  title?: string
   /** Optional content pinned to the header's right-hand side (e.g. a status
    *  badge) — rendered only alongside a `title`. */
-  trailing?: ReactNode;
-  children: ReactNode;
-  className?: string;
+  trailing?: ReactNode
+  children: ReactNode
+  className?: string
 }) {
   return (
     <section className={`space-y-2 ${className}`.trimEnd()}>
@@ -39,5 +39,5 @@ export function SectionGroup({
       )}
       {children}
     </section>
-  );
+  )
 }

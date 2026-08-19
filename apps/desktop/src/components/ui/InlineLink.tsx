@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ReactNode } from 'react';
+import type { ReactNode } from "react"
 
 /**
  * A link rendered inline within a sentence.
@@ -20,11 +20,11 @@ import type { ReactNode } from 'react';
 export function InlineLink({
   children,
   onClick,
-  className = '',
+  className = "",
 }: {
-  children: ReactNode;
-  onClick: () => void;
-  className?: string;
+  children: ReactNode
+  onClick: () => void
+  className?: string
 }) {
   return (
     <button
@@ -34,5 +34,5 @@ export function InlineLink({
     >
       {children}
     </button>
-  );
+  )
 }

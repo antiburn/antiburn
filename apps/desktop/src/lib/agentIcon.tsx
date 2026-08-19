@@ -31,8 +31,8 @@
  * agent produced a session — and is recorded in docs/deviations.md.
  */
 
-import { Bot, PanelsTopLeft, SquareTerminal, type LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { Bot, PanelsTopLeft, SquareTerminal, type LucideIcon } from "lucide-react"
+import type { ReactNode } from "react"
 import {
   siClaude,
   siCline,
@@ -41,10 +41,10 @@ import {
   siOpencode,
   siPi,
   siWindsurf,
-} from 'simple-icons';
+} from "simple-icons"
 
-import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from './brandMarks';
-import { agentDisplayName, agentIconName, type AgentSurface } from './presentation/agents';
+import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from "./brandMarks"
+import { agentDisplayName, agentIconName, type AgentSurface } from "./presentation/agents"
 
 /**
  * Registry icon name → brand mark. Keyed by the registry's icon names (not
@@ -59,7 +59,7 @@ export const BRAND_MARKS: Record<string, BrandMark> = {
   windsurf: fromSimpleIcons(siWindsurf),
   pi: fromSimpleIcons(siPi),
   codex: OPENAI_MARK,
-};
+}
 
 /**
  * Marks that render in their brand's own hex rather than the theme ink.
@@ -73,13 +73,13 @@ export const BRAND_MARKS: Record<string, BrandMark> = {
  * The value is always the mark's recorded `hex`, never a hex written here, so
  * a member without one is a bug the tests catch rather than a silent fallback.
  */
-export const BRAND_COLORED: ReadonlySet<string> = new Set(['claude']);
+export const BRAND_COLORED: ReadonlySet<string> = new Set(["claude"])
 
 /** The glyph for a surface. Unknown surfaces get the neutral agent mark. */
 function glyphFor(surface: AgentSurface | undefined): LucideIcon {
-  if (surface === 'cli') return SquareTerminal;
-  if (surface === 'ide_desktop') return PanelsTopLeft;
-  return Bot;
+  if (surface === "cli") return SquareTerminal
+  if (surface === "ide_desktop") return PanelsTopLeft
+  return Bot
 }
 
 function Mark({ name, mark, size }: { name: string; mark: BrandMark; size: number }) {
@@ -95,7 +95,7 @@ function Mark({ name, mark, size }: { name: string; mark: BrandMark; size: numbe
     >
       <path d={mark.path} />
     </svg>
-  );
+  )
 }
 
 /** The display name's initial, in the provider-glyph tile treatment. */
@@ -108,7 +108,7 @@ function LetterTile({ name, size }: { name: string; size: number }) {
     >
       {name.charAt(0).toUpperCase()}
     </span>
-  );
+  )
 }
 
 /**
@@ -118,9 +118,9 @@ function LetterTile({ name, size }: { name: string; size: number }) {
  * presentation components declare, so it can be passed straight into either.
  */
 export function renderAgentIcon(slug: string, size: number, surface?: AgentSurface): ReactNode {
-  const iconName = agentIconName(slug);
-  const mark = BRAND_MARKS[iconName];
-  const Glyph = glyphFor(surface);
+  const iconName = agentIconName(slug)
+  const mark = BRAND_MARKS[iconName]
+  const Glyph = glyphFor(surface)
   return (
     <span
       // The seam: the registry's icon name for this slug, so artwork can be
@@ -134,11 +134,11 @@ export function renderAgentIcon(slug: string, size: number, surface?: AgentSurfa
     >
       {mark ? (
         <Mark name={iconName} mark={mark} size={size} />
-      ) : iconName === 'generic-agent' ? (
+      ) : iconName === "generic-agent" ? (
         <Glyph size={size} strokeWidth={1.75} aria-hidden="true" />
       ) : (
         <LetterTile name={agentDisplayName(slug)} size={size} />
       )}
     </span>
-  );
+  )
 }

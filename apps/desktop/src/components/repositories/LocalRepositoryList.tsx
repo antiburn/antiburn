@@ -2,52 +2,52 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { FolderSearch, Lock, RefreshCw, Search } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { FolderSearch, Lock, RefreshCw, Search } from "lucide-react"
+import type { ReactNode } from "react"
 
-import type { LocalRepositoryItem, LocalRepositoryStatus } from '../../lib/types/repository';
-import { Tooltip } from '../presentation/Tooltip';
-import { WslOriginBadge } from '../presentation/WslOriginBadge';
-import { PushButton } from '../ui/PushButton';
-import { ScrollPane } from '../ui/ScrollPane';
-import { Skeleton } from '../ui/Skeleton';
-import { ToggleSwitch } from '../ui/ToggleSwitch';
+import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
+import { Tooltip } from "../presentation/Tooltip"
+import { WslOriginBadge } from "../presentation/WslOriginBadge"
+import { PushButton } from "../ui/PushButton"
+import { ScrollPane } from "../ui/ScrollPane"
+import { Skeleton } from "../ui/Skeleton"
+import { ToggleSwitch } from "../ui/ToggleSwitch"
 
 interface RepositoryUndo {
   /** What was just changed, phrased as a completed action. */
-  label: string;
-  onUndo: () => void;
+  label: string
+  onUndo: () => void
 }
 
 export interface LocalRepositoryListProps {
-  repositories: LocalRepositoryItem[];
+  repositories: LocalRepositoryItem[]
   /** Whether a scan is in flight. Shows placeholder rows on the first one. */
-  loading?: boolean;
+  loading?: boolean
   /** Include or ignore one repository. Omitted makes the list read-only. */
-  onToggleRepository?: (item: LocalRepositoryItem, enabled: boolean) => void;
+  onToggleRepository?: (item: LocalRepositoryItem, enabled: boolean) => void
   /** Re-scan for repositories. Omitted hides the control. */
-  onRefresh?: () => void;
+  onRefresh?: () => void
   /** Point the app at a repository it could not find. Omitted hides the control. */
-  onLocate?: (item: LocalRepositoryItem) => void;
+  onLocate?: (item: LocalRepositoryItem) => void
   /** Ask the operating system for access to a blocked repository. */
-  onGrantAccess?: (item: LocalRepositoryItem) => void;
+  onGrantAccess?: (item: LocalRepositoryItem) => void
   /** The last reversible change, shown as a transient bar under the header. */
-  undo?: RepositoryUndo | null;
-  emptyTitle?: string;
-  emptyDescription?: string;
+  undo?: RepositoryUndo | null
+  emptyTitle?: string
+  emptyDescription?: string
   /** Glyph for the WSL-origin badge. */
-  wslIcon?: ReactNode;
+  wslIcon?: ReactNode
 }
 
 const STATUS_NOTE: Record<LocalRepositoryStatus, string | null> = {
   accessible: null,
-  permission_denied: 'Blocked by the system',
-  not_cloned: 'Not on this machine',
+  permission_denied: "Blocked by the system",
+  not_cloned: "Not on this machine",
   disabled: null,
-};
+}
 
 /** How many placeholder rows the first scan shows. */
-const PLACEHOLDER_ROWS = 3;
+const PLACEHOLDER_ROWS = 3
 
 function RepositoryRow({
   item,
@@ -56,23 +56,23 @@ function RepositoryRow({
   onGrantAccess,
   wslIcon,
 }: {
-  item: LocalRepositoryItem;
-  onToggleRepository?: (item: LocalRepositoryItem, enabled: boolean) => void;
-  onLocate?: (item: LocalRepositoryItem) => void;
-  onGrantAccess?: (item: LocalRepositoryItem) => void;
-  wslIcon?: ReactNode;
+  item: LocalRepositoryItem
+  onToggleRepository?: (item: LocalRepositoryItem, enabled: boolean) => void
+  onLocate?: (item: LocalRepositoryItem) => void
+  onGrantAccess?: (item: LocalRepositoryItem) => void
+  wslIcon?: ReactNode
 }) {
-  const blocked = item.status === 'permission_denied';
-  const missing = item.status === 'not_cloned';
-  const path = item.repoRoot ?? item.suspectedPath ?? null;
-  const note = STATUS_NOTE[item.status];
+  const blocked = item.status === "permission_denied"
+  const missing = item.status === "not_cloned"
+  const path = item.repoRoot ?? item.suspectedPath ?? null
+  const note = STATUS_NOTE[item.status]
 
-  const facts: string[] = [];
+  const facts: string[] = []
   if (item.worktreeCount) {
-    facts.push(`${item.worktreeCount} worktree${item.worktreeCount === 1 ? '' : 's'}`);
+    facts.push(`${item.worktreeCount} worktree${item.worktreeCount === 1 ? "" : "s"}`)
   }
   if (item.sessionCount) {
-    facts.push(`${item.sessionCount} session${item.sessionCount === 1 ? '' : 's'}`);
+    facts.push(`${item.sessionCount} session${item.sessionCount === 1 ? "" : "s"}`)
   }
 
   return (
@@ -108,7 +108,7 @@ function RepositoryRow({
 
         {(note || facts.length > 0) && (
           <p className="type-caption text-label-tertiary">
-            {[note, ...facts].filter(Boolean).join(' · ')}
+            {[note, ...facts].filter(Boolean).join(" · ")}
           </p>
         )}
       </div>
@@ -133,7 +133,7 @@ function RepositoryRow({
         )}
       </div>
     </div>
-  );
+  )
 }
 
 /**
@@ -153,11 +153,11 @@ export function LocalRepositoryList({
   onLocate,
   onGrantAccess,
   undo,
-  emptyTitle = 'No repositories found',
-  emptyDescription = 'Repositories appear here once a coding session runs in one, or after a scan finds one on this machine.',
+  emptyTitle = "No repositories found",
+  emptyDescription = "Repositories appear here once a coding session runs in one, or after a scan finds one on this machine.",
   wslIcon,
 }: LocalRepositoryListProps) {
-  const showPlaceholders = loading && repositories.length === 0;
+  const showPlaceholders = loading && repositories.length === 0
 
   return (
     <div className="flex h-full flex-col">
@@ -175,7 +175,7 @@ export function LocalRepositoryList({
               size={12}
               strokeWidth={2}
               aria-hidden="true"
-              className={loading ? 'animate-spin' : undefined}
+              className={loading ? "animate-spin" : undefined}
             />
             <span>Rescan</span>
           </button>
@@ -242,5 +242,5 @@ export function LocalRepositoryList({
         )}
       </ScrollPane>
     </div>
-  );
+  )
 }

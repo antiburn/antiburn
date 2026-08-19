@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ProviderUsagePayload } from '../../lib/ipc';
+import type { ProviderUsagePayload } from "../../lib/ipc"
 import {
   providerWindow,
   sessionCountLabel,
@@ -10,7 +10,7 @@ import {
   usageWindowLabel,
   windowShareOfMonth,
   USAGE_WINDOWS,
-} from '../../lib/presentation/providerUsage';
+} from "../../lib/presentation/providerUsage"
 
 /**
  * The three windows with a bar under each.
@@ -24,16 +24,16 @@ import {
  */
 export function UsageWindowRows({
   provider,
-  className = '',
+  className = "",
 }: {
-  provider: ProviderUsagePayload;
-  className?: string;
+  provider: ProviderUsagePayload
+  className?: string
 }) {
   return (
     <dl className={`space-y-2 ${className}`.trim()}>
       {USAGE_WINDOWS.map(({ value }) => {
-        const window = providerWindow(provider, value);
-        const share = windowShareOfMonth(provider, value);
+        const window = providerWindow(provider, value)
+        const share = windowShareOfMonth(provider, value)
         return (
           <div key={value}>
             <div className="flex items-baseline justify-between gap-3">
@@ -51,7 +51,7 @@ export function UsageWindowRows({
               role="img"
               aria-label={`${usageWindowLabel(value)}: this window's share of the month of local spend shown below it`}
               className="mt-1 w-full overflow-hidden rounded-full"
-              style={{ height: 3, backgroundColor: 'var(--color-separator)' }}
+              style={{ height: 3, backgroundColor: "var(--color-separator)" }}
             >
               <div
                 className="h-full rounded-full"
@@ -61,13 +61,13 @@ export function UsageWindowRows({
                   // accent-fill, not accent: the live macOS system-accent
                   // token breaks as a background-color (see tokens.css); the
                   // -val fallback is the raw palette entry, always emitted.
-                  backgroundColor: 'var(--color-accent-fill, var(--color-accent-fill-val))',
+                  backgroundColor: "var(--color-accent-fill, var(--color-accent-fill-val))",
                 }}
               />
             </div>
           </div>
-        );
+        )
       })}
     </dl>
-  );
+  )
 }

@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronDown } from 'lucide-react';
-import { useId, useState, type ReactNode } from 'react';
+import { ChevronDown } from "lucide-react"
+import { useId, useState, type ReactNode } from "react"
 
 /**
  * A single collapsible disclosure: a full-width header button that reveals its
@@ -22,15 +22,15 @@ export function Disclosure({
   label,
   children,
   defaultOpen = false,
-  className = '',
+  className = "",
 }: {
-  label: string;
-  children: ReactNode;
-  defaultOpen?: boolean;
-  className?: string;
+  label: string
+  children: ReactNode
+  defaultOpen?: boolean
+  className?: string
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const bodyId = useId();
+  const [open, setOpen] = useState(defaultOpen)
+  const bodyId = useId()
 
   return (
     <div className={`border-b border-separator last:border-b-0 ${className}`.trimEnd()}>
@@ -54,7 +54,7 @@ export function Disclosure({
           strokeWidth={2}
           aria-hidden="true"
           className={`shrink-0 text-label-secondary transition-transform duration-[120ms] ease-out ${
-            open ? 'rotate-180' : ''
+            open ? "rotate-180" : ""
           }`.trimEnd()}
         />
       </button>
@@ -66,16 +66,16 @@ export function Disclosure({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 /** A hairline-separated stack of `Disclosure`s. */
 export function DisclosureGroup({
   children,
-  className = '',
+  className = "",
 }: {
-  children: ReactNode;
-  className?: string;
+  children: ReactNode
+  className?: string
 }) {
-  return <div className={`border-t border-separator ${className}`.trimEnd()}>{children}</div>;
+  return <div className={`border-t border-separator ${className}`.trimEnd()}>{children}</div>
 }

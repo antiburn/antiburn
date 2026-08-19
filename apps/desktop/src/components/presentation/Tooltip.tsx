@@ -2,22 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import { useState, type ReactNode } from 'react';
+import * as TooltipPrimitive from "@radix-ui/react-tooltip"
+import { useState, type ReactNode } from "react"
 
 export interface TooltipProps {
   /** Tooltip body. Rich content is allowed — the surface sizes to it. */
-  label: ReactNode;
+  label: ReactNode
   /** The trigger. Must accept a ref and spread props (Radix uses `asChild`). */
-  children: ReactNode;
-  side?: 'top' | 'right' | 'bottom' | 'left';
+  children: ReactNode
+  side?: "top" | "right" | "bottom" | "left"
   /** Hover delay before opening, in milliseconds. */
-  delayMs?: number;
+  delayMs?: number
   /**
    * Also toggle on click, not just hover and focus. For info affordances on
    * small or touch targets, where hover alone is undiscoverable.
    */
-  interactive?: boolean;
+  interactive?: boolean
 }
 
 /**
@@ -31,20 +31,20 @@ export interface TooltipProps {
 export function Tooltip({
   label,
   children,
-  side = 'top',
+  side = "top",
   delayMs = 600,
   interactive = false,
 }: TooltipProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false)
 
-  const rootProps = interactive ? { open, onOpenChange: setOpen } : {};
+  const rootProps = interactive ? { open, onOpenChange: setOpen } : {}
 
   const triggerProps = interactive
     ? {
         onClick: () => setOpen((o) => !o),
         onPointerDown: (event: React.PointerEvent) => event.preventDefault(),
       }
-    : {};
+    : {}
 
   return (
     <TooltipPrimitive.Provider delayDuration={delayMs}>
@@ -64,5 +64,5 @@ export function Tooltip({
         </TooltipPrimitive.Portal>
       </TooltipPrimitive.Root>
     </TooltipPrimitive.Provider>
-  );
+  )
 }

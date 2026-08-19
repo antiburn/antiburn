@@ -2,16 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef } from "react"
 
-import { useExternalSubscription } from './useExternalSubscription';
+import { useExternalSubscription } from "./useExternalSubscription"
 
 export type HoverIntent = {
   /** Replace any pending timer with a new one that runs `run` after `delayMs`. */
-  schedule: (run: () => void, delayMs: number) => void;
+  schedule: (run: () => void, delayMs: number) => void
   /** Clear the pending timer, if any, without running it. */
-  cancel: () => void;
-};
+  cancel: () => void
+}
 
 /**
  * A single pending timer, scoped to one component instance.
@@ -25,31 +25,31 @@ export type HoverIntent = {
  * `onMouseLeave` without them changing every render.
  */
 export function useHoverIntent(): HoverIntent {
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const cancel = useCallback(() => {
     if (timer.current !== null) {
-      clearTimeout(timer.current);
-      timer.current = null;
+      clearTimeout(timer.current)
+      timer.current = null
     }
-  }, []);
+  }, [])
 
   const schedule = useCallback(
     (run: () => void, delayMs: number) => {
-      cancel();
+      cancel()
       timer.current = setTimeout(() => {
-        timer.current = null;
-        run();
-      }, delayMs);
+        timer.current = null
+        run()
+      }, delayMs)
     },
     [cancel],
-  );
+  )
 
   // Unmount cleanup, via the sanctioned lifecycle primitive rather than an
   // effect: subscribe attaches nothing (there is nothing to listen to — the
   // timer is driven entirely by `schedule`/`cancel`) and its cleanup is
   // exactly `cancel`, run when the component goes away.
-  useExternalSubscription(useCallback(() => cancel, [cancel]));
+  useExternalSubscription(useCallback(() => cancel, [cancel]))
 
-  return { schedule, cancel };
+  return { schedule, cancel }
 }

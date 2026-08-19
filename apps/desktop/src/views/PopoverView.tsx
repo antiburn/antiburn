@@ -2,30 +2,30 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from "react"
 
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from "lucide-react"
 
-import { LocalActivityList } from '../components/activity/LocalActivityList';
-import type { LocalActivityEntry } from '../components/activity/LocalActivityList';
-import { ProviderUsageCluster } from '../components/providerUsage';
-import { Banner } from '../components/ui/Banner';
-import { Skeleton } from '../components/ui/Skeleton';
-import { renderAgentIcon } from '../lib/agentIcon';
-import { indexOfSession } from '../lib/activityEntries';
-import { attentionBanners } from '../lib/attention';
-import { DEFAULT_SETTINGS, openSettingsWindow } from '../lib/ipc';
-import type { PopoverSurface } from '../lib/popoverHeight';
-import { PopoverSession, sessionKey } from './popover/PopoverSession';
-import { UsageView } from './popover/UsageView';
-import type { SessionSubject } from './popover/SessionPane';
+import { LocalActivityList } from "../components/activity/LocalActivityList"
+import type { LocalActivityEntry } from "../components/activity/LocalActivityList"
+import { ProviderUsageCluster } from "../components/providerUsage"
+import { Banner } from "../components/ui/Banner"
+import { Skeleton } from "../components/ui/Skeleton"
+import { renderAgentIcon } from "../lib/agentIcon"
+import { indexOfSession } from "../lib/activityEntries"
+import { attentionBanners } from "../lib/attention"
+import { DEFAULT_SETTINGS, openSettingsWindow } from "../lib/ipc"
+import type { PopoverSurface } from "../lib/popoverHeight"
+import { PopoverSession, sessionKey } from "./popover/PopoverSession"
+import { UsageView } from "./popover/UsageView"
+import type { SessionSubject } from "./popover/SessionPane"
 
 // Session analytics pulls in the charting library and a substantial set of
 // presentation components. Keep it out of the activity surface's initial
 // chunk; opening a session is the only action that needs this code.
 const SessionPane = lazy(() =>
-  import('./popover/SessionPane').then(({ SessionPane: pane }) => ({ default: pane })),
-);
+  import("./popover/SessionPane").then(({ SessionPane: pane }) => ({ default: pane })),
+)
 
 /**
  * The tray popover.
@@ -77,7 +77,7 @@ function ActivitySkeleton() {
         </div>
       ))}
     </div>
-  );
+  )
 }
 
 /** Placeholder while the session analytics chunk is fetched on first open. */
@@ -93,26 +93,26 @@ function SessionPaneLoading() {
         <Skeleton className="h-24 w-full" />
       </div>
     </div>
-  );
+  )
 }
 
 export function PopoverView() {
-  const [session] = useState(() => new PopoverSession());
+  const [session] = useState(() => new PopoverSession())
   const state = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
-  );
+  )
 
-  const current = state.stack.at(-1) ?? null;
-  const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
+  const current = state.stack.at(-1) ?? null
+  const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
 
   /* ---------------------------------------------------------------------
    * Window behaviour: which surface is showing, and focus on the way in
    * ------------------------------------------------------------------ */
 
   const surface: PopoverSurface =
-    state.showUsage && state.usage ? 'usage' : current ? 'session' : 'activity';
+    state.showUsage && state.usage ? "usage" : current ? "session" : "activity"
 
   // Conditional render swaps the whole surface; without this, focus is left
   // on <body> and a keyboard or screen-reader user has to walk back in from
@@ -121,18 +121,18 @@ export function PopoverView() {
   // ref callback fire again — a ref on a node that never remounts would only
   // ever run once.
   const focusHeading = useCallback((node: HTMLDivElement | null) => {
-    node?.querySelector<HTMLElement>('[data-view-heading]')?.focus();
-  }, []);
+    node?.querySelector<HTMLElement>("[data-view-heading]")?.focus()
+  }, [])
 
   /* ---------------------------------------------------------------------
    * Session analytics: derived from the session's tagged load result
    * ------------------------------------------------------------------ */
 
-  const currentKey = current ? sessionKey(current) : null;
-  const settledAnalytics = state.analytics?.key === currentKey ? state.analytics : null;
-  const sessionPayload = settledAnalytics?.payload ?? null;
-  const sessionLoading = current != null && settledAnalytics == null;
-  const sessionError = settledAnalytics?.error ?? false;
+  const currentKey = current ? sessionKey(current) : null
+  const settledAnalytics = state.analytics?.key === currentKey ? state.analytics : null
+  const sessionPayload = settledAnalytics?.payload ?? null
+  const sessionLoading = current != null && settledAnalytics == null
+  const sessionError = settledAnalytics?.error ?? false
 
   /* ---------------------------------------------------------------------
    * Attention banners
@@ -141,17 +141,17 @@ export function PopoverView() {
   const banners = attentionBanners({
     repositories: state.repositories,
     storage: state.storage,
-  }).filter((banner) => !state.dismissed.includes(banner.id));
+  }).filter((banner) => !state.dismissed.includes(banner.id))
 
   const subjectFor = (entry: LocalActivityEntry): SessionSubject => {
     return {
       agent: entry.agent,
-      sessionId: entry.sessionId ?? '',
+      sessionId: entry.sessionId ?? "",
       wslDistro: entry.wslDistro ?? null,
       ...(entry.title ? { title: entry.title } : {}),
       isActive: entry.isActive,
-    };
-  };
+    }
+  }
 
   /* ---------------------------------------------------------------------
    * Surfaces
@@ -167,7 +167,7 @@ export function PopoverView() {
           live={state.liveUsage}
           onBack={() => session.setShowUsage(false)}
         />
-      );
+      )
     }
 
     if (current) {
@@ -180,12 +180,12 @@ export function PopoverView() {
             current.agent,
             current.sessionId,
             current.wslDistro,
-          );
+          )
       const neighbour = (offset: number) => {
-        const entry = position >= 0 ? state.entries?.[position + offset] : undefined;
-        if (!entry?.sessionId) return undefined;
-        return () => session.replaceTop(subjectFor(entry));
-      };
+        const entry = position >= 0 ? state.entries?.[position + offset] : undefined
+        if (!entry?.sessionId) return undefined
+        return () => session.replaceTop(subjectFor(entry))
+      }
 
       return (
         <Suspense fallback={<SessionPaneLoading />}>
@@ -201,7 +201,7 @@ export function PopoverView() {
             onDeleted={session.sessionDeleted}
           />
         </Suspense>
-      );
+      )
     }
 
     return (
@@ -221,11 +221,11 @@ export function PopoverView() {
                 message={banner.message}
                 actionLabel={banner.actionLabel}
                 onAction={() => {
-                  if (banner.action.kind === 'rescan') {
-                    void session.rescan();
-                    return;
+                  if (banner.action.kind === "rescan") {
+                    void session.rescan()
+                    return
                   }
-                  void openSettingsWindow(banner.action.pane);
+                  void openSettingsWindow(banner.action.pane)
                 }}
                 onDismiss={() => session.dismissBanner(banner.id)}
                 dismissLabel={banner.dismissLabel}
@@ -243,10 +243,10 @@ export function PopoverView() {
               days={windowDays}
               // The affordance sits on the day-range label, so it lands on the
               // pane that owns "Show the last" rather than the last-open pane.
-              onOpenSettings={() => void openSettingsWindow('general')}
+              onOpenSettings={() => void openSettingsWindow("general")}
               onOpenSession={(entry) => {
-                if (!entry.sessionId) return;
-                session.openSession(subjectFor(entry));
+                if (!entry.sessionId) return
+                session.openSession(subjectFor(entry))
               }}
               renderAgentIcon={renderAgentIcon}
             />
@@ -260,12 +260,12 @@ export function PopoverView() {
           onOpenSettings={() => void openSettingsWindow()}
         />
       </div>
-    );
+    )
   }
 
   return (
     <div key={surface} ref={focusHeading} className="h-full">
       {body()}
     </div>
-  );
+  )
 }

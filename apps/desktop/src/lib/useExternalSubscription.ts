@@ -2,18 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from "react"
 
 // A constant snapshot: this hook exists purely for the subscribe/unsubscribe
 // lifecycle React runs around `useSyncExternalStore`, not for the value it
 // reads. Returning the same literal on every call means the "did the
 // snapshot change" check is always false, so nothing here ever re-renders.
-const CONSTANT_SNAPSHOT = 0;
+const CONSTANT_SNAPSHOT = 0
 function getSnapshot(): number {
-  return CONSTANT_SNAPSHOT;
+  return CONSTANT_SNAPSHOT
 }
 function getServerSnapshot(): number {
-  return CONSTANT_SNAPSHOT;
+  return CONSTANT_SNAPSHOT
 }
 
 /**
@@ -37,5 +37,5 @@ function getServerSnapshot(): number {
  * and is the same tradeoff `useEffect`'s dependency array makes.
  */
 export function useExternalSubscription(subscribe: () => () => void): void {
-  useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
 }

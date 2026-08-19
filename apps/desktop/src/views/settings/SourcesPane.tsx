@@ -2,22 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { FolderPlus, RefreshCw, X } from 'lucide-react';
-import { useCallback, useState, useSyncExternalStore } from 'react';
+import { FolderPlus, RefreshCw, X } from "lucide-react"
+import { useCallback, useState, useSyncExternalStore } from "react"
 
-import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
-import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
-import { Card } from '../../components/ui/Card';
-import { PaneHeader } from '../../components/ui/Pane';
-import { PushButton } from '../../components/ui/PushButton';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { StatusText } from '../../components/ui/StatusText';
-import { openFolderAccessSettings, scanNow } from '../../lib/ipc';
-import { scanStatusStore } from '../../lib/scanStatusStore';
-import type { LocalRepositoryItem } from '../../lib/types/repository';
-import { useFolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
-import { scanStatusLabel } from '../popover/ScanStatusBar';
-import { SourcesSession } from './SourcesSession';
+import { FolderPermissionNotice } from "../../components/repositories/FolderPermissionNotice"
+import { LocalRepositoryList } from "../../components/repositories/LocalRepositoryList"
+import { Card } from "../../components/ui/Card"
+import { PaneHeader } from "../../components/ui/Pane"
+import { PushButton } from "../../components/ui/PushButton"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { StatusText } from "../../components/ui/StatusText"
+import { openFolderAccessSettings, scanNow } from "../../lib/ipc"
+import { scanStatusStore } from "../../lib/scanStatusStore"
+import type { LocalRepositoryItem } from "../../lib/types/repository"
+import { useFolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
+import { scanStatusLabel } from "../popover/ScanStatusBar"
+import { SourcesSession } from "./SourcesSession"
 
 /**
  * Sources: which repositories antiburn watches, and where it looks for them.
@@ -34,51 +34,51 @@ import { SourcesSession } from './SourcesSession';
  */
 
 export interface SourcesPaneProps {
-  discoveryPaused: boolean;
+  discoveryPaused: boolean
 }
 
 export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
-  const [session] = useState(() => new SourcesSession());
+  const [session] = useState(() => new SourcesSession())
   const { repositories, scanRoots, permissions, scanning } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
-  );
+  )
   const scanStatus = useSyncExternalStore(
     scanStatusStore.subscribe,
     scanStatusStore.getSnapshot,
-  );
+  )
 
   const handleRescanSessions = useCallback(async () => {
-    const status = await scanNow().catch(() => null);
-    if (status) scanStatusStore.set(status);
-  }, []);
+    const status = await scanNow().catch(() => null)
+    if (status) scanStatusStore.set(status)
+  }, [])
 
   // Granting is the one path that can add repositories the reader is waiting
   // for, so each grant refreshes the list rather than making them wait for the
   // whole queue.
   const permissionFlow = useFolderPermissionFlow(permissions.deferred, () => {
-    void session.refresh();
-  });
-  const [rechecking, setRechecking] = useState(false);
+    void session.refresh()
+  })
+  const [rechecking, setRechecking] = useState(false)
 
   const handleRecheck = useCallback(async () => {
-    setRechecking(true);
-    await session.recheck();
-    setRechecking(false);
-  }, [session]);
+    setRechecking(true)
+    await session.recheck()
+    setRechecking(false)
+  }, [session])
 
-  const handleCopyDiagnostics = useCallback(() => session.copyDiagnostics(), [session]);
+  const handleCopyDiagnostics = useCallback(() => session.copyDiagnostics(), [session])
 
   const handleToggle = useCallback(
     (item: LocalRepositoryItem, enabled: boolean) => session.toggleRepository(item, enabled),
     [session],
-  );
+  )
 
-  const handleLocate = useCallback(() => session.locate(), [session]);
+  const handleLocate = useCallback(() => session.locate(), [session])
 
-  const handleRemoveRoot = useCallback((path: string) => session.removeRoot(path), [session]);
+  const handleRemoveRoot = useCallback((path: string) => session.removeRoot(path), [session])
 
-  const handleRefresh = useCallback(() => session.refresh(), [session]);
+  const handleRefresh = useCallback(() => session.refresh(), [session])
 
   return (
     <>
@@ -119,7 +119,7 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
                 onClick={() => void handleRescanSessions()}
               >
                 <RefreshCw size={12} aria-hidden="true" />
-                {scanStatus?.running ? 'Scanning…' : 'Rescan'}
+                {scanStatus?.running ? "Scanning…" : "Rescan"}
               </PushButton>
             </div>
           </Card>
@@ -130,8 +130,8 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
           trailing={
             <StatusText tone="secondary">
               {scanRoots.length === 0
-                ? 'Defaults only'
-                : `${scanRoots.length} extra ${scanRoots.length === 1 ? 'folder' : 'folders'}`}
+                ? "Defaults only"
+                : `${scanRoots.length} extra ${scanRoots.length === 1 ? "folder" : "folders"}`}
             </StatusText>
           }
         >
@@ -185,5 +185,5 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
         </SectionGroup>
       </div>
     </>
-  );
+  )
 }

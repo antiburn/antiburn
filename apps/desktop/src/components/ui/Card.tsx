@@ -2,16 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ReactNode } from 'react';
+import type { ReactNode } from "react"
 
 /** Grouped, divided, bordered container. Children are laid out as edge-to-edge
  *  rows separated by hairlines — pair with `Row` / `ToggleRow`. */
 export function Card({
   children,
-  className = '',
+  className = "",
 }: {
-  children: ReactNode;
-  className?: string;
+  children: ReactNode
+  className?: string
 }) {
   return (
     <div
@@ -19,5 +19,5 @@ export function Card({
     >
       {children}
     </div>
-  );
+  )
 }

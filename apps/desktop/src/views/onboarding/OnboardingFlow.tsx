@@ -2,28 +2,24 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Check, FolderPlus, Lock, X } from 'lucide-react';
+import { Check, FolderPlus, Lock, X } from "lucide-react"
 
-import appIcon from '../../assets/app-icon.png';
-import { useState } from 'react';
+import appIcon from "../../assets/app-icon.png"
+import { useState } from "react"
 
-import { isMacOS } from '../../lib/platform';
+import { isMacOS } from "../../lib/platform"
 
-import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
-import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
-import { Card } from '../../components/ui/Card';
-import { PushButton } from '../../components/ui/PushButton';
-import { ScrollPane } from '../../components/ui/ScrollPane';
-import { SegmentedControl } from '../../components/ui/SegmentedControl';
-import { ToggleRow } from '../../components/ui/ToggleRow';
-import {
-  getConsentDiagnostics,
-  openFolderAccessSettings,
-  type ScanStatus,
-} from '../../lib/ipc';
-import type { FolderPermissions } from '../../lib/types/repository';
-import type { FolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
-import type { LocalRepositoryItem } from '../../lib/types/repository';
+import { FolderPermissionNotice } from "../../components/repositories/FolderPermissionNotice"
+import { LocalRepositoryList } from "../../components/repositories/LocalRepositoryList"
+import { Card } from "../../components/ui/Card"
+import { PushButton } from "../../components/ui/PushButton"
+import { ScrollPane } from "../../components/ui/ScrollPane"
+import { SegmentedControl } from "../../components/ui/SegmentedControl"
+import { ToggleRow } from "../../components/ui/ToggleRow"
+import { getConsentDiagnostics, openFolderAccessSettings, type ScanStatus } from "../../lib/ipc"
+import type { FolderPermissions } from "../../lib/types/repository"
+import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
+import type { LocalRepositoryItem } from "../../lib/types/repository"
 
 /**
  * First run, in five screens: Welcome, Sources, Repositories, Historical scan,
@@ -57,79 +53,79 @@ import type { LocalRepositoryItem } from '../../lib/types/repository';
 
 export interface OnboardingFlowProps {
   /** Directories the engine searches without being asked. */
-  defaultRoots: readonly string[];
+  defaultRoots: readonly string[]
   /**
    * Default roots the operating system is still guarding, so the step can say
    * "needs permission" rather than ticking a folder nothing has read.
    */
-  blockedRoots: readonly string[];
+  blockedRoots: readonly string[]
   /** Which protected folders need permission, and which already have it. */
-  permissions: FolderPermissions;
+  permissions: FolderPermissions
   /** The sequential request flow the notice drives. */
-  permissionFlow: FolderPermissionFlow;
+  permissionFlow: FolderPermissionFlow
   /** Look for access granted in System Settings, and refresh what it changed. */
-  onRecheckPermissions: () => void;
+  onRecheckPermissions: () => void
   /** Whether that re-check is in flight. */
-  recheckingPermissions: boolean;
+  recheckingPermissions: boolean
   /** Extra directories the reader has added so far. */
-  scanRoots: readonly string[];
+  scanRoots: readonly string[]
   /** Open a directory picker and add the result. */
-  onAddScanRoot: () => void;
-  onRemoveScanRoot: (path: string) => void;
+  onAddScanRoot: () => void
+  onRemoveScanRoot: (path: string) => void
   /** Repositories the first discovery pass found. */
-  repositories: readonly LocalRepositoryItem[];
+  repositories: readonly LocalRepositoryItem[]
   /** Include or ignore one repository. */
-  onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void;
+  onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void
   /** Run a discovery pass. Called when a step needs fresh results. */
-  onDiscover: () => void;
+  onDiscover: () => void
   /** Stop the pass in flight. */
-  onCancelScan: () => void;
+  onCancelScan: () => void
   /** The shell's scan status, or null before the first read. */
-  scanStatus: ScanStatus | null;
+  scanStatus: ScanStatus | null
   /** How many days of history the popover will list. */
-  windowDays: number;
-  onWindowDaysChange: (days: number) => void;
+  windowDays: number
+  onWindowDaysChange: (days: number) => void
   /** Whether the installed app should start after the reader signs in. */
-  launchAtLogin: boolean;
-  onLaunchAtLoginChange: (enabled: boolean) => void;
+  launchAtLogin: boolean
+  onLaunchAtLoginChange: (enabled: boolean) => void
   /** Finish: records the flag and enters the activity view. */
-  onFinish: () => void;
-  finishing: boolean;
-  finishError: string | null;
+  onFinish: () => void
+  finishing: boolean
+  finishError: string | null
 }
 
-const STEPS = ['welcome', 'sources', 'repositories', 'scan', 'ready'] as const;
-type Step = (typeof STEPS)[number];
+const STEPS = ["welcome", "sources", "repositories", "scan", "ready"] as const
+type Step = (typeof STEPS)[number]
 
 /** Steps that want a discovery pass to have run by the time they are read. */
-const STEPS_NEEDING_DISCOVERY: readonly Step[] = ['repositories', 'scan'];
+const STEPS_NEEDING_DISCOVERY: readonly Step[] = ["repositories", "scan"]
 
 /** The two recent-activity windows the popover offers. They affect the list,
  *  not how long indexed sessions remain stored. */
 const WINDOW_OPTIONS = [
-  { value: '7', label: '7 days' },
-  { value: '14', label: '14 days' },
-] as const;
+  { value: "7", label: "7 days" },
+  { value: "14", label: "14 days" },
+] as const
 
 /** A newly mounted step announces itself without a lifecycle effect. */
 function focusHeading(heading: HTMLHeadingElement | null): void {
-  heading?.focus();
+  heading?.focus()
 }
 
 function StepDots({ step }: { step: Step }) {
-  const index = STEPS.indexOf(step);
+  const index = STEPS.indexOf(step)
   return (
     <div className="flex items-center justify-center gap-1.5" aria-hidden="true">
       {STEPS.map((name, position) => (
         <span
           key={name}
           className={`h-1.5 w-1.5 rounded-full transition-colors ${
-            position === index ? 'bg-label-secondary' : 'bg-label/20'
+            position === index ? "bg-label-secondary" : "bg-label/20"
           }`}
         />
       ))}
     </div>
-  );
+  )
 }
 
 /**
@@ -139,7 +135,7 @@ function StepDots({ step }: { step: Step }) {
  * at that measure reads as a banner rather than a paragraph, so the centred
  * screens keep roughly the column they were written for.
  */
-const CENTRED_COLUMN = 'mx-auto flex max-w-[440px] flex-col items-center';
+const CENTRED_COLUMN = "mx-auto flex max-w-[440px] flex-col items-center"
 
 function Welcome() {
   return (
@@ -176,7 +172,7 @@ function Welcome() {
         </p>
       </div>
     </div>
-  );
+  )
 }
 
 function Sources({
@@ -184,8 +180,8 @@ function Sources({
   blockedRoots,
   scanRoots,
   onRemoveScanRoot,
-}: Pick<OnboardingFlowProps, 'defaultRoots' | 'scanRoots' | 'onRemoveScanRoot'> & {
-  blockedRoots: readonly string[];
+}: Pick<OnboardingFlowProps, "defaultRoots" | "scanRoots" | "onRemoveScanRoot"> & {
+  blockedRoots: readonly string[]
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
@@ -201,14 +197,14 @@ function Sources({
         {defaultRoots.length > 0 && (
           <>
             <p className="pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
-              {blockedRoots.length > 0 ? 'Default folders' : 'Searched already'}
+              {blockedRoots.length > 0 ? "Default folders" : "Searched already"}
             </p>
             <ul className="space-y-0.5 pb-3">
               {defaultRoots.map((root) => {
                 // A default root inside a folder macOS is still guarding has
                 // *not* been searched. Ticking it here would be the one lie
                 // this step could tell.
-                const blocked = blockedRoots.includes(root);
+                const blocked = blockedRoots.includes(root)
                 return (
                   <li key={root} className="flex items-center gap-1.5">
                     {blocked ? (
@@ -238,7 +234,7 @@ function Sources({
                       </span>
                     ) : null}
                   </li>
-                );
+                )
               })}
             </ul>
           </>
@@ -273,7 +269,7 @@ function Sources({
         )}
       </ScrollPane>
     </div>
-  );
+  )
 }
 
 /**
@@ -285,13 +281,13 @@ function Sources({
  * footer it sits where the reader's hand already is, next to Continue, and the
  * step's body is nothing but the list it is about.
  */
-function AddFolderButton({ onAddScanRoot }: Pick<OnboardingFlowProps, 'onAddScanRoot'>) {
+function AddFolderButton({ onAddScanRoot }: Pick<OnboardingFlowProps, "onAddScanRoot">) {
   return (
     <PushButton className="gap-1.5" onClick={onAddScanRoot}>
       <FolderPlus size={12} aria-hidden="true" />
       Add a folder…
     </PushButton>
-  );
+  )
 }
 
 /**
@@ -310,13 +306,13 @@ function Repositories({
   onRecheckPermissions,
   recheckingPermissions,
 }: {
-  repositories: readonly LocalRepositoryItem[];
-  onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void;
-  scanning: boolean;
-  permissions: FolderPermissions;
-  permissionFlow: FolderPermissionFlow;
-  onRecheckPermissions: () => void;
-  recheckingPermissions: boolean;
+  repositories: readonly LocalRepositoryItem[]
+  onToggleRepository: (item: LocalRepositoryItem, enabled: boolean) => void
+  scanning: boolean
+  permissions: FolderPermissions
+  permissionFlow: FolderPermissionFlow
+  onRecheckPermissions: () => void
+  recheckingPermissions: boolean
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
@@ -345,9 +341,9 @@ function Repositories({
                 navigator.clipboard.writeText(
                   probes
                     .map((probe) => `${probe.outcome}\t${probe.elapsedMs}ms\t${probe.target}`)
-                    .join('\n') || 'No folder-access probes this run.',
+                    .join("\n") || "No folder-access probes this run.",
                 ),
-              );
+              )
             }}
           />
         </div>
@@ -362,7 +358,7 @@ function Repositories({
         />
       </div>
     </div>
-  );
+  )
 }
 
 /**
@@ -381,10 +377,10 @@ function HistoricalScan({
   onCancelScan,
 }: Pick<
   OnboardingFlowProps,
-  'scanStatus' | 'windowDays' | 'onWindowDaysChange' | 'onDiscover' | 'onCancelScan'
+  "scanStatus" | "windowDays" | "onWindowDaysChange" | "onDiscover" | "onCancelScan"
 >) {
-  const running = scanStatus?.running ?? false;
-  const found = scanStatus?.sessions ?? 0;
+  const running = scanStatus?.running ?? false
+  const found = scanStatus?.sessions ?? 0
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-8 pt-2">
@@ -401,7 +397,7 @@ function HistoricalScan({
       <SegmentedControl
         className="mt-3 w-full max-w-[280px]"
         options={WINDOW_OPTIONS}
-        value={String(windowDays) === '14' ? '14' : '7'}
+        value={String(windowDays) === "14" ? "14" : "7"}
         onChange={(days) => onWindowDaysChange(Number(days))}
         ariaLabel="How much history to list"
         equalWidth
@@ -411,11 +407,11 @@ function HistoricalScan({
         {running ? (
           <>
             <p className="type-callout text-label">
-              Scanning… {scanStatus?.completedAgents ?? 0} of {scanStatus?.totalAgents ?? 0}{' '}
+              Scanning… {scanStatus?.completedAgents ?? 0} of {scanStatus?.totalAgents ?? 0}{" "}
               agents
             </p>
             <p className="mt-1 type-footnote text-label-secondary">
-              {found} {found === 1 ? 'session' : 'sessions'} so far. Session files are read,
+              {found} {found === 1 ? "session" : "sessions"} so far. Session files are read,
               never written.
             </p>
           </>
@@ -428,14 +424,14 @@ function HistoricalScan({
           <>
             <p className="type-callout text-label">Stopped.</p>
             <p className="mt-1 type-footnote text-label-secondary">
-              {found} {found === 1 ? 'session' : 'sessions'} were indexed before it stopped. You
+              {found} {found === 1 ? "session" : "sessions"} were indexed before it stopped. You
               can continue and scan again later.
             </p>
           </>
         ) : scanStatus?.finishedAt ? (
           <>
             <p className="type-callout text-label">
-              Found {found} {found === 1 ? 'session' : 'sessions'}.
+              Found {found} {found === 1 ? "session" : "sessions"}.
             </p>
             <p className="mt-1 type-footnote text-label-secondary">
               antiburn keeps looking in the background while you use it.
@@ -454,7 +450,7 @@ function HistoricalScan({
         )}
       </div>
     </div>
-  );
+  )
 }
 
 function Ready({
@@ -463,10 +459,10 @@ function Ready({
   onLaunchAtLoginChange,
   finishError,
 }: {
-  sessions: number;
-  launchAtLogin: boolean;
-  onLaunchAtLoginChange: (enabled: boolean) => void;
-  finishError: string | null;
+  sessions: number
+  launchAtLogin: boolean
+  onLaunchAtLoginChange: (enabled: boolean) => void
+  finishError: string | null
 }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
@@ -479,8 +475,8 @@ function Ready({
         </h2>
         <p className="mt-2 text-balance type-callout text-label-secondary">
           {sessions > 0
-            ? `${sessions} ${sessions === 1 ? 'session is' : 'sessions are'} indexed and waiting in the menu bar.`
-            : 'Nothing is indexed yet — antiburn keeps looking in the background as you work.'}
+            ? `${sessions} ${sessions === 1 ? "session is" : "sessions are"} indexed and waiting in the menu bar.`
+            : "Nothing is indexed yet — antiburn keeps looking in the background as you work."}
         </p>
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
           Session files are read only; your repositories are never modified.
@@ -500,7 +496,7 @@ function Ready({
         ) : null}
       </div>
     </div>
-  );
+  )
 }
 
 /** The first-run flow. See the module comment for its rhythm and its one
@@ -528,26 +524,26 @@ export function OnboardingFlow({
   finishing,
   finishError,
 }: OnboardingFlowProps) {
-  const [step, setStep] = useState<Step>('welcome');
-  const [discoveryRequested, setDiscoveryRequested] = useState(false);
-  const index = STEPS.indexOf(step);
-  const last = index === STEPS.length - 1;
-  const discovered = scanStatus?.finishedAt != null;
-  const running = scanStatus?.running ?? false;
+  const [step, setStep] = useState<Step>("welcome")
+  const [discoveryRequested, setDiscoveryRequested] = useState(false)
+  const index = STEPS.indexOf(step)
+  const last = index === STEPS.length - 1
+  const discovered = scanStatus?.finishedAt != null
+  const running = scanStatus?.running ?? false
 
   const advance = () => {
-    const next = STEPS[index + 1] ?? 'ready';
+    const next = STEPS[index + 1] ?? "ready"
     if (
       STEPS_NEEDING_DISCOVERY.includes(next) &&
       !discovered &&
       !running &&
       !discoveryRequested
     ) {
-      setDiscoveryRequested(true);
-      onDiscover();
+      setDiscoveryRequested(true)
+      onDiscover()
     }
-    setStep(next);
-  };
+    setStep(next)
+  }
 
   return (
     <div className="relative flex h-full flex-col" aria-label="Set up antiburn" role="region">
@@ -572,7 +568,7 @@ export function OnboardingFlow({
           title bar, by the app icon on the Welcome step, and by every step's
           own heading. Windows and Linux keep the native bar and show it. */}
       <header className="flex h-11 shrink-0 items-center px-4">
-        <h1 className={`type-headline text-label ${isMacOS() ? 'sr-only' : ''}`}>antiburn</h1>
+        <h1 className={`type-headline text-label ${isMacOS() ? "sr-only" : ""}`}>antiburn</h1>
         {/* The step is announced as text rather than left to the dots, which
             are decorative and hidden. */}
         <p className="sr-only" aria-live="polite">
@@ -581,8 +577,8 @@ export function OnboardingFlow({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {step === 'welcome' && <Welcome />}
-        {step === 'sources' && (
+        {step === "welcome" && <Welcome />}
+        {step === "sources" && (
           <Sources
             defaultRoots={defaultRoots}
             blockedRoots={blockedRoots}
@@ -590,7 +586,7 @@ export function OnboardingFlow({
             onRemoveScanRoot={onRemoveScanRoot}
           />
         )}
-        {step === 'repositories' && (
+        {step === "repositories" && (
           <Repositories
             repositories={repositories}
             onToggleRepository={onToggleRepository}
@@ -601,7 +597,7 @@ export function OnboardingFlow({
             recheckingPermissions={recheckingPermissions}
           />
         )}
-        {step === 'scan' && (
+        {step === "scan" && (
           <HistoricalScan
             scanStatus={scanStatus}
             windowDays={windowDays}
@@ -610,7 +606,7 @@ export function OnboardingFlow({
             onCancelScan={onCancelScan}
           />
         )}
-        {step === 'ready' && (
+        {step === "ready" && (
           <Ready
             sessions={scanStatus?.sessions ?? 0}
             launchAtLogin={launchAtLogin}
@@ -623,23 +619,23 @@ export function OnboardingFlow({
       <footer className="flex shrink-0 items-center gap-2 border-t border-separator px-4 py-3">
         <div className="flex-1">
           {index > 0 && (
-            <PushButton onClick={() => setStep(STEPS[index - 1] ?? 'welcome')}>Back</PushButton>
+            <PushButton onClick={() => setStep(STEPS[index - 1] ?? "welcome")}>Back</PushButton>
           )}
         </div>
         <StepDots step={step} />
         <div className="flex flex-1 items-center justify-end gap-2">
           {/* Left of Continue, so the ordinary way forward stays the rightmost
               button on every step. */}
-          {step === 'sources' && <AddFolderButton onAddScanRoot={onAddScanRoot} />}
+          {step === "sources" && <AddFolderButton onAddScanRoot={onAddScanRoot} />}
           <PushButton
             variant="primary"
             onClick={() => (last ? onFinish() : advance())}
             disabled={last && finishing}
           >
-            {last ? (finishing ? 'Finishing…' : 'Start using antiburn') : 'Continue'}
+            {last ? (finishing ? "Finishing…" : "Start using antiburn") : "Continue"}
           </PushButton>
         </div>
       </footer>
     </div>
-  );
+  )
 }

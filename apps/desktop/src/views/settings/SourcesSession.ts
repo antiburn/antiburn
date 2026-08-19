@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { open } from '@tauri-apps/plugin-dialog';
+import { open } from "@tauri-apps/plugin-dialog"
 
 import {
   addScanRoot,
@@ -15,37 +15,37 @@ import {
   removeScanRoot,
   setRepositoryEnabled,
   type RepositoryItemPayload,
-} from '../../lib/ipc';
+} from "../../lib/ipc"
 import type {
   FolderPermissions,
   LocalRepositoryItem,
   LocalRepositoryStatus,
-} from '../../lib/types/repository';
+} from "../../lib/types/repository"
 
 const EMPTY_PERMISSIONS: FolderPermissions = {
   deferred: [],
   granted: [],
   supported: false,
-};
+}
 
 export type SourcesSnapshot = {
-  repositories: LocalRepositoryItem[];
-  scanRoots: string[];
-  permissions: FolderPermissions;
+  repositories: LocalRepositoryItem[]
+  scanRoots: string[]
+  permissions: FolderPermissions
   /** True while the repository list is being (re)built from disk. */
-  scanning: boolean;
-};
+  scanning: boolean
+}
 
 /** Narrow the shell's status string to the list's union. */
 function statusOf(payload: RepositoryItemPayload): LocalRepositoryStatus {
   switch (payload.status) {
-    case 'accessible':
-    case 'permission_denied':
-    case 'not_cloned':
-    case 'disabled':
-      return payload.status;
+    case "accessible":
+    case "permission_denied":
+    case "not_cloned":
+    case "disabled":
+      return payload.status
     default:
-      return 'accessible';
+      return "accessible"
   }
 }
 
@@ -61,7 +61,7 @@ function toItems(payloads: readonly RepositoryItemPayload[]): LocalRepositoryIte
     sessionCount: payload.sessionCount,
     wslDistro: payload.wslDistro,
     enabled: payload.enabled,
-  }));
+  }))
 }
 
 /**
@@ -75,27 +75,27 @@ function toItems(payloads: readonly RepositoryItemPayload[]): LocalRepositoryIte
  * time here would just be two listeners racing to report the same events.
  */
 export class SourcesSession {
-  private listeners = new Set<() => void>();
-  private started = false;
-  private generation = 0;
+  private listeners = new Set<() => void>()
+  private started = false
+  private generation = 0
 
   private snapshot: SourcesSnapshot = {
     repositories: [],
     scanRoots: [],
     permissions: EMPTY_PERMISSIONS,
     scanning: true,
-  };
+  }
 
-  getSnapshot = (): SourcesSnapshot => this.snapshot;
+  getSnapshot = (): SourcesSnapshot => this.snapshot
 
   subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener);
-    if (!this.started) void this.start();
+    this.listeners.add(listener)
+    if (!this.started) void this.start()
     return () => {
-      this.listeners.delete(listener);
-      if (this.listeners.size === 0) this.stop();
-    };
-  };
+      this.listeners.delete(listener)
+      if (this.listeners.size === 0) this.stop()
+    }
+  }
 
   /**
    * Re-derive the repository list from what is on disk right now.
@@ -105,23 +105,23 @@ export class SourcesSession {
    * permissions read too.
    */
   refresh = async (): Promise<void> => {
-    this.update({ scanning: true });
-    const repos = await refreshRepositories().catch(() => []);
-    this.update({ repositories: toItems(repos), scanning: false });
-    await this.loadPermissions();
-  };
+    this.update({ scanning: true })
+    const repos = await refreshRepositories().catch(() => [])
+    this.update({ repositories: toItems(repos), scanning: false })
+    await this.loadPermissions()
+  }
 
   loadPermissions = async (): Promise<void> => {
-    const next = await getFolderPermissions().catch(() => null);
-    if (next) this.update({ permissions: next });
-  };
+    const next = await getFolderPermissions().catch(() => null)
+    if (next) this.update({ permissions: next })
+  }
 
   toggleRepository = async (item: LocalRepositoryItem, enabled: boolean): Promise<void> => {
     const repos = await setRepositoryEnabled(item.key, enabled).catch(
       () => [] as RepositoryItemPayload[],
-    );
-    if (repos.length > 0) this.update({ repositories: toItems(repos) });
-  };
+    )
+    if (repos.length > 0) this.update({ repositories: toItems(repos) })
+  }
 
   /**
    * "Locate" points the scanner at the folder a missing repository lives in,
@@ -130,15 +130,15 @@ export class SourcesSession {
    * siblings — findable on the next pass.
    */
   locate = async (): Promise<void> => {
-    const picked = await open({ directory: true, multiple: false });
-    if (typeof picked !== 'string') return;
-    this.update({ scanRoots: await addScanRoot(picked) });
-    await this.refresh();
-  };
+    const picked = await open({ directory: true, multiple: false })
+    if (typeof picked !== "string") return
+    this.update({ scanRoots: await addScanRoot(picked) })
+    await this.refresh()
+  }
 
   removeRoot = async (path: string): Promise<void> => {
-    this.update({ scanRoots: await removeScanRoot(path) });
-  };
+    this.update({ scanRoots: await removeScanRoot(path) })
+  }
 
   /**
    * Look for access granted in System Settings rather than through antiburn.
@@ -148,23 +148,23 @@ export class SourcesSession {
    * looks. This is the looking.
    */
   recheck = async (): Promise<void> => {
-    const found = await recheckFolderPermissions().catch(() => []);
-    if (found.length > 0) await this.refresh();
-    else await this.loadPermissions();
-  };
+    const found = await recheckFolderPermissions().catch(() => [])
+    if (found.length > 0) await this.refresh()
+    else await this.loadPermissions()
+  }
 
   /** Probe history, for a bug report. */
   copyDiagnostics = async (): Promise<void> => {
-    const probes = await getConsentDiagnostics().catch(() => []);
+    const probes = await getConsentDiagnostics().catch(() => [])
     const text = probes
       .map((probe) => `${probe.outcome}\t${probe.elapsedMs}ms\t${probe.target}`)
-      .join('\n');
-    await navigator.clipboard.writeText(text || 'No folder-access probes this run.');
-  };
+      .join("\n")
+    await navigator.clipboard.writeText(text || "No folder-access probes this run.")
+  }
 
   private start = async (): Promise<void> => {
-    this.started = true;
-    const generation = ++this.generation;
+    this.started = true
+    const generation = ++this.generation
 
     const [repos, scanRoots, permissions] = await Promise.all([
       listRepositories().catch(() => []),
@@ -172,24 +172,24 @@ export class SourcesSession {
       getFolderPermissions()
         .then((value) => value ?? EMPTY_PERMISSIONS)
         .catch(() => EMPTY_PERMISSIONS),
-    ]);
-    if (generation !== this.generation) return;
+    ])
+    if (generation !== this.generation) return
 
     this.update({
       repositories: toItems(repos),
       scanRoots,
       permissions,
       scanning: false,
-    });
-  };
+    })
+  }
 
   private stop(): void {
-    this.started = false;
-    this.generation += 1;
+    this.started = false
+    this.generation += 1
   }
 
   private update(change: Partial<SourcesSnapshot>): void {
-    this.snapshot = { ...this.snapshot, ...change };
-    for (const listener of this.listeners) listener();
+    this.snapshot = { ...this.snapshot, ...change }
+    for (const listener of this.listeners) listener()
   }
 }

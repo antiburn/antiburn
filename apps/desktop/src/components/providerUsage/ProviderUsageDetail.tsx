@@ -2,31 +2,31 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight } from "lucide-react"
 
-import type { LiveProviderUsagePayload, ProviderUsagePayload } from '../../lib/ipc';
+import type { LiveProviderUsagePayload, ProviderUsagePayload } from "../../lib/ipc"
 import {
   providerWindow,
   stalenessNote,
   tokenRows,
   updatedNote,
   usageStateDescription,
-} from '../../lib/presentation/providerUsage';
-import { LiveUsageDetail } from './LiveUsageDetail';
-import { UsageMetricRows } from './UsageMetricRows';
-import { UsageWindowRows } from './UsageWindowRows';
-import { ProviderGlyph } from './ProviderUsagePrimitives';
+} from "../../lib/presentation/providerUsage"
+import { LiveUsageDetail } from "./LiveUsageDetail"
+import { UsageMetricRows } from "./UsageMetricRows"
+import { UsageWindowRows } from "./UsageWindowRows"
+import { ProviderGlyph } from "./ProviderUsagePrimitives"
 
 interface ProviderUsageDetailProps {
-  provider: ProviderUsagePayload;
+  provider: ProviderUsagePayload
   /** The provider's own limits, when a source could prove any. */
-  live?: LiveProviderUsagePayload | null;
+  live?: LiveProviderUsagePayload | null
   /** Injected so the rendered output is a function of its inputs in tests. */
-  now?: number;
+  now?: number
   /** Id of the element naming this panel, for the caller's `aria-labelledby`. */
-  headingId?: string;
+  headingId?: string
   /** Rendered as an "All provider usage" affordance when supplied. */
-  onViewAll?: (() => void) | undefined;
+  onViewAll?: (() => void) | undefined
 }
 
 /**
@@ -50,11 +50,11 @@ export function ProviderUsageDetail({
   headingId,
   onViewAll,
 }: ProviderUsageDetailProps) {
-  const stale = stalenessNote(provider);
-  const updated = updatedNote(provider);
+  const stale = stalenessNote(provider)
+  const updated = updatedNote(provider)
   // The broadest window the app can see, so the token split describes as much
   // history as exists rather than only the current day.
-  const month = providerWindow(provider, 'month');
+  const month = providerWindow(provider, "month")
 
   return (
     <div className="space-y-3">
@@ -73,7 +73,7 @@ export function ProviderUsageDetail({
           </h2>
           {(stale ?? updated) && (
             <p
-              className={`type-caption ${stale ? 'text-system-orange' : 'text-label-tertiary'}`}
+              className={`type-caption ${stale ? "text-system-orange" : "text-label-tertiary"}`}
             >
               {stale ?? updated}
             </p>
@@ -116,5 +116,5 @@ export function ProviderUsageDetail({
         </button>
       )}
     </div>
-  );
+  )
 }

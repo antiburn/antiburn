@@ -2,17 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from "react"
 
-import { applyTheme } from '../../lib/appearance';
-import { createExternalStore } from '../../lib/externalStore';
+import { applyTheme } from "../../lib/appearance"
+import { createExternalStore } from "../../lib/externalStore"
 import {
   DEFAULT_SETTINGS,
   getSettings,
   onSettingsChanged,
   setSettings,
   type AppSettings,
-} from '../../lib/ipc';
+} from "../../lib/ipc"
 
 /**
  * The settings window's copy of the reader's preferences.
@@ -26,14 +26,14 @@ import {
  * this window follows the choice being made in it.
  */
 export interface AppSettingsController {
-  settings: AppSettings;
+  settings: AppSettings
   /** False until the first read resolves. */
-  loaded: boolean;
+  loaded: boolean
   /** Merge a change into the stored preferences. */
-  update: (change: Partial<AppSettings>) => Promise<void>;
+  update: (change: Partial<AppSettings>) => Promise<void>
 }
 
-type SettingsSnapshot = { settings: AppSettings; loaded: boolean };
+type SettingsSnapshot = { settings: AppSettings; loaded: boolean }
 
 // Module-level: every window that mounts this hook shares one read and one
 // subscription to the broadcast, rather than each racing its own.
@@ -41,11 +41,11 @@ const settingsStore = createExternalStore<SettingsSnapshot>({
   initial: { settings: DEFAULT_SETTINGS, loaded: false },
   load: async () => {
     try {
-      const stored = await getSettings();
-      applyTheme(stored.theme);
-      return { settings: stored, loaded: true };
+      const stored = await getSettings()
+      applyTheme(stored.theme)
+      return { settings: stored, loaded: true }
     } catch {
-      return { settings: DEFAULT_SETTINGS, loaded: true };
+      return { settings: DEFAULT_SETTINGS, loaded: true }
     }
   },
   // Writes can come from another window (onboarding and the popover share the
@@ -53,30 +53,30 @@ const settingsStore = createExternalStore<SettingsSnapshot>({
   // theme — current too.
   subscribe: (set) =>
     onSettingsChanged((stored) => {
-      applyTheme(stored.theme);
-      set({ settings: stored, loaded: true });
+      applyTheme(stored.theme)
+      set({ settings: stored, loaded: true })
     }),
-});
+})
 
 export function useAppSettings(): AppSettingsController {
   const { settings, loaded } = useSyncExternalStore(
     settingsStore.subscribe,
     settingsStore.getSnapshot,
-  );
+  )
 
   const update = useCallback(async (change: Partial<AppSettings>) => {
     // Optimistic, so a switch does not lag behind the pointer; the stored
     // answer replaces it a moment later and wins any disagreement. Reads the
     // current value from the store rather than closing over it, so this
     // callback stays referentially stable across every settings change.
-    const current = settingsStore.getSnapshot().settings;
-    const next = { ...current, ...change };
-    applyTheme(next.theme);
-    settingsStore.set({ settings: next, loaded: true });
-    const saved = await setSettings(next).catch(() => next);
-    applyTheme(saved.theme);
-    settingsStore.set({ settings: saved, loaded: true });
-  }, []);
+    const current = settingsStore.getSnapshot().settings
+    const next = { ...current, ...change }
+    applyTheme(next.theme)
+    settingsStore.set({ settings: next, loaded: true })
+    const saved = await setSettings(next).catch(() => next)
+    applyTheme(saved.theme)
+    settingsStore.set({ settings: saved, loaded: true })
+  }, [])
 
-  return { settings, loaded, update };
+  return { settings, loaded, update }
 }

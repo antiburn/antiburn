@@ -21,15 +21,15 @@
  * that owns them, not from here.
  */
 
-@import 'tailwindcss';
-@import './styles/tokens.css';
-@import './styles/session-analytics-colors.css';
-@import './styles/base.css';
-@import './styles/typography.css';
-@import './styles/focus.css';
-@import './styles/controls.css';
-@import './styles/platform-controls.css';
-@import './styles/motion.css';
+@import "tailwindcss";
+@import "./styles/tokens.css";
+@import "./styles/session-analytics-colors.css";
+@import "./styles/base.css";
+@import "./styles/typography.css";
+@import "./styles/focus.css";
+@import "./styles/controls.css";
+@import "./styles/platform-controls.css";
+@import "./styles/motion.css";
 
 /*
  * App shell layout. Everything above is the shared design foundation; these
