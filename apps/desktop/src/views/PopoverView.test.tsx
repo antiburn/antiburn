@@ -52,6 +52,10 @@ const SETTINGS = {
   launchAtLogin: false,
   autoUpdate: true,
   discoveryPaused: false,
+  // Collapsed, so the tests below that navigate through a provider chip do
+  // not each have to click the toggle open first. The expanded state itself
+  // is exercised in `UsageLimitsSection.test.tsx`.
+  overviewLimitsExpanded: false,
 }
 
 const SCAN_STATUS = {
@@ -130,6 +134,51 @@ const PROVIDER_USAGE = {
   generatedAt: "2027-01-15T08:00:00Z",
 }
 
+const LIVE_FORECAST = {
+  unavailableReason: "sparseHistory",
+  confidence: null,
+  consumptionRate: null,
+  paceRatio: null,
+  paceTrend: null,
+  runwayAt: null,
+  usedToday: null,
+}
+
+// A different provider from `PROVIDER_USAGE`'s spend figures on purpose: the
+// usage-limits section — and the chip row it collapses to — is driven by
+// this payload, not by spend, so Codex is the only chip in these tests below
+// even though Anthropic is the only provider with any local spend. That
+// asymmetry is deliberate: it is what proves the chip row survives a day
+// with zero local spend, as long as a live reading exists.
+const LIVE_USAGE = {
+  providers: [
+    {
+      provider: "openai",
+      displayName: "Codex",
+      support: "live",
+      freshness: "fresh",
+      sourceLabel: "Asked Codex directly",
+      observedAt: "2027-01-15T07:58:00Z",
+      windows: [
+        {
+          id: "seven-day",
+          role: "primaryLong",
+          kind: "weekly",
+          scopeModel: null,
+          usedPercent: 40,
+          startsAt: null,
+          resetsAt: null,
+          hasNonzeroUsageInCurrentPeriod: false,
+          forecast: LIVE_FORECAST,
+        },
+      ],
+      extraUsage: null,
+    },
+  ],
+  errors: [],
+  generatedAt: "2027-01-15T08:00:00Z",
+}
+
 const HEALTHY_STORAGE = { failing: false, message: null }
 
 function repositoryPayload(overrides: Record<string, unknown> = {}) {
@@ -160,6 +209,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(ANALYTICS)
       case "get_provider_usage":
         return Promise.resolve(PROVIDER_USAGE)
+      case "get_live_usage":
+        return Promise.resolve(LIVE_USAGE)
       case "get_scan_status":
       case "scan_now":
       case "cancel_scan":
@@ -297,26 +348,32 @@ describe("PopoverView", () => {
     )
   })
 
-  it("asks for provider usage with the reader own offset and shows the footer", async () => {
+  it("asks for provider usage with the reader own offset and shows the usage-limits chips", async () => {
     render(<PopoverView />)
 
-    expect(await screen.findByTestId("provider-usage-cluster")).toBeInTheDocument()
+    expect(await screen.findByTestId("provider-usage-chips")).toBeInTheDocument()
     // "Today" and "this month" are the reader's calendar days, so the offset
     // travels with the request rather than being guessed shell-side.
     expect(invoke).toHaveBeenCalledWith("get_provider_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })
-    expect(
-      screen.getByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Codex, weekly limit 40%" })).toBeInTheDocument()
+  })
+
+  it("shows the plain title-and-gear footer, with none of the usage chips in it", async () => {
+    render(<PopoverView />)
+    await screen.findByTestId("provider-usage-chips")
+
+    const footer = screen.getByRole("button", { name: "Open settings" }).parentElement
+    expect(footer).not.toBeNull()
+    expect(footer).toHaveTextContent("antiburn")
+    expect(footer?.querySelector('[data-testid="provider-usage-chips"]')).toBeNull()
   })
 
   it("opens the full usage view through a provider panel and comes back", async () => {
     render(<PopoverView />)
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
 
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
@@ -326,20 +383,100 @@ describe("PopoverView", () => {
     expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
   })
 
-  it("withholds the usage footer entirely when the shell reports nothing", async () => {
+  it("still shows a live-only chip on a fresh day with zero local spend anywhere", async () => {
+    // The bug this fixes: the chip row used to be driven by local spend, so
+    // a fresh day with none — even for a provider that never has any, like
+    // Codex here — fell through to an empty-row fallback despite Codex's own
+    // live reading sitting right there in `get_live_usage`.
     mockCommands({ get_provider_usage: { ...PROVIDER_USAGE, providers: [] } })
     render(<PopoverView />)
 
     await screen.findByText("Wire the tray popover")
-    // The footer still appears — it is how the Usage view is reached — but it
-    // says there was no usage today rather than showing an empty chip row.
-    expect(screen.getByTestId("provider-usage-cluster")).toBeInTheDocument()
-    expect(screen.getByText("No provider usage today")).toBeInTheDocument()
+    expect(screen.getByTestId("provider-usage-chips")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Codex, weekly limit 40%" })).toBeInTheDocument()
+    expect(screen.queryByText("No live limits")).not.toBeInTheDocument()
+  })
+
+  it("withholds the usage-limits section entirely when no provider has a limit to show", async () => {
+    mockCommands({ get_live_usage: { providers: [], errors: [], generatedAt: "" } })
+    render(<PopoverView />)
+
+    await screen.findByText("Wire the tray popover")
+    expect(screen.queryByTestId("usage-limits-section")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("provider-usage-chips")).not.toBeInTheDocument()
+    // The plain footer is unaffected — it never depended on usage at all.
+    expect(screen.getByRole("heading", { name: "antiburn" })).toBeInTheDocument()
+  })
+
+  it("persists the usage-limits toggle through set_settings, and switches the section's form", async () => {
+    render(<PopoverView />)
+    await screen.findByTestId("provider-usage-chips")
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand usage limits" }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ overviewLimitsExpanded: true }),
+      }),
+    )
+    // The chips are gone, replaced by the provider's own limit rows.
+    expect(
+      await screen.findByRole("button", { name: "Collapse usage limits" }),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId("provider-usage-chips")).not.toBeInTheDocument()
+    expect(screen.getByText("Codex")).toBeInTheDocument()
+  })
+
+  it("shows a spinner beside the toggle while a usage refresh is in flight", async () => {
+    let resolveSecondLoad: (() => void) | null = null
+    let liveCalls = 0
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "get_live_usage") {
+        liveCalls += 1
+        // The first call is the initial load, which must settle so the view
+        // reaches its resting state; the second is the one this test holds
+        // open to observe the spinner.
+        if (liveCalls === 1) return Promise.resolve(LIVE_USAGE)
+        return new Promise((resolve) => {
+          resolveSecondLoad = () => resolve(LIVE_USAGE)
+        })
+      }
+      switch (command) {
+        case "get_settings":
+          return Promise.resolve(SETTINGS)
+        case "list_recent_sessions":
+          return Promise.resolve([activityEntry()])
+        case "get_provider_usage":
+          return Promise.resolve(PROVIDER_USAGE)
+        case "get_storage_health":
+          return Promise.resolve(HEALTHY_STORAGE)
+        case "list_repositories":
+          return Promise.resolve([])
+        case "set_settings":
+          return Promise.resolve((args as Record<string, unknown> | undefined)?.["settings"])
+        default:
+          return Promise.resolve(null)
+      }
+    })
+
+    render(<PopoverView />)
+    await screen.findByTestId("provider-usage-chips")
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+
+    emit("popover:shown", undefined)
+    await waitFor(() => expect(resolveSecondLoad).not.toBeNull())
+    expect(screen.getByRole("status")).toBeInTheDocument()
+
+    await act(async () => {
+      resolveSecondLoad?.()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
   })
 
   it("refreshes usage on the shell’s popover-shown signal, independent of any scan", async () => {
     render(<PopoverView />)
-    await screen.findByTestId("provider-usage-cluster")
+    await screen.findByTestId("provider-usage-chips")
 
     const callsBeforeShown = invoke.mock.calls.filter(
       ([command]) => command === "get_live_usage",
@@ -524,9 +661,7 @@ describe("PopoverView — window behaviour", () => {
       }),
     )
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_popover_height", {
@@ -567,9 +702,7 @@ describe("PopoverView — window behaviour", () => {
   it("lets an open provider panel claim Escape before the window does", async () => {
     render(<PopoverView />)
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     const panel = await screen.findByRole("dialog")
     expect(panel).toBeInTheDocument()
 
@@ -585,9 +718,7 @@ describe("PopoverView — window behaviour", () => {
     const activity = await screen.findByRole("heading", { name: "antiburn" })
     await waitFor(() => expect(activity).toHaveFocus())
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
 
     const usage = await screen.findByRole("heading", { name: "Usage" })

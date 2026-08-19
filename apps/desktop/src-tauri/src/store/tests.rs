@@ -107,6 +107,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // not something that needs a first-run choice. See `live_usage_active`
     // for the onboarding gate that still applies regardless of this default.
     assert!(defaults.live_usage_enabled);
+    // Open by default, same reasoning: a reader who has limits to see should
+    // see them without an extra click the first time they notice the section.
+    assert!(defaults.overview_limits_expanded);
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -143,6 +146,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
                 at90: false,
             },
             live_usage_enabled: true,
+            overview_limits_expanded: false,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
@@ -157,6 +161,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(!saved.milestones_weekly.any());
     assert!(saved.milestones_5h.at75 && !saved.milestones_5h.at50);
     assert!(saved.live_usage_enabled);
+    assert!(!saved.overview_limits_expanded);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
     // Each notification preference is stored on its own key, so a reader who

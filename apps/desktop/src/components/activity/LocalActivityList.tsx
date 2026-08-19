@@ -2,16 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
-import {
-  Bot,
-  Check,
-  ChevronDown,
-  GitBranchPlus,
-  GitFork,
-  Settings2,
-  SquareTerminal,
-} from "lucide-react"
+import { Bot, GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
 import type { ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
@@ -84,27 +75,11 @@ export interface LocalActivityEntry {
   timeLabel?: string | undefined
 }
 
-/** One option in the list's filter control. */
-interface LocalActivityFilter {
-  value: string
-  label: string
-}
-
 export interface LocalActivityListProps {
   /** Sessions to show. Ordering and grouping are this component's job. */
   entries: LocalActivityEntry[]
-  /** Header title, used when no filter control is shown. */
-  title?: string
-  /** Visible calendar-day window. Also drives the range label and empty copy. */
+  /** Visible calendar-day window. Also drives the empty copy. */
   days: number
-  /** Override the default "Last N days" range label. */
-  rangeLabel?: string
-  /** Open wherever the day range is configured. Omitted makes it plain text. */
-  onOpenSettings?: () => void
-  /** Filter options. Fewer than two renders the plain title instead. */
-  filters?: readonly LocalActivityFilter[]
-  selectedFilter?: string
-  onFilterChange?: (value: string) => void
   /** Headline for the empty state; defaults to the range-aware wording. */
   emptyTitle?: string
   emptyDescription?: string
@@ -130,110 +105,6 @@ function primaryLine(entry: LocalActivityEntry): string {
   if (title) return title
   if (entry.sessionId) return `Session ${entry.sessionId.slice(0, 7)}`
   return agentDisplayName(entry.agent)
-}
-
-function rangeText(days: number): string {
-  return `Last ${days} ${days === 1 ? "day" : "days"}`
-}
-
-function ActivityHeader({
-  title,
-  days,
-  rangeLabel,
-  filters,
-  selectedFilter,
-  onFilterChange,
-  onOpenSettings,
-}: {
-  title: string
-  days: number
-  rangeLabel?: string
-  filters?: readonly LocalActivityFilter[]
-  selectedFilter?: string
-  onFilterChange?: (value: string) => void
-  onOpenSettings?: () => void
-}) {
-  const showFilter = !!filters && filters.length > 1 && !!onFilterChange
-  const currentLabel =
-    filters?.find((option) => option.value === selectedFilter)?.label ?? title
-  const range = rangeLabel ?? rangeText(days)
-
-  return (
-    <div className="flex h-6 items-center gap-3 px-4 whitespace-nowrap">
-      {showFilter ? (
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button
-              type="button"
-              aria-label={`Activity filter, current view: ${currentLabel}`}
-              className="group -ml-1.5 inline-flex h-6 shrink-0 items-center gap-1 rounded-control px-1.5 type-body font-medium text-label hover:bg-surface-hover"
-            >
-              <span>{currentLabel}</span>
-              <ChevronDown
-                size={12}
-                strokeWidth={2.5}
-                aria-hidden="true"
-                className="shrink-0 text-label-tertiary transition-transform duration-[120ms] ease-out group-data-[state=open]:rotate-180"
-              />
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              className="ui-menu"
-              side="bottom"
-              align="start"
-              sideOffset={4}
-            >
-              <DropdownMenu.RadioGroup
-                value={selectedFilter ?? ""}
-                onValueChange={(value) => onFilterChange?.(value)}
-              >
-                {filters.map((option) => (
-                  <DropdownMenu.RadioItem
-                    key={option.value}
-                    value={option.value}
-                    className="ui-menu-item"
-                  >
-                    <span className="inline-flex w-3.5 shrink-0 justify-center">
-                      <DropdownMenu.ItemIndicator>
-                        <Check size={12} strokeWidth={2.5} aria-hidden="true" />
-                      </DropdownMenu.ItemIndicator>
-                    </span>
-                    <span>{option.label}</span>
-                  </DropdownMenu.RadioItem>
-                ))}
-              </DropdownMenu.RadioGroup>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-      ) : (
-        <p className="shrink-0 type-body font-medium text-label">{currentLabel}</p>
-      )}
-
-      {onOpenSettings ? (
-        <button
-          type="button"
-          aria-label={`Recent activity range: ${range}. Change in settings`}
-          onClick={onOpenSettings}
-          className="group -mr-1.5 ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-control px-1.5 type-footnote text-label-secondary hover:bg-surface-hover"
-        >
-          <span className="inline-flex w-3.5 shrink-0 justify-center">
-            <Settings2
-              size={12}
-              strokeWidth={2}
-              aria-hidden="true"
-              className="shrink-0 opacity-0 transition-opacity duration-[120ms] ease-out group-hover:opacity-100 group-focus-visible:opacity-100"
-            />
-          </span>
-          <span>{range}</span>
-        </button>
-      ) : (
-        <span className="-mr-1.5 ml-auto shrink-0 px-1.5 type-footnote text-label-secondary">
-          {range}
-        </span>
-      )}
-    </div>
-  )
 }
 
 function EmptyActivity({ title, description }: { title: string; description: string }) {
@@ -431,19 +302,13 @@ function SessionActivityRow({
 /**
  * A scrolling list of local coding sessions, bucketed by calendar day.
  *
- * Entirely prop-driven: entries, titles, the visible range, the filter set, and
- * every action arrive from the host. The list owns ordering, day grouping, the
- * sticky day label, and the row treatment — and nothing else.
+ * Entirely prop-driven: entries, the visible range, and every action arrive
+ * from the host. The list owns ordering, day grouping, the sticky day label,
+ * and the row treatment — and nothing else.
  */
 export function LocalActivityList({
   entries,
-  title = "Activity",
   days,
-  rangeLabel,
-  onOpenSettings,
-  filters,
-  selectedFilter,
-  onFilterChange,
   emptyTitle,
   emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
   onOpenSession,
@@ -476,86 +341,70 @@ export function LocalActivityList({
     emptyTitle ?? (days === 1 ? "No sessions today" : `No sessions in the last ${days} days`)
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="pt-3 pb-2">
-        <ActivityHeader
-          title={title}
-          days={days}
-          {...(rangeLabel ? { rangeLabel } : {})}
-          {...(filters ? { filters } : {})}
-          {...(selectedFilter ? { selectedFilter } : {})}
-          {...(onFilterChange ? { onFilterChange } : {})}
-          {...(onOpenSettings ? { onOpenSettings } : {})}
-        />
-      </div>
+    <section aria-label="Activity feed" className="flex h-full min-h-0 flex-col pt-2">
+      {/* One live-region announcement for the whole list, rather than a
+          placeholder per row. */}
+      <span className="sr-only" aria-live="polite" aria-atomic="true">
+        {visibleCount === 0 ? resolvedEmptyTitle : ""}
+      </span>
 
-      <section aria-label="Activity feed" className="flex min-h-0 flex-1 flex-col">
-        {/* One live-region announcement for the whole list, rather than a
-            placeholder per row. */}
-        <span className="sr-only" aria-live="polite" aria-atomic="true">
-          {visibleCount === 0 ? resolvedEmptyTitle : ""}
-        </span>
+      {pinnedLabel && (
+        <div
+          data-testid="activity-pinned-group-label"
+          aria-hidden="true"
+          className="shrink-0 px-4 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+        >
+          {pinnedLabel}
+        </div>
+      )}
 
-        {pinnedLabel && (
-          <div
-            data-testid="activity-pinned-group-label"
-            aria-hidden="true"
-            className="shrink-0 px-4 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
-          >
-            {pinnedLabel}
+      <ScrollPane
+        topEdgeFade
+        viewportRef={assignViewportRef}
+        viewportClassName={cn("px-2", visibleCount === 0 && "[&>div]:h-full")}
+      >
+        {visibleCount === 0 ? (
+          <EmptyActivity title={resolvedEmptyTitle} description={emptyDescription} />
+        ) : (
+          <div className="space-y-3 pb-3">
+            {groups.map((group, groupIndex) => {
+              const headingId = `activity-${group.label.replaceAll(" ", "-").toLowerCase()}`
+              return (
+                <section key={group.label} aria-labelledby={headingId}>
+                  <h3
+                    ref={registerHeading(group.label)}
+                    id={headingId}
+                    // The first day's heading is duplicated by the sticky
+                    // label above the viewport, so it is announced but not
+                    // painted twice.
+                    className={
+                      groupIndex === 0
+                        ? "sr-only"
+                        : "px-2 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+                    }
+                  >
+                    {group.label}
+                  </h3>
+                  <div className="space-y-1">
+                    {group.items.map((item) => (
+                      <SessionActivityRow
+                        key={item.key}
+                        entry={item.entry}
+                        {...(onOpenSession ? { onOpen: () => onOpenSession(item.entry) } : {})}
+                        {...(onOpenOrchestration
+                          ? { onOpenOrchestration: () => onOpenOrchestration(item.entry) }
+                          : {})}
+                        {...(renderAgentIcon ? { renderAgentIcon } : {})}
+                        {...(wslIcon ? { wslIcon } : {})}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )
+            })}
           </div>
         )}
-
-        <ScrollPane
-          topEdgeFade
-          viewportRef={assignViewportRef}
-          viewportClassName={cn("px-2", visibleCount === 0 && "[&>div]:h-full")}
-        >
-          {visibleCount === 0 ? (
-            <EmptyActivity title={resolvedEmptyTitle} description={emptyDescription} />
-          ) : (
-            <div className="space-y-3 pb-3">
-              {groups.map((group, groupIndex) => {
-                const headingId = `activity-${group.label.replaceAll(" ", "-").toLowerCase()}`
-                return (
-                  <section key={group.label} aria-labelledby={headingId}>
-                    <h3
-                      ref={registerHeading(group.label)}
-                      id={headingId}
-                      // The first day's heading is duplicated by the sticky
-                      // label above the viewport, so it is announced but not
-                      // painted twice.
-                      className={
-                        groupIndex === 0
-                          ? "sr-only"
-                          : "px-2 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
-                      }
-                    >
-                      {group.label}
-                    </h3>
-                    <div className="space-y-1">
-                      {group.items.map((item) => (
-                        <SessionActivityRow
-                          key={item.key}
-                          entry={item.entry}
-                          {...(onOpenSession
-                            ? { onOpen: () => onOpenSession(item.entry) }
-                            : {})}
-                          {...(onOpenOrchestration
-                            ? { onOpenOrchestration: () => onOpenOrchestration(item.entry) }
-                            : {})}
-                          {...(renderAgentIcon ? { renderAgentIcon } : {})}
-                          {...(wslIcon ? { wslIcon } : {})}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                )
-              })}
-            </div>
-          )}
-        </ScrollPane>
-      </section>
-    </div>
+      </ScrollPane>
+    </section>
   )
 }

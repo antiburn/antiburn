@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Settings } from "lucide-react"
 import { useCallback, useId, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
@@ -10,18 +9,15 @@ import { cn } from "../../lib/cn"
 import type { LiveUsageSummaryPayload, ProviderUsagePayload } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import {
-  headlineWindow,
-  liveForProvider,
   liveWindowLabel,
+  liveWindows,
   liveWindowValueLabel,
+  maxLiveUsedPercent,
 } from "../../lib/presentation/liveUsage"
 import {
   providerInitial,
-  providersForWindow,
-  providerWindow,
   stalenessNote,
   usageStateLabel,
-  usageValueLabel,
 } from "../../lib/presentation/providerUsage"
 import { useDialogDismissal } from "../../lib/useDialogDismissal"
 import { useHoverIntent } from "../../lib/useHoverIntent"
@@ -33,7 +29,13 @@ import { UsageRing } from "./UsageRing"
 /** Chips shown before the rest collapse into a single overflow affordance. */
 const DEFAULT_MAX_CHIPS = 3
 
-interface ProviderUsageClusterProps {
+interface ProviderUsageChipsProps {
+  /**
+   * The reader's own local spend and sessions. No longer what selects which
+   * chips appear — see `live` below — but still what a chip's staleness note
+   * comes from, and what its panel shows beneath the provider's own limits,
+   * for a provider this device has actually run something through.
+   */
   providers: readonly ProviderUsagePayload[]
   /** The provider's own limit figures, when a source could prove any. */
   live?: LiveUsageSummaryPayload
@@ -45,30 +47,43 @@ interface ProviderUsageClusterProps {
   now?: number
   /** Open the full Usage view. */
   onViewAll: () => void
-  /** Open the standalone Settings window (the footer's right-hand gear). */
-  onOpenSettings: () => void
   maxVisible?: number
+  /**
+   * Which way the anchored detail panel opens. `"up"` sits the panel above
+   * the chip row — for a row that lives at the bottom of its container.
+   * `"down"` sits it below — for a row that lives at the top of one. There is
+   * no collision detection because there does not need to be one: the popover
+   * is a fixed 380px of chrome, so a caller near the bottom asks for `"up"`
+   * and a caller near the top asks for `"down"`, and that is the whole
+   * decision.
+   */
+  panelAnchor?: "up" | "down"
+  className?: string
 }
 
 /**
- * The popover's usage footer: one compact chip per provider used today, an
- * overflow count, and the way through to the full Usage view.
+ * One compact chip per provider with a live limit reading, an overflow
+ * count, and the way through to the full Usage view.
  *
- * Chips are drawn from *today* only. A provider the reader has not touched
- * since yesterday is not shown a dash here — it is simply not in the footer,
- * and the Usage view is where the wider windows live. That keeps the resting
- * state of the popover a statement about right now.
+ * Chips are drawn from the *live* payload, not local spend: a chip shows a
+ * percentage now, so it is selected the same way the expanded section above
+ * it picks its subsections — any provider with at least one live window —
+ * and the two always agree on which providers appear. A provider with local
+ * spend but no live reading is not shown a dash here — it is simply not in
+ * the row, and the Usage view is where local-only providers live. A provider
+ * with a live reading but no local spend (nothing was ever run through it on
+ * this device) still gets a chip; its panel just has no spend half to show.
  *
- * Clicking a chip opens a panel anchored above the footer. It is positioned by
+ * Clicking a chip opens a panel anchored to this row. It is positioned by
  * this component rather than portalled, because the popover window is 380px of
  * fixed chrome: a portalled surface would have nowhere to escape to, and a
- * collision-aware library would only be re-deriving "sit above the footer".
+ * collision-aware library would only be re-deriving "sit beside the row".
  *
  * There are two ways in, and they are not the same thing. **Hovering** a chip
  * opens the panel after a short delay and closes it a shorter one after the
- * pointer leaves — the delays exist so a pointer crossing the footer on its
- * way somewhere else does not strobe three panels, and so the diagonal from
- * chip to panel is forgiving. **Clicking or tabbing to** a chip opens the same
+ * pointer leaves — the delays exist so a pointer crossing the row on its way
+ * somewhere else does not strobe three panels, and so the diagonal from chip
+ * to panel is forgiving. **Clicking or tabbing to** a chip opens the same
  * panel deliberately, and it stays until dismissed.
  *
  * Only the deliberate path takes the obligations of a dialog: focus moves into
@@ -88,9 +103,10 @@ interface ProviderUsageClusterProps {
  * How long a pointer must rest on a chip before its panel opens, and how long
  * it may be away before the panel closes.
  *
- * Open is the longer of the two: a pointer crossing the footer on its way to
- * the gear should not light up three panels behind it. Close is shorter but
- * not zero, so the diagonal from a chip to the panel above it is forgiving.
+ * Open is the longer of the two: a pointer crossing the row on its way to
+ * somewhere else should not light up three panels behind it. Close is shorter
+ * but not zero, so the diagonal from a chip to the panel beside it is
+ * forgiving.
  */
 const HOVER_OPEN_MS = 200
 const HOVER_CLOSE_MS = 140
@@ -98,14 +114,16 @@ const HOVER_CLOSE_MS = 140
 /** Everything inside the panel a Tab can reach. */
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-export function ProviderUsageCluster({
+
+export function ProviderUsageChips({
   providers,
   live = EMPTY_LIVE_USAGE,
   now,
   onViewAll,
-  onOpenSettings,
   maxVisible = DEFAULT_MAX_CHIPS,
-}: ProviderUsageClusterProps) {
+  panelAnchor = "up",
+  className = "",
+}: ProviderUsageChipsProps) {
   const at = now ?? (Date.parse(live.generatedAt) || 0)
   const [openProvider, setOpenProvider] = useState<string | null>(null)
   /**
@@ -154,10 +172,16 @@ export function ProviderUsageCluster({
     }, HOVER_CLOSE_MS)
   }, [scheduleHover])
 
-  const today = providersForWindow(providers, "today")
-  const visible = today.slice(0, maxVisible)
-  const overflow = today.length - visible.length
+  // Same predicate the expanded section filters its subsections with, so
+  // collapsed and expanded never disagree about which providers are showing
+  // anything.
+  const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
+  const visible = limited.slice(0, maxVisible)
+  const overflow = limited.length - visible.length
   const open = visible.find((provider) => provider.provider === openProvider) ?? null
+  /** The reader's own local spend for one provider id, when there is any. */
+  const spendFor = (id: string) =>
+    providers.find((provider) => provider.provider === id) ?? null
 
   const close = useCallback(() => {
     cancelHover()
@@ -172,8 +196,8 @@ export function ProviderUsageCluster({
   }, [cancelHover])
 
   // Dismissal is a genuine synchronization with the document: a pointer press
-  // anywhere outside the footer closes the panel, and Escape closes it from
-  // the keyboard. Both listeners exist only while a panel is open. Tab is
+  // anywhere outside the row closes the panel, and Escape closes it from the
+  // keyboard. Both listeners exist only while a panel is open. Tab is
   // additionally held inside the panel while it was opened on purpose.
   useDialogDismissal({
     active: !!open,
@@ -192,47 +216,56 @@ export function ProviderUsageCluster({
   return (
     <div
       ref={rootRef}
-      data-testid="provider-usage-cluster"
-      className="relative flex h-11 shrink-0 items-center gap-1 border-t border-separator px-2"
+      data-testid="provider-usage-chips"
+      className={cn("relative flex min-w-0 items-center gap-1", className)}
     >
-      {visible.map((provider) => {
-        const window = providerWindow(provider, "today")
-        const value = usageValueLabel(window)
-        const stale = stalenessNote(provider)
-        const isOpen = open?.provider === provider.provider
-        // The ring is drawn only where the provider stated a percentage. The
-        // spend figure beside it has no denominator, so borrowing the shape
-        // for it would mean something here that it does not mean. Which window
-        // the ring shows is `headlineWindow`'s decision, and it is the
-        // account-wide one rather than the fullest — see its doc.
-        const limits = liveForProvider(live, provider.provider)
-        const headline = limits ? headlineWindow(limits) : null
+      {visible.map((limits) => {
+        // Every provider that reaches this row is selected *because* it has
+        // live windows — see `limited` above — but it may or may not have
+        // ever produced local spend on this device. Where it has, the
+        // staleness note and the panel's spend half both come from that.
+        const spend = spendFor(limits.provider)
+        const stale = spend ? stalenessNote(spend) : null
+        const isOpen = open?.provider === limits.provider
+        const windows = liveWindows(limits)
+        // The ring shows the fullest live window, not the account-wide one —
+        // see `maxLiveUsedPercent`'s doc for why a compact glance prefers the
+        // worst case over which window happens to be the account's own.
+        const maxPercent = maxLiveUsedPercent(limits)
+        // A dollar figure here would be the local estimate, which has no
+        // denominator to read against — showing it beside a ring drawn from
+        // the provider's own percentage would imply a relationship that is
+        // not there. So the chip shows only what the provider itself stated:
+        // every live window's percentage, in the same order the panel lists
+        // them.
+        const value = windows.map((window) => liveWindowValueLabel(window)).join(" / ")
         return (
           <button
-            key={provider.provider}
+            key={limits.provider}
             type="button"
             aria-haspopup="dialog"
             aria-expanded={isOpen}
             aria-controls={isOpen ? panelId : undefined}
-            // The chip shows a glyph and a number; the name, the window, and
-            // what kind of figure it is have to live in the accessible name or
-            // they are lost. The ring adds a second fact, so it adds a clause:
-            // a shape with no text is invisible to a screen reader.
-            aria-label={`${provider.displayName}, ${value} today, ${usageStateLabel(
-              provider.state,
-            ).toLocaleLowerCase()}${
-              headline
-                ? `, ${liveWindowLabel(headline).toLocaleLowerCase()} ${liveWindowValueLabel(
-                    headline,
-                  ).toLocaleLowerCase()}`
-                : ""
-            }${stale ? `, ${stale.toLocaleLowerCase()}` : ""}`}
+            // The chip shows a glyph and a number per live window; the name,
+            // each window, and — where there is local spend to describe —
+            // what kind of figure it is, have to live in the accessible name
+            // or they are lost.
+            aria-label={`${limits.displayName}${
+              spend ? `, ${usageStateLabel(spend.state).toLocaleLowerCase()}` : ""
+            }${windows
+              .map(
+                (window) =>
+                  `, ${liveWindowLabel(window).toLocaleLowerCase()} ${liveWindowValueLabel(
+                    window,
+                  ).toLocaleLowerCase()}`,
+              )
+              .join("")}${stale ? `, ${stale.toLocaleLowerCase()}` : ""}`}
             onPointerEnter={(event) => {
               // Touch reports a pointer enter immediately before the click it
               // is about to fire; opening on it would make the tap a toggle
               // that opens and then closes.
               if (event.pointerType === "touch") return
-              hoverOpen(provider.provider)
+              hoverOpen(limits.provider)
             }}
             onPointerLeave={(event) => {
               if (event.pointerType === "touch") return
@@ -240,7 +273,7 @@ export function ProviderUsageCluster({
             }}
             onClick={(event) => {
               cancelHover()
-              if (openProvider === provider.provider && openedBy === "pointer") {
+              if (openProvider === limits.provider && openedBy === "pointer") {
                 close()
                 return
               }
@@ -254,7 +287,7 @@ export function ProviderUsageCluster({
               // an effect on it would re-steal focus each time.
               flushSync(() => {
                 setOpenedBy("pointer")
-                setOpenProvider(provider.provider)
+                setOpenProvider(limits.provider)
               })
               const target =
                 panelRef.current?.querySelector<HTMLElement>(FOCUSABLE) ?? panelRef.current
@@ -265,21 +298,21 @@ export function ProviderUsageCluster({
               isOpen && "bg-surface-hover",
             )}
           >
-            {headline ? (
+            {maxPercent != null ? (
               // The ring carries the provider's initial rather than replacing
               // it: a chip that says how full something is without saying
               // whose is a worse trade than the ring is worth.
               <UsageRing
-                percent={headline.usedPercent}
-                mark={providerMark(provider.provider)}
-                glyph={providerInitial(provider.displayName)}
+                percent={maxPercent}
+                mark={providerMark(limits.provider)}
+                glyph={providerInitial(limits.displayName)}
                 size={22}
                 className="shrink-0 text-label-secondary"
               />
             ) : (
               <ProviderGlyph
-                displayName={provider.displayName}
-                provider={provider.provider}
+                displayName={limits.displayName}
+                provider={limits.provider}
                 size={18}
               />
             )}
@@ -288,8 +321,8 @@ export function ProviderUsageCluster({
         )
       })}
 
-      {today.length === 0 && (
-        <span className="type-caption text-label-tertiary">No provider usage today</span>
+      {limited.length === 0 && (
+        <span className="type-caption text-label-tertiary">No live limits</span>
       )}
 
       {overflow > 0 && (
@@ -302,15 +335,6 @@ export function ProviderUsageCluster({
           +{overflow}
         </button>
       )}
-
-      <button
-        type="button"
-        onClick={onOpenSettings}
-        aria-label="Open settings"
-        className="-mr-0.5 ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary hover:bg-surface-hover"
-      >
-        <Settings size={14} strokeWidth={1.75} aria-hidden="true" />
-      </button>
 
       {open && (
         <div
@@ -333,11 +357,16 @@ export function ProviderUsageCluster({
           // Focusable so the dialog itself can hold focus when it contains no
           // control; never in the Tab order.
           tabIndex={-1}
-          className="ui-anchored-panel absolute bottom-full left-2 right-2 mb-1.5 p-3 outline-none"
+          className={cn(
+            "ui-anchored-panel absolute left-0 right-0 p-3 outline-none",
+            panelAnchor === "up" ? "bottom-full mb-1.5" : "top-full mt-1.5",
+          )}
         >
           <ProviderUsageDetail
-            provider={open}
-            live={liveForProvider(live, open.provider)}
+            displayName={open.displayName}
+            providerId={open.provider}
+            provider={spendFor(open.provider)}
+            live={open}
             now={at}
             headingId={headingId}
             onViewAll={viewAll}

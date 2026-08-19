@@ -449,6 +449,11 @@ pub struct AppSettings {
     /// [`AppSettings::live_usage_active`] for the second, unconditional gate
     /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
+    /// Whether the popover's usage-limits section is expanded to its
+    /// per-provider rows, rather than collapsed to the chip row. Purely a
+    /// display preference — it never gates a fetch — so it defaults open and
+    /// stays wherever the reader last left it.
+    pub overview_limits_expanded: bool,
 }
 
 impl Default for AppSettings {
@@ -482,6 +487,9 @@ impl Default for AppSettings {
             // not sit behind a first-run choice. The switch is the opt-out
             // for a reader who wants no background traffic at all.
             live_usage_enabled: true,
+            // Open by default: a reader who has live limits at all should see
+            // them without an extra click the first time they notice this.
+            overview_limits_expanded: true,
         }
     }
 }
