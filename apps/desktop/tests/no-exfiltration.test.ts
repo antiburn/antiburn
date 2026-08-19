@@ -24,7 +24,7 @@
  * here. The updater plugin is registered in release builds only and talks to
  * antiburn's own release feed — a feed that carries no reader data. The
  * anonymised usage-analytics channel (`src-tauri/src/usage_analytics`, recorded
- * as D-026 and deviations D-28) reports on the application itself, behind a
+ * as D-027 and deviations D-28) reports on the application itself, behind a
  * control the reader meets before anything is sent. Neither is reachable from
  * the renderer: both are Rust-side and invoked over IPC, so they need no browser
  * networking API and do not appear here. That is the point of this file

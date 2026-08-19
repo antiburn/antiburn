@@ -71,7 +71,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # The scan scheduler, and the timer the consented-analytics flusher sleeps on.
 # The declared feature set omits `net`, but `reqwest` enables it transitively —
 # the shell now has two network-capable surfaces, the updater and the analytics
-# channel (D-026), and pretending otherwise here would be the same drift the
+# channel (D-027), and pretending otherwise here would be the same drift the
 # deviations register exists to catch.
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already

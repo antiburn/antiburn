@@ -60,7 +60,7 @@ the gap rather than the patch.
 
 One distinction to make before you harden anything: antiburn has **one**
 sanctioned outbound channel besides the update check — the anonymised
-usage-analytics publisher in `src-tauri/src/usage_analytics`, recorded as D-026
+usage-analytics publisher in `src-tauri/src/usage_analytics`, recorded as D-027
 and deviations D-28. Traffic from it is not a breach. What *would* be a breach
 is that channel carrying a field its event schema does not name, reaching an
 endpoint the build did not inject, or sending while the reader's consent is

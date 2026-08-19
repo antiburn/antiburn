@@ -325,7 +325,7 @@ impl Store {
     }
 
     /* -----------------------------------------------------------------
-     * Anonymised application events (D-026, deviations D-28)
+     * Anonymised application events (D-027, deviations D-28)
      * ----------------------------------------------------------------- */
 
     /// Queue one event for delivery. Callers hold the consent check; this is

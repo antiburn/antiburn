@@ -159,7 +159,7 @@ CREATE TABLE consent_grant (
 ) STRICT;
 "#;
 
-/// v3 — the anonymised application-event queue (D-026, deviations D-28).
+/// v3 — the anonymised application-event queue (D-027, deviations D-28).
 ///
 /// # Data policy (schema-level contract)
 ///

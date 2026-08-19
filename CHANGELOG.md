@@ -38,7 +38,7 @@ CI changes, and documentation that no user acts on stay out — see
   `docs/usage-analytics.md` carries the full catalog plus the commands to check
   any of it yourself. Nothing is sent until the first run completes; in the EU,
   the EEA, and the UK the control starts off rather than on; and a build with no
-  endpoint injected sends nothing at all. Recorded as D-026 in
+  endpoint injected sends nothing at all. Recorded as D-027 in
   `docs/oss/source-denylist.toml` and D-28 in `docs/deviations.md`, which also
   resolves D-5.
 

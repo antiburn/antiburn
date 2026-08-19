@@ -6,7 +6,7 @@
 //! stands, the fact that they go nowhere.
 //!
 //! The endpoint and the operator's display name are injected at build time and
-//! appear nowhere in this tree. That is a governance requirement (D-026) rather
+//! appear nowhere in this tree. That is a governance requirement (D-027) rather
 //! than a style preference: this repository is public, and the private
 //! application it reports to may not be named in it.
 //!

@@ -106,7 +106,7 @@ export interface AppSettings {
    */
   liveUsageEnabled: boolean;
   /**
-   * The consented analytics channel (D-026, deviations register D-28).
+   * The consented analytics channel (D-027, deviations register D-28).
    *
    * On by default for a new install, which meets the control on the first-run
    * Ready screen before anything can be sent; off for a store that finished

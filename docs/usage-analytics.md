@@ -13,7 +13,7 @@ opt into rather than out of. That is decided from the locale and time zone your
 machine already reports; nothing is looked up, and neither is ever sent. That
 default diverges from the ratified feature matrix, which specifies default-off,
 and the divergence is recorded as **D-28** in [`deviations.md`](deviations.md)
-rather than left implicit. The channel itself is permitted by **D-026** in
+rather than left implicit. The channel itself is permitted by **D-027** in
 [`oss/source-denylist.toml`](oss/source-denylist.toml).
 
 ## The short version

@@ -353,7 +353,7 @@ pub struct AppInfo {
     pub usage_analytics_supported: bool,
     /// Who receives those events, in the reader's own words. `None` when the
     /// build has no endpoint. Injected with the endpoint, never a literal in
-    /// this repository (D-026).
+    /// this repository (D-027).
     pub usage_analytics_operator: Option<String>,
 }
 

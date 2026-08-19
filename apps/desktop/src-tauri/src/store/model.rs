@@ -398,7 +398,7 @@ pub struct AppSettings {
     /// The per-feature online opt-in for live usage limits. Off by default:
     /// the app calls no provider endpoint until the reader turns this on.
     pub live_usage_enabled: bool,
-    /// The consented analytics channel (D-026, deviations D-28). On by
+    /// The consented analytics channel (D-027, deviations D-28). On by
     /// default for a new install, which meets the control on the Ready
     /// screen before anything is sent; off for a store that finished
     /// onboarding under copy that promised no analytics at all.

@@ -525,7 +525,7 @@ jobs:
           APPLE_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_TEAM_ID || '' }}
-          # The consented analytics channel (D-026). Injected here and
+          # The consented analytics channel (D-027). Injected here and
           # nowhere else: neither the endpoint nor the operator's name is in
           # the public tree, which is what makes a build from a clean
           # checkout provably unable to transmit.
