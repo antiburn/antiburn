@@ -34,6 +34,8 @@ import {
 } from './liveUsage';
 
 const NOW = Date.parse('2027-01-15T12:00:00Z');
+const DAY_MS = 24 * 3_600_000;
+const WEEK_MS = 7 * DAY_MS;
 
 /** Sparse history is the resting state of a source that only moves when an
     agent runs, so it is what a fixture defaults to. */
@@ -142,6 +144,54 @@ describe('the elapsed marker', () => {
       liveWindowElapsed(
         window({
           id: 'five-hour',
+          startsAt: '2027-01-15T11:00:00Z',
+          resetsAt: '2027-01-15T13:00:00Z',
+        }),
+        NOW,
+      ),
+    ).toBeCloseTo(0.5);
+  });
+
+  it('takes a weekly period from the window’s kind, the same way five-hour comes from its id', () => {
+    // Seven days is what "weekly" means, not a guess about this particular
+    // window's boundary.
+    const resetsAt = new Date(NOW + 0.4 * WEEK_MS).toISOString();
+    expect(
+      liveWindowElapsed(
+        window({
+          id: 'seven-day',
+          role: 'primaryLong',
+          kind: 'weekly',
+          startsAt: null,
+          resetsAt,
+        }),
+        NOW,
+      ),
+    ).toBeCloseTo(0.6);
+  });
+
+  it('takes a daily period from the window’s kind', () => {
+    const resetsAt = new Date(NOW + 0.25 * DAY_MS).toISOString();
+    expect(
+      liveWindowElapsed(window({ id: 'daily', kind: 'daily', startsAt: null, resetsAt }), NOW),
+    ).toBeCloseTo(0.75);
+  });
+
+  it('still refuses to guess a monthly period: a month’s length genuinely varies', () => {
+    expect(
+      liveWindowElapsed(window({ id: 'monthly', kind: 'monthly', startsAt: null }), NOW),
+    ).toBeNull();
+    expect(
+      liveWindowElapsed(window({ id: 'billing', kind: 'billingCycle', startsAt: null }), NOW),
+    ).toBeNull();
+  });
+
+  it('prefers a stated start over a kind-implied one', () => {
+    expect(
+      liveWindowElapsed(
+        window({
+          id: 'seven-day',
+          kind: 'weekly',
           startsAt: '2027-01-15T11:00:00Z',
           resetsAt: '2027-01-15T13:00:00Z',
         }),

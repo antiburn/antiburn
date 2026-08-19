@@ -402,6 +402,20 @@ pub fn get_provider_usage(
     Ok(provider_usage::summarize(&evidence, now, offset))
 }
 
+/// How fresh a reading this command asks each source's cooldown for.
+///
+/// This command is called from the popover, which polls it roughly once a
+/// minute for as long as the popover stays visible — see
+/// `scan::TICK` and `popover::note_shown`. Fifty seconds sits just under that
+/// polling interval, so an open popover's own ordinary polling is what keeps
+/// the reading current: every visible tick is close enough to the cooldown's
+/// edge to trigger a real fetch, without this command itself running a timer
+/// or a background task. The aggressive freshness is bounded by someone
+/// actually looking — once the popover closes, nothing here keeps polling on
+/// its behalf, and the background monitor's own, much longer, `max_age`
+/// takes back over (see `usage_alerts::MILESTONE_MAX_AGE`).
+const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
+
 /// The provider's own limit figures, when a registered source can prove them.
 ///
 /// Deliberately a second command rather than a field on
@@ -434,6 +448,7 @@ pub fn get_live_usage(
         app.try_state::<Store>().as_deref(),
         now,
         utc_offset_minutes.unwrap_or(0),
+        POPOVER_LIVE_USAGE_MAX_AGE,
     ))
 }
 

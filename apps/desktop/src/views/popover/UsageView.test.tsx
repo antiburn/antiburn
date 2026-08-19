@@ -265,10 +265,11 @@ describe('UsageView — plan limits layered over local estimates', () => {
     expect(screen.queryByTestId('live-usage-fill-five-hour')).not.toBeInTheDocument();
   });
 
-  it('omits the marker for a window whose period is not stated or implied', () => {
-    // A weekly window with no start: its boundary is the provider's own, and
-    // "seven days before the reset" would be a guess dressed as a measurement.
-    const unbounded = live({
+  it('marks a weekly window from its kind alone, with no stated start', () => {
+    // Seven days is what "weekly" means, the same way five hours is what
+    // "five-hour" means — this is arithmetic on the window's own identity,
+    // not a guess.
+    const bounded = live({
       providers: [
         {
           ...liveProvider(),
@@ -278,6 +279,37 @@ describe('UsageView — plan limits layered over local estimates', () => {
               role: 'primaryLong',
               kind: 'weekly',
               startsAt: null,
+              resetsAt: '2027-01-19T18:00:00Z',
+            }),
+          ],
+        },
+      ],
+    });
+    render(<UsageView summary={summary()} live={bounded} now={NOW} onBack={vi.fn()} />);
+
+    // 2027-01-12T18:00 → 2027-01-19T18:00, clock at 2027-01-15T12:00: 66 of
+    // 168 hours into a seven-day period.
+    expect(screen.getByRole('progressbar', { name: 'Weekly limit' })).toHaveAttribute(
+      'aria-valuetext',
+      '81% used; 39% of the period elapsed',
+    );
+    expect(screen.getByTestId('live-usage-elapsed-seven-day')).toBeInTheDocument();
+  });
+
+  it('omits the marker for a window whose period is not stated or implied', () => {
+    // A monthly window with no start: a month's length genuinely varies, so
+    // "thirty days before the reset" would be a guess dressed as a
+    // measurement — unlike weekly or daily, monthly gets no marker.
+    const unbounded = live({
+      providers: [
+        {
+          ...liveProvider(),
+          windows: [
+            liveWindow({
+              id: 'monthly-window',
+              role: 'other',
+              kind: 'monthly',
+              startsAt: null,
             }),
           ],
         },
@@ -285,8 +317,8 @@ describe('UsageView — plan limits layered over local estimates', () => {
     });
     render(<UsageView summary={summary()} live={unbounded} now={NOW} onBack={vi.fn()} />);
 
-    expect(screen.queryByTestId('live-usage-elapsed-seven-day')).not.toBeInTheDocument();
-    expect(screen.getByRole('progressbar', { name: 'Weekly limit' })).toHaveAttribute(
+    expect(screen.queryByTestId('live-usage-elapsed-monthly-window')).not.toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Monthly limit' })).toHaveAttribute(
       'aria-valuetext',
       '81% used',
     );

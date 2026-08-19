@@ -1077,6 +1077,24 @@ export async function onSessionsInvalidated(handler: () => void): Promise<Unlist
   return listen(SESSIONS_INVALIDATED_EVENT, () => handler());
 }
 
+/**
+ * Event the shell emits the instant the popover reaches the screen. Mirrors
+ * `popover::EVENT_SHOWN` in `src-tauri/src/popover.rs`.
+ *
+ * Deliberately not folded into `onScanEvent`: the scan it also kicks is
+ * gated on discovery being unpaused and can take as long as a full disk
+ * walk, neither of which has anything to do with a provider's own stated
+ * limits. This is what a view subscribes to when what it wants is "the
+ * popover just opened," full stop.
+ */
+export const POPOVER_SHOWN_EVENT = 'popover:shown';
+
+/** Subscribe to the popover reaching the screen. The result unsubscribes. */
+export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return () => {};
+  return listen(POPOVER_SHOWN_EVENT, () => handler());
+}
+
 /** Event the shell emits when storage health changes. Mirrors `src-tauri/src/storage_health.rs`. */
 export const STORAGE_HEALTH_EVENT = 'storage:health';
 

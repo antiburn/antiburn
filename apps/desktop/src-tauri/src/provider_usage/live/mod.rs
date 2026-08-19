@@ -102,7 +102,14 @@ pub trait LiveUsageSource: Send + Sync {
     }
 
     /// Collect whatever this source can currently prove.
-    fn fetch(&self) -> SourceOutcome;
+    ///
+    /// `max_age` is how old a successful reading the caller is willing to
+    /// accept before it wants a real refetch rather than the cached last-good
+    /// snapshot — see the `Cooldown` type every direct-fetch source is built
+    /// on, in `sources::cooldown`. A source that reads a local file rather
+    /// than a network endpoint is free to ignore it: there is no round trip
+    /// there for a cooldown to gate.
+    fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome;
 }
 
 /// One source's answer for one collection pass.
@@ -150,6 +157,13 @@ impl SourceOutcome {
 /// Passing `None` skips both — used by tests that are only exercising the
 /// shaping, and by the fallback path where no store is mounted.
 ///
+/// `max_age` states how fresh *this caller* needs a reading to be, and is
+/// passed straight through to [`sources::collect`] — see
+/// [`LiveUsageSource::fetch`]. The popover, polling while visible, and the
+/// background milestone monitor want different answers to "how old a reading
+/// is acceptable", and this is the one place both meet, so it is the one
+/// place that has to ask.
+///
 /// The ordering is by provider id so a re-render never reshuffles equal rows;
 /// within a provider, windows keep the order the parser found them, which is
 /// the provider's own order — shortest window first in practice, and not
@@ -159,6 +173,7 @@ pub fn summarize(
     store: Option<&crate::store::Store>,
     now: i64,
     utc_offset_minutes: i32,
+    max_age: std::time::Duration,
 ) -> LiveUsageSummary {
     // Read fresh, and default to *not* acting: an unreadable preference is not
     // permission, the same rule every notifier in this app follows. Both
@@ -168,7 +183,7 @@ pub fn summarize(
     let online = store
         .and_then(|store| store.settings().ok())
         .is_some_and(|settings| settings.live_usage_active());
-    let collected = sources::collect(sources, online);
+    let collected = sources::collect(sources, online, max_age);
     let history = store
         .map(|store| history::record(store, &collected.snapshots))
         .unwrap_or_default();

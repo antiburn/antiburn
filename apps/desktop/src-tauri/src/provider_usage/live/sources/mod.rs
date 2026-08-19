@@ -42,6 +42,8 @@ pub mod codex_fetch;
 mod cooldown;
 mod http;
 
+use std::time::Duration;
+
 use super::LiveUsageSource;
 use super::model::{Freshness, ProviderUsageSnapshot};
 
@@ -66,13 +68,19 @@ pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
 /// (see [`crate::store::AppSettings::live_usage_active`]). A source that
 /// declared [`LiveUsageSource::requires_online_opt_in`] is not merely ignored
 /// while it is false — it is never called, so nothing it would do can happen.
-pub fn collect(sources: &[Box<dyn LiveUsageSource>], online: bool) -> Collected {
+///
+/// `max_age` is passed straight through to every source's
+/// [`LiveUsageSource::fetch`] — see that method's doc for what it means. One
+/// value for the whole pass, because a pass answers one question ("what do
+/// the sources say right now, for this caller's freshness need") and every
+/// source in it should be answering the same question.
+pub fn collect(sources: &[Box<dyn LiveUsageSource>], online: bool, max_age: Duration) -> Collected {
     let mut collected = Collected::default();
     for source in sources {
         if source.requires_online_opt_in() && !online {
             continue;
         }
-        let outcome = source.fetch();
+        let outcome = source.fetch(max_age);
         if let Some(error) = outcome.error {
             collected.errors.push((source.id(), error));
         }

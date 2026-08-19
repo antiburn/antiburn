@@ -341,6 +341,27 @@ describe('PopoverView', () => {
     expect(screen.getByText('No provider usage today')).toBeInTheDocument();
   });
 
+  it('refreshes usage on the shell’s popover-shown signal, independent of any scan', async () => {
+    render(<PopoverView />);
+    await screen.findByTestId('provider-usage-cluster');
+
+    const callsBeforeShown = invoke.mock.calls.filter(
+      ([command]) => command === 'get_live_usage',
+    ).length;
+
+    // `popover:shown` carries no payload — it is a pure signal, unlike the
+    // scan events, which carry a status.
+    emit('popover:shown', undefined);
+
+    await waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([command]) => command === 'get_live_usage').length,
+      ).toBeGreaterThan(callsBeforeShown),
+    );
+    // Not riding the scan pipeline: no scan command was ever asked for.
+    expect(invoke).not.toHaveBeenCalledWith('scan_now', expect.anything());
+  });
+
   it('never renders the first-run flow, whatever the flag says', async () => {
     // The flow has its own window now (D-25, `views/OnboardingView.tsx`), and
     // the shell sends the tray click there instead of here. A popover that

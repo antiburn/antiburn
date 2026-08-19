@@ -44,8 +44,9 @@
 //! Every other failure — a rejected credential, a rate limit, an
 //! unreachable network, a response this build cannot parse — goes through
 //! [`Cooldown`], which is what keeps this source from opening a connection on
-//! every five-minute scheduler tick: see that module for the retry and
-//! last-good-reading contract every direct-fetch source shares.
+//! every poll: see that module for the retry and last-good-reading contract
+//! every direct-fetch source shares, and for how a caller's own `max_age`
+//! decides how often "every poll" actually reaches the network.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -270,13 +271,13 @@ impl LiveUsageSource for ClaudeDirectFetch {
         true
     }
 
-    fn fetch(&self) -> SourceOutcome {
+    fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
         // The credential read sits inside the cooldown gate on purpose: on
-        // macOS it spawns a `security` subprocess, and a scheduler tick that
-        // the cooldown is going to skip anyway should not pay for one — nor
+        // macOS it spawns a `security` subprocess, and a poll that the
+        // cooldown is going to skip anyway should not pay for one — nor
         // re-raise a Keychain access prompt the reader has already seen.
-        self.cooldown.poll(now, || {
+        self.cooldown.poll(now, max_age, || {
             let Some(credentials) = self.read_credentials() else {
                 return Ok(None);
             };
@@ -337,6 +338,11 @@ mod tests {
 
     const NOW: i64 = 1_800_000_000;
 
+    /// A background-caller-shaped `max_age` for tests that only exercise
+    /// whether a reading is found, not how the cooldown's freshness budget
+    /// behaves — `cooldown.rs`'s own suite owns that.
+    const TEST_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
     fn credentials_file(expires_at_ms: i64, subscription_type: &str) -> String {
         format!(
             r#"{{"claudeAiOauth": {{"accessToken": "synthetic-token",
@@ -348,7 +354,7 @@ mod tests {
     #[test]
     fn a_missing_credentials_file_is_absent_not_an_error() {
         let source = ClaudeDirectFetch::at(PathBuf::from("/nonexistent/.credentials.json"));
-        let outcome = source.fetch();
+        let outcome = source.fetch(TEST_MAX_AGE);
         assert!(outcome.snapshots.is_empty());
         assert_eq!(outcome.error, None);
     }
@@ -358,7 +364,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".credentials.json");
         fs::write(&path, "not json at all").expect("write");
-        let outcome = ClaudeDirectFetch::at(path).fetch();
+        let outcome = ClaudeDirectFetch::at(path).fetch(TEST_MAX_AGE);
         assert!(outcome.snapshots.is_empty());
         assert_eq!(outcome.error, None);
     }
@@ -368,7 +374,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".credentials.json");
         fs::write(&path, r#"{"somethingElse": true}"#).expect("write");
-        let outcome = ClaudeDirectFetch::at(path).fetch();
+        let outcome = ClaudeDirectFetch::at(path).fetch(TEST_MAX_AGE);
         assert!(outcome.snapshots.is_empty());
         assert_eq!(outcome.error, None);
     }
