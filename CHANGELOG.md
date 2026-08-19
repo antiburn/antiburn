@@ -26,6 +26,21 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Added
 
+- Anonymised usage analytics about the application itself, on by default with
+  the control on the first-run Ready screen and in Settings → Privacy. Events
+  carry twelve fields — platform, a per-message id, a rotating installation
+  identifier, an in-memory identifier for one run of the app, the event name,
+  capture and delivery timestamps, architecture, a bucketed count, a
+  closed-vocabulary label, app version, and operating system — and never
+  sessions, prompts, titles, file paths, repository names, token counts, costs,
+  or credentials. Settings → Privacy enumerates all of them, and
+  `docs/usage-analytics.md` carries the full catalog plus the commands to check
+  any of it yourself. Nothing is sent until the first run completes; in the EU,
+  the EEA, and the UK the control starts off rather than on; and a build with no
+  endpoint injected sends nothing at all. Recorded as D-026 in
+  `docs/oss/source-denylist.toml` and D-28 in `docs/deviations.md`, which also
+  resolves D-5.
+
 - **What "local" means, spelled out.** antiburn needs no antiburn account,
   server, or backend — everything runs on your machine, as you. The
   connections it makes are yours: reading your provider's own current usage

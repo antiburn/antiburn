@@ -58,6 +58,14 @@ mechanical boundaries this repository already enforces — the engine's
 boundary that was crossed once had a gap in it, and the test is what closes
 the gap rather than the patch.
 
+One distinction to make before you harden anything: antiburn has **one**
+sanctioned outbound channel besides the update check — the anonymised
+usage-analytics publisher in `src-tauri/src/usage_analytics`, recorded as D-026
+and deviations D-28. Traffic from it is not a breach. What *would* be a breach
+is that channel carrying a field its event schema does not name, reaching an
+endpoint the build did not inject, or sending while the reader's consent is
+off. Check the schema and the gate before concluding the boundary held.
+
 ## Releasing it
 
 An ordinary release, cut per [`release.md`](release.md), with three differences.

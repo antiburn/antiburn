@@ -44,10 +44,16 @@ technique is not the boundary.
   figures, is not a disclosure: the provider already holds both. This is the
   boundary CI keeps mechanically (`crates/antiburn-local/tests/boundary.rs`,
   `scripts/check-boundary.mjs`, `apps/desktop/tests/no-exfiltration.test.ts`):
-  no telemetry or analytics SDK, no reporting endpoint, no first-party host may
-  enter the tree. The update check — antiburn's own release feed, carrying
-  nothing about the reader — is the one call to a service, and it is a
-  convenience the app never depends on, not a service it needs to function.
+  no telemetry or analytics SDK, and no reporting endpoint carrying the reader's
+  work, may enter the tree. Two first-party calls are permitted and no more: the
+  update check — antiburn's own release feed, carrying nothing about the reader —
+  and the anonymised usage-analytics channel recorded as D-026 and deviations
+  D-28. Four properties keep the second one inside this boundary and must all
+  hold for any change to it: the reader is shown the control before a single
+  event is sent, the payload carries no session content and no credential, the
+  installation identifier rotates so events cannot be joined into a history, and
+  a build with no configured endpoint transmits nothing. Neither call is
+  something the app needs to function.
 - **Genuinely risky local operations still earn care.** Deleting or modifying
   the reader's files, terminating processes, or anything that could damage the
   machine or the reader's standing with a provider needs clear, present intent —

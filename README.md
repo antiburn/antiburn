@@ -26,8 +26,14 @@ account, server, or backend, ever. Everything runs on this machine, as you. The
 connections it makes beyond that are yours: it can read your provider's own current
 usage figures with your own credentials — traffic between this machine and a provider
 you already use, never us. The one call antiburn makes to a service of ours is the update check, against
-GitHub Releases, and the app never depends on it. There is no analytics or telemetry
-of any kind in this application, and antiburn hands your data to no one who doesn't
+GitHub Releases, and the app never depends on it. Released builds also send
+anonymised usage analytics about the application itself — on by default,
+switchable off in Settings → Privacy, and never carrying your sessions, prompts,
+file paths, or repository names. Every field and every event is listed in
+[docs/usage-analytics.md](docs/usage-analytics.md), along with the commands to
+verify it on your own machine. The endpoint is
+injected at build time, so a build from a clean checkout of this repository sends
+nothing at all. Beyond that, antiburn hands your data to no one who doesn't
 already have it.
 
 **Resource boundary:** antiburn is a background utility, so CPU, memory, and disk I/O

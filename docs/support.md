@@ -127,8 +127,27 @@ version exists, and which the app never depends on.
 - It runs on a schedule only while "check for updates automatically" is on, and can
   always be run by hand from Settings → About.
 - Development builds carry no updater at all.
-- There is **no analytics and no telemetry** in this application — no client, no
-  consent screen, and no endpoint.
+- **Anonymised usage analytics** are the one thing antiburn reports about itself.
+  On by default; the switch is in Settings → Privacy, and the first-run Ready
+  screen shows it before anything is sent. Each event carries twelve fields and
+  no others: the constant `desktop`; a random per-message id used to discard
+  duplicate deliveries; a random installation identifier replaced every 30 days;
+  the event name; the time it happened and the time it was delivered; the
+  processor architecture; a count rounded into a range where the event has one;
+  a short label naming which setting changed or which kind of failure occurred,
+  never the value; the app version; and the operating system. The payload has no
+  field able to carry anything else. Because each event is timestamped and the
+  identifier lasts up to 30 days, the events do show roughly when the
+  application is used within that window; they do not show what it was used on.
+  [usage-analytics.md](usage-analytics.md) is the complete account: every field,
+  the full event catalog, and how to verify all of it yourself.
+  Never sent: sessions, transcripts, prompts, titles, file paths, repository or
+  branch names, token counts, costs, or credentials. Switching it off deletes
+  the identifier and anything still queued. A build with no endpoint configured
+  — every development build, and every build from a clean checkout of the public
+  repository — sends nothing at all.
+- There is **no third-party analytics, telemetry, or crash-reporting SDK** in this
+  application. The channel above is first-party and is the only one.
 
 **One setting causes traffic that is not antiburn's.** Settings → Usage has a switch,
 off by default, that lets antiburn run your coding agent in the background — about
