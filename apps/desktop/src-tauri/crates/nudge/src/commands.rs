@@ -55,7 +55,7 @@ pub fn nudge_resize(manager: State<'_, NudgeManager>, height: f64) {
 
 /// Invoked by the notification webview once its `nudge:show` listener is
 /// attached, so a nudge emitted before the webview was ready (e.g. right after
-/// prewarm) is re-delivered instead of silently lost.
+/// creation) is re-delivered instead of silently lost.
 #[tauri::command]
 pub fn nudge_ready(manager: State<'_, NudgeManager>) {
     manager.on_nudge_ready();

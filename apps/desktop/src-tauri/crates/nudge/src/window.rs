@@ -2,8 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The notification window mechanism: build it once, position it at the
-//! OS-native corner, show it **without stealing focus**. This module knows
+//! The notification window mechanism: build it on demand, position it at the
+//! OS-native corner, show it **without stealing focus**, and retire it after
+//! dismissal. This module knows
 //! nothing about *what* a nudge means — that is the app's policy.
 //!
 //! The notification loads the app's own frontend bundle (same SPA as the
@@ -59,11 +60,8 @@ pub(crate) fn get_or_create_nudge_window(app: &AppHandle) -> tauri::Result<Webvi
     }
     match build_nudge_window(app, crate::NUDGE_LABEL) {
         Ok(window) => Ok(window),
-        // `prewarm` and the first `show` can both observe `None` above and race
-        // into `build`; Tauri fails the loser with "a webview with label ...
-        // already exists". Recover by returning the window the winner created so
-        // the losing caller (e.g. `show`) still presents its nudge instead of
-        // silently dropping it.
+        // Concurrent policy events can both observe `None` above and race into
+        // `build`; return whichever build won instead of dropping a nudge.
         Err(err) => app.get_webview_window(crate::NUDGE_LABEL).ok_or(err),
     }
 }
@@ -288,6 +286,22 @@ pub(crate) fn hide(window: &WebviewWindow) {
     }
     #[cfg(not(target_os = "macos"))]
     let _ = window.hide();
+}
+
+/// Retire the hidden notification webview. The next delivery recreates it.
+pub(crate) fn destroy(window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::stop_hover_watch();
+        // `tauri-nspanel` mutates the native window class in place. Restore it
+        // and release the plugin's retained handle before Tauri removes the
+        // WKWebView, or AppKit terminates the process while unregistering
+        // WebKit's window-visibility observer.
+        if !crate::macos::prepare_for_destroy(window) {
+            return;
+        }
+    }
+    let _ = window.destroy();
 }
 
 /// The monitor currently containing the cursor, if it can be determined. Cursor

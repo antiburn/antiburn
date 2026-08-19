@@ -38,7 +38,7 @@ use tauri::{Emitter, Manager, WebviewWindow};
 use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
 use tauri_nspanel::cocoa::base::{BOOL, id};
 use tauri_nspanel::cocoa::foundation::{NSPoint, NSRect, NSSize};
-use tauri_nspanel::objc::runtime::YES;
+use tauri_nspanel::objc::runtime::{Class, Object, YES};
 use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
 use tauri_nspanel::{ManagerExt, WebviewPanelManager, WebviewWindowExt};
 
@@ -53,6 +53,23 @@ const STYLE_MASK_NONACTIVATING_PANEL: i32 = 1 << 7;
 /// menus / pop-ups), so the notification reliably sits on top.
 const STATUS_WINDOW_LEVEL: i32 = 25;
 
+/// The Tao/AppKit class the notification window had before `tauri-nspanel`
+/// changed it in place to `RawNSPanel`.
+///
+/// The pinned nspanel revision retains panels forever and offers no way to
+/// convert one back before Tauri destroys its webview. Destroying the mutated
+/// window makes WebKit remove its visibility observer from the wrong class and
+/// raises an uncaught `NSRangeException`. Newer nspanel releases fix the same
+/// crash by remembering this class, removing the panel handle, restoring the
+/// class, and only then closing the Tauri window. There is only ever one nudge
+/// window, so one slot is the exact lifecycle we need here.
+static ORIGINAL_WINDOW_CLASS: Mutex<Option<usize>> = Mutex::new(None);
+
+unsafe extern "C" {
+    fn object_getClass(object: *mut Object) -> *const Class;
+    fn object_setClass(object: *mut Object, class: *const Class) -> *const Class;
+}
+
 /// Convert the notification window into a non-activating floating panel and
 /// apply the notification behaviors. Requires the nspanel plugin (registered via
 /// [`crate::register`]); a no-op if it isn't present. Safe to call from any
@@ -63,9 +80,22 @@ pub(crate) fn to_nonactivating_panel(window: &WebviewWindow) {
     }
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
+        let Ok(pointer) = window.ns_window() else {
+            return;
+        };
+        // SAFETY: `ns_window` returns the live Objective-C window owned by this
+        // Tauri window, and this closure is executing on AppKit's main thread.
+        let original_class = unsafe { object_getClass(pointer.cast()) };
+        if original_class.is_null() {
+            return;
+        }
+
         let Ok(panel) = window.to_panel() else {
             return;
         };
+        *ORIGINAL_WINDOW_CLASS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(original_class as usize);
         // Borderless + never activate the app on key.
         panel.set_style_mask(STYLE_MASK_NONACTIVATING_PANEL);
         // Float above other windows; show on every Space and above fullscreen apps.
@@ -75,6 +105,53 @@ pub(crate) fn to_nonactivating_panel(window: &WebviewWindow) {
                 | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
         );
     });
+}
+
+/// Convert the notification panel back to its original Tao/AppKit window
+/// class and release nspanel's retained handle before Tauri destroys it.
+///
+/// Must run on the main thread. Returns `false` when a converted panel cannot
+/// be restored; callers must keep that hidden window alive rather than take the
+/// process down with the WebKit/AppKit exception described above.
+pub(crate) fn prepare_for_destroy(window: &WebviewWindow) -> bool {
+    let panel = window.get_webview_panel(crate::NUDGE_LABEL);
+    let mut original_class = ORIGINAL_WINDOW_CLASS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let panel = match (panel, *original_class) {
+        (Err(_), None) => return true,
+        (Ok(panel), Some(_)) => panel,
+        // A panel and its remembered original class must either both exist or
+        // both be absent. Any ambiguous state keeps the hidden window alive.
+        _ => return false,
+    };
+    let Ok(pointer) = window.ns_window() else {
+        return false;
+    };
+
+    // The old plugin has no remove API, but its store is replaceable. Hold our
+    // clone across the replacement so the native object cannot disappear in
+    // the middle of the class transition. This crate registers exactly one
+    // panel label, so clearing the store removes only this notification.
+    let Some(manager) = window.try_state::<WebviewPanelManager>() else {
+        return false;
+    };
+    let mut panels = manager
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *panels = Default::default();
+    let restored_class = original_class.expect("matched Some above") as *const Class;
+    // SAFETY: `pointer` is the live NSWindow on AppKit's main thread;
+    // `restored_class` was read from that same object immediately before
+    // nspanel changed its class and remains registered for the process lifetime.
+    unsafe {
+        object_setClass(pointer.cast(), restored_class);
+    }
+    original_class.take();
+    drop(panels);
+    drop(panel);
+    true
 }
 
 /// Show the notification by ordering its panel front, **without** taking key

@@ -95,9 +95,10 @@ impl Schedulers {
 ///
 /// # Panics
 ///
-/// Panics if the webview runtime, the popover window, the tray item, or the
-/// local database cannot be created: none of the four has a meaningful degraded
-/// mode.
+/// Panics if the webview runtime, tray item, or local database cannot be
+/// created: none of the three has a meaningful degraded mode. Windows are
+/// created lazily and report their own failures at the interaction that asked
+/// for them.
 pub fn run() {
     // `register` installs the non-activating-panel support the notification
     // window needs on macOS; a no-op elsewhere.
@@ -190,11 +191,10 @@ pub fn run() {
             app.manage(settings::PendingPane::default());
             app.manage(nudges::AnchorOverride::default());
 
-            popover::create(app.handle())?;
             tray::create(app.handle())?;
-            // After both, and on the main thread: the monitor dismisses the
-            // popover and reaches the menu-bar item to unlight it, so neither
-            // may be missing by the time a click can arrive.
+            // After the tray, and on the main thread: the monitor reaches the
+            // menu-bar item to unlight it. The popover itself is lazy, and its
+            // dismissal path already treats a missing window as idle.
             global_click::install(app.handle());
 
             // The first run gets a window rather than silence. Everything above
@@ -220,25 +220,14 @@ pub fn run() {
             // automatic check can see whether there is anything to check with.
             install_updater(app.handle());
 
-            // The notification window's manager and the chime player. Prewarm
-            // is deferred a little so the app has a valid display context —
-            // the same reasoning as the popover's own deferred build.
+            // The notification window's manager and the chime player. The
+            // webview itself is created only when policy delivers a nudge.
             nudges::init(app.handle())?;
             // The live-usage registry: the sources that can prove a
             // provider's own limit figures, and the milestone ledger they
             // feed. Registered before the schedulers so the first pass sees
             // a populated registry rather than an empty one.
             app.manage(usage_alerts::LiveUsage::new(data_dir.join("usage-refresh")));
-            {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    if let Some(manager) = handle.try_state::<antiburn_nudge::NudgeManager>() {
-                        manager.prewarm();
-                    }
-                });
-            }
-
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
@@ -310,6 +299,26 @@ fn abort_schedulers(app: &tauri::AppHandle) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClosePolicy {
+    Allow,
+    HidePopover,
+    HidePendingOnboarding,
+    HideNudge,
+}
+
+fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
+    if label == popover::LABEL {
+        ClosePolicy::HidePopover
+    } else if label == antiburn_nudge::NUDGE_LABEL {
+        ClosePolicy::HideNudge
+    } else if label == onboarding::LABEL && onboarding_pending {
+        ClosePolicy::HidePendingOnboarding
+    } else {
+        ClosePolicy::Allow
+    }
+}
+
 /// Window policy shared by every window the shell creates.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     match event {
@@ -318,16 +327,30 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         WindowEvent::Focused(false) if window.label() == popover::LABEL => {
             popover::hide_on_focus_loss(window);
         }
-        // Neither window is ever destroyed by the user: the popover hides and
-        // the settings window is reused on the next open.
         WindowEvent::CloseRequested { api, .. } => {
-            api.prevent_close();
-            if window.label() == popover::LABEL {
-                // Through `popover::hide` rather than `window.hide()`, so this
-                // path answers to the pin like every other dismissal does.
-                popover::hide(window.app_handle());
-            } else {
-                let _ = window.hide();
+            match close_policy(window.label(), onboarding::is_pending(window.app_handle())) {
+                ClosePolicy::Allow => {}
+                ClosePolicy::HidePopover => {
+                    api.prevent_close();
+                    // Through `popover::hide` rather than `window.hide()`, so
+                    // this path answers to the pin like every dismissal does.
+                    popover::hide(window.app_handle());
+                }
+                ClosePolicy::HidePendingOnboarding => {
+                    api.prevent_close();
+                    // Preserve first-run progress until it is completed. The
+                    // Dock and tray can both reopen this same window.
+                    let _ = window.hide();
+                }
+                ClosePolicy::HideNudge => {
+                    api.prevent_close();
+                    if let Some(manager) = window
+                        .app_handle()
+                        .try_state::<antiburn_nudge::NudgeManager>()
+                    {
+                        manager.dismiss();
+                    }
+                }
             }
         }
         _ => {}
@@ -369,7 +392,7 @@ fn install_updater(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_prevent_exit;
+    use super::{ClosePolicy, close_policy, should_prevent_exit};
 
     #[test]
     fn a_window_close_never_quits_the_finished_menu_bar_app() {
@@ -387,5 +410,29 @@ mod tests {
         // context menu both offer Quit and both arrive with no code; swallowing
         // them would ship a Quit item that does nothing.
         assert!(!should_prevent_exit(true, None));
+    }
+
+    #[test]
+    fn only_transient_or_incomplete_windows_intercept_close() {
+        assert_eq!(
+            close_policy(super::popover::LABEL, false),
+            ClosePolicy::HidePopover
+        );
+        assert_eq!(
+            close_policy(super::onboarding::LABEL, true),
+            ClosePolicy::HidePendingOnboarding
+        );
+        assert_eq!(
+            close_policy(super::onboarding::LABEL, false),
+            ClosePolicy::Allow
+        );
+        assert_eq!(
+            close_policy(super::settings::LABEL, false),
+            ClosePolicy::Allow
+        );
+        assert_eq!(
+            close_policy(antiburn_nudge::NUDGE_LABEL, false),
+            ClosePolicy::HideNudge
+        );
     }
 }
