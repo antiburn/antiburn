@@ -391,7 +391,7 @@ describe('SettingsView', () => {
     for (const headline of [
       'Exactly what is sent',
       'The two identifiers',
-      'Where this starts switched off',
+      'How the starting default is chosen',
       'What happens after it arrives',
     ]) {
       expect(screen.getByRole('button', { name: headline })).toBeInTheDocument();
@@ -454,6 +454,13 @@ describe('SettingsView', () => {
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument();
     expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument();
     expect(screen.getByText(/quitting antiburn ends it/i)).toBeInTheDocument();
+    // Shown to everyone, because the locale read it describes happens to
+    // everyone. Asserted unconditionally for the same reason — a regression
+    // that gated this row would pass a test that only ran it one way.
+    open('How the starting default is chosen');
+    expect(
+      screen.getByText(/nothing is looked up, nothing is asked of you/i),
+    ).toBeInTheDocument();
     // Retention is the operator's, and the pane says so rather than promising
     // something this build cannot keep.
     open('What happens after it arrives');

@@ -157,12 +157,13 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             dimmed={!usageAnalyticsSupported || !loaded}
             disabled={!usageAnalyticsSupported || !loaded}
           />
-        </Card>
-        <Card>
-          {/* In a Card rather than on the bare surface: the toggle above is a
-              control and these are its terms, and a shared container says they
-              belong to it. `inset="card"` lines the labels up with the toggle's
-              own, which `px-1` did not. */}
+          {/* One Card with the switch, not a second one beside it: these are
+              the switch's terms, and two containers read as two subjects.
+              `Card`'s own `divide-y` draws the hairline between them, which is
+              why `DisclosureGroup` must not draw one at this inset.
+
+              `inset="card"` lines the labels up with the toggle's own label,
+              which the default 4px surface inset did not. */}
           <DisclosureGroup inset="card">
             <Disclosure inset="card" label="Exactly what is sent">
               {/* Every field, including the plumbing ones. An enumeration that
@@ -233,11 +234,22 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 another.
               </p>
             </Disclosure>
-            <Disclosure inset="card" label="Where this starts switched off">
-              In the EU, the EEA, and the UK this begins off rather than on, because there
-              analytics are something you opt into. antiburn works that out from the locale and
-              time zone your machine already reports &mdash; nothing is looked up, and neither
-              is ever sent.
+            {/* Shown to every reader, not only the ones it switches off for.
+                The locale and time-zone read happens on every machine, so this
+                is a disclosure owed to everybody — and gating it on the guess
+                in `euLocale.ts` would hide the explanation from exactly the
+                reader that guess got wrong. */}
+            <Disclosure inset="card" label="How the starting default is chosen">
+              <p>
+                antiburn reads the locale and time zone your machine already reports. Nothing is
+                looked up, nothing is asked of you, and neither is ever sent &mdash; the answer
+                only picks where the switch above starts.
+              </p>
+              <p className="mt-2">
+                In the EU, the EEA, and the UK it starts off rather than on, because there
+                analytics are something you opt into. Everywhere else it starts on, and this
+                pane is where you turn it off.
+              </p>
             </Disclosure>
             {/* Deliberately not claimed by the app. Retention and IP handling
                 belong to whoever operates the endpoint, and a promise this
