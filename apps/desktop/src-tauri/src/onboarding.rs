@@ -47,6 +47,10 @@ const URL: &str = "index.html#/onboarding";
 const WIDTH: f64 = 680.0;
 const HEIGHT: f64 = 480.0;
 
+/// Give the final settings command time to return before its caller's webview
+/// is destroyed. The window is hidden immediately, so this delay is invisible.
+const FINISH_TEARDOWN_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
 // The reasons for those two numbers, as build errors rather than tests —
 // following `popover.rs`, and for the same reason: a geometry constant edited
 // without its rationale should fail to compile, not fail a suite somebody can
@@ -138,6 +142,23 @@ pub fn finish(app: &AppHandle) {
     // ordered out by it — hence this line before that one, not after.
     apply_activation_policy(app, false);
     crate::notifications::note_menu_bar_home(app);
+
+    // `finish` runs inside the onboarding webview's final `set_settings` IPC.
+    // Destroying that webview synchronously can cut off the command response;
+    // hide now, then retire it once the response and location nudge are away.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(FINISH_TEARDOWN_DELAY).await;
+        let check_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if is_pending(&check_app) {
+                return;
+            }
+            if let Some(window) = check_app.get_webview_window(LABEL) {
+                let _ = window.destroy();
+            }
+        });
+    });
 }
 
 /// Which kind of application antiburn is while the first run is pending.

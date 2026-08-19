@@ -75,6 +75,17 @@ pub(crate) fn to_nonactivating_panel(window: &WebviewWindow) {
     });
 }
 
+/// Convert the notification panel back to its original window class and remove
+/// the retained panel handle before Tauri destroys the webview. The pinned
+/// nspanel revision owns the class restoration in `Panel::to_window`.
+/// Returns `false` if a registered panel cannot be converted safely.
+pub(crate) fn prepare_for_destroy(window: &WebviewWindow) -> bool {
+    match window.get_webview_panel(crate::NUDGE_LABEL) {
+        Ok(panel) => panel.to_window().is_some(),
+        Err(_) => true,
+    }
+}
+
 /// Show the notification by ordering its panel front, **without** taking key
 /// window status. An unprompted nudge must never take key: even though the
 /// `NonactivatingPanel` style mask (see [`to_nonactivating_panel`]) keeps a
