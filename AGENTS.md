@@ -13,3 +13,9 @@ Only add a `useEffect` when it is strictly necessary to synchronize React with a
 Do not add or retain Rust lint suppressions for dead or deprecated code. This includes item-level forms such as `#[allow(dead_code)]` and `#[allow(deprecated)]`, crate- or module-level forms such as `#![allow(dead_code)]` and `#![allow(deprecated)]`, and the corresponding `#[expect(...)]` forms.
 
 Delete dead code and migrate away from deprecated APIs instead. A suppression is permitted only after explaining the concrete need and receiving explicit agreement from the developer. Existing suppressions are not precedent for adding or retaining more, and reviews should call them out.
+
+## Commits
+
+Every commit must carry a Developer Certificate of Origin sign-off: run `git commit -s` (or add `Signed-off-by: Name <email>` to the message by hand). The DCO check fails the whole PR on any commit that is missing one — it does not average out across the branch.
+
+Sign off from the first commit. Fixing a missing sign-off after the fact means amending or rebasing the offending commit and force-pushing the branch, which resets every check run and starts CI over from scratch.
