@@ -103,8 +103,6 @@ export interface OnboardingFlowProps {
   /** Whether this build can send analytics at all. False in development and
    *  in any build from a clean checkout, where the row says so instead. */
   usageAnalyticsSupported: boolean;
-  /** Who receives them, named rather than implied. Null when unsupported. */
-  usageAnalyticsOperator: string | null;
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void;
   finishing: boolean;
@@ -175,23 +173,19 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
           shows you what they cost and how they went. No account, and nothing from your sessions
           is ever uploaded.
         </p>
-        {/* This sentence has to keep matching what "local" actually promises:
-            antiburn goes online as your own agent — reading a provider's
-            current usage figures with your credentials, checking GitHub
-            Releases for new versions — and what makes it local is that none
-            of that depends on any service of ours.
-
-            Gated on support, because a build with no injected endpoint cannot
-            send analytics and this is the first screen a reader ever sees. The
-            long form is Settings → Privacy; the job here is to name the thing
-            and say where the switch is, not to explain it. */}
+        {/* Two claims, because two is what this screen owes: that antiburn
+            does go online, as the reader rather than as us, and that
+            analytics exist and have a switch. "No antiburn account" and
+            "nothing of ours the app needs" both went — the paragraph above
+            already says "No account", and Settings → Privacy is the long
+            form. Gated on support: a build with no injected endpoint cannot
+            send anything, and this is the first screen anyone sees. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          It does go online as your own agent: a provider&rsquo;s usage figures, read with your
-          own credentials, and a check for new versions. There is no antiburn account, and
-          nothing of ours the app needs to work.{' '}
+          It does go online as you: reading a provider&rsquo;s usage figures with your own
+          credentials, and checking for new versions.{' '}
           {usageAnalyticsSupported
-            ? 'It also sends anonymised analytics about itself — switch that off on the last screen, or later in Settings.'
-            : 'This build has no analytics endpoint, so it sends nothing about itself either.'}
+            ? 'It also sends anonymised analytics about itself, which you can switch off on the last screen.'
+            : 'This build has no analytics endpoint, so it sends nothing about itself.'}
         </p>
       </div>
     </div>
@@ -483,7 +477,6 @@ function Ready({
   usageAnalyticsEnabled,
   onAnalyticsEnabledChange,
   usageAnalyticsSupported,
-  usageAnalyticsOperator,
   finishError,
 }: {
   sessions: number;
@@ -492,7 +485,6 @@ function Ready({
   usageAnalyticsEnabled: boolean;
   onAnalyticsEnabledChange: (enabled: boolean) => void;
   usageAnalyticsSupported: boolean;
-  usageAnalyticsOperator: string | null;
   finishError: string | null;
 }) {
   return (
@@ -533,13 +525,10 @@ function Ready({
             label="Send anonymised usage analytics"
             description={
               usageAnalyticsSupported
-                ? // No "change this later in Settings": the row directly above
-                  // already ends on that sentence, and Welcome said where the
-                  // switch lives. What only this row can say is who receives
-                  // these and what they are — so it says that, and stops.
-                  `Which features get used and what breaks${
-                    usageAnalyticsOperator ? `, sent to ${usageAnalyticsOperator}` : ''
-                  }. Never anything from your sessions.`
+                ? // Names no recipient. Settings → Privacy does, and is one click
+                  // from here; a first-run switch reads better without a party
+                  // the reader has no context for yet.
+                  'Only sends which features are used, and what breaks. Never anything to do with your sessions. Change anytime in Settings → Privacy.'
                 : 'This build has no analytics endpoint, so nothing can be sent from it.'
             }
             checked={usageAnalyticsSupported && usageAnalyticsEnabled}
@@ -582,7 +571,6 @@ export function OnboardingFlow({
   usageAnalyticsEnabled,
   onAnalyticsEnabledChange,
   usageAnalyticsSupported,
-  usageAnalyticsOperator,
   onFinish,
   finishing,
   finishError,
@@ -677,7 +665,6 @@ export function OnboardingFlow({
             usageAnalyticsEnabled={usageAnalyticsEnabled}
             onAnalyticsEnabledChange={onAnalyticsEnabledChange}
             usageAnalyticsSupported={usageAnalyticsSupported}
-            usageAnalyticsOperator={usageAnalyticsOperator}
             finishError={finishError}
           />
         )}

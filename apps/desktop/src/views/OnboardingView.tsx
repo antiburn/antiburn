@@ -81,7 +81,6 @@ export function OnboardingView() {
         usageAnalyticsEnabled={state.usageAnalyticsEnabled}
         onAnalyticsEnabledChange={session.setAnalyticsEnabled}
         usageAnalyticsSupported={state.usageAnalyticsSupported}
-        usageAnalyticsOperator={state.usageAnalyticsOperator}
         finishing={state.finishing}
         finishError={state.finishError}
         onFinish={session.finish}

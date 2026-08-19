@@ -200,10 +200,12 @@ describe('OnboardingView', () => {
     expect(await screen.findByRole('heading', { name: 'Ready' })).toBeInTheDocument();
     expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Launch antiburn on startup' })).toBeChecked();
-    // The recipient is named at the moment of consent. A switch that says
-    // "anonymised analytics" without saying who receives them is asking for
-    // agreement to an unnamed party, and nothing else in the flow names one.
-    expect(screen.getByText(/sent to the antiburn team/i)).toBeInTheDocument();
+    // What the switch commits to, at the moment it is committed to. The
+    // recipient is deliberately not named here — Settings → Privacy does that,
+    // and this row points at it.
+    expect(
+      screen.getByText(/only sends which features are used, and what breaks/i),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
@@ -242,7 +244,7 @@ describe('OnboardingView', () => {
     expect(
       await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/it sends nothing about itself either/i)).toBeInTheDocument();
+    expect(screen.getByText(/it sends nothing about itself/i)).toBeInTheDocument();
     expect(screen.queryByText(/also sends anonymised analytics/i)).not.toBeInTheDocument();
 
     await advanceToReady();
