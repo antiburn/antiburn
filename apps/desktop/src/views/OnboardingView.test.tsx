@@ -173,7 +173,7 @@ describe('OnboardingView', () => {
     // for. `APP_INFO` reports a supported build, so this is the branch that
     // claims analytics — see below for the build that cannot send them.
     expect(
-      screen.getByText(/three things.*You can opt out of the analytics/i),
+      screen.getByText(/only goes online for.*You can opt out of the analytics/i),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
