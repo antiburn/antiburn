@@ -54,6 +54,12 @@ const LOG_METADATA_CONCURRENCY: usize = 16;
 /// a multi-gigabyte log never needs to be materialized in full to be described.
 const SOURCE_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Maximum transcript suffix read to recover semantic activity. Activity
+/// records are append-oriented in the JSONL formats we support; a suffix is
+/// enough to find the latest meaningful event without materialising a large
+/// historical transcript on every scan.
+pub const ACTIVITY_TAIL_BYTES: u64 = 256 * 1024;
+
 /// A session whose transcript was written within this window is treated as
 /// "live" — the mtime heartbeat, since no agent writes an explicit
 /// in-progress flag. Shared by every surface that reports live sessions
@@ -1016,6 +1022,42 @@ pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
         .read_to_end(&mut bytes)
         .await
         .ok()?;
+    match String::from_utf8(bytes) {
+        Ok(content) => Some(content),
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            String::from_utf8(error.into_bytes()[..valid].to_vec()).ok()
+        }
+        Err(_) => None,
+    }
+}
+
+/// Read a bounded, line-aligned suffix of a source file.
+///
+/// The first bytes are discarded when the bound starts in the middle of a
+/// JSONL record. Inline and provider-db sources retain their normal whole
+/// content behavior because they are already bounded by their source adapter.
+/// A single final JSONL record larger than [`ACTIVITY_TAIL_BYTES`] is therefore
+/// intentionally omitted. The scan preserves a previously cached semantic
+/// timestamp in that case; first discovery falls back to the source mtime.
+pub async fn session_source_tail(source: &SessionSource) -> Option<String> {
+    let SessionSource::File(path) = source else {
+        return session_source_content(source).await;
+    };
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let len = file.metadata().await.ok()?.len();
+    let start = len.saturating_sub(ACTIVITY_TAIL_BYTES);
+    if start > 0 {
+        file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await.ok()?;
+    if start > 0
+        && let Some(newline) = bytes.iter().position(|byte| *byte == b'\n')
+    {
+        bytes.drain(..=newline);
+    }
     match String::from_utf8(bytes) {
         Ok(content) => Some(content),
         Err(error) if error.utf8_error().error_len().is_none() => {

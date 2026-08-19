@@ -69,10 +69,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use antiburn_local::discovery::scanner::TitleSource;
+use antiburn_local::discovery::scanner::{self, TitleSource};
 use antiburn_local::discovery::{
     Explorers, ResolvedTitle, SessionLog, SessionSource, TitleLookupKind, session_log_metadata,
-    session_source_preview,
+    session_source_preview, session_source_tail,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
@@ -84,7 +84,7 @@ use crate::analytics;
 use crate::dto::ScanStatus;
 use crate::repositories;
 use crate::storage_health::{self, checked};
-use crate::store::{SessionKey, SessionRecord, Store};
+use crate::store::{SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, Store};
 
 /// How often the scheduler wakes up.
 pub const TICK: Duration = Duration::from_secs(60);
@@ -292,7 +292,9 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
         )
         .await;
 
-    let Described { records, rejected } = describe(logs, &home, &ignored).await;
+    let activity_states = store.session_activity_states()?;
+    let Described { records, rejected } =
+        describe_with_states(logs, &home, &ignored, &activity_states).await;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
@@ -351,10 +353,20 @@ struct Described {
 
 /// Read metadata for every discovered log, at a bounded concurrency, and drop
 /// the ones the reader opted out of.
+#[cfg(test)]
 async fn describe(
     logs: Vec<SessionLog>,
     home: &std::path::Path,
     ignored: &std::collections::HashSet<String>,
+) -> Described {
+    describe_with_states(logs, home, ignored, &std::collections::HashMap::new()).await
+}
+
+async fn describe_with_states(
+    logs: Vec<SessionLog>,
+    home: &std::path::Path,
+    ignored: &std::collections::HashSet<String>,
+    activity_states: &std::collections::HashMap<SessionActivityKey, SessionActivityState>,
 ) -> Described {
     let indexed_titles = indexed_titles_for_logs(&logs).await;
     let mut records = Vec::with_capacity(logs.len());
@@ -364,9 +376,17 @@ async fn describe(
         for log in chunk {
             let log = log.clone();
             let home = home.to_path_buf();
+            let activity_key = SessionActivityKey::new(
+                log.environment.key(),
+                log.agent_type.slug(),
+                log.source_label(),
+            );
+            let activity_state = activity_states.get(&activity_key).cloned();
             let indexed_title = recovered_id(&log)
                 .and_then(|session_id| indexed_titles.get(&(log.agent_type, session_id)).cloned());
-            set.spawn(async move { describe_one(log, &home, indexed_title).await });
+            set.spawn(async move {
+                describe_one_with_activity(log, &home, indexed_title, activity_state).await
+            });
         }
         while let Some(joined) = set.join_next().await {
             match joined {
@@ -423,10 +443,113 @@ enum DescribeOutcome {
     Skip,
 }
 
+/// Resolve the display timestamp from transcript events while using the
+/// persisted aggregate cursor as a cheap unchanged-source gate.
+async fn semantic_activity_for_log(
+    log: &SessionLog,
+    previous: Option<&SessionActivityState>,
+    children: &[std::path::PathBuf],
+    preview: Option<&str>,
+) -> (Option<i64>, String, String) {
+    let SessionSource::File(path) = &log.source else {
+        return (log.updated_at, "unknown".to_string(), String::new());
+    };
+
+    let Some(size) = tokio::fs::metadata(path).await.ok().map(|meta| meta.len()) else {
+        return (log.updated_at, "mtime".to_string(), String::new());
+    };
+
+    // Include the complete source set in the cursor. Parent + child sizes and
+    // identities make an unchanged orchestrator as cheap as a leaf while a
+    // child append naturally invalidates the gate.
+    let mut cursor_parts = vec![[
+        "parent".to_string(),
+        path.to_string_lossy().into_owned(),
+        size.to_string(),
+    ]];
+    for child in children {
+        let child_size = tokio::fs::metadata(child)
+            .await
+            .ok()
+            .map(|meta| meta.len())
+            .map_or_else(|| "missing".to_string(), |size| size.to_string());
+        cursor_parts.push([
+            "child".to_string(),
+            child.to_string_lossy().into_owned(),
+            child_size,
+        ]);
+    }
+    cursor_parts.sort_unstable();
+    let cursor = serde_json::to_string(&cursor_parts).expect("activity cursor is serializable");
+
+    let unchanged_event = previous
+        .is_some_and(|state| state.activity_source == "event" && state.activity_cursor == cursor);
+    if unchanged_event {
+        let state = previous.expect("checked above");
+        return (
+            state.updated_at_epoch,
+            state.activity_source.clone(),
+            cursor,
+        );
+    }
+
+    // Preserve a known event timestamp before looking at changed content. A
+    // size-growing append containing only housekeeping must never fall back to
+    // its new mtime or promote an otherwise idle session.
+    let mut latest = previous
+        .filter(|state| state.activity_source == "event")
+        .and_then(|state| state.updated_at_epoch);
+    let mut consider = |content: &str| {
+        if let Some(epoch) = scanner::max_activity_event_epoch(content, log.agent_type) {
+            latest = Some(latest.map_or(epoch, |current| current.max(epoch)));
+        }
+    };
+
+    // `describe_one_with_activity` already fetched the bounded preview for
+    // metadata/title work. Reuse it for normal-sized files; larger files use
+    // both the preview and a line-aligned tail so old activity can heal a
+    // migrated mtime row even when the tail is housekeeping-only.
+    if let Some(preview) = preview {
+        consider(preview);
+    }
+    let preview_is_complete = preview.is_some_and(|content| size <= content.len() as u64);
+    if !preview_is_complete && let Some(tail) = session_source_tail(&log.source).await {
+        consider(&tail);
+    }
+
+    // Child transcripts are separate append-only files. Their semantic work
+    // belongs to the orchestrator's activity row; child mtimes are discovery
+    // hints only.
+    for child in children {
+        let child_source = SessionSource::File(child.clone());
+        if let Some(epoch) = session_source_tail(&child_source)
+            .await
+            .and_then(|tail| scanner::max_activity_event_epoch(&tail, log.agent_type))
+        {
+            latest = Some(latest.map_or(epoch, |current| current.max(epoch)));
+        }
+    }
+
+    match latest {
+        Some(epoch) => (Some(epoch), "event".to_string(), cursor),
+        None => (log.updated_at, "mtime".to_string(), cursor),
+    }
+}
+
+#[cfg(test)]
 async fn describe_one(
     log: SessionLog,
     home: &std::path::Path,
     indexed_title: Option<ResolvedTitle>,
+) -> DescribeOutcome {
+    describe_one_with_activity(log, home, indexed_title, None).await
+}
+
+async fn describe_one_with_activity(
+    log: SessionLog,
+    home: &std::path::Path,
+    indexed_title: Option<ResolvedTitle>,
+    activity_state: Option<SessionActivityState>,
 ) -> DescribeOutcome {
     let metadata = session_log_metadata(&log).await;
     let Some(session_id) = metadata
@@ -471,13 +594,21 @@ async fn describe_one(
 
     // A dir listing per orchestrator-capable session; vendors that record no
     // orchestration return empty without touching the disk.
-    let subagent_count = match &log.source {
-        SessionSource::File(path) => Explorers::DISK
-            .list_subagents_for_transcript(&log.agent_type, path)
-            .await
-            .len() as u32,
-        _ => 0,
+    let children = match &log.source {
+        SessionSource::File(path)
+            if matches!(log.agent_type, AgentKind::Claude | AgentKind::Codex) =>
+        {
+            Explorers::DISK
+                .list_subagents_for_transcript(&log.agent_type, path)
+                .await
+        }
+        _ => Vec::new(),
     };
+    let subagent_count = children.len() as u32;
+
+    let (updated_at_epoch, activity_source, activity_cursor) =
+        semantic_activity_for_log(&log, activity_state.as_ref(), &children, preview.as_deref())
+            .await;
 
     DescribeOutcome::Session(Box::new(SessionRecord {
         key,
@@ -488,7 +619,9 @@ async fn describe_one(
         title_source,
         cwd: metadata.and_then(|metadata| metadata.cwd),
         surface: log.surface_label(home).to_string(),
-        updated_at_epoch: log.updated_at,
+        updated_at_epoch,
+        activity_cursor,
+        activity_source,
         subagent_count,
         // Lineage is resolved when a session is opened: the observation lives
         // inside the transcript, and reading every transcript on every pass
@@ -696,7 +829,7 @@ fn source_kind(source: &SessionSource) -> &'static str {
     }
 }
 
-/// Per-agent `(slug, sessions seen, newest heartbeat)` for the scan-state table.
+/// Per-agent `(slug, sessions seen, newest activity)` for the scan-state table.
 fn per_agent_totals(records: &[SessionRecord]) -> Vec<(String, i64, Option<i64>)> {
     let mut totals: std::collections::BTreeMap<String, (i64, Option<i64>)> =
         std::collections::BTreeMap::new();
@@ -784,6 +917,7 @@ mod tests {
     use super::*;
     use antiburn_local::platform::environment::DiscoveryEnvironment;
     use std::collections::HashSet;
+    use std::io::Write;
 
     /// A synthetic Claude store: `<home>/.claude/projects/<encoded>/<id>.jsonl`.
     /// Every value is fictional; the shapes are what the engine's scanner reads.
@@ -1112,7 +1246,7 @@ mod tests {
         assert_eq!(stored.len(), 2);
         assert_eq!(
             stored[0].key.session_id, "codex-abc",
-            "newest heartbeat first"
+            "newest activity first"
         );
 
         let state = store.scan_state().unwrap();
@@ -1122,6 +1256,194 @@ mod tests {
                 .iter()
                 .all(|(_, completed, seen)| { completed.is_some() && *seen == 1 })
         );
+    }
+
+    #[tokio::test]
+    async fn an_idle_touched_transcript_heals_mtime_recency_and_then_uses_size_gate() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = home
+            .path()
+            .join(".claude/projects/-home-avery-code-widgets/old.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","sessionId":"old","cwd":"/home/avery/code/widgets","timestamp":"2026-06-26T21:20:00Z"}"#,
+                "\n",
+                r#"{"type":"custom-title","customTitle":"Renamed","timestamp":"2026-08-19T17:07:32Z"}"#,
+                "\n",
+                r#"{"type":"permission-mode","mode":"default","timestamp":"2026-08-19T17:07:33Z"}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-06-26T21:30:15Z"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+
+        // Append a housekeeping record larger than the bounded tail. The
+        // preview still contains the old activity and should heal this
+        // migrated mtime row on its first semantic scan.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(
+                format!(
+                    r#"{{"type":"permission-mode","mode":"default","timestamp":"2026-08-19T17:08:00Z","padding":"{}"}}
+"#,
+                    "x".repeat(300_000)
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+
+        // Simulate a row written by the old mtime-based scanner. The semantic
+        // pass must replace it with the old meaningful transcript activity.
+        let mut stale = record("claude-code", "old", Some(1_787_155_652));
+        stale.source_label = path.to_string_lossy().into_owned();
+        stale.activity_cursor = "legacy".into();
+        stale.activity_source = "mtime".into();
+        store.upsert_sessions(&[stale]).unwrap();
+
+        let states = store.session_activity_states().unwrap();
+        let described = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_787_155_652)],
+            home.path(),
+            &HashSet::new(),
+            &states,
+        )
+        .await;
+        let expected = time::OffsetDateTime::parse(
+            "2026-06-26T21:30:15Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
+        .unix_timestamp();
+        assert_eq!(described.records[0].updated_at_epoch, Some(expected));
+        assert_eq!(described.records[0].activity_source, "event");
+        store.upsert_sessions(&described.records).unwrap();
+        let stored = store
+            .session_activity_states()
+            .unwrap()
+            .remove(&SessionActivityKey::new(
+                "native",
+                AgentKind::Claude.slug(),
+                path.to_string_lossy().into_owned(),
+            ))
+            .expect("healed activity cursor");
+        assert_eq!(stored.updated_at_epoch, Some(expected));
+        assert_eq!(stored.activity_source, "event");
+
+        // A harness appends housekeeping only. The changed size invalidates
+        // the cursor, but the previous event seed survives the suffix parse
+        // and prevents the new mtime from promoting the session.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(
+                format!(
+                    r#"{{"type":"permission-mode","mode":"default","timestamp":"2026-08-19T17:08:00Z","padding":"{}"}}
+"#,
+                    "x".repeat(300_000)
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        let states = store.session_activity_states().unwrap();
+        let touched = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+            &states,
+        )
+        .await;
+        assert_eq!(touched.records[0].updated_at_epoch, Some(expected));
+        assert_eq!(touched.records[0].activity_source, "event");
+
+        // A later mtime-only touch now hits the unchanged-size cursor gate.
+        let states = {
+            store.upsert_sessions(&touched.records).unwrap();
+            store.session_activity_states().unwrap()
+        };
+        let gated = describe_with_states(
+            vec![log(AgentKind::Claude, path, 1_800_000_001)],
+            home.path(),
+            &HashSet::new(),
+            &states,
+        )
+        .await;
+        assert_eq!(gated.records[0].updated_at_epoch, Some(expected));
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_cursor_gates_unchanged_children_and_advances_on_child_growth() {
+        let home = tempfile::TempDir::new().unwrap();
+        let parent = write_claude_session(home.path(), "orchestrator");
+        let child_dir = parent
+            .parent()
+            .unwrap()
+            .join("orchestrator")
+            .join("subagents");
+        std::fs::create_dir_all(&child_dir).unwrap();
+        let child = child_dir.join("agent-child.jsonl");
+        std::fs::write(
+            &child,
+            r#"{"type":"assistant","timestamp":"2026-08-01T10:02:00Z"}
+"#,
+        )
+        .unwrap();
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+
+        let first = describe_with_states(
+            vec![log(AgentKind::Claude, parent.clone(), 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_activity_states().unwrap(),
+        )
+        .await;
+        assert_eq!(first.records[0].subagent_count, 1);
+        let first_epoch = first.records[0].updated_at_epoch.unwrap();
+        store.upsert_sessions(&first.records).unwrap();
+
+        // An mtime-only parent touch with an unchanged parent+child cursor is
+        // served from the cached semantic event without reading either tail.
+        let gated = describe_with_states(
+            vec![log(AgentKind::Claude, parent.clone(), 1_900_000_000)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_activity_states().unwrap(),
+        )
+        .await;
+        assert_eq!(gated.records[0].updated_at_epoch, Some(first_epoch));
+
+        // Appending genuine child work changes the aggregate cursor and
+        // promotes the parent to the child's semantic event time.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&child)
+            .unwrap()
+            .write_all(
+                br#"{"type":"assistant","timestamp":"2026-08-01T10:03:00Z"}
+"#,
+            )
+            .unwrap();
+        let advanced = describe_with_states(
+            vec![log(AgentKind::Claude, parent, 1_900_000_001)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_activity_states().unwrap(),
+        )
+        .await;
+        let expected = time::OffsetDateTime::parse(
+            "2026-08-01T10:03:00Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
+        .unix_timestamp();
+        assert_eq!(advanced.records[0].updated_at_epoch, Some(expected));
+        assert!(advanced.records[0].updated_at_epoch.unwrap() > first_epoch);
     }
 
     /// A synthetic Claude sidechain transcript: `agentId` on every record and
@@ -1348,13 +1670,15 @@ mod tests {
             cwd: None,
             surface: "cli".into(),
             updated_at_epoch: updated_at,
+            activity_cursor: String::new(),
+            activity_source: "mtime".into(),
             subagent_count: 0,
             fork_parent_session_id: None,
         }
     }
 
     #[test]
-    fn per_agent_totals_count_sessions_and_keep_the_newest_heartbeat() {
+    fn per_agent_totals_count_sessions_and_keep_the_newest_activity() {
         let records = vec![
             record("claude-code", "a", Some(1_000)),
             record("claude-code", "b", Some(3_000)),

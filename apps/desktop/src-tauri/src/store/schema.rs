@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -65,7 +65,8 @@ CREATE TABLE session (
     title_source     TEXT,
     cwd              TEXT,
     surface          TEXT NOT NULL DEFAULT 'unknown',
-    -- Transcript heartbeat (unix seconds), as discovery reported it.
+    -- Most recent meaningful transcript activity (unix seconds), as the scan
+    -- reported it. File mtime is only a fallback for sources without events.
     updated_at_epoch INTEGER,
     subagent_count   INTEGER NOT NULL DEFAULT 0,
     first_seen_at    TEXT NOT NULL,
@@ -179,4 +180,13 @@ CREATE TABLE consent_grant (
 /// strategy instead of this one.
 const V3: &str = r#"
 DELETE FROM setting WHERE key = 'liveUsageEnabled';
+"#;
+
+/// v4 — activity cursor and timestamp provenance.
+///
+/// Existing rows are marked as mtime-derived so the next scan gets one chance
+/// to replace a stale mtime-derived timestamp with one from transcript content.
+const V4: &str = r#"
+ALTER TABLE session ADD COLUMN activity_source TEXT NOT NULL DEFAULT 'mtime';
+ALTER TABLE session ADD COLUMN activity_cursor TEXT NOT NULL DEFAULT '';
 "#;

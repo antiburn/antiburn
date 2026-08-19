@@ -1183,7 +1183,7 @@ mod tests {
     fn epochs_render_as_the_iso_stamps_the_activity_list_parses() {
         assert_eq!(iso_from_epoch(Some(0)), "1970-01-01T00:00:00Z");
         assert_eq!(iso_from_epoch(Some(1_800_000_000)), "2027-01-15T08:00:00Z");
-        // A session with no heartbeat still yields a parseable stamp rather
+        // A session with no activity still yields a parseable stamp rather
         // than an empty string the list would drop.
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
     }

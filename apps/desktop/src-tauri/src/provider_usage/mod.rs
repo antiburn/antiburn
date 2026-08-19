@@ -25,7 +25,7 @@
 //! # An honest limitation, surfaced rather than hidden
 //!
 //! 1. **A session lands in one window: the one its last activity falls in.**
-//!    The store keeps a per-session heartbeat, not a per-turn timeline, so a
+//!    The store keeps a per-session activity timestamp, not a per-turn timeline, so a
 //!    session that ran across midnight counts entirely in the day it last
 //!    touched. The views say so.
 
@@ -115,7 +115,7 @@ pub fn window_bounds(now: i64, utc_offset_minutes: i32) -> WindowBounds {
     }
 }
 
-/// The earliest heartbeat the aggregation needs to read.
+/// The earliest activity timestamp the aggregation needs to read.
 ///
 /// Exposed so the caller can bound its query instead of loading every retained
 /// session and discarding most of them.
@@ -147,7 +147,7 @@ impl Membership {
     }
 
     /// True when the row falls outside every window, which makes it irrelevant
-    /// — a session whose heartbeat is older than the widest bound, or missing
+    /// — a session whose activity is older than the widest bound, or missing
     /// entirely (stored as zero).
     fn is_empty(self) -> bool {
         !self.today && !self.week && !self.month
@@ -329,7 +329,7 @@ fn provider_without_models(agent: &str) -> &'static str {
 /// bounded by [`lookback_start`], which is a lower bound, not an exact filter —
 /// and those are skipped here.
 /// Estimated spend, in USD, across every provider for sessions whose
-/// heartbeat falls in `[start, end)`.
+/// activity timestamp falls in `[start, end)`.
 ///
 /// The anomaly monitor's arithmetic, kept next to `summarize` because it
 /// reuses the same attribution and per-model pricing. Same floor semantics as

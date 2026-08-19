@@ -73,11 +73,54 @@ pub struct SessionRecord {
     pub cwd: Option<String>,
     /// `cli`, `ide_desktop`, or `unknown`.
     pub surface: String,
-    /// Transcript heartbeat, in unix seconds.
+    /// Most recent meaningful transcript activity, in unix seconds. A
+    /// filesystem mtime is retained only when the source has no usable event
+    /// timestamp; see [`Self::activity_source`].
     pub updated_at_epoch: Option<i64>,
+    /// Fingerprint of the complete activity source set: parent size plus the
+    /// identities and sizes of any child transcripts. Used as the cheap gate
+    /// before re-reading transcript suffixes for semantic activity.
+    pub activity_cursor: String,
+    /// Provenance of `updated_at_epoch`: `event` for a meaningful transcript
+    /// event, `mtime` for the filesystem fallback, or `unknown` for sources
+    /// without a file heartbeat.
+    pub activity_source: String,
     pub subagent_count: u32,
     /// The session this one was branched from, when the vendor records it.
     pub fork_parent_session_id: Option<String>,
+}
+
+/// Identity of one persisted activity cursor. The source label alone is not
+/// enough: native and WSL environments can expose the same provider path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionActivityKey {
+    pub environment_key: String,
+    pub agent: String,
+    pub source_label: String,
+}
+
+impl SessionActivityKey {
+    pub fn new(
+        environment_key: impl Into<String>,
+        agent: impl Into<String>,
+        source_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            environment_key: environment_key.into(),
+            agent: agent.into(),
+            source_label: source_label.into(),
+        }
+    }
+}
+
+/// Small persisted cursor used by the scanner before it reads transcript
+/// suffixes. Kept separate from [`SessionRecord`] so callers that only need
+/// the activity gate do not materialize titles, CWDs, or relationships.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionActivityState {
+    pub activity_cursor: String,
+    pub updated_at_epoch: Option<i64>,
+    pub activity_source: String,
 }
 
 /// Engine-derived analysis for one session, as cached.
@@ -109,8 +152,8 @@ pub struct AnalysisRecord {
 pub struct UsageEvidenceRecord {
     /// The agent's discovery slug.
     pub agent: String,
-    /// Transcript heartbeat, in unix seconds. Zero when the session never
-    /// carried one, which puts it outside every window.
+    /// Most recent meaningful session activity, in unix seconds. Zero when
+    /// the session never carried one, which puts it outside every window.
     pub updated_at_epoch: i64,
     /// Billable tokens per normalized model key, or `None` when the session has
     /// not been analyzed. Absence is "we do not know yet", never "zero".
