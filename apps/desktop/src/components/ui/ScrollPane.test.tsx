@@ -2,46 +2,46 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render } from "@testing-library/react"
+import { describe, expect, it, vi } from "vitest"
 
-import { ScrollPane } from './ScrollPane';
+import { ScrollPane } from "./ScrollPane"
 
-describe('ScrollPane top edge fade', () => {
-  it('activates the reusable mask only after leaving the top edge', () => {
-    const viewportRef = vi.fn();
+describe("ScrollPane top edge fade", () => {
+  it("activates the reusable mask only after leaving the top edge", () => {
+    const viewportRef = vi.fn()
     const { container } = render(
       <ScrollPane topEdgeFade viewportRef={viewportRef}>
         <div>Scrollable content</div>
       </ScrollPane>,
-    );
-    const viewport = container.querySelector('.ui-scroll-viewport') as HTMLDivElement;
+    )
+    const viewport = container.querySelector(".ui-scroll-viewport") as HTMLDivElement
 
-    expect(viewportRef).toHaveBeenCalledWith(viewport);
-    expect(viewport.className).toContain('scroll-edge-fade-top');
-    expect(viewport.hasAttribute('data-scroll-edge-top')).toBe(false);
+    expect(viewportRef).toHaveBeenCalledWith(viewport)
+    expect(viewport.className).toContain("scroll-edge-fade-top")
+    expect(viewport.hasAttribute("data-scroll-edge-top")).toBe(false)
 
-    viewport.scrollTop = 2;
-    fireEvent.scroll(viewport);
-    expect(viewport.getAttribute('data-scroll-edge-top')).toBe('active');
+    viewport.scrollTop = 2
+    fireEvent.scroll(viewport)
+    expect(viewport.getAttribute("data-scroll-edge-top")).toBe("active")
 
-    viewport.scrollTop = 1;
-    fireEvent.scroll(viewport);
-    expect(viewport.hasAttribute('data-scroll-edge-top')).toBe(false);
-  });
+    viewport.scrollTop = 1
+    fireEvent.scroll(viewport)
+    expect(viewport.hasAttribute("data-scroll-edge-top")).toBe(false)
+  })
 
-  it('does not add fade behavior unless requested', () => {
+  it("does not add fade behavior unless requested", () => {
     const { container } = render(
       <ScrollPane>
         <div>Scrollable content</div>
       </ScrollPane>,
-    );
-    const viewport = container.querySelector('.ui-scroll-viewport') as HTMLDivElement;
+    )
+    const viewport = container.querySelector(".ui-scroll-viewport") as HTMLDivElement
 
-    viewport.scrollTop = 20;
-    fireEvent.scroll(viewport);
+    viewport.scrollTop = 20
+    fireEvent.scroll(viewport)
 
-    expect(viewport.className).not.toContain('scroll-edge-fade-top');
-    expect(viewport.hasAttribute('data-scroll-edge-top')).toBe(false);
-  });
-});
+    expect(viewport.className).not.toContain("scroll-edge-fade-top")
+    expect(viewport.hasAttribute("data-scroll-edge-top")).toBe(false)
+  })
+})

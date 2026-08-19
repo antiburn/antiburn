@@ -2,18 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronDown, ChevronUp } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { ChevronDown, ChevronUp } from "lucide-react"
+import { useState, type ReactNode } from "react"
 
 export interface CollapsibleOrchestrationCardProps {
   /** Leading glyph in the header. */
-  icon?: ReactNode;
+  icon?: ReactNode
   /** Collapsed header text. */
-  title: string;
+  title: string
   /** Extra classes for the expanded body wrapper, on top of the base padding. */
-  bodyClassName?: string;
+  bodyClassName?: string
   /** Revealed when expanded. */
-  children: ReactNode;
+  children: ReactNode
 }
 
 /**
@@ -33,8 +33,8 @@ export function CollapsibleOrchestrationCard({
   bodyClassName,
   children,
 }: CollapsibleOrchestrationCardProps) {
-  const [expanded, setExpanded] = useState(false);
-  const Chevron = expanded ? ChevronUp : ChevronDown;
+  const [expanded, setExpanded] = useState(false)
+  const Chevron = expanded ? ChevronUp : ChevronDown
 
   return (
     <div className="mx-3 mb-3 overflow-hidden rounded-xl bg-system-indigo/10">
@@ -53,7 +53,7 @@ export function CollapsibleOrchestrationCard({
         />
       </button>
 
-      {expanded && <div className={`px-2 pt-0.5 pb-2 ${bodyClassName ?? ''}`}>{children}</div>}
+      {expanded && <div className={`px-2 pt-0.5 pb-2 ${bodyClassName ?? ""}`}>{children}</div>}
     </div>
-  );
+  )
 }

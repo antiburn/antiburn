@@ -2,93 +2,89 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState } from "react"
 
 import {
   bucketDetail,
   formatCompact,
   formatDuration,
   phaseColor,
-} from '../../../lib/presentation/sessionAnalytics';
-import type {
-  PhaseDistribution,
-  SessionBucket,
-  SessionPhase,
-} from '../../../lib/types/session';
+} from "../../../lib/presentation/sessionAnalytics"
+import type { PhaseDistribution, SessionBucket, SessionPhase } from "../../../lib/types/session"
 import {
   dedupe,
   roundedClosedPath,
   traceRibbon,
   type Rect,
   type Vec,
-} from './hypnogramGeometry';
-import { GLASS_TOOLTIP_STYLE, useTooltipPosition } from './tooltip';
+} from "./hypnogramGeometry"
+import { GLASS_TOOLTIP_STYLE, useTooltipPosition } from "./tooltip"
 
 /**
  * Lanes top → bottom. Disruptions sit at the top, the way "awake" does on a
  * sleep hypnogram; implementing is the deepest lane at the bottom.
  */
 const LANES: readonly SessionPhase[] = [
-  'disruption',
-  'thinking',
-  'exploring',
-  'testing',
-  'implementing',
-];
+  "disruption",
+  "thinking",
+  "exploring",
+  "testing",
+  "implementing",
+]
 
-const VIEW_H = 40;
+const VIEW_H = 40
 /**
  * Fixed viewBox width, roughly matching the card's aspect, so thickness and
  * rounded corners scale evenly under `preserveAspectRatio="none"` instead of
  * distorting with the bucket count.
  */
-const VIEW_W = 100;
-const LANE_GAP = 2;
-const LANE_H = (VIEW_H - LANE_GAP * (LANES.length - 1)) / LANES.length;
+const VIEW_W = 100
+const LANE_GAP = 2
+const LANE_H = (VIEW_H - LANE_GAP * (LANES.length - 1)) / LANES.length
 
 /**
  * Plateau half-thickness, mapped from how dominant the leading phase is. The
  * maximum stays under the lane pitch so adjacent bands stay separated.
  */
-const HALF_MIN = 1.8;
-const HALF_MAX = 4.2;
+const HALF_MIN = 1.8
+const HALF_MAX = 4.2
 
 /** Half-width of the vertical connector that bridges two lanes. */
-const RISER_HALF = 0.2;
+const RISER_HALF = 0.2
 /** Corner radius for the rounded steps, clamped per corner. */
-const CORNER_R = 1.4;
+const CORNER_R = 1.4
 /**
  * Disruption "wake-up" ticks: vertical marks in the top lane for any bucket
  * holding a disruption, even when it is not that bucket's dominant phase — the
  * ribbon alone only shows the plurality, so sparse errors would vanish.
  */
-const TICK_HALF_MIN = 1.6;
+const TICK_HALF_MIN = 1.6
 /**
  * Plateau half-width of a disruption mark: wider than the riser, so the cap
  * reads as a small flat top exactly like the ribbon's own plateaus.
  */
-const TICK_PLATEAU_HALF = 0.7;
+const TICK_PLATEAU_HALF = 0.7
 
 const LANE_CENTER: Record<SessionPhase, number> = LANES.reduce(
   (acc, phase, i) => {
-    acc[phase] = i * (LANE_H + LANE_GAP) + LANE_H / 2;
-    return acc;
+    acc[phase] = i * (LANE_H + LANE_GAP) + LANE_H / 2
+    return acc
   },
   {} as Record<SessionPhase, number>,
-);
+)
 
 function clamp01(t: number): number {
-  return t < 0 ? 0 : t > 1 ? 1 : t;
+  return t < 0 ? 0 : t > 1 ? 1 : t
 }
 
 function distTotal(d: PhaseDistribution): number {
-  return d.implementing + d.testing + d.exploring + d.thinking + d.disruption;
+  return d.implementing + d.testing + d.exploring + d.thinking + d.disruption
 }
 
 function leadShare(d: PhaseDistribution): number {
-  const total = distTotal(d);
-  if (total <= 0) return 0;
-  return Math.max(d.implementing, d.testing, d.exploring, d.thinking, d.disruption) / total;
+  const total = distTotal(d)
+  if (total <= 0) return 0
+  return Math.max(d.implementing, d.testing, d.exploring, d.thinking, d.disruption) / total
 }
 
 /**
@@ -96,36 +92,36 @@ function leadShare(d: PhaseDistribution): number {
  * spans about 0.25 (an even four-way split) to 1.0 (fully dominant).
  */
 function halfThick(lead: number): number {
-  return HALF_MIN + (HALF_MAX - HALF_MIN) * clamp01((lead - 0.25) / 0.75);
+  return HALF_MIN + (HALF_MAX - HALF_MIN) * clamp01((lead - 0.25) / 0.75)
 }
 
 interface Run {
   /** First bucket index, inclusive. */
-  startB: number;
+  startB: number
   /** Last bucket index plus one, exclusive. */
-  endB: number;
+  endB: number
   /** Lane center y. */
-  cy: number;
+  cy: number
   /** Half-thickness, constant across the run. */
-  ht: number;
+  ht: number
 }
 
 interface Tick {
   /** viewBox x at the bucket center. */
-  x: number;
+  x: number
   /** Plateau half-thickness at the disruption lane (severity). */
-  ht: number;
+  ht: number
   /** y where the riser meets the ribbon band below. */
-  base: number;
+  base: number
 }
 
 export interface HypnogramProps {
-  buckets: SessionBucket[];
-  height?: number;
+  buckets: SessionBucket[]
+  height?: number
   /** Session length, used to label the hover position with elapsed time. */
-  durationSecs: number;
+  durationSecs: number
   /** Model context window; 0 when unknown. */
-  contextWindow: number;
+  contextWindow: number
 }
 
 /**
@@ -134,40 +130,40 @@ export interface HypnogramProps {
  * step between two runs is placed at the midpoint of any gap between them.
  */
 function buildRuns(buckets: SessionBucket[]): Run[] {
-  const runs: Run[] = [];
-  let i = 0;
+  const runs: Run[] = []
+  let i = 0
   while (i < buckets.length) {
-    const bucket = buckets[i];
+    const bucket = buckets[i]
     if (!bucket || bucket.dominantPhase == null || distTotal(bucket.distribution) <= 0) {
-      i++;
-      continue;
+      i++
+      continue
     }
-    const phase = bucket.dominantPhase;
-    let j = i;
-    let leadSum = 0;
+    const phase = bucket.dominantPhase
+    let j = i
+    let leadSum = 0
     for (;;) {
-      const next = buckets[j];
-      if (!next || next.dominantPhase !== phase || distTotal(next.distribution) <= 0) break;
-      leadSum += leadShare(next.distribution);
-      j++;
+      const next = buckets[j]
+      if (!next || next.dominantPhase !== phase || distTotal(next.distribution) <= 0) break
+      leadSum += leadShare(next.distribution)
+      j++
     }
     runs.push({
       startB: i,
       endB: j,
       cy: LANE_CENTER[phase],
       ht: halfThick(leadSum / (j - i)),
-    });
-    i = j;
+    })
+    i = j
   }
-  return runs;
+  return runs
 }
 
 /** Top edge of the ribbon band covering a bucket, or null if none does. */
 function bandTopAt(runs: Run[], bucket: number): number | null {
   for (const run of runs) {
-    if (bucket >= run.startB && bucket < run.endB) return run.cy - run.ht;
+    if (bucket >= run.startB && bucket < run.endB) return run.cy - run.ht
   }
-  return null;
+  return null
 }
 
 /**
@@ -178,23 +174,23 @@ function bandTopAt(runs: Run[], bucket: number): number | null {
  * as wake-up spikes instead of floating free.
  */
 function disruptionTicks(buckets: SessionBucket[], runs: Run[], n: number): Tick[] {
-  const xScale = VIEW_W / n;
-  const halfMax = LANE_H / 2; // a fully-disruption bucket fills the lane
-  const ticks: Tick[] = [];
+  const xScale = VIEW_W / n
+  const halfMax = LANE_H / 2 // a fully-disruption bucket fills the lane
+  const ticks: Tick[] = []
   for (let i = 0; i < buckets.length; i++) {
-    const bucket = buckets[i];
-    if (!bucket) continue;
-    const share = bucket.distribution.disruption;
-    if (share <= 0 || bucket.dominantPhase === 'disruption') continue;
-    const base = bandTopAt(runs, i);
-    if (base == null) continue;
+    const bucket = buckets[i]
+    if (!bucket) continue
+    const share = bucket.distribution.disruption
+    if (share <= 0 || bucket.dominantPhase === "disruption") continue
+    const base = bandTopAt(runs, i)
+    if (base == null) continue
     ticks.push({
       x: (i + 0.5) * xScale,
       ht: TICK_HALF_MIN + (halfMax - TICK_HALF_MIN) * clamp01(share),
       base,
-    });
+    })
   }
-  return ticks;
+  return ticks
 }
 
 /**
@@ -207,30 +203,30 @@ function bandExtents(
   buckets: SessionBucket[],
   runs: Run[],
 ): ({ top: number; bottom: number } | null)[] {
-  const extents: ({ top: number; bottom: number } | null)[] = buckets.map(() => null);
+  const extents: ({ top: number; bottom: number } | null)[] = buckets.map(() => null)
   for (const run of runs) {
     for (let i = run.startB; i < run.endB; i++) {
-      extents[i] = { top: run.cy - run.ht, bottom: run.cy + run.ht };
+      extents[i] = { top: run.cy - run.ht, bottom: run.cy + run.ht }
     }
   }
-  const halfMax = LANE_H / 2;
+  const halfMax = LANE_H / 2
   for (let i = 0; i < buckets.length; i++) {
-    const bucket = buckets[i];
-    const extent = extents[i];
-    if (!bucket || !extent) continue;
-    const share = bucket.distribution.disruption;
-    if (share <= 0 || bucket.dominantPhase === 'disruption') continue;
-    const ht = TICK_HALF_MIN + (halfMax - TICK_HALF_MIN) * clamp01(share);
-    extent.top = Math.min(extent.top, LANE_CENTER.disruption - ht);
+    const bucket = buckets[i]
+    const extent = extents[i]
+    if (!bucket || !extent) continue
+    const share = bucket.distribution.disruption
+    if (share <= 0 || bucket.dominantPhase === "disruption") continue
+    const ht = TICK_HALF_MIN + (halfMax - TICK_HALF_MIN) * clamp01(share)
+    extent.top = Math.min(extent.top, LANE_CENTER.disruption - ht)
   }
-  return extents;
+  return extents
 }
 
 /** Plateau-at-the-disruption-lane plus riser-to-the-ribbon outline for one mark. */
 function tickPath(tick: Tick): string {
-  const cy = LANE_CENTER.disruption;
-  const top = cy - tick.ht;
-  const bot = cy + tick.ht;
+  const cy = LANE_CENTER.disruption
+  const top = cy - tick.ht
+  const bot = cy + tick.ht
   const pts: Vec[] = [
     [tick.x - TICK_PLATEAU_HALF, top],
     [tick.x + TICK_PLATEAU_HALF, top],
@@ -240,8 +236,8 @@ function tickPath(tick: Tick): string {
     [tick.x - RISER_HALF, tick.base],
     [tick.x - RISER_HALF, bot],
     [tick.x - TICK_PLATEAU_HALF, bot],
-  ];
-  return roundedClosedPath(dedupe(pts), CORNER_R);
+  ]
+  return roundedClosedPath(dedupe(pts), CORNER_R)
 }
 
 /**
@@ -251,43 +247,43 @@ function tickPath(tick: Tick): string {
  * visible bridges.
  */
 function ribbonPath(runs: Run[], n: number): string {
-  if (runs.length === 0) return '';
-  const xScale = VIEW_W / n;
-  const xOf = (b: number) => b * xScale;
-  const m = runs.length;
+  if (runs.length === 0) return ""
+  const xScale = VIEW_W / n
+  const xOf = (b: number) => b * xScale
+  const m = runs.length
 
   // Riser x between run k and k+1: the midpoint of any gap between them, or
   // their shared boundary when there is none.
-  const rx: number[] = [];
+  const rx: number[] = []
   for (let k = 0; k < m - 1; k++) {
-    const a = runs[k];
-    const b = runs[k + 1];
-    if (!a || !b) continue;
-    rx.push(xOf((a.endB + b.startB) / 2));
+    const a = runs[k]
+    const b = runs[k + 1]
+    if (!a || !b) continue
+    rx.push(xOf((a.endB + b.startB) / 2))
   }
-  const xL = (k: number) => (k === 0 ? 0 : (rx[k - 1] ?? 0));
-  const xR = (k: number) => (k === m - 1 ? VIEW_W : (rx[k] ?? VIEW_W));
+  const xL = (k: number) => (k === 0 ? 0 : (rx[k - 1] ?? 0))
+  const xR = (k: number) => (k === m - 1 ? VIEW_W : (rx[k] ?? VIEW_W))
 
-  const rects: Rect[] = [];
+  const rects: Rect[] = []
   for (let k = 0; k < m; k++) {
-    const run = runs[k];
-    if (!run) continue;
-    rects.push({ x0: xL(k), x1: xR(k), y0: run.cy - run.ht, y1: run.cy + run.ht });
+    const run = runs[k]
+    if (!run) continue
+    rects.push({ x0: xL(k), x1: xR(k), y0: run.cy - run.ht, y1: run.cy + run.ht })
   }
   for (let k = 0; k < m - 1; k++) {
-    const a = runs[k];
-    const b = runs[k + 1];
-    const x = rx[k];
-    if (!a || !b || x === undefined) continue;
+    const a = runs[k]
+    const b = runs[k + 1]
+    const x = rx[k]
+    if (!a || !b || x === undefined) continue
     rects.push({
       x0: x - RISER_HALF,
       x1: x + RISER_HALF,
       y0: Math.min(a.cy - a.ht, b.cy - b.ht),
       y1: Math.max(a.cy + a.ht, b.cy + b.ht),
-    });
+    })
   }
 
-  return traceRibbon(rects, VIEW_W, CORNER_R);
+  return traceRibbon(rects, VIEW_W, CORNER_R)
 }
 
 /**
@@ -310,52 +306,52 @@ export function Hypnogram({
   // space. Each active bucket keeps its original index and the original count,
   // so the hover tooltip still reports its true elapsed time and progress
   // through the uncompressed session.
-  const origN = Math.max(buckets.length, 1);
+  const origN = Math.max(buckets.length, 1)
   const active = buckets
     .map((bucket, origIndex) => ({ bucket, origIndex }))
-    .filter(({ bucket }) => bucket.dominantPhase != null && distTotal(bucket.distribution) > 0);
-  const activeBuckets = active.map((a) => a.bucket);
-  const n = Math.max(activeBuckets.length, 1);
-  const id = useId().replace(/:/g, '');
-  const runs = buildRuns(activeBuckets);
-  const ticks = disruptionTicks(activeBuckets, runs, n);
-  const extents = bandExtents(activeBuckets, runs);
+    .filter(({ bucket }) => bucket.dominantPhase != null && distTotal(bucket.distribution) > 0)
+  const activeBuckets = active.map((a) => a.bucket)
+  const n = Math.max(activeBuckets.length, 1)
+  const id = useId().replace(/:/g, "")
+  const runs = buildRuns(activeBuckets)
+  const ticks = disruptionTicks(activeBuckets, runs, n)
+  const extents = bandExtents(activeBuckets, runs)
 
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const tipRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const tipRef = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{
-    index: number;
-    clientX: number;
-    clientY: number;
-  } | null>(null);
+    index: number
+    clientX: number
+    clientY: number
+  } | null>(null)
 
   function onMove(event: React.MouseEvent<HTMLDivElement>) {
-    const el = wrapRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const xPx = event.clientX - rect.left;
-    const yPx = event.clientY - rect.top;
-    const index = Math.min(n - 1, Math.max(0, Math.floor((xPx / rect.width) * n)));
+    const el = wrapRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const xPx = event.clientX - rect.left
+    const yPx = event.clientY - rect.top
+    const index = Math.min(n - 1, Math.max(0, Math.floor((xPx / rect.width) * n)))
     // Only engage hover when the pointer is over the ribbon itself (with a
     // small tolerance), so empty space around the band shows no tooltip.
-    const extent = extents[index];
-    const yVB = (yPx / rect.height) * VIEW_H;
-    const PAD = 1; // viewBox units of slack, to make thin bands easy to hit
+    const extent = extents[index]
+    const yVB = (yPx / rect.height) * VIEW_H
+    const PAD = 1 // viewBox units of slack, to make thin bands easy to hit
     if (!extent || yVB < extent.top - PAD || yVB > extent.bottom + PAD) {
-      setHover(null);
-      return;
+      setHover(null)
+      return
     }
-    setHover({ index, clientX: event.clientX, clientY: event.clientY });
+    setHover({ index, clientX: event.clientX, clientY: event.clientY })
   }
 
-  const tipPos = useTooltipPosition(hover, wrapRef, tipRef);
+  const tipPos = useTooltipPosition(hover, wrapRef, tipRef)
 
-  const hovered = hover ? active[hover.index] : null;
+  const hovered = hover ? active[hover.index] : null
   const detail = hovered
     ? bucketDetail(hovered.bucket, hovered.origIndex, origN, durationSecs, contextWindow)
-    : null;
-  const cursorX = hover ? ((hover.index + 0.5) * VIEW_W) / n : 0;
+    : null
+  const cursorX = hover ? ((hover.index + 0.5) * VIEW_W) / n : 0
 
   return (
     <div
@@ -372,8 +368,8 @@ export function Hypnogram({
         role="img"
         aria-label="Session mode over time"
         style={{
-          display: 'block',
-          border: '1px solid color-mix(in srgb, var(--color-separator) 50%, transparent)',
+          display: "block",
+          border: "1px solid color-mix(in srgb, var(--color-separator) 50%, transparent)",
         }}
       >
         <defs>
@@ -389,13 +385,13 @@ export function Hypnogram({
             y2={VIEW_H}
           >
             {LANES.flatMap((phase, i) => {
-              const top = (i * (LANE_H + LANE_GAP)) / VIEW_H;
-              const bottom = (i * (LANE_H + LANE_GAP) + LANE_H) / VIEW_H;
-              const color = phaseColor(phase);
+              const top = (i * (LANE_H + LANE_GAP)) / VIEW_H
+              const bottom = (i * (LANE_H + LANE_GAP) + LANE_H) / VIEW_H
+              const color = phaseColor(phase)
               return [
                 <stop key={`${phase}-top`} offset={top} stopColor={color} />,
                 <stop key={`${phase}-bottom`} offset={bottom} stopColor={color} />,
-              ];
+              ]
             })}
           </linearGradient>
         </defs>
@@ -403,7 +399,7 @@ export function Hypnogram({
         {/* Muted dashed separators in the gaps between lanes, drawn before the
             ribbon so it always paints on top. */}
         {LANES.slice(0, -1).map((phase, i) => {
-          const y = i * (LANE_H + LANE_GAP) + LANE_H + LANE_GAP / 2;
+          const y = i * (LANE_H + LANE_GAP) + LANE_H + LANE_GAP / 2
           return (
             <line
               key={`lane-divider-${phase}`}
@@ -416,7 +412,7 @@ export function Hypnogram({
               strokeDasharray="3 3"
               vectorEffect="non-scaling-stroke"
             />
-          );
+          )
         })}
 
         <path d={ribbonPath(runs, n)} fill={`url(#${id}-lane)`} />
@@ -447,10 +443,10 @@ export function Hypnogram({
             ...GLASS_TOOLTIP_STYLE,
             left: tipPos?.left ?? 0,
             top: tipPos?.top ?? 0,
-            visibility: tipPos ? 'visible' : 'hidden',
-            whiteSpace: 'nowrap',
+            visibility: tipPos ? "visible" : "hidden",
+            whiteSpace: "nowrap",
             lineHeight: 1.4,
-            padding: '6px 9px',
+            padding: "6px 9px",
           }}
         >
           <div className="mb-1.5 text-label-secondary" style={{ fontWeight: 500 }}>
@@ -474,12 +470,12 @@ export function Hypnogram({
               ))}
               <div className="mt-1 text-label-tertiary">
                 {formatCompact(detail.tokensIn)} in · {formatCompact(detail.tokensOut)} out ·
-                context {detail.contextPct == null ? 'unavailable' : `${detail.contextPct}%`}
+                context {detail.contextPct == null ? "unavailable" : `${detail.contextPct}%`}
               </div>
             </div>
           )}
         </div>
       )}
     </div>
-  );
+  )
 }

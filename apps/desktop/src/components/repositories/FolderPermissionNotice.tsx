@@ -2,11 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { FolderLock } from 'lucide-react';
+import { FolderLock } from "lucide-react"
 
-import { PushButton } from '../ui/PushButton';
-import type { FlowPhase } from '../../lib/useFolderPermissionFlow';
-import type { DeferredPermissionDir } from '../../lib/types/repository';
+import { PushButton } from "../ui/PushButton"
+import type { FlowPhase } from "../../lib/useFolderPermissionFlow"
+import type { DeferredPermissionDir } from "../../lib/types/repository"
 
 /**
  * The explanation that comes *before* the system's consent dialog.
@@ -34,26 +34,26 @@ export function FolderPermissionNotice({
   onCopyDiagnostics,
   rechecking = false,
 }: {
-  deferred: DeferredPermissionDir[];
-  phase: FlowPhase;
-  current: string | null;
-  position: number;
-  total: number;
-  recordedDenials: string[];
-  onRequest: () => void;
-  onOpenSettings: () => void;
+  deferred: DeferredPermissionDir[]
+  phase: FlowPhase
+  current: string | null
+  position: number
+  total: number
+  recordedDenials: string[]
+  onRequest: () => void
+  onOpenSettings: () => void
   /** Look for access granted outside antiburn, in system settings. */
-  onRecheck: () => void;
-  onCopyDiagnostics: () => void;
-  rechecking?: boolean;
+  onRecheck: () => void
+  onCopyDiagnostics: () => void
+  rechecking?: boolean
 }) {
-  if (deferred.length === 0) return null;
+  if (deferred.length === 0) return null
 
   // Every folder left is one the system will not re-prompt for, so the button
   // that asks would do nothing. Send the reader somewhere that works instead.
   const allStuck =
-    deferred.length > 0 && deferred.every((entry) => recordedDenials.includes(entry.dir));
-  const busy = phase === 'asking' || phase === 'settling';
+    deferred.length > 0 && deferred.every((entry) => recordedDenials.includes(entry.dir))
+  const busy = phase === "asking" || phase === "settling"
 
   return (
     <div
@@ -68,16 +68,16 @@ export function FolderPermissionNotice({
           </p>
           <p className="type-caption text-label-secondary">
             {allStuck
-              ? 'macOS remembers an earlier “Don’t Allow” for these folders and will not ask again. Turning antiburn on in System Settings is the way back.'
-              : 'antiburn looks for the git repositories your coding agents worked in. It reads repository names and locations only, and nothing leaves this Mac.'}
+              ? "macOS remembers an earlier “Don’t Allow” for these folders and will not ask again. Turning antiburn on in System Settings is the way back."
+              : "antiburn looks for the git repositories your coding agents worked in. It reads repository names and locations only, and nothing leaves this Mac."}
           </p>
 
           {busy && current !== null ? (
             <p className="type-caption text-label-secondary" aria-live="polite">
-              {phase === 'settling'
+              {phase === "settling"
                 ? `Reading ${current}…`
                 : `Waiting for macOS about ${current}. If no dialog appears, check your other windows and displays.`}
-              {total > 1 ? ` (${position} of ${total})` : ''}
+              {total > 1 ? ` (${position} of ${total})` : ""}
             </p>
           ) : null}
 
@@ -91,18 +91,18 @@ export function FolderPermissionNotice({
                     until something looks again, and nothing may look for an
                     hour. This is that "look again". */}
                 <PushButton onClick={onRecheck} disabled={rechecking}>
-                  {rechecking ? 'Checking…' : 'Check again'}
+                  {rechecking ? "Checking…" : "Check again"}
                 </PushButton>
                 <PushButton onClick={onCopyDiagnostics}>Copy diagnostics</PushButton>
               </>
             ) : (
               <>
                 <PushButton onClick={onRequest} variant="primary" disabled={busy}>
-                  {busy ? 'Waiting for macOS…' : 'Grant access'}
+                  {busy ? "Waiting for macOS…" : "Grant access"}
                 </PushButton>
                 <PushButton onClick={onOpenSettings}>Open System Settings</PushButton>
                 <PushButton onClick={onRecheck} disabled={busy || rechecking}>
-                  {rechecking ? 'Checking…' : 'Check again'}
+                  {rechecking ? "Checking…" : "Check again"}
                 </PushButton>
               </>
             )}
@@ -110,21 +110,21 @@ export function FolderPermissionNotice({
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 /** "antiburn can't read Documents and Desktop yet." */
 function headlineForPending(deferred: DeferredPermissionDir[]): string {
-  return `antiburn can’t read ${joinFolders(deferred.map((entry) => entry.dir))} yet.`;
+  return `antiburn can’t read ${joinFolders(deferred.map((entry) => entry.dir))} yet.`
 }
 
 function headlineForStuck(deferred: DeferredPermissionDir[]): string {
-  return `antiburn is blocked from ${joinFolders(deferred.map((entry) => entry.dir))}.`;
+  return `antiburn is blocked from ${joinFolders(deferred.map((entry) => entry.dir))}.`
 }
 
 /** `a`, `a and b`, `a, b and c` — the shape a sentence wants. */
 export function joinFolders(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? '';
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  if (names.length <= 1) return names[0] ?? ""
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
 }

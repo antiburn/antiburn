@@ -2,10 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { AlertTriangle, Pause, Play, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Pause, Play, RefreshCw } from "lucide-react"
 
-import { relativeTime } from '../../lib/presentation/relativeTime';
-import type { ScanStatus } from '../../lib/ipc';
+import { relativeTime } from "../../lib/presentation/relativeTime"
+import type { ScanStatus } from "../../lib/ipc"
 
 /**
  * What the local index knows and when it last looked.
@@ -22,29 +22,29 @@ import type { ScanStatus } from '../../lib/ipc';
 
 export interface ScanStatusBarProps {
   /** The shell's latest status, or null before the first read resolves. */
-  status: ScanStatus | null;
+  status: ScanStatus | null
   /** Whether background discovery is paused. */
-  paused: boolean;
-  onRescan: () => void;
-  onCancel: () => void;
-  onTogglePaused: (paused: boolean) => void;
+  paused: boolean
+  onRescan: () => void
+  onCancel: () => void
+  onTogglePaused: (paused: boolean) => void
 }
 
 /** The sentence the bar leads with. */
 export function scanStatusLabel(status: ScanStatus | null, paused: boolean): string {
   if (status?.running) {
-    const { completedAgents, totalAgents } = status;
+    const { completedAgents, totalAgents } = status
     // Before the first agent reports there is no ratio worth printing.
     if (totalAgents > 0 && completedAgents > 0) {
-      return `Scanning… ${completedAgents} of ${totalAgents} agents`;
+      return `Scanning… ${completedAgents} of ${totalAgents} agents`
     }
-    return 'Scanning…';
+    return "Scanning…"
   }
-  if (status?.error) return 'Last scan did not finish';
-  if (paused) return 'Scanning paused';
-  if (status?.cancelled) return 'Last scan was stopped';
-  if (status?.finishedAt) return `Scanned ${relativeTime(status.finishedAt)}`;
-  return 'Not scanned yet';
+  if (status?.error) return "Last scan did not finish"
+  if (paused) return "Scanning paused"
+  if (status?.cancelled) return "Last scan was stopped"
+  if (status?.finishedAt) return `Scanned ${relativeTime(status.finishedAt)}`
+  return "Not scanned yet"
 }
 
 export function ScanStatusBar({
@@ -54,9 +54,9 @@ export function ScanStatusBar({
   onCancel,
   onTogglePaused,
 }: ScanStatusBarProps) {
-  const running = status?.running ?? false;
-  const failed = !running && !!status?.error;
-  const label = scanStatusLabel(status, paused);
+  const running = status?.running ?? false
+  const failed = !running && !!status?.error
+  const label = scanStatusLabel(status, paused)
 
   return (
     <div
@@ -102,7 +102,7 @@ export function ScanStatusBar({
       <button
         type="button"
         onClick={() => onTogglePaused(!paused)}
-        aria-label={paused ? 'Resume background scanning' : 'Pause background scanning'}
+        aria-label={paused ? "Resume background scanning" : "Pause background scanning"}
         className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-control text-label-tertiary hover:bg-surface-hover hover:text-label-secondary"
       >
         {paused ? (
@@ -112,5 +112,5 @@ export function ScanStatusBar({
         )}
       </button>
     </div>
-  );
+  )
 }

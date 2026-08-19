@@ -23,7 +23,7 @@
  */
 
 /** Every surface the popover can be showing. */
-export type PopoverSurface = 'activity' | 'session' | 'usage';
+export type PopoverSurface = "activity" | "session" | "usage"
 
 /**
  * Ceiling shared with the shell (`popover::MAX_HEIGHT`).
@@ -31,13 +31,13 @@ export type PopoverSurface = 'activity' | 'session' | 'usage';
  * Above the contract's 700. Only a surface that genuinely cannot do its job in
  * 700 should use it, and today exactly one does.
  */
-export const MAX_POPOVER_HEIGHT = 780;
+export const MAX_POPOVER_HEIGHT = 780
 
 /**
  * The contract's height, shared with the shell (`popover::DEFAULT_HEIGHT`) —
  * what the window is created at and rests at.
  */
-export const DEFAULT_POPOVER_HEIGHT = 700;
+export const DEFAULT_POPOVER_HEIGHT = 700
 
 /** Height, in logical pixels, of each surface. */
 export const POPOVER_HEIGHTS: Record<PopoverSurface, number> = {
@@ -51,11 +51,11 @@ export const POPOVER_HEIGHTS: Record<PopoverSurface, number> = {
   // three reset lines, and the pace block — so two vendors no longer fit, and
   // the reader ends up scrolling a surface whose whole point is one glance.
   usage: MAX_POPOVER_HEIGHT,
-};
+}
 
 /** The height a surface asks the shell for. */
 export function popoverHeightFor(surface: PopoverSurface): number {
-  return POPOVER_HEIGHTS[surface];
+  return POPOVER_HEIGHTS[surface]
 }
 
 /**
@@ -67,6 +67,6 @@ export function popoverHeightFor(surface: PopoverSurface): number {
  * preference, which is the browser default.
  */
 export function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches
 }

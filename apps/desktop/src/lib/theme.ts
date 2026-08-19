@@ -14,46 +14,46 @@
  * `<html data-theme>` override wins, and the system preference is the default.
  */
 
-import { useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from "react"
 
 function darkQuery(): MediaQueryList | null {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return null;
-  return window.matchMedia('(prefers-color-scheme: dark)');
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return null
+  return window.matchMedia("(prefers-color-scheme: dark)")
 }
 
 /** True when the app is currently rendering in dark mode. */
 function isDarkTheme(): boolean {
-  if (typeof document !== 'undefined') {
-    const theme = document.documentElement.dataset['theme'];
-    if (theme === 'dark') return true;
-    if (theme === 'light') return false;
+  if (typeof document !== "undefined") {
+    const theme = document.documentElement.dataset["theme"]
+    if (theme === "dark") return true
+    if (theme === "light") return false
   }
-  return darkQuery()?.matches ?? false;
+  return darkQuery()?.matches ?? false
 }
 
 function subscribe(onChange: () => void): () => void {
-  const query = darkQuery();
-  query?.addEventListener('change', onChange);
+  const query = darkQuery()
+  query?.addEventListener("change", onChange)
 
   // The explicit override is an attribute on <html>, so watching the attribute
   // itself is the whole story — no custom event for a writer to remember to
   // fire, and no way for the two to drift apart.
   const observer =
-    typeof MutationObserver === 'undefined' || typeof document === 'undefined'
+    typeof MutationObserver === "undefined" || typeof document === "undefined"
       ? null
-      : new MutationObserver(onChange);
+      : new MutationObserver(onChange)
   observer?.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ['data-theme'],
-  });
+    attributeFilter: ["data-theme"],
+  })
 
   return () => {
-    query?.removeEventListener('change', onChange);
-    observer?.disconnect();
-  };
+    query?.removeEventListener("change", onChange)
+    observer?.disconnect()
+  }
 }
 
 /** Subscribe to {@link isDarkTheme}. Reports `false` during server rendering. */
 export function useDarkTheme(): boolean {
-  return useSyncExternalStore(subscribe, isDarkTheme, () => false);
+  return useSyncExternalStore(subscribe, isDarkTheme, () => false)
 }

@@ -7,14 +7,14 @@
 // whole-tree source-boundary scan by path, and a copy of its text in a
 // scanned file would fail CI. `?raw` keeps a single source of truth and
 // inlines the string at build time.
-import licenseText from '../../../../LICENSE?raw';
-import noticeText from '../../../../NOTICE?raw';
+import licenseText from "../../../../LICENSE?raw"
+import noticeText from "../../../../NOTICE?raw"
 
 /** The full MPL-2.0 text the application ships under. */
-export const LICENSE_TEXT: string = licenseText;
+export const LICENSE_TEXT: string = licenseText
 
 /** The repository's NOTICE file: copyright and provenance statement. */
-export const NOTICE_TEXT: string = noticeText;
+export const NOTICE_TEXT: string = noticeText
 
 /**
  * Third-party attributions. Static by design: the application bundles very
@@ -23,20 +23,20 @@ export const NOTICE_TEXT: string = noticeText;
  */
 export const ATTRIBUTIONS: ReadonlyArray<{ title: string; body: string }> = [
   {
-    title: 'Agent brand marks',
+    title: "Agent brand marks",
     body:
-      'Agent rows render brand marks from the simple-icons package, and ' +
-      'OpenAI’s mark from Gil Barbara’s SVG Logos. Both publish their path ' +
-      'data under CC0-1.0, and where a mark is drawn in a brand’s own colour ' +
-      'that colour is the value those packages record. The marks remain ' +
-      'trademarks of their respective owners and appear here nominatively — ' +
-      'to say which tool a session belongs to, not to claim any affiliation.',
+      "Agent rows render brand marks from the simple-icons package, and " +
+      "OpenAI’s mark from Gil Barbara’s SVG Logos. Both publish their path " +
+      "data under CC0-1.0, and where a mark is drawn in a brand’s own colour " +
+      "that colour is the value those packages record. The marks remain " +
+      "trademarks of their respective owners and appear here nominatively — " +
+      "to say which tool a session belongs to, not to claim any affiliation.",
   },
   {
-    title: 'Provider artwork',
+    title: "Provider artwork",
     body:
-      'Model providers appear as letter tiles rather than logos: their ' +
-      'artwork is licensed separately from this application and is not ' +
-      'bundled with it.',
+      "Model providers appear as letter tiles rather than logos: their " +
+      "artwork is licensed separately from this application and is not " +
+      "bundled with it.",
   },
-];
+]

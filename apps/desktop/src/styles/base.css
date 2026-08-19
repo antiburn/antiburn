@@ -13,7 +13,7 @@
 html,
 body,
 #root {
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   font-size: 13px;
   line-height: 1.4;
   font-optical-sizing: auto;
@@ -25,16 +25,16 @@ body,
 
 /* Desktop convention: buttons keep the arrow cursor, not the pointer hand. */
 button,
-[role='button'] {
+[role="button"] {
   cursor: default;
 }
 
-input:not([type='range']),
+input:not([type="range"]),
 textarea {
   cursor: text;
 }
 
-[draggable='true'] {
+[draggable="true"] {
   cursor: grab;
 }
 

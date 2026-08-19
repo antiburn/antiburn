@@ -18,25 +18,25 @@ import {
   useSyncExternalStore,
   type CSSProperties,
   type RefObject,
-} from 'react';
+} from "react"
 
 /** The frosted-glass surface every analytics chart tooltip paints on. */
 export const GLASS_TOOLTIP_STYLE: CSSProperties = {
-  background: 'color-mix(in srgb, var(--color-surface) 88%, transparent)',
-  backdropFilter: 'blur(6px)',
-  WebkitBackdropFilter: 'blur(6px)',
-  border: '1px solid var(--color-separator)',
+  background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
+  backdropFilter: "blur(6px)",
+  WebkitBackdropFilter: "blur(6px)",
+  border: "1px solid var(--color-separator)",
   borderRadius: 8,
-  boxShadow: '0 2px 8px rgb(0 0 0 / 0.12)',
+  boxShadow: "0 2px 8px rgb(0 0 0 / 0.12)",
   fontSize: 11,
-};
+}
 
 /** Padding kept between the tooltip and the window edge, in px. */
-const EDGE_PADDING = 8;
+const EDGE_PADDING = 8
 /** Offset from the cursor to the tooltip's nearest corner, in px. */
-const CURSOR_OFFSET = 14;
+const CURSOR_OFFSET = 14
 
-type TipPos = { left: number; top: number };
+type TipPos = { left: number; top: number }
 
 /**
  * Position a hover tooltip beside the cursor: prefer below-right, flip away
@@ -71,44 +71,44 @@ export function useTooltipPosition(
   // Caches the last computed position so `getSnapshot` can return the same
   // reference when nothing actually changed — `useSyncExternalStore` treats a
   // fresh object every call as a store change on every render otherwise.
-  const lastPos = useRef<TipPos | null>(null);
+  const lastPos = useRef<TipPos | null>(null)
 
   const getSnapshot = useCallback((): TipPos | null => {
-    const wrap = wrapRef.current;
-    const tip = tipRef.current;
+    const wrap = wrapRef.current
+    const tip = tipRef.current
     if (!hover || !wrap || !tip) {
-      lastPos.current = null;
-      return null;
+      lastPos.current = null
+      return null
     }
-    const box = tip.getBoundingClientRect();
-    const wrapRect = wrap.getBoundingClientRect();
-    const maxX = window.innerWidth - EDGE_PADDING - box.width;
-    const maxY = window.innerHeight - EDGE_PADDING - box.height;
+    const box = tip.getBoundingClientRect()
+    const wrapRect = wrap.getBoundingClientRect()
+    const maxX = window.innerWidth - EDGE_PADDING - box.width
+    const maxY = window.innerHeight - EDGE_PADDING - box.height
 
-    let vx = hover.clientX + CURSOR_OFFSET;
-    if (vx > maxX) vx = hover.clientX - CURSOR_OFFSET - box.width;
-    vx = Math.min(Math.max(vx, EDGE_PADDING), Math.max(EDGE_PADDING, maxX));
+    let vx = hover.clientX + CURSOR_OFFSET
+    if (vx > maxX) vx = hover.clientX - CURSOR_OFFSET - box.width
+    vx = Math.min(Math.max(vx, EDGE_PADDING), Math.max(EDGE_PADDING, maxX))
 
-    let vy = hover.clientY + CURSOR_OFFSET;
-    if (vy > maxY) vy = hover.clientY - CURSOR_OFFSET - box.height;
-    vy = Math.min(Math.max(vy, EDGE_PADDING), Math.max(EDGE_PADDING, maxY));
+    let vy = hover.clientY + CURSOR_OFFSET
+    if (vy > maxY) vy = hover.clientY - CURSOR_OFFSET - box.height
+    vy = Math.min(Math.max(vy, EDGE_PADDING), Math.max(EDGE_PADDING, maxY))
 
-    const next = { left: vx - wrapRect.left, top: vy - wrapRect.top };
-    const prev = lastPos.current;
-    if (prev && prev.left === next.left && prev.top === next.top) return prev;
-    lastPos.current = next;
-    return next;
-  }, [hover, wrapRef, tipRef]);
+    const next = { left: vx - wrapRect.left, top: vy - wrapRect.top }
+    const prev = lastPos.current
+    if (prev && prev.left === next.left && prev.top === next.top) return prev
+    lastPos.current = next
+    return next
+  }, [hover, wrapRef, tipRef])
 
   // `hover` isn't read in the body — its only role is to give `subscribe` a
   // fresh identity on every pointer move, forcing the resubscribe-driven
   // resync described above.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const subscribe = useCallback(() => () => {}, [hover]);
+  const subscribe = useCallback(() => () => {}, [hover])
 
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
 }
 
 function getServerSnapshot(): TipPos | null {
-  return null;
+  return null
 }

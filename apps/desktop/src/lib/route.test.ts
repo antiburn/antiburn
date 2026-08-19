@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest"
 
-import { NUDGE_FRAGMENT, routeFromHash, SETTINGS_FRAGMENT } from './route';
+import { NUDGE_FRAGMENT, routeFromHash, SETTINGS_FRAGMENT } from "./route"
 
 /**
  * The fragment is the only thing that distinguishes one window from another,
@@ -12,31 +12,31 @@ import { NUDGE_FRAGMENT, routeFromHash, SETTINGS_FRAGMENT } from './route';
  * the popover inside it. That makes the exported fragment constants and the
  * parser worth checking together.
  */
-describe('routeFromHash', () => {
-  it('resolves the fragments the shell opens windows with', () => {
-    expect(routeFromHash(SETTINGS_FRAGMENT)).toBe('settings');
-    expect(routeFromHash(NUDGE_FRAGMENT)).toBe('nudge');
-  });
+describe("routeFromHash", () => {
+  it("resolves the fragments the shell opens windows with", () => {
+    expect(routeFromHash(SETTINGS_FRAGMENT)).toBe("settings")
+    expect(routeFromHash(NUDGE_FRAGMENT)).toBe("nudge")
+  })
 
-  it('accepts a fragment with or without the leading slash', () => {
-    expect(routeFromHash('#settings')).toBe('settings');
-    expect(routeFromHash('#nudge')).toBe('nudge');
-  });
+  it("accepts a fragment with or without the leading slash", () => {
+    expect(routeFromHash("#settings")).toBe("settings")
+    expect(routeFromHash("#nudge")).toBe("nudge")
+  })
 
-  it('falls back to the popover for an empty fragment', () => {
-    expect(routeFromHash('')).toBe('popover');
-    expect(routeFromHash('#')).toBe('popover');
-    expect(routeFromHash('#/')).toBe('popover');
-  });
+  it("falls back to the popover for an empty fragment", () => {
+    expect(routeFromHash("")).toBe("popover")
+    expect(routeFromHash("#")).toBe("popover")
+    expect(routeFromHash("#/")).toBe("popover")
+  })
 
-  it('falls back to the popover rather than rendering nothing for an unknown one', () => {
-    expect(routeFromHash('#/account')).toBe('popover');
-  });
+  it("falls back to the popover rather than rendering nothing for an unknown one", () => {
+    expect(routeFromHash("#/account")).toBe("popover")
+  })
 
-  it('does not resolve a route from an inherited object property', () => {
+  it("does not resolve a route from an inherited object property", () => {
     // A fragment like "constructor" must not resolve to anything just because
     // it is an inherited object property rather than a known route.
-    expect(routeFromHash('#/constructor')).toBe('popover');
-    expect(routeFromHash('#/toString')).toBe('popover');
-  });
-});
+    expect(routeFromHash("#/constructor")).toBe("popover")
+    expect(routeFromHash("#/toString")).toBe("popover")
+  })
+})

@@ -6,18 +6,18 @@ import {
   costBreakdownRows,
   costFigureLabel,
   formatCost,
-} from '../../../lib/presentation/sessionAnalytics';
+} from "../../../lib/presentation/sessionAnalytics"
 import {
   resultComponentCost,
   type LocalSessionCost,
-} from '../../../lib/presentation/sessionCosts';
+} from "../../../lib/presentation/sessionCosts"
 
 interface CostBreakdownSplit {
   /** The orchestrator's own transcript. */
-  parent: LocalSessionCost;
+  parent: LocalSessionCost
   /** Every sub-agent it launched, together. */
-  subagents: LocalSessionCost;
-  subagentCount: number;
+  subagents: LocalSessionCost
+  subagentCount: number
 }
 
 export interface CostBreakdownProps {
@@ -25,12 +25,12 @@ export interface CostBreakdownProps {
    * The selected result. Its headline and every component row describe one
    * subject, so the rows always sum to the total shown.
    */
-  cost: LocalSessionCost;
+  cost: LocalSessionCost
   /**
    * Parent/sub-agents split, for an inclusive orchestration result. Omit it
    * for any other subject, where there is nothing to break apart.
    */
-  split?: CostBreakdownSplit | null;
+  split?: CostBreakdownSplit | null
 }
 
 /**
@@ -42,7 +42,7 @@ export interface CostBreakdownProps {
  * that do not add up.
  */
 export function CostBreakdown({ cost, split }: CostBreakdownProps) {
-  const rows = costBreakdownRows(resultComponentCost(cost));
+  const rows = costBreakdownRows(resultComponentCost(cost))
 
   return (
     <div className="mt-2 space-y-1 border-t border-separator pt-2">
@@ -56,7 +56,7 @@ export function CostBreakdown({ cost, split }: CostBreakdownProps) {
           </div>
           <div className="flex items-center justify-between type-caption">
             <span className="text-label-tertiary">
-              {split.subagentCount} sub-agent{split.subagentCount === 1 ? '' : 's'}
+              {split.subagentCount} sub-agent{split.subagentCount === 1 ? "" : "s"}
             </span>
             <span className="pr-1.5 text-label tabular-nums">
               {formatCost(split.subagents.totalCostUsd)}
@@ -77,5 +77,5 @@ export function CostBreakdown({ cost, split }: CostBreakdownProps) {
         </span>
       </div>
     </div>
-  );
+  )
 }

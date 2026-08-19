@@ -2,11 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { X } from 'lucide-react';
-import { useCallback, useState, useSyncExternalStore, type AnimationEvent } from 'react';
+import { X } from "lucide-react"
+import { useCallback, useState, useSyncExternalStore, type AnimationEvent } from "react"
 
-import appIcon from '../assets/app-icon.png';
-import { NudgeSession } from './nudge/NudgeSession';
+import appIcon from "../assets/app-icon.png"
+import { NudgeSession } from "./nudge/NudgeSession"
 
 /**
  * The notification surface, styled to read like a native macOS notification
@@ -25,12 +25,12 @@ import { NudgeSession } from './nudge/NudgeSession';
  * timers, and the crate's measure/reveal/resize handshake.
  */
 export function NudgeView() {
-  const [session] = useState(() => new NudgeSession());
+  const [session] = useState(() => new NudgeSession())
   const state = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
-  );
+  )
 
   // Registers the session's measurement source as the card mounts/unmounts.
   // This has to happen from inside a ref callback rather than the render body:
@@ -49,31 +49,31 @@ export function NudgeView() {
         node
           ? () => session.reportMeasuredHeight(Math.ceil(node.getBoundingClientRect().height))
           : null,
-      );
+      )
     },
     [session],
-  );
+  )
 
-  const { nudge, entering, exiting, expanded, elapsedLabel } = state;
-  if (!nudge) return null;
+  const { nudge, entering, exiting, expanded, elapsedLabel } = state
+  if (!nudge) return null
 
   // The wire contract omits an empty `recommendations` array (Rust
   // `skip_serializing_if`), so it arrives undefined for nudges without any.
   // Default the optional arrays so the expanded render is null-safe.
-  const recommendations = nudge.recommendations ?? [];
-  const actions = nudge.actions ?? [];
+  const recommendations = nudge.recommendations ?? []
+  const actions = nudge.actions ?? []
 
   function handleAnimationEnd(event: AnimationEvent<HTMLDivElement>) {
     // Only the card's own entrance or exit animation is allowed to settle this
     // state machine — never one bubbled up from its content.
-    if (event.target !== event.currentTarget) return;
-    session.handleAnimationEnd();
+    if (event.target !== event.currentTarget) return
+    session.handleAnimationEnd()
   }
 
   return (
     <div
-      onMouseEnter={() => session.applyHover(true, 'pointer')}
-      onMouseLeave={() => session.applyHover(false, 'pointer')}
+      onMouseEnter={() => session.applyHover(true, "pointer")}
+      onMouseLeave={() => session.applyHover(false, "pointer")}
     >
       <div
         // Re-key per nudge so the enter animation replays for each one.
@@ -90,7 +90,7 @@ export function NudgeView() {
         // events CSS hover depends on don't reach this window while another
         // antiburn window holds macOS key status — see `NudgeSession.applyHover`.
         className={`relative overflow-hidden bg-surface text-label select-none ${
-          exiting ? 'animate-nudge-out' : entering ? 'animate-nudge-in' : ''
+          exiting ? "animate-nudge-out" : entering ? "animate-nudge-in" : ""
         }`}
         onAnimationEnd={handleAnimationEnd}
       >
@@ -118,7 +118,7 @@ export function NudgeView() {
                 {/* Timestamp fades on hover as the card expands and the close appears. */}
                 <span
                   className={`type-footnote shrink-0 text-label-tertiary transition-opacity ${
-                    expanded ? 'opacity-0' : 'opacity-100'
+                    expanded ? "opacity-0" : "opacity-100"
                   }`}
                 >
                   {elapsedLabel}
@@ -127,7 +127,7 @@ export function NudgeView() {
               {nudge.reason && (
                 <p
                   className={`type-body mt-0.5 leading-snug text-label-secondary ${
-                    expanded ? '' : 'line-clamp-2'
+                    expanded ? "" : "line-clamp-2"
                   }`}
                 >
                   {nudge.reason}
@@ -163,8 +163,8 @@ export function NudgeView() {
                 key={action.id}
                 onClick={() => session.handleAction(action)}
                 className={`type-body flex-1 py-2.5 text-center transition-colors outline-none hover:bg-surface-hover focus-visible:outline-none ${
-                  i > 0 ? 'border-l border-separator' : ''
-                } ${action.primary ? 'font-medium text-accent' : 'text-label'}`}
+                  i > 0 ? "border-l border-separator" : ""
+                } ${action.primary ? "font-medium text-accent" : "text-label"}`}
               >
                 {action.label}
               </button>
@@ -178,12 +178,12 @@ export function NudgeView() {
           onClick={session.handleClose}
           aria-label="Close"
           className={`absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-surface-secondary text-label-secondary transition-opacity outline-none hover:text-label focus-visible:outline-none ${
-            expanded ? 'opacity-100' : 'opacity-0'
+            expanded ? "opacity-100" : "opacity-0"
           }`}
         >
           <X size={12} aria-hidden />
         </button>
       </div>
     </div>
-  );
+  )
 }

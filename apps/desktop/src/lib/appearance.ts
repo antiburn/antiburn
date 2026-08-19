@@ -15,7 +15,7 @@
  * choice on mount and there is nothing to broadcast between them.
  */
 
-import type { ThemePreference } from './ipc';
+import type { ThemePreference } from "./ipc"
 
 /**
  * Write (or clear) the theme override on the document element.
@@ -24,18 +24,18 @@ import type { ThemePreference } from './ipc';
  * simply do nothing.
  */
 export function applyTheme(theme: ThemePreference): void {
-  if (typeof document === 'undefined') return;
-  const root = document.documentElement;
-  if (theme === 'system') {
-    delete root.dataset['theme'];
-    return;
+  if (typeof document === "undefined") return
+  const root = document.documentElement
+  if (theme === "system") {
+    delete root.dataset["theme"]
+    return
   }
-  root.dataset['theme'] = theme;
+  root.dataset["theme"] = theme
 }
 
 /** The theme currently written on the document, or `system` when none is. */
 export function currentTheme(): ThemePreference {
-  if (typeof document === 'undefined') return 'system';
-  const theme = document.documentElement.dataset['theme'];
-  return theme === 'light' || theme === 'dark' ? theme : 'system';
+  if (typeof document === "undefined") return "system"
+  const theme = document.documentElement.dataset["theme"]
+  return theme === "light" || theme === "dark" ? theme : "system"
 }

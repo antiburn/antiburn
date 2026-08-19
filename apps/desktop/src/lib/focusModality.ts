@@ -17,11 +17,11 @@
  * mid-click.
  */
 
-const ATTRIBUTE = 'data-keyboard';
+const ATTRIBUTE = "data-keyboard"
 
 /** True while the last input that moved focus was a Tab press. */
 export function isKeyboardModality(root: HTMLElement = document.documentElement): boolean {
-  return root.hasAttribute(ATTRIBUTE);
+  return root.hasAttribute(ATTRIBUTE)
 }
 
 /**
@@ -33,26 +33,26 @@ export function isKeyboardModality(root: HTMLElement = document.documentElement)
  */
 export function installFocusModality(root: HTMLElement = document.documentElement): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Tab') {
-      root.setAttribute(ATTRIBUTE, '');
+    if (event.key === "Tab") {
+      root.setAttribute(ATTRIBUTE, "")
     }
-  };
+  }
   const onPointer = () => {
-    root.removeAttribute(ATTRIBUTE);
-  };
+    root.removeAttribute(ATTRIBUTE)
+  }
 
-  window.addEventListener('keydown', onKeyDown, true);
-  window.addEventListener('pointerdown', onPointer, true);
+  window.addEventListener("keydown", onKeyDown, true)
+  window.addEventListener("pointerdown", onPointer, true)
   // A pointer press that starts outside the window (a menu-bar click that
   // reveals the popover) never produces a pointerdown here, but it does end in
   // one of these, so clear on them too.
-  window.addEventListener('mousedown', onPointer, true);
-  window.addEventListener('touchstart', onPointer, true);
+  window.addEventListener("mousedown", onPointer, true)
+  window.addEventListener("touchstart", onPointer, true)
 
   return () => {
-    window.removeEventListener('keydown', onKeyDown, true);
-    window.removeEventListener('pointerdown', onPointer, true);
-    window.removeEventListener('mousedown', onPointer, true);
-    window.removeEventListener('touchstart', onPointer, true);
-  };
+    window.removeEventListener("keydown", onKeyDown, true)
+    window.removeEventListener("pointerdown", onPointer, true)
+    window.removeEventListener("mousedown", onPointer, true)
+    window.removeEventListener("touchstart", onPointer, true)
+  }
 }

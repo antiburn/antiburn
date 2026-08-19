@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest"
 
-import type { InitialContextBreakdown, SessionBucket } from '../types/session';
+import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
   bucketDetail,
   contextSeries,
@@ -25,7 +25,7 @@ import {
   scoreColor,
   scoreLabel,
   tokenSeries,
-} from './sessionAnalytics';
+} from "./sessionAnalytics"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
@@ -36,20 +36,20 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     contextTokens: 0,
     isCompactionBoundary: false,
     ...over,
-  };
+  }
 }
 
 const active = (over: Partial<SessionBucket> = {}) =>
   bucket({
-    dominantPhase: 'implementing',
+    dominantPhase: "implementing",
     distribution: { implementing: 1, testing: 0, exploring: 0, thinking: 0, disruption: 0 },
     ...over,
-  });
+  })
 
-describe('bucketDetail', () => {
-  it('derives elapsed time, progress, modes, and context occupancy', () => {
+describe("bucketDetail", () => {
+  it("derives elapsed time, progress, modes, and context occupancy", () => {
     const b = bucket({
-      dominantPhase: 'implementing',
+      dominantPhase: "implementing",
       distribution: {
         implementing: 0.6,
         testing: 0,
@@ -60,36 +60,36 @@ describe('bucketDetail', () => {
       tokensIn: 8000,
       tokensOut: 2000,
       contextTokens: 90_000,
-    });
+    })
     // Index 30 of 60 buckets → halfway; a 600s session → ~300s elapsed.
-    const d = bucketDetail(b, 30, 60, 600, 200_000);
+    const d = bucketDetail(b, 30, 60, 600, 200_000)
 
-    expect(d.empty).toBe(false);
-    expect(d.progressPct).toBe(51); // 30 / 59
-    expect(d.elapsedSecs).toBe(305);
-    expect(d.tokensIn).toBe(8000);
-    expect(d.tokensOut).toBe(2000);
-    expect(d.contextPct).toBe(45); // 90k / 200k
+    expect(d.empty).toBe(false)
+    expect(d.progressPct).toBe(51) // 30 / 59
+    expect(d.elapsedSecs).toBe(305)
+    expect(d.tokensIn).toBe(8000)
+    expect(d.tokensOut).toBe(2000)
+    expect(d.contextPct).toBe(45) // 90k / 200k
     // Only non-zero modes, deepest → shallowest.
-    expect(d.modes.map((m) => m.label)).toEqual(['Implement', 'Explore', 'Plan']);
-    expect(d.modes[0]?.pct).toBe(60);
-  });
+    expect(d.modes.map((m) => m.label)).toEqual(["Implement", "Explore", "Plan"])
+    expect(d.modes[0]?.pct).toBe(60)
+  })
 
-  it('flags an inactive bucket as empty with no mode rows', () => {
-    const d = bucketDetail(bucket(), 0, 60, 600, 200_000);
-    expect(d.empty).toBe(true);
-    expect(d.modes).toEqual([]);
-    expect(d.elapsedSecs).toBe(0);
-    expect(d.progressPct).toBe(0);
-  });
+  it("flags an inactive bucket as empty with no mode rows", () => {
+    const d = bucketDetail(bucket(), 0, 60, 600, 200_000)
+    expect(d.empty).toBe(true)
+    expect(d.modes).toEqual([])
+    expect(d.elapsedSecs).toBe(0)
+    expect(d.progressPct).toBe(0)
+  })
 
-  it('reports an unknown context window as null rather than zero percent', () => {
-    expect(bucketDetail(active({ contextTokens: 1000 }), 0, 1, 60, 0).contextPct).toBeNull();
-  });
-});
+  it("reports an unknown context window as null rather than zero percent", () => {
+    expect(bucketDetail(active({ contextTokens: 1000 }), 0, 1, 60, 0).contextPct).toBeNull()
+  })
+})
 
-describe('tokenSeries', () => {
-  it('drops idle buckets so progress spans active time, not wall-clock', () => {
+describe("tokenSeries", () => {
+  it("drops idle buckets so progress spans active time, not wall-clock", () => {
     const buckets = [
       bucket(),
       active({ tokensIn: 100, tokensOut: 10 }),
@@ -97,31 +97,31 @@ describe('tokenSeries', () => {
       active({ tokensIn: 300, tokensOut: 30 }),
       active({ tokensIn: 500, tokensOut: 50 }),
       bucket(),
-    ];
-    const series = tokenSeries(buckets);
-    expect(series).toHaveLength(3);
-    expect(series.map((p) => p.tokensIn)).toEqual([100, 300, 500]);
-    expect(series.map((p) => p.progress)).toEqual([0, 50, 100]);
-  });
+    ]
+    const series = tokenSeries(buckets)
+    expect(series).toHaveLength(3)
+    expect(series.map((p) => p.tokensIn)).toEqual([100, 300, 500])
+    expect(series.map((p) => p.progress)).toEqual([0, 50, 100])
+  })
 
-  it('returns an empty series when no bucket has activity', () => {
-    expect(tokenSeries([bucket(), bucket()])).toEqual([]);
-  });
+  it("returns an empty series when no bucket has activity", () => {
+    expect(tokenSeries([bucket(), bucket()])).toEqual([])
+  })
 
-  it('drops a compaction-only bucket instead of rendering a spurious zero dip', () => {
+  it("drops a compaction-only bucket instead of rendering a spurious zero dip", () => {
     const buckets = [
       active({ tokensIn: 100, tokensOut: 10 }),
       bucket({ isCompactionBoundary: true }),
       active({ tokensIn: 300, tokensOut: 30 }),
-    ];
-    const series = tokenSeries(buckets);
-    expect(series).toHaveLength(2);
-    expect(series.map((p) => p.tokensIn)).toEqual([100, 300]);
-  });
-});
+    ]
+    const series = tokenSeries(buckets)
+    expect(series).toHaveLength(2)
+    expect(series.map((p) => p.tokensIn)).toEqual([100, 300])
+  })
+})
 
-describe('contextSeries', () => {
-  it('drops idle buckets so progress spans active time, not wall-clock', () => {
+describe("contextSeries", () => {
+  it("drops idle buckets so progress spans active time, not wall-clock", () => {
     const series = contextSeries(
       [
         bucket(),
@@ -130,13 +130,13 @@ describe('contextSeries', () => {
         active({ contextTokens: 150_000 }),
       ],
       200_000,
-    );
-    expect(series).toHaveLength(2);
-    expect(series.map((p) => p.contextPct)).toEqual([25, 75]);
-    expect(series.map((p) => p.progress)).toEqual([0, 100]);
-  });
+    )
+    expect(series).toHaveLength(2)
+    expect(series.map((p) => p.contextPct)).toEqual([25, 75])
+    expect(series.map((p) => p.progress)).toEqual([0, 100])
+  })
 
-  it('carries the compaction-boundary flag onto the matching point', () => {
+  it("carries the compaction-boundary flag onto the matching point", () => {
     const series = contextSeries(
       [
         active({ contextTokens: 180_000 }),
@@ -144,11 +144,11 @@ describe('contextSeries', () => {
         active({ contextTokens: 40_000 }),
       ],
       200_000,
-    );
-    expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false]);
-  });
+    )
+    expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
+  })
 
-  it('keeps a compaction-only bucket even with no classified phase', () => {
+  it("keeps a compaction-only bucket even with no classified phase", () => {
     // A compaction marker is never classified into a phase, so its bucket
     // otherwise reads as idle and the compaction line never reaches the chart.
     const series = contextSeries(
@@ -158,182 +158,182 @@ describe('contextSeries', () => {
         active({ contextTokens: 20_000 }),
       ],
       200_000,
-    );
-    expect(series).toHaveLength(3);
-    expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false]);
-    expect(series.map((p) => p.contextPct)).toEqual([90, 0, 10]);
-  });
-});
+    )
+    expect(series).toHaveLength(3)
+    expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
+    expect(series.map((p) => p.contextPct)).toEqual([90, 0, 10])
+  })
+})
 
-describe('formatDuration', () => {
-  it('carries the minute remainder into the hour instead of printing 60m', () => {
-    expect(formatDuration(7170)).toBe('2h');
-    expect(formatDuration(3570)).toBe('1h');
-  });
+describe("formatDuration", () => {
+  it("carries the minute remainder into the hour instead of printing 60m", () => {
+    expect(formatDuration(7170)).toBe("2h")
+    expect(formatDuration(3570)).toBe("1h")
+  })
 
-  it('shows seconds under a minute instead of collapsing to 0m', () => {
-    expect(formatDuration(0)).toBe('0s');
-    expect(formatDuration(30)).toBe('30s');
-    expect(formatDuration(59)).toBe('59s');
-  });
+  it("shows seconds under a minute instead of collapsing to 0m", () => {
+    expect(formatDuration(0)).toBe("0s")
+    expect(formatDuration(30)).toBe("30s")
+    expect(formatDuration(59)).toBe("59s")
+  })
 
-  it('formats hours and minutes compactly', () => {
-    expect(formatDuration(60)).toBe('1m');
-    expect(formatDuration(3600)).toBe('1h');
-    expect(formatDuration(3660)).toBe('1h 1m');
-    expect(formatDuration(8220)).toBe('2h 17m');
-  });
-});
+  it("formats hours and minutes compactly", () => {
+    expect(formatDuration(60)).toBe("1m")
+    expect(formatDuration(3600)).toBe("1h")
+    expect(formatDuration(3660)).toBe("1h 1m")
+    expect(formatDuration(8220)).toBe("2h 17m")
+  })
+})
 
-describe('formatBytes', () => {
-  it('keeps whole bytes and steps through binary units', () => {
-    expect(formatBytes(512)).toBe('512 B');
-    expect(formatBytes(1536)).toBe('1.5 KiB');
-    expect(formatBytes(2 * 1024 * 1024)).toBe('2.0 MiB');
-    expect(formatBytes(1024 * 1024 * 1024)).toBe('1.0 GiB');
-  });
+describe("formatBytes", () => {
+  it("keeps whole bytes and steps through binary units", () => {
+    expect(formatBytes(512)).toBe("512 B")
+    expect(formatBytes(1536)).toBe("1.5 KiB")
+    expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MiB")
+    expect(formatBytes(1024 * 1024 * 1024)).toBe("1.0 GiB")
+  })
 
-  it('clamps malformed input to zero', () => {
-    expect(formatBytes(Number.NaN)).toBe('0 B');
-    expect(formatBytes(-1)).toBe('0 B');
-  });
-});
+  it("clamps malformed input to zero", () => {
+    expect(formatBytes(Number.NaN)).toBe("0 B")
+    expect(formatBytes(-1)).toBe("0 B")
+  })
+})
 
-describe('formatCost', () => {
-  it('always renders two decimals', () => {
-    expect(formatCost(0.003)).toBe('<$0.01');
-    expect(formatCost(0.42)).toBe('$0.42');
-    expect(formatCost(2.4)).toBe('$2.40');
-    expect(formatCost(20.7)).toBe('$20.70');
-    expect(formatCost(240)).toBe('$240.00');
-  });
+describe("formatCost", () => {
+  it("always renders two decimals", () => {
+    expect(formatCost(0.003)).toBe("<$0.01")
+    expect(formatCost(0.42)).toBe("$0.42")
+    expect(formatCost(2.4)).toBe("$2.40")
+    expect(formatCost(20.7)).toBe("$20.70")
+    expect(formatCost(240)).toBe("$240.00")
+  })
 
-  it('renders an exact zero as $0.00, not <$0.01', () => {
+  it("renders an exact zero as $0.00, not <$0.01", () => {
     // A structurally-zero component must read as a true zero, so the breakdown
     // rows still sum to the total.
-    expect(formatCost(0)).toBe('$0.00');
-  });
+    expect(formatCost(0)).toBe("$0.00")
+  })
 
-  it('clamps non-finite or negative (malformed) input to $0.00', () => {
-    expect(formatCost(Number.NaN)).toBe('$0.00');
-    expect(formatCost(Number.POSITIVE_INFINITY)).toBe('$0.00');
-    expect(formatCost(-1)).toBe('$0.00');
-  });
-});
+  it("clamps non-finite or negative (malformed) input to $0.00", () => {
+    expect(formatCost(Number.NaN)).toBe("$0.00")
+    expect(formatCost(Number.POSITIVE_INFINITY)).toBe("$0.00")
+    expect(formatCost(-1)).toBe("$0.00")
+  })
+})
 
-describe('costBreakdownRows', () => {
-  it('maps the four billable components in display order', () => {
+describe("costBreakdownRows", () => {
+  it("maps the four billable components in display order", () => {
     const rows = costBreakdownRows({
       inputUsd: 0.3,
       outputUsd: 0.8,
       cacheReadUsd: 1.1,
       cacheWriteUsd: 0.2,
-    });
-    expect(rows.map((r) => r.label)).toEqual(['Input', 'Output', 'Cache read', 'Cache write']);
-    expect(rows.map((r) => r.usd)).toEqual([0.3, 0.8, 1.1, 0.2]);
-  });
-});
+    })
+    expect(rows.map((r) => r.label)).toEqual(["Input", "Output", "Cache read", "Cache write"])
+    expect(rows.map((r) => r.usd)).toEqual([0.3, 0.8, 1.1, 0.2])
+  })
+})
 
-describe('costFigureLabel', () => {
-  it('labels a live figure a projection and a settled one an estimate', () => {
-    expect(costFigureLabel(true)).toBe('Projected cost');
-    expect(costFigureLabel(false)).toBe('Estimated cost');
-  });
-});
+describe("costFigureLabel", () => {
+  it("labels a live figure a projection and a settled one an estimate", () => {
+    expect(costFigureLabel(true)).toBe("Projected cost")
+    expect(costFigureLabel(false)).toBe("Estimated cost")
+  })
+})
 
-describe('initialContextTotal / initialContextNamedRows', () => {
+describe("initialContextTotal / initialContextNamedRows", () => {
   const breakdown = (
     totalTokens: number | null,
-    sources: InitialContextBreakdown['sources'],
-  ): InitialContextBreakdown => ({ trackingStatus: 'trackedPartial', totalTokens, sources });
+    sources: InitialContextBreakdown["sources"],
+  ): InitialContextBreakdown => ({ trackingStatus: "trackedPartial", totalTokens, sources })
 
-  it('uses the slice sum when per-source estimates overshoot the reported total', () => {
+  it("uses the slice sum when per-source estimates overshoot the reported total", () => {
     const ic = breakdown(1000, [
-      { source: 'skill_instructions', sourceName: 'a', tokenCount: 800 },
-      { source: 'system_instructions', sourceName: null, tokenCount: 700 },
-    ]);
-    expect(initialContextTotal(ic)).toBe(1500);
-  });
+      { source: "skill_instructions", sourceName: "a", tokenCount: 800 },
+      { source: "system_instructions", sourceName: null, tokenCount: 700 },
+    ])
+    expect(initialContextTotal(ic)).toBe(1500)
+  })
 
-  it('uses the reported total when the slices agree', () => {
+  it("uses the reported total when the slices agree", () => {
     const ic = breakdown(1000, [
-      { source: 'system_instructions', sourceName: null, tokenCount: 600 },
-      { source: 'unattributed', sourceName: null, tokenCount: 400 },
-    ]);
-    expect(initialContextTotal(ic)).toBe(1000);
-  });
+      { source: "system_instructions", sourceName: null, tokenCount: 600 },
+      { source: "unattributed", sourceName: null, tokenCount: 400 },
+    ])
+    expect(initialContextTotal(ic)).toBe(1000)
+  })
 
-  it('sorts named rows by contribution and rolls the tail into one Other row', () => {
+  it("sorts named rows by contribution and rolls the tail into one Other row", () => {
     const ic = breakdown(
       null,
-      ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((name, i) => ({
-        source: 'skill_instructions' as const,
+      ["a", "b", "c", "d", "e", "f", "g"].map((name, i) => ({
+        source: "skill_instructions" as const,
         sourceName: name,
         tokenCount: (i + 1) * 100,
       })),
-    );
-    const rows = initialContextNamedRows(ic);
-    expect(rows).toHaveLength(6);
-    expect(rows[0]?.label).toBe('Skill: g');
-    expect(rows[5]?.label).toBe('Other (2)');
-    expect(rows[5]?.tokenCount).toBe(300); // a (100) + b (200)
-  });
+    )
+    const rows = initialContextNamedRows(ic)
+    expect(rows).toHaveLength(6)
+    expect(rows[0]?.label).toBe("Skill: g")
+    expect(rows[5]?.label).toBe("Other (2)")
+    expect(rows[5]?.tokenCount).toBe(300) // a (100) + b (200)
+  })
 
-  it('drops unnamed and unprefixed sources from the named drill-down', () => {
+  it("drops unnamed and unprefixed sources from the named drill-down", () => {
     const ic = breakdown(null, [
-      { source: 'skill_instructions', sourceName: null, tokenCount: 900 },
-      { source: 'unattributed', sourceName: 'baseline', tokenCount: 900 },
-    ]);
-    expect(initialContextNamedRows(ic)).toEqual([]);
-  });
-});
+      { source: "skill_instructions", sourceName: null, tokenCount: 900 },
+      { source: "unattributed", sourceName: "baseline", tokenCount: 900 },
+    ])
+    expect(initialContextNamedRows(ic)).toEqual([])
+  })
+})
 
-describe('phase presentation', () => {
-  it('gives each band its own color and label', () => {
-    expect(phaseLabel('implementing')).toBe('Implement');
-    expect(phaseLabel('disruption')).toBe('Errors');
-    expect(phaseColor('testing')).toBe('var(--color-mode-testing)');
-  });
-});
+describe("phase presentation", () => {
+  it("gives each band its own color and label", () => {
+    expect(phaseLabel("implementing")).toBe("Implement")
+    expect(phaseLabel("disruption")).toBe("Errors")
+    expect(phaseColor("testing")).toBe("var(--color-mode-testing)")
+  })
+})
 
-describe('scoreColor / scoreLabel', () => {
-  it('bands the score at 75 and 50', () => {
-    expect(scoreLabel(75)).toBe('Healthy');
-    expect(scoreLabel(74)).toBe('Drifting');
-    expect(scoreLabel(50)).toBe('Drifting');
-    expect(scoreLabel(49)).toBe('Thrashing');
-    expect(scoreColor(90)).toBe('var(--color-system-green)');
-    expect(scoreColor(60)).toBe('var(--color-pattern-drifting)');
-    expect(scoreColor(10)).toBe('var(--color-mode-disruption)');
-  });
-});
+describe("scoreColor / scoreLabel", () => {
+  it("bands the score at 75 and 50", () => {
+    expect(scoreLabel(75)).toBe("Healthy")
+    expect(scoreLabel(74)).toBe("Drifting")
+    expect(scoreLabel(50)).toBe("Drifting")
+    expect(scoreLabel(49)).toBe("Thrashing")
+    expect(scoreColor(90)).toBe("var(--color-system-green)")
+    expect(scoreColor(60)).toBe("var(--color-pattern-drifting)")
+    expect(scoreColor(10)).toBe("var(--color-mode-disruption)")
+  })
+})
 
-describe('median / costOutlierThreshold', () => {
-  it('returns the middle value, averaging the two middles for an even list', () => {
-    expect(median([3, 1, 2])).toBe(2);
-    expect(median([1, 2, 3, 4])).toBe(2.5);
-    expect(median([])).toBe(0);
-  });
+describe("median / costOutlierThreshold", () => {
+  it("returns the middle value, averaging the two middles for an even list", () => {
+    expect(median([3, 1, 2])).toBe(2)
+    expect(median([1, 2, 3, 4])).toBe(2.5)
+    expect(median([])).toBe(0)
+  })
 
-  it('does not mutate its input', () => {
-    const xs = [3, 1, 2];
-    median(xs);
-    expect(xs).toEqual([3, 1, 2]);
-  });
+  it("does not mutate its input", () => {
+    const xs = [3, 1, 2]
+    median(xs)
+    expect(xs).toEqual([3, 1, 2])
+  })
 
-  it('returns null below the minimum sample size', () => {
-    expect(costOutlierThreshold(Array(HIGH_COST_MIN_SAMPLE - 1).fill(5))).toBeNull();
-  });
+  it("returns null below the minimum sample size", () => {
+    expect(costOutlierThreshold(Array(HIGH_COST_MIN_SAMPLE - 1).fill(5))).toBeNull()
+  })
 
-  it('uses the median multiple once the median clears the floor', () => {
+  it("uses the median multiple once the median clears the floor", () => {
     expect(costOutlierThreshold(Array(HIGH_COST_MIN_SAMPLE).fill(2))).toBe(
       HIGH_COST_MEDIAN_MULTIPLE * 2,
-    );
-  });
+    )
+  })
 
-  it('falls back to the absolute floor for a cheap cohort', () => {
+  it("falls back to the absolute floor for a cheap cohort", () => {
     expect(costOutlierThreshold(Array(HIGH_COST_MIN_SAMPLE).fill(0.1))).toBe(
       HIGH_COST_FLOOR_USD,
-    );
-  });
-});
+    )
+  })
+})

@@ -20,82 +20,78 @@
  * connection on its own account.
  */
 
-import { invoke, isTauri } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke, isTauri } from "@tauri-apps/api/core"
+import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
-import type { SettingsPane } from './settingsPanes';
-import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from './types/repository';
-import type {
-  ActiveSessionsSummary,
-  SessionCostComponents,
-  SkillDetail,
-} from './types/session';
+import type { SettingsPane } from "./settingsPanes"
+import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
+import type { ActiveSessionsSummary, SessionCostComponents, SkillDetail } from "./types/session"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
  * ---------------------------------------------------------------------- */
 
 /** How the app renders itself. `system` follows the OS appearance. */
-export type ThemePreference = 'system' | 'light' | 'dark';
+export type ThemePreference = "system" | "light" | "dark"
 
 /** Where the notification window appears. `menuBar` is macOS-only. */
-export type NudgePlacement = 'menuBar' | 'topRight';
+export type NudgePlacement = "menuBar" | "topRight"
 
 /** When the menu bar shows the free-disk-space number. */
-export type DiskSpaceDisplay = 'always' | 'whenLow' | 'never';
+export type DiskSpaceDisplay = "always" | "whenLow" | "never"
 
 /** Which usage-milestone thresholds notify, for one window class. */
 export interface Milestones {
-  at50: boolean;
-  at75: boolean;
-  at90: boolean;
+  at50: boolean
+  at75: boolean
+  at90: boolean
 }
 
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
-  theme: ThemePreference;
+  theme: ThemePreference
   /** Calendar days of activity the popover list shows. */
-  activityWindowDays: number;
+  activityWindowDays: number
   /** False until the first-run flow finishes. */
-  onboardingCompleted: boolean;
+  onboardingCompleted: boolean
   /** Recorded; applied by the platform at next launch. */
-  launchAtLogin: boolean;
+  launchAtLogin: boolean
   /** Whether the shell may check the release feed on its own schedule. */
-  autoUpdate: boolean;
+  autoUpdate: boolean
   /**
    * Whether background discovery and indexing are paused.
    *
    * Paused stops scheduled scans only. An explicit rescan still runs, and
    * everything already indexed stays browsable.
    */
-  discoveryPaused: boolean;
+  discoveryPaused: boolean
   /**
    * The master switch for desktop notifications. Off means nothing is
    * delivered, whatever the per-kind preferences say.
    */
-  notificationsEnabled: boolean;
+  notificationsEnabled: boolean
   /** Notify when an automatic update check finds a newer version. */
-  notifyUpdateAvailable: boolean;
+  notifyUpdateAvailable: boolean
   /** Notify the first time a scan fails in this run of the app. */
-  notifyScanFailure: boolean;
+  notifyScanFailure: boolean
   /** Where the notification window appears. */
-  nudgePlacement: NudgePlacement;
+  nudgePlacement: NudgePlacement
   /** Seconds a nudge stays before dismissing itself (3–30). */
-  nudgeAutoDismissSecs: number;
+  nudgeAutoDismissSecs: number
   /** Whether a nudge may play the notification chime. */
-  notificationSound: boolean;
+  notificationSound: boolean
   /** When the menu bar shows the free-disk-space number. */
-  diskSpaceDisplay: DiskSpaceDisplay;
+  diskSpaceDisplay: DiskSpaceDisplay
   /** Free space, in GB, below which the disk counts as low (5–2000). */
-  diskSpaceThresholdGb: number;
+  diskSpaceThresholdGb: number
   /** Notify once each time free space drops below the threshold. */
-  notifyDiskSpaceLow: boolean;
+  notifyDiskSpaceLow: boolean
   /** Notify when sustained spend is unusually fast for this machine. */
-  notifyUsageAnomalies: boolean;
+  notifyUsageAnomalies: boolean
   /** Five-hour-window milestones. Only fire while live usage is enabled. */
-  milestones5h: Milestones;
+  milestones5h: Milestones
   /** Weekly-window milestones. */
-  milestonesWeekly: Milestones;
+  milestonesWeekly: Milestones
   /**
    * The per-feature online opt-out for live usage limits. On by default, once
    * first-run setup is complete.
@@ -108,21 +104,21 @@ export interface AppSettings {
    * makes none of these requests and has no plan limits to show; this is the
    * setting for a reader who wants no background traffic at all.
    */
-  liveUsageEnabled: boolean;
+  liveUsageEnabled: boolean
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
 export interface AppInfo {
-  appVersion: string;
+  appVersion: string
   /** CPU architecture this binary was compiled for, e.g. `aarch64`. */
-  arch: string;
-  pricingCatalogVersion: string;
-  schemaVersion: number;
-  dataDir: string;
+  arch: string
+  pricingCatalogVersion: string
+  schemaVersion: number
+  dataDir: string
   /** Sessions currently in the local index. */
-  indexedSessions: number;
+  indexedSessions: number
   /** Size of the local database on disk, in bytes. */
-  databaseBytes: number;
+  databaseBytes: number
   /**
    * Whether this build can check for updates at all.
    *
@@ -130,81 +126,81 @@ export interface AppInfo {
    * signing key — never from a compile-time flag — so a build that cannot
    * update never renders a control implying it can.
    */
-  updatesSupported: boolean;
+  updatesSupported: boolean
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
 export interface ActivityEntryPayload {
-  agent: string;
-  sessionId: string;
-  repo: string;
-  timestamp: string;
-  isActive: boolean;
-  surface: string;
-  wslDistro: string | null;
-  title: string | null;
-  hasForkParent: boolean;
-  forkChildCount: number;
-  subagentCount: number;
-  cost: SessionCostComponents | null;
-  models: string[];
-  activeSecs: number | null;
-  durationSecs: number | null;
+  agent: string
+  sessionId: string
+  repo: string
+  timestamp: string
+  isActive: boolean
+  surface: string
+  wslDistro: string | null
+  title: string | null
+  hasForkParent: boolean
+  forkChildCount: number
+  subagentCount: number
+  cost: SessionCostComponents | null
+  models: string[]
+  activeSecs: number | null
+  durationSecs: number | null
 }
 
 /** Identity of one local session, as the analytics view carries it. */
 export interface SessionIdentityPayload {
-  agent: string;
-  sessionId: string;
-  wslDistro: string | null;
+  agent: string
+  sessionId: string
+  wslDistro: string | null
 }
 
 /** One end of a local fork relation. */
 export interface SessionRelationPayload {
-  identity: SessionIdentityPayload;
-  title: string | null;
-  available: boolean;
+  identity: SessionIdentityPayload
+  title: string | null
+  available: boolean
 }
 
 /** Direct fork relations for one session. */
 export interface SessionRelationsPayload {
-  title: string | null;
-  parent: SessionRelationPayload | null;
-  children: SessionRelationPayload[];
+  title: string | null
+  parent: SessionRelationPayload | null
+  children: SessionRelationPayload[]
 }
 
 /** One sub-agent an orchestrator launched. */
 export interface SubagentMemberPayload {
-  agent: string;
-  subagentId: string;
-  label: string;
-  patternScore: number;
-  spawnProgress: number | null;
+  agent: string
+  subagentId: string
+  label: string
+  patternScore: number
+  spawnProgress: number | null
 }
 
 /** The sub-agent picture for one session. */
 export interface OrchestrationPayload {
-  orchestrating: boolean;
-  orchestratorAgent: string;
-  orchestratorSessionId: string;
-  subagentCount: number;
-  members: SubagentMemberPayload[];
+  orchestrating: boolean
+  orchestratorAgent: string
+  orchestratorSessionId: string
+  subagentCount: number
+  members: SubagentMemberPayload[]
 }
 
 /** Everything the session-analytics surface renders for one session. */
 export interface SessionAnalyticsPayload {
-  summary: ActiveSessionsSummary | null;
-  supportsAnalytics: boolean;
-  title: string | null;
-  wslDistro: string | null;
-  isActive: boolean;
-  cost: SessionCostComponents | null;
-  models: string[];
-  skills: SkillDetail[];
-  orchestration: OrchestrationPayload | null;
-  relations: SessionRelationsPayload | null;
+  summary: ActiveSessionsSummary | null
+  supportsAnalytics: boolean
+  title: string | null
+  wslDistro: string | null
+  isActive: boolean
+  cost: SessionCostComponents | null
+  models: string[]
+  skills: SkillDetail[]
+  orchestration: OrchestrationPayload | null
+  relations: SessionRelationsPayload | null
   /** The provider's own transcript, for the reveal action. */
-  sourcePath: string | null;
+  sourcePath: string | null
 }
 
 /**
@@ -217,10 +213,10 @@ export interface SessionAnalyticsPayload {
  * They are declared — and rendered — so a later, separately reviewed passive
  * source cannot arrive to a view that has no branch for it.
  */
-export type ProviderUsageState = 'live' | 'estimated' | 'observed' | 'detected' | 'unknown';
+export type ProviderUsageState = "live" | "estimated" | "observed" | "detected" | "unknown"
 
 /** Whether a provider's newest local evidence still describes now. */
-export type ProviderUsageStaleness = 'fresh' | 'stale' | 'unknown';
+export type ProviderUsageStaleness = "fresh" | "stale" | "unknown"
 
 /**
  * One provider's totals over one window.
@@ -230,41 +226,41 @@ export type ProviderUsageStaleness = 'fresh' | 'stale' | 'unknown';
  */
 export interface ProviderUsageWindowPayload {
   /** Fresh prompt tokens plus prompt-cache writes. */
-  tokensIn: number;
-  tokensOut: number;
+  tokensIn: number
+  tokensOut: number
   /** Prompt-cache reads, billed at their own rate. */
-  cacheRead: number;
+  cacheRead: number
   /**
    * On-device estimate for the models that could be priced, or null when none
    * could. A `observed` state means this is a floor rather than a total.
    */
-  estimatedUsd: number | null;
+  estimatedUsd: number | null
   /** Sessions that contributed. One session can count under two providers. */
-  sessionCount: number;
+  sessionCount: number
 }
 
 /** The three windows every provider is summarized over. */
 export interface ProviderUsageWindowsPayload {
-  today: ProviderUsageWindowPayload;
-  week: ProviderUsageWindowPayload;
-  month: ProviderUsageWindowPayload;
+  today: ProviderUsageWindowPayload
+  week: ProviderUsageWindowPayload
+  month: ProviderUsageWindowPayload
 }
 
 /** Everything the usage surfaces show about one provider. */
 export interface ProviderUsagePayload {
   /** Canonical id (`anthropic`, `openai`, `unknown`, …) — a key, not copy. */
-  provider: string;
-  displayName: string;
-  state: ProviderUsageState;
-  staleness: ProviderUsageStaleness;
-  windows: ProviderUsageWindowsPayload;
-  lastActivityAt: string | null;
+  provider: string
+  displayName: string
+  state: ProviderUsageState
+  staleness: ProviderUsageStaleness
+  windows: ProviderUsageWindowsPayload
+  lastActivityAt: string | null
 }
 
 /** Local provider usage as one snapshot. Mirrors Rust `ProviderUsageSummary`. */
 export interface ProviderUsageSummaryPayload {
-  providers: ProviderUsagePayload[];
-  generatedAt: string;
+  providers: ProviderUsagePayload[]
+  generatedAt: string
 }
 
 /* -------------------------------------------------------------------------
@@ -283,10 +279,10 @@ export interface ProviderUsageSummaryPayload {
  * ---------------------------------------------------------------------- */
 
 /** Marks figures stated directly by a provider. Mirrors Rust `LiveUsageSupport`. */
-export type LiveUsageSupport = 'live';
+export type LiveUsageSupport = "live"
 
 /** Whether a live reading still describes now. */
-export type LiveUsageFreshness = 'fresh' | 'stale';
+export type LiveUsageFreshness = "fresh" | "stale"
 
 /**
  * One provider-reported allowance.
@@ -300,25 +296,25 @@ export type LiveUsageFreshness = 'fresh' | 'stale';
  */
 export interface LiveUsageWindowPayload {
   /** `five-hour`, `seven-day`, `weekly-<model>`, or the provider's own name. */
-  id: string;
+  id: string
   /** `primaryShort` | `primaryLong` | `supplemental` | the provider's word. */
-  role: string;
+  role: string
   /** `rolling` | `weekly` | `daily` | `monthly` | `billingCycle` | provider's. */
-  kind: string;
+  kind: string
   /** The model a scoped window covers, when it covers one. */
-  scopeModel: string | null;
+  scopeModel: string | null
   /** Consumed capacity, 0–100. Never remaining. */
-  usedPercent: number | null;
-  startsAt: string | null;
-  resetsAt: string | null;
+  usedPercent: number | null
+  startsAt: string | null
+  resetsAt: string | null
   /**
    * Whether trustworthy history shows non-zero usage anywhere in this
    * window's current allowance period. Consulted only for a supplemental,
    * model-scoped window — see `isUsageWindowVisible` in `liveUsage.ts`.
    */
-  hasNonzeroUsageInCurrentPeriod: boolean;
+  hasNonzeroUsageInCurrentPeriod: boolean
   /** What this window's own history supports saying about it. */
-  forecast: LiveUsageForecastPayload;
+  forecast: LiveUsageForecastPayload
 }
 
 /**
@@ -332,52 +328,52 @@ export interface LiveUsageWindowPayload {
  */
 export interface LiveUsageForecastPayload {
   /** `stale` | `transition` | `sparseHistory`, or null when there is one. */
-  unavailableReason: string | null;
+  unavailableReason: string | null
   /** `low` | `medium` | `high`. */
-  confidence: string | null;
+  confidence: string | null
   /** Percentage points of the allowance consumed per hour. */
-  consumptionRate: number | null;
+  consumptionRate: number | null
   /** Current rate over the rate that lands exactly at the reset. >1 overshoots. */
-  paceRatio: number | null;
+  paceRatio: number | null
   /** Last half hour's rate over the last two hours'. >1 is speeding up. */
-  paceTrend: number | null;
+  paceTrend: number | null
   /** When the allowance runs out at the current rate. */
-  runwayAt: string | null;
+  runwayAt: string | null
   /** Points of this window consumed since the reader's local midnight. */
-  usedToday: number | null;
+  usedToday: number | null
 }
 
 /** Metered spend alongside the allowance. */
 export interface LiveExtraUsagePayload {
   /** Whether the account permits this path. `false` differs from unknown. */
-  enabled: boolean;
-  usedPercent: number | null;
-  used: number | null;
-  remaining: number | null;
-  limit: number | null;
-  currency: string | null;
+  enabled: boolean
+  usedPercent: number | null
+  used: number | null
+  remaining: number | null
+  limit: number | null
+  currency: string | null
 }
 
 /** One provider account's live usage. Mirrors Rust `LiveProviderUsage`. */
 export interface LiveProviderUsagePayload {
   /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
-  provider: string;
-  displayName: string;
-  support: LiveUsageSupport;
-  freshness: LiveUsageFreshness;
+  provider: string
+  displayName: string
+  support: LiveUsageSupport
+  freshness: LiveUsageFreshness
   /** Where the figures came from. Safe to display; carries no account id. */
-  sourceLabel: string;
+  sourceLabel: string
   /** When the *provider fact* was observed — not when the app read it. */
-  observedAt: string;
-  windows: LiveUsageWindowPayload[];
-  extraUsage: LiveExtraUsagePayload | null;
+  observedAt: string
+  windows: LiveUsageWindowPayload[]
+  extraUsage: LiveExtraUsagePayload | null
 }
 
 /** A source that failed, in terms a reader can act on. */
 export interface LiveUsageSourceErrorPayload {
-  source: string;
+  source: string
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
-  category: string;
+  category: string
 }
 
 /**
@@ -388,43 +384,43 @@ export interface LiveUsageSourceErrorPayload {
  * look alike.
  */
 export interface LiveUsageSummaryPayload {
-  providers: LiveProviderUsagePayload[];
-  errors: LiveUsageSourceErrorPayload[];
-  generatedAt: string;
+  providers: LiveProviderUsagePayload[]
+  errors: LiveUsageSourceErrorPayload[]
+  generatedAt: string
 }
 
 /** One repository row. Mirrors Rust `RepositoryItem`. */
 export interface RepositoryItemPayload {
-  key: string;
-  repoName: string;
-  fullName: string;
-  status: string;
-  repoRoot: string | null;
-  suspectedPath: string | null;
-  worktreeCount: number;
-  sessionCount: number;
-  wslDistro: string | null;
-  enabled: boolean;
+  key: string
+  repoName: string
+  fullName: string
+  status: string
+  repoRoot: string | null
+  suspectedPath: string | null
+  worktreeCount: number
+  sessionCount: number
+  wslDistro: string | null
+  enabled: boolean
 }
 
 /** What one agent's last pass saw. */
 export interface AgentScanState {
-  agent: string;
-  lastCompletedAt: string | null;
-  sessionsSeen: number;
+  agent: string
+  lastCompletedAt: string | null
+  sessionsSeen: number
 }
 
 /** What a scan is doing, or last did. Mirrors Rust `ScanStatus`. */
 export interface ScanStatus {
-  running: boolean;
-  completedAgents: number;
-  totalAgents: number;
-  sessions: number;
-  finishedAt: string | null;
+  running: boolean
+  completedAgents: number
+  totalAgents: number
+  sessions: number
+  finishedAt: string | null
   /** True when the last pass stopped because it was asked to, not because it failed. */
-  cancelled: boolean;
-  error: string | null;
-  agents: AgentScanState[];
+  cancelled: boolean
+  error: string | null
+  agents: AgentScanState[]
 }
 
 /**
@@ -436,19 +432,19 @@ export interface ScanStatus {
  * shell reports it and the popover surfaces it.
  */
 export interface StorageHealthPayload {
-  failing: boolean;
+  failing: boolean
   /** What failed, in the store's own words. Present only while `failing`. */
-  message: string | null;
+  message: string | null
 }
 
 /** The outcome of one update check. Mirrors Rust `UpdateStatus`. */
 export interface UpdateStatusPayload {
-  kind: 'current' | 'available' | 'failed' | 'unsupported';
-  version: string | null;
-  message: string | null;
-  checkedAt: string;
+  kind: "current" | "available" | "failed" | "unsupported"
+  version: string | null
+  message: string | null
+  checkedAt: string
   /** True when the shell's own schedule ran the check rather than a reader. */
-  automatic: boolean;
+  automatic: boolean
 }
 
 /* -------------------------------------------------------------------------
@@ -460,7 +456,7 @@ export interface UpdateStatusPayload {
  * ---------------------------------------------------------------------- */
 
 /** Window label the shell gives the notification window. Mirrors `NUDGE_LABEL`. */
-export const NUDGE_WINDOW_LABEL = 'nudge';
+export const NUDGE_WINDOW_LABEL = "nudge"
 
 /**
  * What surfaced a nudge. Mirrors Rust `NudgeKind`.
@@ -470,32 +466,32 @@ export const NUDGE_WINDOW_LABEL = 'nudge';
  * with no change to the notification UI.
  */
 export type NudgeKind =
-  | 'updateAvailable'
-  | 'scanFailure'
-  | 'diskSpaceLow'
-  | 'usageAnomaly'
-  | 'usageMilestone'
-  | 'test';
+  | "updateAvailable"
+  | "scanFailure"
+  | "diskSpaceLow"
+  | "usageAnomaly"
+  | "usageMilestone"
+  | "test"
 
 /** Visual tone — informational, positive, or attention. Mirrors Rust `NudgeTone`. */
-export type NudgeTone = 'info' | 'success' | 'warning';
+export type NudgeTone = "info" | "success" | "warning"
 
 /**
  * Optional structured target carried by a CTA and echoed back to the shell when
  * it is clicked, so the handler acts on what the nudge was actually about.
  */
 export type NudgeActionTarget =
-  | { type: 'providerUsage'; provider: string; accountKey: string | null }
-  | { type: 'session'; agent: string; sessionId: string; environment: string | null };
+  | { type: "providerUsage"; provider: string; accountKey: string | null }
+  | { type: "session"; agent: string; sessionId: string; environment: string | null }
 
 /** One actionable CTA on the notification. Mirrors Rust `NudgeAction`. */
 export interface NudgeAction {
   /** Stable identifier routed back to the shell on click. */
-  id: string;
-  label: string;
+  id: string
+  label: string
   /** Rendered as the emphasized button, and always last (macOS convention). */
-  primary: boolean;
-  target?: NudgeActionTarget;
+  primary: boolean
+  target?: NudgeActionTarget
 }
 
 /**
@@ -505,19 +501,19 @@ export interface NudgeAction {
  * `recommendations` arrives absent rather than as `[]` — the view defaults it.
  */
 export interface Nudge {
-  id: string;
-  kind: NudgeKind;
-  tone: NudgeTone;
-  title: string;
+  id: string
+  kind: NudgeKind
+  tone: NudgeTone
+  title: string
   /** Who or what this is about, when it is about one. Never drawn; the shell acts on it. */
-  actor?: string;
+  actor?: string
   /** Why this is being shown. Rendered only when present. */
-  reason?: string;
+  reason?: string
   /** Suggested steps, revealed when the notification expands on hover. */
-  recommendations?: string[];
-  actions: NudgeAction[];
+  recommendations?: string[]
+  actions: NudgeAction[]
   /** Auto-dismiss timeout in milliseconds; absent means sticky until acted on. */
-  timeoutMs?: number;
+  timeoutMs?: number
 }
 
 /* -------------------------------------------------------------------------
@@ -526,12 +522,12 @@ export interface Nudge {
 
 /** True when the bundle is running inside the antiburn shell. */
 export function hasShell(): boolean {
-  return isTauri();
+  return isTauri()
 }
 
 /** What settings look like before anything has been stored, or without a shell. */
 export const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'system',
+  theme: "system",
   activityWindowDays: 7,
   onboardingCompleted: false,
   launchAtLogin: true,
@@ -540,17 +536,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notificationsEnabled: true,
   notifyUpdateAvailable: true,
   notifyScanFailure: true,
-  nudgePlacement: 'menuBar',
+  nudgePlacement: "menuBar",
   nudgeAutoDismissSecs: 10,
   notificationSound: true,
-  diskSpaceDisplay: 'whenLow',
+  diskSpaceDisplay: "whenLow",
   diskSpaceThresholdGb: 50,
   notifyDiskSpaceLow: true,
   notifyUsageAnomalies: true,
   milestones5h: { at50: true, at75: true, at90: true },
   milestonesWeekly: { at50: true, at75: true, at90: true },
   liveUsageEnabled: true,
-};
+}
 
 /* -------------------------------------------------------------------------
  * Commands
@@ -563,8 +559,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * originates in `antiburn_local::pricing::PRICING_CATALOG_VERSION`.
  */
 export async function engineCatalogVersion(): Promise<string | null> {
-  if (!hasShell()) return null;
-  return invoke<string>('engine_catalog_version');
+  if (!hasShell()) return null
+  return invoke<string>("engine_catalog_version")
 }
 
 /**
@@ -575,8 +571,8 @@ export async function engineCatalogVersion(): Promise<string | null> {
  * the window wherever it was.
  */
 export async function openSettingsWindow(pane?: SettingsPane): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('open_settings_window', { pane: pane ?? null });
+  if (!hasShell()) return
+  await invoke("open_settings_window", { pane: pane ?? null })
 }
 
 /**
@@ -586,8 +582,8 @@ export async function openSettingsWindow(pane?: SettingsPane): Promise<void> {
  * somebody asked for an hour ago.
  */
 export async function takeSettingsPane(): Promise<string | null> {
-  if (!hasShell()) return null;
-  return invoke<string | null>('take_settings_pane');
+  if (!hasShell()) return null
+  return invoke<string | null>("take_settings_pane")
 }
 
 /**
@@ -604,9 +600,9 @@ export async function takeSettingsPane(): Promise<string | null> {
  * shortcut has no owner unless the view handles it.
  */
 export async function closeCurrentWindow(): Promise<void> {
-  if (!hasShell()) return;
-  const { getCurrentWindow } = await import('@tauri-apps/api/window');
-  await getCurrentWindow().close();
+  if (!hasShell()) return
+  const { getCurrentWindow } = await import("@tauri-apps/api/window")
+  await getCurrentWindow().close()
 }
 
 /**
@@ -617,8 +613,8 @@ export async function closeCurrentWindow(): Promise<void> {
  * window closes the shell suppresses.
  */
 export async function quitApp(): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('quit_app');
+  if (!hasShell()) return
+  await invoke("quit_app")
 }
 
 /**
@@ -629,8 +625,8 @@ export async function quitApp(): Promise<void> {
  * the master preference — pressing the button is the permission.
  */
 export async function postTestNotification(): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('post_test_notification');
+  if (!hasShell()) return
+  await invoke("post_test_notification")
 }
 
 /**
@@ -641,8 +637,8 @@ export async function postTestNotification(): Promise<void> {
  * behind its back would leave that gate open.
  */
 export async function hidePopover(): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('hide_popover');
+  if (!hasShell()) return
+  await invoke("hide_popover")
 }
 
 /**
@@ -654,12 +650,12 @@ export async function hidePopover(): Promise<void> {
  * `finally`, so a rejected dialog can never leave the window unhideable.
  */
 export async function withPopoverHold<T>(action: () => Promise<T>): Promise<T> {
-  if (!hasShell()) return action();
-  await invoke('begin_popover_hold');
+  if (!hasShell()) return action()
+  await invoke("begin_popover_hold")
   try {
-    return await action();
+    return await action()
   } finally {
-    await invoke('end_popover_hold').catch(() => undefined);
+    await invoke("end_popover_hold").catch(() => undefined)
   }
 }
 
@@ -671,26 +667,26 @@ export async function withPopoverHold<T>(action: () => Promise<T>): Promise<T> {
  * webview-side media query and a height change is motion.
  */
 export async function setPopoverHeight(height: number, animate: boolean): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('set_popover_height', { height, animate });
+  if (!hasShell()) return
+  await invoke("set_popover_height", { height, animate })
 }
 
 /** Where the app came from and what it is running against. */
 export async function appInfo(): Promise<AppInfo | null> {
-  if (!hasShell()) return null;
-  return invoke<AppInfo>('app_info');
+  if (!hasShell()) return null
+  return invoke<AppInfo>("app_info")
 }
 
 /** Every persisted preference. */
 export async function getSettings(): Promise<AppSettings> {
-  if (!hasShell()) return DEFAULT_SETTINGS;
-  return invoke<AppSettings>('get_settings');
+  if (!hasShell()) return DEFAULT_SETTINGS
+  return invoke<AppSettings>("get_settings")
 }
 
 /** Replace every preference, returning what was actually stored. */
 export async function setSettings(settings: AppSettings): Promise<AppSettings> {
-  if (!hasShell()) return settings;
-  return invoke<AppSettings>('set_settings', { settings });
+  if (!hasShell()) return settings
+  return invoke<AppSettings>("set_settings", { settings })
 }
 
 /** Commit the first-run choices and finish onboarding in one shell transition. */
@@ -704,17 +700,17 @@ export async function finishOnboarding(
       activityWindowDays,
       launchAtLogin,
       onboardingCompleted: true,
-    };
+    }
   }
-  return invoke<AppSettings>('finish_onboarding', { activityWindowDays, launchAtLogin });
+  return invoke<AppSettings>("finish_onboarding", { activityWindowDays, launchAtLogin })
 }
 
 /** The sessions to show in the popover, newest first. */
 export async function listRecentSessions(windowDays?: number): Promise<ActivityEntryPayload[]> {
-  if (!hasShell()) return [];
-  return invoke<ActivityEntryPayload[]>('list_recent_sessions', {
+  if (!hasShell()) return []
+  return invoke<ActivityEntryPayload[]>("list_recent_sessions", {
     windowDays: windowDays ?? null,
-  });
+  })
 }
 
 /** One session's analysis, sub-agent roster, and fork relations. */
@@ -723,12 +719,12 @@ export async function getSessionAnalytics(
   sessionId: string,
   wslDistro?: string | null,
 ): Promise<SessionAnalyticsPayload | null> {
-  if (!hasShell()) return null;
-  return invoke<SessionAnalyticsPayload>('get_session_analytics', {
+  if (!hasShell()) return null
+  return invoke<SessionAnalyticsPayload>("get_session_analytics", {
     agent,
     sessionId,
     wslDistro: wslDistro ?? null,
-  });
+  })
 }
 
 /** One sub-agent's own analysis. */
@@ -738,13 +734,13 @@ export async function getSubagentAnalytics(
   subagentId: string,
   wslDistro?: string | null,
 ): Promise<SessionAnalyticsPayload | null> {
-  if (!hasShell()) return null;
-  return invoke<SessionAnalyticsPayload>('get_subagent_analytics', {
+  if (!hasShell()) return null
+  return invoke<SessionAnalyticsPayload>("get_subagent_analytics", {
     agent,
     parentSessionId,
     subagentId,
     wslDistro: wslDistro ?? null,
-  });
+  })
 }
 
 /**
@@ -759,17 +755,17 @@ export async function getSubagentAnalytics(
  * surfaces have an honest empty state and no separate "no shell" state.
  */
 export async function getProviderUsage(): Promise<ProviderUsageSummaryPayload> {
-  if (!hasShell()) return EMPTY_PROVIDER_USAGE;
-  return invoke<ProviderUsageSummaryPayload>('get_provider_usage', {
+  if (!hasShell()) return EMPTY_PROVIDER_USAGE
+  return invoke<ProviderUsageSummaryPayload>("get_provider_usage", {
     utcOffsetMinutes: -new Date().getTimezoneOffset(),
-  });
+  })
 }
 
 /** What provider usage looks like with nothing to report. */
 export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
   providers: [],
-  generatedAt: '',
-};
+  generatedAt: "",
+}
 
 /**
  * The provider's own limit figures, when a registered source can prove them.
@@ -779,36 +775,36 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
  * boundaries, stated as absolute instants, and owe nothing to it.
  */
 export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
-  if (!hasShell()) return EMPTY_LIVE_USAGE;
+  if (!hasShell()) return EMPTY_LIVE_USAGE
   // Coerced rather than passed through: a shell that answered with nothing is
   // the same fact as a shell with no source, and the views should not each
   // carry a null branch for a state that has a perfectly good empty value.
   return (
-    (await invoke<LiveUsageSummaryPayload | null>('get_live_usage', {
+    (await invoke<LiveUsageSummaryPayload | null>("get_live_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })) ?? EMPTY_LIVE_USAGE
-  );
+  )
 }
 
 /** What live usage looks like with no source able to say anything. */
 export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   providers: [],
   errors: [],
-  generatedAt: '',
-};
+  generatedAt: "",
+}
 
 /** Run a scan now, unless one is already in flight. */
 export async function scanNow(activityWindowDays?: number): Promise<ScanStatus | null> {
-  if (!hasShell()) return null;
+  if (!hasShell()) return null
   return activityWindowDays === undefined
-    ? invoke<ScanStatus>('scan_now')
-    : invoke<ScanStatus>('scan_now', { activityWindowDays });
+    ? invoke<ScanStatus>("scan_now")
+    : invoke<ScanStatus>("scan_now", { activityWindowDays })
 }
 
 /** What the current or last scan is doing. */
 export async function getScanStatus(): Promise<ScanStatus | null> {
-  if (!hasShell()) return null;
-  return invoke<ScanStatus>('get_scan_status');
+  if (!hasShell()) return null
+  return invoke<ScanStatus>("get_scan_status")
 }
 
 /**
@@ -818,8 +814,8 @@ export async function getScanStatus(): Promise<ScanStatus | null> {
  * pass, not an undone one.
  */
 export async function cancelScan(): Promise<ScanStatus | null> {
-  if (!hasShell()) return null;
-  return invoke<ScanStatus>('cancel_scan');
+  if (!hasShell()) return null
+  return invoke<ScanStatus>("cancel_scan")
 }
 
 /**
@@ -829,8 +825,8 @@ export async function cancelScan(): Promise<ScanStatus | null> {
  * later scan finds all of this again.
  */
 export async function clearLocalIndex(): Promise<number> {
-  if (!hasShell()) return 0;
-  return invoke<number>('clear_local_index');
+  if (!hasShell()) return 0
+  return invoke<number>("clear_local_index")
 }
 
 /**
@@ -841,17 +837,17 @@ export async function clearLocalIndex(): Promise<number> {
  * reader a banner about.
  */
 export async function getStorageHealth(): Promise<StorageHealthPayload> {
-  if (!hasShell()) return HEALTHY_STORAGE;
-  return (await invoke<StorageHealthPayload | null>('get_storage_health')) ?? HEALTHY_STORAGE;
+  if (!hasShell()) return HEALTHY_STORAGE
+  return (await invoke<StorageHealthPayload | null>("get_storage_health")) ?? HEALTHY_STORAGE
 }
 
 /** What storage health looks like with nothing wrong. */
-export const HEALTHY_STORAGE: StorageHealthPayload = { failing: false, message: null };
+export const HEALTHY_STORAGE: StorageHealthPayload = { failing: false, message: null }
 
 /** Every repository antiburn knows about on this machine. */
 export async function listRepositories(): Promise<RepositoryItemPayload[]> {
-  if (!hasShell()) return [];
-  return invoke<RepositoryItemPayload[]>('list_repositories');
+  if (!hasShell()) return []
+  return invoke<RepositoryItemPayload[]>("list_repositories")
 }
 
 /** Include or ignore one repository, returning the refreshed list. */
@@ -859,38 +855,38 @@ export async function setRepositoryEnabled(
   key: string,
   enabled: boolean,
 ): Promise<RepositoryItemPayload[]> {
-  if (!hasShell()) return [];
-  return invoke<RepositoryItemPayload[]>('set_repository_enabled', { key, enabled });
+  if (!hasShell()) return []
+  return invoke<RepositoryItemPayload[]>("set_repository_enabled", { key, enabled })
 }
 
 /** Re-derive the repository list from what is on disk right now. */
 export async function refreshRepositories(): Promise<RepositoryItemPayload[]> {
-  if (!hasShell()) return [];
-  return invoke<RepositoryItemPayload[]>('refresh_repositories');
+  if (!hasShell()) return []
+  return invoke<RepositoryItemPayload[]>("refresh_repositories")
 }
 
 /** The extra directories the reader pointed the scanner at. */
 export async function listScanRoots(): Promise<string[]> {
-  if (!hasShell()) return [];
-  return invoke<string[]>('list_scan_roots');
+  if (!hasShell()) return []
+  return invoke<string[]>("list_scan_roots")
 }
 
 /** The directories the engine already searches without being asked. */
 export async function defaultScanRoots(): Promise<string[]> {
-  if (!hasShell()) return [];
-  return invoke<string[]>('default_scan_roots');
+  if (!hasShell()) return []
+  return invoke<string[]>("default_scan_roots")
 }
 
 /** Add a directory to scan. */
 export async function addScanRoot(path: string): Promise<string[]> {
-  if (!hasShell()) return [];
-  return invoke<string[]>('add_scan_root', { path });
+  if (!hasShell()) return []
+  return invoke<string[]>("add_scan_root", { path })
 }
 
 /** Stop scanning a directory. */
 export async function removeScanRoot(path: string): Promise<string[]> {
-  if (!hasShell()) return [];
-  return invoke<string[]>('remove_scan_root', { path });
+  if (!hasShell()) return []
+  return invoke<string[]>("remove_scan_root", { path })
 }
 
 /**
@@ -905,13 +901,13 @@ export async function exportSession(
   destPath: string,
   wslDistro?: string | null,
 ): Promise<string | null> {
-  if (!hasShell()) return null;
-  return invoke<string>('export_session', {
+  if (!hasShell()) return null
+  return invoke<string>("export_session", {
     agent,
     sessionId,
     wslDistro: wslDistro ?? null,
     destPath,
-  });
+  })
 }
 
 /**
@@ -924,18 +920,18 @@ export async function deleteSessionData(
   sessionId: string,
   wslDistro?: string | null,
 ): Promise<boolean> {
-  if (!hasShell()) return false;
-  return invoke<boolean>('delete_session_data', {
+  if (!hasShell()) return false
+  return invoke<boolean>("delete_session_data", {
     agent,
     sessionId,
     wslDistro: wslDistro ?? null,
-  });
+  })
 }
 
 /** Reveal a transcript in the platform's file manager. */
 export async function revealSource(path: string): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('reveal_source', { path });
+  if (!hasShell()) return
+  await invoke("reveal_source", { path })
 }
 
 /* -------------------------------------------------------------------------
@@ -958,14 +954,14 @@ export async function nudgeAction(
   actionId: string,
   target?: NudgeActionTarget,
 ): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('nudge_action', { kind, actionId, target });
+  if (!hasShell()) return
+  await invoke("nudge_action", { kind, actionId, target })
 }
 
 /** Hide the notification without acting (close button, or the auto-dismiss timeout). */
 export async function dismissNudge(): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('nudge_dismiss');
+  if (!hasShell()) return
+  await invoke("nudge_dismiss")
 }
 
 /**
@@ -976,8 +972,8 @@ export async function dismissNudge(): Promise<void> {
  * resizing on screen as it appears.
  */
 export async function revealNudge(height: number): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('nudge_reveal', { height });
+  if (!hasShell()) return
+  await invoke("nudge_reveal", { height })
 }
 
 /**
@@ -986,8 +982,8 @@ export async function revealNudge(height: number): Promise<void> {
  * system's resize ease, anchored at its top edge; elsewhere it snaps.
  */
 export async function resizeNudge(height: number): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('nudge_resize', { height });
+  if (!hasShell()) return
+  await invoke("nudge_resize", { height })
 }
 
 /**
@@ -998,8 +994,8 @@ export async function resizeNudge(height: number): Promise<void> {
  * rather than the first nudge after a launch being silently lost.
  */
 export async function nudgeReady(): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('nudge_ready');
+  if (!hasShell()) return
+  await invoke("nudge_ready")
 }
 
 /**
@@ -1013,8 +1009,8 @@ export async function nudgeReady(): Promise<void> {
  * is receiving no mouse events, so there is no `:hover` to feed.
  */
 export async function setNudgeHovered(hovered: boolean): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('nudge_set_hovered', { hovered });
+  if (!hasShell()) return
+  await invoke("nudge_set_hovered", { hovered })
 }
 
 /* -------------------------------------------------------------------------
@@ -1023,10 +1019,10 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
 
 /** Event names the scan emits. Mirrors `src-tauri/src/scan.rs`. */
 export const SCAN_EVENTS = {
-  started: 'scan:started',
-  progress: 'scan:progress',
-  finished: 'scan:finished',
-} as const;
+  started: "scan:started",
+  progress: "scan:progress",
+  finished: "scan:finished",
+} as const
 
 /**
  * Subscribe to every scan event. The callback receives the status snapshot the
@@ -1038,13 +1034,13 @@ export const SCAN_EVENTS = {
 export async function onScanEvent(
   handler: (status: ScanStatus, phase: keyof typeof SCAN_EVENTS) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
+  if (!hasShell()) return () => {}
   const unlisteners = await Promise.all(
     (Object.keys(SCAN_EVENTS) as (keyof typeof SCAN_EVENTS)[]).map((phase) =>
       listen<ScanStatus>(SCAN_EVENTS[phase], (event) => handler(event.payload, phase)),
     ),
-  );
-  return () => unlisteners.forEach((unlisten) => unlisten());
+  )
+  return () => unlisteners.forEach((unlisten) => unlisten())
 }
 
 /**
@@ -1054,14 +1050,14 @@ export async function onScanEvent(
  * but rendered in the popover too; this is what keeps a long-lived popover
  * webview current without a poll.
  */
-export const SETTINGS_CHANGED_EVENT = 'settings:changed';
+export const SETTINGS_CHANGED_EVENT = "settings:changed"
 
 /** Subscribe to settings writes from any window. The result unsubscribes. */
 export async function onSettingsChanged(
   handler: (settings: AppSettings) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen<AppSettings>(SETTINGS_CHANGED_EVENT, (event) => handler(event.payload));
+  if (!hasShell()) return () => {}
+  return listen<AppSettings>(SETTINGS_CHANGED_EVENT, (event) => handler(event.payload))
 }
 
 /**
@@ -1069,12 +1065,12 @@ export async function onSettingsChanged(
  * (repository opt-out, index clearing). Mirrors `SESSIONS_INVALIDATED_EVENT`
  * in `src-tauri/src/commands.rs`.
  */
-export const SESSIONS_INVALIDATED_EVENT = 'sessions:invalidated';
+export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
 
 /** Subscribe to out-of-band session-index changes. The result unsubscribes. */
 export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen(SESSIONS_INVALIDATED_EVENT, () => handler());
+  if (!hasShell()) return () => {}
+  return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
 }
 
 /**
@@ -1087,16 +1083,16 @@ export async function onSessionsInvalidated(handler: () => void): Promise<Unlist
  * limits. This is what a view subscribes to when what it wants is "the
  * popover just opened," full stop.
  */
-export const POPOVER_SHOWN_EVENT = 'popover:shown';
+export const POPOVER_SHOWN_EVENT = "popover:shown"
 
 /** Subscribe to the popover reaching the screen. The result unsubscribes. */
 export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen(POPOVER_SHOWN_EVENT, () => handler());
+  if (!hasShell()) return () => {}
+  return listen(POPOVER_SHOWN_EVENT, () => handler())
 }
 
 /** Event the shell emits when storage health changes. Mirrors `src-tauri/src/storage_health.rs`. */
-export const STORAGE_HEALTH_EVENT = 'storage:health';
+export const STORAGE_HEALTH_EVENT = "storage:health"
 
 /**
  * Subscribe to storage-health changes. The returned function unsubscribes.
@@ -1107,26 +1103,26 @@ export const STORAGE_HEALTH_EVENT = 'storage:health';
 export async function onStorageHealth(
   handler: (status: StorageHealthPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen<StorageHealthPayload>(STORAGE_HEALTH_EVENT, (event) => handler(event.payload));
+  if (!hasShell()) return () => {}
+  return listen<StorageHealthPayload>(STORAGE_HEALTH_EVENT, (event) => handler(event.payload))
 }
 
 /**
  * Event the shell emits to move an *already open* settings window to a pane.
  * Mirrors `src-tauri/src/settings.rs`.
  */
-export const SETTINGS_PANE_EVENT = 'settings:pane';
+export const SETTINGS_PANE_EVENT = "settings:pane"
 
 /** Subscribe to pane requests aimed at an open settings window. */
 export async function onSettingsPaneRequest(
   handler: (pane: string) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen<string>(SETTINGS_PANE_EVENT, (event) => handler(event.payload));
+  if (!hasShell()) return () => {}
+  return listen<string>(SETTINGS_PANE_EVENT, (event) => handler(event.payload))
 }
 
 /** Event the shell emits after every update check. Mirrors `src-tauri/src/updates.rs`. */
-export const UPDATE_EVENT = 'update:status';
+export const UPDATE_EVENT = "update:status"
 
 /**
  * Subscribe to the outcome of every update check the shell runs on its own
@@ -1139,8 +1135,8 @@ export const UPDATE_EVENT = 'update:status';
 export async function onUpdateStatus(
   handler: (status: UpdateStatusPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen<UpdateStatusPayload>(UPDATE_EVENT, (event) => handler(event.payload));
+  if (!hasShell()) return () => {}
+  return listen<UpdateStatusPayload>(UPDATE_EVENT, (event) => handler(event.payload))
 }
 
 /**
@@ -1148,12 +1144,12 @@ export async function onUpdateStatus(
  * {@link Nudge} to draw. Mirrors `NUDGE_SHOW_EVENT` in
  * `src-tauri/crates/nudge/src/lib.rs`.
  */
-export const NUDGE_SHOW_EVENT = 'nudge:show';
+export const NUDGE_SHOW_EVENT = "nudge:show"
 
 /** Subscribe to incoming nudges. The returned function unsubscribes. */
 export async function onNudgeShow(handler: (nudge: Nudge) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen<Nudge>(NUDGE_SHOW_EVENT, (event) => handler(event.payload));
+  if (!hasShell()) return () => {}
+  return listen<Nudge>(NUDGE_SHOW_EVENT, (event) => handler(event.payload))
 }
 
 /**
@@ -1165,12 +1161,12 @@ export async function onNudgeShow(handler: (nudge: Nudge) => void): Promise<Unli
  * (the settings window, or the popover) holds macOS key-window status, because
  * AppKit routes mouse-moved events there instead.
  */
-export const NUDGE_HOVER_EVENT = 'nudge:hover';
+export const NUDGE_HOVER_EVENT = "nudge:hover"
 
 /** Subscribe to the native hover signal. The returned function unsubscribes. */
 export async function onNudgeHover(handler: (hovered: boolean) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {};
-  return listen<boolean>(NUDGE_HOVER_EVENT, (event) => handler(event.payload === true));
+  if (!hasShell()) return () => {}
+  return listen<boolean>(NUDGE_HOVER_EVENT, (event) => handler(event.payload === true))
 }
 
 /* -------------------------------------------------------------------------
@@ -1179,8 +1175,8 @@ export async function onNudgeHover(handler: (hovered: boolean) => void): Promise
 
 /** Which protected folders need permission, and which already have it. */
 export async function getFolderPermissions(): Promise<FolderPermissions> {
-  if (!hasShell()) return { deferred: [], granted: [], supported: false };
-  return invoke<FolderPermissions>('get_folder_permissions');
+  if (!hasShell()) return { deferred: [], granted: [], supported: false }
+  return invoke<FolderPermissions>("get_folder_permissions")
 }
 
 /**
@@ -1193,20 +1189,20 @@ export async function getFolderPermissions(): Promise<FolderPermissions> {
  * everything else.
  */
 export async function requestFolderAccess(dir: string): Promise<FolderAccessOutcome> {
-  if (!hasShell()) return { outcome: 'denied', elapsedMs: 0 };
-  return invoke<FolderAccessOutcome>('request_folder_access', { dir });
+  if (!hasShell()) return { outcome: "denied", elapsedMs: 0 }
+  return invoke<FolderAccessOutcome>("request_folder_access", { dir })
 }
 
 /** Open the system pane where folder permissions are granted. */
 export async function openFolderAccessSettings(): Promise<void> {
-  if (!hasShell()) return;
-  await invoke('open_folder_access_settings');
+  if (!hasShell()) return
+  await invoke("open_folder_access_settings")
 }
 
 /** Probe outcomes from this run, for a bug report. */
 export async function getConsentDiagnostics(): Promise<ProbeRecord[]> {
-  if (!hasShell()) return [];
-  return invoke<ProbeRecord[]>('get_consent_diagnostics');
+  if (!hasShell()) return []
+  return invoke<ProbeRecord[]>("get_consent_diagnostics")
 }
 
 /**
@@ -1216,6 +1212,6 @@ export async function getConsentDiagnostics(): Promise<ProbeRecord[]> {
  * dialog**, so it belongs behind an explicit control, never a background poll.
  */
 export async function recheckFolderPermissions(): Promise<string[]> {
-  if (!hasShell()) return [];
-  return invoke<string[]>('recheck_folder_permissions');
+  if (!hasShell()) return []
+  return invoke<string[]>("recheck_folder_permissions")
 }

@@ -2,13 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from "@testing-library/react"
+import { describe, expect, it, vi } from "vitest"
 
-import { RangeSlider } from './RangeSlider';
+import { RangeSlider } from "./RangeSlider"
 
-describe('RangeSlider', () => {
-  it('shares the settings slider treatment and accessible value', () => {
+describe("RangeSlider", () => {
+  it("shares the settings slider treatment and accessible value", () => {
     render(
       <RangeSlider
         value={3}
@@ -18,17 +18,17 @@ describe('RangeSlider', () => {
         ariaLabel="Recent activity days"
         ariaValueText="3 days"
       />,
-    );
+    )
 
-    const slider = screen.getByRole('slider', { name: 'Recent activity days' });
-    expect(slider.className).toContain('bg-surface-secondary');
-    expect(slider.className).toContain('accent-[var(--color-accent-fill)]');
-    expect(slider.classList).toContain('cursor-default');
-    expect(slider.classList).not.toContain('cursor-pointer');
-    expect(slider.getAttribute('aria-valuetext')).toBe('3 days');
-  });
+    const slider = screen.getByRole("slider", { name: "Recent activity days" })
+    expect(slider.className).toContain("bg-surface-secondary")
+    expect(slider.className).toContain("accent-[var(--color-accent-fill)]")
+    expect(slider.classList).toContain("cursor-default")
+    expect(slider.classList).not.toContain("cursor-pointer")
+    expect(slider.getAttribute("aria-valuetext")).toBe("3 days")
+  })
 
-  it('keeps the unavailable cursor treatment when disabled', () => {
+  it("keeps the unavailable cursor treatment when disabled", () => {
     render(
       <RangeSlider
         value={10}
@@ -38,17 +38,17 @@ describe('RangeSlider', () => {
         ariaLabel="Auto-dismiss time"
         disabled
       />,
-    );
+    )
 
-    const slider = screen.getByRole('slider', { name: 'Auto-dismiss time' });
-    expect((slider as HTMLInputElement).disabled).toBe(true);
-    expect(slider.classList).toContain('cursor-default');
-    expect(slider.classList).toContain('disabled:cursor-not-allowed');
-  });
+    const slider = screen.getByRole("slider", { name: "Auto-dismiss time" })
+    expect((slider as HTMLInputElement).disabled).toBe(true)
+    expect(slider.classList).toContain("cursor-default")
+    expect(slider.classList).toContain("disabled:cursor-not-allowed")
+  })
 
-  it('changes continuously and commits once when a gesture settles', () => {
-    const onChange = vi.fn();
-    const onCommit = vi.fn();
+  it("changes continuously and commits once when a gesture settles", () => {
+    const onChange = vi.fn()
+    const onCommit = vi.fn()
     const { rerender } = render(
       <RangeSlider
         value={3}
@@ -58,11 +58,11 @@ describe('RangeSlider', () => {
         onCommit={onCommit}
         ariaLabel="Days"
       />,
-    );
-    const slider = screen.getByRole('slider', { name: 'Days' });
+    )
+    const slider = screen.getByRole("slider", { name: "Days" })
 
-    fireEvent.pointerDown(slider);
-    fireEvent.change(slider, { target: { value: '5' } });
+    fireEvent.pointerDown(slider)
+    fireEvent.change(slider, { target: { value: "5" } })
     rerender(
       <RangeSlider
         value={5}
@@ -72,17 +72,17 @@ describe('RangeSlider', () => {
         onCommit={onCommit}
         ariaLabel="Days"
       />,
-    );
-    fireEvent.pointerUp(slider);
-    fireEvent.blur(slider);
+    )
+    fireEvent.pointerUp(slider)
+    fireEvent.blur(slider)
 
-    expect(onChange).toHaveBeenCalledWith(5);
-    expect(onCommit).toHaveBeenCalledOnce();
-    expect(onCommit).toHaveBeenCalledWith(5);
-  });
+    expect(onChange).toHaveBeenCalledWith(5)
+    expect(onCommit).toHaveBeenCalledOnce()
+    expect(onCommit).toHaveBeenCalledWith(5)
+  })
 
-  it('does not commit a gesture whose value did not change', () => {
-    const onCommit = vi.fn();
+  it("does not commit a gesture whose value did not change", () => {
+    const onCommit = vi.fn()
     render(
       <RangeSlider
         value={3}
@@ -92,12 +92,12 @@ describe('RangeSlider', () => {
         onCommit={onCommit}
         ariaLabel="Days"
       />,
-    );
-    const slider = screen.getByRole('slider', { name: 'Days' });
+    )
+    const slider = screen.getByRole("slider", { name: "Days" })
 
-    fireEvent.pointerDown(slider);
-    fireEvent.pointerUp(slider);
+    fireEvent.pointerDown(slider)
+    fireEvent.pointerUp(slider)
 
-    expect(onCommit).not.toHaveBeenCalled();
-  });
-});
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+})

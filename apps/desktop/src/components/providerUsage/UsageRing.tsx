@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { BrandMark } from '../../lib/brandMarks';
+import type { BrandMark } from "../../lib/brandMarks"
 
 /**
  * How wide a mark is drawn, in the ring's 32-unit units.
@@ -12,7 +12,7 @@ import type { BrandMark } from '../../lib/brandMarks';
  * a mark that fills the interior edge-to-edge reads as crowding the arc rather
  * than sitting in it.
  */
-const MARK_EXTENT = 16.8;
+const MARK_EXTENT = 16.8
 
 /**
  * Centre a mark in the ring's 32-unit box at {@link MARK_EXTENT}.
@@ -23,9 +23,9 @@ const MARK_EXTENT = 16.8;
  * stretched and nothing overflows.
  */
 function markTransform(mark: BrandMark): string {
-  const [, , w = 24, h = 24] = mark.viewBox.split(' ').map(Number);
-  const scale = MARK_EXTENT / Math.max(w, h);
-  return `translate(16 16) scale(${scale}) translate(${-w / 2} ${-h / 2})`;
+  const [, , w = 24, h = 24] = mark.viewBox.split(" ").map(Number)
+  const scale = MARK_EXTENT / Math.max(w, h)
+  return `translate(16 16) scale(${scale}) translate(${-w / 2} ${-h / 2})`
 }
 
 /**
@@ -52,12 +52,12 @@ export function UsageRing({
   glyph,
   mark,
   size = 16,
-  className = '',
+  className = "",
 }: {
   /** Consumed capacity, 0–100. `null` renders the indeterminate ring. */
-  percent: number | null;
+  percent: number | null
   /** Whether the figure was modelled rather than stated by the provider. */
-  estimated?: boolean;
+  estimated?: boolean
   /**
    * What sits inside the ring — the provider's brand mark where one exists,
    * otherwise its initial.
@@ -66,17 +66,17 @@ export function UsageRing({
    * leave a chip that says how full something is without saying whose, which
    * is a worse trade than the ring is worth.
    */
-  glyph?: string;
+  glyph?: string
   /** A brand mark, preferred over `glyph` when supplied. */
-  mark?: BrandMark | undefined;
-  size?: number;
-  className?: string;
+  mark?: BrandMark | undefined
+  size?: number
+  className?: string
 }) {
   // Geometry in a fixed 32-unit box, scaled by `size`. Keeping the viewBox
   // constant means the stroke stays proportional at every call site.
-  const radius = 13;
-  const circumference = 2 * Math.PI * radius;
-  const clamped = percent == null ? null : Math.min(100, Math.max(0, percent));
+  const radius = 13
+  const circumference = 2 * Math.PI * radius
+  const clamped = percent == null ? null : Math.min(100, Math.max(0, percent))
 
   return (
     <svg
@@ -94,8 +94,8 @@ export function UsageRing({
         fill="none"
         strokeWidth="2.5"
         stroke="currentColor"
-        className={clamped == null ? 'text-label-tertiary' : 'text-separator'}
-        strokeDasharray={clamped == null ? '2 2' : undefined}
+        className={clamped == null ? "text-label-tertiary" : "text-separator"}
+        strokeDasharray={clamped == null ? "2 2" : undefined}
       />
       {clamped != null && (
         <circle
@@ -155,5 +155,5 @@ export function UsageRing({
         </text>
       )}
     </svg>
-  );
+  )
 }

@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useId, type ReactElement } from 'react';
+import { useId, type ReactElement } from "react"
 import {
   Area,
   AreaChart,
@@ -11,25 +11,25 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from 'recharts';
+} from "recharts"
 
-import { contextSeries } from '../../../lib/presentation/sessionAnalytics';
-import type { SessionBucket } from '../../../lib/types/session';
-import { GLASS_TOOLTIP_STYLE } from './tooltip';
+import { contextSeries } from "../../../lib/presentation/sessionAnalytics"
+import type { SessionBucket } from "../../../lib/types/session"
+import { GLASS_TOOLTIP_STYLE } from "./tooltip"
 
 export interface ContextDriftChartProps {
-  buckets: SessionBucket[];
-  contextWindow: number;
+  buckets: SessionBucket[]
+  contextWindow: number
 }
 
 /** Occupancy percentage at which the chart starts warning. */
-const CONTEXT_THRESHOLD = 90;
+const CONTEXT_THRESHOLD = 90
 
 /** Context-window occupancy over progress, marked at the warning threshold. */
 export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartProps) {
-  const data = contextSeries(buckets, contextWindow);
-  const compactionPoints = data.filter((d) => d.isCompactionBoundary);
-  const fillId = `context-fill-${useId().replace(/:/g, '')}`;
+  const data = contextSeries(buckets, contextWindow)
+  const compactionPoints = data.filter((d) => d.isCompactionBoundary)
+  const fillId = `context-fill-${useId().replace(/:/g, "")}`
 
   // The fill gradient is an SVG `objectBoundingBox` gradient, so its [0,1]
   // offsets map over the *area path's* bounding box — which spans 0..peak, not
@@ -39,10 +39,10 @@ export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartP
   // top. A constant domain-relative split only happens to align when the peak
   // is exactly 100. Null when the session never crosses the threshold, so the
   // whole area stays calm.
-  const peak = data.reduce((m, d) => Math.max(m, d.contextPct), 0);
-  const thresholdSplit = peak > CONTEXT_THRESHOLD ? (peak - CONTEXT_THRESHOLD) / peak : null;
+  const peak = data.reduce((m, d) => Math.max(m, d.contextPct), 0)
+  const thresholdSplit = peak > CONTEXT_THRESHOLD ? (peak - CONTEXT_THRESHOLD) / peak : null
 
-  const stops: ReactElement[] = [];
+  const stops: ReactElement[] = []
   if (thresholdSplit != null) {
     stops.push(
       <stop
@@ -57,7 +57,7 @@ export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartP
         stopColor="var(--color-pattern-drifting)"
         stopOpacity={0.3}
       />,
-    );
+    )
   }
   stops.push(
     <stop
@@ -66,7 +66,7 @@ export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartP
       stopColor="var(--color-context-fill-top)"
     />,
     <stop key="healthy-base" offset={1} stopColor="var(--color-context-fill-base)" />,
-  );
+  )
 
   return (
     <ResponsiveContainer width="100%" height={110}>
@@ -95,18 +95,18 @@ export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartP
             strokeDasharray="2 2"
             strokeOpacity={0.8}
             label={{
-              value: '⊥ Compaction',
-              position: 'insideTopLeft',
-              fill: 'var(--color-label-tertiary)',
+              value: "⊥ Compaction",
+              position: "insideTopLeft",
+              fill: "var(--color-label-tertiary)",
               fontSize: 9,
             }}
           />
         ))}
         <Tooltip
-          cursor={{ stroke: 'var(--color-separator)' }}
+          cursor={{ stroke: "var(--color-separator)" }}
           contentStyle={GLASS_TOOLTIP_STYLE}
           labelFormatter={(progress) => `${progress}% through`}
-          formatter={(value) => [`${Number(value)}%`, 'Context']}
+          formatter={(value) => [`${Number(value)}%`, "Context"]}
         />
         <Area
           type="monotone"
@@ -118,5 +118,5 @@ export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartP
         />
       </AreaChart>
     </ResponsiveContainer>
-  );
+  )
 }

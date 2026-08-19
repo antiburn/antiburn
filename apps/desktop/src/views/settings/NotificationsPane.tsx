@@ -2,22 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Card } from '../../components/ui/Card';
-import { Pane } from '../../components/ui/Pane';
-import { PushButton } from '../../components/ui/PushButton';
-import { RangeSlider } from '../../components/ui/RangeSlider';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { SegmentedControl } from '../../components/ui/SegmentedControl';
-import { ToggleRow } from '../../components/ui/ToggleRow';
+import { Card } from "../../components/ui/Card"
+import { Pane } from "../../components/ui/Pane"
+import { PushButton } from "../../components/ui/PushButton"
+import { RangeSlider } from "../../components/ui/RangeSlider"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { SegmentedControl } from "../../components/ui/SegmentedControl"
+import { ToggleRow } from "../../components/ui/ToggleRow"
 import {
   postTestNotification,
   type DiskSpaceDisplay,
   type Milestones,
   type NudgePlacement,
-} from '../../lib/ipc';
-import { isMacOS } from '../../lib/platform';
-import type { AppSettingsController } from './useAppSettings';
+} from "../../lib/ipc"
+import { isMacOS } from "../../lib/platform"
+import type { AppSettingsController } from "./useAppSettings"
 
 /**
  * Notifications.
@@ -42,26 +42,26 @@ import type { AppSettingsController } from './useAppSettings';
  * rather than leaving a reader to wonder why their pills are quiet.
  */
 
-export type NotificationsPaneProps = AppSettingsController;
+export type NotificationsPaneProps = AppSettingsController
 
 const PLACEMENTS: readonly { value: NudgePlacement; label: string }[] = [
-  { value: 'menuBar', label: 'Menu bar' },
-  { value: 'topRight', label: 'Top right' },
-];
+  { value: "menuBar", label: "Menu bar" },
+  { value: "topRight", label: "Top right" },
+]
 
 const DISK_DISPLAYS: readonly { value: DiskSpaceDisplay; label: string }[] = [
-  { value: 'always', label: 'Always' },
-  { value: 'whenLow', label: 'When low' },
-  { value: 'never', label: 'Never' },
-];
+  { value: "always", label: "Always" },
+  { value: "whenLow", label: "When low" },
+  { value: "never", label: "Never" },
+]
 
 /** The threshold presets. The store accepts 5–2000; these are the sensible
  *  stops, matching the tray's own "N GB" rendering. */
 const DISK_THRESHOLDS: readonly { value: string; label: string }[] = [
-  { value: '25', label: '25 GB' },
-  { value: '50', label: '50 GB' },
-  { value: '100', label: '100 GB' },
-];
+  { value: "25", label: "25 GB" },
+  { value: "50", label: "50 GB" },
+  { value: "100", label: "100 GB" },
+]
 
 /** Three multi-select pills. Not a `SegmentedControl`: these are independent
  *  toggles that happen to sit together, so each button carries its own
@@ -72,16 +72,16 @@ function MilestonePills({
   ariaLabel,
   disabled = false,
 }: {
-  value: Milestones;
-  onChange: (next: Milestones) => void;
-  ariaLabel: string;
-  disabled?: boolean;
+  value: Milestones
+  onChange: (next: Milestones) => void
+  ariaLabel: string
+  disabled?: boolean
 }) {
   const options = [
-    ['at50', '50%'],
-    ['at75', '75%'],
-    ['at90', '90%'],
-  ] as const;
+    ["at50", "50%"],
+    ["at75", "75%"],
+    ["at90", "90%"],
+  ] as const
   return (
     <div role="group" aria-label={ariaLabel} className="flex items-center gap-1.5">
       {options.map(([key, label]) => (
@@ -93,20 +93,20 @@ function MilestonePills({
           onClick={() => onChange({ ...value, [key]: !value[key] })}
           className={`type-footnote h-6 rounded-control px-2 tabular-nums transition-colors duration-[120ms] ease-out ${
             value[key]
-              ? 'bg-accent-fill text-white'
-              : 'text-label-secondary hover:bg-surface-hover'
+              ? "bg-accent-fill text-white"
+              : "text-label-secondary hover:bg-surface-hover"
           }`}
         >
           {label}
         </button>
       ))}
     </div>
-  );
+  )
 }
 
 export function NotificationsPane({ settings, update }: NotificationsPaneProps) {
-  const on = settings.notificationsEnabled;
-  const macOS = isMacOS();
+  const on = settings.notificationsEnabled
+  const macOS = isMacOS()
 
   return (
     <Pane title="Notifications">
@@ -250,5 +250,5 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
         </SectionGroup>
       )}
     </Pane>
-  );
+  )
 }

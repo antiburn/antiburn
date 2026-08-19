@@ -2,21 +2,21 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft } from "lucide-react"
 
-import { ProviderGlyph } from '../../components/providerUsage';
-import { LiveUsageDetail } from '../../components/providerUsage/LiveUsageDetail';
-import { UsageMetricRows } from '../../components/providerUsage/UsageMetricRows';
-import { UsageWindowRows } from '../../components/providerUsage/UsageWindowRows';
-import { ScrollPane } from '../../components/ui/ScrollPane';
+import { ProviderGlyph } from "../../components/providerUsage"
+import { LiveUsageDetail } from "../../components/providerUsage/LiveUsageDetail"
+import { UsageMetricRows } from "../../components/providerUsage/UsageMetricRows"
+import { UsageWindowRows } from "../../components/providerUsage/UsageWindowRows"
+import { ScrollPane } from "../../components/ui/ScrollPane"
 import type {
   LiveProviderUsagePayload,
   LiveUsageSummaryPayload,
   ProviderUsagePayload,
   ProviderUsageSummaryPayload,
-} from '../../lib/ipc';
-import { EMPTY_LIVE_USAGE } from '../../lib/ipc';
-import { liveAuthNote, liveForProvider } from '../../lib/presentation/liveUsage';
+} from "../../lib/ipc"
+import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
+import { liveAuthNote, liveForProvider } from "../../lib/presentation/liveUsage"
 import {
   providerWindow,
   rankByWindow,
@@ -24,12 +24,12 @@ import {
   updatedNote,
   usageStateDescription,
   windowHasEvidence,
-} from '../../lib/presentation/providerUsage';
+} from "../../lib/presentation/providerUsage"
 
 export interface UsageViewProps {
-  summary: ProviderUsageSummaryPayload;
+  summary: ProviderUsageSummaryPayload
   /** The provider's own limit figures, when a source could prove any. */
-  live?: LiveUsageSummaryPayload;
+  live?: LiveUsageSummaryPayload
   /**
    * The instant countdowns and elapsed markers are measured from. Defaults to
    * when the shell collected the snapshot, which is both pure — a render must
@@ -37,22 +37,22 @@ export interface UsageViewProps {
    * countdown then agrees with the reading it sits under, instead of drifting
    * a little further from it on every re-render.
    */
-  now?: number;
-  onBack: () => void;
+  now?: number
+  onBack: () => void
 }
 
 /** Providers split the way a reader scans them: current work first. */
 function sectioned(providers: readonly ProviderUsagePayload[]): {
-  recent: ProviderUsagePayload[];
-  rest: ProviderUsagePayload[];
+  recent: ProviderUsagePayload[]
+  rest: ProviderUsagePayload[]
 } {
-  const ranked = rankByWindow(providers, 'month');
+  const ranked = rankByWindow(providers, "month")
   const recent = ranked.filter(
     (provider) =>
-      windowHasEvidence(providerWindow(provider, 'today')) || provider.staleness === 'fresh',
-  );
-  const rest = ranked.filter((provider) => !recent.includes(provider));
-  return { recent, rest };
+      windowHasEvidence(providerWindow(provider, "today")) || provider.staleness === "fresh",
+  )
+  const rest = ranked.filter((provider) => !recent.includes(provider))
+  return { recent, rest }
 }
 
 /**
@@ -79,10 +79,10 @@ function sectioned(providers: readonly ProviderUsagePayload[]): {
 export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: UsageViewProps) {
   // `|| 0` rather than a fallback clock: with no snapshot there is no live
   // section to render, so nothing consumes this.
-  const at = now ?? (Date.parse(live.generatedAt) || 0);
-  const { recent, rest } = sectioned(summary.providers);
-  const empty = recent.length === 0 && rest.length === 0;
-  const authNote = liveAuthNote(live);
+  const at = now ?? (Date.parse(live.generatedAt) || 0)
+  const { recent, rest } = sectioned(summary.providers)
+  const empty = recent.length === 0 && rest.length === 0
+  const authNote = liveAuthNote(live)
 
   return (
     <div className="flex h-full flex-col">
@@ -139,7 +139,7 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
         </p>
       </footer>
     </div>
-  );
+  )
 }
 
 function UsageSection({
@@ -148,12 +148,12 @@ function UsageSection({
   live,
   now,
 }: {
-  title: string;
-  providers: readonly ProviderUsagePayload[];
-  live: LiveUsageSummaryPayload;
-  now: number;
+  title: string
+  providers: readonly ProviderUsagePayload[]
+  live: LiveUsageSummaryPayload
+  now: number
 }) {
-  if (providers.length === 0) return null;
+  if (providers.length === 0) return null
   return (
     <section aria-label={title} className="pt-2 first:pt-0">
       <h2 className="px-1 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
@@ -170,7 +170,7 @@ function UsageSection({
         ))}
       </ul>
     </section>
-  );
+  )
 }
 
 function ProviderCard({
@@ -178,13 +178,13 @@ function ProviderCard({
   live,
   now,
 }: {
-  provider: ProviderUsagePayload;
-  live: LiveProviderUsagePayload | null;
-  now: number;
+  provider: ProviderUsagePayload
+  live: LiveProviderUsagePayload | null
+  now: number
 }) {
-  const stale = stalenessNote(provider);
-  const updated = updatedNote(provider);
-  const usedToday = windowHasEvidence(providerWindow(provider, 'today'));
+  const stale = stalenessNote(provider)
+  const updated = updatedNote(provider)
+  const usedToday = windowHasEvidence(providerWindow(provider, "today"))
 
   return (
     <li className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
@@ -208,7 +208,7 @@ function ProviderCard({
           </div>
           {(stale ?? updated) && (
             <p
-              className={`type-caption ${stale ? 'text-system-orange' : 'text-label-tertiary'}`}
+              className={`type-caption ${stale ? "text-system-orange" : "text-label-tertiary"}`}
             >
               {stale ?? updated}
             </p>
@@ -226,5 +226,5 @@ function ProviderCard({
         {usageStateDescription(provider.state)}
       </p>
     </li>
-  );
+  )
 }

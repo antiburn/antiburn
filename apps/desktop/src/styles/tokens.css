@@ -230,7 +230,7 @@
 }
 
 /* --- Explicit theme override, for platforms with no live system tokens --- */
-:root[data-theme='light'] {
+:root[data-theme="light"] {
   --color-bg-primary: rgb(255 255 255 / 0.58);
   --color-bg-secondary: rgb(0 0 0 / 0.08);
   --color-bg-tertiary: rgb(0 0 0 / 0.12);
@@ -275,13 +275,13 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-theme='light'] {
+  :root[data-theme="light"] {
     --color-bg-primary: rgb(255 255 255);
     --color-bg-window: rgb(246 246 246);
   }
 }
 
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   --color-bg-primary: rgb(30 30 30 / 0.92);
   --color-bg-secondary: rgb(255 255 255 / 0.12);
   --color-bg-tertiary: rgb(255 255 255 / 0.18);
@@ -321,14 +321,14 @@
    opaque they composite to opaque too; giving them solid values would just
    hard-code a color that already falls out of the stack. */
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-theme='dark'] {
+  :root[data-theme="dark"] {
     --color-bg-window: rgb(32 32 32);
   }
 }
 
 @supports (color: -apple-system-label) {
-  :root[data-theme='light'],
-  :root[data-theme='dark'] {
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
     --color-text-primary: -apple-system-label;
     --color-text-secondary: -apple-system-secondary-label;
     --color-border: -apple-system-separator;

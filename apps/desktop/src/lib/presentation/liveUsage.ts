@@ -28,8 +28,8 @@ import type {
   LiveUsageFreshness,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
-} from '../ipc';
-import { relativeTime } from './relativeTime';
+} from "../ipc"
+import { relativeTime } from "./relativeTime"
 
 /**
  * The full name of one window.
@@ -39,12 +39,12 @@ import { relativeTime } from './relativeTime';
  * directly above it.
  */
 export function liveWindowLabel(window: LiveUsageWindowPayload): string {
-  if (window.scopeModel) return `${window.scopeModel} weekly limit`;
-  if (window.role === 'primaryShort') return '5-hour limit';
-  if (window.role === 'primaryLong') return 'Weekly limit';
-  if (window.kind === 'daily') return 'Daily limit';
-  if (window.kind === 'monthly' || window.kind === 'billingCycle') return 'Monthly limit';
-  return 'Usage limit';
+  if (window.scopeModel) return `${window.scopeModel} weekly limit`
+  if (window.role === "primaryShort") return "5-hour limit"
+  if (window.role === "primaryLong") return "Weekly limit"
+  if (window.kind === "daily") return "Daily limit"
+  if (window.kind === "monthly" || window.kind === "billingCycle") return "Monthly limit"
+  return "Usage limit"
 }
 
 /**
@@ -54,8 +54,8 @@ export function liveWindowLabel(window: LiveUsageWindowPayload): string {
  * claim, and this one would be a claim nobody made.
  */
 export function liveWindowValueLabel(window: LiveUsageWindowPayload): string {
-  if (window.usedPercent == null) return 'Unknown';
-  return `${Math.round(window.usedPercent)}% used`;
+  if (window.usedPercent == null) return "Unknown"
+  return `${Math.round(window.usedPercent)}% used`
 }
 
 /**
@@ -70,11 +70,11 @@ export function liveWindowValueLabel(window: LiveUsageWindowPayload): string {
  * only covers the recurrence that does not fit that pattern.
  */
 const IMPLIED_PERIOD_MS: Readonly<Record<string, number>> = {
-  'five-hour': 5 * 3_600_000,
-};
+  "five-hour": 5 * 3_600_000,
+}
 
-const DAY_MS = 24 * 3_600_000;
-const WEEK_MS = 7 * DAY_MS;
+const DAY_MS = 24 * 3_600_000
+const WEEK_MS = 7 * DAY_MS
 
 /**
  * The length of a window's period implied by its own identity, in
@@ -92,11 +92,11 @@ const WEEK_MS = 7 * DAY_MS;
  * exactly the thing this module exists to avoid.
  */
 function impliedPeriodMs(window: LiveUsageWindowPayload): number | null {
-  const byId = IMPLIED_PERIOD_MS[window.id];
-  if (byId != null) return byId;
-  if (window.kind === 'weekly') return WEEK_MS;
-  if (window.kind === 'daily') return DAY_MS;
-  return null;
+  const byId = IMPLIED_PERIOD_MS[window.id]
+  if (byId != null) return byId
+  if (window.kind === "weekly") return WEEK_MS
+  if (window.kind === "daily") return DAY_MS
+  return null
 }
 
 /**
@@ -114,16 +114,16 @@ function impliedPeriodMs(window: LiveUsageWindowPayload): number | null {
  * from an assumed period.
  */
 export function liveWindowElapsed(window: LiveUsageWindowPayload, now: number): number | null {
-  if (!window.resetsAt) return null;
-  const end = new Date(window.resetsAt).getTime();
-  if (Number.isNaN(end)) return null;
+  if (!window.resetsAt) return null
+  const end = new Date(window.resetsAt).getTime()
+  if (Number.isNaN(end)) return null
 
-  const stated = window.startsAt ? new Date(window.startsAt).getTime() : Number.NaN;
-  const implied = impliedPeriodMs(window);
-  const start = Number.isNaN(stated) ? (implied == null ? Number.NaN : end - implied) : stated;
-  if (Number.isNaN(start) || end <= start) return null;
+  const stated = window.startsAt ? new Date(window.startsAt).getTime() : Number.NaN
+  const implied = impliedPeriodMs(window)
+  const start = Number.isNaN(stated) ? (implied == null ? Number.NaN : end - implied) : stated
+  if (Number.isNaN(start) || end <= start) return null
 
-  return Math.min(1, Math.max(0, (now - start) / (end - start)));
+  return Math.min(1, Math.max(0, (now - start) / (end - start)))
 }
 
 /**
@@ -134,22 +134,22 @@ export function liveWindowElapsed(window: LiveUsageWindowPayload, now: number): 
  * reads as a time, and a weekday and clock time is.
  */
 export function liveResetLabel(window: LiveUsageWindowPayload, now: number): string {
-  if (!window.resetsAt) return 'Reset unavailable';
-  const at = new Date(window.resetsAt).getTime();
-  if (Number.isNaN(at)) return 'Reset unavailable';
-  const remaining = at - now;
+  if (!window.resetsAt) return "Reset unavailable"
+  const at = new Date(window.resetsAt).getTime()
+  if (Number.isNaN(at)) return "Reset unavailable"
+  const remaining = at - now
   // Already past, and the provider has not published the next one yet. Not an
   // error: a rolling window resets on the provider's clock, not ours.
-  if (remaining <= 0) return 'Reset pending';
+  if (remaining <= 0) return "Reset pending"
   if (remaining < 86_400_000) {
-    const hours = Math.floor(remaining / 3_600_000);
-    const minutes = Math.floor((remaining % 3_600_000) / 60_000);
-    return hours > 0 ? `Resets in ${hours}h ${minutes}m` : `Resets in ${minutes}m`;
+    const hours = Math.floor(remaining / 3_600_000)
+    const minutes = Math.floor((remaining % 3_600_000) / 60_000)
+    return hours > 0 ? `Resets in ${hours}h ${minutes}m` : `Resets in ${minutes}m`
   }
-  const date = new Date(at);
-  const day = date.toLocaleDateString(undefined, { weekday: 'short' });
-  const time = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  return `Resets ${day} ${time}`;
+  const date = new Date(at)
+  const day = date.toLocaleDateString(undefined, { weekday: "short" })
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+  return `Resets ${day} ${time}`
 }
 
 /**
@@ -160,8 +160,8 @@ export function liveResetLabel(window: LiveUsageWindowPayload, now: number): str
  * figure stated directly by the provider can have moved since we observed it.
  */
 export function liveSourceNote(provider: LiveProviderUsagePayload): string {
-  if (!provider.observedAt) return 'Live';
-  return `Live · stated ${relativeTime(provider.observedAt)}`;
+  if (!provider.observedAt) return "Live"
+  return `Live · stated ${relativeTime(provider.observedAt)}`
 }
 
 /**
@@ -169,7 +169,7 @@ export function liveSourceNote(provider: LiveProviderUsagePayload): string {
  * gone stale — a fresh reading is not news.
  */
 export function liveFreshnessToneClass(freshness: LiveUsageFreshness): string {
-  return freshness === 'stale' ? 'text-system-orange' : 'text-label-tertiary';
+  return freshness === "stale" ? "text-system-orange" : "text-label-tertiary"
 }
 
 /**
@@ -179,8 +179,8 @@ export function liveFreshnessToneClass(freshness: LiveUsageFreshness): string {
  * has not run since Tuesday has a Tuesday answer, and nothing is wrong.
  */
 export function liveStalenessNote(provider: LiveProviderUsagePayload): string | null {
-  if (provider.freshness !== 'stale') return null;
-  return `These figures are from ${relativeTime(provider.observedAt)} and may have moved since.`;
+  if (provider.freshness !== "stale") return null
+  return `These figures are from ${relativeTime(provider.observedAt)} and may have moved since.`
 }
 
 /**
@@ -192,7 +192,7 @@ export function liveStalenessNote(provider: LiveProviderUsagePayload): string | 
  * screen unconditionally, whatever they read.
  */
 export function isConditionallyVisibleUsageWindow(window: LiveUsageWindowPayload): boolean {
-  return window.role === 'supplemental' && window.scopeModel != null;
+  return window.role === "supplemental" && window.scopeModel != null
 }
 
 /**
@@ -210,19 +210,19 @@ export function isUsageWindowVisible(window: LiveUsageWindowPayload): boolean {
     !isConditionallyVisibleUsageWindow(window) ||
     (window.usedPercent ?? 0) > 0 ||
     window.hasNonzeroUsageInCurrentPeriod
-  );
+  )
 }
 
 /** Windows worth rendering, primary ones first. */
 export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindowPayload[] {
   const rank = (window: LiveUsageWindowPayload) => {
-    if (window.role === 'primaryShort') return 0;
-    if (window.role === 'primaryLong') return 1;
-    return 2;
-  };
+    if (window.role === "primaryShort") return 0
+    if (window.role === "primaryLong") return 1
+    return 2
+  }
   // A stable sort over a copy, so the provider's own order breaks ties and two
   // supplemental windows never swap places between renders.
-  return provider.windows.filter(isUsageWindowVisible).sort((a, b) => rank(a) - rank(b));
+  return provider.windows.filter(isUsageWindowVisible).sort((a, b) => rank(a) - rank(b))
 }
 
 /** The live reading for one provider id, or null when there is none. */
@@ -230,7 +230,7 @@ export function liveForProvider(
   summary: LiveUsageSummaryPayload,
   provider: string,
 ): LiveProviderUsagePayload | null {
-  return summary.providers.find((entry) => entry.provider === provider) ?? null;
+  return summary.providers.find((entry) => entry.provider === provider) ?? null
 }
 
 /**
@@ -241,9 +241,9 @@ export function liveForProvider(
  * missing agent, and neither is worth interrupting someone over.
  */
 export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
-  const failed = summary.errors.some((error) => error.category === 'authentication');
-  if (!failed) return null;
-  return 'antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view.';
+  const failed = summary.errors.some((error) => error.category === "authentication")
+  if (!failed) return null
+  return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
 }
 
 /**
@@ -254,13 +254,13 @@ export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
  * reader has already turned off does not need reporting back to them.
  */
 export function liveExtraUsageLabel(provider: LiveProviderUsagePayload): string | null {
-  const extra = provider.extraUsage;
-  if (!extra?.enabled) return null;
-  if (extra.usedPercent != null) return `${Math.round(extra.usedPercent)}% of extra usage`;
+  const extra = provider.extraUsage
+  if (!extra?.enabled) return null
+  if (extra.usedPercent != null) return `${Math.round(extra.usedPercent)}% of extra usage`
   if (extra.used != null && extra.currency) {
-    return `${extra.used.toFixed(2)} ${extra.currency} of extra usage`;
+    return `${extra.used.toFixed(2)} ${extra.currency} of extra usage`
   }
-  return 'Extra usage is on';
+  return "Extra usage is on"
 }
 
 /* -------------------------------------------------------------------------
@@ -274,14 +274,14 @@ export function liveExtraUsageLabel(provider: LiveProviderUsagePayload): string 
  * ---------------------------------------------------------------------- */
 
 /** How a window's pace reads against the pace its allowance can afford. */
-export type PaceState = 'comfortable' | 'onPace' | 'runningHot' | 'atRisk';
+export type PaceState = "comfortable" | "onPace" | "runningHot" | "atRisk"
 
 /** Where each band starts. Below 0.8 is comfortable; above 1.5 is at risk. */
 const PACE_BANDS: ReadonlyArray<{ below: number; state: PaceState }> = [
-  { below: 0.8, state: 'comfortable' },
-  { below: 1.1, state: 'onPace' },
-  { below: 1.5, state: 'runningHot' },
-];
+  { below: 0.8, state: "comfortable" },
+  { below: 1.1, state: "onPace" },
+  { below: 1.5, state: "runningHot" },
+]
 
 /**
  * Which band a pace ratio falls in.
@@ -292,46 +292,46 @@ const PACE_BANDS: ReadonlyArray<{ below: number; state: PaceState }> = [
  * busy half hour is how a useful signal becomes one people stop reading.
  */
 export function paceState(ratio: number): PaceState {
-  return PACE_BANDS.find((band) => ratio < band.below)?.state ?? 'atRisk';
+  return PACE_BANDS.find((band) => ratio < band.below)?.state ?? "atRisk"
 }
 
 /** The word for a band. */
 export function paceStateLabel(state: PaceState): string {
   switch (state) {
-    case 'comfortable':
-      return 'Comfortable';
-    case 'onPace':
-      return 'On pace';
-    case 'runningHot':
-      return 'Running hot';
+    case "comfortable":
+      return "Comfortable"
+    case "onPace":
+      return "On pace"
+    case "runningHot":
+      return "Running hot"
     default:
-      return 'At risk';
+      return "At risk"
   }
 }
 
 /** Tailwind colour for a band. Green through red, in that order. */
 function paceStateToneClass(state: PaceState): string {
   switch (state) {
-    case 'comfortable':
-      return 'text-system-green';
-    case 'onPace':
-      return 'text-label-secondary';
-    case 'runningHot':
-      return 'text-system-orange';
+    case "comfortable":
+      return "text-system-green"
+    case "onPace":
+      return "text-label-secondary"
+    case "runningHot":
+      return "text-system-orange"
     default:
-      return 'text-system-red';
+      return "text-system-red"
   }
 }
 
 /** Below this a trend reads as easing; above its mirror, as picking up. */
-const TREND_EASING = 0.85;
-const TREND_PICKING_UP = 1.15;
+const TREND_EASING = 0.85
+const TREND_PICKING_UP = 1.15
 
 /** `"Picking up"` / `"Steady"` / `"Easing"`. */
 export function trendLabel(ratio: number): string {
-  if (ratio < TREND_EASING) return 'Easing';
-  if (ratio > TREND_PICKING_UP) return 'Picking up';
-  return 'Steady';
+  if (ratio < TREND_EASING) return "Easing"
+  if (ratio > TREND_PICKING_UP) return "Picking up"
+  return "Steady"
 }
 
 /**
@@ -345,23 +345,23 @@ export function trendLabel(ratio: number): string {
  */
 export function forecastUnavailableNote(window: LiveUsageWindowPayload): string | null {
   switch (window.forecast.unavailableReason) {
-    case 'sparseHistory':
-      return 'Not enough history';
-    case 'transition':
-      return 'Just reset';
-    case 'stale':
-      return 'Reading is out of date';
+    case "sparseHistory":
+      return "Not enough history"
+    case "transition":
+      return "Just reset"
+    case "stale":
+      return "Reading is out of date"
     default:
-      return null;
+      return null
   }
 }
 
 /** One derived row: a label, a value, and how alarming the value is. */
 export interface LiveMetricRow {
-  key: string;
-  label: string;
-  value: string;
-  toneClass: string;
+  key: string
+  label: string
+  value: string
+  toneClass: string
 }
 
 /**
@@ -374,61 +374,61 @@ export interface LiveMetricRow {
  * vanishes takes the question with it.
  */
 export function liveMetricRows(window: LiveUsageWindowPayload, now: number): LiveMetricRow[] {
-  const { forecast } = window;
-  const unavailable = forecastUnavailableNote(window);
-  const muted = 'text-label-tertiary';
+  const { forecast } = window
+  const unavailable = forecastUnavailableNote(window)
+  const muted = "text-label-tertiary"
 
   const pace: LiveMetricRow = {
-    key: 'pace',
-    label: 'Pace',
-    value: unavailable ?? 'Not enough history',
+    key: "pace",
+    label: "Pace",
+    value: unavailable ?? "Not enough history",
     toneClass: muted,
-  };
+  }
   if (forecast.paceRatio != null && forecast.consumptionRate != null) {
-    const state = paceState(forecast.paceRatio);
+    const state = paceState(forecast.paceRatio)
     pace.value = `${paceStateLabel(state)} · ${forecast.paceRatio.toFixed(1)}× · ${forecast.consumptionRate.toFixed(
       1,
-    )}%/hour`;
-    pace.toneClass = paceStateToneClass(state);
+    )}%/hour`
+    pace.toneClass = paceStateToneClass(state)
   } else if (forecast.consumptionRate != null) {
     // A rate with no reset to measure it against: still worth showing, but it
     // is not a verdict, so it stays muted.
-    pace.value = `${forecast.consumptionRate.toFixed(1)}%/hour`;
+    pace.value = `${forecast.consumptionRate.toFixed(1)}%/hour`
   }
 
   const trend: LiveMetricRow = {
-    key: 'trend',
-    label: 'Trend',
-    value: forecast.paceTrend == null ? (unavailable ?? 'Not enough history') : '',
+    key: "trend",
+    label: "Trend",
+    value: forecast.paceTrend == null ? (unavailable ?? "Not enough history") : "",
     toneClass: muted,
-  };
+  }
   if (forecast.paceTrend != null) {
-    trend.value = `${trendLabel(forecast.paceTrend)} · ${forecast.paceTrend.toFixed(1)}×`;
+    trend.value = `${trendLabel(forecast.paceTrend)} · ${forecast.paceTrend.toFixed(1)}×`
   }
 
   const runway: LiveMetricRow = {
-    key: 'runway',
-    label: 'Runway',
-    value: unavailable ?? 'Not enough history',
+    key: "runway",
+    label: "Runway",
+    value: unavailable ?? "Not enough history",
     toneClass: muted,
-  };
-  const runwayNote = runwayLabel(window, now);
+  }
+  const runwayNote = runwayLabel(window, now)
   if (runwayNote) {
-    runway.value = runwayNote;
+    runway.value = runwayNote
     runway.toneClass =
-      forecast.paceRatio != null && forecast.paceRatio > 1 ? 'text-system-orange' : muted;
+      forecast.paceRatio != null && forecast.paceRatio > 1 ? "text-system-orange" : muted
   }
 
-  const rows = [pace, trend, runway];
+  const rows = [pace, trend, runway]
   if (forecast.usedToday != null) {
     rows.push({
-      key: 'today',
-      label: 'Today',
+      key: "today",
+      label: "Today",
       value: `${forecast.usedToday.toFixed(1)} points of this window`,
       toneClass: muted,
-    });
+    })
   }
-  return rows;
+  return rows
 }
 
 /**
@@ -440,23 +440,23 @@ export function liveMetricRows(window: LiveUsageWindowPayload, now: number): Liv
  * printing one would invent an anxiety.
  */
 export function runwayLabel(window: LiveUsageWindowPayload, now: number): string | null {
-  const at = window.forecast.runwayAt ? Date.parse(window.forecast.runwayAt) : Number.NaN;
-  if (Number.isNaN(at)) return null;
+  const at = window.forecast.runwayAt ? Date.parse(window.forecast.runwayAt) : Number.NaN
+  if (Number.isNaN(at)) return null
 
-  const reset = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
-  if (!Number.isNaN(reset) && at >= reset) return 'Lasts past the reset';
-  if (at <= now) return 'At the limit';
+  const reset = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN
+  if (!Number.isNaN(reset) && at >= reset) return "Lasts past the reset"
+  if (at <= now) return "At the limit"
 
-  const date = new Date(at);
-  const remaining = at - now;
+  const date = new Date(at)
+  const remaining = at - now
   if (remaining < 86_400_000) {
-    const hours = Math.floor(remaining / 3_600_000);
-    const minutes = Math.floor((remaining % 3_600_000) / 60_000);
-    return hours > 0 ? `Runs out in ${hours}h ${minutes}m` : `Runs out in ${minutes}m`;
+    const hours = Math.floor(remaining / 3_600_000)
+    const minutes = Math.floor((remaining % 3_600_000) / 60_000)
+    return hours > 0 ? `Runs out in ${hours}h ${minutes}m` : `Runs out in ${minutes}m`
   }
-  const day = date.toLocaleDateString(undefined, { weekday: 'short' });
-  const time = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  return `Runs out ${day} ${time}`;
+  const day = date.toLocaleDateString(undefined, { weekday: "short" })
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+  return `Runs out ${day} ${time}`
 }
 
 /**
@@ -478,23 +478,23 @@ export function runwayLabel(window: LiveUsageWindowPayload, now: number): string
 export function headlineWindow(
   provider: LiveProviderUsagePayload,
 ): LiveUsageWindowPayload | null {
-  const windows = liveWindows(provider);
-  const find = (match: (window: LiveUsageWindowPayload) => boolean) => windows.find(match);
+  const windows = liveWindows(provider)
+  const find = (match: (window: LiveUsageWindowPayload) => boolean) => windows.find(match)
 
   return (
-    find((window) => window.role === 'primaryLong') ??
-    find((window) => window.kind === 'weekly') ??
-    find((window) => window.kind === 'billingCycle' && window.scopeModel == null) ??
+    find((window) => window.role === "primaryLong") ??
+    find((window) => window.kind === "weekly") ??
+    find((window) => window.kind === "billingCycle" && window.scopeModel == null) ??
     // Anything account-wide that is neither the short window nor a secondary
     // limit — a monthly allowance, say.
     find(
       (window) =>
-        window.role !== 'primaryShort' &&
-        window.role !== 'supplemental' &&
+        window.role !== "primaryShort" &&
+        window.role !== "supplemental" &&
         window.usedPercent != null,
     ) ??
     // Last resort: the short window, which is better than an empty footer.
     find((window) => window.usedPercent != null) ??
     null
-  );
+  )
 }

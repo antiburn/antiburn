@@ -2,38 +2,38 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronLeft } from 'lucide-react';
-import { useCallback } from 'react';
+import { ChevronLeft } from "lucide-react"
+import { useCallback } from "react"
 
-import { PaneHeader } from '../../components/ui/Pane';
-import { ATTRIBUTIONS, LICENSE_TEXT, NOTICE_TEXT } from '../../lib/legalNotices';
+import { PaneHeader } from "../../components/ui/Pane"
+import { ATTRIBUTIONS, LICENSE_TEXT, NOTICE_TEXT } from "../../lib/legalNotices"
 
 /** The legal documents About can open. */
-export type AboutDocumentId = 'licence' | 'notices' | 'attributions';
+export type AboutDocumentId = "licence" | "notices" | "attributions"
 
 /** Titles, shared so a row and the view it opens can never drift apart. */
 const ABOUT_DOCUMENTS: Record<AboutDocumentId, { title: string }> = {
-  licence: { title: 'Licence text' },
-  notices: { title: 'Legal notices' },
-  attributions: { title: 'Third-party attributions' },
-};
+  licence: { title: "Licence text" },
+  notices: { title: "Legal notices" },
+  attributions: { title: "Third-party attributions" },
+}
 
 /** Long-form legal prose. Plain text, never anchors — the licence body carries
  *  bare URLs and About's no-external-links rule covers them too. */
 function DocumentBody({ id }: { id: AboutDocumentId }) {
-  if (id === 'licence') {
+  if (id === "licence") {
     return (
       <p className="type-footnote whitespace-pre-wrap text-label-secondary">
         {LICENSE_TEXT.trim()}
       </p>
-    );
+    )
   }
-  if (id === 'notices') {
+  if (id === "notices") {
     return (
       <p className="type-footnote whitespace-pre-wrap text-label-secondary">
         {NOTICE_TEXT.trim()}
       </p>
-    );
+    )
   }
   return (
     <div className="flex flex-col gap-3">
@@ -44,7 +44,7 @@ function DocumentBody({ id }: { id: AboutDocumentId }) {
         </div>
       ))}
     </div>
-  );
+  )
 }
 
 /**
@@ -70,8 +70,8 @@ export function AboutDocumentView({ id, onBack }: { id: AboutDocumentId; onBack:
   // remounts each time `id` changes (see the doc comment above), so "the node
   // was just created" and "the id changed" are the same moment.
   const headingRef = useCallback((node: HTMLHeadingElement | null) => {
-    node?.focus();
-  }, []);
+    node?.focus()
+  }, [])
 
   return (
     <>
@@ -95,5 +95,5 @@ export function AboutDocumentView({ id, onBack }: { id: AboutDocumentId; onBack:
       />
       <DocumentBody id={id} />
     </>
-  );
+  )
 }

@@ -2,22 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Bot } from 'lucide-react';
+import { Bot } from "lucide-react"
 
-import { CollapsibleOrchestrationCard } from './CollapsibleOrchestrationCard';
-import { SubagentRosterRow, type AgentIconRenderer } from './SubagentRosterRow';
+import { CollapsibleOrchestrationCard } from "./CollapsibleOrchestrationCard"
+import { SubagentRosterRow, type AgentIconRenderer } from "./SubagentRosterRow"
 
 export interface SubagentBadgeProps {
   /** Orchestrator (parent) agent slug — the icon for its session row. */
-  parentAgent: string;
+  parentAgent: string
   /** Title of the orchestrator session that launched this sub-agent, if known. */
-  parentTitle?: string;
+  parentTitle?: string
   /**
    * Open the launching orchestrator's own analytics, where its roster lives.
    * Omitted leaves the badge informational.
    */
-  onOpenOrchestrator?: () => void;
-  renderAgentIcon?: AgentIconRenderer | undefined;
+  onOpenOrchestrator?: () => void
+  renderAgentIcon?: AgentIconRenderer | undefined
 }
 
 /**
@@ -42,7 +42,7 @@ export function SubagentBadge({
           <div className="px-2 pb-0.5 type-caption text-label-tertiary">Launched by</div>
           <SubagentRosterRow
             agent={parentAgent}
-            label={parentTitle?.trim() || 'Orchestrator session'}
+            label={parentTitle?.trim() || "Orchestrator session"}
             onClick={onOpenOrchestrator}
             renderAgentIcon={renderAgentIcon}
           />
@@ -53,5 +53,5 @@ export function SubagentBadge({
         </div>
       )}
     </CollapsibleOrchestrationCard>
-  );
+  )
 }

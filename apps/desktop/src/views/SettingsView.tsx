@@ -11,24 +11,24 @@ import {
   SlidersHorizontal,
   FolderGit2,
   Gauge,
-} from 'lucide-react';
-import { useState, useSyncExternalStore } from 'react';
+} from "lucide-react"
+import { useState, useSyncExternalStore } from "react"
 
-import { ScrollPane } from '../components/ui/ScrollPane';
-import { SidebarNav, type SidebarNavItem } from '../components/ui/SidebarNav';
-import { closeCurrentWindow, quitApp } from '../lib/ipc';
-import { useGlobalKeydown } from '../lib/useGlobalKeydown';
-import { isMacOS } from '../lib/platform';
-import { isSettingsPane, type SettingsPane } from '../lib/settingsPanes';
-import { AboutPane } from './settings/AboutPane';
-import { AppearancePane } from './settings/AppearancePane';
-import { GeneralPane } from './settings/GeneralPane';
-import { NotificationsPane } from './settings/NotificationsPane';
-import { PrivacyPane } from './settings/PrivacyPane';
-import { SettingsWindowSession } from './settings/SettingsWindowSession';
-import { SourcesPane } from './settings/SourcesPane';
-import { UsagePane } from './settings/UsagePane';
-import { useAppSettings } from './settings/useAppSettings';
+import { ScrollPane } from "../components/ui/ScrollPane"
+import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
+import { closeCurrentWindow, quitApp } from "../lib/ipc"
+import { useGlobalKeydown } from "../lib/useGlobalKeydown"
+import { isMacOS } from "../lib/platform"
+import { isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
+import { AboutPane } from "./settings/AboutPane"
+import { AppearancePane } from "./settings/AppearancePane"
+import { GeneralPane } from "./settings/GeneralPane"
+import { NotificationsPane } from "./settings/NotificationsPane"
+import { PrivacyPane } from "./settings/PrivacyPane"
+import { SettingsWindowSession } from "./settings/SettingsWindowSession"
+import { SourcesPane } from "./settings/SourcesPane"
+import { UsagePane } from "./settings/UsagePane"
+import { useAppSettings } from "./settings/useAppSettings"
 
 /**
  * The standalone settings window: a source list on the left, one pane on the
@@ -56,23 +56,23 @@ import { useAppSettings } from './settings/useAppSettings';
 // exist, and About closes the list. Software update lives inside About, with
 // the build it updates, rather than as a pane of its own.
 const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
-  { id: 'general', label: 'General', icon: SlidersHorizontal },
-  { id: 'privacy', label: 'Privacy', icon: ShieldCheck },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'usage', label: 'Usage', icon: Gauge },
-  { id: 'sources', label: 'Sources', icon: FolderGit2 },
-  { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'about', label: 'About', icon: Info },
-];
+  { id: "general", label: "General", icon: SlidersHorizontal },
+  { id: "privacy", label: "Privacy", icon: ShieldCheck },
+  { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "usage", label: "Usage", icon: Gauge },
+  { id: "sources", label: "Sources", icon: FolderGit2 },
+  { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "about", label: "About", icon: Info },
+]
 
 export function SettingsView() {
-  const [session] = useState(() => new SettingsWindowSession());
+  const [session] = useState(() => new SettingsWindowSession())
   const { info, pane } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
-  );
-  const controller = useAppSettings();
+  )
+  const controller = useAppSettings()
 
   // ⌘W closes the window. The shell runs as an accessory app with no
   // application menu, so the standard shortcut has no owner unless it is
@@ -81,17 +81,17 @@ export function SettingsView() {
   // Esc must NOT close: dismiss-on-Escape is modal behavior and a settings
   // window is not a modal. Do not "fix" this by adding Escape.
   useGlobalKeydown(true, (event) => {
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'w') {
-      event.preventDefault();
-      void closeCurrentWindow();
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "w") {
+      event.preventDefault()
+      void closeCurrentWindow()
     }
-  });
+  })
 
   // On macOS the native title bar is hidden (overlay style in
   // `src-tauri/src/settings.rs`), so the content column pushes down past the
   // drag strip: pt-10 (40px) starts content exactly at the strip's bottom
   // edge. Windows/Linux keep the native bar and the original padding.
-  const contentPadding = isMacOS() ? 'px-6 pb-5 pt-10' : 'px-6 py-5';
+  const contentPadding = isMacOS() ? "px-6 pb-5 pt-10" : "px-6 py-5"
 
   return (
     <div className="relative flex h-full min-h-0">
@@ -115,14 +115,14 @@ export function SettingsView() {
         items={PANES}
         value={pane}
         onChange={(next) => {
-          if (isSettingsPane(next)) session.setPane(next);
+          if (isSettingsPane(next)) session.setPane(next)
         }}
         ariaLabel="Settings sections"
         // The overlay title bar hides the native bar: pt-7 plus the tablist's
         // own py-3 lands the first row at 40px — the bottom edge of the drag
         // strip — while the sidebar material still fills to the window's top
         // edge behind the traffic lights.
-        className={isMacOS() ? 'pt-7' : ''}
+        className={isMacOS() ? "pt-7" : ""}
         footer={
           <button
             type="button"
@@ -152,28 +152,28 @@ export function SettingsView() {
           <div
             key={pane}
             ref={(node) => {
-              const viewport = node?.closest<HTMLDivElement>('.ui-scroll-viewport');
-              if (viewport) viewport.scrollTop = 0;
+              const viewport = node?.closest<HTMLDivElement>(".ui-scroll-viewport")
+              if (viewport) viewport.scrollTop = 0
             }}
             role="tabpanel"
             id={`${pane}-panel`}
             aria-labelledby={`${pane}-tab`}
             className="animate-step-in mx-auto w-full max-w-[600px]"
           >
-            {pane === 'general' && <GeneralPane {...controller} info={info} />}
-            {pane === 'appearance' && <AppearancePane {...controller} />}
-            {pane === 'sources' && (
+            {pane === "general" && <GeneralPane {...controller} info={info} />}
+            {pane === "appearance" && <AppearancePane {...controller} />}
+            {pane === "sources" && (
               <SourcesPane discoveryPaused={controller.settings.discoveryPaused} />
             )}
-            {pane === 'privacy' && <PrivacyPane />}
-            {pane === 'notifications' && <NotificationsPane {...controller} />}
-            {pane === 'usage' && <UsagePane {...controller} />}
-            {pane === 'about' && (
+            {pane === "privacy" && <PrivacyPane />}
+            {pane === "notifications" && <NotificationsPane {...controller} />}
+            {pane === "usage" && <UsagePane {...controller} />}
+            {pane === "about" && (
               <AboutPane {...controller} info={info} onOpenPane={session.setPane} />
             )}
           </div>
         </ScrollPane>
       </div>
     </div>
-  );
+  )
 }

@@ -2,14 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useRef } from 'react';
+import { useRef } from "react"
 
 export type SegmentedOption<T extends string> = {
-  value: T;
-  label: string;
-};
+  value: T
+  label: string
+}
 
-export type SegmentedControlVariant = 'segmented' | 'text-tabs';
+export type SegmentedControlVariant = "segmented" | "text-tabs"
 
 /** A single-select pill group exposed as a radiogroup (or a tablist). Works
  *  for any number of options.
@@ -22,50 +22,50 @@ export function SegmentedControl<T extends string>({
   value,
   onChange,
   ariaLabel,
-  className = '',
+  className = "",
   equalWidth = false,
   animatedIndicator = false,
-  semantics = 'radio',
+  semantics = "radio",
   idPrefix,
-  variant = 'segmented',
+  variant = "segmented",
 }: {
-  options: ReadonlyArray<SegmentedOption<T>>;
-  value: T;
-  onChange: (next: T) => void;
-  ariaLabel: string;
-  className?: string;
-  equalWidth?: boolean;
-  animatedIndicator?: boolean;
-  semantics?: 'radio' | 'tabs';
-  idPrefix?: string;
-  variant?: SegmentedControlVariant;
+  options: ReadonlyArray<SegmentedOption<T>>
+  value: T
+  onChange: (next: T) => void
+  ariaLabel: string
+  className?: string
+  equalWidth?: boolean
+  animatedIndicator?: boolean
+  semantics?: "radio" | "tabs"
+  idPrefix?: string
+  variant?: SegmentedControlVariant
 }) {
-  const textTabs = variant === 'text-tabs';
-  const showAnimatedIndicator = animatedIndicator && !textTabs;
+  const textTabs = variant === "text-tabs"
+  const showAnimatedIndicator = animatedIndicator && !textTabs
   const selectedIndex = Math.max(
     0,
     options.findIndex((option) => option.value === value),
-  );
-  const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  )
+  const buttonRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   function selectIndex(index: number) {
-    if (options.length === 0) return;
-    const normalized = (index + options.length) % options.length;
-    const option = options[normalized];
-    if (!option) return;
-    onChange(option.value);
-    buttonRefs.current[normalized]?.focus();
+    if (options.length === 0) return
+    const normalized = (index + options.length) % options.length
+    const option = options[normalized]
+    if (!option) return
+    onChange(option.value)
+    buttonRefs.current[normalized]?.focus()
   }
 
   return (
     <div
-      role={semantics === 'tabs' ? 'tablist' : 'radiogroup'}
+      role={semantics === "tabs" ? "tablist" : "radiogroup"}
       aria-label={ariaLabel}
       data-variant={variant}
       className={
         textTabs
           ? `inline-flex h-6 items-center gap-3 whitespace-nowrap ${className}`.trimEnd()
-          : `${showAnimatedIndicator ? 'relative ' : ''}${equalWidth ? 'grid ' : 'inline-flex '}h-6 overflow-hidden rounded-control border border-separator bg-surface-secondary ${className}`.trimEnd()
+          : `${showAnimatedIndicator ? "relative " : ""}${equalWidth ? "grid " : "inline-flex "}h-6 overflow-hidden rounded-control border border-separator bg-surface-secondary ${className}`.trimEnd()
       }
       style={
         equalWidth && !textTabs
@@ -86,41 +86,41 @@ export function SegmentedControl<T extends string>({
         />
       ) : null}
       {options.map((option, index) => {
-        const selected = value === option.value;
-        const optionId = idPrefix ? `${idPrefix}-${option.value}` : undefined;
+        const selected = value === option.value
+        const optionId = idPrefix ? `${idPrefix}-${option.value}` : undefined
         return (
           <button
             ref={(node) => {
-              buttonRefs.current[index] = node;
+              buttonRefs.current[index] = node
             }}
             key={option.value}
             id={optionId}
             type="button"
-            role={semantics === 'tabs' ? 'tab' : 'radio'}
-            aria-checked={semantics === 'radio' ? selected : undefined}
-            aria-selected={semantics === 'tabs' ? selected : undefined}
-            aria-controls={semantics === 'tabs' && idPrefix ? `${idPrefix}-panel` : undefined}
+            role={semantics === "tabs" ? "tab" : "radio"}
+            aria-checked={semantics === "radio" ? selected : undefined}
+            aria-selected={semantics === "tabs" ? selected : undefined}
+            aria-controls={semantics === "tabs" && idPrefix ? `${idPrefix}-panel` : undefined}
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => {
-              if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-                event.preventDefault();
-                selectIndex(index + 1);
-              } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-                event.preventDefault();
-                selectIndex(index - 1);
-              } else if (event.key === 'Home') {
-                event.preventDefault();
-                selectIndex(0);
-              } else if (event.key === 'End') {
-                event.preventDefault();
-                selectIndex(options.length - 1);
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                event.preventDefault()
+                selectIndex(index + 1)
+              } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+                event.preventDefault()
+                selectIndex(index - 1)
+              } else if (event.key === "Home") {
+                event.preventDefault()
+                selectIndex(0)
+              } else if (event.key === "End") {
+                event.preventDefault()
+                selectIndex(options.length - 1)
               }
             }}
             className={
               textTabs
-                ? `type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] ${selected ? 'font-medium text-label' : 'text-label-tertiary hover:text-label-secondary'}`
-                : `${showAnimatedIndicator ? 'relative ' : ''}${equalWidth ? 'min-w-0 ' : ''}type-footnote px-2 ${selected ? `${showAnimatedIndicator ? '' : 'bg-accent-fill '}text-white` : 'text-label-secondary hover:bg-surface-hover'}`
+                ? `type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] ${selected ? "font-medium text-label" : "text-label-tertiary hover:text-label-secondary"}`
+                : `${showAnimatedIndicator ? "relative " : ""}${equalWidth ? "min-w-0 " : ""}type-footnote px-2 ${selected ? `${showAnimatedIndicator ? "" : "bg-accent-fill "}text-white` : "text-label-secondary hover:bg-surface-hover"}`
             }
           >
             {textTabs ? (
@@ -131,7 +131,7 @@ export function SegmentedControl<T extends string>({
               // the indicator, not a styling API.
               <span
                 aria-hidden="true"
-                className={`segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label-secondary transition-opacity duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] ${selected ? 'opacity-100' : 'opacity-0'}`}
+                className={`segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label-secondary transition-opacity duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] ${selected ? "opacity-100" : "opacity-0"}`}
               />
             ) : null}
             {showAnimatedIndicator ? (
@@ -141,15 +141,15 @@ export function SegmentedControl<T extends string>({
               // grants a short crossfade to, so the swap is not a hard flicker.
               <span
                 aria-hidden="true"
-                className={`ui-segmented-reduced-fill pointer-events-none absolute inset-0 hidden rounded-[4px] bg-accent-fill transition-opacity ease-out motion-reduce:block ${selected ? 'opacity-100' : 'opacity-0'}`}
+                className={`ui-segmented-reduced-fill pointer-events-none absolute inset-0 hidden rounded-[4px] bg-accent-fill transition-opacity ease-out motion-reduce:block ${selected ? "opacity-100" : "opacity-0"}`}
               />
             ) : null}
-            <span className={showAnimatedIndicator ? 'relative z-10' : undefined}>
+            <span className={showAnimatedIndicator ? "relative z-10" : undefined}>
               {option.label}
             </span>
           </button>
-        );
+        )
       })}
     </div>
-  );
+  )
 }

@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LucideIcon } from 'lucide-react';
+import type { LucideIcon } from "lucide-react"
 
-import { relativeTime } from '../../lib/presentation/relativeTime';
+import { relativeTime } from "../../lib/presentation/relativeTime"
 
 /**
  * The vocabulary every row in an activity list is built from: its class names,
@@ -17,14 +17,14 @@ import { relativeTime } from '../../lib/presentation/relativeTime';
  */
 
 /** Chrome shared by every row: the hover host the reveal rules key off. */
-export const ROW_CLASS = 'activity-row';
-export const ROW_TITLE_CLASS = 'activity-row-title';
-export const ROW_CORNER_GUTTER_CLASS = 'activity-row-corner-gutter';
-export const SECONDARY_DETAIL_REVEAL_CLASS = 'activity-row-secondary-detail';
+export const ROW_CLASS = "activity-row"
+export const ROW_TITLE_CLASS = "activity-row-title"
+export const ROW_CORNER_GUTTER_CLASS = "activity-row-corner-gutter"
+export const SECONDARY_DETAIL_REVEAL_CLASS = "activity-row-secondary-detail"
 /** Applied alongside {@link ROW_CLASS} while a row's subject is still running. */
-export const ROW_ACTIVE_CLASS = 'activity-row-active';
+export const ROW_ACTIVE_CLASS = "activity-row-active"
 /** Applied to a title that should shimmer while its subject is running. */
-export const ROW_TITLE_SHIMMER_CLASS = 'activity-row-title-shimmer';
+export const ROW_TITLE_SHIMMER_CLASS = "activity-row-title-shimmer"
 
 /**
  * The row box itself: a three-column flex — glyph, content, absolute corner —
@@ -35,7 +35,7 @@ export const ROW_TITLE_SHIMMER_CLASS = 'activity-row-title-shimmer';
  * than it saves.
  */
 export const ROW_LAYOUT_CLASS =
-  'relative flex items-start gap-3 py-2 px-2 min-h-[60px] w-full text-left rounded-md';
+  "relative flex items-start gap-3 py-2 px-2 min-h-[60px] w-full text-left rounded-md"
 
 /**
  * The corner markers are attributes, not classes, because they carry no styles
@@ -43,8 +43,8 @@ export const ROW_LAYOUT_CLASS =
  * is painting a corner, and so tests can find one. A class that never styles
  * anything is a hook wearing the wrong clothes.
  */
-export const ROW_CORNER_ATTR = 'data-row-corner';
-export const ROW_CORNER_PINNED_ATTR = 'data-row-corner-pinned';
+export const ROW_CORNER_ATTR = "data-row-corner"
+export const ROW_CORNER_PINNED_ATTR = "data-row-corner-pinned"
 
 /**
  * How a row wants its time corner announced and marked. The corner renders
@@ -52,13 +52,13 @@ export const ROW_CORNER_PINNED_ATTR = 'data-row-corner-pinned';
  */
 export interface RowTimeStatus {
   /** What the timestamp means — "Last activity", "Edited", … */
-  label: string;
+  label: string
   /** Problem glyph, or null for the healthy case: success gets no tick. */
-  icon?: LucideIcon | null;
+  icon?: LucideIcon | null
   /** Text tint for a problem; empty keeps the muted default. */
-  tint?: string;
+  tint?: string
   /** Keep the corner visible at rest instead of revealing it on hover. */
-  pinned?: boolean;
+  pinned?: boolean
 }
 
 /**
@@ -72,5 +72,5 @@ export interface RowTimeStatus {
  * and must fold this string into that label instead, or it is never announced.
  */
 export function rowTimeLabel(label: string, timestamp: string): string {
-  return `${label} ${relativeTime(timestamp)}`;
+  return `${label} ${relativeTime(timestamp)}`
 }

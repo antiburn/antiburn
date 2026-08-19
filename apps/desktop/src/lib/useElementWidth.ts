@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback, useSyncExternalStore } from 'react';
-import type { RefObject } from 'react';
+import { useCallback, useSyncExternalStore } from "react"
+import type { RefObject } from "react"
 
 /**
  * Track the rendered width of `ref`'s element, re-rendering as it resizes.
@@ -30,20 +30,20 @@ import type { RefObject } from 'react';
 export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
   const subscribe = useCallback(
     (onChange: () => void) => {
-      const element = ref.current;
-      if (!element || typeof ResizeObserver === 'undefined') return () => {};
-      const observer = new ResizeObserver(onChange);
-      observer.observe(element);
-      return () => observer.disconnect();
+      const element = ref.current
+      if (!element || typeof ResizeObserver === "undefined") return () => {}
+      const observer = new ResizeObserver(onChange)
+      observer.observe(element)
+      return () => observer.disconnect()
     },
     [ref],
-  );
+  )
 
-  const getSnapshot = useCallback(() => ref.current?.getBoundingClientRect().width ?? 0, [ref]);
+  const getSnapshot = useCallback(() => ref.current?.getBoundingClientRect().width ?? 0, [ref])
 
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
 }
 
 function getServerSnapshot(): number {
-  return 0;
+  return 0
 }

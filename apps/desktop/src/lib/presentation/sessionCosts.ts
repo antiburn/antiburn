@@ -19,59 +19,59 @@
  * layer to reconcile against.
  */
 
-import { environmentKey } from './localIdentity';
+import { environmentKey } from "./localIdentity"
 
 /** The transcript or aggregate one cost result describes. */
 export type LocalCostSubject =
   | {
-      scope: 'topLevel' | 'subagents' | 'inclusive';
-      agent: string;
-      parentSessionId: string;
-      wslDistro?: string | null;
+      scope: "topLevel" | "subagents" | "inclusive"
+      agent: string
+      parentSessionId: string
+      wslDistro?: string | null
     }
   | {
-      scope: 'subagent';
-      agent: string;
-      parentSessionId: string;
-      subagentId: string;
-      wslDistro?: string | null;
-    };
+      scope: "subagent"
+      agent: string
+      parentSessionId: string
+      subagentId: string
+      wslDistro?: string | null
+    }
 
 /** Billable token counts for one model within a result. */
 interface LocalModelTokens {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
 }
 
 /** One priced cost subject, as the local pricing table computed it. */
 export interface LocalSessionCost {
-  subject: LocalCostSubject;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  totalTokens: number;
-  inputCostUsd: number;
-  outputCostUsd: number;
-  cacheReadCostUsd: number;
-  cacheWriteCostUsd: number;
-  totalCostUsd: number;
+  subject: LocalCostSubject
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  totalTokens: number
+  inputCostUsd: number
+  outputCostUsd: number
+  cacheReadCostUsd: number
+  cacheWriteCostUsd: number
+  totalCostUsd: number
   /** The single model priced, when the subject used exactly one. */
-  model?: string | null;
+  model?: string | null
   /** Billable tokens per normalized model key; authoritative when mixed. */
-  modelBreakdown?: Record<string, LocalModelTokens>;
+  modelBreakdown?: Record<string, LocalModelTokens>
   /** Whether the underlying transcript was still being written when priced. */
-  isActive: boolean;
+  isActive: boolean
 }
 
 /** Every cost subject computed for one session in a single pass. */
 export interface LocalSessionCostScopes {
-  topLevel?: LocalSessionCost | null;
-  subagents?: LocalSessionCost | null;
-  inclusive?: LocalSessionCost | null;
-  children: LocalSessionCost[];
+  topLevel?: LocalSessionCost | null
+  subagents?: LocalSessionCost | null
+  inclusive?: LocalSessionCost | null
+  children: LocalSessionCost[]
 }
 
 /** The named session's own transcript, excluding anything it launched. */
@@ -80,7 +80,7 @@ export function topLevelCostSubject(
   parentSessionId: string,
   wslDistro?: string | null,
 ): LocalCostSubject {
-  return { scope: 'topLevel', agent, parentSessionId, ...(wslDistro ? { wslDistro } : {}) };
+  return { scope: "topLevel", agent, parentSessionId, ...(wslDistro ? { wslDistro } : {}) }
 }
 
 /** Every sub-agent the named session launched, together. */
@@ -89,7 +89,7 @@ export function subagentsCostSubject(
   parentSessionId: string,
   wslDistro?: string | null,
 ): LocalCostSubject {
-  return { scope: 'subagents', agent, parentSessionId, ...(wslDistro ? { wslDistro } : {}) };
+  return { scope: "subagents", agent, parentSessionId, ...(wslDistro ? { wslDistro } : {}) }
 }
 
 /** The named session plus every sub-agent it launched. */
@@ -98,7 +98,7 @@ export function inclusiveCostSubject(
   parentSessionId: string,
   wslDistro?: string | null,
 ): LocalCostSubject {
-  return { scope: 'inclusive', agent, parentSessionId, ...(wslDistro ? { wslDistro } : {}) };
+  return { scope: "inclusive", agent, parentSessionId, ...(wslDistro ? { wslDistro } : {}) }
 }
 
 /** One named sub-agent of the named session. */
@@ -109,12 +109,12 @@ export function subagentCostSubject(
   wslDistro?: string | null,
 ): LocalCostSubject {
   return {
-    scope: 'subagent',
+    scope: "subagent",
     agent,
     parentSessionId,
     subagentId,
     ...(wslDistro ? { wslDistro } : {}),
-  };
+  }
 }
 
 /**
@@ -131,13 +131,13 @@ export function costSubjectKey(subject: LocalCostSubject): string {
     subject.agent,
     subject.parentSessionId,
     subject.scope,
-    subject.scope === 'subagent' ? subject.subagentId : null,
-  ]);
+    subject.scope === "subagent" ? subject.subagentId : null,
+  ])
 }
 
 /** True when two subjects name the same transcript or aggregate. */
 export function sameCostSubject(a: LocalCostSubject, b: LocalCostSubject): boolean {
-  return costSubjectKey(a) === costSubjectKey(b);
+  return costSubjectKey(a) === costSubjectKey(b)
 }
 
 /** Flatten a one-pass pricing response into independently addressable results. */
@@ -147,7 +147,7 @@ export function costScopeResults(scopes: LocalSessionCostScopes): LocalSessionCo
     scopes.subagents ?? null,
     scopes.inclusive ?? null,
     ...scopes.children,
-  ].filter((result): result is LocalSessionCost => result != null);
+  ].filter((result): result is LocalSessionCost => result != null)
 }
 
 /** Pick the result for an exact subject out of a set, or null when absent. */
@@ -155,16 +155,16 @@ export function costForSubject(
   subject: LocalCostSubject,
   results: readonly LocalSessionCost[],
 ): LocalSessionCost | null {
-  return results.find((result) => sameCostSubject(result.subject, subject)) ?? null;
+  return results.find((result) => sameCostSubject(result.subject, subject)) ?? null
 }
 
 /** The four component figures a breakdown renders, plus the total. */
 export function resultComponentCost(result: LocalSessionCost): {
-  totalUsd: number;
-  inputUsd: number;
-  outputUsd: number;
-  cacheReadUsd: number;
-  cacheWriteUsd: number;
+  totalUsd: number
+  inputUsd: number
+  outputUsd: number
+  cacheReadUsd: number
+  cacheWriteUsd: number
 } {
   return {
     totalUsd: result.totalCostUsd,
@@ -172,7 +172,7 @@ export function resultComponentCost(result: LocalSessionCost): {
     outputUsd: result.outputCostUsd,
     cacheReadUsd: result.cacheReadCostUsd,
     cacheWriteUsd: result.cacheWriteCostUsd,
-  };
+  }
 }
 
 /**
@@ -185,9 +185,9 @@ export function resultModels(result: LocalSessionCost): string[] {
   const models = Object.keys(result.modelBreakdown ?? {})
     .map((model) => model.trim())
     .filter((model) => model.length > 0)
-    .sort((a, b) => a.localeCompare(b));
-  if (models.length > 0) return models;
+    .sort((a, b) => a.localeCompare(b))
+  if (models.length > 0) return models
 
-  const fallback = result.model?.trim();
-  return fallback ? [fallback] : [];
+  const fallback = result.model?.trim()
+  return fallback ? [fallback] : []
 }

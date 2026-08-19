@@ -11,7 +11,7 @@
  */
 
 function localDayOrdinal(date: Date): number {
-  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000
 }
 
 /**
@@ -24,10 +24,10 @@ export function isWithinActivityDays(
   days: number,
   now = new Date(),
 ): boolean {
-  const at = new Date(timestamp);
-  if (!Number.isFinite(at.getTime()) || at.getTime() > now.getTime()) return false;
-  const age = localDayOrdinal(now) - localDayOrdinal(at);
-  return age >= 0 && age < days;
+  const at = new Date(timestamp)
+  if (!Number.isFinite(at.getTime()) || at.getTime() > now.getTime()) return false
+  const age = localDayOrdinal(now) - localDayOrdinal(at)
+  return age >= 0 && age < days
 }
 
 /**
@@ -35,8 +35,8 @@ export function isWithinActivityDays(
  * future or unparseable.
  */
 export function activityDayAge(timestamp: string, now = new Date()): number | null {
-  const at = new Date(timestamp);
-  if (!Number.isFinite(at.getTime()) || at.getTime() > now.getTime()) return null;
-  const age = localDayOrdinal(now) - localDayOrdinal(at);
-  return age >= 0 ? age : null;
+  const at = new Date(timestamp)
+  if (!Number.isFinite(at.getTime()) || at.getTime() > now.getTime()) return null
+  const age = localDayOrdinal(now) - localDayOrdinal(at)
+  return age >= 0 ? age : null
 }

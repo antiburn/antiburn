@@ -63,7 +63,7 @@
 
 /* --- Light (default and explicit) --- */
 :root,
-:root[data-theme='light'] {
+:root[data-theme="light"] {
   --color-mode-implementing-val: rgb(29 78 216); /* blue-700 */
   --color-mode-testing-val: rgb(5 150 105); /* emerald-600 */
   --color-mode-exploring-val: rgb(59 130 246); /* blue-500 */
@@ -99,7 +99,7 @@
   }
 }
 
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   --color-mode-implementing-val: rgb(37 99 235);
   --color-mode-testing-val: rgb(52 211 153);
   --color-mode-exploring-val: rgb(96 165 250);

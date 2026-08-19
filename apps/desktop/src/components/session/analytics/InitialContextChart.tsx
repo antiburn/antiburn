@@ -2,20 +2,20 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Info } from 'lucide-react';
-import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts';
+import { Info } from "lucide-react"
+import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts"
 
 import {
   formatCompact,
   initialContextNamedRows,
   initialContextSlices,
   initialContextTotal,
-} from '../../../lib/presentation/sessionAnalytics';
-import type { InitialContextBreakdown } from '../../../lib/types/session';
-import { Tooltip } from '../../presentation/Tooltip';
+} from "../../../lib/presentation/sessionAnalytics"
+import type { InitialContextBreakdown } from "../../../lib/types/session"
+import { Tooltip } from "../../presentation/Tooltip"
 
 export interface InitialContextChartProps {
-  breakdown: InitialContextBreakdown;
+  breakdown: InitialContextBreakdown
 }
 
 /**
@@ -23,17 +23,15 @@ export interface InitialContextChartProps {
  * named drill-down of the heaviest contributors underneath.
  */
 export function InitialContextChart({ breakdown }: InitialContextChartProps) {
-  const slices = initialContextSlices(breakdown);
-  const sliceTotal = slices.reduce((acc, s) => acc + s.value, 0);
+  const slices = initialContextSlices(breakdown)
+  const sliceTotal = slices.reduce((acc, s) => acc + s.value, 0)
   // Never let the center read smaller than its own slices when estimates
   // overshoot the reported total.
-  const total = initialContextTotal(breakdown);
-  const named = initialContextNamedRows(breakdown);
+  const total = initialContextTotal(breakdown)
+  const named = initialContextNamedRows(breakdown)
 
   if (sliceTotal === 0) {
-    return (
-      <p className="type-footnote text-label-tertiary">No initial context to attribute.</p>
-    );
+    return <p className="type-footnote text-label-tertiary">No initial context to attribute.</p>
   }
 
   return (
@@ -108,5 +106,5 @@ export function InitialContextChart({ breakdown }: InitialContextChartProps) {
         </div>
       )}
     </div>
-  );
+  )
 }

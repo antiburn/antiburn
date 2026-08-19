@@ -13,7 +13,7 @@
    means a call site cancels it with `active:transform-none` rather than by
    racing Tailwind's utility layer. */
 button,
-[role='button'] {
+[role="button"] {
   transition:
     opacity 120ms ease-out,
     transform 80ms ease-out,
@@ -21,7 +21,7 @@ button,
 }
 
 button:active,
-[role='button']:active {
+[role="button"]:active {
   opacity: 0.85;
   transform: scale(0.98);
 }

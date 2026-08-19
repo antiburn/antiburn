@@ -2,17 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useRef, useState, type ReactNode, type RefObject } from "react"
 
-import { useHoverIntent } from '../../../lib/useHoverIntent';
-import type { TimelineMarker } from './markerCluster';
-import { GLASS_TOOLTIP_STYLE, useTooltipPosition } from './tooltip';
+import { useHoverIntent } from "../../../lib/useHoverIntent"
+import type { TimelineMarker } from "./markerCluster"
+import { GLASS_TOOLTIP_STYLE, useTooltipPosition } from "./tooltip"
 
 /**
  * How long the card stays open after the cursor leaves a dot — the bridge that
  * lets the cursor cross the gap from the dot into the interactive card.
  */
-const CLOSE_DELAY_MS = 180;
+const CLOSE_DELAY_MS = 180
 
 /**
  * A cluster resolved to pixel geometry by the hypnogram's placement pass. The
@@ -21,13 +21,13 @@ const CLOSE_DELAY_MS = 180;
  */
 export interface ResolvedDot<T> {
   /** Horizontal center, in viewBox percent of the chart width. */
-  xPct: number;
-  size: number;
+  xPct: number
+  size: number
   /** Top of the tether: the marker's own lane band center, in px. */
-  bandCenter: number;
+  bandCenter: number
   /** The dot's vertical center, in px from the chart's top edge. */
-  centerY: number;
-  members: TimelineMarker<T>[];
+  centerY: number
+  members: TimelineMarker<T>[]
 }
 
 /**
@@ -40,47 +40,47 @@ export interface ResolvedDot<T> {
  */
 export interface MarkerKind<T> {
   /** Dot fill (a CSS color), varying by theme. */
-  dotFill: (dark: boolean) => string;
+  dotFill: (dark: boolean) => string
   /** Color of the fine connector from the ribbon band down to the dot. */
-  tetherColor: string;
+  tetherColor: string
   /** Color of the count or glyph drawn inside the dot. */
-  textColor: string;
+  textColor: string
   /** Optional text stroke for the in-dot glyph, for legibility on a tint. */
-  textStroke: (dark: boolean) => string | undefined;
+  textStroke: (dark: boolean) => string | undefined
   /** What is drawn inside the dot — a merged count, or a glyph for a lone dot. */
-  dotContent: (members: TimelineMarker<T>[]) => ReactNode;
+  dotContent: (members: TimelineMarker<T>[]) => ReactNode
   /** Accessible label for the dot button. */
-  ariaLabel: (members: TimelineMarker<T>[]) => string;
+  ariaLabel: (members: TimelineMarker<T>[]) => string
   /** Click action for a lone dot (a single-member cluster). */
-  onLoneClick?: (member: TimelineMarker<T>) => void;
+  onLoneClick?: (member: TimelineMarker<T>) => void
   /**
    * The hover card's body. The kind owns iteration, keys, and header policy.
    * `close()` cancels the close timer and dismisses the card, so a row can
    * dismiss-then-act on click.
    */
-  renderTooltip: (members: TimelineMarker<T>[], close: () => void) => ReactNode;
+  renderTooltip: (members: TimelineMarker<T>[], close: () => void) => ReactNode
   /** Hover-card min width in px; defaults to 150. */
-  minWidth?: number;
+  minWidth?: number
   /** Hover-card max width in px; defaults to 230. Denser cards widen it. */
-  maxWidth?: number;
+  maxWidth?: number
 }
 
 export interface HypnogramMarkersProps<T> {
-  dots: ResolvedDot<T>[];
-  kind: MarkerKind<T>;
-  dark: boolean;
+  dots: ResolvedDot<T>[]
+  kind: MarkerKind<T>
+  dark: boolean
   /**
    * The hypnogram's own positioned wrapper. Shared, not re-created, so the
    * dots' absolute coordinates and the tooltip's wrapper-local conversion
    * resolve against the same ancestor as the ribbon's own tooltip.
    */
-  wrapRef: RefObject<HTMLDivElement | null>;
+  wrapRef: RefObject<HTMLDivElement | null>
   /** This overlay's index among sibling layers. */
-  layerId: number;
+  layerId: number
   /** Which layer currently owns the open card (`null` = none). */
-  activeLayer: number | null;
+  activeLayer: number | null
   /** Claim the open card for this layer; siblings dismiss theirs immediately. */
-  onActivate: (layerId: number) => void;
+  onActivate: (layerId: number) => void
 }
 
 /**
@@ -105,40 +105,40 @@ export function HypnogramMarkers<T>({
   // The card mirrors the ribbon's glass tooltip but is *interactive* (its rows
   // open a target), so a short close timer keeps it up while the cursor
   // crosses the gap from the dot into the card.
-  const tipRef = useRef<HTMLDivElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{
-    index: number;
-    clientX: number;
-    clientY: number;
-  } | null>(null);
+    index: number
+    clientX: number
+    clientY: number
+  } | null>(null)
   // Owns the close-delay timer, including clearing it on unmount, so this
   // component needs no timer refs or cleanup effect of its own.
-  const closeIntent = useHoverIntent();
+  const closeIntent = useHoverIntent()
 
   const open = (index: number, event: React.MouseEvent) => {
-    closeIntent.cancel();
-    onActivate(layerId);
-    setHover({ index, clientX: event.clientX, clientY: event.clientY });
-  };
+    closeIntent.cancel()
+    onActivate(layerId)
+    setHover({ index, clientX: event.clientX, clientY: event.clientY })
+  }
   const scheduleClose = () => {
-    closeIntent.schedule(() => setHover(null), CLOSE_DELAY_MS);
-  };
+    closeIntent.schedule(() => setHover(null), CLOSE_DELAY_MS)
+  }
   // Dismiss the card. Deliberately ref-free so it is safe to hand to
   // `renderTooltip`, which runs during render; a pending close timer would
   // only re-set null, and unmount cleanup clears it regardless.
-  const close = () => setHover(null);
+  const close = () => setHover(null)
 
   // Only one marker card across all layers. Derived, not synchronized: the
   // parent says which layer owns the card, and a layer that does not own it
   // simply does not paint one. There is no close-delay bridge here — that gap
   // exists for travelling into *our* card, not for letting two coexist — and
   // no effect, so a sibling claiming the card cannot cost a second render.
-  const owned = activeLayer === layerId ? hover : null;
+  const owned = activeLayer === layerId ? hover : null
 
-  const tipPos = useTooltipPosition(owned, wrapRef, tipRef);
-  const hovered = owned ? dots[owned.index] : null;
+  const tipPos = useTooltipPosition(owned, wrapRef, tipRef)
+  const hovered = owned ? dots[owned.index] : null
 
-  if (dots.length === 0) return null;
+  if (dots.length === 0) return null
 
   return (
     <>
@@ -153,7 +153,7 @@ export function HypnogramMarkers<T>({
       `}</style>
 
       {dots.map(({ xPct, size, bandCenter, centerY, members }, i) => {
-        const lone = members.length === 1 ? members[0] : undefined;
+        const lone = members.length === 1 ? members[0] : undefined
         return (
           <div key={`cluster-${i}`}>
             {/* Fine tether from the ribbon's vertical center down to the dot. */}
@@ -191,7 +191,7 @@ export function HypnogramMarkers<T>({
               {kind.dotContent(members)}
             </button>
           </div>
-        );
+        )
       })}
 
       {/* Hover card: the same glass surface and window-clamped positioning as
@@ -210,20 +210,20 @@ export function HypnogramMarkers<T>({
             // low-alpha base to firm it up. Overridden here rather than in the
             // shared style so the other chart tooltips keep their frosting.
             background: dark
-              ? 'linear-gradient(var(--color-surface), var(--color-surface)), rgb(30 30 30 / 0.5)'
-              : 'linear-gradient(var(--color-surface), var(--color-surface)), rgb(255 255 255 / 0.3)',
+              ? "linear-gradient(var(--color-surface), var(--color-surface)), rgb(30 30 30 / 0.5)"
+              : "linear-gradient(var(--color-surface), var(--color-surface)), rgb(255 255 255 / 0.3)",
             left: tipPos?.left ?? 0,
             top: tipPos?.top ?? 0,
-            visibility: tipPos ? 'visible' : 'hidden',
+            visibility: tipPos ? "visible" : "hidden",
             minWidth: kind.minWidth ?? 150,
             maxWidth: kind.maxWidth ?? 230,
             lineHeight: 1.4,
-            padding: '5px 6px',
+            padding: "5px 6px",
           }}
         >
           {kind.renderTooltip(hovered.members, close)}
         </div>
       )}
     </>
-  );
+  )
 }

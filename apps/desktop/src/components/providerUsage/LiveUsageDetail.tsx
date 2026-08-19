@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LiveProviderUsagePayload } from '../../lib/ipc';
+import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
   liveExtraUsageLabel,
   liveFreshnessToneClass,
@@ -11,8 +11,8 @@ import {
   liveStalenessNote,
   liveWindowLabel,
   liveWindows,
-} from '../../lib/presentation/liveUsage';
-import { LiveUsageWindowRows } from './LiveUsageWindowRows';
+} from "../../lib/presentation/liveUsage"
+import { LiveUsageWindowRows } from "./LiveUsageWindowRows"
 
 /**
  * The provider's own limits, with what their history says about them.
@@ -30,18 +30,18 @@ import { LiveUsageWindowRows } from './LiveUsageWindowRows';
 export function LiveUsageDetail({
   live,
   now,
-  className = '',
+  className = "",
 }: {
-  live: LiveProviderUsagePayload;
+  live: LiveProviderUsagePayload
   /** Injected so the rendered output is a function of its inputs in tests. */
-  now: number;
-  className?: string;
+  now: number
+  className?: string
 }) {
-  const staleness = liveStalenessNote(live);
-  const extra = liveExtraUsageLabel(live);
-  const windows = liveWindows(live);
-  const primary = windows[0];
-  if (!primary) return null;
+  const staleness = liveStalenessNote(live)
+  const extra = liveExtraUsageLabel(live)
+  const windows = liveWindows(live)
+  const primary = windows[0]
+  if (!primary) return null
 
   return (
     <section
@@ -82,5 +82,5 @@ export function LiveUsageDetail({
       {extra && <p className="type-caption text-label-tertiary">{extra}</p>}
       {staleness && <p className="type-caption text-system-orange">{staleness}</p>}
     </section>
-  );
+  )
 }

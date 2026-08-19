@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef } from "react"
 
-import { useExternalSubscription } from './useExternalSubscription';
+import { useExternalSubscription } from "./useExternalSubscription"
 
 /**
  * Listen for `keydown` on `document` or `window` while `active`, without
@@ -25,28 +25,28 @@ import { useExternalSubscription } from './useExternalSubscription';
 export function useGlobalKeydown(
   active: boolean,
   onKeyDown: (e: KeyboardEvent) => void,
-  target: 'document' | 'window' = 'document',
+  target: "document" | "window" = "document",
 ): void {
-  const handlerRef = useRef(onKeyDown);
+  const handlerRef = useRef(onKeyDown)
   // Deliberate render-body ref write (the "latest ref" pattern), not a stray
   // one: see the doc comment above for why it is safe here specifically. The
   // lint rule's default assumption — a render-body ref write is almost always
   // a bug — does not hold for a ref that is never read during render.
   // eslint-disable-next-line react-hooks/refs
-  handlerRef.current = onKeyDown;
+  handlerRef.current = onKeyDown
 
   useExternalSubscription(
     useCallback(() => {
-      if (!active) return () => {};
-      const source = target === 'window' ? window : document;
+      if (!active) return () => {}
+      const source = target === "window" ? window : document
       // `source`'s static type is the `Document | Window` union, which only
       // has the untyped `EventListener` overload of `addEventListener` — the
       // per-event-name overloads that would infer `KeyboardEvent` live on
       // `Document` and `Window` separately. The cast is safe: this listener
       // is only ever attached to the `keydown` event.
-      const listener: EventListener = (e) => handlerRef.current(e as KeyboardEvent);
-      source.addEventListener('keydown', listener);
-      return () => source.removeEventListener('keydown', listener);
+      const listener: EventListener = (e) => handlerRef.current(e as KeyboardEvent)
+      source.addEventListener("keydown", listener)
+      return () => source.removeEventListener("keydown", listener)
     }, [active, target]),
-  );
+  )
 }

@@ -12,11 +12,11 @@
  * subscription is one fewer place to drift from the other.
  */
 
-import { createExternalStore } from './externalStore';
-import { getScanStatus, onScanEvent, type ScanStatus } from './ipc';
+import { createExternalStore } from "./externalStore"
+import { getScanStatus, onScanEvent, type ScanStatus } from "./ipc"
 
 export const scanStatusStore = createExternalStore<ScanStatus | null>({
   initial: null,
   load: () => getScanStatus().catch(() => null),
   subscribe: (set) => onScanEvent((status) => set(status)),
-});
+})
