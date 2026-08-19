@@ -10,7 +10,7 @@ import type {
   ProviderUsagePayload,
   ProviderUsageWindowPayload,
 } from "../../lib/ipc"
-import { ProviderUsageCluster } from "./ProviderUsageCluster"
+import { ProviderUsageChips } from "./ProviderUsageChips"
 
 function usageWindow(
   overrides: Partial<ProviderUsageWindowPayload> = {},
@@ -50,15 +50,9 @@ function ranked(count: number): ProviderUsagePayload[] {
   })
 }
 
-describe("ProviderUsageCluster", () => {
+describe("ProviderUsageChips", () => {
   it("shows a chip per provider used today, with the figure in its name", () => {
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider()]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
 
     // The chip renders a glyph and a number; everything a reader needs to know
     // about what that number *is* has to be in the accessible name.
@@ -70,7 +64,7 @@ describe("ProviderUsageCluster", () => {
   it("shows a token count when the provider could not be priced", () => {
     const window = usageWindow({ tokensIn: 12_000, sessionCount: 2 })
     render(
-      <ProviderUsageCluster
+      <ProviderUsageChips
         providers={[
           provider({
             state: "observed",
@@ -78,7 +72,6 @@ describe("ProviderUsageCluster", () => {
           }),
         ]}
         onViewAll={vi.fn()}
-        onOpenSettings={vi.fn()}
       />,
     )
 
@@ -89,7 +82,7 @@ describe("ProviderUsageCluster", () => {
 
   it("carries staleness into the chip name rather than only into a color", () => {
     render(
-      <ProviderUsageCluster
+      <ProviderUsageChips
         providers={[
           provider({
             staleness: "stale",
@@ -97,7 +90,6 @@ describe("ProviderUsageCluster", () => {
           }),
         ]}
         onViewAll={vi.fn()}
-        onOpenSettings={vi.fn()}
       />,
     )
 
@@ -116,9 +108,7 @@ describe("ProviderUsageCluster", () => {
         month: usageWindow(),
       },
     })
-    render(
-      <ProviderUsageCluster onOpenSettings={vi.fn()} providers={[idle]} onViewAll={vi.fn()} />,
-    )
+    render(<ProviderUsageChips providers={[idle]} onViewAll={vi.fn()} />)
 
     expect(screen.getByText("No provider usage today")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /anthropic/i })).not.toBeInTheDocument()
@@ -126,14 +116,7 @@ describe("ProviderUsageCluster", () => {
 
   it("collapses everything past the chip budget into one overflow affordance", () => {
     const onViewAll = vi.fn()
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={ranked(5)}
-        onViewAll={onViewAll}
-        maxVisible={3}
-      />,
-    )
+    render(<ProviderUsageChips providers={ranked(5)} onViewAll={onViewAll} maxVisible={3} />)
 
     expect(screen.getAllByRole("button", { name: /^Provider \d/ })).toHaveLength(3)
     const overflow = screen.getByRole("button", { name: "Show 2 more providers" })
@@ -142,13 +125,7 @@ describe("ProviderUsageCluster", () => {
   })
 
   it("opens a provider panel on click and closes it on a second click", () => {
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider()]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
     const chip = screen.getByRole("button", { name: /anthropic/i })
 
     expect(chip).toHaveAttribute("aria-expanded", "false")
@@ -166,13 +143,7 @@ describe("ProviderUsageCluster", () => {
   })
 
   it("closes the panel on Escape and on a press outside it", () => {
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider()]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
     const chip = screen.getByRole("button", { name: /anthropic/i })
 
     fireEvent.click(chip)
@@ -185,36 +156,19 @@ describe("ProviderUsageCluster", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
-  it("leads to the full view from the panel, and to settings from the gear", () => {
+  it("leads to the full view from the panel", () => {
     const onViewAll = vi.fn()
-    const onOpenSettings = vi.fn()
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={onOpenSettings}
-        providers={[provider()]}
-        onViewAll={onViewAll}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={onViewAll} />)
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
     fireEvent.click(screen.getByRole("button", { name: "All provider usage" }))
     expect(onViewAll).toHaveBeenCalledTimes(1)
     // Navigating away also dismisses the panel, so returning shows the list.
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole("button", { name: "Open settings" }))
-    expect(onOpenSettings).toHaveBeenCalledTimes(1)
-    expect(onViewAll).toHaveBeenCalledTimes(1)
   })
 
   it("moves focus into the panel it opens", () => {
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider()]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
 
@@ -226,20 +180,14 @@ describe("ProviderUsageCluster", () => {
   })
 
   it("holds Tab inside the panel while it is open", () => {
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider()]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
     const panel = screen.getByRole("dialog")
     const viewAll = screen.getByRole("button", { name: "All provider usage" })
 
     // Forwards from the last control wraps to the first rather than escaping
-    // into the footer behind the dialog.
+    // into the row behind the dialog.
     fireEvent.keyDown(document, { key: "Tab" })
     expect(panel.contains(document.activeElement)).toBe(true)
     expect(viewAll).toHaveFocus()
@@ -249,13 +197,7 @@ describe("ProviderUsageCluster", () => {
   })
 
   it("returns focus to the chip that opened the panel", () => {
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider()]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
     const chip = screen.getByRole("button", { name: /anthropic/i })
 
     fireEvent.click(chip)
@@ -267,13 +209,7 @@ describe("ProviderUsageCluster", () => {
   })
 
   it("claims Escape so a host does not also act on it", () => {
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider()]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
     // `fireEvent` returns false when a handler called `preventDefault`, which
@@ -285,17 +221,24 @@ describe("ProviderUsageCluster", () => {
   it("renders a reserved state correctly if one ever arrives", () => {
     // v1 never emits `live`, but the contract says a view must not fall through
     // to an unknown branch the day a reviewed passive source does.
-    render(
-      <ProviderUsageCluster
-        onOpenSettings={vi.fn()}
-        providers={[provider({ state: "live" })]}
-        onViewAll={vi.fn()}
-      />,
-    )
+    render(<ProviderUsageChips providers={[provider({ state: "live" })]} onViewAll={vi.fn()} />)
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic, \$1\.25 today, live/i }))
     expect(screen.getByText("Live")).toBeInTheDocument()
     expect(screen.getByText(/reported this usage directly/i)).toBeInTheDocument()
+  })
+
+  it("anchors the panel above the row by default, and below it when asked", () => {
+    const { container, rerender } = render(
+      <ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
+    expect(container.querySelector('[role="dialog"]')).toHaveClass("bottom-full")
+
+    rerender(
+      <ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} panelAnchor="down" />,
+    )
+    expect(container.querySelector('[role="dialog"]')).toHaveClass("top-full")
   })
 })
 
@@ -354,16 +297,15 @@ function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
   }
 }
 
-describe("ProviderUsageCluster — the limit ring", () => {
+describe("ProviderUsageChips — the limit ring", () => {
   it("replaces the glyph with a ring at the account-wide window", () => {
     // Not the shortest and not the fullest: a single ring has to answer "how
     // am I doing", which only the account-wide window answers.
     const { container } = render(
-      <ProviderUsageCluster
+      <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
         live={liveSummary(88)}
         onViewAll={vi.fn()}
-        onOpenSettings={vi.fn()}
       />,
     )
 
@@ -380,11 +322,10 @@ describe("ProviderUsageCluster — the limit ring", () => {
 
   it("keeps the glyph, and says nothing extra, where no limit was stated", () => {
     const { container } = render(
-      <ProviderUsageCluster
+      <ProviderUsageChips
         providers={[provider({ provider: "openai", displayName: "OpenAI" })]}
         live={liveSummary(88)}
         onViewAll={vi.fn()}
-        onOpenSettings={vi.fn()}
       />,
     )
 
@@ -394,11 +335,10 @@ describe("ProviderUsageCluster — the limit ring", () => {
 
   it("shows the plan limits inside the panel the chip opens", () => {
     render(
-      <ProviderUsageCluster
+      <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
         live={liveSummary(88)}
         onViewAll={vi.fn()}
-        onOpenSettings={vi.fn()}
       />,
     )
 
@@ -411,16 +351,15 @@ describe("ProviderUsageCluster — the limit ring", () => {
   })
 })
 
-describe("ProviderUsageCluster — hover", () => {
+describe("ProviderUsageChips — hover", () => {
   const chip = () => screen.getByRole("button", { name: /^Anthropic,/ })
 
-  function cluster() {
+  function chips() {
     render(
-      <ProviderUsageCluster
+      <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
         live={liveSummary(88)}
         onViewAll={vi.fn()}
-        onOpenSettings={vi.fn()}
       />,
     )
   }
@@ -428,8 +367,8 @@ describe("ProviderUsageCluster — hover", () => {
   beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }))
   afterEach(() => vi.useRealTimers())
 
-  it("waits before opening, so a pointer crossing the footer lights nothing up", () => {
-    cluster()
+  it("waits before opening, so a pointer crossing the row lights nothing up", () => {
+    chips()
     fireEvent.pointerEnter(chip(), { pointerType: "mouse" })
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 
@@ -440,7 +379,7 @@ describe("ProviderUsageCluster — hover", () => {
   it("does not claim to be modal, and does not steal focus, when hover opened it", () => {
     // Yanking focus out from under a pointer that merely passed over a chip is
     // hostile, and a modal nobody asked for is worse than a disclosure.
-    cluster()
+    chips()
     fireEvent.pointerEnter(chip(), { pointerType: "mouse" })
     act(() => void vi.advanceTimersByTime(200))
 
@@ -450,7 +389,7 @@ describe("ProviderUsageCluster — hover", () => {
   })
 
   it("survives the diagonal from the chip into the panel", () => {
-    cluster()
+    chips()
     fireEvent.pointerEnter(chip(), { pointerType: "mouse" })
     act(() => void vi.advanceTimersByTime(200))
 
@@ -463,7 +402,7 @@ describe("ProviderUsageCluster — hover", () => {
   })
 
   it("closes once the pointer leaves the panel too", () => {
-    cluster()
+    chips()
     fireEvent.pointerEnter(chip(), { pointerType: "mouse" })
     act(() => void vi.advanceTimersByTime(200))
 
@@ -474,7 +413,7 @@ describe("ProviderUsageCluster — hover", () => {
 
   it("keeps a deliberately opened panel open when the pointer wanders off", () => {
     // A click is a decision; a pointer moving away is not a retraction of it.
-    cluster()
+    chips()
     fireEvent.click(chip())
     expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true")
 
@@ -484,7 +423,7 @@ describe("ProviderUsageCluster — hover", () => {
   })
 
   it("ignores hover from a touch pointer, which fires one just before its tap", () => {
-    cluster()
+    chips()
     fireEvent.pointerEnter(chip(), { pointerType: "touch" })
     act(() => void vi.advanceTimersByTime(500))
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()

@@ -28,6 +28,7 @@ import {
   openSettingsWindow,
   scanNow,
   setPopoverHeight,
+  setSettings,
   type AppSettings,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
@@ -67,6 +68,8 @@ export interface PopoverSnapshot {
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
   liveUsage: LiveUsageSummaryPayload
+  /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
+  usageRefreshing: boolean
   /** Whether the full Usage view is showing over the activity list. */
   showUsage: boolean
   storage: StorageHealthPayload
@@ -151,6 +154,7 @@ export class PopoverSession {
     repositories: [],
     usage: null,
     liveUsage: EMPTY_LIVE_USAGE,
+    usageRefreshing: false,
     showUsage: false,
     storage: HEALTHY_STORAGE,
     dismissed: [],
@@ -207,6 +211,24 @@ export class PopoverSession {
   dismissBanner = (id: AttentionKind): void => {
     if (this.snapshot.dismissed.includes(id)) return
     this.update({ dismissed: [...this.snapshot.dismissed, id] })
+  }
+
+  /**
+   * Open or close the popover's usage-limits section, and persist the choice
+   * so it never changes again on its own.
+   *
+   * Optimistic, the same way the settings window writes: the toggle must not
+   * lag behind the pointer, and the stored answer replaces this one a moment
+   * later — silently, since a boolean the store would reject does not exist.
+   */
+  setOverviewLimitsExpanded = (expanded: boolean): void => {
+    const current = this.snapshot.settings ?? DEFAULT_SETTINGS
+    if (current.overviewLimitsExpanded === expanded) return
+    const next = { ...current, overviewLimitsExpanded: expanded }
+    this.update({ settings: next })
+    void setSettings(next)
+      .then((saved) => this.update({ settings: saved }))
+      .catch(() => {})
   }
 
   /** Run a discovery pass. The source-access banner's only action. */
@@ -399,19 +421,27 @@ export class PopoverSession {
   }
 
   private refreshUsage = async (): Promise<void> => {
-    // Two commands, refreshed together and settled independently: the limit
-    // half is allowed to be missing without the spend half waiting on it, and
-    // a source that throws leaves the estimate surface untouched.
-    const [spend, limits] = await Promise.all([
-      getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
-      getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
-    ])
-    this.update({ usage: spend, liveUsage: limits })
-    // Usage arriving can flip the derived surface to 'usage' on its own — the
-    // reader may have already asked to see it before there was anything to
-    // show — so the height request has to follow this update too, not only
-    // the click-driven ones.
-    this.syncHeight()
+    // Flagged for the limits section's spinner, set before the request and
+    // cleared once it settles either way — a source that throws must not
+    // leave the spinner stuck on.
+    this.update({ usageRefreshing: true })
+    try {
+      // Two commands, refreshed together and settled independently: the limit
+      // half is allowed to be missing without the spend half waiting on it,
+      // and a source that throws leaves the estimate surface untouched.
+      const [spend, limits] = await Promise.all([
+        getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
+        getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+      ])
+      this.update({ usage: spend, liveUsage: limits })
+      // Usage arriving can flip the derived surface to 'usage' on its own —
+      // the reader may have already asked to see it before there was
+      // anything to show — so the height request has to follow this update
+      // too, not only the click-driven ones.
+      this.syncHeight()
+    } finally {
+      this.update({ usageRefreshing: false })
+    }
   }
 
   private refreshRepositoryList = async (): Promise<void> => {

@@ -887,6 +887,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
+        overview_limits_expanded: stored
+            .get("overviewLimitsExpanded")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.overview_limits_expanded),
     }
     .normalized())
 }
@@ -960,6 +964,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "liveUsageEnabled",
         bool_text(settings.live_usage_enabled)
+    ])?;
+    put.execute(params![
+        "overviewLimitsExpanded",
+        bool_text(settings.overview_limits_expanded)
     ])?;
     Ok(())
 }
