@@ -432,24 +432,31 @@ const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::fro
 /// about the reader's calendar day. The windows themselves are the provider's
 /// own boundaries, stated as absolute instants, and owe nothing to it.
 #[tauri::command]
-pub fn get_live_usage(
+pub async fn get_live_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
-    let now = scan::unix_now();
-    let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() else {
-        return Ok(LiveUsageSummary {
-            generated_at: crate::store::iso_from_epoch(Some(now)),
-            ..LiveUsageSummary::default()
-        });
-    };
-    Ok(provider_usage::live::summarize(
-        &live.sources,
-        app.try_state::<Store>().as_deref(),
-        now,
-        utc_offset_minutes.unwrap_or(0),
-        POPOVER_LIVE_USAGE_MAX_AGE,
-    ))
+    // The sources deliberately expose a synchronous interface and include
+    // blocking HTTP, Keychain, and subprocess work. An async command keeps the
+    // IPC handler responsive; the blocking pool is the boundary for that work.
+    tauri::async_runtime::spawn_blocking(move || {
+        let now = scan::unix_now();
+        let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() else {
+            return Ok(LiveUsageSummary {
+                generated_at: crate::store::iso_from_epoch(Some(now)),
+                ..LiveUsageSummary::default()
+            });
+        };
+        Ok(provider_usage::live::summarize(
+            &live.sources,
+            app.try_state::<Store>().as_deref(),
+            now,
+            utc_offset_minutes.unwrap_or(0),
+            POPOVER_LIVE_USAGE_MAX_AGE,
+        ))
+    })
+    .await
+    .map_err(fail)?
 }
 
 /* -------------------------------------------------------------------------
