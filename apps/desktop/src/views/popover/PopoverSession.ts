@@ -141,6 +141,15 @@ export class PopoverSession {
   private started = false
   private generation = 0
   private analyticsToken = 0
+  /**
+   * How many `refreshUsage` calls are currently in flight.
+   *
+   * A counter rather than a boolean: the popover-shown signal and a
+   * scan-finished event can each trigger a refresh close together, and the
+   * first one to settle must not clear the spinner out from under the one
+   * still running. The snapshot's `usageRefreshing` is `count > 0`.
+   */
+  private usageRefreshCount = 0
 
   private stopSettingsListening: (() => void) | null = null
   private stopSessionsInvalidatedListening: (() => void) | null = null
@@ -421,9 +430,11 @@ export class PopoverSession {
   }
 
   private refreshUsage = async (): Promise<void> => {
-    // Flagged for the limits section's spinner, set before the request and
-    // cleared once it settles either way — a source that throws must not
-    // leave the spinner stuck on.
+    // Counted rather than flagged directly, and flushed to the snapshot as
+    // `count > 0`: the popover-shown signal and a scan-finished event can
+    // each start a refresh close together, and the first call to settle must
+    // not clear the spinner while a second one is still in flight.
+    this.usageRefreshCount += 1
     this.update({ usageRefreshing: true })
     try {
       // Two commands, refreshed together and settled independently: the limit
@@ -440,7 +451,8 @@ export class PopoverSession {
       // too, not only the click-driven ones.
       this.syncHeight()
     } finally {
-      this.update({ usageRefreshing: false })
+      this.usageRefreshCount -= 1
+      this.update({ usageRefreshing: this.usageRefreshCount > 0 })
     }
   }
 

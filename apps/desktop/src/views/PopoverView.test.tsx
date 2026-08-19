@@ -349,7 +349,7 @@ describe("PopoverView", () => {
   it("asks for provider usage with the reader own offset and shows the usage-limits chips", async () => {
     render(<PopoverView />)
 
-    expect(await screen.findByTestId("provider-usage-cluster")).toBeInTheDocument()
+    expect(await screen.findByTestId("provider-usage-chips")).toBeInTheDocument()
     // "Today" and "this month" are the reader's calendar days, so the offset
     // travels with the request rather than being guessed shell-side.
     expect(invoke).toHaveBeenCalledWith("get_provider_usage", {
@@ -362,12 +362,12 @@ describe("PopoverView", () => {
 
   it("shows the plain title-and-gear footer, with none of the usage chips in it", async () => {
     render(<PopoverView />)
-    await screen.findByTestId("provider-usage-cluster")
+    await screen.findByTestId("provider-usage-chips")
 
     const footer = screen.getByRole("button", { name: "Open settings" }).parentElement
     expect(footer).not.toBeNull()
     expect(footer).toHaveTextContent("antiburn")
-    expect(footer?.querySelector('[data-testid="provider-usage-cluster"]')).toBeNull()
+    expect(footer?.querySelector('[data-testid="provider-usage-chips"]')).toBeNull()
   })
 
   it("opens the full usage view through a provider panel and comes back", async () => {
@@ -393,7 +393,7 @@ describe("PopoverView", () => {
     // The usage-limits section still appears — Codex still has a limit to
     // show — but its chip row says there was no spend today rather than
     // showing an empty row.
-    expect(screen.getByTestId("provider-usage-cluster")).toBeInTheDocument()
+    expect(screen.getByTestId("provider-usage-chips")).toBeInTheDocument()
     expect(screen.getByText("No provider usage today")).toBeInTheDocument()
   })
 
@@ -403,14 +403,14 @@ describe("PopoverView", () => {
 
     await screen.findByText("Wire the tray popover")
     expect(screen.queryByTestId("usage-limits-section")).not.toBeInTheDocument()
-    expect(screen.queryByTestId("provider-usage-cluster")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("provider-usage-chips")).not.toBeInTheDocument()
     // The plain footer is unaffected — it never depended on usage at all.
     expect(screen.getByRole("heading", { name: "antiburn" })).toBeInTheDocument()
   })
 
   it("persists the usage-limits toggle through set_settings, and switches the section's form", async () => {
     render(<PopoverView />)
-    await screen.findByTestId("provider-usage-cluster")
+    await screen.findByTestId("provider-usage-chips")
 
     fireEvent.click(screen.getByRole("button", { name: "Expand usage limits" }))
 
@@ -423,7 +423,7 @@ describe("PopoverView", () => {
     expect(
       await screen.findByRole("button", { name: "Collapse usage limits" }),
     ).toBeInTheDocument()
-    expect(screen.queryByTestId("provider-usage-cluster")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("provider-usage-chips")).not.toBeInTheDocument()
     expect(screen.getByText("Codex")).toBeInTheDocument()
   })
 
@@ -460,7 +460,7 @@ describe("PopoverView", () => {
     })
 
     render(<PopoverView />)
-    await screen.findByTestId("provider-usage-cluster")
+    await screen.findByTestId("provider-usage-chips")
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
 
     emit("popover:shown", undefined)
@@ -476,7 +476,7 @@ describe("PopoverView", () => {
 
   it("refreshes usage on the shell’s popover-shown signal, independent of any scan", async () => {
     render(<PopoverView />)
-    await screen.findByTestId("provider-usage-cluster")
+    await screen.findByTestId("provider-usage-chips")
 
     const callsBeforeShown = invoke.mock.calls.filter(
       ([command]) => command === "get_live_usage",

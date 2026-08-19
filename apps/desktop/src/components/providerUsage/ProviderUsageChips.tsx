@@ -203,7 +203,7 @@ export function ProviderUsageChips({
   return (
     <div
       ref={rootRef}
-      data-testid="provider-usage-cluster"
+      data-testid="provider-usage-chips"
       className={cn("relative flex min-w-0 items-center gap-1", className)}
     >
       {visible.map((provider) => {

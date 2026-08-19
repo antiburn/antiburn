@@ -99,17 +99,27 @@ export function UsageLimitsSection({
   return (
     <div
       data-testid="usage-limits-section"
-      className="shrink-0 space-y-2 border-b border-separator px-2 pt-2 pb-2.5"
+      className="relative shrink-0 border-b border-separator px-2 pt-2 pb-2.5"
     >
       {expanded ? (
         <>
-          <div className="flex items-center justify-end gap-1">
+          {/* Overlaid on the corner rather than given its own row: the
+              product goal is minimal vertical footprint, and a toggle plus a
+              spinner is not worth a whole row of its own. The first
+              subsection reserves the horizontal space this needs — see
+              `reserveToggleSpace` below. */}
+          <div className="absolute top-2 right-2 flex items-center gap-1">
             {spinner}
             {toggle}
           </div>
           <div className="space-y-2.5">
-            {limited.map((provider) => (
-              <ProviderLimitSubsection key={provider.provider} provider={provider} now={at} />
+            {limited.map((provider, index) => (
+              <ProviderLimitSubsection
+                key={provider.provider}
+                provider={provider}
+                now={at}
+                reserveToggleSpace={index === 0}
+              />
             ))}
           </div>
         </>
@@ -134,13 +144,26 @@ export function UsageLimitsSection({
 function ProviderLimitSubsection({
   provider,
   now,
+  reserveToggleSpace = false,
 }: {
   provider: LiveProviderUsagePayload
   now: number
+  /**
+   * Leaves room on the right of the header row for the toggle (and spinner)
+   * overlaid on the section's top-right corner, so a "Live Xm ago" note never
+   * renders under it. Only the first subsection needs this — the toggle sits
+   * over the top of the section, not beside every subsection below it.
+   */
+  reserveToggleSpace?: boolean
 }) {
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-2 px-1 pb-1">
+      <div
+        className={cn(
+          "flex items-baseline justify-between gap-2 px-1 pb-1",
+          reserveToggleSpace && "pr-8",
+        )}
+      >
         <h3 className="truncate type-caption font-medium text-label-secondary">
           {provider.displayName}
         </h3>

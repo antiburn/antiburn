@@ -145,14 +145,43 @@ describe("UsageLimitsSection — expanded", () => {
 
   it("omits the chip row entirely while expanded", () => {
     section()
-    expect(screen.queryByTestId("provider-usage-cluster")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("provider-usage-chips")).not.toBeInTheDocument()
+  })
+
+  it("overlays the toggle on the corner rather than spending a row on it", () => {
+    const { container } = section()
+    const toggle = screen.getByRole("button", { name: "Collapse usage limits" })
+    // Overlaid, not its own flow row: the toggle's row lives outside the
+    // document's normal layout, so it costs no vertical space of its own.
+    expect(toggle.parentElement).toHaveClass("absolute")
+    expect(container.querySelector('[data-testid="usage-limits-section"]')).toHaveClass(
+      "relative",
+    )
+  })
+
+  it("reserves right-hand space in only the first subsection's header, clear of the overlay", () => {
+    section({
+      live: liveSummary([
+        liveProvider({ provider: "anthropic", displayName: "Claude" }),
+        liveProvider({
+          provider: "openai",
+          displayName: "Codex",
+          windows: [liveWindow({ id: "five-hour", role: "primaryShort", usedPercent: 10 })],
+        }),
+      ]),
+    })
+
+    const firstHeader = screen.getByText("Claude").parentElement
+    const secondHeader = screen.getByText("Codex").parentElement
+    expect(firstHeader).toHaveClass("pr-8")
+    expect(secondHeader).not.toHaveClass("pr-8")
   })
 })
 
 describe("UsageLimitsSection — collapsed", () => {
   it("shows the same chip row the bottom bar used to carry", () => {
     section({ expanded: false })
-    expect(screen.getByTestId("provider-usage-cluster")).toBeInTheDocument()
+    expect(screen.getByTestId("provider-usage-chips")).toBeInTheDocument()
     expect(
       screen.getByRole("button", { name: "Claude, $1.25 today, estimated, weekly limit 42%" }),
     ).toBeInTheDocument()
