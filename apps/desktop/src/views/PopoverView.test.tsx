@@ -388,7 +388,7 @@ describe('PopoverView', () => {
 
     await screen.findByText('Wire the tray popover');
     expect(
-      screen.queryByRole('heading', { name: 'Everything stays on this machine' }),
+      screen.queryByRole('heading', { name: 'Your sessions never leave this machine' }),
     ).not.toBeInTheDocument();
   });
 });

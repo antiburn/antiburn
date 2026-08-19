@@ -166,28 +166,25 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
           draggable={false}
         />
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
-          Everything stays on this machine
+          Your sessions never leave this machine
         </h2>
+        {/* One paragraph, not a claim and a footnote walking it back. The
+            heading above used to read "Everything stays on this machine",
+            which is an absolute this app cannot keep — so every line under
+            it spent words retreating from it. Narrowed to the promise that
+            is exactly true, the body only has to say what antiburn does.
+
+            "only for" is doing the work of the old second paragraph: it is
+            a closed list, so naming the three destinations is the whole
+            disclosure. Gated on support, because a build with no injected
+            endpoint cannot send analytics and this is the first screen
+            anyone sees. Settings → Privacy remains the long form. */}
         <p className="mt-2 text-balance type-callout text-label-secondary">
-          antiburn reads the coding-agent sessions already on your disk, analyzes them here, and
-          shows you what they cost and how they went. No account, and nothing from your sessions
-          is ever uploaded.
-        </p>
-        {/* Two claims, because two is what this screen owes: that antiburn
-            does go online, on the reader's own account rather than ours,
-            and that analytics exist and have a switch. What carries the
-            first claim is "credentials you already have" — plain, and the
-            actual substance of it. "No antiburn account" and
-            "nothing of ours the app needs" both went — the paragraph above
-            already says "No account", and Settings → Privacy is the long
-            form. Gated on support: a build with no injected endpoint cannot
-            send anything, and this is the first screen anyone sees. */}
-        <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          It goes online to read your provider&rsquo;s usage figures, using credentials you
-          already have, and to check for updates.{' '}
+          antiburn reads the coding-agent sessions already on your disk and shows what they cost
+          and how they went &mdash; no account, and nothing from your sessions is ever uploaded.{' '}
           {usageAnalyticsSupported
-            ? 'It also sends anonymised analytics about itself, which you can opt out of.'
-            : 'This build has no analytics endpoint, so it sends nothing about itself.'}
+            ? 'It goes online only for your provider’s usage figures, a version check, and anonymised analytics about the app, which you can opt out of.'
+            : 'It goes online only for your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself.'}
         </p>
       </div>
     </div>
