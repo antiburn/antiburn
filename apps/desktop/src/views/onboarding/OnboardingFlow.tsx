@@ -48,8 +48,8 @@ import type { LocalRepositoryItem } from '../../lib/types/repository';
  *
  * The ratified onboarding row asks Welcome to *mention* anonymised analytics
  * and to put the opt-in somewhere separate. That is the shape here: Welcome
- * names it and says where it lives, and the switch itself is on the Ready step
- * in its own card. The matrix specifies default-off while this build ships
+ * names the channel and says it is optional, and the switch itself is on the
+ * Ready step in its own card, which points at Settings → Privacy for later. The matrix specifies default-off while this build ships
  * default-on — a real divergence, recorded as D-28 rather than smoothed over.
  * D-5 tracks the channel itself.
  *
@@ -186,7 +186,7 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
           It goes online to read your provider&rsquo;s usage figures, using credentials you
           already have, and to check for updates.{' '}
           {usageAnalyticsSupported
-            ? 'It also sends anonymised analytics about itself, which you can switch off on the last screen.'
+            ? 'It also sends anonymised analytics about itself, which you can opt out of.'
             : 'This build has no analytics endpoint, so it sends nothing about itself.'}
         </p>
       </div>
