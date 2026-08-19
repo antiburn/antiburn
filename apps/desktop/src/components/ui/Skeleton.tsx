@@ -4,6 +4,8 @@
 
 import type { HTMLAttributes, ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 export interface SkeletonProps extends HTMLAttributes<HTMLSpanElement> {
   /** When false the children render untouched, so a call site can wrap its
    *  real content once and flip a flag instead of branching in JSX. */
@@ -42,9 +44,11 @@ export function Skeleton({ loading = true, children, className = "", ...rest }: 
       aria-hidden="true"
       tabIndex={-1}
       data-placeholder=""
-      className={`pointer-events-none animate-pulse select-none rounded-small bg-surface-tertiary ${shape} ${className}`
-        .replace(/\s+/g, " ")
-        .trimEnd()}
+      className={cn(
+        "pointer-events-none animate-pulse select-none rounded-small bg-surface-tertiary",
+        shape,
+        className,
+      )}
     >
       {children}
     </span>
@@ -70,13 +74,16 @@ export function SkeletonCard({
 }: SkeletonCardProps) {
   return (
     <div
-      className={`overflow-hidden rounded-popover border border-separator bg-surface-card/60 px-4 py-3 ${className}`.trimEnd()}
+      className={cn(
+        "overflow-hidden rounded-popover border border-separator bg-surface-card/60 px-4 py-3",
+        className,
+      )}
     >
       <div className="flex items-start gap-2">
         {leading && <Skeleton className="mt-0.5 h-[15px] w-[15px] shrink-0" />}
         <div className="min-w-0 flex-1 space-y-1.5">
           {lines.map((width, index) => (
-            <Skeleton key={`${width}-${index}`} className={`h-3 ${width}`} />
+            <Skeleton key={`${width}-${index}`} className={cn("h-3", width)} />
           ))}
         </div>
       </div>

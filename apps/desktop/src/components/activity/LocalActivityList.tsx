@@ -14,6 +14,7 @@ import {
 } from "lucide-react"
 import type { ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
 import type { AgentSurface } from "../../lib/presentation/agents"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
@@ -283,11 +284,14 @@ function SessionActivityRow({
 
   return (
     <div
-      className={`${ROW_CLASS}${entry.isActive ? ` ${ROW_ACTIVE_CLASS} isolate` : ""} ${ROW_LAYOUT_CLASS} transition-colors duration-[120ms] ${
-        clickable
-          ? "cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover"
-          : ""
-      }`}
+      className={cn(
+        ROW_CLASS,
+        entry.isActive && `${ROW_ACTIVE_CLASS} isolate`,
+        ROW_LAYOUT_CLASS,
+        "transition-colors duration-[120ms]",
+        clickable &&
+          "cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover",
+      )}
       {...(clickable
         ? {
             role: "button" as const,
@@ -310,9 +314,13 @@ function SessionActivityRow({
       {entry.isActive && <span className="sr-only">Active session</span>}
       <div className="mt-0.5 shrink-0">{renderAgentIcon?.(entry.agent, 18, entry.surface)}</div>
       <div className="min-w-0 flex-1 space-y-0.5">
-        <div className={`${ROW_CORNER_GUTTER_CLASS} flex min-w-0 items-center gap-1`}>
+        <div className={cn(ROW_CORNER_GUTTER_CLASS, "flex min-w-0 items-center gap-1")}>
           <TruncatedText
-            className={`${ROW_TITLE_CLASS} min-w-0 truncate type-callout ${entry.isActive ? "" : "text-label"}`}
+            className={cn(
+              ROW_TITLE_CLASS,
+              "min-w-0 truncate type-callout",
+              !entry.isActive && "text-label",
+            )}
             text={primary}
             shimmer={entry.isActive}
           />
@@ -373,7 +381,7 @@ function SessionActivityRow({
           <div className="flex min-h-[15px] min-w-0 items-center gap-1.5">
             {entry.cost && <SessionCostBadge {...entry.cost} />}
             {entry.activeTime && (
-              <span className={`flex ${SECONDARY_DETAIL_REVEAL_CLASS} shrink-0`}>
+              <span className={cn("flex", SECONDARY_DETAIL_REVEAL_CLASS, "shrink-0")}>
                 <SessionActiveTimeBadge
                   activeSecs={entry.activeTime.activeSecs}
                   {...(entry.activeTime.durationSecs != null
@@ -383,7 +391,7 @@ function SessionActivityRow({
               </span>
             )}
             {isOrchestrator && openRoster && (
-              <span className={`flex ${SECONDARY_DETAIL_REVEAL_CLASS} shrink-0`}>
+              <span className={cn("flex", SECONDARY_DETAIL_REVEAL_CLASS, "shrink-0")}>
                 <Tooltip
                   label={`Orchestrated ${subagentCount} sub-agents — view roster`}
                   delayMs={700}
@@ -501,7 +509,7 @@ export function LocalActivityList({
         <ScrollPane
           topEdgeFade
           viewportRef={assignViewportRef}
-          viewportClassName={`px-2${visibleCount === 0 ? " [&>div]:h-full" : ""}`}
+          viewportClassName={cn("px-2", visibleCount === 0 && "[&>div]:h-full")}
         >
           {visibleCount === 0 ? (
             <EmptyActivity title={resolvedEmptyTitle} description={emptyDescription} />

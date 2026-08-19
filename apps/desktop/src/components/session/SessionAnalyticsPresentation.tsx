@@ -16,6 +16,7 @@ import {
 } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
 import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
 import {
@@ -320,9 +321,10 @@ function PhaseBreakdownRows({
       {phaseBreakdown(summary).map((row) => (
         <div
           key={row.key}
-          className={`-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1 transition-colors ${
-            activePhase === row.key ? "bg-surface-secondary" : ""
-          }`}
+          className={cn(
+            "-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1 transition-colors",
+            activePhase === row.key && "bg-surface-secondary",
+          )}
           onMouseEnter={() => onHoverPhase?.(row.key)}
           onMouseLeave={() => onHoverPhase?.(null)}
         >
@@ -836,11 +838,12 @@ export function SessionAnalyticsPresentation({
                             onClick={onPrev}
                             disabled={!onPrev}
                             aria-label="Newer session"
-                            className={`shrink-0 rounded-md p-1 transition-colors ${
+                            className={cn(
+                              "shrink-0 rounded-md p-1 transition-colors",
                               onPrev
                                 ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                                : "cursor-default text-label-tertiary opacity-40"
-                            }`}
+                                : "cursor-default text-label-tertiary opacity-40",
+                            )}
                           >
                             <ChevronLeft size={16} aria-hidden="true" />
                           </button>
@@ -860,11 +863,12 @@ export function SessionAnalyticsPresentation({
                             onClick={onNext}
                             disabled={!onNext}
                             aria-label="Older session"
-                            className={`shrink-0 rounded-md p-1 transition-colors ${
+                            className={cn(
+                              "shrink-0 rounded-md p-1 transition-colors",
                               onNext
                                 ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                                : "cursor-default text-label-tertiary opacity-40"
-                            }`}
+                                : "cursor-default text-label-tertiary opacity-40",
+                            )}
                           >
                             <ChevronRight size={16} aria-hidden="true" />
                           </button>

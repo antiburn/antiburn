@@ -5,6 +5,8 @@
 import { ChevronDown, ChevronUp } from "lucide-react"
 import { useState, type ReactNode } from "react"
 
+import { cn } from "../../../lib/cn"
+
 export interface CollapsibleOrchestrationCardProps {
   /** Leading glyph in the header. */
   icon?: ReactNode
@@ -53,7 +55,7 @@ export function CollapsibleOrchestrationCard({
         />
       </button>
 
-      {expanded && <div className={`px-2 pt-0.5 pb-2 ${bodyClassName ?? ""}`}>{children}</div>}
+      {expanded && <div className={cn("px-2 pt-0.5 pb-2", bodyClassName)}>{children}</div>}
     </div>
   )
 }

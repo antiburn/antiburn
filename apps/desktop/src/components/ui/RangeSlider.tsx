@@ -4,6 +4,8 @@
 
 import { useRef } from "react"
 
+import { cn } from "../../lib/cn"
+
 /** A horizontal value slider.
  *
  *  A native `input[type=range]`, so the platform supplies the drag, the
@@ -67,7 +69,10 @@ export function RangeSlider({
       onBlur={(event) => endGesture(Number(event.currentTarget.value))}
       aria-label={ariaLabel}
       aria-valuetext={ariaValueText}
-      className={`h-1 w-full cursor-default appearance-none rounded-full bg-surface-secondary accent-[var(--color-accent-fill)] disabled:cursor-not-allowed ${className}`.trimEnd()}
+      className={cn(
+        "h-1 w-full cursor-default appearance-none rounded-full bg-surface-secondary accent-[var(--color-accent-fill)] disabled:cursor-not-allowed",
+        className,
+      )}
     />
   )
 }

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { cn } from "../../lib/cn"
 import type { ProviderUsagePayload } from "../../lib/ipc"
 import {
   providerWindow,
@@ -30,7 +31,7 @@ export function UsageWindowRows({
   className?: string
 }) {
   return (
-    <dl className={`space-y-2 ${className}`.trim()}>
+    <dl className={cn("space-y-2", className)}>
       {USAGE_WINDOWS.map(({ value }) => {
         const window = providerWindow(provider, value)
         const share = windowShareOfMonth(provider, value)

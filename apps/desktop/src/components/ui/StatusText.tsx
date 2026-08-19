@@ -5,6 +5,8 @@
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 /** `primary` is the plain label color, `secondary` the quieter one used for a
  *  trailing status word next to a row label. */
 export type StatusTextTone = "primary" | "secondary"
@@ -33,16 +35,18 @@ export function StatusText({
 }) {
   return (
     <span
-      className={`type-footnote inline-flex items-center gap-1.5 ${
-        tone === "secondary" ? "text-label-secondary" : "text-label"
-      } ${className}`.trimEnd()}
+      className={cn(
+        "type-footnote inline-flex items-center gap-1.5",
+        tone === "secondary" ? "text-label-secondary" : "text-label",
+        className,
+      )}
     >
       {Icon && (
         <Icon
           size={12}
           strokeWidth={iconStrokeWidth}
           aria-hidden="true"
-          className={`shrink-0 ${iconClassName}`.trimEnd()}
+          className={cn("shrink-0", iconClassName)}
         />
       )}
       {children}

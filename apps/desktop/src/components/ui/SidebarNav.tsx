@@ -5,6 +5,8 @@
 import type { LucideIcon } from "lucide-react"
 import { Fragment, useRef, type KeyboardEvent, type ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 export type SidebarNavItem = {
   id: string
   label: string
@@ -74,7 +76,10 @@ export function SidebarNav({
   // group break reads as 25px of separation against the 8px plain row gap.
   return (
     <div
-      className={`flex w-[var(--sidebar-width)] shrink-0 flex-col border-r border-separator bg-surface-sidebar ${className}`.trimEnd()}
+      className={cn(
+        "flex w-[var(--sidebar-width)] shrink-0 flex-col border-r border-separator bg-surface-sidebar",
+        className,
+      )}
     >
       {header && <div className="px-5 pb-1 pt-4">{header}</div>}
       <div
@@ -104,11 +109,12 @@ export function SidebarNav({
                 aria-controls={`${item.id}-panel`}
                 tabIndex={selected ? 0 : -1}
                 onClick={() => onChange(item.id)}
-                className={`type-body flex h-9 items-center gap-3 rounded-control px-3 transition-colors duration-[120ms] ease-out ${
+                className={cn(
+                  "type-body flex h-9 items-center gap-3 rounded-control px-3 transition-colors duration-[120ms] ease-out",
                   selected
                     ? "bg-surface-selected text-label"
-                    : "text-label hover:bg-surface-hover"
-                }`}
+                    : "text-label hover:bg-surface-hover",
+                )}
               >
                 <Icon size={16} strokeWidth={2} className="shrink-0" aria-hidden="true" />
                 <span className="truncate">{item.label}</span>
