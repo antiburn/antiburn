@@ -166,13 +166,14 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
           draggable={false}
         />
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
-          Your sessions never leave this machine
+          Stop hitting your token limits.
         </h2>
-        {/* One paragraph, not a claim and a footnote walking it back. The
-            heading above used to read "Everything stays on this machine",
-            which is an absolute this app cannot keep — so every line under
-            it spent words retreating from it. Narrowed to the promise that
-            is exactly true, the body only has to say what antiburn does.
+        {/* One paragraph, not a claim and a footnote walking it back. This
+            screen used to be headed "Everything stays on this machine", an
+            absolute the app cannot keep, so every line under it spent words
+            retreating from it. The heading now names what antiburn is for
+            and the privacy promise sits in the sentence below, where it is
+            stated exactly rather than as a slogan.
 
             "only for" is doing the work of the old second paragraph: it is
             a closed list, so naming the three destinations is the whole

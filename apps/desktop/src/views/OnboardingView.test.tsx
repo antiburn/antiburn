@@ -105,7 +105,7 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
 }
 
 async function advanceToReady() {
-  await screen.findByRole('heading', { name: 'Your sessions never leave this machine' });
+  await screen.findByRole('heading', { name: 'Stop hitting your token limits.' });
   for (let step = 0; step < 4; step += 1) {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
   }
@@ -131,18 +131,18 @@ describe('OnboardingView', () => {
 
     expect(await screen.findByText('Preparing antiburn…')).toBeInTheDocument();
     expect(
-      screen.queryByRole('heading', { name: 'Your sessions never leave this machine' }),
+      screen.queryByRole('heading', { name: 'Stop hitting your token limits.' }),
     ).not.toBeInTheDocument();
 
     resolveSettings(SETTINGS);
     expect(
-      await screen.findByRole('heading', { name: 'Your sessions never leave this machine' }),
+      await screen.findByRole('heading', { name: 'Stop hitting your token limits.' }),
     ).toBeInTheDocument();
   });
 
   it('releases its shell subscriptions when the window view unmounts', async () => {
     const { unmount } = render(<OnboardingView />);
-    await screen.findByRole('heading', { name: 'Your sessions never leave this machine' });
+    await screen.findByRole('heading', { name: 'Stop hitting your token limits.' });
 
     expect(listeners.get('scan:started')).toHaveLength(1);
     expect(listeners.get('scan:progress')).toHaveLength(1);
@@ -163,7 +163,7 @@ describe('OnboardingView', () => {
 
     // 1 — Welcome. No account, and nothing of the reader's work leaving.
     expect(
-      await screen.findByRole('heading', { name: 'Your sessions never leave this machine' }),
+      await screen.findByRole('heading', { name: 'Stop hitting your token limits.' }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/nothing from your sessions is ever uploaded/i),
@@ -242,7 +242,7 @@ describe('OnboardingView', () => {
     // Its analytics sentence was unconditional, so a build with no endpoint
     // opened by announcing a transmission it could not make.
     expect(
-      await screen.findByRole('heading', { name: 'Your sessions never leave this machine' }),
+      await screen.findByRole('heading', { name: 'Stop hitting your token limits.' }),
     ).toBeInTheDocument();
     expect(screen.getByText(/it sends nothing about itself/i)).toBeInTheDocument();
     expect(screen.queryByText(/anonymised analytics about the app/i)).not.toBeInTheDocument();
@@ -336,7 +336,7 @@ describe('OnboardingView', () => {
     render(<OnboardingView />);
 
     const welcome = await screen.findByRole('heading', {
-      name: 'Your sessions never leave this machine',
+      name: 'Stop hitting your token limits.',
     });
     await waitFor(() => expect(welcome).toHaveFocus());
     expect(screen.getByText('Step 1 of 5')).toBeInTheDocument();
@@ -369,13 +369,13 @@ describe('OnboardingView', () => {
     // Escape dismissed the popover, which was right for a transient tray
     // surface and wrong for a decorated window in the middle of a task.
     render(<OnboardingView />);
-    await screen.findByRole('heading', { name: 'Your sessions never leave this machine' });
+    await screen.findByRole('heading', { name: 'Stop hitting your token limits.' });
 
     fireEvent.keyDown(document, { key: 'Escape' });
 
     expect(invoke).not.toHaveBeenCalledWith('hide_popover');
     expect(
-      screen.getByRole('heading', { name: 'Your sessions never leave this machine' }),
+      screen.getByRole('heading', { name: 'Stop hitting your token limits.' }),
     ).toBeInTheDocument();
   });
 });

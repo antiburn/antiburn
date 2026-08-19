@@ -56,7 +56,7 @@ describe('App', () => {
     render(<App />);
 
     expect(
-      await screen.findByRole('heading', { name: 'Your sessions never leave this machine' }),
+      await screen.findByRole('heading', { name: 'Stop hitting your token limits.' }),
     ).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('get_settings');
   });
@@ -72,7 +72,7 @@ describe('App', () => {
 
     await screen.findByRole('heading', { name: 'antiburn' });
     expect(
-      screen.queryByRole('heading', { name: 'Your sessions never leave this machine' }),
+      screen.queryByRole('heading', { name: 'Stop hitting your token limits.' }),
     ).not.toBeInTheDocument();
   });
 
