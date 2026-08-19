@@ -35,6 +35,92 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
     );
 }
 
+/// The upgrade path, which is the one way this feature could send data from
+/// somebody who was told it did not exist.
+///
+/// A database written before the setting existed has no `usageAnalyticsEnabled`
+/// key. Taking the plain default there would switch analytics on for every
+/// existing install at the moment they updated — under copy that had promised
+/// none, and without the Ready screen they already walked past. So the absent
+/// key is read against `onboardingCompleted`: a fresh store takes the default,
+/// and a store that has already finished onboarding stays off.
+#[test]
+fn an_absent_analytics_key_is_read_against_whether_onboarding_already_finished() {
+    // A fresh install: no keys at all. It will meet the control on the Ready
+    // screen before anything can be sent, so the default stands.
+    let fresh = store();
+    assert!(fresh.settings().unwrap().usage_analytics_enabled);
+
+    // An install that predates the setting. `onboardingCompleted` is the only
+    // evidence available that this reader has already been shown first-run
+    // copy, and it is enough to know they were not shown this.
+    let upgraded = store();
+    upgraded
+        .update_settings(|settings| settings.onboarding_completed = true)
+        .unwrap();
+    upgraded
+        .lock()
+        .execute(
+            "DELETE FROM setting WHERE key = 'usageAnalyticsEnabled'",
+            [],
+        )
+        .unwrap();
+    assert!(
+        !upgraded.settings().unwrap().usage_analytics_enabled,
+        "an install that predates the setting must not start reporting on upgrade"
+    );
+
+    // An explicit stored answer always wins over either default.
+    upgraded
+        .update_settings(|settings| settings.usage_analytics_enabled = true)
+        .unwrap();
+    assert!(upgraded.settings().unwrap().usage_analytics_enabled);
+}
+
+/// Opting out is a withdrawal, not a pause: nothing queued survives it, and
+/// neither does the identifier that would let a later opt-in be joined to it.
+#[test]
+fn opting_out_destroys_the_queue_and_the_installation_identity() {
+    let store = store();
+    store
+        .set_usage_analytics_identity("11111111-1111-4111-8111-111111111111")
+        .unwrap();
+    store
+        .queue_usage_analytics_event("app_launched", "{}")
+        .unwrap();
+    assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+    assert!(store.usage_analytics_identity().unwrap().is_some());
+
+    store.clear_usage_analytics().unwrap();
+
+    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
+    assert!(store.usage_analytics_identity().unwrap().is_none());
+}
+
+/// An undeliverable event is dropped rather than retried forever: a queue that
+/// grows without bound on a machine that is offline for a week is a
+/// disk-space bug, not a feature.
+#[test]
+fn events_are_given_up_on_after_a_bounded_number_of_attempts() {
+    let store = store();
+    store
+        .queue_usage_analytics_event("app_launched", "{}")
+        .unwrap();
+    let ids: Vec<i64> = store
+        .pending_usage_analytics_events(10)
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+
+    for _ in 0..2 {
+        assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 0);
+        assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+    }
+    assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 1);
+    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
+}
+
 #[test]
 fn consent_grants_round_trip_and_revoke_individually() {
     let store = store();
@@ -136,6 +222,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
                 at90: false,
             },
             live_usage_enabled: true,
+            usage_analytics_enabled: false,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);

@@ -357,7 +357,9 @@ describe('SettingsView', () => {
     const stored = await screen.findByRole('button', {
       name: 'Visibility data stays on this machine',
     });
-    expect(screen.getByRole('button', { name: 'Nothing is uploaded' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Your work is never uploaded' }),
+    ).toBeInTheDocument();
 
     // …and each opens into its receipts. Collapsed bodies are unmounted, so
     // the specifics genuinely appear on expansion rather than being hidden.
@@ -369,6 +371,63 @@ describe('SettingsView', () => {
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
     expect(screen.getByText(/antiburn cannot do this, by design/i)).toBeInTheDocument();
+  });
+
+  /// The analytics section is the one place this pane describes something
+  /// leaving the machine, so it is the one place vagueness would cost the most.
+  it('names every field the analytics channel sends, and what it never sends', async () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Privacy' }));
+
+    expect(
+      await screen.findByRole('switch', { name: 'Send anonymised usage analytics' }),
+    ).toBeInTheDocument();
+    // The complete enumeration, one assertion per field on the wire. The
+    // earlier version of this test sampled two of them, which is how five
+    // fields went unnamed in the pane while the copy claimed to list them all.
+    // `usage_analytics::event::Event` is the other half of this pair.
+    for (const field of [
+      /the word .desktop./i,
+      /a random id for the message itself/i,
+      /a random installation identifier/i,
+      /the event name/i,
+      /when it happened and when it was delivered/i,
+      /your processor architecture/i,
+      /a count rounded into a range/i,
+      /a short label naming which setting you changed/i,
+      /the app version/i,
+      /your operating system/i,
+    ]) {
+      expect(screen.getByText(field)).toBeInTheDocument();
+    }
+    // What the timestamps enable is stated rather than left to be worked out.
+    expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument();
+    expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument();
+    // The exclusions are stated in the reader's own terms rather than left as
+    // an absence they would have to notice.
+    expect(
+      screen.getByText(/file paths, repository or branch names, token counts/i),
+    ).toBeInTheDocument();
+    // Retention is the operator's, and the pane says so rather than promising
+    // something this build cannot keep.
+    expect(
+      screen.getByText(/are the operator’s decisions rather than the app’s/i),
+    ).toBeInTheDocument();
+  });
+
+  /// A build with no injected endpoint cannot transmit, and the row says so
+  /// rather than offering a live switch over nothing. `app_info` in these
+  /// tests reports the shell's real answer, which for a test build is false.
+  it('disables the analytics switch in a build that has no endpoint', async () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Privacy' }));
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'Send anonymised usage analytics',
+    });
+    expect(toggle).toBeDisabled();
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText(/this build has no analytics endpoint/i)).toBeInTheDocument();
   });
 
   it('adds a scan folder through the directory picker', async () => {

@@ -78,6 +78,10 @@ export function OnboardingView() {
         onWindowDaysChange={session.setActivityWindowDays}
         launchAtLogin={state.launchAtLogin}
         onLaunchAtLoginChange={session.setLaunchAtLogin}
+        usageAnalyticsEnabled={state.usageAnalyticsEnabled}
+        onAnalyticsEnabledChange={session.setAnalyticsEnabled}
+        usageAnalyticsSupported={state.usageAnalyticsSupported}
+        usageAnalyticsOperator={state.usageAnalyticsOperator}
         finishing={state.finishing}
         finishError={state.finishError}
         onFinish={session.finish}

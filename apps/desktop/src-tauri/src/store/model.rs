@@ -398,6 +398,11 @@ pub struct AppSettings {
     /// The per-feature online opt-in for live usage limits. Off by default:
     /// the app calls no provider endpoint until the reader turns this on.
     pub live_usage_enabled: bool,
+    /// The consented analytics channel (D-026, deviations D-28). On by
+    /// default for a new install, which meets the control on the Ready
+    /// screen before anything is sent; off for a store that finished
+    /// onboarding under copy that promised no analytics at all.
+    pub usage_analytics_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -430,6 +435,11 @@ impl Default for AppSettings {
             // usage reading — the only traffic beyond the update check, and
             // traffic that's the agent's and its provider's, not ours.
             live_usage_enabled: false,
+            // On by default, and the reader is shown it on the Ready screen
+            // before a single event is sent — switching it off there means
+            // nothing ever leaves the machine. `settings_from` downgrades
+            // this to false for a database that predates the setting.
+            usage_analytics_enabled: true,
         }
     }
 }

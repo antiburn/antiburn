@@ -105,6 +105,16 @@ export interface AppSettings {
    * from whatever the agent last cached and nothing runs.
    */
   liveUsageEnabled: boolean;
+  /**
+   * The consented analytics channel (D-026, deviations register D-28).
+   *
+   * On by default for a new install, which meets the control on the first-run
+   * Ready screen before anything can be sent; off for a store that finished
+   * onboarding under copy promising no analytics at all. Nothing is
+   * transmitted until onboarding completes, and no build without an injected
+   * endpoint transmits at all — see `AppInfo.usageAnalyticsSupported`.
+   */
+  usageAnalyticsEnabled: boolean;
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -127,6 +137,19 @@ export interface AppInfo {
    * update never renders a control implying it can.
    */
   updatesSupported: boolean;
+  /**
+   * Whether this build can send consented analytics at all.
+   *
+   * Same rule as `updatesSupported`, for the same reason: derived shell-side
+   * from the build that is actually running, never from a compile-time flag.
+   * False in every development build and every build from a clean checkout of
+   * this repository, because the endpoint is injected at build time and this
+   * tree carries none.
+   */
+  usageAnalyticsSupported: boolean;
+  /** Who receives those events, in the reader's own words. Null when this
+   *  build has no endpoint. */
+  usageAnalyticsOperator: string | null;
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
@@ -546,6 +569,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestones5h: { at50: true, at75: true, at90: true },
   milestonesWeekly: { at50: true, at75: true, at90: true },
   liveUsageEnabled: false,
+  usageAnalyticsEnabled: true,
 };
 
 /* -------------------------------------------------------------------------
@@ -693,16 +717,22 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
 export async function finishOnboarding(
   activityWindowDays: number,
   launchAtLogin: boolean,
+  usageAnalyticsEnabled: boolean,
 ): Promise<AppSettings> {
   if (!hasShell()) {
     return {
       ...DEFAULT_SETTINGS,
       activityWindowDays,
       launchAtLogin,
+      usageAnalyticsEnabled,
       onboardingCompleted: true,
     };
   }
-  return invoke<AppSettings>('finish_onboarding', { activityWindowDays, launchAtLogin });
+  return invoke<AppSettings>('finish_onboarding', {
+    activityWindowDays,
+    launchAtLogin,
+    usageAnalyticsEnabled,
+  });
 }
 
 /** The sessions to show in the popover, newest first. */

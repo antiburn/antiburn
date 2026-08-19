@@ -44,6 +44,18 @@ const SETTINGS = {
   launchAtLogin: true,
   autoUpdate: true,
   discoveryPaused: false,
+  usageAnalyticsEnabled: true,
+};
+
+/// A build that *can* transmit, so the consent control renders as a live
+/// switch. The unsupported case has its own test below, because "no endpoint
+/// injected" is the state every clean checkout is in.
+const APP_INFO = {
+  appVersion: '0.1.0',
+  arch: 'aarch64',
+  updatesSupported: false,
+  usageAnalyticsSupported: true,
+  usageAnalyticsOperator: 'the antiburn team',
 };
 
 const SCAN_STATUS = {
@@ -63,6 +75,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
     switch (command) {
       case 'get_settings':
         return Promise.resolve(SETTINGS);
+      case 'app_info':
+        return Promise.resolve(APP_INFO);
       case 'scan_now':
       case 'cancel_scan':
         return Promise.resolve(SCAN_STATUS);
@@ -152,7 +166,12 @@ describe('OnboardingView', () => {
     expect(
       await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/no usage data collected/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/nothing from your sessions is ever uploaded/i),
+    ).toBeInTheDocument();
+    // Welcome *mentions* the analytics control and says where it lives; the
+    // switch itself is on the last step, which is the shape the matrix asks for.
+    expect(screen.getByText(/switch off on the last screen/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     // 2 — Sources. The engine's own default roots are listed, so the reader can
@@ -184,6 +203,55 @@ describe('OnboardingView', () => {
       expect(invoke).toHaveBeenCalledWith('finish_onboarding', {
         activityWindowDays: 14,
         launchAtLogin: true,
+        usageAnalyticsEnabled: true,
+      }),
+    );
+  });
+
+  /// The consent control ships on by default, and the reader meets it here
+  /// before anything can be sent — the flow writes nothing until Finish.
+  it('offers the analytics control on the last step, on by default', async () => {
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    const analytics = screen.getByRole('switch', {
+      name: 'Send anonymised usage analytics',
+    });
+    expect(analytics).toBeChecked();
+    // Nothing has been written yet: the whole point of putting this on the
+    // step that commits is that declining here means never recorded.
+    expect(invoke).not.toHaveBeenCalledWith('finish_onboarding', expect.anything());
+  });
+
+  /// A build with no endpoint injected cannot send anything, so the row says
+  /// so rather than offering a switch over nothing.
+  it('disables the analytics control in a build with no endpoint', async () => {
+    mockCommands({ app_info: { ...APP_INFO, usageAnalyticsSupported: false } });
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    const analytics = screen.getByRole('switch', {
+      name: 'Send anonymised usage analytics',
+    });
+    expect(analytics).toBeDisabled();
+    expect(analytics).not.toBeChecked();
+    expect(screen.getByText(/this build has no analytics endpoint/i)).toBeInTheDocument();
+  });
+
+  /// Turning it off on the Ready screen must reach the shell as part of the
+  /// same commit, not as a later correction.
+  it('carries an analytics opt-out into the finish call', async () => {
+    render(<OnboardingView />);
+    await advanceToReady();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Send anonymised usage analytics' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('finish_onboarding', {
+        activityWindowDays: 7,
+        launchAtLogin: true,
+        usageAnalyticsEnabled: false,
       }),
     );
   });
@@ -203,6 +271,7 @@ describe('OnboardingView', () => {
       expect(invoke).toHaveBeenCalledWith('finish_onboarding', {
         activityWindowDays: 7,
         launchAtLogin: false,
+        usageAnalyticsEnabled: true,
       }),
     );
   });

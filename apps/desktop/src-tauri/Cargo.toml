@@ -68,10 +68,35 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # RFC 3339 stamps for the store's own timestamps.
 time = { version = "0.3", features = ["formatting", "parsing"] }
-# The scan scheduler. Excludes `net`: nothing here needs a socket of its own
-# — the updater plugin is the shell's only network-capable surface, and it
-# talks to antiburn's own release feed over its own Tauri-managed client.
+# The scan scheduler, and the timer the consented-analytics flusher sleeps on.
+# The declared feature set omits `net`, but `reqwest` enables it transitively —
+# the shell now has two network-capable surfaces, the updater and the analytics
+# channel (D-026), and pretending otherwise here would be the same drift the
+# deviations register exists to catch.
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+# Sixteen unpredictable bytes for the rotating installation identifier. Already
+# in the tree via the TLS stack; declared directly so the use is visible.
+getrandom = "0.2"
+# Delivery for the consented analytics channel (`src/usage_analytics`).
+#
+# `reqwest` was already vendored transitively by the updater plugin, so taking
+# it directly adds no crate to the lockfile — but only because of the feature
+# choice on the next line. The obvious spelling, `features = ["rustls"]`, is
+# NOT free: reqwest 0.13 resolves that to rustls's current default provider,
+# `aws-lc-rs`, which pulls `aws-lc-sys` (a CMake and C toolchain build) in
+# alongside the `ring` the updater already uses, plus a `quinn` QUIC stack —
+# sixteen crates, two crypto backends, and a C toolchain in CI and in release
+# packaging. Naming the provider ourselves avoids all of it, and the lockfile
+# is the record: zero `aws-lc-*`, zero `quinn`, one `ring`.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+# The crypto provider, chosen explicitly. `features = ["rustls"]` would pick
+# rustls's current default, `aws-lc-rs`, which drags in `aws-lc-sys` (a CMake
+# and C toolchain build) and a `quinn` QUIC stack — while the updater plugin
+# already had `rustls` on `ring`. Naming `ring` here means one provider in the
+# binary instead of two, and no C toolchain in CI or release packaging.
+# `rustls-no-provider` above is what makes the choice ours rather than a
+# default's; `usage_analytics::ensure_crypto_provider` installs it.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds

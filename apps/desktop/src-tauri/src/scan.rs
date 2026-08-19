@@ -255,6 +255,24 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
         storage_health::note_ok(app);
     }
     let _ = app.emit(EVENT_FINISHED, finished.clone());
+    // Bucketed, never exact: how much this is being used is a fair question,
+    // and "is this the same machine as last week" is not one this payload is
+    // allowed to answer. The failure arm carries a category and no message,
+    // because an error string can hold a path.
+    match &outcome {
+        Ok(sessions) => crate::usage_analytics::record(
+            app,
+            crate::usage_analytics::event::EventName::ScanCompleted,
+            Some(crate::usage_analytics::event::bucket(*sessions as u64)),
+            None,
+        ),
+        Err(_) => crate::usage_analytics::record(
+            app,
+            crate::usage_analytics::event::EventName::ErrorOccurred,
+            None,
+            Some("scan_failed"),
+        ),
+    }
     crate::notifications::note_scan_outcome(app, &finished);
     finished
 }

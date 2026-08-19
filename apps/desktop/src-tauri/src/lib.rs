@@ -74,6 +74,7 @@ mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
+mod usage_analytics;
 mod window_placement;
 
 use std::sync::Mutex;
@@ -222,6 +223,18 @@ pub fn run() {
             // Registered before the update scheduler starts, so the first
             // automatic check can see whether there is anything to check with.
             install_updater(app.handle());
+
+            // The consented analytics channel (D-026, deviations D-28). Both
+            // calls are inert unless this build injected an endpoint AND the
+            // reader has finished onboarding with the switch on — see
+            // `usage_analytics::allowed`, which is the single gate both go through.
+            usage_analytics::install(app.handle());
+            usage_analytics::record(
+                app.handle(),
+                usage_analytics::event::EventName::AppLaunched,
+                None,
+                None,
+            );
 
             // The notification window's manager and the chime player. Prewarm
             // is deferred a little so the app has a valid display context —

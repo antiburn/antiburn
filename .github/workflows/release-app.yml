@@ -525,6 +525,19 @@ jobs:
           APPLE_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_TEAM_ID || '' }}
+          # The consented analytics channel (D-026). Injected here and
+          # nowhere else: neither the endpoint nor the operator's name is in
+          # the public tree, which is what makes a build from a clean
+          # checkout provably unable to transmit.
+          #
+          # Deliberately not a hard requirement, unlike the updater key. An
+          # absent secret arrives as an empty string, `config::endpoint()`
+          # reads that as unconfigured, and the result is a release that
+          # works in every respect except that it reports nothing. That is a
+          # degraded build, not a broken one, so it must not fail the release
+          # the way an unsigned update would.
+          ANTIBURN_ANALYTICS_URL: ${{ secrets.ANTIBURN_ANALYTICS_URL }}
+          ANTIBURN_ANALYTICS_OPERATOR: ${{ secrets.ANTIBURN_ANALYTICS_OPERATOR }}
           # linuxdeploy cannot mount a FUSE filesystem on a GitHub runner.
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |

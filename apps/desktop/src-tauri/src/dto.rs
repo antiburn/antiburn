@@ -345,6 +345,16 @@ pub struct AppInfo {
     pub database_bytes: u64,
     /// False in development builds, where the updater plugin is not installed.
     pub updates_supported: bool,
+    /// Whether this build can send consented analytics at all. False in every
+    /// development build and every build from a clean checkout, because the
+    /// endpoint is injected and this tree has none — so the Privacy pane
+    /// offers a disabled row that says why, rather than a live switch over
+    /// nothing.
+    pub usage_analytics_supported: bool,
+    /// Who receives those events, in the reader's own words. `None` when the
+    /// build has no endpoint. Injected with the endpoint, never a literal in
+    /// this repository (D-026).
+    pub usage_analytics_operator: Option<String>,
 }
 
 /* -------------------------------------------------------------------------

@@ -44,15 +44,19 @@ import type { LocalRepositoryItem } from '../../lib/types/repository';
  * header carries a `data-tauri-drag-region` strip on macOS, where the window's
  * title bar is an overlay and the webview covers its area.
  *
- * ## Deliberate copy deviation
+ * ## The analytics control
  *
- * The ratified onboarding row specifies Welcome copy that mentions "anonymous
- * analytics is sent only after a separate, default-off opt-in". This build
- * ships **no analytics of any kind** — no client, no consent surface, no
- * endpoint — so promising a control that does not exist would be the exact
- * failure the honesty rule is there to prevent. The Welcome step says what is
- * true instead, and the divergence is recorded rather than hidden. If analytics
- * are ever built, the copy and the matrix row can be reconciled then.
+ * The ratified onboarding row asks Welcome to *mention* anonymised analytics
+ * and to put the opt-in somewhere separate. That is the shape here: Welcome
+ * names it and says where it lives, and the switch itself is on the Ready step
+ * in its own card. The matrix specifies default-off while this build ships
+ * default-on — a real divergence, recorded as D-28 rather than smoothed over.
+ * D-5 tracks the channel itself.
+ *
+ * The switch is on the *last* step rather than the first because this flow
+ * writes nothing until its final button. A reader who turns analytics off on
+ * the Ready screen is never counted once, rather than counted and then
+ * withdrawn — and that is only true while this step is the one that commits.
  */
 
 export interface OnboardingFlowProps {
@@ -92,6 +96,15 @@ export interface OnboardingFlowProps {
   /** Whether the installed app should start after the reader signs in. */
   launchAtLogin: boolean;
   onLaunchAtLoginChange: (enabled: boolean) => void;
+  /** The consented analytics channel. On by default, and nothing is sent
+   *  until this flow finishes — so switching it off here means never. */
+  usageAnalyticsEnabled: boolean;
+  onAnalyticsEnabledChange: (enabled: boolean) => void;
+  /** Whether this build can send analytics at all. False in development and
+   *  in any build from a clean checkout, where the row says so instead. */
+  usageAnalyticsSupported: boolean;
+  /** Who receives them, named rather than implied. Null when unsupported. */
+  usageAnalyticsOperator: string | null;
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void;
   finishing: boolean;
@@ -159,8 +172,8 @@ function Welcome() {
         </h2>
         <p className="mt-2 text-balance type-callout text-label-secondary">
           antiburn reads the coding-agent sessions already on your disk, analyzes them here, and
-          shows you what they cost and how they went. No account, nothing uploaded, and no usage
-          data collected.
+          shows you what they cost and how they went. No account, and nothing from your sessions
+          is ever uploaded.
         </p>
         {/* This sentence has to keep matching what "local" actually promises:
             antiburn goes online as your own agent — reading a provider's
@@ -172,7 +185,9 @@ function Welcome() {
           antiburn goes online as your own agent — to read a provider&rsquo;s current usage
           figures with your own credentials, and to check GitHub Releases for new versions. None
           of it needs an antiburn account or an antiburn server — there isn&rsquo;t one — and
-          nothing about you or your sessions goes anywhere else.
+          nothing from your sessions goes anywhere. antiburn does send anonymised analytics
+          about the application itself, which you can switch off on the last screen or later in
+          Settings.
         </p>
       </div>
     </div>
@@ -461,11 +476,19 @@ function Ready({
   sessions,
   launchAtLogin,
   onLaunchAtLoginChange,
+  usageAnalyticsEnabled,
+  onAnalyticsEnabledChange,
+  usageAnalyticsSupported,
+  usageAnalyticsOperator,
   finishError,
 }: {
   sessions: number;
   launchAtLogin: boolean;
   onLaunchAtLoginChange: (enabled: boolean) => void;
+  usageAnalyticsEnabled: boolean;
+  onAnalyticsEnabledChange: (enabled: boolean) => void;
+  usageAnalyticsSupported: boolean;
+  usageAnalyticsOperator: string | null;
   finishError: string | null;
 }) {
   return (
@@ -491,6 +514,30 @@ function Ready({
             description="Starts automatically in the menu bar. Change anytime in Settings."
             checked={launchAtLogin}
             onChange={onLaunchAtLoginChange}
+          />
+        </Card>
+        {/* Its own card, with a gap, rather than a second row in the one
+            above. Both switches default on, and a consent control stacked
+            under a convenience control reads as part of it — one glance,
+            one decision, which is exactly the reading this must not get.
+            Nothing has been sent at this point: the flow writes the setting
+            only when the button below is pressed, so switching this off here
+            means no event is ever recorded rather than recorded and then
+            withdrawn. */}
+        <Card className="mt-3 w-full text-left">
+          <ToggleRow
+            label="Send anonymised usage analytics"
+            description={
+              usageAnalyticsSupported
+                ? `Which features get used and what breaks${
+                    usageAnalyticsOperator ? `, sent to ${usageAnalyticsOperator}` : ''
+                  }. Never your sessions, prompts, file paths, or repository names. Change anytime in Settings → Privacy.`
+                : 'This build has no analytics endpoint, so nothing can be sent from it.'
+            }
+            checked={usageAnalyticsSupported && usageAnalyticsEnabled}
+            onChange={onAnalyticsEnabledChange}
+            dimmed={!usageAnalyticsSupported}
+            disabled={!usageAnalyticsSupported}
           />
         </Card>
         {finishError ? (
@@ -524,6 +571,10 @@ export function OnboardingFlow({
   onWindowDaysChange,
   launchAtLogin,
   onLaunchAtLoginChange,
+  usageAnalyticsEnabled,
+  onAnalyticsEnabledChange,
+  usageAnalyticsSupported,
+  usageAnalyticsOperator,
   onFinish,
   finishing,
   finishError,
@@ -615,6 +666,10 @@ export function OnboardingFlow({
             sessions={scanStatus?.sessions ?? 0}
             launchAtLogin={launchAtLogin}
             onLaunchAtLoginChange={onLaunchAtLoginChange}
+            usageAnalyticsEnabled={usageAnalyticsEnabled}
+            onAnalyticsEnabledChange={onAnalyticsEnabledChange}
+            usageAnalyticsSupported={usageAnalyticsSupported}
+            usageAnalyticsOperator={usageAnalyticsOperator}
             finishError={finishError}
           />
         )}

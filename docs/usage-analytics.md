@@ -1,0 +1,191 @@
+# Anonymised usage analytics
+
+antiburn sends anonymised events about **the application itself** — which
+features get used, and what breaks. This document is the complete account of
+that: every field, every event, what is deliberately excluded, what antiburn
+cannot promise, and how to verify all of it yourself without trusting this
+page.
+
+The control is in **Settings → Privacy**, and the first-run Ready screen shows
+it before anything is sent. It is on by default — except in the EU, the EEA,
+and the UK, where it starts **off**, because there analytics are something you
+opt into rather than out of. That is decided from the locale and time zone your
+machine already reports; nothing is looked up, and neither is ever sent. That default diverges from the
+ratified feature matrix, which specifies default-off, and the divergence is
+recorded as **D-28** in [`deviations.md`](deviations.md) rather than left
+implicit. The channel itself is permitted by **D-026** in
+[`oss/source-denylist.toml`](oss/source-denylist.toml).
+
+## The short version
+
+- Nothing derived from your work is ever sent — no transcript, prompt, title,
+  file path, repository or branch name, token count, cost, or credential.
+- Nothing is sent until the first run completes, so declining on the Ready
+  screen means no event is ever recorded, rather than recorded and withdrawn.
+- The installation identifier is random, is not derived from anything about
+  your machine, and is replaced every 30 days.
+- Turning the control off deletes the identifier and everything queued.
+- A build with no endpoint configured sends nothing at all. That includes every
+  development build and **every build made from a clean checkout of this
+  repository** — the endpoint is injected at build time and is not in the tree.
+
+## Exactly what every event carries
+
+Twelve fields, and this is the whole list. The payload is a closed Rust struct
+([`usage_analytics/event.rs`](../apps/desktop/src-tauri/src/usage_analytics/event.rs))
+with no map and no free-form string, so there is nowhere for anything else to
+be put.
+
+| Field | What it is | Example |
+|---|---|---|
+| `platform` | Constant. The surface class the collector partitions on. | `desktop` |
+| `messageId` | Random per-event id, so a redelivered event is not counted twice. | `9f2c…` |
+| `anonymousId` | The rotating installation identifier. | `4b81…` |
+| `sessionId` | Identifies one run of the application. Held in memory only, never written to disk, replaced after 30 minutes of inactivity and whenever antiburn restarts. | `7d10…` |
+| `event` | The event name, from the closed catalog below. | `antiburn.scan_completed` |
+| `originalTimestamp` | When it happened, UTC. | `2026-08-19T09:14:02Z` |
+| `sentAt` | When it was delivered. Added at send, not at capture. | `2026-08-19T09:15:02Z` |
+| `properties.arch` | CPU architecture. | `aarch64` |
+| `properties.bucket` | A count rounded into a range. Never exact. | `10-49` |
+| `properties.label` | A key from a closed vocabulary — which setting changed, or which kind of failure. Never the value. | `live_usage` |
+| `context.appVersion` | The application version. | `antiburn:0.1.0` |
+| `context.os` | Operating-system family. | `macos` |
+
+### What the two timestamps make possible
+
+Each event is timestamped and the installation identifier lasts up to 30 days,
+so these events show roughly **when** antiburn is used within that window. The
+`sessionId` additionally groups the events of a single run together, so a run
+can be seen as one visit rather than as scattered events. Neither can show what
+antiburn was used *on*. This is stated because an enumeration that lists fields
+without saying what they enable is not really an enumeration.
+
+### Why there are two identifiers
+
+The receiving server's contract requires both, and they are not equally
+durable. `anonymousId` is stored on disk and lasts up to 30 days. `sessionId`
+exists only in memory: quitting antiburn ends it, and nothing on your machine
+remembers it afterwards. It is the shortest-lived thing in the payload, and it
+cannot connect one run of the application to another.
+
+### Why counts are bucketed
+
+An exact count, reported repeatedly over weeks, identifies a machine on its own
+even without an identifier attached. Buckets are `0`, `1-9`, `10-49`, `50-199`,
+`200-999`, `1000+`.
+
+## What is never sent
+
+Sessions, transcripts, prompts, messages, tool activity, session titles, file
+paths, repository or branch names, working directories, agent identities, token
+counts, cost figures, credentials or tokens of any kind, your name, your email
+address, your locale, and your hostname or username.
+
+There is also **no third-party analytics, telemetry, or crash-reporting SDK** in
+antiburn — no crash reporter, no session replay, no product-metrics vendor. The
+channel
+described here is first-party and is the only one. That exclusion is enforced
+mechanically by [`scripts/check-boundary.mjs`](../scripts/check-boundary.mjs),
+[`apps/desktop/tests/no-exfiltration.test.ts`](../apps/desktop/tests/no-exfiltration.test.ts),
+and the engine's own `tests/boundary.rs`.
+
+## The event catalog
+
+Event names are namespaced `antiburn.*`.
+
+### Shipping today
+
+| Event | When it fires | Carries |
+|---|---|---|
+| `antiburn.app_launched` | The application starts. | — |
+| `antiburn.onboarding_finished` | The first run completes. | — |
+| `antiburn.scan_completed` | A discovery pass finishes. | `bucket` — how many sessions |
+| `antiburn.setting_toggled` | A preference changes. | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value. |
+| `antiburn.error_occurred` | Something failed. | `label` — a category, currently `scan_failed`. No message, no path, no backtrace. |
+
+That is the complete list of what this build sends. A test
+(`the_documented_catalog_matches_the_code`) fails if an event exists in the
+code and not in this table.
+
+### Planned, not yet implemented
+
+Listed so this document describes a direction rather than implying a
+capability. None of these are sent today.
+
+Popover opened and closed · dock icon clicked · usage view opened · usage
+refreshed · provider usage available · session row clicked · session detail
+opened · update available shown · update clicked · attention banner shown and
+clicked · onboarding step viewed · settings opened · settings section viewed ·
+settings changed · settings action clicked · settings closed · nudge shown,
+actioned, and dismissed · discovery paused and resumed · scan started and
+cancelled · daily liveness pulse · folder-permission requested, granted, and
+denied · repository toggled · session exported · local index cleared.
+
+## What antiburn cannot promise
+
+How long these events are kept, and whether the receiving server records the IP
+address that every internet request carries, are decisions belonging to whoever
+operates the endpoint — not to the application. antiburn can only promise what
+it sends, which is the list above. Retention and IP handling belong in the
+[privacy policy](privacy-policy.md), which is still a draft: it names each of
+those open questions explicitly rather than leaving them unstated, and nothing
+in the application links to it until they are answered.
+
+This distinction is deliberate. A claim the client cannot keep is exactly the
+kind of drift the [deviations register](deviations.md) exists to catch, so the
+in-app copy and this document both stop at the boundary of what the code
+guarantees.
+
+## Verifying this yourself
+
+Everything above is checkable on your own machine.
+
+**Confirm a development build sends nothing.** Run `pnpm dev` from
+`apps/desktop`. Settings → Privacy shows the control disabled, with the reason.
+No endpoint was injected, so `usage_analytics::config::configured()` is false
+and nothing is queued or sent.
+
+**Watch what a configured build actually sends.** Start a collector that prints
+each request:
+
+```bash
+python3 -c "
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('content-length', 0))
+        print(self.path, self.rfile.read(n).decode(), flush=True)
+        self.send_response(200); self.end_headers()
+HTTPServer(('127.0.0.1', 8787), H).serve_forever()"
+```
+
+Then build against it. Plain `http` is accepted only on loopback, which exists
+for exactly this:
+
+```bash
+cd apps/desktop && ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 pnpm tauri dev --features distribution --config src-tauri/tauri.debug.conf.json
+```
+
+The first delivery is a minute after launch, then every fifteen minutes.
+
+**Read the queue on disk.** Nothing is hidden from you; the events wait in the
+app's own database:
+
+```bash
+sqlite3 ~/Library/Application\ Support/ai.antiburn.desktop/antiburn-debug.sqlite3 "SELECT id, name, attempts, payload FROM usage_analytics_event; SELECT install_id, minted_at FROM usage_analytics_identity;"
+```
+
+**Confirm opting out is a withdrawal, not a pause.** Turn the control off in
+Settings → Privacy, then re-run the query above. Both tables are empty: the
+queue is discarded and the identifier destroyed, so a later opt-in starts an
+identity that cannot be linked to the old one.
+
+## Where this lives in the code
+
+| Concern | File |
+|---|---|
+| Consent gate, queue, delivery | [`usage_analytics/mod.rs`](../apps/desktop/src-tauri/src/usage_analytics/mod.rs) |
+| The payload, and the closed field set | [`usage_analytics/event.rs`](../apps/desktop/src-tauri/src/usage_analytics/event.rs) |
+| Endpoint configuration, and why a clean checkout is inert | [`usage_analytics/config.rs`](../apps/desktop/src-tauri/src/usage_analytics/config.rs) |
+| The setting, and the upgrade rule for existing installs | [`store/mod.rs`](../apps/desktop/src-tauri/src/store/mod.rs) |
+| The reader-facing copy | [`PrivacyPane.tsx`](../apps/desktop/src/views/settings/PrivacyPane.tsx) |

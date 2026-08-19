@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -156,5 +156,41 @@ const V2: &str = r#"
 CREATE TABLE consent_grant (
     dir_name   TEXT PRIMARY KEY,
     granted_at TEXT NOT NULL
+) STRICT;
+"#;
+
+/// v3 — the anonymised application-event queue (D-026, deviations D-28).
+///
+/// # Data policy (schema-level contract)
+///
+/// Both tables below are the one exception to the rule that nothing derived
+/// from a reader's work leaves this machine, and they are shaped so the
+/// exception cannot quietly widen. `usage_analytics_event.payload` carries only the
+/// fields `usage_analytics::event` names — app version, operating system,
+/// architecture, a rotating installation identifier, an event name, and
+/// bucketed counts. A migration that lets a path, a repository name, a title,
+/// a credential, or an unbucketed count into this table would break the
+/// governance record that permits the table to exist at all.
+///
+/// `attempts` is what bounds the queue: a row that cannot be delivered is
+/// dropped rather than retried forever, because an unbounded queue on a
+/// machine that is offline for a week is a disk-space bug wearing a feature's
+/// clothes. Opting out deletes every row in both tables.
+const V3: &str = r#"
+CREATE TABLE usage_analytics_event (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT NOT NULL,
+    payload   TEXT NOT NULL,
+    queued_at TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
+-- One row, ever. The identifier is random, is not derived from any machine
+-- fact, and is rotated on a schedule so events cannot be joined into a
+-- longitudinal profile.
+CREATE TABLE usage_analytics_identity (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    install_id TEXT NOT NULL,
+    minted_at  TEXT NOT NULL
 ) STRICT;
 "#;

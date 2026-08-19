@@ -198,7 +198,7 @@ export function SettingsView() {
             {pane === 'general' && <GeneralPane {...controller} info={info} />}
             {pane === 'appearance' && <AppearancePane {...controller} />}
             {pane === 'sources' && <SourcesPane />}
-            {pane === 'privacy' && <PrivacyPane />}
+            {pane === 'privacy' && <PrivacyPane {...controller} info={info} />}
             {pane === 'notifications' && <NotificationsPane {...controller} />}
             {pane === 'usage' && <UsagePane {...controller} />}
             {pane === 'about' && <AboutPane {...controller} info={info} onOpenPane={setPane} />}
