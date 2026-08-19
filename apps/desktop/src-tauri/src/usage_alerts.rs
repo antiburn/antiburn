@@ -90,7 +90,15 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            run_pass(&app);
+            // A pass can read SQLite, call Keychain and child processes, and
+            // use reqwest's blocking client. Keep all of it off the runtime's
+            // worker threads, while awaiting each pass so two never overlap.
+            let pass_app = app.clone();
+            if let Err(error) =
+                tauri::async_runtime::spawn_blocking(move || run_pass(&pass_app)).await
+            {
+                eprintln!("antiburn: usage-alert pass failed ({error})");
+            }
         }
     })
 }
