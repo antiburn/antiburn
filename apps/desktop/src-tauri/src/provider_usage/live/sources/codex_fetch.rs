@@ -66,8 +66,7 @@ use time::OffsetDateTime;
 
 use crate::provider_usage::live::codex;
 use crate::provider_usage::live::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, SupportTier,
-    UsageSource,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
@@ -377,7 +376,6 @@ fn build_snapshot(
             // Recomputed on every read by `Cooldown::poll`.
             freshness: Freshness::Fresh,
         },
-        support: SupportTier::Live,
         windows: usage.windows,
         supplemental: None,
     })

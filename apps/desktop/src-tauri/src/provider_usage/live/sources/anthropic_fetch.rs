@@ -55,8 +55,7 @@ use time::OffsetDateTime;
 
 use crate::provider_usage::live::anthropic;
 use crate::provider_usage::live::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, SupportTier,
-    UsageSource,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
@@ -327,7 +326,6 @@ fn fetch_live(
             // function returns is always describing the instant it was built.
             freshness: Freshness::Fresh,
         },
-        support: SupportTier::Live,
         windows: usage.windows,
         supplemental: usage.supplemental,
     })

@@ -144,7 +144,7 @@ mod tests {
 
     use super::*;
     use crate::provider_usage::live::model::{
-        Confidence, SupportTier, UsageScope, UsageSource, UsageWindow, UsageWindowKind, WindowRole,
+        Confidence, UsageScope, UsageSource, UsageWindow, UsageWindowKind, WindowRole,
     };
 
     fn at(seconds: i64) -> OffsetDateTime {
@@ -163,7 +163,6 @@ mod tests {
                 confidence: Confidence::High,
                 freshness: Freshness::Fresh,
             },
-            support: SupportTier::Live,
             windows: vec![UsageWindow {
                 id: "five-hour".into(),
                 role: WindowRole::PrimaryShort,

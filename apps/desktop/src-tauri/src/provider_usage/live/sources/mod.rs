@@ -26,15 +26,15 @@
 //! from an HTTP status to this module's error taxonomy — and [`cooldown`] is
 //! the retry-and-last-good-reading contract both sources are built on.
 //!
-//! # The ladder
+//! # Picking one reading
 //!
 //! Sources are ranked, not merged. When two of them describe the same
 //! provider account, the better one wins outright and the other is discarded
 //! — a snapshot is one coherent reading of one moment, and splicing a fresh
 //! five-hour window onto a stale weekly one produces a picture that was never
 //! true at any instant. In practice this build registers at most one source
-//! per provider, so the ladder's real job today is picking between a fresh
-//! reading and network the reader just turned off — see [`preferred`].
+//! per provider, so the rule's real job today is picking between a fresh
+//! reading and a cached one — see [`preferred`].
 
 pub mod anthropic_fetch;
 mod codex_app_server;
@@ -43,7 +43,7 @@ mod cooldown;
 mod http;
 
 use super::LiveUsageSource;
-use super::model::{Freshness, ProviderUsageSnapshot, SupportTier};
+use super::model::{Freshness, ProviderUsageSnapshot};
 
 /// The stable id both [`codex_fetch`] and [`codex_app_server`] stamp their
 /// snapshots with. One registered source, two ways of answering for it — the
@@ -112,26 +112,12 @@ impl Collected {
 
 /// Whether `candidate` is a better reading of the same account than `current`.
 ///
-/// The order is support tier, then freshness, then observation time. Tier
-/// leads because a stale figure the provider stated still beats a current
-/// figure we modelled: the first is old news about the truth, the second is
-/// fresh news about a guess.
+/// Freshness leads, then observation time. Every registered source reports
+/// provider-stated figures, so there is no second, speculative support tier
+/// to rank ahead of recency.
 fn preferred(candidate: &ProviderUsageSnapshot, current: &ProviderUsageSnapshot) -> bool {
-    let rank = |tier: SupportTier| match tier {
-        SupportTier::Live => 3,
-        SupportTier::Estimated => 2,
-        SupportTier::Observed => 1,
-        SupportTier::Detected => 0,
-    };
     let fresh = |freshness: Freshness| usize::from(freshness == Freshness::Fresh);
 
-    (
-        rank(candidate.support),
-        fresh(candidate.source.freshness),
-        candidate.observed_at,
-    ) > (
-        rank(current.support),
-        fresh(current.source.freshness),
-        current.observed_at,
-    )
+    (fresh(candidate.source.freshness), candidate.observed_at)
+        > (fresh(current.source.freshness), current.observed_at)
 }

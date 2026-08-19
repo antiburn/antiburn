@@ -21,27 +21,6 @@ pub fn used_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageErro
     validate_percent(value)
 }
 
-/// Convert a remaining percentage into the consumed percentage this module
-/// stores.
-///
-/// Presentation may invert it again; storage and arithmetic never do.
-#[allow(dead_code)] // Awaits the first source that reports remaining rather than used.
-pub fn remaining_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
-    Ok(validate_percent(value)?.map(|remaining| 100.0 - remaining))
-}
-
-/// Convert a remaining fraction in `0..=1` into consumed percent in `0..=100`.
-#[allow(dead_code)] // Awaits the first source that reports a fraction.
-pub fn remaining_fraction(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-        return Err(ProviderUsageError::Schema(SchemaReason::InvalidValue));
-    }
-    Ok(Some((1.0 - value) * 100.0))
-}
-
 /// Convert a value that might be a `0..=1` fraction or an already-consumed
 /// percentage into the `0..=100` domain this module stores.
 ///
@@ -68,27 +47,6 @@ pub fn used_percent_or_fraction(value: Option<f64>) -> Result<Option<f64>, Provi
         value
     };
     used_percent(Some(percent))
-}
-
-/// Derive a consumed percentage, but only when both a non-negative usage and
-/// a positive limit are known.
-///
-/// A partial input stays unknown rather than becoming a guess; an invalid one
-/// fails.
-#[allow(dead_code)] // Awaits the first source that discloses raw amounts.
-pub fn percent_from_amounts(
-    used: Option<f64>,
-    limit: Option<f64>,
-) -> Result<Option<f64>, ProviderUsageError> {
-    match (used, limit) {
-        (Some(used), Some(limit))
-            if used.is_finite() && limit.is_finite() && used >= 0.0 && limit > 0.0 =>
-        {
-            validate_percent(Some(used / limit * 100.0))
-        }
-        (None, _) | (_, None) => Ok(None),
-        _ => Err(ProviderUsageError::Schema(SchemaReason::InvalidValue)),
-    }
 }
 
 fn validate_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
@@ -144,13 +102,6 @@ mod tests {
     }
 
     #[test]
-    fn remaining_inverts_into_consumed() {
-        assert_eq!(remaining_percent(Some(25.0)), Ok(Some(75.0)));
-        assert_eq!(remaining_fraction(Some(0.25)), Ok(Some(75.0)));
-        assert_eq!(remaining_fraction(Some(1.5)), Err(INVALID));
-    }
-
-    #[test]
     fn a_fraction_at_or_below_one_is_scaled_up_into_a_percent() {
         assert_eq!(used_percent_or_fraction(Some(0.81)), Ok(Some(81.0)));
         assert_eq!(used_percent_or_fraction(Some(0.0)), Ok(Some(0.0)));
@@ -181,17 +132,5 @@ mod tests {
     fn slugify_trims_leading_and_trailing_hyphens() {
         assert_eq!(slugify("  Fable  "), "fable");
         assert_eq!(slugify("--already--hyphenated--"), "already-hyphenated");
-    }
-
-    #[test]
-    fn amounts_need_both_halves_before_they_become_a_percentage() {
-        assert_eq!(percent_from_amounts(Some(5.0), Some(20.0)), Ok(Some(25.0)));
-        // Half the pair is not a quarter of an answer.
-        assert_eq!(percent_from_amounts(Some(5.0), None), Ok(None));
-        assert_eq!(percent_from_amounts(None, Some(20.0)), Ok(None));
-        // A zero limit is not an infinite percentage.
-        assert_eq!(percent_from_amounts(Some(5.0), Some(0.0)), Err(INVALID));
-        // And an over-limit amount is a payload we did not understand.
-        assert_eq!(percent_from_amounts(Some(30.0), Some(20.0)), Err(INVALID));
     }
 }

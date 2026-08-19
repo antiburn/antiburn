@@ -38,6 +38,7 @@ import {
   prefersReducedMotion,
   type PopoverSurface,
 } from '../../lib/popoverHeight';
+import { localSessionKey } from '../../lib/presentation/localIdentity';
 import type { LocalRepositoryItem, LocalRepositoryStatus } from '../../lib/types/repository';
 import type { SessionSubject } from './SessionPane';
 
@@ -84,9 +85,25 @@ export interface PopoverSnapshot {
   analytics: PopoverAnalyticsState;
 }
 
-/** Identity key for a subject's analytics load. Stable across re-navigation. */
+/**
+ * Identity key for a subject's analytics load. Stable across re-navigation.
+ *
+ * Scoped by environment as well as agent and id: the same session id can
+ * exist natively and inside a WSL distribution, and without the environment
+ * in the key a subject moving between the two would keep showing the other
+ * environment's stale (or loading) analytics.
+ *
+ * A sub-agent id is only unique within its launching session, so its key
+ * carries the parent's local identity too.
+ */
 export function sessionKey(subject: SessionSubject): string {
-  return `${subject.agent}|${subject.sessionId}|${subject.subagent?.subagentId ?? ''}`;
+  return subject.subagent
+    ? JSON.stringify([
+        'subagent',
+        localSessionKey(subject.agent, subject.subagent.parentSessionId, subject.wslDistro),
+        subject.subagent.subagentId,
+      ])
+    : localSessionKey(subject.agent, subject.sessionId, subject.wslDistro);
 }
 
 /** Load one subject's analytics. Sub-agents come from their own command. */
