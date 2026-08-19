@@ -175,17 +175,23 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
             and the privacy promise sits in the sentence below, where it is
             stated exactly rather than as a slogan.
 
-            "only for" is doing the work of the old second paragraph: it is
-            a closed list, so naming the three destinations is the whole
-            disclosure. Gated on support, because a build with no injected
-            endpoint cannot send analytics and this is the first screen
-            anyone sees. Settings → Privacy remains the long form. */}
+            The count closes the list, which is what makes naming the
+            destinations a complete disclosure rather than a sample — so a
+            fourth destination is a copy change here, not just a code change.
+            It drops to two where analytics cannot be sent. Gated on support,
+            because a build with no injected endpoint cannot send them at all
+            and this is the first screen anyone sees. Settings → Privacy
+            remains the long form. */}
         <p className="mt-2 text-balance type-callout text-label-secondary">
           antiburn reads the coding-agent sessions already on your disk and shows what they cost
-          and how they went &mdash; no account, and nothing from your sessions is ever uploaded.{' '}
+          and how they went. No account, and nothing from your sessions is ever uploaded.{' '}
           {usageAnalyticsSupported
-            ? 'It goes online only for your provider’s usage figures, a version check, and anonymised analytics about the app, which you can opt out of.'
-            : 'It goes online only for your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself.'}
+            ? // The opt-out gets its own sentence. Trailing the list, "which you
+              // can opt out of" modified all three items — and a reader cannot
+              // opt out of a version check. "only" still closes the list; what
+              // moved is the scope of the offer.
+              'It goes online for three things: your provider’s usage figures, a version check, and anonymised analytics about the app. You can opt out of the analytics.'
+            : 'It goes online for two things: your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself.'}
         </p>
       </div>
     </div>
