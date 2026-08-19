@@ -745,6 +745,8 @@ mod tests {
             cwd: Some(cwd.to_string()),
             surface: "cli".to_string(),
             updated_at_epoch: Some(1_800_000_000),
+            activity_cursor: String::new(),
+            activity_source: "mtime".to_string(),
             subagent_count: 0,
             fork_parent_session_id: None,
         };
@@ -829,6 +831,8 @@ mod tests {
             cwd: Some(cwd.to_string()),
             surface: "cli".into(),
             updated_at_epoch: Some(1),
+            activity_cursor: String::new(),
+            activity_source: "mtime".into(),
             subagent_count: 0,
             fork_parent_session_id: None,
         };

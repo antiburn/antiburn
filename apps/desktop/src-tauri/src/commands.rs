@@ -447,6 +447,9 @@ pub async fn get_live_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
+    // The sources deliberately expose a synchronous interface and include
+    // blocking HTTP, Keychain, and subprocess work. The blocking pool is the
+    // boundary for all of it.
     let utc_offset_minutes = utc_offset_minutes.unwrap_or(0);
     tauri::async_runtime::spawn_blocking(move || {
         // Read here rather than before the hop: this summary is stamped with
@@ -1205,7 +1208,7 @@ mod tests {
     fn epochs_render_as_the_iso_stamps_the_activity_list_parses() {
         assert_eq!(iso_from_epoch(Some(0)), "1970-01-01T00:00:00Z");
         assert_eq!(iso_from_epoch(Some(1_800_000_000)), "2027-01-15T08:00:00Z");
-        // A session with no heartbeat still yields a parseable stamp rather
+        // A session with no activity still yields a parseable stamp rather
         // than an empty string the list would drop.
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
     }

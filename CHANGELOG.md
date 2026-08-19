@@ -24,7 +24,22 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.1.0-rc.5] - 2026-08-20
+
+A release-candidate rehearsal build, not a supported release. The macOS and
+Windows binaries are **unsigned** — your operating system will warn you, and it
+is right to. Install it only if you are testing the release pipeline itself.
+
+On macOS, open the app for the first time with right-click → Open rather than a
+double-click. The build is sealed but has no Developer ID signature, so macOS
+shows its unidentified-developer warning.
+
 ### Added
+
+- **Launch antiburn when you sign in.** New installs opt in by default from the
+  final setup step so the menu-bar or tray utility is available without being
+  opened by hand. The same switch is available later in Settings → General,
+  and can be turned off before setup finishes.
 
 - **What "local" means, spelled out.** antiburn needs no antiburn account,
   server, or backend — everything runs on your machine, as you. The
@@ -35,6 +50,11 @@ CI changes, and documentation that no user acts on stay out — see
   it hands your data to no one who doesn't already have it.
 
 ### Changed
+
+- **Plan limits now live at the top of the main popover.** Expand the Limits
+  section for each provider's windows and reset times, or collapse it to a row
+  of compact percentage chips. Each chip's ring follows that provider's
+  fullest reported limit, so the most urgent allowance stays visible.
 
 - **A per-model weekly limit stays out of the way until you use that
   model.** Your provider can report a supplemental weekly allowance scoped to
@@ -62,7 +82,24 @@ CI changes, and documentation that no user acts on stay out — see
   traffic at all; with it off, antiburn has no plan limits to show, since there
   is no longer a cached file it reads on its own.
 
+- **Hidden utility windows no longer remain resident indefinitely.** The
+  popover, Settings, setup, and notification views are released when they are
+  no longer needed and recreated on demand, substantially reducing the app's
+  idle memory footprint.
+
 ### Fixed
+
+- **Recent Activity follows real transcript activity.** Background file
+  touches, title changes, permission changes, and other agent housekeeping no
+  longer make an idle session look newly active. Subagent work still counts
+  toward its parent session.
+
+- **Native and WSL session analytics stay separate.** Sessions with the same
+  agent identifier can no longer reuse one another's cached analysis across
+  those environments.
+
+- Settings panes return to the top when you move between them, instead of
+  keeping the previous pane's scroll position.
 
 - **Session names in recent activity.** antiburn now reads authoritative names
   from each agent's indexed session store when available, while keeping mounted

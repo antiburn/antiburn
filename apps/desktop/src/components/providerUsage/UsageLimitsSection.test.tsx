@@ -1,0 +1,239 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import { fireEvent, render, screen } from "@testing-library/react"
+import { describe, expect, it, vi } from "vitest"
+
+import type {
+  LiveProviderUsagePayload,
+  LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
+  ProviderUsagePayload,
+  ProviderUsageWindowPayload,
+} from "../../lib/ipc"
+import { UsageLimitsSection } from "./UsageLimitsSection"
+
+const FORECAST = {
+  unavailableReason: "sparseHistory",
+  confidence: null,
+  consumptionRate: null,
+  paceRatio: null,
+  paceTrend: null,
+  runwayAt: null,
+  usedToday: null,
+}
+
+function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindowPayload {
+  return {
+    id: "seven-day",
+    role: "primaryLong",
+    kind: "weekly",
+    scopeModel: null,
+    usedPercent: 42,
+    startsAt: null,
+    resetsAt: null,
+    hasNonzeroUsageInCurrentPeriod: false,
+    forecast: FORECAST,
+    ...overrides,
+  }
+}
+
+function liveProvider(
+  overrides: Partial<LiveProviderUsagePayload> = {},
+): LiveProviderUsagePayload {
+  return {
+    provider: "anthropic",
+    displayName: "Claude",
+    support: "live",
+    freshness: "fresh",
+    sourceLabel: "Asked Claude directly",
+    observedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    windows: [liveWindow()],
+    extraUsage: null,
+    ...overrides,
+  }
+}
+
+function liveSummary(
+  providers: readonly LiveProviderUsagePayload[] = [liveProvider()],
+): LiveUsageSummaryPayload {
+  return { providers: [...providers], errors: [], generatedAt: new Date().toISOString() }
+}
+
+function spendWindow(
+  overrides: Partial<ProviderUsageWindowPayload> = {},
+): ProviderUsageWindowPayload {
+  return {
+    tokensIn: 0,
+    tokensOut: 0,
+    cacheRead: 0,
+    estimatedUsd: null,
+    sessionCount: 0,
+    ...overrides,
+  }
+}
+
+function spendProvider(overrides: Partial<ProviderUsagePayload> = {}): ProviderUsagePayload {
+  const today = spendWindow({ estimatedUsd: 1.25, tokensIn: 1_000, sessionCount: 1 })
+  return {
+    provider: "anthropic",
+    displayName: "Claude",
+    state: "estimated",
+    staleness: "fresh",
+    windows: { today, week: today, month: today },
+    lastActivityAt: new Date().toISOString(),
+    ...overrides,
+  }
+}
+
+function section(over: Partial<Parameters<typeof UsageLimitsSection>[0]> = {}) {
+  return render(
+    <UsageLimitsSection
+      providers={[spendProvider()]}
+      live={liveSummary()}
+      expanded={true}
+      onToggleExpanded={vi.fn()}
+      refreshing={false}
+      onViewAll={vi.fn()}
+      {...over}
+    />,
+  )
+}
+
+describe("UsageLimitsSection — visibility", () => {
+  it("renders nothing when no provider has live limit data", () => {
+    const { container } = section({ live: liveSummary([]) })
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it("renders nothing when a provider reports but states no windows worth showing", () => {
+    const { container } = section({ live: liveSummary([liveProvider({ windows: [] })]) })
+    expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe("UsageLimitsSection — expanded", () => {
+  it("shows one subsection per provider with limit data, each with its own rows", () => {
+    section({
+      live: liveSummary([
+        liveProvider({ provider: "anthropic", displayName: "Claude" }),
+        liveProvider({
+          provider: "openai",
+          displayName: "Codex",
+          windows: [liveWindow({ id: "five-hour", role: "primaryShort", usedPercent: 10 })],
+        }),
+      ]),
+    })
+
+    expect(screen.getByText("Claude")).toBeInTheDocument()
+    expect(screen.getByText("Codex")).toBeInTheDocument()
+    expect(screen.getAllByRole("progressbar").length).toBe(2)
+  })
+
+  it("carries a freshness note next to each provider's name", () => {
+    section()
+    expect(screen.getByText("Live 3m ago")).toBeInTheDocument()
+  })
+
+  it("does not show pace, trend, runway, or spend — only the limit rows", () => {
+    section()
+    expect(screen.queryByText(/pace/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/runway/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/trend/i)).not.toBeInTheDocument()
+  })
+
+  it("omits the chip row entirely while expanded", () => {
+    section()
+    expect(screen.queryByTestId("provider-usage-chips")).not.toBeInTheDocument()
+  })
+
+  it("sits the toggle in the left rail beside the vertical heading, not over the subsections", () => {
+    const { container } = section()
+    const toggle = screen.getByRole("button", { name: "Collapse usage limits" })
+    const heading = screen.getByRole("heading", { name: "Limits", level: 2 })
+    // The toggle shares the narrow left rail with the heading rather than
+    // floating over the subsection content, so it never needs to reserve
+    // space in any subsection's header.
+    expect(toggle.parentElement).toBe(heading.parentElement)
+    // Only the spinner is overlaid on the corner, costing no layout space.
+    expect(container.querySelector('[data-testid="usage-limits-section"]')).toHaveClass(
+      "relative",
+    )
+  })
+
+  it('labels the section by its vertical "Limits" heading rather than a redundant aria-label', () => {
+    const { container } = section()
+
+    const heading = screen.getByRole("heading", { name: "Limits", level: 2 })
+    expect(heading).toBeInTheDocument()
+
+    const region = screen.getByRole("region", { name: "Limits" })
+    expect(region).toBe(container.querySelector('[data-testid="usage-limits-section"]'))
+    expect(region).toHaveAttribute("aria-labelledby", heading.id)
+  })
+})
+
+describe("UsageLimitsSection — collapsed", () => {
+  it("shows the same chip row the bottom bar used to carry", () => {
+    section({ expanded: false })
+    expect(screen.getByTestId("provider-usage-chips")).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Claude, estimated, weekly limit 42%" }),
+    ).toBeInTheDocument()
+  })
+
+  it("does not show the per-provider rows while collapsed", () => {
+    section({ expanded: false })
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+  })
+
+  it('shows no "Limits" heading or region — a single row of chips can\'t carry one', () => {
+    section({ expanded: false })
+    expect(screen.queryByText("Limits")).not.toBeInTheDocument()
+    expect(screen.queryByRole("region")).not.toBeInTheDocument()
+  })
+})
+
+describe("UsageLimitsSection — toggle and spinner", () => {
+  it("toggles through the chevron button, in either state", () => {
+    const onToggleExpanded = vi.fn()
+    const { rerender } = section({ expanded: true, onToggleExpanded })
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse usage limits" }))
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <UsageLimitsSection
+        providers={[spendProvider()]}
+        live={liveSummary()}
+        expanded={false}
+        onToggleExpanded={onToggleExpanded}
+        refreshing={false}
+        onViewAll={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Expand usage limits" }))
+    expect(onToggleExpanded).toHaveBeenCalledTimes(2)
+  })
+
+  it("shows a spinner while a refresh is in flight, and hides it once settled", () => {
+    const { rerender } = section({ refreshing: true })
+    const status = screen.getByRole("status")
+    expect(status).toBeInTheDocument()
+    // The spinner alone is overlaid on the corner, costing no layout space.
+    expect(status.parentElement).toHaveClass("absolute")
+
+    rerender(
+      <UsageLimitsSection
+        providers={[spendProvider()]}
+        live={liveSummary()}
+        expanded={true}
+        onToggleExpanded={vi.fn()}
+        refreshing={false}
+        onViewAll={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+  })
+})
