@@ -2,7 +2,7 @@
 
 **Status:** Reviewed implementation proposal
 
-**Goal:** Build a useful on-device Hygiene and Efficiency report from local coding-agent sessions while keeping transcript processing bounded, truthful, restart-safe, and minimally disruptive to the user's active work.
+**Goal:** Build a useful on-device Hygiene and Efficiency report from local coding-agent sessions while keeping raw transcript reading bounded, results truthful, processing restart-safe, and work minimally disruptive to the user's active work.
 
 ## Executive decision
 
@@ -15,7 +15,7 @@ session discovery
   → source versioning and durable work state
   → bounded source-record stream
   → provider-specific normalization
-  → multiple bounded accumulators
+  → multiple analysis accumulators
       ├── existing SessionMetrics
       └── new SessionEvidence
   → atomic session_analysis + session_evidence update
@@ -30,6 +30,8 @@ read-only SQLite snapshot
 ```
 
 The design intentionally does **not** persist raw transcripts or complete canonical sessions. A normalized record exists only long enough to update the relevant accumulators and is then discarded.
+
+The bounded-memory guarantee applies to raw source framing, normalized-record lifetime, `SessionEvidence`, and report reduction. It does not initially apply to every retained collection needed for exact existing `SessionMetrics` output. The current analysis already grows in memory with transcript size; the first streaming implementation removes the worse whole-file `String` and complete canonical-event materialization while accepting that compact metrics state may still grow with metric-bearing events.
 
 The implementation should proceed provider by provider:
 
@@ -331,16 +333,19 @@ pub struct ProcessedSession {
 
 The source line, parsed JSON value, and normalized record are discarded before the next source record is retained.
 
-### Rich metrics and bounded state
+### Rich metrics and retained state
 
 Some existing `SessionMetrics` fields require finalization after the complete event sequence:
 
 - active-time normalization;
 - timeline segments;
 - phase buckets;
-- timestamp ordering.
+- timestamp ordering;
+- per-invocation skill data.
 
-The streaming metrics accumulator may retain compact timestamp/phase signal points required to finalize these fields. It should not retain raw text, whole JSON values, tool-output payloads, or complete normalized events when a smaller representation is sufficient.
+Exact parity with the current metrics contract can require retained state proportional to the number of metric-bearing events. Some output collections, including phase segments and skill uses, can themselves grow with session size. The first implementation accepts this existing unbounded metrics behavior while making it substantially less expensive: retain compact timestamp/phase/skill facts only where exact finalization needs them, and do not retain raw text, whole JSON values, tool-output payloads, the complete transcript `String`, or complete normalized events.
+
+A later measured improvement may move growing metric details into generation-scoped child/staging tables or another disk-backed spool and retain only bounded summaries in memory. That optimization may require changing the rich metrics output contract or finalization path and is not required for the first streaming provider.
 
 ## JSONL source policy
 
@@ -467,14 +472,17 @@ Persist model-attributed token quantities, not only current prices. Pricing chan
 
 ### Shared source version on `session`
 
-Add source truth once to the existing `session` row:
+Add source truth and a queryable analyzed start time to the existing `session` row:
 
 ```text
 source_fingerprint TEXT
 source_generation  INTEGER NOT NULL DEFAULT 0
+started_at_epoch   INTEGER
 ```
 
 When discovery first obtains a reusable fingerprint, generation becomes 1. When the fingerprint changes, generation increments. Re-observing the same fingerprint is idempotent.
+
+Antiburn does not currently store a queryable session start on `session`; the earliest parsed timestamp exists only as `SessionMetrics.first_ts_ms` inside `metrics_json`. Streaming analysis should populate `started_at_epoch` from trustworthy provider start metadata or the earliest normalized timestamp. `first_seen_at` is discovery time and must not be used as a session-start fallback.
 
 ### Version existing `session_analysis`
 
@@ -511,7 +519,10 @@ CREATE TABLE session_evidence (
     diagnostics_json        TEXT,
 
     retry_count             INTEGER NOT NULL DEFAULT 0,
+    claim_fence             INTEGER NOT NULL DEFAULT 0,
     claimed_at              TEXT,
+    lease_expires_at        TEXT,
+    next_attempt_at         TEXT,
     analyzed_at             TEXT,
     last_error              TEXT,
 
@@ -526,7 +537,7 @@ CREATE TABLE session_evidence (
 ) STRICT;
 
 CREATE INDEX session_evidence_status
-    ON session_evidence (status, claimed_at);
+    ON session_evidence (status, next_attempt_at, lease_expires_at);
 ```
 
 Work lifecycle and evidence quality remain separate:
@@ -547,18 +558,58 @@ session_evidence.last_error = null
 
 The session upsert and evidence transition happen in one short transaction. Worker notification occurs only after commit.
 
-### Atomic completion
+### Revision-driven requeue
 
-At completion, write `session_analysis` and `session_evidence` in one short transaction only if the claimed generation still matches `session.source_generation`.
+A source can require reprocessing even when its fingerprint and generation did not change. On startup and before normal worker claiming, reconcile enabled-provider rows against current projection revisions. Mark or treat a row as pending when any transcript-derived projection is stale:
 
-Conceptually:
+```text
+session_analysis.analyzed_generation != session.source_generation
+OR session_analysis.parser_revision != CURRENT_PARSER_REVISION
+OR session_analysis.analyzer_revision != CURRENT_ANALYZER_REVISION
+OR session_analysis.metrics_schema_revision != CURRENT_METRICS_SCHEMA_REVISION
+OR session_evidence.analyzed_generation != session.source_generation
+OR session_evidence.parser_revision != CURRENT_PARSER_REVISION
+OR session_evidence.analyzer_revision != CURRENT_ANALYZER_REVISION
+OR session_evidence.evidence_schema_revision != CURRENT_EVIDENCE_SCHEMA_REVISION
+```
+
+Do not increment `session.source_generation` for a code/schema revision; the source did not change. Requeue stale projections lazily through the normal bounded worker so an application update cannot create an uncontrolled processing spike.
+
+Invalidation policy:
+
+| Change | Reprocess transcript |
+|---|---:|
+| Parser revision | Yes |
+| Analyzer revision | Yes |
+| Metrics schema revision | Yes |
+| Evidence schema revision | Yes unless an explicit data-only migration can upgrade it safely |
+| Detector thresholds/rules | No |
+| Remediation/catalog wording | No |
+| Pricing catalog | No for evidence/report facts |
+| Deprecated-model replacement catalog | No |
+
+### Claim fencing and atomic completion
+
+Source generation is not a worker-claim token: two workers may process the same generation after a lease expires. Every initial claim or reclaim must atomically increment `claim_fence` and return the new value. The worker carries both its claimed source generation and fence token.
+
+Lease renewal, success, failure, and retry transitions must match:
+
+```text
+status = processing
+source generation = claimed generation
+claim_fence = claimed fence
+```
+
+A reclaimed worker receives a newer fence, making every late transition from the older worker a no-op.
+
+At completion, write `session.started_at_epoch`, `session_analysis`, and `session_evidence` in one short transaction only if the claimed generation still matches `session.source_generation` and the current processing row still carries the worker's claim fence. Conceptually:
 
 ```sql
 UPDATE session_analysis ... analyzed_generation = ?claimed_generation ...;
 UPDATE session_evidence ... status = 'ready', analyzed_generation = ?claimed_generation ...;
 ```
 
-Both updates are guarded by a current-generation check. If the source changed during processing, commit neither projection and leave the newer generation pending.
+If either guard fails, commit neither projection. A source change leaves the newer generation pending; a fence mismatch means another claim owns the work.
 
 ### Persistence policy
 
@@ -579,7 +630,7 @@ SQLite is the durable queue. An in-process event only wakes the worker.
 scan transaction marks pending
   → commit
   → wake worker
-  → worker claims one generation
+  → worker claims one generation and increments/receives its claim fence
   → release Antiburn DB lock/transaction
   → acquire resource permits
   → process source in blocking job
@@ -587,7 +638,7 @@ scan transaction marks pending
   → conditional atomic completion
 ```
 
-On startup, reclaim abandoned `processing` rows older than the configured lease. Duplicate wake-ups are harmless.
+On startup, reconcile revision-stale projections and reclaim abandoned `processing` rows whose leases expired. Every reclaim increments the fence before work starts. Duplicate wake-ups are harmless.
 
 ### Database connection rule
 
@@ -636,15 +687,21 @@ WAL permits the normal writer connection to continue committing while the report
 
 ### Report population
 
-For the first report select:
+The first report is a **session-start cohort**, not an event-time slice. Select sessions whose trustworthy `started_at_epoch` falls within the trailing thirty days, then consume each selected session's complete evidence. Because every selected session began inside the window, its normal event history is also inside the cohort window.
 
-- trailing thirty days;
+This deliberately excludes a session that began before the window even if it remained active or was updated recently. The UI/report wording must say “sessions started in the last 30 days,” not imply that it includes every event from every session active during the period.
+
+Select:
+
+- `session.started_at_epoch >= window_start` and `< window_end`;
 - current machine/environment scope;
 - ready evidence;
 - `session_analysis`/`session_evidence` generations matching `session.source_generation` where needed;
 - current parser/analyzer/evidence revisions.
 
-Count pending, processing, failed, unsupported, stale, and ready rows separately.
+A session without a trustworthy start time is not eligible for the cohort and is counted as not assessed rather than assigned discovery time. Account-level quota snapshots continue to use their own observation timestamps within the report window.
+
+Count pending, processing, failed, unsupported, stale, unknown-start, and ready rows separately.
 
 ### Candidate query shape
 
@@ -653,6 +710,7 @@ SELECT
     s.environment_key,
     s.agent,
     s.session_id,
+    s.started_at_epoch,
     s.updated_at_epoch,
     s.cwd,
     s.surface,
@@ -661,13 +719,14 @@ SELECT
 FROM session s
 JOIN session_evidence e
   USING (environment_key, agent, session_id)
-WHERE s.updated_at_epoch >= ?window_start
+WHERE s.started_at_epoch >= ?window_start
+  AND s.started_at_epoch < ?window_end
   AND e.status = 'ready'
   AND e.analyzed_generation = s.source_generation
   AND e.parser_revision = ?parser_revision
   AND e.analyzer_revision = ?analyzer_revision
   AND e.evidence_schema_revision = ?evidence_schema_revision
-ORDER BY s.updated_at_epoch, s.session_id;
+ORDER BY s.started_at_epoch, s.session_id;
 ```
 
 The final query may join compact `session_analysis` fields where a report requires them, but it must not load canonical transcripts.
@@ -706,7 +765,7 @@ The report engine is implemented once. Each provider maps its source into the sh
 Include:
 
 - computed time;
-- window start/end;
+- window start/end and explicit session-start cohort semantics;
 - source/evidence snapshot information;
 - discovered count;
 - ready/usable count;
@@ -885,6 +944,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Append a new migration constant to `apps/desktop/src-tauri/src/store/schema.rs`.
 - [ ] Add `source_fingerprint` to `session` with migration-safe null/default behavior.
 - [ ] Add `source_generation` to `session` with an initial zero generation.
+- [ ] Add nullable `started_at_epoch` to `session`; do not backfill it from `first_seen_at`.
 - [ ] Add `analyzed_generation` to `session_analysis`.
 - [ ] Add `parser_revision` to `session_analysis`.
 - [ ] Add `analyzer_revision` to `session_analysis`.
@@ -893,7 +953,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 
 ### Store model and query updates
 
-- [ ] Extend `SessionRecord` with source fingerprint/generation where appropriate.
+- [ ] Extend `SessionRecord` with source fingerprint, generation, and nullable analyzed start time where appropriate.
 - [ ] Extend `AnalysisRecord` with analyzed generation and revisions.
 - [ ] Update every `session` select/insert/upsert mapping.
 - [ ] Update every `session_analysis` select/insert/upsert mapping.
@@ -926,6 +986,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Test first fingerprint observation.
 - [ ] Test same-fingerprint idempotence.
 - [ ] Test changed-fingerprint generation increment.
+- [ ] Test nullable `started_at_epoch` migration and query mapping.
 - [ ] Test provider DB fingerprint mapping.
 - [ ] Test inline-source behavior.
 - [ ] Test serialization/query mappings for new fields.
@@ -1031,7 +1092,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Update error/disruption counts online.
 - [ ] Update skill uses online.
 - [ ] Update compaction observations online.
-- [ ] Retain only compact timing/phase points needed for finalization.
+- [ ] Retain compact timing/phase/skill points needed for exact finalization, accepting that these collections may grow with metric-bearing events in the first implementation.
 - [ ] Finalize duration and active time at end of stream.
 - [ ] Finalize buckets and phase segments at end of stream.
 - [ ] Finalize pattern score/signals at end of stream.
@@ -1057,6 +1118,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Route Claude `analytics::analyze` through the streaming processor.
 - [ ] Keep CPU work inside `spawn_blocking`.
 - [ ] Write `session_analysis.analyzed_generation` from the claimed/current source generation.
+- [ ] Derive `session.started_at_epoch` from trustworthy provider start metadata or `SessionMetrics.first_ts_ms`; leave it unknown when neither exists.
 - [ ] Write parser/analyzer/metrics revisions.
 - [ ] Keep other providers on the existing path.
 
@@ -1076,7 +1138,8 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 
 - [ ] Demonstrate no whole-file `String` in the Claude metrics path.
 - [ ] Demonstrate no complete `Vec<NormalizedEvent>` in normal Claude metrics generation.
-- [ ] Measure retained accumulator state on a generated large session.
+- [ ] Measure retained accumulator state on a generated large session and document its proportional growth.
+- [ ] Confirm the improvement claim is limited to bounded raw-record retention and removal of whole-file/canonical-event materialization, not bounded rich metrics memory.
 - [ ] Measure processing time relative to the legacy path.
 - [ ] Confirm active UI behavior remains unchanged.
 
@@ -1085,6 +1148,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Existing Claude `session_analysis` records are generated from a one-record-at-a-time source pass.
 - [ ] Existing user-visible metrics remain equivalent.
 - [ ] The old Claude full-read metrics path is removed or restricted to explicit compatibility tests/tools.
+- [ ] The implementation and documentation explicitly accept that exact rich metrics accumulation remains unbounded in the first version.
 
 ## Phase 5 — add one in-memory evidence data point
 
@@ -1131,6 +1195,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 ### Migration
 
 - [ ] Append the `session_evidence` table migration.
+- [ ] Add `claim_fence`, `lease_expires_at`, and `next_attempt_at` work-state columns.
 - [ ] Add lifecycle/version indexes.
 - [ ] Add composite foreign key with delete cascade.
 - [ ] Preserve immutable prior migrations.
@@ -1139,10 +1204,12 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 
 - [ ] Add `SessionEvidenceRecord` with identity, lifecycle, generation, revisions, JSON, and diagnostics.
 - [ ] Add a transactional method to create/mark pending evidence when source generation changes.
-- [ ] Add an atomic claim method.
-- [ ] Add conditional completion guarded by source generation.
+- [ ] Add revision reconciliation that requeues stale metrics/evidence without changing source generation.
+- [ ] Add an atomic claim method that increments and returns `claim_fence`.
+- [ ] Add conditional completion guarded by source generation and claim fence.
+- [ ] Guard failure, retry, and lease-renewal transitions with the same fence.
 - [ ] Add failed/unsupported transitions.
-- [ ] Add abandoned-processing reclamation.
+- [ ] Add abandoned-processing reclamation that increments the fence before reassignment.
 - [ ] Add bounded retry count and local error summary.
 - [ ] Update session deletion.
 - [ ] Update clear-local-session-data.
@@ -1160,6 +1227,8 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Recheck source version.
 - [ ] Begin one short Antiburn-store transaction.
 - [ ] Verify claimed generation equals current `session.source_generation`.
+- [ ] Verify status is processing and the worker's claim fence is still current.
+- [ ] Update `session.started_at_epoch` from finalized analysis when trustworthy.
 - [ ] Update `session_analysis`.
 - [ ] Update `session_evidence`.
 - [ ] Commit both or neither.
@@ -1169,9 +1238,13 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 
 - [ ] Fresh evidence row starts pending.
 - [ ] Same generation does not duplicate work.
-- [ ] Only one claim succeeds.
+- [ ] Only one initial claim succeeds.
+- [ ] Reclaim increments the fence.
+- [ ] A late worker with an old fence cannot complete, fail, renew, or retry the work.
 - [ ] Completion writes both projections.
 - [ ] Stale generation writes neither projection.
+- [ ] Parser/analyzer/metrics/evidence revision changes requeue unchanged sources.
+- [ ] Detector, remediation, pricing, and model-replacement catalog changes do not reparse transcript evidence.
 - [ ] Evidence JSON round-trips.
 - [ ] Delete cascades.
 - [ ] Clear removes evidence/work state.
@@ -1190,7 +1263,8 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Make SQLite pending rows the durable queue.
 - [ ] Add a post-commit wake-up mechanism.
 - [ ] Start/recover the worker with the desktop application.
-- [ ] Claim one generation at a time initially.
+- [ ] Reconcile projection revision mismatches before normal claiming.
+- [ ] Claim one generation at a time initially and carry its returned fence through every transition.
 - [ ] Release the Antiburn store guard before source processing.
 - [ ] Run parsing/analysis in `spawn_blocking`.
 - [ ] Reacquire the store only for short completion/failure transitions.
@@ -1216,9 +1290,10 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 
 ### Failure and recovery
 
-- [ ] Retry transient source-busy/read failures with bounded backoff.
+- [ ] Retry transient source-busy/read failures with bounded backoff and `next_attempt_at`.
 - [ ] Do not retry unsupported provider/schema forever.
-- [ ] Reclaim stale processing leases on startup.
+- [ ] Reclaim stale processing leases on startup by issuing a new fence.
+- [ ] Reject every late transition carrying an older fence.
 - [ ] Ensure errors contain no transcript content.
 - [ ] Keep a newer generation pending when an older job finishes.
 
@@ -1365,7 +1440,8 @@ For every group below, perform the same sequence before moving on:
 
 ### Row-streaming query
 
-- [ ] Select session identity/metadata and current ready evidence for thirty days.
+- [ ] Select session identity/metadata and current ready evidence only for sessions whose trustworthy start falls inside the thirty-day cohort.
+- [ ] Exclude and count sessions with unknown start time rather than substituting discovery time.
 - [ ] Filter source/analyzed generations and revisions.
 - [ ] Order deterministically.
 - [ ] Deserialize one `SessionEvidence` row at a time.
@@ -1384,6 +1460,7 @@ For every group below, perform the same sequence before moving on:
 - [ ] Count failed sessions.
 - [ ] Count unsupported sessions.
 - [ ] Count stale generation/revision sessions.
+- [ ] Count unknown-start sessions excluded from the cohort.
 - [ ] Expose per-detector eligible/assessed counts.
 
 ### Composite accumulator
@@ -1545,6 +1622,8 @@ Do not add provider-specific branches to the report reducer where a normalized e
 - [ ] Rebuild on truncation, replacement, or mismatch.
 - [ ] Profile before adding report caching.
 - [ ] Include source generations and all relevant revisions in any report cache identity.
+- [ ] Profile exact rich-metrics retained collections before moving them to generation-scoped child/staging SQL tables or another disk-backed spool.
+- [ ] Offload growing metrics details only when measurements justify the extra write/finalization path; keep partial generations invisible until published.
 - [ ] Profile before normalizing evidence into child SQL tables.
 - [ ] Add additional read connections/pooling only if compact report reads contend measurably.
 - [ ] Keep background processing lazy/low-impact unless product evidence justifies stronger eagerness.
