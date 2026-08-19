@@ -376,12 +376,25 @@ The maximum individual record size should be selected from real provider fixture
 - Skipped records update diagnostics and evidence coverage.
 - Cancellation is checked between records or bounded byte intervals.
 
-### Source mutation
+### Source mutation and actively growing transcripts
 
 - Capture source version before reading.
 - Recheck source identity/version after processing.
 - If the source changed, return `SourceChanged` and do not publish stale projections.
 - The next generation remains pending.
+
+A transcript that is still receiving appends must not enter an immediate discard/retry loop or monopolize worker capacity. The first implementation should:
+
+- reuse `ACTIVE_SESSION_WINDOW_SECS` as the quiet-period debounce and avoid claiming file sources still considered active;
+- set `next_attempt_at` instead of immediately retrying `SourceChanged` work;
+- apply bounded backoff when a source repeatedly changes during processing;
+- claim eligible rows fairly so one hot session cannot prevent stable sessions from progressing;
+- retain the last completed `analyzed_generation` and evidence payload while a newer generation is pending;
+- exclude stale/pending evidence from a clean current report and count the active session as not assessed.
+
+Marking a new generation pending must not erase its last completed evidence. A session that remains active indefinitely may remain pending in the first version, but it must not starve the rest of the queue.
+
+A later optimization may process a captured append-only prefix: record file identity and starting length, read only complete records in that prefix, publish that older completed generation, and leave appended work pending. Do not add this until provider append-only behavior and measured need justify it.
 
 ### Selective deserialization
 
@@ -554,6 +567,7 @@ session.source_generation += 1
 session.source_fingerprint = observed fingerprint
 session_evidence.status = pending
 session_evidence.last_error = null
+session_evidence.evidence_json remains the last completed generation until replacement
 ```
 
 The session upsert and evidence transition happen in one short transaction. Worker notification occurs only after commit.
@@ -701,7 +715,7 @@ Select:
 
 A session without a trustworthy start time is not eligible for the cohort and is counted as not assessed rather than assigned discovery time. Account-level quota snapshots continue to use their own observation timestamps within the report window.
 
-Count pending, processing, failed, unsupported, stale, unknown-start, and ready rows separately.
+Count pending, actively growing/debounced, processing, failed, unsupported, stale, unknown-start, and ready rows separately.
 
 ### Candidate query shape
 
@@ -913,6 +927,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Confirm that the first implementation rebuilds a changed session from the beginning.
 - [ ] Confirm that there is no total 512 MiB JSONL processing cap.
 - [ ] Confirm that append-tail checkpoints are out of scope.
+- [ ] Confirm that actively written file sources are debounced using `ACTIVE_SESSION_WINDOW_SECS` and cannot monopolize the queue.
 - [ ] Confirm that canonical sessions/events will not be persisted.
 - [ ] Confirm that the existing session UI must remain behaviorally unchanged.
 
@@ -1203,7 +1218,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 ### Store models and methods
 
 - [ ] Add `SessionEvidenceRecord` with identity, lifecycle, generation, revisions, JSON, and diagnostics.
-- [ ] Add a transactional method to create/mark pending evidence when source generation changes.
+- [ ] Add a transactional method to create/mark pending evidence when source generation changes without deleting the last completed payload.
 - [ ] Add revision reconciliation that requeues stale metrics/evidence without changing source generation.
 - [ ] Add an atomic claim method that increments and returns `claim_fence`.
 - [ ] Add conditional completion guarded by source generation and claim fence.
@@ -1246,6 +1261,7 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Parser/analyzer/metrics/evidence revision changes requeue unchanged sources.
 - [ ] Detector, remediation, pricing, and model-replacement catalog changes do not reparse transcript evidence.
 - [ ] Evidence JSON round-trips.
+- [ ] Marking a newer generation pending preserves the prior analyzed generation and evidence payload.
 - [ ] Delete cascades.
 - [ ] Clear removes evidence/work state.
 - [ ] Abandoned processing is reclaimed.
@@ -1283,6 +1299,8 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 - [ ] Add a small CPU/job semaphore.
 - [ ] Add a source/file semaphore.
 - [ ] Add a provider-DB semaphore.
+- [ ] Exclude file sources updated within `ACTIVE_SESSION_WINDOW_SECS` from claiming and set their next eligible attempt time.
+- [ ] Order eligible claims fairly by `next_attempt_at` and stable tie-breakers rather than repeatedly selecting the hottest session.
 - [ ] Add memory weighting only for materialized fallbacks.
 - [ ] Acquire permits before scheduling blocking work.
 - [ ] Check cancellation between source records.
@@ -1291,11 +1309,18 @@ The checklist is deliberately ordered. Do not begin a later provider before the 
 ### Failure and recovery
 
 - [ ] Retry transient source-busy/read failures with bounded backoff and `next_attempt_at`.
+- [ ] Treat `SourceChanged` as deferred active work, not an immediate tight-loop retry.
+- [ ] Increase backoff when the same source repeatedly changes during processing.
+- [ ] Continue claiming other eligible sessions while an active source is deferred.
 - [ ] Do not retry unsupported provider/schema forever.
 - [ ] Reclaim stale processing leases on startup by issuing a new fence.
 - [ ] Reject every late transition carrying an older fence.
 - [ ] Ensure errors contain no transcript content.
 - [ ] Keep a newer generation pending when an older job finishes.
+- [ ] Test that a continuously growing transcript is deferred rather than immediately reclaimed.
+- [ ] Test that stable sessions continue processing while a growing transcript is deferred.
+- [ ] Test that a deferred session becomes claimable after the quiet period.
+- [ ] Test that deferral preserves its last completed evidence payload.
 
 ### Completion gate
 
@@ -1456,6 +1481,7 @@ For every group below, perform the same sequence before moving on:
 - [ ] Count discovered sessions in the window.
 - [ ] Count ready/current sessions.
 - [ ] Count pending sessions.
+- [ ] Count actively growing/debounced sessions separately where the source state is known.
 - [ ] Count processing sessions.
 - [ ] Count failed sessions.
 - [ ] Count unsupported sessions.
@@ -1617,6 +1643,7 @@ Do not add provider-specific branches to the report reducer where a normalized e
 ## Phase 13 — measured future optimizations only
 
 - [ ] Profile before adding append-tail processing.
+- [ ] Evaluate captured-prefix processing for proven append-only providers before implementing resumable checkpoints: process complete records up to the claimed starting length, publish that completed generation, and leave newer appended work pending.
 - [ ] Add byte-offset checkpoints only for providers with safe append semantics and measured need.
 - [ ] Include file identity, complete-line offset, boundary hash, parser/analyzer revisions, and accumulator continuation state in any checkpoint.
 - [ ] Rebuild on truncation, replacement, or mismatch.
@@ -1723,10 +1750,9 @@ coverage/finding/status views
 1. Exact first-provider fixture cohort and supported Claude schema versions.
 2. Maximum retained JSONL record bytes based on observed legitimate records.
 3. Initial worker CPU/source concurrency and processing lease duration.
-4. Whether processing pauses/debounces actively written sessions.
-5. Whether opening Insights accelerates pending thirty-day work.
-6. Exact evidence fields retained as bounded supporting examples.
-7. Parser, analyzer, metrics, evidence, detector, pricing, and remediation revision constants.
-8. Which partial evidence permits a finding and which prevents a clean status for each detector.
-9. The second provider selected after Claude; choosing a provider SQLite source early would validate the row-streaming path.
-10. Acceptable first-open evidence backlog and report-readiness experience.
+4. Whether opening Insights accelerates pending thirty-day work.
+5. Exact evidence fields retained as bounded supporting examples.
+6. Parser, analyzer, metrics, evidence, detector, pricing, and remediation revision constants.
+7. Which partial evidence permits a finding and which prevents a clean status for each detector.
+8. The second provider selected after Claude; choosing a provider SQLite source early would validate the row-streaming path.
+9. Acceptable first-open evidence backlog and report-readiness experience.
