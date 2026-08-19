@@ -81,7 +81,9 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(screen.getByRole('tablist', { name: 'Settings sections' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('tablist', { name: 'Settings sections' }),
+    ).toBeInTheDocument();
     expect(await screen.findByRole('heading', { name: 'General' })).toBeInTheDocument();
   });
 });

@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import { AlertTriangle } from 'lucide-react';
 
@@ -45,8 +45,15 @@ import {
   type PopoverSurface,
 } from '../lib/popoverHeight';
 import type { LocalRepositoryItem, LocalRepositoryStatus } from '../lib/types/repository';
-import { SessionPane, type SessionSubject } from './popover/SessionPane';
 import { UsageView } from './popover/UsageView';
+import type { SessionSubject } from './popover/SessionPane';
+
+// Session analytics pulls in the charting library and a substantial set of
+// presentation components. Keep it out of the activity surface's initial
+// chunk; opening a session is the only action that needs this code.
+const SessionPane = lazy(() =>
+  import('./popover/SessionPane').then(({ SessionPane: pane }) => ({ default: pane })),
+);
 
 /**
  * The tray popover.
@@ -95,6 +102,22 @@ function ActivitySkeleton() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Placeholder while the session analytics chunk is fetched on first open. */
+function SessionPaneLoading() {
+  return (
+    <div className="flex h-full flex-col" aria-busy="true" data-testid="session-pane-loading">
+      <header className="flex h-11 shrink-0 items-center px-4">
+        <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
+          Session Analytics
+        </h1>
+      </header>
+      <div className="min-h-0 flex-1 px-4 pt-4">
+        <Skeleton className="h-24 w-full" />
+      </div>
     </div>
   );
 }
@@ -396,17 +419,19 @@ export function PopoverView() {
       };
 
       return (
-        <SessionPane
-          subject={current}
-          onBack={goBack}
-          onPrev={neighbour(-1)}
-          onNext={neighbour(1)}
-          onOpenSession={openSession}
-          onDeleted={() => {
-            goBack();
-            void refreshEntries(windowDays).catch(() => {});
-          }}
-        />
+        <Suspense fallback={<SessionPaneLoading />}>
+          <SessionPane
+            subject={current}
+            onBack={goBack}
+            onPrev={neighbour(-1)}
+            onNext={neighbour(1)}
+            onOpenSession={openSession}
+            onDeleted={() => {
+              goBack();
+              void refreshEntries(windowDays).catch(() => {});
+            }}
+          />
+        </Suspense>
       );
     }
 
