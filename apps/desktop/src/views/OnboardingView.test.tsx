@@ -161,8 +161,7 @@ describe('OnboardingView', () => {
     mockCommands({ default_scan_roots: ['/home/avery/code'] });
     render(<OnboardingView />);
 
-    // 1 — Welcome. No account, and no promise of analytics this build does not
-    // ship.
+    // 1 — Welcome. No account, and nothing of the reader's work leaving.
     expect(
       await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
     ).toBeInTheDocument();
@@ -170,8 +169,12 @@ describe('OnboardingView', () => {
       screen.getByText(/nothing from your sessions is ever uploaded/i),
     ).toBeInTheDocument();
     // Welcome *mentions* the analytics control and says where it lives; the
-    // switch itself is on the last step, which is the shape the matrix asks for.
-    expect(screen.getByText(/switch off on the last screen/i)).toBeInTheDocument();
+    // switch itself is on the last step, which is the shape the matrix asks
+    // for. `APP_INFO` reports a supported build, so this is the branch that
+    // claims analytics — see below for the build that cannot send them.
+    expect(
+      screen.getByText(/also sends anonymised analytics about itself.*on the last screen/i),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     // 2 — Sources. The engine's own default roots are listed, so the reader can
@@ -228,6 +231,16 @@ describe('OnboardingView', () => {
   it('disables the analytics control in a build with no endpoint', async () => {
     mockCommands({ app_info: { ...APP_INFO, usageAnalyticsSupported: false } });
     render(<OnboardingView />);
+
+    // Welcome first, because it is the screen that used to overstate this.
+    // Its analytics sentence was unconditional, so a build with no endpoint
+    // opened by announcing a transmission it could not make.
+    expect(
+      await screen.findByRole('heading', { name: 'Everything stays on this machine' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/it sends nothing about itself either/i)).toBeInTheDocument();
+    expect(screen.queryByText(/also sends anonymised analytics/i)).not.toBeInTheDocument();
+
     await advanceToReady();
 
     const analytics = screen.getByRole('switch', {

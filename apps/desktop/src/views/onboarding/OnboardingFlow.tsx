@@ -154,7 +154,7 @@ function StepDots({ step }: { step: Step }) {
  */
 const CENTRED_COLUMN = 'mx-auto flex max-w-[440px] flex-col items-center';
 
-function Welcome() {
+function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
@@ -179,15 +179,19 @@ function Welcome() {
             antiburn goes online as your own agent — reading a provider's
             current usage figures with your credentials, checking GitHub
             Releases for new versions — and what makes it local is that none
-            of that depends on any service of ours, and nothing about you
-            goes to one. */}
+            of that depends on any service of ours.
+
+            Gated on support, because a build with no injected endpoint cannot
+            send analytics and this is the first screen a reader ever sees. The
+            long form is Settings → Privacy; the job here is to name the thing
+            and say where the switch is, not to explain it. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          antiburn goes online as your own agent — to read a provider&rsquo;s current usage
-          figures with your own credentials, and to check GitHub Releases for new versions. None
-          of it needs an antiburn account or an antiburn server — there isn&rsquo;t one — and
-          nothing from your sessions goes anywhere. antiburn does send anonymised analytics
-          about the application itself, which you can switch off on the last screen or later in
-          Settings.
+          It does go online as your own agent: a provider&rsquo;s usage figures, read with your
+          own credentials, and a check for new versions. There is no antiburn account, and
+          nothing of ours the app needs to work.{' '}
+          {usageAnalyticsSupported
+            ? 'It also sends anonymised analytics about itself — switch that off on the last screen, or later in Settings.'
+            : 'This build has no analytics endpoint, so it sends nothing about itself either.'}
         </p>
       </div>
     </div>
@@ -632,7 +636,7 @@ export function OnboardingFlow({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {step === 'welcome' && <Welcome />}
+        {step === 'welcome' && <Welcome usageAnalyticsSupported={usageAnalyticsSupported} />}
         {step === 'sources' && (
           <Sources
             defaultRoots={defaultRoots}
