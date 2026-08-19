@@ -17,6 +17,7 @@ import {
   type SessionAnalyticsPayload,
 } from '../../lib/ipc';
 import { agentSupportsAnalytics } from '../../lib/presentation/agents';
+import { localSessionKey } from '../../lib/presentation/localIdentity';
 import { costBreakdownRows, costFigureLabel } from '../../lib/presentation/sessionAnalytics';
 import {
   topLevelCostSubject,
@@ -109,16 +110,17 @@ function toLocalCost(
 }
 
 /** Load one subject's analytics. Sub-agents come from their own command. */
-async function loadAnalytics(subject: SessionSubject): Promise<SessionAnalyticsPayload | null> {
-  if (subject.subagent) {
-    return getSubagentAnalytics(
-      subject.agent,
-      subject.subagent.parentSessionId,
-      subject.subagent.subagentId,
-      subject.wslDistro,
-    );
+async function loadAnalytics(
+  agent: string,
+  sessionId: string,
+  wslDistro: string | null | undefined,
+  parentSessionId?: string,
+  subagentId?: string,
+): Promise<SessionAnalyticsPayload | null> {
+  if (parentSessionId !== undefined && subagentId !== undefined) {
+    return getSubagentAnalytics(agent, parentSessionId, subagentId, wslDistro);
   }
-  return getSessionAnalytics(subject.agent, subject.sessionId, subject.wslDistro);
+  return getSessionAnalytics(agent, sessionId, wslDistro);
 }
 
 export function SessionPane({
@@ -144,11 +146,25 @@ export function SessionPane({
     error: boolean;
   } | null>(null);
 
-  const key = `${subject.agent}|${subject.sessionId}|${subject.subagent?.subagentId ?? ''}`;
+  const agent = subject.agent;
+  const sessionId = subject.sessionId;
+  const wslDistro = subject.wslDistro;
+  const parentSessionId = subject.subagent?.parentSessionId;
+  const subagentId = subject.subagent?.subagentId;
+  // A sub-agent id is only unique within its launching session. Keep the
+  // parent identity in the key as well as the environment-aware session key.
+  const key =
+    parentSessionId !== undefined && subagentId !== undefined
+      ? JSON.stringify([
+          'subagent',
+          localSessionKey(agent, parentSessionId, wslDistro),
+          subagentId,
+        ])
+      : localSessionKey(agent, sessionId, wslDistro);
 
   useEffect(() => {
     let active = true;
-    loadAnalytics(subject)
+    loadAnalytics(agent, sessionId, wslDistro, parentSessionId, subagentId)
       .then((result) => {
         if (active) setSettled({ key, payload: result, error: false });
       })
@@ -158,10 +174,10 @@ export function SessionPane({
     return () => {
       active = false;
     };
-    // `subject` is rebuilt on every render by the host, so the identity key is
-    // what actually changes when a different session is opened.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+    // `subject` is rebuilt on every render by the host, so the primitive
+    // identity fields are what actually change when a different session is
+    // opened.
+  }, [agent, sessionId, wslDistro, parentSessionId, subagentId, key]);
 
   const current = settled?.key === key ? settled : null;
   const payload = current?.payload ?? null;
