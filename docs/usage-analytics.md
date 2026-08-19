@@ -109,11 +109,17 @@ Event names are namespaced `antiburn.*`.
 |---|---|---|
 | `antiburn.app_launched` | The application starts. | — |
 | `antiburn.onboarding_finished` | The first run completes. | — |
-| `antiburn.scan_completed` | A discovery pass finishes. | `bucket` — how many sessions |
+| `antiburn.scan_completed` | A discovery pass finishes **and finds a different number of sessions than the last one reported**. antiburn rescans about once a minute while the popover is open; a repeat of the same answer is not sent. | `bucket` — how many sessions |
 | `antiburn.setting_toggled` | A preference changes. | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value. |
 | `antiburn.session_opened` | You open a session from the activity list. | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native` or `wsl`. **Not** the session, its title, its repository, or the name of your WSL distribution. |
 | `antiburn.usage_viewed` | You open the usage view. | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
-| `antiburn.error_occurred` | Something failed. | `label` — a category, currently `scan_failed`. No message, no path, no backtrace. |
+| `antiburn.error_occurred` | Something failed, and the previous pass had not already reported the same failure. | `label` — a category, currently `scan_failed`. No message, no path, no backtrace. |
+
+Two of those are deliberately not sent once per occurrence. A scan result that
+repeats the last one is dropped, so a machine left running does not report the
+same number every minute and a machine stuck failing does not report the same
+failure six hundred times a day. What survives is the first pass of each run,
+every crossing of a bucket boundary, and every move into or out of failure.
 
 That is the complete list of what this build sends. More events may be added
 later, and the table is not a courtesy when they are: a test

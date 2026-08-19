@@ -143,6 +143,73 @@ pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
     record(app, name, facts);
 }
 
+/// The last scan outcome reported in this run.
+///
+/// In memory, like [`SESSION`], and for the same reason: it is a suppression
+/// hint, not a fact about the reader, and it has no business on their disk.
+static LAST_SCAN: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// Record a discovery pass, if it says anything the previous one did not.
+///
+/// `Some(count)` is a completed pass; `None` is a failed one.
+///
+/// The scheduler runs a pass every [`crate::scan::TICK`] for as long as the
+/// popover is open, so reporting each one would put an event a minute, all
+/// day, into a channel whose other events are counted in ones — swamping the
+/// queue's own bound and every other event with it. It would also be the wrong
+/// measurement twice over: what is worth knowing is roughly how large an
+/// install's history is and whether scanning works at all, and a repetition
+/// answers neither better than the first report did. A machine stuck failing
+/// every pass would additionally report that failure some six hundred times a
+/// day, which is not more information about one broken install.
+///
+/// So the bucket, or the failure category, is compared against the last one
+/// reported and an unchanged outcome is dropped. What survives is the first
+/// pass of each run, every crossing of a bucket boundary, and every transition
+/// into or out of failure.
+pub fn record_scan(app: &tauri::AppHandle, sessions: Option<u64>) {
+    // Ahead of the suppression check, not after it. A pass during onboarding,
+    // or while the switch is off, must not leave a mark that then suppresses
+    // the first pass the reader actually consented to.
+    if !allowed(app) {
+        return;
+    }
+    let (name, facts) = match sessions {
+        Some(count) => (
+            EventName::ScanCompleted,
+            Facts {
+                bucket: Some(event::bucket(count)),
+                ..Facts::default()
+            },
+        ),
+        None => (
+            EventName::ErrorOccurred,
+            Facts {
+                label: Some("scan_failed"),
+                ..Facts::default()
+            },
+        ),
+    };
+    if !scan_outcome_is_new(facts.bucket.or(facts.label)) {
+        return;
+    }
+    record(app, name, facts);
+}
+
+/// Whether this outcome differs from the last one reported, remembering it if
+/// it does. Buckets and failure categories share the comparison deliberately:
+/// recovering from a failure is a change worth one event.
+fn scan_outcome_is_new(outcome: Option<&'static str>) -> bool {
+    let mut guard = LAST_SCAN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *guard == outcome {
+        return false;
+    }
+    *guard = outcome;
+    true
+}
+
 /// The identifier to stamp on an event, minting or rotating it as needed.
 fn current_install_id(store: &Store) -> Option<String> {
     let existing = store.usage_analytics_identity().ok()?;
@@ -261,6 +328,12 @@ pub fn handle_settings_transition(
     // the session that was just withdrawn.
     let _ = store.clear_usage_analytics();
     reset_session();
+    // Withdrawal leaves no in-memory residue of the consented period either,
+    // so opting back in starts from a clean comparison rather than silently
+    // suppressing the first scan it would otherwise report.
+    *LAST_SCAN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 /// Install the TLS crypto provider this crate's client needs.
@@ -453,6 +526,27 @@ mod tests {
         reset_session();
         assert_ne!(first, current_session_id(), "withdrawn, not resumed");
         reset_session();
+    }
+
+    /// A pass a minute is the scheduler's business; a pass a minute in the
+    /// payload is not. Only a changed outcome survives, and recovering from a
+    /// failure counts as a change.
+    #[test]
+    fn only_a_changed_scan_outcome_is_worth_an_event() {
+        *LAST_SCAN.lock().unwrap() = None;
+
+        assert!(
+            scan_outcome_is_new(Some("10-49")),
+            "the first pass of a run"
+        );
+        assert!(!scan_outcome_is_new(Some("10-49")), "the same pass again");
+        assert!(!scan_outcome_is_new(Some("10-49")));
+        assert!(scan_outcome_is_new(Some("50-199")), "a bucket boundary");
+        assert!(scan_outcome_is_new(Some("scan_failed")), "into failure");
+        assert!(!scan_outcome_is_new(Some("scan_failed")), "still failing");
+        assert!(scan_outcome_is_new(Some("50-199")), "out of failure");
+
+        *LAST_SCAN.lock().unwrap() = None;
     }
 
     #[test]
