@@ -370,9 +370,17 @@ jobs:
         working-directory: crates/antiburn-local
         run: cargo deny --locked check bans licenses
 
+      - name: Check engine advisories
+        working-directory: crates/antiburn-local
+        run: cargo deny --locked check advisories
+
       - name: Check desktop app licenses
         working-directory: apps/desktop/src-tauri
         run: cargo deny --locked check licenses
+
+      - name: Check desktop app advisories
+        working-directory: apps/desktop/src-tauri
+        run: cargo deny --locked check advisories
 
   dco:
     name: DCO sign-off
