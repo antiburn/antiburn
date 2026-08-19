@@ -18,8 +18,6 @@ import {
   liveResetLabel,
   liveSourceNote,
   liveStalenessNote,
-  liveSupportDescription,
-  liveSupportLabel,
   liveWindowElapsed,
   liveWindowLabel,
   liveMetricRows,
@@ -88,20 +86,6 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
 function summary(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSummaryPayload {
   return { providers: [provider()], errors: [], generatedAt: '', ...overrides };
 }
-
-describe('capability labels', () => {
-  it('names every support tier, including the ones no source produces yet', () => {
-    expect(liveSupportLabel('live')).toBe('Live');
-    expect(liveSupportLabel('estimated')).toBe('Estimated');
-    expect(liveSupportLabel('observed')).toBe('Activity only');
-    expect(liveSupportLabel('detected')).toBe('Unavailable');
-  });
-
-  it('describes a live figure as the provider’s own, never as ours', () => {
-    expect(liveSupportDescription('live')).toMatch(/your provider stated/i);
-    expect(liveSupportDescription('estimated')).toMatch(/rather than stated/i);
-  });
-});
 
 describe('window labels', () => {
   it('names a model-scoped weekly limit after its model', () => {

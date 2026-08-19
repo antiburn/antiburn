@@ -55,8 +55,8 @@ use time::OffsetDateTime;
 
 use crate::provider_usage::live::codex::is_sliding_reset_projection;
 use crate::provider_usage::live::model::{
-    Confidence, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, SupportTier, UsageScope,
-    UsageSource, UsageWindow, UsageWindowKind, WindowRole,
+    Confidence, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageScope, UsageSource,
+    UsageWindow, UsageWindowKind, WindowRole,
 };
 
 use super::CODEX_SOURCE_ID;
@@ -129,7 +129,6 @@ pub fn fetch(now: OffsetDateTime) -> Result<Option<ProviderUsageSnapshot>, Provi
             confidence: Confidence::High,
             freshness: crate::provider_usage::live::model::Freshness::Fresh,
         },
-        support: SupportTier::Live,
         windows,
         supplemental: None,
     }))

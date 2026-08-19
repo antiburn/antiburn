@@ -60,8 +60,8 @@ mod tests;
 
 pub use milestones::{MilestoneContent, MilestoneLedger, milestone_content};
 pub use model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SupportTier, UsageScope,
-    UsageWindow, UsageWindowKind, WindowRole,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, UsageScope, UsageWindow,
+    UsageWindowKind, WindowRole,
 };
 
 use crate::dto::{
@@ -182,12 +182,7 @@ pub fn summarize(
         .map(|snapshot| LiveProviderUsage {
             display_name: super::providers::display_name(snapshot.provider).to_string(),
             provider: snapshot.provider.to_string(),
-            support: match snapshot.support {
-                SupportTier::Live => LiveUsageSupport::Live,
-                SupportTier::Estimated => LiveUsageSupport::Estimated,
-                SupportTier::Observed => LiveUsageSupport::Observed,
-                SupportTier::Detected => LiveUsageSupport::Detected,
-            },
+            support: LiveUsageSupport::Live,
             freshness: match snapshot.source.freshness {
                 Freshness::Fresh => LiveUsageFreshness::Fresh,
                 Freshness::Stale => LiveUsageFreshness::Stale,
@@ -251,12 +246,9 @@ fn window(
     // Only on a window longer than a day. "How much of your five-hour limit
     // you used today" is a question about a period that has already rolled
     // several times, and the answer would be nonsense dressed as a metric.
-    let used_today = matches!(
-        window.kind,
-        UsageWindowKind::Weekly | UsageWindowKind::Monthly | UsageWindowKind::BillingCycle
-    )
-    .then(|| metrics::used_since(samples, local_midnight))
-    .flatten();
+    let used_today = matches!(window.kind, UsageWindowKind::Weekly)
+        .then(|| metrics::used_since(samples, local_midnight))
+        .flatten();
 
     LiveUsageWindow {
         id: window.id,
@@ -268,16 +260,12 @@ fn window(
         },
         kind: match window.kind {
             UsageWindowKind::Rolling => "rolling".to_string(),
-            UsageWindowKind::Daily => "daily".to_string(),
             UsageWindowKind::Weekly => "weekly".to_string(),
-            UsageWindowKind::Monthly => "monthly".to_string(),
-            UsageWindowKind::BillingCycle => "billingCycle".to_string(),
             UsageWindowKind::Other(other) => other,
         },
         scope_model: match window.scope {
             UsageScope::Model(model) => Some(model),
-            UsageScope::ModelGroup(group) => Some(group),
-            UsageScope::Account | UsageScope::Other(_) => None,
+            UsageScope::Account => None,
         },
         used_percent: window.used_percent,
         starts_at: window.starts_at.map(iso),
@@ -289,7 +277,6 @@ fn window(
                 .map(|reason| reason.as_str().to_string()),
             confidence: forecast.confidence.map(|confidence| {
                 match confidence {
-                    Confidence::Low => "low",
                     Confidence::Medium => "medium",
                     Confidence::High => "high",
                 }

@@ -27,38 +27,9 @@ import type {
   LiveProviderUsagePayload,
   LiveUsageFreshness,
   LiveUsageSummaryPayload,
-  LiveUsageSupport,
   LiveUsageWindowPayload,
 } from '../ipc';
 import { relativeTime } from './relativeTime';
-
-/** The one-word capability label for a live reading. */
-export function liveSupportLabel(support: LiveUsageSupport): string {
-  switch (support) {
-    case 'live':
-      return 'Live';
-    case 'estimated':
-      return 'Estimated';
-    case 'observed':
-      return 'Activity only';
-    default:
-      return 'Unavailable';
-  }
-}
-
-/** What that label means, in a sentence. */
-export function liveSupportDescription(support: LiveUsageSupport): string {
-  switch (support) {
-    case 'live':
-      return 'Your provider stated these figures.';
-    case 'estimated':
-      return 'Modelled on this device rather than stated by your provider.';
-    case 'observed':
-      return 'Activity is known, but no trustworthy allowance is.';
-    default:
-      return 'An account was found without any usage figures.';
-  }
-}
 
 /**
  * The full name of one window.
@@ -155,16 +126,15 @@ export function liveResetLabel(window: LiveUsageWindowPayload, now: number): str
 }
 
 /**
- * The provenance line: what kind of reading this is, and how old.
+ * The provenance line: these are provider-stated figures, and this is how old
+ * the observation is.
  *
- * One line rather than two because they are one thought — a live figure from
- * four hours ago and a modelled figure from just now are both worth doubting,
- * for different reasons, and the reader should weigh them together.
+ * One line rather than two because provenance and age are one thought: even a
+ * figure stated directly by the provider can have moved since we observed it.
  */
 export function liveSourceNote(provider: LiveProviderUsagePayload): string {
-  const support = liveSupportLabel(provider.support);
-  if (!provider.observedAt) return support;
-  return `${support} · stated ${relativeTime(provider.observedAt)}`;
+  if (!provider.observedAt) return 'Live';
+  return `Live · stated ${relativeTime(provider.observedAt)}`;
 }
 
 /**

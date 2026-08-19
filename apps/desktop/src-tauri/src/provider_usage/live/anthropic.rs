@@ -36,8 +36,8 @@ use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::model::{
-    CreditBalance, ProviderUsageError, SchemaReason, SupplementalUsage, SupplementalUsageKind,
-    UsageScope, UsageUnit, UsageWindow, UsageWindowKind, WindowRole,
+    CreditBalance, ProviderUsageError, SchemaReason, SupplementalUsage, UsageScope, UsageWindow,
+    UsageWindowKind, WindowRole,
 };
 use super::normalize::{slugify, used_percent, used_percent_or_fraction};
 
@@ -209,7 +209,6 @@ fn extra_usage(value: &Value) -> Result<SupplementalUsage, ProviderUsageError> {
     }
 
     Ok(SupplementalUsage {
-        kind: SupplementalUsageKind::ExtraUsage,
         enabled,
         used_percent: used_percent(value.get("utilization").and_then(Value::as_f64))?,
         balance: (used.is_some() || limit.is_some()).then(|| CreditBalance {
@@ -219,7 +218,6 @@ fn extra_usage(value: &Value) -> Result<SupplementalUsage, ProviderUsageError> {
                 _ => None,
             },
             limit,
-            unit: UsageUnit::CurrencyMinor,
             currency,
         }),
     })

@@ -282,8 +282,8 @@ export interface ProviderUsageSummaryPayload {
  * `tests/no-exfiltration.test.ts`.
  * ---------------------------------------------------------------------- */
 
-/** How trustworthy a live reading is. Mirrors Rust `LiveUsageSupport`. */
-export type LiveUsageSupport = 'live' | 'estimated' | 'observed' | 'detected';
+/** Marks figures stated directly by a provider. Mirrors Rust `LiveUsageSupport`. */
+export type LiveUsageSupport = 'live';
 
 /** Whether a live reading still describes now. */
 export type LiveUsageFreshness = 'fresh' | 'stale';
