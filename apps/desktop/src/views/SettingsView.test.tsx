@@ -383,11 +383,11 @@ describe('SettingsView', () => {
       await screen.findByRole('switch', { name: 'Send anonymised usage analytics' }),
     ).toBeInTheDocument();
 
-    // What a reader sees without clicking anything: the seven headlines, and
-    // the one line that survives them all being shut. Collapsed disclosures
-    // are unmounted, so this is the entire always-visible contract — worth an
-    // assertion of its own, because a label quietly renamed or dropped would
-    // otherwise only show up as a missing body far below.
+    // What a reader sees without clicking anything: seven headlines and
+    // nothing else. Collapsed disclosures are unmounted, so this is the
+    // entire always-visible contract — worth an assertion of its own, because
+    // a label quietly renamed or dropped would otherwise only show up as a
+    // missing body far below.
     for (const headline of [
       'Exactly what is sent',
       'What the timestamps make possible',
@@ -399,9 +399,6 @@ describe('SettingsView', () => {
     ]) {
       expect(screen.getByRole('button', { name: headline })).toBeInTheDocument();
     }
-    expect(
-      screen.getByText(/thirteen fields, and none of them is your work/i),
-    ).toBeInTheDocument();
 
     // The complete enumeration, one assertion per field on the wire. The
     // earlier version of this test sampled two of them, which is how five
@@ -411,6 +408,10 @@ describe('SettingsView', () => {
     // from the Rust side.
     const enumeration = screen.getByRole('button', { name: 'Exactly what is sent' });
     fireEvent.click(enumeration);
+    // The count sits beside the list it counts. The Rust guard
+    // `every_document_that_counts_the_fields_counts_the_same_number` greps
+    // this pane for that phrase, so it has to survive edits to this section.
+    expect(screen.getByText(/thirteen fields, and these are all of them/i)).toBeInTheDocument();
     for (const field of [
       /the word .desktop./i,
       /a random id for the message itself/i,

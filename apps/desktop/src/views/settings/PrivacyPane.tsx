@@ -71,7 +71,11 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
   return (
     <Pane title="Privacy">
       <div className="space-y-3">
-        <p className="type-body text-pretty text-label-secondary">
+        {/* `px-1` to match `SectionGroup`'s header and `Disclosure`'s label,
+            both of which sit at the same inset. Cards indent their own
+            contents to 16px; bare prose belongs on the section's line, not
+            4px to the left of everything it introduces. */}
+        <p className="type-body px-1 text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine and
           keeps the data it needs locally. Your sessions, prompts, and file paths never leave
           it.{' '}
@@ -154,115 +158,95 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             disabled={!usageAnalyticsSupported || !loaded}
           />
         </Card>
-        <div className="space-y-3">
-          {/* Always visible, because a collapsed `Disclosure` unmounts its body
-              — it leaves the accessibility tree and find-in-page with it. The
-              count and the exclusion are the load-bearing half of this
-              section's claim, so they stay on screen and stay searchable while
-              the receipts move behind the labels below.
+        <DisclosureGroup>
+          <Disclosure label="Exactly what is sent">
+            {/* Every field, including the plumbing ones. An enumeration that
+                quietly omits the dull fields is worth less than no
+                enumeration, because it reads as complete.
+                `usage_analytics::event::Event` is the source of truth; if a
+                field is added there, it is named here in the same change or
+                the promise below stops being true.
 
-              The phrase "thirteen fields" is also load-bearing in a second
-              sense: the Rust guard in `usage_analytics/event.rs` greps this
-              file for it. Rewording the number out of this sentence fails
-              `every_document_that_counts_the_fields_counts_the_same_number`. */}
-          <p className="type-body text-pretty text-label-secondary">
-            Thirteen fields, and none of them is your work — no transcript, prompt, title, file
-            path, repository name, token count, or cost. Each line below opens into the
-            specifics.
-          </p>
-          {/* Disclosures rather than Card rows, for the same reason the group
-              above uses them: these are paragraph-length explanations, and a
-              card of seven of them read as settings that could not be changed
-              — and buried the "Local data" group below the fold. */}
-          <DisclosureGroup>
-            <Disclosure label="Exactly what is sent">
-              {/* Every field, including the plumbing ones. An enumeration that
-                  quietly omits the dull fields is worth less than no
-                  enumeration, because it reads as complete.
-                  `usage_analytics::event::Event` is the source of truth; if a
-                  field is added there, it is named here in the same change or
-                  the promise below stops being true.
-
-                  A list rather than one long sentence: a reader auditing this
-                  is counting items against that struct, and thirteen clauses
-                  separated by semicolons cannot be counted. */}
-              <ul className="list-disc space-y-0.5 pl-4">
-                <li>The word &ldquo;desktop&rdquo;.</li>
-                <li>A random id for the message itself, so a retry is not counted twice.</li>
-                <li>A random installation identifier.</li>
-                <li>A random identifier for this run of the app.</li>
-                <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
-                <li>When it happened.</li>
-                <li>When it was delivered.</li>
-                <li>Your processor architecture.</li>
-                <li>A count rounded into a range, when the event has one.</li>
-                <li>
-                  A short label naming which setting you changed, which agent recorded the
-                  session you opened, or which kind of thing failed &mdash; the name only, never
-                  the value.
-                </li>
-                <li>
-                  A second such label where an event has two things worth telling apart, such as
-                  whether an agent ran natively or under WSL.
-                </li>
-                <li>The app version.</li>
-                <li>Your operating system.</li>
-              </ul>
-              <p className="mt-2">
-                Nothing else: the payload has no field capable of carrying anything else.
-              </p>
-            </Disclosure>
-            {/* Named rather than left for a reader to work out. Two stamps plus
-                an identifier that lives 30 days is a coarse picture of when the
-                app gets used, and saying so is cheaper than being caught not
-                having said it. */}
-            <Disclosure label="What the timestamps make possible">
-              Because each event carries a time and the installation identifier lasts up to 30
-              days, these events show roughly when antiburn is used during that period. They
-              cannot show what you were working on. If that is more than you want to share, the
-              switch above turns all of it off.
-            </Disclosure>
-            <Disclosure label="What is never sent">
-              Sessions, transcripts, prompts, titles, file paths, repository or branch names,
-              token counts, costs, credentials, your name, and your email address. Exact counts
-              are not sent either: a precise number, repeated over weeks, identifies a machine
-              on its own.
-            </Disclosure>
-            <Disclosure label="Where this starts switched off">
-              In the EU, the EEA, and the UK this begins off rather than on, because there
-              analytics are something you opt into rather than out of. antiburn works that out
-              from the locale and time zone your machine already reports — nothing is looked up,
-              and neither is ever sent.
-            </Disclosure>
-            <Disclosure label="The identifier is not you">
-              It is random and is not derived from anything about your machine. It is replaced
-              every 30 days, so events cannot be joined into a history longer than that. Turning
-              the switch off deletes it along with anything still queued, so turning it back on
-              later starts a new identifier that cannot be linked to the old one.
-            </Disclosure>
-            {/* The receiving server requires a per-run id, so the honest move is
-                to name it and say plainly how much less durable it is than the
-                installation one — not to leave a reader to notice a second
-                identifier in the list above and wonder. */}
-            <Disclosure label="The second identifier is weaker still">
-              The identifier for a run of the app is required by the receiving server. It exists
-              only in memory: quitting antiburn ends it, nothing on your machine remembers it
-              afterwards, and it is replaced after 30 minutes of inactivity. It groups one
-              run&rsquo;s events together and cannot connect one run to another.
-            </Disclosure>
-            {/* Deliberately not claimed by the app. Retention and IP handling
-                belong to whoever operates the endpoint, and a promise this
-                binary cannot keep is the exact drift the deviations register
-                exists to catch — so point at the party who can make it. */}
-            <Disclosure label="What happens after it arrives">
-              How long these events are kept, and whether the receiving server records the IP
-              address that every internet request carries, are the operator&rsquo;s decisions
-              rather than the app&rsquo;s. antiburn can only promise what it sends, which is the
-              list above. The project&rsquo;s docs/usage-analytics.md carries the full event
-              catalog and the commands to check any of this yourself.
-            </Disclosure>
-          </DisclosureGroup>
-        </div>
+                A list rather than one long sentence: a reader auditing this
+                is counting items against that struct, and thirteen clauses
+                separated by semicolons cannot be counted. */}
+            <p>Thirteen fields, and these are all of them.</p>
+            <ul className="mt-2 list-disc space-y-0.5 pl-4">
+              <li>The word &ldquo;desktop&rdquo;.</li>
+              <li>A random id for the message itself, so a retry is not counted twice.</li>
+              <li>A random installation identifier.</li>
+              <li>A random identifier for this run of the app.</li>
+              <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
+              <li>When it happened.</li>
+              <li>When it was delivered.</li>
+              <li>Your processor architecture.</li>
+              <li>A count rounded into a range, when the event has one.</li>
+              <li>
+                A short label naming which setting you changed, which agent recorded the session
+                you opened, or which kind of thing failed &mdash; the name only, never the
+                value.
+              </li>
+              <li>
+                A second such label where an event has two things worth telling apart, such as
+                whether an agent ran natively or under WSL.
+              </li>
+              <li>The app version.</li>
+              <li>Your operating system.</li>
+            </ul>
+            <p className="mt-2">
+              Nothing else: the payload has no field capable of carrying anything else.
+            </p>
+          </Disclosure>
+          {/* Named rather than left for a reader to work out. Two stamps plus
+              an identifier that lives 30 days is a coarse picture of when the
+              app gets used, and saying so is cheaper than being caught not
+              having said it. */}
+          <Disclosure label="What the timestamps make possible">
+            Because each event carries a time and the installation identifier lasts up to 30
+            days, these events show roughly when antiburn is used during that period. They
+            cannot show what you were working on. If that is more than you want to share, the
+            switch above turns all of it off.
+          </Disclosure>
+          <Disclosure label="What is never sent">
+            Sessions, transcripts, prompts, titles, file paths, repository or branch names,
+            token counts, costs, credentials, your name, and your email address. Exact counts
+            are not sent either: a precise number, repeated over weeks, identifies a machine on
+            its own.
+          </Disclosure>
+          <Disclosure label="Where this starts switched off">
+            In the EU, the EEA, and the UK this begins off rather than on, because there
+            analytics are something you opt into rather than out of. antiburn works that out
+            from the locale and time zone your machine already reports — nothing is looked up,
+            and neither is ever sent.
+          </Disclosure>
+          <Disclosure label="The identifier is not you">
+            It is random and is not derived from anything about your machine. It is replaced
+            every 30 days, so events cannot be joined into a history longer than that. Turning
+            the switch off deletes it along with anything still queued, so turning it back on
+            later starts a new identifier that cannot be linked to the old one.
+          </Disclosure>
+          {/* The receiving server requires a per-run id, so the honest move is
+              to name it and say plainly how much less durable it is than the
+              installation one — not to leave a reader to notice a second
+              identifier in the list above and wonder. */}
+          <Disclosure label="The second identifier is weaker still">
+            The identifier for a run of the app is required by the receiving server. It exists
+            only in memory: quitting antiburn ends it, nothing on your machine remembers it
+            afterwards, and it is replaced after 30 minutes of inactivity. It groups one
+            run&rsquo;s events together and cannot connect one run to another.
+          </Disclosure>
+          {/* Deliberately not claimed by the app. Retention and IP handling
+              belong to whoever operates the endpoint, and a promise this
+              binary cannot keep is the exact drift the deviations register
+              exists to catch — so point at the party who can make it. */}
+          <Disclosure label="What happens after it arrives">
+            How long these events are kept, and whether the receiving server records the IP
+            address that every internet request carries, are the operator&rsquo;s decisions
+            rather than the app&rsquo;s. antiburn can only promise what it sends, which is the
+            list above. The project&rsquo;s docs/usage-analytics.md carries the full event
+            catalog and the commands to check any of this yourself.
+          </Disclosure>
+        </DisclosureGroup>
       </SectionGroup>
 
       <SectionGroup title="Local data">
