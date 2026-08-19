@@ -163,19 +163,15 @@ CREATE TABLE consent_grant (
 ///
 /// # Data policy (schema-level contract)
 ///
-/// Both tables below are the one exception to the rule that nothing derived
-/// from a reader's work leaves this machine, and they are shaped so the
-/// exception cannot quietly widen. `usage_analytics_event.payload` carries only the
-/// fields `usage_analytics::event` names — app version, operating system,
-/// architecture, a rotating installation identifier, an event name, and
-/// bucketed counts. A migration that lets a path, a repository name, a title,
-/// a credential, or an unbucketed count into this table would break the
-/// governance record that permits the table to exist at all.
+/// These two tables are the one exception to the rule that nothing derived
+/// from a reader's work leaves this machine. `payload` holds exactly what
+/// `usage_analytics::event::Event` serializes and nothing else; a migration
+/// that let a path, a repository name, a title, a credential, or an unbucketed
+/// count in here would break the governance record that permits the table to
+/// exist at all.
 ///
-/// `attempts` is what bounds the queue: a row that cannot be delivered is
-/// dropped rather than retried forever, because an unbounded queue on a
-/// machine that is offline for a week is a disk-space bug wearing a feature's
-/// clothes. Opting out deletes every row in both tables.
+/// `attempts` bounds the queue by age of failure, as `store::mod` bounds it by
+/// row count. Opting out deletes every row in both tables.
 const V3: &str = r#"
 CREATE TABLE usage_analytics_event (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,

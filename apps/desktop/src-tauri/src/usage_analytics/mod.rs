@@ -35,7 +35,7 @@ pub mod event;
 
 use std::time::Duration;
 
-use tauri::{Emitter as _, Manager as _};
+use tauri::Manager as _;
 
 use crate::store::{AppSettings, Store};
 use event::{Event, EventName, Facts, Interaction};
@@ -137,11 +137,7 @@ pub fn record(app: &tauri::AppHandle, name: EventName, facts: Facts) {
 
 /// Record an interaction reported by the renderer.
 ///
-/// The renderer names a shape, not an event: [`Interaction`] is a closed enum
-/// that serde validates at the command boundary, and every string that ends up
-/// in the payload comes from [`event`] rather than from the webview. See that
-/// type for why there is deliberately no general-purpose "record an event"
-/// command.
+/// The renderer names a shape, not an event. See [`Interaction`] for why.
 pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
     let (name, facts) = interaction.resolve();
     record(app, name, facts);
@@ -242,31 +238,30 @@ fn random_identifier() -> String {
 
 /// React to a settings change. Called from the one transition hub in
 /// `commands.rs` so the queue can never drift out of step with the switch.
+///
+/// Only withdrawal does anything here. Opting *in* needs no work — the
+/// identifier is minted lazily at the first event — and open windows learn
+/// the new state from `SETTINGS_CHANGED_EVENT`, which the same hub emits with
+/// the saved settings a moment later.
 pub fn handle_settings_transition(
     app: &tauri::AppHandle,
     previous: &AppSettings,
     saved: &AppSettings,
 ) {
-    if previous.usage_analytics_enabled == saved.usage_analytics_enabled {
+    if saved.usage_analytics_enabled || !previous.usage_analytics_enabled {
         return;
     }
     let Some(store) = app.try_state::<Store>() else {
         return;
     };
-    if !saved.usage_analytics_enabled {
-        // Opting out is immediate and total: anything already queued is
-        // withdrawn, not merely paused, and both identifiers go with it. The
-        // run identifier lives in memory rather than in the store, so it has
-        // to be dropped separately or opting out and back in inside the same
-        // launch would resume the session that was just withdrawn.
-        let _ = store.clear_usage_analytics();
-        reset_session();
-    }
-    let _ = app.emit(EVENT_ANALYTICS_CHANGED, saved.usage_analytics_enabled);
+    // Opting out is immediate and total: anything already queued is withdrawn,
+    // not merely paused, and both identifiers go with it. The run identifier
+    // lives in memory rather than in the store, so it has to be dropped
+    // separately or opting out and back in inside the same launch would resume
+    // the session that was just withdrawn.
+    let _ = store.clear_usage_analytics();
+    reset_session();
 }
-
-/// Emitted when the consent state changes, so open windows agree.
-pub const EVENT_ANALYTICS_CHANGED: &str = "analytics:changed";
 
 /// Install the TLS crypto provider this crate's client needs.
 ///

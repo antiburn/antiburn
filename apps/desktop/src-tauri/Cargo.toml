@@ -77,25 +77,20 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
 getrandom = "0.2"
-# Delivery for the consented analytics channel (`src/usage_analytics`).
-#
-# `reqwest` was already vendored transitively by the updater plugin, so taking
-# it directly adds no crate to the lockfile — but only because of the feature
-# choice on the next line. The obvious spelling, `features = ["rustls"]`, is
-# NOT free: reqwest 0.13 resolves that to rustls's current default provider,
-# `aws-lc-rs`, which pulls `aws-lc-sys` (a CMake and C toolchain build) in
-# alongside the `ring` the updater already uses, plus a `quinn` QUIC stack —
-# sixteen crates, two crypto backends, and a C toolchain in CI and in release
-# packaging. Naming the provider ourselves avoids all of it, and the lockfile
-# is the record: zero `aws-lc-*`, zero `quinn`, one `ring`.
+# Delivery for the consented analytics channel (`src/usage_analytics`). Already
+# vendored transitively by the updater plugin, so taking it directly adds no
+# crate to the lockfile — but only given the provider choice below.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-# The crypto provider, chosen explicitly. `features = ["rustls"]` would pick
-# rustls's current default, `aws-lc-rs`, which drags in `aws-lc-sys` (a CMake
-# and C toolchain build) and a `quinn` QUIC stack — while the updater plugin
-# already had `rustls` on `ring`. Naming `ring` here means one provider in the
-# binary instead of two, and no C toolchain in CI or release packaging.
-# `rustls-no-provider` above is what makes the choice ours rather than a
-# default's; `usage_analytics::ensure_crypto_provider` installs it.
+# The TLS crypto provider, named rather than defaulted, which is what
+# `rustls-no-provider` above exists to force.
+#
+# The obvious spelling, `reqwest = { features = ["rustls"] }`, is NOT free:
+# reqwest 0.13 resolves it to rustls's current default, `aws-lc-rs`, which
+# pulls `aws-lc-sys` (a CMake and C toolchain build) in alongside the `ring`
+# the updater already uses, plus a `quinn` QUIC stack — sixteen crates, two
+# crypto backends, and a C toolchain in CI and in release packaging. The
+# lockfile is the record that naming `ring` avoids it: zero `aws-lc-*`, zero
+# `quinn`, one `ring`. `usage_analytics::ensure_crypto_provider` installs it.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

@@ -10,10 +10,10 @@ The control is in **Settings → Privacy**, and the first-run Ready screen shows
 it before anything is sent. It is on by default — except in the EU, the EEA,
 and the UK, where it starts **off**, because there analytics are something you
 opt into rather than out of. That is decided from the locale and time zone your
-machine already reports; nothing is looked up, and neither is ever sent. That default diverges from the
-ratified feature matrix, which specifies default-off, and the divergence is
-recorded as **D-28** in [`deviations.md`](deviations.md) rather than left
-implicit. The channel itself is permitted by **D-026** in
+machine already reports; nothing is looked up, and neither is ever sent. That
+default diverges from the ratified feature matrix, which specifies default-off,
+and the divergence is recorded as **D-28** in [`deviations.md`](deviations.md)
+rather than left implicit. The channel itself is permitted by **D-026** in
 [`oss/source-denylist.toml`](oss/source-denylist.toml).
 
 ## The short version
@@ -96,17 +96,14 @@ address, your locale, and your hostname or username.
 
 There is also **no third-party analytics, telemetry, or crash-reporting SDK** in
 antiburn — no crash reporter, no session replay, no product-metrics vendor. The
-channel
-described here is first-party and is the only one. That exclusion is enforced
-mechanically by [`scripts/check-boundary.mjs`](../scripts/check-boundary.mjs),
+channel described here is first-party and is the only one. That exclusion is
+enforced mechanically by [`scripts/check-boundary.mjs`](../scripts/check-boundary.mjs),
 [`apps/desktop/tests/no-exfiltration.test.ts`](../apps/desktop/tests/no-exfiltration.test.ts),
 and the engine's own `tests/boundary.rs`.
 
 ## The event catalog
 
 Event names are namespaced `antiburn.*`.
-
-### Shipping today
 
 | Event | When it fires | Carries |
 |---|---|---|
@@ -118,23 +115,11 @@ Event names are namespaced `antiburn.*`.
 | `antiburn.usage_viewed` | You open the usage view. | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
 | `antiburn.error_occurred` | Something failed. | `label` — a category, currently `scan_failed`. No message, no path, no backtrace. |
 
-That is the complete list of what this build sends. A test
-(`the_documented_catalog_matches_the_code`) fails if an event exists in the
-code and not in this table.
-
-### Planned, not yet implemented
-
-Listed so this document describes a direction rather than implying a
-capability. None of these are sent today.
-
-Popover opened and closed · dock icon clicked · usage
-refreshed · provider usage available · session detail
-opened · update available shown · update clicked · attention banner shown and
-clicked · onboarding step viewed · settings opened · settings section viewed ·
-settings changed · settings action clicked · settings closed · nudge shown,
-actioned, and dismissed · discovery paused and resumed · scan started and
-cancelled · daily liveness pulse · folder-permission requested, granted, and
-denied · repository toggled · session exported · local index cleared.
+That is the complete list of what this build sends. More events may be added
+later, and the table is not a courtesy when they are: a test
+(`the_documented_catalog_matches_the_code`) fails the build if an event exists
+in the code and not in this table, so what you are reading is enforced rather
+than maintained.
 
 ## What antiburn cannot promise
 

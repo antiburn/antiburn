@@ -166,8 +166,38 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             // because it reads as complete. `usage_analytics::event::Event` is
             // the source of truth; if a field is added there, it is named here
             // in the same change or the promise below stops being true.
-            description="Thirteen fields, and this is all of them: the word “desktop”; a random id for the message itself, so a retry is not counted twice; a random installation identifier; a random identifier for this run of the app; the event name, such as “a scan finished”; when it happened and when it was delivered; your processor architecture; a count rounded into a range, when the event has one; a short label naming which setting you changed, which agent recorded the session you opened, or which kind of thing failed — the name only, never the value; a second such label where an event has two things worth telling apart, such as whether an agent ran natively or under WSL; the app version; and your operating system. Nothing else: the payload has no field capable of carrying anything else."
-          />
+            //
+            // A list rather than one long sentence: a reader auditing this is
+            // counting items against that struct, and thirteen clauses
+            // separated by semicolons cannot be counted.
+            description="Thirteen fields, and these are all of them."
+          >
+            <ul className="type-footnote mt-1 list-disc space-y-0.5 pl-4 text-label-secondary">
+              <li>The word &ldquo;desktop&rdquo;.</li>
+              <li>A random id for the message itself, so a retry is not counted twice.</li>
+              <li>A random installation identifier.</li>
+              <li>A random identifier for this run of the app.</li>
+              <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
+              <li>When it happened.</li>
+              <li>When it was delivered.</li>
+              <li>Your processor architecture.</li>
+              <li>A count rounded into a range, when the event has one.</li>
+              <li>
+                A short label naming which setting you changed, which agent recorded the session
+                you opened, or which kind of thing failed &mdash; the name only, never the
+                value.
+              </li>
+              <li>
+                A second such label where an event has two things worth telling apart, such as
+                whether an agent ran natively or under WSL.
+              </li>
+              <li>The app version.</li>
+              <li>Your operating system.</li>
+            </ul>
+            <p className="type-footnote mt-1.5 text-pretty text-label-secondary">
+              Nothing else: the payload has no field capable of carrying anything else.
+            </p>
+          </Row>
           <Row
             label="What the timestamps make possible"
             // Named rather than left for a reader to work out. Two stamps plus

@@ -125,8 +125,8 @@ pub struct Event {
     pub context: Context,
 }
 
-/// Everything an event may carry beyond its name. A struct rather than a JSON
-/// object so there is nowhere for a path or a title to be put.
+/// Everything an event may carry beyond its name. Closed, for the reason in
+/// this module's own docs.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Properties {
@@ -140,9 +140,7 @@ pub struct Properties {
     pub label: Option<&'static str>,
     /// A second dimension, where one event has two things worth separating —
     /// which agent's session was opened *and* whether it ran natively or
-    /// under WSL. Same rules as [`Properties::label`], and the same reason
-    /// for the `&'static str`: only a compile-time constant can be put here,
-    /// so no amount of caller error can turn it into a path or a title.
+    /// under WSL. Same rules as [`Properties::label`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<&'static str>,
 }
@@ -182,7 +180,7 @@ pub struct Context {
 /// nothing stops a future call site from passing a repository name. Here the
 /// renderer may only name a shape that already exists, serde rejects anything
 /// outside it, and every string that reaches the payload is a `&'static str`
-/// this file wrote.
+/// this file wrote. Every doc comment below that says "closed" means this.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Interaction {

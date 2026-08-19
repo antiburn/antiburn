@@ -379,8 +379,11 @@ impl Store {
 
     /// Count a failed delivery, and drop whatever has now failed too often.
     ///
-    /// Returns how many rows were given up on, so the caller can say so once
-    /// rather than silently losing data.
+    /// Returns how many rows were given up on. The flusher ignores it — a
+    /// dropped event is not worth a line of user-facing text, and analytics
+    /// that reported their own failures would have their priorities inverted.
+    /// It is returned so the give-up threshold is assertable from a test,
+    /// which is the only way that arm is exercised at all.
     pub fn fail_usage_analytics_events(&self, ids: &[i64], max_attempts: u32) -> Result<usize> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;

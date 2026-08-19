@@ -105,9 +105,6 @@ pub fn operator() -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// The loopback exemption exists so a local listener can be used for the
-    /// manual verification. It must not become a way to ship plaintext to a
-    /// host that merely starts with a loopback name.
     /// A base with a path composes onto, rather than replaces, the request
     /// path — so the configured value has to be cut back to its origin before
     /// `/v1/track` is appended.
@@ -125,6 +122,9 @@ mod tests {
         assert_eq!(origin_of("example.com/v1"), "example.com/v1");
     }
 
+    /// The loopback exemption exists so a local listener can be used for the
+    /// manual verification. It must not become a way to ship plaintext to a
+    /// host that merely starts with a loopback name.
     #[test]
     fn the_loopback_exemption_stops_at_the_host() {
         for accepted in [

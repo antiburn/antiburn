@@ -233,11 +233,10 @@ pub fn finish_onboarding(
 
 /// Report one interaction from the renderer.
 ///
-/// Takes a closed enum rather than an event name and a property map, which is
-/// the point: the vocabulary lives in Rust, serde refuses anything outside it,
-/// and no call site in the webview can widen what is sent. Infallible and
-/// silent — analytics that could fail an action the reader actually asked for
-/// would have its priorities inverted.
+/// Infallible and silent: analytics that could fail an action the reader
+/// actually asked for would have their priorities inverted. The parameter is a
+/// closed enum rather than a name and a property map — see
+/// [`usage_analytics::event::Interaction`](crate::usage_analytics::event::Interaction).
 #[tauri::command]
 pub fn note_interaction(
     app: tauri::AppHandle,

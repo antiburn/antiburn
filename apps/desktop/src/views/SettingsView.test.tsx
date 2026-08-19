@@ -385,21 +385,32 @@ describe('SettingsView', () => {
     // The complete enumeration, one assertion per field on the wire. The
     // earlier version of this test sampled two of them, which is how five
     // fields went unnamed in the pane while the copy claimed to list them all.
-    // `usage_analytics::event::Event` is the other half of this pair.
+    // `usage_analytics::event::Event` is the other half of this pair, and its
+    // `the_wire_payload_is_exactly_these_thirteen_fields` pins the same number
+    // from the Rust side.
     for (const field of [
       /the word .desktop./i,
       /a random id for the message itself/i,
       /a random installation identifier/i,
+      /a random identifier for this run of the app/i,
       /the event name/i,
-      /when it happened and when it was delivered/i,
+      /when it happened/i,
+      /when it was delivered/i,
       /your processor architecture/i,
       /a count rounded into a range/i,
       /a short label naming which setting you changed/i,
+      /a second such label where an event has two things/i,
       /the app version/i,
       /your operating system/i,
     ]) {
       expect(screen.getByText(field)).toBeInTheDocument();
     }
+    // And the count itself, because the copy claims a number. A field added to
+    // the payload without a line here leaves the pane saying "thirteen" over a
+    // list of fourteen, which is the one way this enumeration can lie while
+    // every individual assertion above still passes.
+    const enumeration = screen.getByText(/thirteen fields, and these are all of them/i);
+    expect(enumeration.parentElement?.querySelectorAll('li')).toHaveLength(13);
     // What the timestamps enable is stated rather than left to be worked out.
     expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument();
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument();
