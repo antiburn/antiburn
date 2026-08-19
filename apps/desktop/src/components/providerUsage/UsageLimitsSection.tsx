@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { ChevronDown, Loader2 } from "lucide-react"
+import { useId } from "react"
 
 import { cn } from "../../lib/cn"
 import type {
@@ -66,6 +67,7 @@ export function UsageLimitsSection({
 }: UsageLimitsSectionProps) {
   const at = now ?? (Date.parse(live.generatedAt) || 0)
   const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
+  const headingId = useId()
 
   if (limited.length === 0) return null
 
@@ -100,6 +102,12 @@ export function UsageLimitsSection({
     <div
       data-testid="usage-limits-section"
       className="relative shrink-0 border-b border-separator px-2 pt-2 pb-2.5"
+      // The vertical "Limits" label is this section's visible name while
+      // expanded, so it doubles as the accessible one — a region labelled by
+      // a heading, rather than a redundant aria-label restating text already
+      // on screen. Collapsed, the chips already carry their own accessible
+      // names and there is no heading to point to.
+      {...(expanded ? { role: "region", "aria-labelledby": headingId } : {})}
     >
       {expanded ? (
         <>
@@ -112,15 +120,30 @@ export function UsageLimitsSection({
             {spinner}
             {toggle}
           </div>
-          <div className="space-y-2.5">
-            {limited.map((provider, index) => (
-              <ProviderLimitSubsection
-                key={provider.provider}
-                provider={provider}
-                now={at}
-                reserveToggleSpace={index === 0}
-              />
-            ))}
+          <div className="flex gap-2">
+            {/* A vertical label rather than a horizontal heading row: the
+                whole point is a header that costs no vertical space. Centred
+                by flexbox's default stretch — this column and the
+                subsections beside it share one cross-axis, so centring
+                within the column centres against the full stack of them. */}
+            <div className="flex w-4 shrink-0 items-center justify-center">
+              <h2
+                id={headingId}
+                className="[writing-mode:vertical-rl] rotate-180 type-caption font-medium tracking-wider text-label-tertiary uppercase"
+              >
+                Limits
+              </h2>
+            </div>
+            <div className="min-w-0 flex-1 space-y-2.5">
+              {limited.map((provider, index) => (
+                <ProviderLimitSubsection
+                  key={provider.provider}
+                  provider={provider}
+                  now={at}
+                  reserveToggleSpace={index === 0}
+                />
+              ))}
+            </div>
           </div>
         </>
       ) : (

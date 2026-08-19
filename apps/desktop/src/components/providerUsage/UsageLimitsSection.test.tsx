@@ -176,6 +176,17 @@ describe("UsageLimitsSection — expanded", () => {
     expect(firstHeader).toHaveClass("pr-8")
     expect(secondHeader).not.toHaveClass("pr-8")
   })
+
+  it('labels the section by its vertical "Limits" heading rather than a redundant aria-label', () => {
+    const { container } = section()
+
+    const heading = screen.getByRole("heading", { name: "Limits", level: 2 })
+    expect(heading).toBeInTheDocument()
+
+    const region = screen.getByRole("region", { name: "Limits" })
+    expect(region).toBe(container.querySelector('[data-testid="usage-limits-section"]'))
+    expect(region).toHaveAttribute("aria-labelledby", heading.id)
+  })
 })
 
 describe("UsageLimitsSection — collapsed", () => {
@@ -190,6 +201,12 @@ describe("UsageLimitsSection — collapsed", () => {
   it("does not show the per-provider rows while collapsed", () => {
     section({ expanded: false })
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+  })
+
+  it('shows no "Limits" heading or region — a single row of chips can\'t carry one', () => {
+    section({ expanded: false })
+    expect(screen.queryByText("Limits")).not.toBeInTheDocument()
+    expect(screen.queryByRole("region")).not.toBeInTheDocument()
   })
 })
 
