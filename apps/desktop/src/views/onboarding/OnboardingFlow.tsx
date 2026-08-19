@@ -533,9 +533,13 @@ function Ready({
             label="Send anonymised usage analytics"
             description={
               usageAnalyticsSupported
-                ? `Which features get used and what breaks${
+                ? // No "change this later in Settings": the row directly above
+                  // already ends on that sentence, and Welcome said where the
+                  // switch lives. What only this row can say is who receives
+                  // these and what they are — so it says that, and stops.
+                  `Which features get used and what breaks${
                     usageAnalyticsOperator ? `, sent to ${usageAnalyticsOperator}` : ''
-                  }. Never your sessions, prompts, file paths, or repository names. Change anytime in Settings → Privacy.`
+                  }. Never anything from your sessions.`
                 : 'This build has no analytics endpoint, so nothing can be sent from it.'
             }
             checked={usageAnalyticsSupported && usageAnalyticsEnabled}

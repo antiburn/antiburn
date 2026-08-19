@@ -200,6 +200,10 @@ describe('OnboardingView', () => {
     expect(await screen.findByRole('heading', { name: 'Ready' })).toBeInTheDocument();
     expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Launch antiburn on startup' })).toBeChecked();
+    // The recipient is named at the moment of consent. A switch that says
+    // "anonymised analytics" without saying who receives them is asking for
+    // agreement to an unnamed party, and nothing else in the flow names one.
+    expect(screen.getByText(/sent to the antiburn team/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Start using antiburn' }));
 
     await waitFor(() =>
