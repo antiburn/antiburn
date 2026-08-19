@@ -28,10 +28,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 - Anonymised usage analytics about the application itself, on by default with
   the control on the first-run Ready screen and in Settings → Privacy. Events
-  carry twelve fields — platform, a per-message id, a rotating installation
+  carry thirteen fields — platform, a per-message id, a rotating installation
   identifier, an in-memory identifier for one run of the app, the event name,
   capture and delivery timestamps, architecture, a bucketed count, a
-  closed-vocabulary label, app version, and operating system — and never
+  closed-vocabulary label, a second such label where an event has two things
+  worth telling apart, app version, and operating system — and never
   sessions, prompts, titles, file paths, repository names, token counts, costs,
   or credentials. Settings → Privacy enumerates all of them, and
   `docs/usage-analytics.md` carries the full catalog plus the commands to check

@@ -129,7 +129,7 @@ version exists, and which the app never depends on.
 - Development builds carry no updater at all.
 - **Anonymised usage analytics** are the one thing antiburn reports about itself.
   On by default; the switch is in Settings → Privacy, and the first-run Ready
-  screen shows it before anything is sent. Each event carries twelve fields and
+  screen shows it before anything is sent. Each event carries thirteen fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   the event name; the time it happened and the time it was delivered; the

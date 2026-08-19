@@ -263,14 +263,18 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
         Ok(sessions) => crate::usage_analytics::record(
             app,
             crate::usage_analytics::event::EventName::ScanCompleted,
-            Some(crate::usage_analytics::event::bucket(*sessions as u64)),
-            None,
+            crate::usage_analytics::event::Facts {
+                bucket: Some(crate::usage_analytics::event::bucket(*sessions as u64)),
+                ..Default::default()
+            },
         ),
         Err(_) => crate::usage_analytics::record(
             app,
             crate::usage_analytics::event::EventName::ErrorOccurred,
-            None,
-            Some("scan_failed"),
+            crate::usage_analytics::event::Facts {
+                label: Some("scan_failed"),
+                ..Default::default()
+            },
         ),
     }
     crate::notifications::note_scan_outcome(app, &finished);

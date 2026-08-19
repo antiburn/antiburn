@@ -225,6 +225,47 @@ describe('PopoverView', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('notes an opened session as an agent and an environment, and nothing else', async () => {
+    render(<PopoverView />);
+
+    fireEvent.click(await screen.findByText('Wire the tray popover'));
+
+    const notes = invoke.mock.calls.filter(([name]) => name === 'note_interaction');
+    // Exactly one. The card is the only thing instrumented: the newer/older
+    // traversal inside a session replaces the top of the stack and is
+    // deliberately silent, because counting it would drown out the question
+    // this event exists to answer — how often the list leads anywhere at all.
+    expect(notes).toHaveLength(1);
+    expect(invoke).toHaveBeenCalledWith('note_interaction', {
+      interaction: { kind: 'sessionOpened', agent: 'claude-code', environment: 'native' },
+    });
+    // The shape is the guarantee. Nothing identifying the session itself may
+    // ride along, and the shell would refuse it if it did — this asserts the
+    // caller does not even try.
+    const [, payload] = invoke.mock.calls.find(([name]) => name === 'note_interaction') ?? [];
+    expect(Object.keys((payload as { interaction: object }).interaction).sort()).toEqual([
+      'agent',
+      'environment',
+      'kind',
+    ]);
+  });
+
+  it('notes an opened usage view with a bucketable count and what it could show', async () => {
+    render(<PopoverView />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Anthropic, $1.25 today, estimated' }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'All provider usage' }));
+
+    // `estimated_only`: this fixture has local estimates and no provider
+    // reporting its own limit figures, which is the distinction the event
+    // exists to draw.
+    expect(invoke).toHaveBeenCalledWith('note_interaction', {
+      interaction: { kind: 'usageViewed', providers: 1, evidence: 'estimated_only' },
+    });
+  });
+
   it('warns before an export and only writes once a destination is chosen', async () => {
     confirmDialog.mockResolvedValue(true);
     saveDialog.mockResolvedValue('/home/avery/Desktop/antiburn-session.json');

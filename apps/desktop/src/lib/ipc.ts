@@ -713,6 +713,40 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>('set_settings', { settings });
 }
 
+/**
+ * One interaction worth counting, in the shell's own closed vocabulary.
+ *
+ * Deliberately not `{ name: string; properties: Record<string, string> }`.
+ * The shell deserialises this into a Rust enum and refuses anything outside
+ * it, so the set of things that can ever be reported is fixed there rather
+ * than here — no call site in this webview can widen it, and none can put a
+ * path, a title, or a repository name into a payload. See
+ * `src-tauri/src/usage_analytics/event.rs`.
+ */
+export type Interaction =
+  | { kind: 'sessionOpened'; agent: string; environment: 'native' | 'wsl' }
+  | {
+      kind: 'usageViewed';
+      providers: number;
+      evidence: 'live' | 'estimated_only' | 'none';
+    };
+
+/**
+ * Report one interaction. Fire-and-forget, and silent on failure.
+ *
+ * The shell decides whether anything is actually recorded: this is inert
+ * unless the build has an endpoint, the reader has finished onboarding, and
+ * the switch in Settings → Privacy is on. Callers do not check, so there is
+ * one gate rather than two that can drift apart.
+ */
+export function noteInteraction(interaction: Interaction): void {
+  if (!hasShell()) return;
+  void invoke('note_interaction', { interaction }).catch(() => {
+    // Analytics must never surface an error into something the reader asked
+    // for. A dropped event is not worth a line of user-facing text.
+  });
+}
+
 /** Commit the first-run choices and finish onboarding in one shell transition. */
 export async function finishOnboarding(
   activityWindowDays: number,

@@ -31,7 +31,7 @@ implicit. The channel itself is permitted by **D-026** in
 
 ## Exactly what every event carries
 
-Twelve fields, and this is the whole list. The payload is a closed Rust struct
+Thirteen fields, and this is the whole list. The payload is a closed Rust struct
 ([`usage_analytics/event.rs`](../apps/desktop/src-tauri/src/usage_analytics/event.rs))
 with no map and no free-form string, so there is nowhere for anything else to
 be put.
@@ -47,7 +47,8 @@ be put.
 | `sentAt` | When it was delivered. Added at send, not at capture. | `2026-08-19T09:15:02Z` |
 | `properties.arch` | CPU architecture. | `aarch64` |
 | `properties.bucket` | A count rounded into a range. Never exact. | `10-49` |
-| `properties.label` | A key from a closed vocabulary — which setting changed, or which kind of failure. Never the value. | `live_usage` |
+| `properties.label` | A key from a closed vocabulary — which setting changed, which agent's session was opened, or which kind of failure. Never the value. | `live_usage` |
+| `properties.detail` | A second value from a closed vocabulary, where one event has two things worth telling apart. | `native` |
 | `context.appVersion` | The application version. | `antiburn:0.1.0` |
 | `context.os` | Operating-system family. | `macos` |
 
@@ -67,6 +68,18 @@ durable. `anonymousId` is stored on disk and lasts up to 30 days. `sessionId`
 exists only in memory: quitting antiburn ends it, and nothing on your machine
 remembers it afterwards. It is the shortest-lived thing in the payload, and it
 cannot connect one run of the application to another.
+
+### Which agents you use
+
+`antiburn.session_opened` carries the agent that recorded the session you
+opened — `claude-code`, `codex`, `cursor`, and so on, from the fixed list
+antiburn knows how to read. Nothing else about the session travels with it: not
+its title, not its repository, not its path, and not the name of your WSL
+distribution, which you chose and which would identify your machine.
+
+This is called out separately because it is the one field that says something
+about your tools rather than about the application. If that is more than you
+want to share, the switch turns all of it off.
 
 ### Why counts are bucketed
 
@@ -101,6 +114,8 @@ Event names are namespaced `antiburn.*`.
 | `antiburn.onboarding_finished` | The first run completes. | — |
 | `antiburn.scan_completed` | A discovery pass finishes. | `bucket` — how many sessions |
 | `antiburn.setting_toggled` | A preference changes. | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value. |
+| `antiburn.session_opened` | You open a session from the activity list. | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native` or `wsl`. **Not** the session, its title, its repository, or the name of your WSL distribution. |
+| `antiburn.usage_viewed` | You open the usage view. | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
 | `antiburn.error_occurred` | Something failed. | `label` — a category, currently `scan_failed`. No message, no path, no backtrace. |
 
 That is the complete list of what this build sends. A test
@@ -112,8 +127,8 @@ code and not in this table.
 Listed so this document describes a direction rather than implying a
 capability. None of these are sent today.
 
-Popover opened and closed · dock icon clicked · usage view opened · usage
-refreshed · provider usage available · session row clicked · session detail
+Popover opened and closed · dock icon clicked · usage
+refreshed · provider usage available · session detail
 opened · update available shown · update clicked · attention banner shown and
 clicked · onboarding step viewed · settings opened · settings section viewed ·
 settings changed · settings action clicked · settings closed · nudge shown,

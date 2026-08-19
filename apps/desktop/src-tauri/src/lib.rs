@@ -132,6 +132,7 @@ pub fn run() {
             commands::get_subagent_analytics,
             commands::hide_popover,
             commands::finish_onboarding,
+            commands::note_interaction,
             commands::list_recent_sessions,
             commands::list_repositories,
             commands::list_scan_roots,
@@ -232,8 +233,7 @@ pub fn run() {
             usage_analytics::record(
                 app.handle(),
                 usage_analytics::event::EventName::AppLaunched,
-                None,
-                None,
+                usage_analytics::event::Facts::default(),
             );
 
             // The notification window's manager and the chime player. Prewarm

@@ -50,6 +50,12 @@ pub use model::{
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
 
+/// How many undelivered analytics events are kept before the oldest are
+/// dropped. At the flusher's 50-per-15-minutes this is several hours of
+/// backlog, which is more than an ordinary outage needs and far less than an
+/// unbounded table on a reader's disk.
+const USAGE_ANALYTICS_QUEUE_LIMIT: u32 = 500;
+
 /// File name of the database inside the app data directory.
 ///
 /// Debug builds use their own file so a half-finished migration cannot damage
@@ -325,10 +331,23 @@ impl Store {
     /// Queue one event for delivery. Callers hold the consent check; this is
     /// storage, and a queue that decided policy for itself would be a second
     /// place for the gate to drift out of step with the reader's choice.
+    ///
+    /// Bounded, and the bound is load-bearing rather than defensive. Events
+    /// now include interactions, which a reader can generate as fast as they
+    /// can click; a machine offline for a week would otherwise accumulate
+    /// them without limit in the reader's own database. The oldest go first —
+    /// the newest events are the ones still worth having, and a queue that
+    /// dropped the newest would report a machine's distant past forever.
     pub fn queue_usage_analytics_event(&self, name: &str, payload: &str) -> Result<()> {
-        self.lock().execute(
+        let connection = self.lock();
+        connection.execute(
             "INSERT INTO usage_analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
             params![name, payload, now_rfc3339()],
+        )?;
+        connection.execute(
+            "DELETE FROM usage_analytics_event WHERE id NOT IN
+                 (SELECT id FROM usage_analytics_event ORDER BY id DESC LIMIT ?1)",
+            params![USAGE_ANALYTICS_QUEUE_LIMIT],
         )?;
         Ok(())
     }

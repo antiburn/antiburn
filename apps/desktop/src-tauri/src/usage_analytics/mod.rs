@@ -38,7 +38,7 @@ use std::time::Duration;
 use tauri::{Emitter as _, Manager as _};
 
 use crate::store::{AppSettings, Store};
-use event::{Event, EventName};
+use event::{Event, EventName, Facts, Interaction};
 
 /// How long an installation identifier lives before it is replaced.
 pub const IDENTITY_LIFETIME_DAYS: i64 = 30;
@@ -99,12 +99,7 @@ fn allowed(app: &tauri::AppHandle) -> bool {
 /// Failure is silent by design. Analytics that interrupt the reader, or that
 /// fail an operation the reader actually asked for, would be the tail wagging
 /// the dog; a dropped event is not worth a single line of user-facing text.
-pub fn record(
-    app: &tauri::AppHandle,
-    name: EventName,
-    bucket: Option<&'static str>,
-    label: Option<&'static str>,
-) {
+pub fn record(app: &tauri::AppHandle, name: EventName, facts: Facts) {
     if !allowed(app) {
         return;
     }
@@ -126,8 +121,9 @@ pub fn record(
         original_timestamp: crate::store::now_rfc3339(),
         properties: event::Properties {
             arch: event::arch(),
-            bucket,
-            label,
+            bucket: facts.bucket,
+            label: facts.label,
+            detail: facts.detail,
         },
         context: event::Context {
             app_version: format!("antiburn:{}", app.package_info().version),
@@ -137,6 +133,18 @@ pub fn record(
     if let Ok(json) = serde_json::to_string(&payload) {
         let _ = store.queue_usage_analytics_event(name.as_str(), &json);
     }
+}
+
+/// Record an interaction reported by the renderer.
+///
+/// The renderer names a shape, not an event: [`Interaction`] is a closed enum
+/// that serde validates at the command boundary, and every string that ends up
+/// in the payload comes from [`event`] rather than from the webview. See that
+/// type for why there is deliberately no general-purpose "record an event"
+/// command.
+pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
+    let (name, facts) = interaction.resolve();
+    record(app, name, facts);
 }
 
 /// The identifier to stamp on an event, minting or rotating it as needed.

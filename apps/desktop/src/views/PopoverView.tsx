@@ -27,6 +27,7 @@ import {
   hidePopover,
   listRecentSessions,
   listRepositories,
+  noteInteraction,
   onScanEvent,
   onSessionsInvalidated,
   onSettingsChanged,
@@ -110,6 +111,22 @@ function repositoryStatus(status: string): LocalRepositoryStatus {
     default:
       return 'accessible';
   }
+}
+
+/**
+ * What the usage view had to show when it opened.
+ *
+ * The product question is whether an installation ever gets the provider's own
+ * limit figures or only antiburn's estimates from local transcripts. Three
+ * values answer that; a per-provider breakdown would answer it no better and
+ * would say more about the reader than the question needs.
+ */
+function usageEvidence(
+  usage: ProviderUsageSummaryPayload | null,
+  live: LiveUsageSummaryPayload,
+): 'live' | 'estimated_only' | 'none' {
+  if (live.providers.length > 0) return 'live';
+  return (usage?.providers.length ?? 0) > 0 ? 'estimated_only' : 'none';
 }
 
 export function PopoverView() {
@@ -452,6 +469,16 @@ export function PopoverView() {
               onOpenSettings={() => void openSettingsWindow('general')}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return;
+                // The card click, not the traversal inside a session — the
+                // question is how often the list leads anywhere, and the
+                // newer/older arrows would drown that out. Which agent, and
+                // native or WSL; never the distribution's name, which the
+                // reader chose.
+                noteInteraction({
+                  kind: 'sessionOpened',
+                  agent: entry.agent,
+                  environment: entry.wslDistro ? 'wsl' : 'native',
+                });
                 openSession(subjectFor(entry));
               }}
               renderAgentIcon={renderAgentIcon}
@@ -462,7 +489,14 @@ export function PopoverView() {
         <ProviderUsageCluster
           providers={usage?.providers ?? []}
           live={liveUsage}
-          onViewAll={() => setShowUsage(true)}
+          onViewAll={() => {
+            noteInteraction({
+              kind: 'usageViewed',
+              providers: usage?.providers.length ?? 0,
+              evidence: usageEvidence(usage, liveUsage),
+            });
+            setShowUsage(true);
+          }}
           onOpenSettings={() => void openSettingsWindow()}
         />
       </div>

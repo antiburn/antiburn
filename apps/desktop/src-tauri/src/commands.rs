@@ -226,10 +226,24 @@ pub fn finish_onboarding(
     crate::usage_analytics::record(
         &app,
         crate::usage_analytics::event::EventName::OnboardingFinished,
-        None,
-        None,
+        crate::usage_analytics::event::Facts::default(),
     );
     Ok(saved)
+}
+
+/// Report one interaction from the renderer.
+///
+/// Takes a closed enum rather than an event name and a property map, which is
+/// the point: the vocabulary lives in Rust, serde refuses anything outside it,
+/// and no call site in the webview can widen what is sent. Infallible and
+/// silent — analytics that could fail an action the reader actually asked for
+/// would have its priorities inverted.
+#[tauri::command]
+pub fn note_interaction(
+    app: tauri::AppHandle,
+    interaction: crate::usage_analytics::event::Interaction,
+) {
+    crate::usage_analytics::record_interaction(&app, interaction);
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
@@ -314,8 +328,10 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
             crate::usage_analytics::record(
                 app,
                 crate::usage_analytics::event::EventName::SettingToggled,
-                None,
-                Some(key),
+                crate::usage_analytics::event::Facts {
+                    label: Some(key),
+                    ..Default::default()
+                },
             );
         }
     }

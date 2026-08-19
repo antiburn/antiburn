@@ -16,7 +16,8 @@
 //! to it; a bucket is the answer to "roughly how much is this being used"
 //! without also answering "is this the same machine as last week".
 
-use serde::Serialize;
+use antiburn_local::model::AgentKind;
+use serde::{Deserialize, Serialize};
 
 /// The events this application may report. A closed set, by design: a
 /// `&'static str` a caller passes in would put naming — and therefore scope —
@@ -31,6 +32,10 @@ pub enum EventName {
     ScanCompleted,
     /// A preference changed. The key travels; the value never does.
     SettingToggled,
+    /// A session was opened from the activity list.
+    SessionOpened,
+    /// The usage view was opened.
+    UsageViewed,
     /// Something failed, by category. No message, no path, no backtrace.
     ErrorOccurred,
 }
@@ -49,6 +54,8 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::OnboardingFinished,
     EventName::ScanCompleted,
     EventName::SettingToggled,
+    EventName::SessionOpened,
+    EventName::UsageViewed,
     EventName::ErrorOccurred,
 ];
 
@@ -59,6 +66,8 @@ impl EventName {
             EventName::OnboardingFinished => "antiburn.onboarding_finished",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
+            EventName::SessionOpened => "antiburn.session_opened",
+            EventName::UsageViewed => "antiburn.usage_viewed",
             EventName::ErrorOccurred => "antiburn.error_occurred",
         }
     }
@@ -129,6 +138,29 @@ pub struct Properties {
     /// A bare key or category from a closed vocabulary, never reader text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<&'static str>,
+    /// A second dimension, where one event has two things worth separating —
+    /// which agent's session was opened *and* whether it ran natively or
+    /// under WSL. Same rules as [`Properties::label`], and the same reason
+    /// for the `&'static str`: only a compile-time constant can be put here,
+    /// so no amount of caller error can turn it into a path or a title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<&'static str>,
+}
+
+/// What a caller may attach to an event.
+///
+/// A struct rather than three positional `Option<&'static str>` arguments,
+/// which are indistinguishable to the compiler and so silently swappable at a
+/// call site. Naming them makes a mix-up a compile error instead of a wrong
+/// value arriving in a dashboard nobody cross-checks.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Facts {
+    /// A bucketed magnitude, never an exact count.
+    pub bucket: Option<&'static str>,
+    /// The primary dimension.
+    pub label: Option<&'static str>,
+    /// The secondary dimension, where the event has one.
+    pub detail: Option<&'static str>,
 }
 
 /// The install context the contract stamps on every track event.
@@ -140,6 +172,105 @@ pub struct Context {
     pub app_version: String,
     /// Operating-system family — `macos`, `windows`, `linux`.
     pub os: &'static str,
+}
+
+/// An interaction the renderer may report.
+///
+/// This is the enforcement point for events fired from the webview, and it is
+/// why there is no general "record an event" command. A command taking a name
+/// and a map would move naming — and therefore scope — into TypeScript, where
+/// nothing stops a future call site from passing a repository name. Here the
+/// renderer may only name a shape that already exists, serde rejects anything
+/// outside it, and every string that reaches the payload is a `&'static str`
+/// this file wrote.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Interaction {
+    /// A session was opened from the activity list. `agent` deserializes into
+    /// the engine's own closed enum, so an unrecognised slug is a rejected
+    /// command rather than a new value appearing in the data.
+    SessionOpened {
+        agent: AgentKind,
+        environment: Environment,
+    },
+    /// The usage view was opened, with how much there was to show.
+    UsageViewed {
+        providers: u64,
+        evidence: UsageEvidence,
+    },
+}
+
+/// Where an agent ran. Two values, and neither names anything: a WSL
+/// distribution's *name* is chosen by the reader and is deliberately not
+/// carried, unlike the contract's own client, which sends it.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Environment {
+    Native,
+    Wsl,
+}
+
+/// What the usage view had to work with when it opened.
+///
+/// The product question this exists to answer is whether an installation ever
+/// gets the provider's own figures or only antiburn's estimates from local
+/// transcripts. Three values answer it; a per-provider breakdown would not
+/// answer it better and would say more about the reader.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageEvidence {
+    /// At least one provider reported its own limit figures.
+    Live,
+    /// Estimates from local transcripts only.
+    EstimatedOnly,
+    /// Nothing to show.
+    None,
+}
+
+impl Interaction {
+    /// The event and the facts this interaction becomes.
+    pub fn resolve(self) -> (EventName, Facts) {
+        match self {
+            Interaction::SessionOpened { agent, environment } => (
+                EventName::SessionOpened,
+                Facts {
+                    label: Some(agent.slug()),
+                    detail: Some(environment.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::UsageViewed {
+                providers,
+                evidence,
+            } => (
+                EventName::UsageViewed,
+                Facts {
+                    bucket: Some(bucket(providers)),
+                    label: Some(evidence.as_str()),
+                    ..Facts::default()
+                },
+            ),
+        }
+    }
+}
+
+impl Environment {
+    fn as_str(self) -> &'static str {
+        match self {
+            Environment::Native => "native",
+            Environment::Wsl => "wsl",
+        }
+    }
+}
+
+impl UsageEvidence {
+    fn as_str(self) -> &'static str {
+        match self {
+            UsageEvidence::Live => "live",
+            UsageEvidence::EstimatedOnly => "estimated_only",
+            UsageEvidence::None => "none",
+        }
+    }
 }
 
 /// Collapse a count into the bucket that ships in its place.
@@ -183,7 +314,8 @@ mod tests {
             properties: Properties {
                 arch: "aarch64",
                 bucket: Some("10-49"),
-                label: None,
+                label: Some("claude-code"),
+                detail: Some("native"),
             },
             context: Context {
                 app_version: "antiburn:1.2.3".into(),
@@ -213,7 +345,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twelve_fields() {
+    fn the_wire_payload_is_exactly_these_thirteen_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -239,7 +371,7 @@ mod tests {
             .map(String::as_str)
             .collect();
         property_keys.sort_unstable();
-        assert_eq!(property_keys, ["arch", "bucket"]);
+        assert_eq!(property_keys, ["arch", "bucket", "detail", "label"]);
 
         let mut context_keys: Vec<_> = object["context"]
             .as_object()
@@ -276,9 +408,12 @@ mod tests {
     fn absent_optional_fields_are_omitted_rather_than_null() {
         let mut event = sample();
         event.properties.bucket = None;
+        event.properties.label = None;
+        event.properties.detail = None;
         let json = serde_json::to_string(&event).expect("serializes");
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
+        assert!(!json.contains("detail"), "{json}");
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
@@ -294,12 +429,14 @@ mod tests {
                 | EventName::OnboardingFinished
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
+                | EventName::SessionOpened
+                | EventName::UsageViewed
                 | EventName::ErrorOccurred => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            5,
+            7,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -322,6 +459,59 @@ mod tests {
                 name.as_str()
             );
         }
+    }
+
+    /// An interaction resolves to constants this file owns, never to
+    /// anything the renderer supplied verbatim.
+    #[test]
+    fn an_interaction_resolves_to_this_files_own_constants() {
+        let (name, facts) = Interaction::SessionOpened {
+            agent: AgentKind::Claude,
+            environment: Environment::Wsl,
+        }
+        .resolve();
+        assert_eq!(name, EventName::SessionOpened);
+        assert_eq!(facts.label, Some("claude-code"));
+        assert_eq!(facts.detail, Some("wsl"));
+        assert_eq!(facts.bucket, None);
+
+        let (name, facts) = Interaction::UsageViewed {
+            providers: 12,
+            evidence: UsageEvidence::EstimatedOnly,
+        }
+        .resolve();
+        assert_eq!(name, EventName::UsageViewed);
+        assert_eq!(facts.bucket, Some("10-49"), "counts are never exact");
+        assert_eq!(facts.label, Some("estimated_only"));
+        assert_eq!(facts.detail, None);
+    }
+
+    /// The renderer cannot invent a value. This is the whole reason the IPC
+    /// edge takes a closed enum rather than a name and a map: a call site in
+    /// TypeScript that passed a repository name would not compile into
+    /// anything the collector could receive — it fails at the command
+    /// boundary instead.
+    #[test]
+    fn an_unrecognised_interaction_is_refused_at_the_boundary() {
+        let unknown_agent = serde_json::json!({
+            "kind": "sessionOpened",
+            "agent": "some-repository-name",
+            "environment": "native",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_agent).is_err());
+
+        let unknown_shape = serde_json::json!({
+            "kind": "somethingElse",
+            "path": "/Users/someone/work",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_shape).is_err());
+
+        let unknown_environment = serde_json::json!({
+            "kind": "sessionOpened",
+            "agent": "claude-code",
+            "environment": "Ubuntu-24.04",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_environment).is_err());
     }
 
     #[test]
