@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useSyncExternalStore, type RefObject } from 'react';
 
 import { relativeTime } from '../../lib/presentation/relativeTime';
 import { Tooltip } from '../presentation/Tooltip';
@@ -29,6 +29,47 @@ function absoluteTime(iso: string): string | null {
   return Number.isNaN(ms) ? null : new Date(ms).toLocaleString();
 }
 
+/**
+ * Track whether `ref`'s element is overflowing its own box, re-rendering as
+ * that changes. Modeled on `useElementWidth`: `subscribe` attaches a
+ * `ResizeObserver` at subscribe time, which is enough to cover the initial
+ * measurement too — `useSyncExternalStore` re-reads `getSnapshot` right after
+ * `subscribe` runs on mount, after refs have attached, correcting the first
+ * render's stale value before it is ever seen (this holds even in jsdom,
+ * which has no `ResizeObserver` and so a `subscribe` that no-ops).
+ *
+ * `subscribe` is also keyed on `text`: the element's own box can stay the same
+ * size while its content's *natural* width changes (a `ResizeObserver` only
+ * fires on the former), so resubscribing whenever the text changes forces the
+ * same guaranteed resync to recheck against the freshly committed text.
+ */
+function useTruncated(ref: RefObject<HTMLElement | null>, text: string): boolean {
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      const element = ref.current;
+      if (!element || typeof ResizeObserver === 'undefined') return () => {};
+      const observer = new ResizeObserver(onChange);
+      observer.observe(element);
+      return () => observer.disconnect();
+    },
+    // `text` isn't read in the body above — it's here only to force a
+    // resubscribe (see the doc comment) whenever it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ref, text],
+  );
+
+  const getSnapshot = useCallback(
+    () => (ref.current ? ref.current.scrollWidth > ref.current.clientWidth : false),
+    [ref],
+  );
+
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
+function getServerSnapshot(): boolean {
+  return false;
+}
+
 export interface TruncatedTextProps {
   className?: string;
   text: string;
@@ -46,18 +87,7 @@ export interface TruncatedTextProps {
  */
 export function TruncatedText({ className, text, shimmer = false }: TruncatedTextProps) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [truncated, setTruncated] = useState(false);
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const check = () => setTruncated(el.scrollWidth > el.clientWidth);
-    check();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(check);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [text]);
+  const truncated = useTruncated(ref, text);
 
   return (
     <div

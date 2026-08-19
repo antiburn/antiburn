@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 import { Card } from '../../components/ui/Card';
 import { Pane } from '../../components/ui/Pane';
@@ -11,15 +11,9 @@ import { RangeSlider } from '../../components/ui/RangeSlider';
 import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
 import { ToggleRow } from '../../components/ui/ToggleRow';
-import {
-  cancelScan,
-  getScanStatus,
-  onScanEvent,
-  scanNow,
-  type AppInfo,
-  type ScanStatus,
-} from '../../lib/ipc';
+import { cancelScan, scanNow, type AppInfo, type ScanStatus } from '../../lib/ipc';
 import { relativeTime } from '../../lib/presentation/relativeTime';
+import { scanStatusStore } from '../../lib/scanStatusStore';
 import type { AppSettingsController } from './useAppSettings';
 
 /** Narrowest and widest activity-list windows, mirroring the store's clamp. */
@@ -70,32 +64,19 @@ export interface GeneralPaneProps extends AppSettingsController {
  * switch that stops it.
  */
 export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
-  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void getScanStatus()
-      .then((status) => {
-        if (active) setScanStatus(status);
-      })
-      .catch(() => {});
-    const pending = onScanEvent((status) => {
-      if (active) setScanStatus(status);
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, []);
+  const scanStatus = useSyncExternalStore(
+    scanStatusStore.subscribe,
+    scanStatusStore.getSnapshot,
+  );
 
   const handleScan = useCallback(async () => {
     const status = await scanNow().catch(() => null);
-    if (status) setScanStatus(status);
+    if (status) scanStatusStore.set(status);
   }, []);
 
   const handleCancel = useCallback(async () => {
     const status = await cancelScan().catch(() => null);
-    if (status) setScanStatus(status);
+    if (status) scanStatusStore.set(status);
   }, []);
 
   const running = scanStatus?.running ?? false;

@@ -2,9 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 import { applyTheme } from '../../lib/appearance';
+import { createExternalStore } from '../../lib/externalStore';
 import {
   DEFAULT_SETTINGS,
   getSettings,
@@ -32,49 +33,50 @@ export interface AppSettingsController {
   update: (change: Partial<AppSettings>) => Promise<void>;
 }
 
-export function useAppSettings(): AppSettingsController {
-  const [settings, setLocal] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [loaded, setLoaded] = useState(false);
+type SettingsSnapshot = { settings: AppSettings; loaded: boolean };
 
-  useEffect(() => {
-    let active = true;
-    getSettings()
-      .then((stored) => {
-        if (!active) return;
-        applyTheme(stored.theme);
-        setLocal(stored);
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (active) setLoaded(true);
-      });
-    // Writes can come from another window (onboarding and the popover share the
-    // same settings store); the broadcast keeps this window's copy — and its
-    // theme — current too.
-    const pending = onSettingsChanged((stored) => {
-      if (!active) return;
+// Module-level: every window that mounts this hook shares one read and one
+// subscription to the broadcast, rather than each racing its own.
+const settingsStore = createExternalStore<SettingsSnapshot>({
+  initial: { settings: DEFAULT_SETTINGS, loaded: false },
+  load: async () => {
+    try {
+      const stored = await getSettings();
       applyTheme(stored.theme);
-      setLocal(stored);
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, []);
+      return { settings: stored, loaded: true };
+    } catch {
+      return { settings: DEFAULT_SETTINGS, loaded: true };
+    }
+  },
+  // Writes can come from another window (onboarding and the popover share the
+  // same settings store); the broadcast keeps this window's copy — and its
+  // theme — current too.
+  subscribe: (set) =>
+    onSettingsChanged((stored) => {
+      applyTheme(stored.theme);
+      set({ settings: stored, loaded: true });
+    }),
+});
 
-  const update = useCallback(
-    async (change: Partial<AppSettings>) => {
-      // Optimistic, so a switch does not lag behind the pointer; the stored
-      // answer replaces it a moment later and wins any disagreement.
-      const next = { ...settings, ...change };
-      setLocal(next);
-      applyTheme(next.theme);
-      const saved = await setSettings(next).catch(() => next);
-      setLocal(saved);
-      applyTheme(saved.theme);
-    },
-    [settings],
+export function useAppSettings(): AppSettingsController {
+  const { settings, loaded } = useSyncExternalStore(
+    settingsStore.subscribe,
+    settingsStore.getSnapshot,
   );
+
+  const update = useCallback(async (change: Partial<AppSettings>) => {
+    // Optimistic, so a switch does not lag behind the pointer; the stored
+    // answer replaces it a moment later and wins any disagreement. Reads the
+    // current value from the store rather than closing over it, so this
+    // callback stays referentially stable across every settings change.
+    const current = settingsStore.getSnapshot().settings;
+    const next = { ...current, ...change };
+    applyTheme(next.theme);
+    settingsStore.set({ settings: next, loaded: true });
+    const saved = await setSettings(next).catch(() => next);
+    applyTheme(saved.theme);
+    settingsStore.set({ settings: saved, loaded: true });
+  }, []);
 
   return { settings, loaded, update };
 }

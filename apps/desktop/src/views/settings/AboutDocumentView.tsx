@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { ChevronLeft } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useCallback } from 'react';
 
 import { PaneHeader } from '../../components/ui/Pane';
 import { ATTRIBUTIONS, LICENSE_TEXT, NOTICE_TEXT } from '../../lib/legalNotices';
@@ -62,15 +62,16 @@ function DocumentBody({ id }: { id: AboutDocumentId }) {
  * and a second would nest two scrollers inside one column.
  */
 export function AboutDocumentView({ id, onBack }: { id: AboutDocumentId; onBack: () => void }) {
-  const heading = useRef<HTMLHeadingElement>(null);
-
-  // Move focus into the view as it takes over the pane. Two jobs at once: a
-  // keyboard or screen-reader user lands on the document instead of being left
-  // on the button that just vanished, and the shared viewport scrolls back to
-  // the top rather than opening a fresh document mid-page.
-  useEffect(() => {
-    heading.current?.focus();
-  }, [id]);
+  // Move focus into the view as it takes over the pane, the moment the heading
+  // node exists. Two jobs at once: a keyboard or screen-reader user lands on
+  // the document instead of being left on the button that just vanished, and
+  // the shared viewport scrolls back to the top rather than opening a fresh
+  // document mid-page. A ref callback rather than an effect: this view fully
+  // remounts each time `id` changes (see the doc comment above), so "the node
+  // was just created" and "the id changed" are the same moment.
+  const headingRef = useCallback((node: HTMLHeadingElement | null) => {
+    node?.focus();
+  }, []);
 
   return (
     <>
@@ -79,7 +80,7 @@ export function AboutDocumentView({ id, onBack }: { id: AboutDocumentId; onBack:
           as the name of the control that leaves the view, and leave the view
           with no heading at all. */}
       <PaneHeader
-        headingRef={heading}
+        headingRef={headingRef}
         title={ABOUT_DOCUMENTS[id].title}
         leading={
           <button

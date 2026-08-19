@@ -14,7 +14,7 @@ import {
   Share,
   Trash2,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import { agentDisplayName } from '../../lib/presentation/agents';
 import { sessionIdentityKey } from '../../lib/presentation/localIdentity';
@@ -35,6 +35,7 @@ import type {
   SessionPhase,
   SkillDetail,
 } from '../../lib/types/session';
+import { useGlobalKeydown } from '../../lib/useGlobalKeydown';
 import { Tooltip } from '../presentation/Tooltip';
 import { WslOriginBadge } from '../presentation/WslOriginBadge';
 import { Skeleton } from '../ui/Skeleton';
@@ -452,38 +453,82 @@ function SessionAnalyticsSkeleton() {
 }
 
 /**
+ * Per-instance timer/timestamp bookkeeping behind {@link useSkeletonVisible}.
+ * Held once per component instance (via `useState`) rather than recreated
+ * each render, so `shownAt` survives the resubscribes that happen every time
+ * `loading` flips: the anti-flash delay and the minimum-visible floor both
+ * depend on remembering *when* the skeleton last appeared, not just whether a
+ * transition is currently in flight.
+ */
+class SkeletonGate {
+  visible = false;
+  private shownAt: number | null = null;
+  private notify: (() => void) | null = null;
+
+  getSnapshot = (): boolean => this.visible;
+
+  /**
+   * `useSyncExternalStore`'s `subscribe`, closed over the `loading` value it
+   * was built for. Called fresh whenever `loading` changes (that is the
+   * deliberate keyed resubscription — see useExternalSubscription.ts), so
+   * each call is exactly one loading/not-loading transition.
+   */
+  subscribe =
+    (loading: boolean) =>
+    (onChange: () => void): (() => void) => {
+      this.notify = onChange;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      if (loading) {
+        timer = setTimeout(() => {
+          timer = null;
+          this.shownAt = Date.now();
+          this.setVisible(true);
+        }, SKELETON_DELAY_MS);
+      } else if (this.shownAt != null) {
+        // Loading finished while the skeleton was up: hold it for the rest of
+        // its minimum-visible window.
+        const remaining = SKELETON_MIN_VISIBLE_MS - (Date.now() - this.shownAt);
+        this.shownAt = null;
+        if (remaining > 0) {
+          timer = setTimeout(() => {
+            timer = null;
+            this.setVisible(false);
+          }, remaining);
+        } else {
+          this.setVisible(false);
+        }
+      } else {
+        // It never showed, so there is nothing to hold.
+        this.setVisible(false);
+      }
+
+      return () => {
+        if (timer != null) clearTimeout(timer);
+        this.notify = null;
+      };
+    };
+
+  private setVisible(value: boolean): void {
+    if (this.visible === value) return;
+    this.visible = value;
+    this.notify?.();
+  }
+}
+
+/**
  * Gate the skeleton on time, not just on `loading`, to kill the flash on fast
  * loads. Returns true only once loading has persisted past the delay; once
  * shown it stays true for the minimum-visible window, so a quick finish cannot
  * flicker it. A load that resolves within the delay never flips it at all.
  */
 function useSkeletonVisible(loading: boolean): boolean {
-  const [visible, setVisible] = useState(false);
-  const shownAtRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (loading) {
-      const timer = setTimeout(() => {
-        shownAtRef.current = Date.now();
-        setVisible(true);
-      }, SKELETON_DELAY_MS);
-      return () => clearTimeout(timer);
-    }
-    // Loading finished. If the skeleton is up, hold it for the rest of its
-    // minimum-visible window; otherwise it never showed, so stay hidden.
-    if (shownAtRef.current != null) {
-      const remaining = SKELETON_MIN_VISIBLE_MS - (Date.now() - shownAtRef.current);
-      shownAtRef.current = null;
-      if (remaining > 0) {
-        const timer = setTimeout(() => setVisible(false), remaining);
-        return () => clearTimeout(timer);
-      }
-    }
-    setVisible(false);
-    return;
-  }, [loading]);
-
-  return visible;
+  const [gate] = useState(() => new SkeletonGate());
+  const subscribe = useCallback(
+    (onChange: () => void) => gate.subscribe(loading)(onChange),
+    [gate, loading],
+  );
+  return useSyncExternalStore(subscribe, gate.getSnapshot, gate.getSnapshot);
 }
 
 /* -------------------------------------------------------------------------
@@ -532,30 +577,23 @@ export function SessionAnalyticsPresentation({
 
   // Left and right arrows traverse adjacent sessions, mirroring the header
   // chevrons. A missing handler is a no-op, matching the chevrons' own state.
-  useEffect(() => {
-    if (!single) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-      if (event.key === 'ArrowLeft' && onPrev) {
-        event.preventDefault();
-        onPrev();
-      } else if (event.key === 'ArrowRight' && onNext) {
-        event.preventDefault();
-        onNext();
-      }
+  useGlobalKeydown(single, (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+    ) {
+      return;
     }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [single, onPrev, onNext]);
+    if (event.key === 'ArrowLeft' && onPrev) {
+      event.preventDefault();
+      onPrev();
+    } else if (event.key === 'ArrowRight' && onNext) {
+      event.preventDefault();
+      onNext();
+    }
+  });
 
   const showSkeleton = useSkeletonVisible(loading && supportsAnalytics);
   // The settled gate the real content, error, and empty states all key off:

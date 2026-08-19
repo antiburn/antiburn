@@ -3,15 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { confirm, save } from '@tauri-apps/plugin-dialog';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 
 import { SessionAnalyticsPresentation } from '../../components/session/SessionAnalyticsPresentation';
 import { renderAgentIcon } from '../../lib/agentIcon';
 import {
   deleteSessionData,
   exportSession,
-  getSessionAnalytics,
-  getSubagentAnalytics,
   revealSource,
   withPopoverHold,
   type SessionAnalyticsPayload,
@@ -54,6 +52,12 @@ export interface SessionSubject {
 
 export interface SessionPaneProps {
   subject: SessionSubject;
+  /** The subject's loaded analytics, or null while loading or on failure. */
+  payload: SessionAnalyticsPayload | null;
+  /** Whether `payload` belongs to a load still in flight for this subject. */
+  loading: boolean;
+  /** Whether the load for this subject failed. */
+  error: boolean;
   onBack: () => void;
   /** Newer adjacent session; omitted when there is none. */
   onPrev?: (() => void) | undefined;
@@ -108,66 +112,17 @@ function toLocalCost(
   };
 }
 
-/** Load one subject's analytics. Sub-agents come from their own command. */
-async function loadAnalytics(subject: SessionSubject): Promise<SessionAnalyticsPayload | null> {
-  if (subject.subagent) {
-    return getSubagentAnalytics(
-      subject.agent,
-      subject.subagent.parentSessionId,
-      subject.subagent.subagentId,
-      subject.wslDistro,
-    );
-  }
-  return getSessionAnalytics(subject.agent, subject.sessionId, subject.wslDistro);
-}
-
 export function SessionPane({
   subject,
+  payload,
+  loading,
+  error,
   onBack,
   onPrev,
   onNext,
   onOpenSession,
   onDeleted,
 }: SessionPaneProps) {
-  /**
-   * The load result, tagged with the session it belongs to.
-   *
-   * One piece of state rather than three, and it carries its own key: "still
-   * loading" is then *derived* (the settled result is for a different session
-   * than the one being shown) instead of being a flag an effect has to flip on
-   * the way in. That keeps the effect body free of state updates, so opening a
-   * session cannot cascade renders.
-   */
-  const [settled, setSettled] = useState<{
-    key: string;
-    payload: SessionAnalyticsPayload | null;
-    error: boolean;
-  } | null>(null);
-
-  const key = `${subject.agent}|${subject.sessionId}|${subject.subagent?.subagentId ?? ''}`;
-
-  useEffect(() => {
-    let active = true;
-    loadAnalytics(subject)
-      .then((result) => {
-        if (active) setSettled({ key, payload: result, error: false });
-      })
-      .catch(() => {
-        if (active) setSettled({ key, payload: null, error: true });
-      });
-    return () => {
-      active = false;
-    };
-    // `subject` is rebuilt on every render by the host, so the identity key is
-    // what actually changes when a different session is opened.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  const current = settled?.key === key ? settled : null;
-  const payload = current?.payload ?? null;
-  const loading = current == null;
-  const error = current?.error ?? false;
-
   /**
    * Export: confirm, then choose a destination, then write.
    *

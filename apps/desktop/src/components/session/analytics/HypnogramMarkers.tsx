@@ -2,8 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useRef, useState, type ReactNode, type RefObject } from 'react';
 
+import { useHoverIntent } from '../../../lib/useHoverIntent';
 import type { TimelineMarker } from './markerCluster';
 import { GLASS_TOOLTIP_STYLE, useTooltipPosition } from './tooltip';
 
@@ -110,29 +111,22 @@ export function HypnogramMarkers<T>({
     clientX: number;
     clientY: number;
   } | null>(null);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Owns the close-delay timer, including clearing it on unmount, so this
+  // component needs no timer refs or cleanup effect of its own.
+  const closeIntent = useHoverIntent();
 
-  const cancelClose = () => {
-    if (closeTimer.current != null) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  };
   const open = (index: number, event: React.MouseEvent) => {
-    cancelClose();
+    closeIntent.cancel();
     onActivate(layerId);
     setHover({ index, clientX: event.clientX, clientY: event.clientY });
   };
   const scheduleClose = () => {
-    cancelClose();
-    closeTimer.current = setTimeout(() => setHover(null), CLOSE_DELAY_MS);
+    closeIntent.schedule(() => setHover(null), CLOSE_DELAY_MS);
   };
   // Dismiss the card. Deliberately ref-free so it is safe to hand to
   // `renderTooltip`, which runs during render; a pending close timer would
-  // only re-set null, and the unmount effect clears it regardless.
+  // only re-set null, and unmount cleanup clears it regardless.
   const close = () => setHover(null);
-
-  useEffect(() => cancelClose, []);
 
   // Only one marker card across all layers. Derived, not synchronized: the
   // parent says which layer owns the card, and a layer that does not own it
@@ -205,7 +199,7 @@ export function HypnogramMarkers<T>({
       {hovered && (
         <div
           ref={tipRef}
-          onMouseEnter={cancelClose}
+          onMouseEnter={closeIntent.cancel}
           onMouseLeave={scheduleClose}
           className="absolute z-40 text-label"
           style={{

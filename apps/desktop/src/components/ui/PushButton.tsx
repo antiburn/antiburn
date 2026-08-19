@@ -24,6 +24,7 @@ export function PushButton({
   ariaLabel,
   id,
   className = '',
+  autoFocus = false,
 }: {
   children: ReactNode;
   onClick: () => void;
@@ -36,6 +37,10 @@ export function PushButton({
    *  to the control that opened a subview, after the subview unmounted it. */
   id?: string;
   className?: string;
+  /** For a caller that mounts this button already knowing it should hold
+   *  focus — a row returning focus to the control that opened a subview now
+   *  closed, rather than moving focus imperatively after the fact. */
+  autoFocus?: boolean;
 }) {
   const variantClass =
     variant === 'primary'
@@ -48,6 +53,7 @@ export function PushButton({
       aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
+      autoFocus={autoFocus}
       className={`ui-push-button gap-1 whitespace-nowrap disabled:opacity-50 ${variantClass} ${className}`
         .replace(/\s+/g, ' ')
         .trimEnd()}
