@@ -144,10 +144,12 @@ const LIVE_FORECAST = {
   usedToday: null,
 }
 
-// A different provider from `PROVIDER_USAGE`'s spend figures on purpose: this
-// is what puts the usage-limits section on screen (and so the chip row it
-// collapses to) without changing the accessible name the tests below assert
-// for the Anthropic chip, which carries no limit of its own here.
+// A different provider from `PROVIDER_USAGE`'s spend figures on purpose: the
+// usage-limits section — and the chip row it collapses to — is driven by
+// this payload, not by spend, so Codex is the only chip in these tests below
+// even though Anthropic is the only provider with any local spend. That
+// asymmetry is deliberate: it is what proves the chip row survives a day
+// with zero local spend, as long as a live reading exists.
 const LIVE_USAGE = {
   providers: [
     {
@@ -355,7 +357,7 @@ describe("PopoverView", () => {
     expect(invoke).toHaveBeenCalledWith("get_provider_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })
-    expect(screen.getByRole("button", { name: "Anthropic, estimated" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Codex, weekly limit 40%" })).toBeInTheDocument()
   })
 
   it("shows the plain title-and-gear footer, with none of the usage chips in it", async () => {
@@ -371,7 +373,7 @@ describe("PopoverView", () => {
   it("opens the full usage view through a provider panel and comes back", async () => {
     render(<PopoverView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
 
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
@@ -381,16 +383,18 @@ describe("PopoverView", () => {
     expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
   })
 
-  it("says so honestly in the chip row when nothing was spent today", async () => {
+  it("still shows a live-only chip on a fresh day with zero local spend anywhere", async () => {
+    // The bug this fixes: the chip row used to be driven by local spend, so
+    // a fresh day with none — even for a provider that never has any, like
+    // Codex here — fell through to an empty-row fallback despite Codex's own
+    // live reading sitting right there in `get_live_usage`.
     mockCommands({ get_provider_usage: { ...PROVIDER_USAGE, providers: [] } })
     render(<PopoverView />)
 
     await screen.findByText("Wire the tray popover")
-    // The usage-limits section still appears — Codex still has a limit to
-    // show — but its chip row says there was no spend today rather than
-    // showing an empty row.
     expect(screen.getByTestId("provider-usage-chips")).toBeInTheDocument()
-    expect(screen.getByText("No provider usage today")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Codex, weekly limit 40%" })).toBeInTheDocument()
+    expect(screen.queryByText("No live limits")).not.toBeInTheDocument()
   })
 
   it("withholds the usage-limits section entirely when no provider has a limit to show", async () => {
@@ -657,7 +661,7 @@ describe("PopoverView — window behaviour", () => {
       }),
     )
 
-    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_popover_height", {
@@ -698,7 +702,7 @@ describe("PopoverView — window behaviour", () => {
   it("lets an open provider panel claim Escape before the window does", async () => {
     render(<PopoverView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     const panel = await screen.findByRole("dialog")
     expect(panel).toBeInTheDocument()
 
@@ -714,7 +718,7 @@ describe("PopoverView — window behaviour", () => {
     const activity = await screen.findByRole("heading", { name: "antiburn" })
     await waitFor(() => expect(activity).toHaveFocus())
 
-    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Codex, weekly limit 40%" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
 
     const usage = await screen.findByRole("heading", { name: "Usage" })

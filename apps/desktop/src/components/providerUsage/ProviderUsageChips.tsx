@@ -9,15 +9,13 @@ import { cn } from "../../lib/cn"
 import type { LiveUsageSummaryPayload, ProviderUsagePayload } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import {
-  headlineWindow,
-  liveForProvider,
   liveWindowLabel,
   liveWindows,
   liveWindowValueLabel,
+  maxLiveUsedPercent,
 } from "../../lib/presentation/liveUsage"
 import {
   providerInitial,
-  providersForWindow,
   stalenessNote,
   usageStateLabel,
 } from "../../lib/presentation/providerUsage"
@@ -32,6 +30,12 @@ import { UsageRing } from "./UsageRing"
 const DEFAULT_MAX_CHIPS = 3
 
 interface ProviderUsageChipsProps {
+  /**
+   * The reader's own local spend and sessions. No longer what selects which
+   * chips appear — see `live` below — but still what a chip's staleness note
+   * comes from, and what its panel shows beneath the provider's own limits,
+   * for a provider this device has actually run something through.
+   */
   providers: readonly ProviderUsagePayload[]
   /** The provider's own limit figures, when a source could prove any. */
   live?: LiveUsageSummaryPayload
@@ -58,13 +62,17 @@ interface ProviderUsageChipsProps {
 }
 
 /**
- * One compact chip per provider used today, an overflow count, and the way
- * through to the full Usage view.
+ * One compact chip per provider with a live limit reading, an overflow
+ * count, and the way through to the full Usage view.
  *
- * Chips are drawn from *today* only. A provider the reader has not touched
- * since yesterday is not shown a dash here — it is simply not in the row, and
- * the Usage view is where the wider windows live. That keeps the resting
- * state of the row a statement about right now.
+ * Chips are drawn from the *live* payload, not local spend: a chip shows a
+ * percentage now, so it is selected the same way the expanded section above
+ * it picks its subsections — any provider with at least one live window —
+ * and the two always agree on which providers appear. A provider with local
+ * spend but no live reading is not shown a dash here — it is simply not in
+ * the row, and the Usage view is where local-only providers live. A provider
+ * with a live reading but no local spend (nothing was ever run through it on
+ * this device) still gets a chip; its panel just has no spend half to show.
  *
  * Clicking a chip opens a panel anchored to this row. It is positioned by
  * this component rather than portalled, because the popover window is 380px of
@@ -164,10 +172,16 @@ export function ProviderUsageChips({
     }, HOVER_CLOSE_MS)
   }, [scheduleHover])
 
-  const today = providersForWindow(providers, "today")
-  const visible = today.slice(0, maxVisible)
-  const overflow = today.length - visible.length
+  // Same predicate the expanded section filters its subsections with, so
+  // collapsed and expanded never disagree about which providers are showing
+  // anything.
+  const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
+  const visible = limited.slice(0, maxVisible)
+  const overflow = limited.length - visible.length
   const open = visible.find((provider) => provider.provider === openProvider) ?? null
+  /** The reader's own local spend for one provider id, when there is any. */
+  const spendFor = (id: string) =>
+    providers.find((provider) => provider.provider === id) ?? null
 
   const close = useCallback(() => {
     cancelHover()
@@ -205,40 +219,40 @@ export function ProviderUsageChips({
       data-testid="provider-usage-chips"
       className={cn("relative flex min-w-0 items-center gap-1", className)}
     >
-      {visible.map((provider) => {
-        const stale = stalenessNote(provider)
-        const isOpen = open?.provider === provider.provider
-        // The ring is drawn only where the provider stated a percentage. The
-        // spend figure beside it has no denominator, so borrowing the shape
-        // for it would mean something here that it does not mean. Which window
-        // the ring shows is `headlineWindow`'s decision, and it is the
-        // account-wide one rather than the fullest — see its doc.
-        const limits = liveForProvider(live, provider.provider)
-        const windows = limits ? liveWindows(limits) : []
-        const headline = limits ? headlineWindow(limits) : null
+      {visible.map((limits) => {
+        // Every provider that reaches this row is selected *because* it has
+        // live windows — see `limited` above — but it may or may not have
+        // ever produced local spend on this device. Where it has, the
+        // staleness note and the panel's spend half both come from that.
+        const spend = spendFor(limits.provider)
+        const stale = spend ? stalenessNote(spend) : null
+        const isOpen = open?.provider === limits.provider
+        const windows = liveWindows(limits)
+        // The ring shows the fullest live window, not the account-wide one —
+        // see `maxLiveUsedPercent`'s doc for why a compact glance prefers the
+        // worst case over which window happens to be the account's own.
+        const maxPercent = maxLiveUsedPercent(limits)
         // A dollar figure here would be the local estimate, which has no
         // denominator to read against — showing it beside a ring drawn from
         // the provider's own percentage would imply a relationship that is
         // not there. So the chip shows only what the provider itself stated:
         // every live window's percentage, in the same order the panel lists
-        // them. A provider with no live windows shows no value text at all —
-        // the glyph alone, rather than falling back to a dollar figure the
-        // ring beside it does not agree with.
+        // them.
         const value = windows.map((window) => liveWindowValueLabel(window)).join(" / ")
         return (
           <button
-            key={provider.provider}
+            key={limits.provider}
             type="button"
             aria-haspopup="dialog"
             aria-expanded={isOpen}
             aria-controls={isOpen ? panelId : undefined}
-            // The chip shows a glyph and, where the provider stated any live
-            // windows, a number per window; the name, each window, and what
-            // kind of figure it is have to live in the accessible name or
-            // they are lost.
-            aria-label={`${provider.displayName}, ${usageStateLabel(
-              provider.state,
-            ).toLocaleLowerCase()}${windows
+            // The chip shows a glyph and a number per live window; the name,
+            // each window, and — where there is local spend to describe —
+            // what kind of figure it is, have to live in the accessible name
+            // or they are lost.
+            aria-label={`${limits.displayName}${
+              spend ? `, ${usageStateLabel(spend.state).toLocaleLowerCase()}` : ""
+            }${windows
               .map(
                 (window) =>
                   `, ${liveWindowLabel(window).toLocaleLowerCase()} ${liveWindowValueLabel(
@@ -251,7 +265,7 @@ export function ProviderUsageChips({
               // is about to fire; opening on it would make the tap a toggle
               // that opens and then closes.
               if (event.pointerType === "touch") return
-              hoverOpen(provider.provider)
+              hoverOpen(limits.provider)
             }}
             onPointerLeave={(event) => {
               if (event.pointerType === "touch") return
@@ -259,7 +273,7 @@ export function ProviderUsageChips({
             }}
             onClick={(event) => {
               cancelHover()
-              if (openProvider === provider.provider && openedBy === "pointer") {
+              if (openProvider === limits.provider && openedBy === "pointer") {
                 close()
                 return
               }
@@ -273,7 +287,7 @@ export function ProviderUsageChips({
               // an effect on it would re-steal focus each time.
               flushSync(() => {
                 setOpenedBy("pointer")
-                setOpenProvider(provider.provider)
+                setOpenProvider(limits.provider)
               })
               const target =
                 panelRef.current?.querySelector<HTMLElement>(FOCUSABLE) ?? panelRef.current
@@ -284,31 +298,31 @@ export function ProviderUsageChips({
               isOpen && "bg-surface-hover",
             )}
           >
-            {headline ? (
+            {maxPercent != null ? (
               // The ring carries the provider's initial rather than replacing
               // it: a chip that says how full something is without saying
               // whose is a worse trade than the ring is worth.
               <UsageRing
-                percent={headline.usedPercent}
-                mark={providerMark(provider.provider)}
-                glyph={providerInitial(provider.displayName)}
+                percent={maxPercent}
+                mark={providerMark(limits.provider)}
+                glyph={providerInitial(limits.displayName)}
                 size={22}
                 className="shrink-0 text-label-secondary"
               />
             ) : (
               <ProviderGlyph
-                displayName={provider.displayName}
-                provider={provider.provider}
+                displayName={limits.displayName}
+                provider={limits.provider}
                 size={18}
               />
             )}
-            {windows.length > 0 && <TextRoll text={value} />}
+            <TextRoll text={value} />
           </button>
         )
       })}
 
-      {today.length === 0 && (
-        <span className="type-caption text-label-tertiary">No provider usage today</span>
+      {limited.length === 0 && (
+        <span className="type-caption text-label-tertiary">No live limits</span>
       )}
 
       {overflow > 0 && (
@@ -349,8 +363,10 @@ export function ProviderUsageChips({
           )}
         >
           <ProviderUsageDetail
-            provider={open}
-            live={liveForProvider(live, open.provider)}
+            displayName={open.displayName}
+            providerId={open.provider}
+            provider={spendFor(open.provider)}
+            live={open}
             now={at}
             headingId={headingId}
             onViewAll={viewAll}

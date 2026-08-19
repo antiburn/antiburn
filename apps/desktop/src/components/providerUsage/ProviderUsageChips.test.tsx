@@ -6,7 +6,9 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
+  LiveProviderUsagePayload,
   LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
   ProviderUsagePayload,
   ProviderUsageWindowPayload,
 } from "../../lib/ipc"
@@ -38,31 +40,94 @@ function provider(overrides: Partial<ProviderUsagePayload> = {}): ProviderUsageP
   }
 }
 
-/** Providers ranked below the first, so the overflow affordance appears. */
-function ranked(count: number): ProviderUsagePayload[] {
-  return Array.from({ length: count }, (_, index) => {
-    const window = usageWindow({ estimatedUsd: count - index, sessionCount: 1 })
-    return provider({
+const FORECAST = {
+  unavailableReason: "sparseHistory",
+  confidence: null,
+  consumptionRate: null,
+  paceRatio: null,
+  paceTrend: null,
+  runwayAt: null,
+  usedToday: null,
+}
+
+function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindowPayload {
+  return {
+    id: "seven-day",
+    role: "primaryLong",
+    kind: "weekly",
+    scopeModel: null,
+    usedPercent: 42,
+    startsAt: null,
+    resetsAt: null,
+    hasNonzeroUsageInCurrentPeriod: false,
+    forecast: FORECAST,
+    ...overrides,
+  }
+}
+
+function liveProvider(
+  overrides: Partial<LiveProviderUsagePayload> = {},
+): LiveProviderUsagePayload {
+  return {
+    provider: "anthropic",
+    displayName: "Anthropic",
+    support: "live",
+    freshness: "fresh",
+    sourceLabel: "Asked Claude directly",
+    observedAt: new Date().toISOString(),
+    windows: [liveWindow()],
+    extraUsage: null,
+    ...overrides,
+  }
+}
+
+function liveSummary(
+  providers: readonly LiveProviderUsagePayload[] = [liveProvider()],
+): LiveUsageSummaryPayload {
+  return { providers: [...providers], errors: [], generatedAt: new Date().toISOString() }
+}
+
+/** Live providers ranked below the first, so the overflow affordance appears. */
+function rankedLive(count: number): LiveProviderUsagePayload[] {
+  return Array.from({ length: count }, (_, index) =>
+    liveProvider({
       provider: `p${index}`,
       displayName: `Provider ${index}`,
-      windows: { today: window, week: window, month: window },
-    })
-  })
+      windows: [liveWindow({ usedPercent: count - index })],
+    }),
+  )
 }
 
 describe("ProviderUsageChips", () => {
-  it("shows a chip per provider used today, glyph-only where the provider stated no live limit", () => {
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
+  it("shows a chip from a live reading alone, even when nothing was spent today", () => {
+    // The bug this fixes: a fresh day with no local spend used to fall
+    // through to the empty-row fallback, even though the provider's own
+    // limits were sitting right there in `live`.
+    render(
+      <ProviderUsageChips
+        providers={[]}
+        live={liveSummary([liveProvider({ displayName: "Claude" })])}
+        onViewAll={vi.fn()}
+      />,
+    )
 
-    // No live summary was given, so there is nothing to read a percentage
-    // from — and no dollar figure either, since that number has no
-    // denominator to sit beside a ring's percentage meaningfully.
-    const chip = screen.getByRole("button", { name: "Anthropic, estimated" })
-    expect(chip).toBeInTheDocument()
-    expect(chip).toHaveTextContent("")
+    expect(screen.getByRole("button", { name: /^Claude,/ })).toBeInTheDocument()
+    expect(screen.queryByText("No live limits")).not.toBeInTheDocument()
   })
 
-  it("still shows the chip for a provider that could not be priced", () => {
+  it("drops the local-state clause when the provider has no local spend to describe", () => {
+    render(
+      <ProviderUsageChips
+        providers={[]}
+        live={liveSummary([liveProvider({ displayName: "Claude" })])}
+        onViewAll={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("button", { name: "Claude, weekly limit 42%" })).toBeInTheDocument()
+  })
+
+  it("carries the local state into the chip name when local spend exists alongside the live reading", () => {
     const window = usageWindow({ tokensIn: 12_000, sessionCount: 2 })
     render(
       <ProviderUsageChips
@@ -72,11 +137,14 @@ describe("ProviderUsageChips", () => {
             windows: { today: window, week: window, month: window },
           }),
         ]}
+        live={liveSummary()}
         onViewAll={vi.fn()}
       />,
     )
 
-    expect(screen.getByRole("button", { name: "Anthropic, observed" })).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Anthropic, observed, weekly limit 42%" }),
+    ).toBeInTheDocument()
   })
 
   it("carries staleness into the chip name rather than only into a color", () => {
@@ -88,34 +156,36 @@ describe("ProviderUsageChips", () => {
             lastActivityAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
           }),
         ]}
+        live={liveSummary()}
         onViewAll={vi.fn()}
       />,
     )
 
     expect(
       screen.getByRole("button", {
-        name: /anthropic, estimated, last used 2d ago/i,
+        name: /anthropic, estimated, weekly limit 42%, last used 2d ago/i,
       }),
     ).toBeInTheDocument()
   })
 
-  it("says so honestly when nothing was used today", () => {
-    const idle = provider({
-      windows: {
-        today: usageWindow(),
-        week: usageWindow({ tokensIn: 5 }),
-        month: usageWindow(),
-      },
-    })
-    render(<ProviderUsageChips providers={[idle]} onViewAll={vi.fn()} />)
+  it("says so honestly when no provider has a live limit", () => {
+    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
 
-    expect(screen.getByText("No provider usage today")).toBeInTheDocument()
+    // Local spend alone no longer earns a chip — see the selection doc.
+    expect(screen.getByText("No live limits")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /anthropic/i })).not.toBeInTheDocument()
   })
 
   it("collapses everything past the chip budget into one overflow affordance", () => {
     const onViewAll = vi.fn()
-    render(<ProviderUsageChips providers={ranked(5)} onViewAll={onViewAll} maxVisible={3} />)
+    render(
+      <ProviderUsageChips
+        providers={[]}
+        live={liveSummary(rankedLive(5))}
+        onViewAll={onViewAll}
+        maxVisible={3}
+      />,
+    )
 
     expect(screen.getAllByRole("button", { name: /^Provider \d/ })).toHaveLength(3)
     const overflow = screen.getByRole("button", { name: "Show 2 more providers" })
@@ -124,7 +194,9 @@ describe("ProviderUsageChips", () => {
   })
 
   it("opens a provider panel on click and closes it on a second click", () => {
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
+    render(
+      <ProviderUsageChips providers={[provider()]} live={liveSummary()} onViewAll={vi.fn()} />,
+    )
     const chip = screen.getByRole("button", { name: /anthropic/i })
 
     expect(chip).toHaveAttribute("aria-expanded", "false")
@@ -141,8 +213,28 @@ describe("ProviderUsageChips", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
+  it("opens a panel with only the live limits, and no spend section, for a live-only provider", () => {
+    render(
+      <ProviderUsageChips
+        providers={[]}
+        live={liveSummary([liveProvider({ displayName: "Claude" })])}
+        onViewAll={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /^Claude,/ }))
+    const panel = screen.getByRole("dialog")
+    expect(panel).toHaveTextContent("Plan limits")
+    // Nothing was ever run through this provider on this device, so the
+    // panel has no spend half to show — not even a zeroed one.
+    expect(panel).not.toHaveTextContent("Tokens · this month")
+    expect(panel).not.toHaveTextContent("Spend trend")
+  })
+
   it("closes the panel on Escape and on a press outside it", () => {
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
+    render(
+      <ProviderUsageChips providers={[provider()]} live={liveSummary()} onViewAll={vi.fn()} />,
+    )
     const chip = screen.getByRole("button", { name: /anthropic/i })
 
     fireEvent.click(chip)
@@ -157,7 +249,13 @@ describe("ProviderUsageChips", () => {
 
   it("leads to the full view from the panel", () => {
     const onViewAll = vi.fn()
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={onViewAll} />)
+    render(
+      <ProviderUsageChips
+        providers={[provider()]}
+        live={liveSummary()}
+        onViewAll={onViewAll}
+      />,
+    )
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
     fireEvent.click(screen.getByRole("button", { name: "All provider usage" }))
@@ -167,7 +265,9 @@ describe("ProviderUsageChips", () => {
   })
 
   it("moves focus into the panel it opens", () => {
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
+    render(
+      <ProviderUsageChips providers={[provider()]} live={liveSummary()} onViewAll={vi.fn()} />,
+    )
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
 
@@ -179,7 +279,9 @@ describe("ProviderUsageChips", () => {
   })
 
   it("holds Tab inside the panel while it is open", () => {
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
+    render(
+      <ProviderUsageChips providers={[provider()]} live={liveSummary()} onViewAll={vi.fn()} />,
+    )
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
     const panel = screen.getByRole("dialog")
@@ -196,7 +298,9 @@ describe("ProviderUsageChips", () => {
   })
 
   it("returns focus to the chip that opened the panel", () => {
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
+    render(
+      <ProviderUsageChips providers={[provider()]} live={liveSummary()} onViewAll={vi.fn()} />,
+    )
     const chip = screen.getByRole("button", { name: /anthropic/i })
 
     fireEvent.click(chip)
@@ -208,7 +312,9 @@ describe("ProviderUsageChips", () => {
   })
 
   it("claims Escape so a host does not also act on it", () => {
-    render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
+    render(
+      <ProviderUsageChips providers={[provider()]} live={liveSummary()} onViewAll={vi.fn()} />,
+    )
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
     // `fireEvent` returns false when a handler called `preventDefault`, which
@@ -218,9 +324,16 @@ describe("ProviderUsageChips", () => {
   })
 
   it("renders a reserved state correctly if one ever arrives", () => {
-    // v1 never emits `live`, but the contract says a view must not fall through
-    // to an unknown branch the day a reviewed passive source does.
-    render(<ProviderUsageChips providers={[provider({ state: "live" })]} onViewAll={vi.fn()} />)
+    // v1 never emits `live` on the spend side, but the contract says a view
+    // must not fall through to an unknown branch the day a reviewed passive
+    // source does.
+    render(
+      <ProviderUsageChips
+        providers={[provider({ state: "live" })]}
+        live={liveSummary()}
+        onViewAll={vi.fn()}
+      />,
+    )
 
     fireEvent.click(screen.getByRole("button", { name: /anthropic, live/i }))
     expect(screen.getByText("Live")).toBeInTheDocument()
@@ -229,114 +342,93 @@ describe("ProviderUsageChips", () => {
 
   it("anchors the panel above the row by default, and below it when asked", () => {
     const { container, rerender } = render(
-      <ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />,
+      <ProviderUsageChips providers={[provider()]} live={liveSummary()} onViewAll={vi.fn()} />,
     )
     fireEvent.click(screen.getByRole("button", { name: /anthropic/i }))
     expect(container.querySelector('[role="dialog"]')).toHaveClass("bottom-full")
 
     rerender(
-      <ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} panelAnchor="down" />,
+      <ProviderUsageChips
+        providers={[provider()]}
+        live={liveSummary()}
+        onViewAll={vi.fn()}
+        panelAnchor="down"
+      />,
     )
     expect(container.querySelector('[role="dialog"]')).toHaveClass("top-full")
   })
 })
 
 /* -------------------------------------------------------------------------
- * The ring: shown only where a provider stated a percentage
+ * The ring: shown only where a live window stated a percentage, and always
+ * the fullest one rather than the account-wide window.
  * ---------------------------------------------------------------------- */
 
-function liveSummary(usedPercent: number | null = 88): LiveUsageSummaryPayload {
-  const forecast = {
-    unavailableReason: "sparseHistory",
-    confidence: null,
-    consumptionRate: null,
-    paceRatio: null,
-    paceTrend: null,
-    runwayAt: null,
-    usedToday: null,
-  }
-  return {
-    providers: [
-      {
-        provider: "anthropic",
-        displayName: "Anthropic",
-        support: "live",
-        freshness: "fresh",
-        sourceLabel: "Asked Claude directly",
-        observedAt: new Date().toISOString(),
-        windows: [
-          {
-            id: "five-hour",
-            role: "primaryShort",
-            kind: "rolling",
-            scopeModel: null,
-            usedPercent: 12,
-            startsAt: null,
-            resetsAt: null,
-            hasNonzeroUsageInCurrentPeriod: false,
-            forecast,
-          },
-          {
-            id: "seven-day",
-            role: "primaryLong",
-            kind: "weekly",
-            scopeModel: null,
-            usedPercent,
-            startsAt: null,
-            resetsAt: null,
-            hasNonzeroUsageInCurrentPeriod: false,
-            forecast,
-          },
-        ],
-        extraUsage: null,
-      },
-    ],
-    errors: [],
-    generatedAt: new Date().toISOString(),
-  }
-}
-
 describe("ProviderUsageChips — the limit ring", () => {
-  it("replaces the glyph with a ring at the account-wide window", () => {
-    // Not the shortest and not the fullest: a single ring has to answer "how
-    // am I doing", which only the account-wide window answers.
+  it("shows the fullest live window's percentage, not the account-wide one", () => {
+    // The case that matters: a model-scoped weekly at 95% beside an account
+    // weekly at 69%. The ring answers "how worried should I be", and the
+    // per-model limit is exactly as worth a glance as the account-wide one.
     const { container } = render(
       <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
-        live={liveSummary(88)}
+        live={liveSummary([
+          liveProvider({
+            windows: [
+              liveWindow({ id: "five-hour", role: "primaryShort", usedPercent: 14 }),
+              liveWindow({
+                id: "seven-day",
+                role: "primaryLong",
+                kind: "weekly",
+                usedPercent: 69,
+              }),
+              liveWindow({
+                id: "weekly-fable",
+                role: "supplemental",
+                kind: "weekly",
+                scopeModel: "Fable",
+                usedPercent: 95,
+              }),
+            ],
+          }),
+        ])}
         onViewAll={vi.fn()}
       />,
     )
 
-    expect(container.querySelector('[data-testid="usage-ring-arc"]')).not.toBeNull()
-    // The ring carries the provider's identity rather than replacing it — the
-    // brand mark where one exists, so the chip still says whose limit it is.
+    const arc = container.querySelector('[data-testid="usage-ring-arc"]')
+    expect(arc).not.toBeNull()
     expect(container.querySelector('[data-testid="usage-ring-mark"]')).not.toBeNull()
+    const circumference = 2 * Math.PI * 13
+    expect(Number(arc?.getAttribute("stroke-dashoffset"))).toBeCloseTo(
+      circumference * (1 - 95 / 100),
+      5,
+    )
     // The ring is a shape with no text, so the figure has to reach the
     // accessible name or a screen-reader user simply does not get it.
     expect(
-      screen.getByRole("button", { name: /anthropic.*weekly limit 88%/i }),
+      screen.getByRole("button", { name: /anthropic.*fable weekly limit 95%/i }),
     ).toBeInTheDocument()
   })
 
-  it("keeps the glyph, and says nothing extra, where no limit was stated", () => {
+  it("keeps the glyph, with no ring, where a live window carries no percentage", () => {
     const { container } = render(
       <ProviderUsageChips
-        providers={[provider({ provider: "openai", displayName: "OpenAI" })]}
-        live={liveSummary(88)}
+        providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
+        live={liveSummary([liveProvider({ windows: [liveWindow({ usedPercent: null })] })])}
         onViewAll={vi.fn()}
       />,
     )
 
     expect(container.querySelector('[data-testid="usage-ring-arc"]')).toBeNull()
-    expect(screen.getByRole("button", { name: /^OpenAI,/ })).not.toHaveAccessibleName(/limit/i)
+    expect(screen.getByRole("button", { name: /^Anthropic,/ })).not.toHaveAccessibleName(/\d%/)
   })
 
   it("shows the plan limits inside the panel the chip opens", () => {
     render(
       <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
-        live={liveSummary(88)}
+        live={liveSummary([liveProvider({ windows: [liveWindow({ usedPercent: 88 })] })])}
         onViewAll={vi.fn()}
       />,
     )
@@ -345,7 +437,8 @@ describe("ProviderUsageChips — the limit ring", () => {
     const panel = screen.getByRole("dialog")
     expect(panel).toHaveTextContent("Plan limits")
     expect(panel).toHaveTextContent("88%")
-    // And the spend half is still there, below it.
+    // And the spend half is still there, below it, since this provider does
+    // have local spend to show.
     expect(panel).toHaveTextContent("Last 7 days")
   })
 })
@@ -355,7 +448,19 @@ describe("ProviderUsageChips — chip value", () => {
     render(
       <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
-        live={liveSummary(19)}
+        live={liveSummary([
+          liveProvider({
+            windows: [
+              liveWindow({ id: "five-hour", role: "primaryShort", usedPercent: 12 }),
+              liveWindow({
+                id: "seven-day",
+                role: "primaryLong",
+                kind: "weekly",
+                usedPercent: 19,
+              }),
+            ],
+          }),
+        ])}
         onViewAll={vi.fn()}
       />,
     )
@@ -369,7 +474,19 @@ describe("ProviderUsageChips — chip value", () => {
     render(
       <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
-        live={liveSummary(19)}
+        live={liveSummary([
+          liveProvider({
+            windows: [
+              liveWindow({ id: "five-hour", role: "primaryShort", usedPercent: 12 }),
+              liveWindow({
+                id: "seven-day",
+                role: "primaryLong",
+                kind: "weekly",
+                usedPercent: 19,
+              }),
+            ],
+          }),
+        ])}
         onViewAll={vi.fn()}
       />,
     )
@@ -380,19 +497,6 @@ describe("ProviderUsageChips — chip value", () => {
       }),
     ).toBeInTheDocument()
   })
-
-  it("shows the glyph alone, with no value text, for a provider with no live windows", () => {
-    render(
-      <ProviderUsageChips
-        providers={[provider({ provider: "openai", displayName: "OpenAI" })]}
-        live={liveSummary(19)}
-        onViewAll={vi.fn()}
-      />,
-    )
-
-    const chip = screen.getByRole("button", { name: "OpenAI, estimated" })
-    expect(chip).toHaveTextContent("")
-  })
 })
 
 describe("ProviderUsageChips — hover", () => {
@@ -402,7 +506,7 @@ describe("ProviderUsageChips — hover", () => {
     render(
       <ProviderUsageChips
         providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
-        live={liveSummary(88)}
+        live={liveSummary([liveProvider({ windows: [liveWindow({ usedPercent: 88 })] })])}
         onViewAll={vi.fn()}
       />,
     )

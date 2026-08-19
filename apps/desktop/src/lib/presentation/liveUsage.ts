@@ -225,6 +225,22 @@ export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindow
   return provider.windows.filter(isUsageWindowVisible).sort((a, b) => rank(a) - rank(b))
 }
 
+/**
+ * The fullest of a provider's live windows, as a percentage, or null when
+ * none of them carries one.
+ *
+ * A compact ring can only show one number, and "how full is the fullest
+ * thing I'm watching" is the question a glance at a chip is asking — a
+ * per-model limit at 95% is exactly as worth a glance as an account-wide one
+ * at 95%. The full breakdown, with each window named, is one hover away.
+ */
+export function maxLiveUsedPercent(provider: LiveProviderUsagePayload): number | null {
+  return liveWindows(provider).reduce<number | null>((max, window) => {
+    if (window.usedPercent == null) return max
+    return max == null ? window.usedPercent : Math.max(max, window.usedPercent)
+  }, null)
+}
+
 /** The live reading for one provider id, or null when there is none. */
 export function liveForProvider(
   summary: LiveUsageSummaryPayload,
@@ -457,44 +473,4 @@ export function runwayLabel(window: LiveUsageWindowPayload, now: number): string
   const day = date.toLocaleDateString(undefined, { weekday: "short" })
   const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
   return `Runs out ${day} ${time}`
-}
-
-/**
- * The window a compact surface should lead with.
- *
- * By *role*, not by how full it is. The account-wide long window — the weekly
- * limit — is the one that describes the account's overall standing, so it
- * leads whenever it exists.
- *
- * The tempting alternative is "whichever is nearest its ceiling", and it is
- * wrong. A per-model weekly limit at 95% next to an account weekly at 69%
- * would take the ring, and a reader glancing at the footer would read 95% as
- * their overall position when it constrains one model. A single ring has to
- * answer "how am I doing", and only the account-wide window answers that.
- *
- * The per-model limit is not hidden — it has its own row, with its own name,
- * one hover away.
- */
-export function headlineWindow(
-  provider: LiveProviderUsagePayload,
-): LiveUsageWindowPayload | null {
-  const windows = liveWindows(provider)
-  const find = (match: (window: LiveUsageWindowPayload) => boolean) => windows.find(match)
-
-  return (
-    find((window) => window.role === "primaryLong") ??
-    find((window) => window.kind === "weekly") ??
-    find((window) => window.kind === "billingCycle" && window.scopeModel == null) ??
-    // Anything account-wide that is neither the short window nor a secondary
-    // limit — a monthly allowance, say.
-    find(
-      (window) =>
-        window.role !== "primaryShort" &&
-        window.role !== "supplemental" &&
-        window.usedPercent != null,
-    ) ??
-    // Last resort: the short window, which is better than an empty footer.
-    find((window) => window.usedPercent != null) ??
-    null
-  )
 }
