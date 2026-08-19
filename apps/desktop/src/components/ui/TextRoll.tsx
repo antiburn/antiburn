@@ -4,6 +4,7 @@
 
 import { memo, useState, type CSSProperties } from "react"
 
+import { cn } from "../../lib/cn"
 import "./text-roll.css"
 
 /**
@@ -133,7 +134,7 @@ export const TextRoll = memo(function TextRoll({ text, className }: TextRollProp
   }
 
   return (
-    <span className={className ? `text-roll ${className}` : "text-roll"}>
+    <span className={cn("text-roll", className)}>
       {/* Assistive tech reads the plain string; the animated cells below are
           presentation-only (and excluded from text selection, so copying the
           element yields the string exactly once). */}

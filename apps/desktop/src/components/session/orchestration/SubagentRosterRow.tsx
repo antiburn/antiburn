@@ -5,6 +5,8 @@
 import { ChevronRight } from "lucide-react"
 import type { ReactNode } from "react"
 
+import { cn } from "../../../lib/cn"
+
 /**
  * Renders the icon for an agent slug. Components take this as a slot rather
  * than reaching for artwork themselves, so the presentation layer ships no
@@ -48,12 +50,13 @@ export function SubagentRosterRow({
     <button
       type="button"
       onClick={onClick}
-      className={`group/srow flex w-full items-center gap-2 rounded-md text-left transition-colors hover:bg-system-indigo/10 ${
-        dense ? "px-1 py-1" : "px-2 py-1.5"
-      }`}
+      className={cn(
+        "group/srow flex w-full items-center gap-2 rounded-md text-left transition-colors hover:bg-system-indigo/10",
+        dense ? "px-1 py-1" : "px-2 py-1.5",
+      )}
     >
       {renderAgentIcon?.(agent, 14)}
-      <span className={`min-w-0 flex-1 truncate ${dense ? "" : "type-callout text-label"}`}>
+      <span className={cn("min-w-0 flex-1 truncate", !dense && "type-callout text-label")}>
         {label}
       </span>
       {trailing}

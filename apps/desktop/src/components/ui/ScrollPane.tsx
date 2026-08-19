@@ -5,6 +5,8 @@
 import * as ScrollArea from "@radix-ui/react-scroll-area"
 import type { ReactNode, Ref } from "react"
 
+import { cn } from "../../lib/cn"
+
 function syncTopEdgeFade(viewport: HTMLDivElement) {
   const shouldFade = viewport.scrollTop > 1
   if (shouldFade === viewport.hasAttribute("data-scroll-edge-top")) return
@@ -48,11 +50,15 @@ export function ScrollPane({
   }
 
   return (
-    <ScrollArea.Root className={`flex-1 overflow-hidden ${className}`.trimEnd()}>
+    <ScrollArea.Root className={cn("flex-1 overflow-hidden", className)}>
       <ScrollArea.Viewport
         ref={assignViewportRef}
         onScroll={topEdgeFade ? (event) => syncTopEdgeFade(event.currentTarget) : undefined}
-        className={`ui-scroll-viewport h-full${topEdgeFade ? " scroll-edge-fade-top" : ""} ${viewportClassName}`.trimEnd()}
+        className={cn(
+          "ui-scroll-viewport h-full",
+          topEdgeFade && "scroll-edge-fade-top",
+          viewportClassName,
+        )}
       >
         {children}
       </ScrollArea.Viewport>

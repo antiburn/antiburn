@@ -4,6 +4,7 @@
 
 import { useCallback, useRef, useSyncExternalStore, type RefObject } from "react"
 
+import { cn } from "../../lib/cn"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
 import {
@@ -92,7 +93,7 @@ export function TruncatedText({ className, text, shimmer = false }: TruncatedTex
   return (
     <div
       ref={ref}
-      className={`${className ?? ""}${shimmer ? ` ${ROW_TITLE_SHIMMER_CLASS}` : ""}`}
+      className={cn(className, shimmer && ROW_TITLE_SHIMMER_CLASS)}
       title={truncated ? text : undefined}
       data-text={shimmer ? text : undefined}
       aria-label={shimmer ? text : undefined}
@@ -142,7 +143,10 @@ export function RowTimeCorner({
       <div
         {...{ [ROW_CORNER_ATTR]: "" }}
         {...(pinned ? { [ROW_CORNER_PINNED_ATTR]: "" } : {})}
-        className={`absolute top-2 right-2 flex items-center gap-1 ${pinned ? "" : revealClassName}`}
+        className={cn(
+          "absolute top-2 right-2 flex items-center gap-1",
+          !pinned && revealClassName,
+        )}
       >
         <Tooltip
           side="bottom"
@@ -159,7 +163,10 @@ export function RowTimeCorner({
             // Muted by default — the time is supplementary next to the title,
             // and it is repeated in the tooltip and the copy above. A problem
             // outcome keeps its own tint, which must stay legible.
-            className={`flex items-center gap-1 text-sm font-normal ${tint || "text-label-tertiary"}`}
+            className={cn(
+              "flex items-center gap-1 text-sm font-normal",
+              tint || "text-label-tertiary",
+            )}
           >
             {Icon && <Icon size={11} className="shrink-0" aria-hidden="true" />}
             {relativeTime(timestamp, { compact: true })}

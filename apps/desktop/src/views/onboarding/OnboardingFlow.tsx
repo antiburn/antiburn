@@ -8,6 +8,7 @@ import appIcon from "../../assets/app-icon.png"
 import { useState } from "react"
 
 import { isMacOS } from "../../lib/platform"
+import { cn } from "../../lib/cn"
 
 import { FolderPermissionNotice } from "../../components/repositories/FolderPermissionNotice"
 import { LocalRepositoryList } from "../../components/repositories/LocalRepositoryList"
@@ -131,9 +132,10 @@ function StepDots({ step }: { step: Step }) {
       {STEPS.map((name, position) => (
         <span
           key={name}
-          className={`h-1.5 w-1.5 rounded-full transition-colors ${
-            position === index ? "bg-label-secondary" : "bg-label/20"
-          }`}
+          className={cn(
+            "h-1.5 w-1.5 rounded-full transition-colors",
+            position === index ? "bg-label-secondary" : "bg-label/20",
+          )}
         />
       ))}
     </div>
@@ -626,7 +628,7 @@ export function OnboardingFlow({
           title bar, by the app icon on the Welcome step, and by every step's
           own heading. Windows and Linux keep the native bar and show it. */}
       <header className="flex h-11 shrink-0 items-center px-4">
-        <h1 className={`type-headline text-label ${isMacOS() ? "sr-only" : ""}`}>antiburn</h1>
+        <h1 className={cn("type-headline text-label", isMacOS() && "sr-only")}>antiburn</h1>
         {/* The step is announced as text rather than left to the dots, which
             are decorative and hidden. */}
         <p className="sr-only" aria-live="polite">

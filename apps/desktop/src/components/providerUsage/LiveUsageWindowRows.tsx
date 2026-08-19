@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { cn } from "../../lib/cn"
 import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
   liveResetLabel,
@@ -41,67 +42,69 @@ export function LiveUsageWindowRows({
   if (windows.length === 0) return null
 
   return (
-    <dl className={`space-y-2 ${className}`.trim()}>
+    <div className={cn("space-y-1.5", className)}>
       {windows.map((window) => {
         const used = window.usedPercent
         const elapsed = liveWindowElapsed(window, now)
         return (
-          <div key={window.id}>
-            <div className="flex items-baseline justify-between gap-3">
-              <dt className="type-footnote text-label-secondary">{liveWindowLabel(window)}</dt>
-              <dd className="type-footnote tabular-nums text-label">
+          <div key={window.id} className="group">
+            <div className="flex items-baseline justify-between gap-x-2">
+              <span className="type-footnote text-label-secondary">
+                {liveWindowLabel(window)}
+                <span className="hidden group-hover:inline">
+                  {" "}
+                  ({liveResetLabel(window, now)})
+                </span>
+              </span>
+              <span className="type-footnote tabular-nums text-label text-right">
                 {liveWindowValueLabel(window)}
-              </dd>
+              </span>
             </div>
-            <div
-              role="progressbar"
-              aria-label={liveWindowLabel(window)}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              // Absent rather than zero when unknown: a progressbar with no
-              // value is announced as indeterminate, which is the truth.
-              aria-valuenow={used ?? undefined}
-              aria-valuetext={
-                used == null
-                  ? "Usage unknown"
-                  : elapsed == null
-                    ? `${Math.round(used)}% used`
-                    : `${Math.round(used)}% used; ${Math.round(elapsed * 100)}% of the period elapsed`
-              }
-              className="relative mt-1 w-full overflow-hidden rounded-full"
-              style={{ height: 3, backgroundColor: "var(--color-separator)" }}
-            >
-              {used != null && (
-                <div
-                  className="h-full rounded-full"
-                  data-testid={`live-usage-fill-${window.id}`}
-                  style={{
-                    width: `${Math.min(100, Math.max(0, used))}%`,
-                    // accent-fill, not accent: the live macOS system-accent
-                    // token breaks as a background-color (see tokens.css).
-                    backgroundColor: "var(--color-accent-fill, var(--color-accent-fill-val))",
-                  }}
-                />
-              )}
+
+            <div className="mt-0.5 h-[6px] py-[1.5px] relative">
+              <div
+                role="progressbar"
+                aria-label={liveWindowLabel(window)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                // Absent rather than zero when unknown: a progressbar with no
+                // value is announced as indeterminate, which is the truth.
+                aria-valuenow={used ?? undefined}
+                aria-valuetext={
+                  used == null
+                    ? "Usage unknown"
+                    : elapsed == null
+                      ? `${Math.round(used)}% used`
+                      : `${Math.round(used)}% used; ${Math.round(elapsed * 100)}% of the period elapsed`
+                }
+                className="h-full w-full bg-(--color-separator) rounded-full overflow-hidden"
+              >
+                {used != null && (
+                  <div
+                    className="h-full"
+                    data-testid={`live-usage-fill-${window.id}`}
+                    style={{
+                      width: `${Math.min(100, Math.max(0, used))}%`,
+                      // accent-fill, not accent: the live macOS system-accent
+                      // token breaks as a background-color (see tokens.css).
+                      backgroundColor: "var(--color-accent-fill, var(--color-accent-fill-val))",
+                    }}
+                  />
+                )}
+              </div>
+
               {elapsed != null && (
                 <div
                   aria-hidden="true"
                   data-testid={`live-usage-elapsed-${window.id}`}
-                  className="absolute inset-y-0"
-                  style={{
-                    left: `${Math.min(100, Math.max(0, elapsed * 100))}%`,
-                    width: 1,
-                    backgroundColor: "var(--color-label)",
-                  }}
+                  className="absolute inset-y-0 w-[1.5px] z-1 bg-(--color-label)"
+                  style={{ left: `${Math.min(100, Math.max(0, elapsed * 100))}%` }}
                 />
               )}
             </div>
-            <p className="mt-0.5 type-caption text-label-tertiary">
-              {liveResetLabel(window, now)}
-            </p>
           </div>
         )
       })}
-    </dl>
+    </div>
   )
 }

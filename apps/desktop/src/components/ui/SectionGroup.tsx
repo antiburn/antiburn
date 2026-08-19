@@ -4,6 +4,8 @@
 
 import type { ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 /** A labelled group of cards. The header sits a step above the row labels
  *  inside those cards (15px vs 13px, full-contrast vs secondary), so a pane
  *  scans as titled groups rather than one undifferentiated run of rows.
@@ -30,7 +32,7 @@ export function SectionGroup({
   className?: string
 }) {
   return (
-    <section className={`space-y-2 ${className}`.trimEnd()}>
+    <section className={cn("space-y-2", className)}>
       {title && (
         <div className="flex items-center justify-between gap-2 px-1">
           <h2 className="type-title-3 font-normal! text-label">{title}</h2>

@@ -160,16 +160,14 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             dimmed={!usageAnalyticsSupported || !loaded}
             disabled={!usageAnalyticsSupported || !loaded}
           />
-          {/* One Card with the switch, not a second one beside it: these are
-              the switch's terms, and two containers read as two subjects.
-              `Card`'s own `divide-y` draws the hairline between them, which is
-              why `DisclosureGroup` must not draw one at this inset.
-
-              `inset="card"` lines the labels up with the toggle's own label,
-              which the default 4px surface inset did not. */}
-          <DisclosureGroup inset="card">
-            <Disclosure inset="card" label="Exactly what is sent">
-              {/* Every field, including the plumbing ones. An enumeration that
+        </Card>
+        {/* The switch's terms sit below the card rather than inside it, which
+            is the same shape the Privacy group above uses. A `Disclosure`
+            owns its own hairline and its own 4px inset; nesting the group in
+            a `Card` lands a second border directly on the card's own. */}
+        <DisclosureGroup>
+          <Disclosure label="Exactly what is sent">
+            {/* Every field, including the plumbing ones. An enumeration that
                   quietly omits the dull fields is worth less than no
                   enumeration, because it reads as complete.
                   `usage_analytics::event::Event` is the source of truth; if a
@@ -179,99 +177,95 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   A list rather than one long sentence: a reader auditing this
                   is counting items against that struct, and thirteen clauses
                   separated by semicolons cannot be counted. */}
-              <p>Thirteen fields, and these are all of them:</p>
-              {/* `pl-7`, not the `pl-4` this started as. Root font-size here
+            <p>Thirteen fields, and these are all of them:</p>
+            {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
                   4.5px *left* of the paragraph above and reading as an
                   unindented list. 22.75px clears the marker and indents it. */}
-              <ul className="mt-2 list-disc space-y-0.5 pl-7">
-                <li>The word &ldquo;desktop&rdquo;.</li>
-                <li>A random id for the message, so a retry is not counted twice.</li>
-                <li>A random installation id.</li>
-                <li>A random id for this run of the app.</li>
-                <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
-                <li>When it happened.</li>
-                <li>When it was delivered.</li>
-                <li>Your processor architecture.</li>
-                <li>A count rounded to a range, when the event has one.</li>
-                <li>
-                  A short label &mdash; which setting you changed, which agent recorded a
-                  session, what kind of thing failed. The name only, never the value.
-                </li>
-                <li>
-                  A second such label when an event has two things to tell apart, such as native
-                  versus WSL.
-                </li>
-                <li>The app version.</li>
-                <li>Your operating system.</li>
-              </ul>
-              {/* The complement belongs here rather than in a row of its own.
+            <ul className="mt-2 list-disc space-y-0.5 pl-7">
+              <li>The word &ldquo;desktop&rdquo;.</li>
+              <li>A random id for the message, so a retry is not counted twice.</li>
+              <li>A random installation id.</li>
+              <li>A random id for this run of the app.</li>
+              <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
+              <li>When it happened.</li>
+              <li>When it was delivered.</li>
+              <li>Your processor architecture.</li>
+              <li>A count rounded to a range, when the event has one.</li>
+              <li>
+                A short label &mdash; which setting you changed, which agent recorded a session,
+                what kind of thing failed. The name only, never the value.
+              </li>
+              <li>
+                A second such label when an event has two things to tell apart, such as native
+                versus WSL.
+              </li>
+              <li>The app version.</li>
+              <li>Your operating system.</li>
+            </ul>
+            {/* The complement belongs here rather than in a row of its own.
                   A reader checking the list against their own worry is asking
                   one question, and answering it two accordions apart made them
                   open both to find out. */}
-              <p className="mt-2">
-                Never your sessions, transcripts, prompts, titles, file paths, repository or
-                branch names, token counts, costs, credentials, name, or email address. Not even
-                exact counts: a precise number, repeated week after week, identifies a machine
-                on its own.
-              </p>
-            </Disclosure>
-            {/* Both identifiers in one place, with what the timestamps add.
+            <p className="mt-2">
+              Never your sessions, transcripts, prompts, titles, file paths, repository or
+              branch names, token counts, costs, credentials, name, or email address. Not even
+              exact counts: a precise number, repeated week after week, identifies a machine on
+              its own.
+            </p>
+          </Disclosure>
+          {/* Both identifiers in one place, with what the timestamps add.
                 They were three rows, but the honest claim only holds when all
                 three facts are read together: a 30-day id plus a time on every
                 event is a coarse picture of when the app gets used, and saying
                 so is cheaper than being caught not having said it. */}
-            <Disclosure inset="card" label="The two identifiers">
-              <p>
-                Both are random. Neither is derived from anything about you or your machine.
-              </p>
-              <p className="mt-2">
-                The <strong className="font-medium text-label">installation id</strong> is
-                replaced every 30 days, so events cannot be joined into a history longer than
-                that. Since every event also carries a time, they do show roughly when antiburn
-                is used within those 30 days &mdash; never what you were working on. Switching
-                analytics off deletes the id and anything still queued, so switching back on
-                starts a new id that cannot be linked to the old one.
-              </p>
-              <p className="mt-2">
-                The <strong className="font-medium text-label">run id</strong> is required by
-                the receiving server. It exists only in memory: quitting antiburn ends it,
-                nothing on your machine remembers it, and it is replaced after 30 minutes of
-                inactivity. It groups one run&rsquo;s events and cannot connect one run to
-                another.
-              </p>
-            </Disclosure>
-            {/* Shown to every reader, not only the ones it switches off for.
+          <Disclosure label="The two identifiers">
+            <p>Both are random. Neither is derived from anything about you or your machine.</p>
+            <p className="mt-2">
+              The <strong className="font-medium text-label">installation id</strong> is
+              replaced every 30 days, so events cannot be joined into a history longer than
+              that. Since every event also carries a time, they do show roughly when antiburn is
+              used within those 30 days &mdash; never what you were working on. Switching
+              analytics off deletes the id and anything still queued, so switching back on
+              starts a new id that cannot be linked to the old one.
+            </p>
+            <p className="mt-2">
+              The <strong className="font-medium text-label">run id</strong> is required by the
+              receiving server. It exists only in memory: quitting antiburn ends it, nothing on
+              your machine remembers it, and it is replaced after 30 minutes of inactivity. It
+              groups one run&rsquo;s events and cannot connect one run to another.
+            </p>
+          </Disclosure>
+          {/* Shown to every reader, not only the ones it switches off for.
                 The locale and time-zone read happens on every machine, so this
                 is a disclosure owed to everybody — and gating it on the guess
                 in `euLocale.ts` would hide the explanation from exactly the
                 reader that guess got wrong. */}
-            <Disclosure inset="card" label="How the starting default is chosen">
-              <p>
-                antiburn reads the locale and time zone your machine already reports. Nothing is
-                looked up, nothing is asked of you, and neither is ever sent &mdash; the answer
-                only picks where the switch above starts.
-              </p>
-              <p className="mt-2">
-                In the EU, the EEA, and the UK it starts off rather than on, because there
-                analytics are something you opt into. Everywhere else it starts on, and this
-                pane is where you turn it off.
-              </p>
-            </Disclosure>
-            {/* Deliberately not claimed by the app. Retention and IP handling
+          <Disclosure label="How the starting default is chosen">
+            <p>
+              antiburn reads the locale and time zone your machine already reports. Nothing is
+              looked up, nothing is asked of you, and neither is ever sent &mdash; the answer
+              only picks where the switch above starts.
+            </p>
+            <p className="mt-2">
+              In the EU, the EEA, and the UK it starts off rather than on, because there
+              analytics are something you opt into. Everywhere else it starts on, and this pane
+              is where you turn it off.
+            </p>
+          </Disclosure>
+          {/* Deliberately not claimed by the app. Retention and IP handling
                 belong to whoever operates the endpoint, and a promise this
                 binary cannot keep is the exact drift the deviations register
                 exists to catch — so point at the party who can make it. */}
-            <Disclosure inset="card" label="What happens after it arrives">
-              How long these events are kept, and whether the receiving server records the IP
-              address that every internet request carries, are the operator&rsquo;s decisions
-              rather than the app&rsquo;s. antiburn can only promise what it sends, which is the
-              list above. The project&rsquo;s docs/usage-analytics.md has the full event catalog
-              and the commands to check any of this yourself.
-            </Disclosure>
-          </DisclosureGroup>
-        </Card>
+          <Disclosure label="What happens after it arrives">
+            How long these events are kept, and whether the receiving server records the IP
+            address that every internet request carries, are the operator&rsquo;s decisions
+            rather than the app&rsquo;s. antiburn can only promise what it sends, which is the
+            list above. The project&rsquo;s docs/usage-analytics.md has the full event catalog
+            and the commands to check any of this yourself.
+          </Disclosure>
+        </DisclosureGroup>
       </SectionGroup>
 
       <SectionGroup title="Local data">

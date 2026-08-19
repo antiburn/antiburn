@@ -10,6 +10,7 @@ import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { ToggleRow } from "../../components/ui/ToggleRow"
+import { cn } from "../../lib/cn"
 import {
   postTestNotification,
   type DiskSpaceDisplay,
@@ -91,11 +92,12 @@ function MilestonePills({
           aria-pressed={value[key]}
           disabled={disabled}
           onClick={() => onChange({ ...value, [key]: !value[key] })}
-          className={`type-footnote h-6 rounded-control px-2 tabular-nums transition-colors duration-[120ms] ease-out ${
+          className={cn(
+            "type-footnote h-6 rounded-control px-2 tabular-nums transition-colors duration-[120ms] ease-out",
             value[key]
               ? "bg-accent-fill text-white"
-              : "text-label-secondary hover:bg-surface-hover"
-          }`}
+              : "text-label-secondary hover:bg-surface-hover",
+          )}
         >
           {label}
         </button>

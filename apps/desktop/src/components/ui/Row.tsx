@@ -4,6 +4,8 @@
 
 import type { ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 /** A single row inside a `Card`: label on the left, an optional trailing
  *  control on the right, and a full-width description underneath.
  *
@@ -30,9 +32,10 @@ export function Row({
 }) {
   return (
     <div
-      className={`grid min-h-[58px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3 ${
-        dimmed ? "opacity-50" : ""
-      }`}
+      className={cn(
+        "grid min-h-[58px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3",
+        dimmed && "opacity-50",
+      )}
     >
       <p className="type-body min-w-0 truncate text-label">{label}</p>
       <div className="shrink-0">{trailing}</div>

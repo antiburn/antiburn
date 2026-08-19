@@ -4,6 +4,8 @@
 
 import { useRef } from "react"
 
+import { cn } from "../../lib/cn"
+
 export type SegmentedOption<T extends string> = {
   value: T
   label: string
@@ -64,8 +66,13 @@ export function SegmentedControl<T extends string>({
       data-variant={variant}
       className={
         textTabs
-          ? `inline-flex h-6 items-center gap-3 whitespace-nowrap ${className}`.trimEnd()
-          : `${showAnimatedIndicator ? "relative " : ""}${equalWidth ? "grid " : "inline-flex "}h-6 overflow-hidden rounded-control border border-separator bg-surface-secondary ${className}`.trimEnd()
+          ? cn("inline-flex h-6 items-center gap-3 whitespace-nowrap", className)
+          : cn(
+              showAnimatedIndicator && "relative",
+              equalWidth ? "grid" : "inline-flex",
+              "h-6 overflow-hidden rounded-control border border-separator bg-surface-secondary",
+              className,
+            )
       }
       style={
         equalWidth && !textTabs
@@ -119,8 +126,19 @@ export function SegmentedControl<T extends string>({
             }}
             className={
               textTabs
-                ? `type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] ${selected ? "font-medium text-label" : "text-label-tertiary hover:text-label-secondary"}`
-                : `${showAnimatedIndicator ? "relative " : ""}${equalWidth ? "min-w-0 " : ""}type-footnote px-2 ${selected ? `${showAnimatedIndicator ? "" : "bg-accent-fill "}text-white` : "text-label-secondary hover:bg-surface-hover"}`
+                ? cn(
+                    "type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                    selected
+                      ? "font-medium text-label"
+                      : "text-label-tertiary hover:text-label-secondary",
+                  )
+                : cn(
+                    showAnimatedIndicator && "relative",
+                    equalWidth && "min-w-0",
+                    "type-footnote px-2",
+                    selected && !showAnimatedIndicator && "bg-accent-fill",
+                    selected ? "text-white" : "text-label-secondary hover:bg-surface-hover",
+                  )
             }
           >
             {textTabs ? (
@@ -131,7 +149,10 @@ export function SegmentedControl<T extends string>({
               // the indicator, not a styling API.
               <span
                 aria-hidden="true"
-                className={`segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label-secondary transition-opacity duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] ${selected ? "opacity-100" : "opacity-0"}`}
+                className={cn(
+                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label-secondary transition-opacity duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                  selected ? "opacity-100" : "opacity-0",
+                )}
               />
             ) : null}
             {showAnimatedIndicator ? (
@@ -141,7 +162,10 @@ export function SegmentedControl<T extends string>({
               // grants a short crossfade to, so the swap is not a hard flicker.
               <span
                 aria-hidden="true"
-                className={`ui-segmented-reduced-fill pointer-events-none absolute inset-0 hidden rounded-[4px] bg-accent-fill transition-opacity ease-out motion-reduce:block ${selected ? "opacity-100" : "opacity-0"}`}
+                className={cn(
+                  "ui-segmented-reduced-fill pointer-events-none absolute inset-0 hidden rounded-[4px] bg-accent-fill transition-opacity ease-out motion-reduce:block",
+                  selected ? "opacity-100" : "opacity-0",
+                )}
               />
             ) : null}
             <span className={showAnimatedIndicator ? "relative z-10" : undefined}>

@@ -4,6 +4,7 @@
 
 import { ChevronRight } from "lucide-react"
 
+import { cn } from "../../lib/cn"
 import type { LiveProviderUsagePayload, ProviderUsagePayload } from "../../lib/ipc"
 import {
   providerWindow,
@@ -73,7 +74,10 @@ export function ProviderUsageDetail({
           </h2>
           {(stale ?? updated) && (
             <p
-              className={`type-caption ${stale ? "text-system-orange" : "text-label-tertiary"}`}
+              className={cn(
+                "type-caption",
+                stale ? "text-system-orange" : "text-label-tertiary",
+              )}
             >
               {stale ?? updated}
             </p>

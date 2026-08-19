@@ -223,9 +223,9 @@ describe("UsageView — plan limits layered over local estimates", () => {
     const card = screen.getByText("Anthropic").closest("li")!
     const limits = within(card).getByRole("region", { name: "Anthropic plan limits" })
     expect(within(limits).getByText("5-hour limit")).toBeInTheDocument()
-    expect(within(limits).getByText("81% used")).toBeInTheDocument()
+    expect(within(limits).getByText("81%")).toBeInTheDocument()
     expect(within(limits).getByText("Weekly limit")).toBeInTheDocument()
-    expect(within(limits).getByText("Resets in 2h 30m")).toBeInTheDocument()
+    expect(within(limits).getByText(/resets in 2h 30m/)).toBeInTheDocument()
 
     // The estimate half is still there and unchanged: a reader who connects a
     // source gains the limits, they do not trade one surface for the other.
@@ -247,7 +247,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     const bar = screen.getByRole("progressbar", { name: "5-hour limit" })
     expect(bar).toHaveAttribute("aria-valuenow", "81")
     expect(bar).toHaveAttribute("aria-valuetext", "81% used; 50% of the period elapsed")
-    expect(within(bar).getByTestId("live-usage-elapsed-five-hour")).toHaveStyle({
+    expect(screen.getByTestId("live-usage-elapsed-five-hour")).toHaveStyle({
       left: "50%",
     })
   })
@@ -336,7 +336,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
 
     expect(screen.getByText(/may have moved since/)).toBeInTheDocument()
     // Still the best figures anyone has, so they stay on screen.
-    expect(screen.getByText("81% used")).toBeInTheDocument()
+    expect(screen.getByText("81%")).toBeInTheDocument()
   })
 
   it("shows nothing at all where no source could prove a limit", () => {

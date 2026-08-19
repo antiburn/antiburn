@@ -99,7 +99,7 @@ describe("UsagePane", () => {
     pane()
     await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
     expect(screen.getByText(/Asked Claude directly/)).toBeInTheDocument()
-    expect(screen.getByText("Live · stated 5m ago")).toBeInTheDocument()
+    expect(screen.getByText("Live 5m ago")).toBeInTheDocument()
   })
 
   it("degrades to an empty list rather than throwing when the shell answers with nothing", async () => {
