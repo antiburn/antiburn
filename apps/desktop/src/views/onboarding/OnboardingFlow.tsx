@@ -174,15 +174,17 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
           is ever uploaded.
         </p>
         {/* Two claims, because two is what this screen owes: that antiburn
-            does go online, as the reader rather than as us, and that
-            analytics exist and have a switch. "No antiburn account" and
+            does go online, on the reader's own account rather than ours,
+            and that analytics exist and have a switch. What carries the
+            first claim is "credentials you already have" — plain, and the
+            actual substance of it. "No antiburn account" and
             "nothing of ours the app needs" both went — the paragraph above
             already says "No account", and Settings → Privacy is the long
             form. Gated on support: a build with no injected endpoint cannot
             send anything, and this is the first screen anyone sees. */}
         <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          It does go online as you: reading a provider&rsquo;s usage figures with your own
-          credentials, and checking for new versions.{' '}
+          It goes online to read your provider&rsquo;s usage figures, using credentials you
+          already have, and to check for updates.{' '}
           {usageAnalyticsSupported
             ? 'It also sends anonymised analytics about itself, which you can switch off on the last screen.'
             : 'This build has no analytics endpoint, so it sends nothing about itself.'}
