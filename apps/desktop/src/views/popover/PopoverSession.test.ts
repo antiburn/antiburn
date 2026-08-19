@@ -32,8 +32,16 @@ describe('sessionKey', () => {
   });
 
   it('is case-insensitive on the WSL distribution name', () => {
-    const lower = sessionKey({ agent: 'claude-code', sessionId: 'same-id', wslDistro: 'ubuntu' });
-    const upper = sessionKey({ agent: 'claude-code', sessionId: 'same-id', wslDistro: 'UBUNTU' });
+    const lower = sessionKey({
+      agent: 'claude-code',
+      sessionId: 'same-id',
+      wslDistro: 'ubuntu',
+    });
+    const upper = sessionKey({
+      agent: 'claude-code',
+      sessionId: 'same-id',
+      wslDistro: 'UBUNTU',
+    });
 
     expect(lower).toBe(upper);
   });
@@ -56,7 +64,11 @@ describe('sessionKey', () => {
   });
 
   it('does not collide a sub-agent key with a top-level session of the same id', () => {
-    const topLevel = sessionKey({ agent: 'claude-code', sessionId: 'shared-id', wslDistro: null });
+    const topLevel = sessionKey({
+      agent: 'claude-code',
+      sessionId: 'shared-id',
+      wslDistro: null,
+    });
     const subagent = sessionKey({
       agent: 'claude-code',
       sessionId: 'shared-id',
