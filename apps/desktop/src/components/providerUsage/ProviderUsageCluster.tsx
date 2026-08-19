@@ -3,7 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { Settings } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 
 import type { LiveUsageSummaryPayload, ProviderUsagePayload } from '../../lib/ipc';
 import { EMPTY_LIVE_USAGE } from '../../lib/ipc';
@@ -21,6 +22,8 @@ import {
   usageStateLabel,
   usageValueLabel,
 } from '../../lib/presentation/providerUsage';
+import { useDialogDismissal } from '../../lib/useDialogDismissal';
+import { useHoverIntent } from '../../lib/useHoverIntent';
 import { TextRoll } from '../ui/TextRoll';
 import { ProviderUsageDetail } from './ProviderUsageDetail';
 import { ProviderGlyph, providerMark } from './ProviderUsagePrimitives';
@@ -112,27 +115,25 @@ export function ProviderUsageCluster({
   const [openedBy, setOpenedBy] = useState<'hover' | 'pointer'>('pointer');
   /** Mirrors `openedBy` so a pending timer reads it without re-subscribing. */
   const openedByRef = useRef(openedBy);
+  // Written directly during render rather than synced in an effect: this ref
+  // is only ever read from timers and event handlers, never during render, so
+  // there is no tearing to guard against. See useGlobalKeydown.ts for the
+  // same "latest ref" pattern.
+  // eslint-disable-next-line react-hooks/refs
+  openedByRef.current = openedBy;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   /** The chip that opened the panel, so focus can be handed back to it. */
   const invokerRef = useRef<HTMLElement | null>(null);
   /** The pending hover open or close, so either can be called off. */
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { schedule: scheduleHover, cancel: cancelHover } = useHoverIntent();
   const panelId = useId();
   const headingId = `${panelId}-heading`;
-
-  const cancelHover = useCallback(() => {
-    if (hoverTimer.current != null) {
-      clearTimeout(hoverTimer.current);
-      hoverTimer.current = null;
-    }
-  }, []);
 
   /** Open on hover, once the pointer has stayed long enough to mean it. */
   const hoverOpen = useCallback(
     (provider: string) => {
-      cancelHover();
-      hoverTimer.current = setTimeout(() => {
+      scheduleHover(() => {
         setOpenProvider((current) => {
           // A deliberately-opened panel is not replaced by a passing pointer.
           if (current != null && openedByRef.current === 'pointer') return current;
@@ -141,17 +142,16 @@ export function ProviderUsageCluster({
         });
       }, HOVER_OPEN_MS);
     },
-    [cancelHover],
+    [scheduleHover],
   );
 
   /** Close on hover-out, unless the reader opened it on purpose. */
   const hoverClose = useCallback(() => {
-    cancelHover();
-    hoverTimer.current = setTimeout(() => {
+    scheduleHover(() => {
       if (openedByRef.current === 'pointer') return;
       setOpenProvider(null);
     }, HOVER_CLOSE_MS);
-  }, [cancelHover]);
+  }, [scheduleHover]);
 
   const today = providersForWindow(providers, 'today');
   const visible = today.slice(0, maxVisible);
@@ -172,71 +172,16 @@ export function ProviderUsageCluster({
 
   // Dismissal is a genuine synchronization with the document: a pointer press
   // anywhere outside the footer closes the panel, and Escape closes it from
-  // the keyboard. Both listeners exist only while a panel is open.
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) close();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        // Claimed, so the popover's own Escape handler does not also dismiss
-        // the whole window: one key press closes one thing.
-        event.preventDefault();
-        close();
-        return;
-      }
-      // Tab is only held inside a panel the reader opened on purpose. A
-      // hover panel is not modal and must not capture the key.
-      if (event.key !== 'Tab' || openedByRef.current !== 'pointer') return;
-
-      const panel = panelRef.current;
-      if (!panel) return;
-      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
-      // A panel with nothing to focus still holds the key, or Tab would walk
-      // out of a dialog the reader has not dismissed.
-      if (focusable.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !panel.contains(active))) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && (active === last || !panel.contains(active))) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open, close]);
-
-  // Move focus into the dialog on open. The panel itself is the target when it
-  // has no control of its own, so the reader is at least *inside* the thing
-  // their key presses now apply to.
-  useEffect(() => {
-    if (!open || openedBy !== 'pointer') return;
-    const panel = panelRef.current;
-    if (!panel) return;
-    const target = panel.querySelector<HTMLElement>(FOCUSABLE) ?? panel;
-    target.focus();
-  }, [open, openedBy]);
-
-  // Synced in an effect rather than assigned during render: a ref written
-  // while rendering is a value React is entitled to discard.
-  useEffect(() => {
-    openedByRef.current = openedBy;
-  }, [openedBy]);
-
-  // A pending timer outliving the component would set state on nothing.
-  useEffect(() => cancelHover, [cancelHover]);
+  // the keyboard. Both listeners exist only while a panel is open. Tab is
+  // additionally held inside the panel while it was opened on purpose.
+  useDialogDismissal({
+    active: !!open,
+    containerRef: rootRef,
+    trapRef: panelRef,
+    trapFocus: openedBy === 'pointer',
+    focusableSelector: FOCUSABLE,
+    onDismiss: close,
+  });
 
   const viewAll = () => {
     close();
@@ -299,8 +244,20 @@ export function ProviderUsageCluster({
                 return;
               }
               invokerRef.current = event.currentTarget;
-              setOpenedBy('pointer');
-              setOpenProvider(provider.provider);
+              // Flushed synchronously so the panel is in the DOM by the next
+              // line: covers both a fresh open and a hover-open promoted to
+              // pointer. Deliberately not an effect keyed on [open, openedBy]
+              // — `open` is a freshly `.find()`-derived object each render,
+              // so its identity changes on every render (including the ones
+              // an IPC poll tick causes while the panel just sits open), and
+              // an effect on it would re-steal focus each time.
+              flushSync(() => {
+                setOpenedBy('pointer');
+                setOpenProvider(provider.provider);
+              });
+              const target =
+                panelRef.current?.querySelector<HTMLElement>(FOCUSABLE) ?? panelRef.current;
+              target?.focus();
             }}
             className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-control px-1.5 type-caption tabular-nums leading-none text-label-secondary hover:bg-surface-hover ${
               isOpen ? 'bg-surface-hover' : ''

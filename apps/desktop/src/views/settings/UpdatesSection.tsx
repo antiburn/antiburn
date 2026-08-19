@@ -4,7 +4,7 @@
 
 import { check } from '@tauri-apps/plugin-updater';
 import { AlertTriangle, Check as CheckGlyph, Download, Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 import { Card } from '../../components/ui/Card';
 import { PushButton } from '../../components/ui/PushButton';
@@ -12,6 +12,7 @@ import { Row } from '../../components/ui/Row';
 import { SectionGroup } from '../../components/ui/SectionGroup';
 import { StatusText } from '../../components/ui/StatusText';
 import { ToggleRow } from '../../components/ui/ToggleRow';
+import { createExternalStore } from '../../lib/externalStore';
 import { relativeTime } from '../../lib/presentation/relativeTime';
 import { onUpdateStatus, type AppInfo, type UpdateStatusPayload } from '../../lib/ipc';
 import type { AppSettingsController } from './useAppSettings';
@@ -95,28 +96,38 @@ function CheckStatus({ state }: { state: CheckState }) {
   }
 }
 
-export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) {
-  const [state, setState] = useState<CheckState>({ kind: 'idle' });
+type UpdatesSnapshot = {
+  state: CheckState;
   /** When the shell last checked on its own, as it reported it. */
-  const [lastAutomatic, setLastAutomatic] = useState<string | null>(null);
-  const supported = info?.updatesSupported ?? false;
+  lastAutomatic: string | null;
+};
 
+// Module-level: the shell's automatic-check schedule and a manual check both
+// land here regardless of how many settings windows are open to see them.
+const updateStatusStore = createExternalStore<UpdatesSnapshot>({
+  initial: { state: { kind: 'idle' }, lastAutomatic: null },
   // The shell owns the schedule, so this section learns about an automatic
   // check the same way it learns about anything else the shell did: an event.
-  useEffect(() => {
-    let active = true;
-    const pending = onUpdateStatus((status) => {
-      if (!active) return;
-      setState(stateFromEvent(status));
-      if (status.automatic) setLastAutomatic(status.checkedAt);
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, []);
+  subscribe: (set) =>
+    onUpdateStatus((status) => {
+      const current = updateStatusStore.getSnapshot();
+      set({
+        state: stateFromEvent(status),
+        lastAutomatic: status.automatic ? status.checkedAt : current.lastAutomatic,
+      });
+    }),
+});
+
+export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) {
+  const { state, lastAutomatic } = useSyncExternalStore(
+    updateStatusStore.subscribe,
+    updateStatusStore.getSnapshot,
+  );
+  const supported = info?.updatesSupported ?? false;
 
   const runCheck = useCallback(async () => {
+    const setState = (next: CheckState) =>
+      updateStatusStore.set({ ...updateStatusStore.getSnapshot(), state: next });
     setState({ kind: 'checking' });
     try {
       const found = await check();

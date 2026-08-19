@@ -12,18 +12,12 @@ import {
   FolderGit2,
   Gauge,
 } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 
 import { ScrollPane } from '../components/ui/ScrollPane';
 import { SidebarNav, type SidebarNavItem } from '../components/ui/SidebarNav';
-import {
-  appInfo,
-  closeCurrentWindow,
-  onSettingsPaneRequest,
-  quitApp,
-  takeSettingsPane,
-  type AppInfo,
-} from '../lib/ipc';
+import { closeCurrentWindow, quitApp } from '../lib/ipc';
+import { useGlobalKeydown } from '../lib/useGlobalKeydown';
 import { isMacOS } from '../lib/platform';
 import { isSettingsPane, type SettingsPane } from '../lib/settingsPanes';
 import { AboutPane } from './settings/AboutPane';
@@ -31,6 +25,7 @@ import { AppearancePane } from './settings/AppearancePane';
 import { GeneralPane } from './settings/GeneralPane';
 import { NotificationsPane } from './settings/NotificationsPane';
 import { PrivacyPane } from './settings/PrivacyPane';
+import { SettingsWindowSession } from './settings/SettingsWindowSession';
 import { SourcesPane } from './settings/SourcesPane';
 import { UsagePane } from './settings/UsagePane';
 import { useAppSettings } from './settings/useAppSettings';
@@ -71,48 +66,13 @@ const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
 ];
 
 export function SettingsView() {
-  const [pane, setPane] = useState<SettingsPane>('general');
-  const [info, setInfo] = useState<AppInfo | null>(null);
-  const viewportRef = useRef<HTMLDivElement>(null);
+  const [session] = useState(() => new SettingsWindowSession());
+  const { info, pane } = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+    session.getSnapshot,
+  );
   const controller = useAppSettings();
-
-  useLayoutEffect(() => {
-    if (viewportRef.current) viewportRef.current.scrollTop = 0;
-  }, [pane]);
-
-  useEffect(() => {
-    let active = true;
-    appInfo()
-      .then((resolved) => {
-        if (active) setInfo(resolved);
-      })
-      .catch(() => {
-        if (active) setInfo(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // A pane somebody asked for. Taken once on mount (the window may have been
-  // created *by* that request), and listened for afterwards (a window that was
-  // already open never mounts again). Unknown ids are ignored rather than
-  // rendering nothing.
-  useEffect(() => {
-    let active = true;
-    void takeSettingsPane()
-      .then((requested) => {
-        if (active && isSettingsPane(requested)) setPane(requested);
-      })
-      .catch(() => {});
-    const pending = onSettingsPaneRequest((requested) => {
-      if (active && isSettingsPane(requested)) setPane(requested);
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, []);
 
   // ⌘W closes the window. The shell runs as an accessory app with no
   // application menu, so the standard shortcut has no owner unless it is
@@ -120,20 +80,12 @@ export function SettingsView() {
   // a hide), so this takes the same path as the title-bar button.
   // Esc must NOT close: dismiss-on-Escape is modal behavior and a settings
   // window is not a modal. Do not "fix" this by adding Escape.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (
-        (event.metaKey || event.ctrlKey) &&
-        !event.altKey &&
-        event.key.toLowerCase() === 'w'
-      ) {
-        event.preventDefault();
-        void closeCurrentWindow();
-      }
+  useGlobalKeydown(true, (event) => {
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'w') {
+      event.preventDefault();
+      void closeCurrentWindow();
     }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, []);
+  });
 
   // On macOS the native title bar is hidden (overlay style in
   // `src-tauri/src/settings.rs`), so the content column pushes down past the
@@ -163,7 +115,7 @@ export function SettingsView() {
         items={PANES}
         value={pane}
         onChange={(next) => {
-          if (isSettingsPane(next)) setPane(next);
+          if (isSettingsPane(next)) session.setPane(next);
         }}
         ariaLabel="Settings sections"
         // The overlay title bar hides the native bar: pt-7 plus the tablist's
@@ -184,12 +136,25 @@ export function SettingsView() {
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ScrollPane viewportClassName={contentPadding} viewportRef={viewportRef}>
+        <ScrollPane viewportClassName={contentPadding}>
           {/* Keyed by pane so a section switch remounts the panel and plays
               the entrance once; the global reduced-motion clamp in
-              styles/motion.css neutralizes it for readers who asked. */}
+              styles/motion.css neutralizes it for readers who asked. The ref
+              callback resets the shared scroll viewport when this node mounts
+              — once per pane switch — in place of a layout effect keyed on
+              `pane`. It reaches the viewport through the live DOM (`closest`)
+              rather than a React ref: `ScrollPane` rebuilds its own viewport
+              ref callback on every render, so a ref *object* can transiently
+              read back `null` here (React attaches refs child-before-parent,
+              and this node is the viewport's child) even though the viewport
+              element itself — a plain DOM ancestor — is already in the tree by
+              the time any ref for this commit runs. */}
           <div
             key={pane}
+            ref={(node) => {
+              const viewport = node?.closest<HTMLDivElement>('.ui-scroll-viewport');
+              if (viewport) viewport.scrollTop = 0;
+            }}
             role="tabpanel"
             id={`${pane}-panel`}
             aria-labelledby={`${pane}-tab`}
@@ -203,7 +168,9 @@ export function SettingsView() {
             {pane === 'privacy' && <PrivacyPane />}
             {pane === 'notifications' && <NotificationsPane {...controller} />}
             {pane === 'usage' && <UsagePane {...controller} />}
-            {pane === 'about' && <AboutPane {...controller} info={info} onOpenPane={setPane} />}
+            {pane === 'about' && (
+              <AboutPane {...controller} info={info} onOpenPane={session.setPane} />
+            )}
           </div>
         </ScrollPane>
       </div>

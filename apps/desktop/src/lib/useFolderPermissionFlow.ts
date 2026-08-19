@@ -20,10 +20,11 @@
  * - **error** — the request never reached the system. Retrying is reasonable.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import { requestFolderAccess } from './ipc';
 import type { DeferredPermissionDir } from './types/repository';
+import { useExternalSubscription } from './useExternalSubscription';
 
 /** Where the flow is. */
 export type FlowPhase =
@@ -86,12 +87,15 @@ export function useFolderPermissionFlow(
   const cancelled = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Held in a ref so a caller passing a fresh closure every render does not
-  // restart the queue, and written in an effect because a ref must not be
-  // touched during render.
+  // restart the queue. Written directly in the render body (the "latest ref"
+  // pattern), not through an effect: it is only ever read inside the async
+  // `step()` below, never during render, so there is no tearing risk.
   const onGrantedRef = useRef(onGranted);
-  useEffect(() => {
-    onGrantedRef.current = onGranted;
-  }, [onGranted]);
+  // Deliberate render-body ref write (the "latest ref" pattern): only ever
+  // read inside `step()`, an async callback, never during render, so there is
+  // no tearing risk.
+  // eslint-disable-next-line react-hooks/refs
+  onGrantedRef.current = onGranted;
 
   const clearTimer = useCallback(() => {
     if (timer.current !== null) {
@@ -102,12 +106,14 @@ export function useFolderPermissionFlow(
 
   // A component unmounting mid-flow must not leave a timer that resumes into a
   // dead tree, and must not keep answering for a reader who has moved on.
-  useEffect(
-    () => () => {
-      cancelled.current = true;
-      clearTimer();
-    },
-    [clearTimer],
+  useExternalSubscription(
+    useCallback(
+      () => () => {
+        cancelled.current = true;
+        clearTimer();
+      },
+      [clearTimer],
+    ),
   );
 
   const reset = useCallback(() => {

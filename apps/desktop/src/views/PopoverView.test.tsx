@@ -217,7 +217,10 @@ describe('PopoverView', () => {
       }),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    // The session pane is a lazy-loaded chunk: its own "Session Analytics"
+    // heading briefly shares text with the Suspense fallback's, so wait for a
+    // control unique to the loaded pane before treating it as ready.
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
 
     expect(await screen.findByText('Wire the tray popover')).toBeInTheDocument();
     expect(

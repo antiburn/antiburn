@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from 'react';
 
 import { AlertTriangle } from 'lucide-react';
 
@@ -12,39 +12,11 @@ import { ProviderUsageCluster } from '../components/providerUsage';
 import { Banner } from '../components/ui/Banner';
 import { Skeleton } from '../components/ui/Skeleton';
 import { renderAgentIcon } from '../lib/agentIcon';
-import { indexOfSession, toActivityEntries } from '../lib/activityEntries';
-import { applyTheme } from '../lib/appearance';
-import { attentionBanners, type AttentionKind } from '../lib/attention';
-import {
-  DEFAULT_SETTINGS,
-  EMPTY_LIVE_USAGE,
-  EMPTY_PROVIDER_USAGE,
-  getLiveUsage,
-  getProviderUsage,
-  getSettings,
-  getStorageHealth,
-  HEALTHY_STORAGE,
-  hidePopover,
-  listRecentSessions,
-  listRepositories,
-  onScanEvent,
-  onSessionsInvalidated,
-  onSettingsChanged,
-  onStorageHealth,
-  openSettingsWindow,
-  scanNow,
-  setPopoverHeight,
-  type AppSettings,
-  type LiveUsageSummaryPayload,
-  type ProviderUsageSummaryPayload,
-  type StorageHealthPayload,
-} from '../lib/ipc';
-import {
-  popoverHeightFor,
-  prefersReducedMotion,
-  type PopoverSurface,
-} from '../lib/popoverHeight';
-import type { LocalRepositoryItem, LocalRepositoryStatus } from '../lib/types/repository';
+import { indexOfSession } from '../lib/activityEntries';
+import { attentionBanners } from '../lib/attention';
+import { DEFAULT_SETTINGS, openSettingsWindow } from '../lib/ipc';
+import type { PopoverSurface } from '../lib/popoverHeight';
+import { PopoverSession, sessionKey } from './popover/PopoverSession';
 import { UsageView } from './popover/UsageView';
 import type { SessionSubject } from './popover/SessionPane';
 
@@ -69,8 +41,9 @@ const SessionPane = lazy(() =>
  * component carried for one surface out of four. What is left of that here is
  * only what the attention banners genuinely read.
  *
- * Three things are owned here rather than by any one surface, because they are
- * properties of *the window*:
+ * Three things are owned by `PopoverSession` rather than by any one surface,
+ * because they are properties of *the window* and not of a component
+ * lifecycle:
  *
  * - **Height.** Each surface declares one (`lib/popoverHeight`) and the shell
  *   animates between them, bounded at 700px.
@@ -78,13 +51,14 @@ const SessionPane = lazy(() =>
  *   window unless a surface has already handled the key for something nearer —
  *   an open provider panel, say — which those surfaces signal by calling
  *   `preventDefault`.
- * - **Focus.** Swapping surfaces by conditional render leaves focus on `<body>`
- *   and tells a screen-reader user nothing. Every surface marks its heading,
- *   and that heading is focused when the surface changes.
+ * - **Focus.** Swapping surfaces leaves focus on `<body>` and tells a
+ *   screen-reader user nothing. Every surface marks its heading, and that
+ *   heading is focused when the surface changes — here, by keying the surface
+ *   wrapper so it remounts and a callback ref can claim focus each time.
  *
- * A fourth thing is owned here for a different reason: the **attention
- * banners** above the activity list. What they may say is decided by
- * `lib/attention`, from signals the shell reports; dismissal is held here,
+ * A fourth thing is owned by the session for a different reason: the
+ * **attention banners** above the activity list. What they may say is decided
+ * by `lib/attention`, from signals the shell reports; dismissal is held there,
  * because "I have seen this" is a fact about this run of the popover and not
  * something worth persisting.
  */
@@ -122,270 +96,54 @@ function SessionPaneLoading() {
   );
 }
 
-/** Narrow the shell's status string to the repository list's union. */
-function repositoryStatus(status: string): LocalRepositoryStatus {
-  switch (status) {
-    case 'accessible':
-    case 'permission_denied':
-    case 'not_cloned':
-    case 'disabled':
-      return status;
-    default:
-      return 'accessible';
-  }
-}
-
 export function PopoverView() {
-  const [settings, setSettingsState] = useState<AppSettings | null>(null);
-  const [entries, setEntries] = useState<LocalActivityEntry[] | null>(null);
-  const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
-  /** Navigation stack. Empty means the activity list is showing. */
-  const [stack, setStack] = useState<SessionSubject[]>([]);
-  /**
-   * Provider usage, or null while the first snapshot is in flight. The footer
-   * is withheld rather than shown empty until then: an empty usage footer and
-   * a not-yet-loaded one look identical, and one of them is a lie.
-   */
-  const [usage, setUsage] = useState<ProviderUsageSummaryPayload | null>(null);
-  /**
-   * The provider's own limit figures. Unlike `usage` this starts at the empty
-   * summary rather than null: the limit half is genuinely optional, so "no
-   * source has anything" is a real state and not a loading one.
-   */
-  const [liveUsage, setLiveUsage] = useState<LiveUsageSummaryPayload>(EMPTY_LIVE_USAGE);
-  /** Whether the full Usage view is showing over the activity list. */
-  const [showUsage, setShowUsage] = useState(false);
-  /** Whether the local database is still accepting writes. */
-  const [storage, setStorage] = useState<StorageHealthPayload>(HEALTHY_STORAGE);
-  /** Banners the reader has waved away this run. */
-  const [dismissed, setDismissed] = useState<readonly AttentionKind[]>([]);
+  const [session] = useState(() => new PopoverSession());
+  const state = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+    session.getSnapshot,
+  );
 
-  const current = stack.at(-1) ?? null;
-  const windowDays = settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
-
-  // The settings-changed subscription compares against the days it last saw
-  // without re-subscribing on every change.
-  const windowDaysRef = useRef(windowDays);
-  useEffect(() => {
-    windowDaysRef.current = windowDays;
-  }, [windowDays]);
-
-  const refreshEntries = useCallback(async (days: number) => {
-    const payloads = await listRecentSessions(days);
-    setEntries(toActivityEntries(payloads));
-  }, []);
-
-  const refreshUsage = useCallback(async () => {
-    // Two commands, refreshed together and settled independently: the limit
-    // half is allowed to be missing without the spend half waiting on it, and
-    // a source that throws leaves the estimate surface untouched.
-    const [spend, limits] = await Promise.all([
-      getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
-      getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
-    ]);
-    setUsage(spend);
-    setLiveUsage(limits);
-  }, []);
-
-  const refreshRepositoryList = useCallback(async () => {
-    const payloads = await listRepositories().catch(() => []);
-    setRepositories(
-      payloads.map((payload) => ({ ...payload, status: repositoryStatus(payload.status) })),
-    );
-  }, []);
-
-  // First load: preferences decide the theme and the visible window, so
-  // everything else waits on them.
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      const stored = await getSettings().catch(() => DEFAULT_SETTINGS);
-      if (!active) return;
-      applyTheme(stored.theme);
-      setSettingsState(stored);
-      const health = await getStorageHealth().catch(() => HEALTHY_STORAGE);
-      if (!active) return;
-      setStorage(health);
-      // The repository list is read on first paint rather than waiting for a
-      // scan to finish, because the source-access banner needs it — a blocked
-      // repository is exactly the case where no scan will ever complete to
-      // deliver the news. Not awaited: it is a store read that nothing below
-      // depends on, and the activity list is what a reader opened the popover
-      // for.
-      void refreshRepositoryList();
-      await Promise.all([
-        refreshEntries(stored.activityWindowDays).catch(() => setEntries([])),
-        refreshUsage(),
-      ]);
-    })();
-    return () => {
-      active = false;
-    };
-  }, [refreshEntries, refreshUsage, refreshRepositoryList]);
-
-  // Settings are written in the settings window but rendered here: the theme,
-  // the day window, and the pause state all change what this window shows.
-  // The shell broadcasts every write, and the popover restyles and re-queries
-  // as needed instead of waiting for its next mount (which never comes — the
-  // window lives for the whole run).
-  useEffect(() => {
-    let active = true;
-    const pending = onSettingsChanged((stored) => {
-      if (!active) return;
-      const previousDays = windowDaysRef.current;
-      applyTheme(stored.theme);
-      setSettingsState(stored);
-      if (stored.activityWindowDays !== previousDays) {
-        void refreshEntries(stored.activityWindowDays).catch(() => {});
-      }
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, [refreshEntries]);
-
-  // Sessions can leave the index without a scan — a repository opt-out purges
-  // its rows on the spot — and the list must not keep showing them.
-  useEffect(() => {
-    let active = true;
-    const pending = onSessionsInvalidated(() => {
-      if (!active) return;
-      void refreshEntries(windowDaysRef.current).catch(() => {});
-      void refreshUsage();
-      void refreshRepositoryList();
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, [refreshEntries, refreshUsage, refreshRepositoryList]);
-
-  // Storage health changes rarely and matters immediately, so it is pushed
-  // rather than polled. Only changes are emitted, so this is not a per-tick
-  // event.
-  useEffect(() => {
-    let active = true;
-    const pending = onStorageHealth((status) => {
-      if (!active) return;
-      setStorage(status);
-      // A failure that recovers should not leave its banner dismissed, or the
-      // next failure would arrive silently.
-      if (!status.failing)
-        setDismissed((previous) => previous.filter((id) => id !== 'storage'));
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, []);
-
-  // The scan is the only thing that changes what is on screen behind the
-  // reader's back, so that is what the list listens for rather than polling.
-  // Only `finished` matters here: no surface in this window draws a pass in
-  // progress, so the intermediate phases have nothing to say.
-  useEffect(() => {
-    let active = true;
-    const pending = onScanEvent((_status, phase) => {
-      if (!active) return;
-      if (phase !== 'finished') return;
-      void refreshEntries(windowDays).catch(() => {});
-      void refreshUsage();
-      void refreshRepositoryList();
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, [windowDays, refreshEntries, refreshUsage, refreshRepositoryList]);
+  const current = state.stack.at(-1) ?? null;
+  const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays;
 
   /* ---------------------------------------------------------------------
-   * Window behaviour: which surface is showing, how tall it is, and Escape
+   * Window behaviour: which surface is showing, and focus on the way in
    * ------------------------------------------------------------------ */
 
   const surface: PopoverSurface =
-    showUsage && usage ? 'usage' : current ? 'session' : 'activity';
+    state.showUsage && state.usage ? 'usage' : current ? 'session' : 'activity';
 
-  useEffect(() => {
-    // Reduced motion is a webview preference, so the decision is made here and
-    // the shell simply honours it.
-    void setPopoverHeight(popoverHeightFor(surface), !prefersReducedMotion()).catch(() => {});
-  }, [surface]);
-
-  const surfaceRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    // Conditional render swaps the whole surface; without this, focus is left
-    // on <body> and a keyboard or screen-reader user has to walk back in from
-    // the top of the document every time.
-    surfaceRef.current?.querySelector<HTMLElement>('[data-view-heading]')?.focus();
-  }, [surface]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      // A surface with something nearer to close — an open provider panel —
-      // claims the key by calling `preventDefault`. Anything left over
-      // dismisses the popover, which is the keyboard's only way out of a tray
-      // window.
-      if (event.defaultPrevented) return;
-      void hidePopover().catch(() => {});
-    };
-    // Bound to `window`, deliberately: it is the last object in the event's
-    // propagation path, so every surface listening on `document` has already
-    // had its chance to claim the key. Dismissing the whole window is the
-    // coarsest possible response to Escape and must therefore be the last.
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
-
-  // ⌘, opens Settings — the platform's standard preferences shortcut, which
-  // an accessory app with no application menu has to own itself.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === ',') {
-        event.preventDefault();
-        void openSettingsWindow();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+  // Conditional render swaps the whole surface; without this, focus is left
+  // on <body> and a keyboard or screen-reader user has to walk back in from
+  // the top of the document every time. `key={surface}` below forces the
+  // wrapper to remount on every surface change, which is what makes this
+  // ref callback fire again — a ref on a node that never remounts would only
+  // ever run once.
+  const focusHeading = useCallback((node: HTMLDivElement | null) => {
+    node?.querySelector<HTMLElement>('[data-view-heading]')?.focus();
   }, []);
 
   /* ---------------------------------------------------------------------
-   * Actions
+   * Session analytics: derived from the session's tagged load result
    * ------------------------------------------------------------------ */
 
-  /** Run a discovery pass. The source-access banner's only action. */
-  const handleRescan = useCallback(async () => {
-    await scanNow().catch(() => null);
-  }, []);
+  const currentKey = current ? sessionKey(current) : null;
+  const settledAnalytics = state.analytics?.key === currentKey ? state.analytics : null;
+  const sessionPayload = settledAnalytics?.payload ?? null;
+  const sessionLoading = current != null && settledAnalytics == null;
+  const sessionError = settledAnalytics?.error ?? false;
 
   /* ---------------------------------------------------------------------
    * Attention banners
    * ------------------------------------------------------------------ */
 
-  const banners = attentionBanners({ repositories, storage }).filter(
-    (banner) => !dismissed.includes(banner.id),
-  );
+  const banners = attentionBanners({
+    repositories: state.repositories,
+    storage: state.storage,
+  }).filter((banner) => !state.dismissed.includes(banner.id));
 
-  const dismissBanner = useCallback((id: AttentionKind) => {
-    setDismissed((previous) => (previous.includes(id) ? previous : [...previous, id]));
-  }, []);
-
-  const openSession = useCallback((subject: SessionSubject) => {
-    setStack((previous) => [...previous, subject]);
-  }, []);
-
-  const goBack = useCallback(() => {
-    setStack((previous) => previous.slice(0, -1));
-  }, []);
-
-  /** Replace the top of the stack, for the newer/older traversal. */
-  const replaceTop = useCallback((subject: SessionSubject) => {
-    setStack((previous) => [...previous.slice(0, -1), subject]);
-  }, []);
-
-  const subjectFor = useCallback((entry: LocalActivityEntry): SessionSubject => {
+  const subjectFor = (entry: LocalActivityEntry): SessionSubject => {
     return {
       agent: entry.agent,
       sessionId: entry.sessionId ?? '',
@@ -393,7 +151,7 @@ export function PopoverView() {
       ...(entry.title ? { title: entry.title } : {}),
       isActive: entry.isActive,
     };
-  }, []);
+  };
 
   /* ---------------------------------------------------------------------
    * Surfaces
@@ -402,8 +160,14 @@ export function PopoverView() {
   function body() {
     // Usage sits over the list rather than in the session stack: it is a second
     // way of reading the same activity, not a place a session leads to.
-    if (showUsage && usage) {
-      return <UsageView summary={usage} live={liveUsage} onBack={() => setShowUsage(false)} />;
+    if (state.showUsage && state.usage) {
+      return (
+        <UsageView
+          summary={state.usage}
+          live={state.liveUsage}
+          onBack={() => session.setShowUsage(false)}
+        />
+      );
     }
 
     if (current) {
@@ -411,25 +175,30 @@ export function PopoverView() {
       // sub-agent or a fork opened from elsewhere has no neighbours.
       const position = current.subagent
         ? -1
-        : indexOfSession(entries ?? [], current.agent, current.sessionId, current.wslDistro);
+        : indexOfSession(
+            state.entries ?? [],
+            current.agent,
+            current.sessionId,
+            current.wslDistro,
+          );
       const neighbour = (offset: number) => {
-        const entry = position >= 0 ? entries?.[position + offset] : undefined;
+        const entry = position >= 0 ? state.entries?.[position + offset] : undefined;
         if (!entry?.sessionId) return undefined;
-        return () => replaceTop(subjectFor(entry));
+        return () => session.replaceTop(subjectFor(entry));
       };
 
       return (
         <Suspense fallback={<SessionPaneLoading />}>
           <SessionPane
             subject={current}
-            onBack={goBack}
+            payload={sessionPayload}
+            loading={sessionLoading}
+            error={sessionError}
+            onBack={session.goBack}
             onPrev={neighbour(-1)}
             onNext={neighbour(1)}
-            onOpenSession={openSession}
-            onDeleted={() => {
-              goBack();
-              void refreshEntries(windowDays).catch(() => {});
-            }}
+            onOpenSession={session.openSession}
+            onDeleted={session.sessionDeleted}
           />
         </Suspense>
       );
@@ -453,12 +222,12 @@ export function PopoverView() {
                 actionLabel={banner.actionLabel}
                 onAction={() => {
                   if (banner.action.kind === 'rescan') {
-                    void handleRescan();
+                    void session.rescan();
                     return;
                   }
                   void openSettingsWindow(banner.action.pane);
                 }}
-                onDismiss={() => dismissBanner(banner.id)}
+                onDismiss={() => session.dismissBanner(banner.id)}
                 dismissLabel={banner.dismissLabel}
               />
             ))}
@@ -466,18 +235,18 @@ export function PopoverView() {
         )}
 
         <div className="min-h-0 flex-1">
-          {entries == null ? (
+          {state.entries == null ? (
             <ActivitySkeleton />
           ) : (
             <LocalActivityList
-              entries={entries}
+              entries={state.entries}
               days={windowDays}
               // The affordance sits on the day-range label, so it lands on the
               // pane that owns "Show the last" rather than the last-open pane.
               onOpenSettings={() => void openSettingsWindow('general')}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return;
-                openSession(subjectFor(entry));
+                session.openSession(subjectFor(entry));
               }}
               renderAgentIcon={renderAgentIcon}
             />
@@ -485,9 +254,9 @@ export function PopoverView() {
         </div>
 
         <ProviderUsageCluster
-          providers={usage?.providers ?? []}
-          live={liveUsage}
-          onViewAll={() => setShowUsage(true)}
+          providers={state.usage?.providers ?? []}
+          live={state.liveUsage}
+          onViewAll={() => session.setShowUsage(true)}
           onOpenSettings={() => void openSettingsWindow()}
         />
       </div>
@@ -495,7 +264,7 @@ export function PopoverView() {
   }
 
   return (
-    <div ref={surfaceRef} className="h-full">
+    <div key={surface} ref={focusHeading} className="h-full">
       {body()}
     </div>
   );

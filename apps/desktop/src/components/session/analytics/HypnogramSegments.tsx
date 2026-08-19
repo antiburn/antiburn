@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 
 import {
   formatCompact,
@@ -11,6 +11,7 @@ import {
   phaseLabel,
 } from '../../../lib/presentation/sessionAnalytics';
 import { useDarkTheme } from '../../../lib/theme';
+import { useElementWidth } from '../../../lib/useElementWidth';
 import type { PhaseSegment, SessionPhase } from '../../../lib/types/session';
 import { traceRibbon, type Rect } from './hypnogramGeometry';
 import { HypnogramMarkers, type MarkerKind, type ResolvedDot } from './HypnogramMarkers';
@@ -204,18 +205,7 @@ export function HypnogramSegments({
   // The chart's rendered pixel width, tracked so dots can be clustered
   // size-aware (a dot's diameter is in px, but its x is a viewBox percent).
   // 0 until measured — clustering falls back to its width-independent pass.
-  const [widthPx, setWidthPx] = useState(0);
-
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const update = () => setWidthPx(el.getBoundingClientRect().width);
-    update();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+  const widthPx = useElementWidth(wrapRef);
 
   // The SVG renders at a fixed pixel height with `preserveAspectRatio="none"`,
   // so its vertical scale is constant regardless of width.

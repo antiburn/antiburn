@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 
 import { Card } from '../../components/ui/Card';
 import { Pane } from '../../components/ui/Pane';
@@ -63,24 +63,18 @@ const OPEN_BUTTON_ID: Record<AboutDocumentId, string> = {
 
 export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutPaneProps) {
   const [openDocument, setOpenDocument] = useState<AboutDocumentId | null>(null);
-  // A ref, not state: which row to hand focus back to is a note to the next
-  // effect, and nothing renders differently for it.
-  const returnFocusTo = useRef<AboutDocumentId | null>(null);
-
-  // Back from a document returns focus to the row that opened it, so a keyboard
-  // reader resumes where they left the card rather than at the top of About.
-  useEffect(() => {
-    if (openDocument || !returnFocusTo.current) return;
-    document.getElementById(OPEN_BUTTON_ID[returnFocusTo.current])?.focus();
-    returnFocusTo.current = null;
-  }, [openDocument]);
+  // Which row to hand focus back to, once its document closes and this pane
+  // remounts the button that opened it. `autoFocus` on that button (below)
+  // acts the moment the node is created, so there is no separate step needed
+  // to move focus there — unlike a ref an effect would have to read.
+  const [returnFocusTo, setReturnFocusTo] = useState<AboutDocumentId | null>(null);
 
   if (openDocument) {
     return (
       <AboutDocumentView
         id={openDocument}
         onBack={() => {
-          returnFocusTo.current = openDocument;
+          setReturnFocusTo(openDocument);
           setOpenDocument(null);
         }}
       />
@@ -155,6 +149,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
                   id={OPEN_BUTTON_ID.licence}
                   ariaLabel="Open licence text"
                   onClick={() => setOpenDocument('licence')}
+                  autoFocus={returnFocusTo === 'licence'}
                 >
                   Open
                 </PushButton>
@@ -183,6 +178,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
                 id={OPEN_BUTTON_ID.notices}
                 ariaLabel="Open legal notices"
                 onClick={() => setOpenDocument('notices')}
+                autoFocus={returnFocusTo === 'notices'}
               >
                 Open
               </PushButton>
@@ -196,6 +192,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
                 id={OPEN_BUTTON_ID.attributions}
                 ariaLabel="Open third-party attributions"
                 onClick={() => setOpenDocument('attributions')}
+                autoFocus={returnFocusTo === 'attributions'}
               >
                 Open
               </PushButton>

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { ChevronDown, ChevronUp, FolderOpen, Zap } from 'lucide-react';
-import { Fragment, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useState } from 'react';
 
 import {
   formatBytes,
@@ -138,14 +138,24 @@ function ClampedDescription({
   expanded: boolean;
   onOverflowChange: (overflows: boolean) => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el) onOverflowChange(el.scrollHeight > el.clientHeight + 1);
-  }, [text, onOverflowChange]);
+  // Measured via a ref callback rather than a layout effect: memoizing it on
+  // the same deps the old effect had means React only detaches/reattaches it
+  // (re-running the measurement) when `text` or `onOverflowChange` actually
+  // changes — an `expanded` toggle alone leaves the identity, and so the
+  // measurement, untouched, exactly like the effect's dependency array did.
+  // Ref callbacks fire during commit, before paint, so the timing matches too.
+  const measure = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (el) onOverflowChange(el.scrollHeight > el.clientHeight + 1);
+    },
+    // `text` isn't read in the body above — it's here only to force the
+    // ref-callback detach/reattach (see the doc comment) whenever it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [text, onOverflowChange],
+  );
   return (
     <div
-      ref={ref}
+      ref={measure}
       className="mt-0.5 text-label-secondary"
       style={
         expanded
