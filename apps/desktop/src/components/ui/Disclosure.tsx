@@ -5,11 +5,19 @@
 import { ChevronDown } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
 
+/** Horizontal inset for a disclosure's header and body.
+ *
+ *  `surface` sits on the bare window at the same 4px inset as a section
+ *  header, for prose that would read as an over-built list if every paragraph
+ *  were given a container. `card` matches `Row`'s 16px, so a group dropped
+ *  inside a `Card` lines up with the card rows above it. */
+export type DisclosureInset = 'surface' | 'card';
+
+const INSET = { surface: 'px-1', card: 'px-4' } as const;
+
 /**
  * A single collapsible disclosure: a full-width header button that reveals its
- * body. Hairline-separated and chrome-free by design — it sits directly on the
- * surface rather than inside a `Card`, for explanatory prose that would read as
- * an over-built list if every paragraph were given a container.
+ * body, hairline-separated from its neighbours.
  *
  * Uncontrolled, because a disclosure's open state is presentation, not data.
  * Pass `defaultOpen` for the one that should start expanded.
@@ -22,11 +30,13 @@ export function Disclosure({
   label,
   children,
   defaultOpen = false,
+  inset = 'surface',
   className = '',
 }: {
   label: string;
   children: ReactNode;
   defaultOpen?: boolean;
+  inset?: DisclosureInset;
   className?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -46,7 +56,7 @@ export function Disclosure({
         // `active:transform-none` is what actually cancels that rule —
         // Tailwind's `scale-*` sets the separate `scale` property and composes
         // with its `transform` instead.
-        className="flex w-full items-center justify-between gap-3 rounded-control px-1 py-3 text-left active:transform-none active:opacity-100"
+        className={`flex w-full items-center justify-between gap-3 rounded-control py-3 text-left active:transform-none active:opacity-100 ${INSET[inset]}`}
       >
         <span className="type-body text-label">{label}</span>
         <ChevronDown
@@ -61,7 +71,10 @@ export function Disclosure({
       {/* Unmounted rather than hidden when collapsed, so collapsed prose stays
           out of the accessibility tree and out of find-in-page. */}
       {open && (
-        <div id={bodyId} className="type-body px-1 pb-3 text-pretty text-label-secondary">
+        <div
+          id={bodyId}
+          className={`type-body pb-3 text-pretty text-label-secondary ${INSET[inset]}`}
+        >
           {children}
         </div>
       )}
@@ -69,13 +82,25 @@ export function Disclosure({
   );
 }
 
-/** A hairline-separated stack of `Disclosure`s. */
+/** A hairline-separated stack of `Disclosure`s.
+ *
+ *  On the bare surface the group draws its own top hairline, since nothing
+ *  else marks where it starts. Inside a `Card` it must not: the card's own
+ *  border is already that line, and a second one lands directly on it. */
 export function DisclosureGroup({
   children,
+  inset = 'surface',
   className = '',
 }: {
   children: ReactNode;
+  inset?: DisclosureInset;
   className?: string;
 }) {
-  return <div className={`border-t border-separator ${className}`.trimEnd()}>{children}</div>;
+  return (
+    <div
+      className={`${inset === 'surface' ? 'border-t border-separator' : ''} ${className}`.trim()}
+    >
+      {children}
+    </div>
+  );
 }

@@ -383,18 +383,15 @@ describe('SettingsView', () => {
       await screen.findByRole('switch', { name: 'Send anonymised usage analytics' }),
     ).toBeInTheDocument();
 
-    // What a reader sees without clicking anything: seven headlines and
+    // What a reader sees without clicking anything: four headlines and
     // nothing else. Collapsed disclosures are unmounted, so this is the
     // entire always-visible contract — worth an assertion of its own, because
     // a label quietly renamed or dropped would otherwise only show up as a
     // missing body far below.
     for (const headline of [
       'Exactly what is sent',
-      'What the timestamps make possible',
-      'What is never sent',
+      'The two identifiers',
       'Where this starts switched off',
-      'The identifier is not you',
-      'The second identifier is weaker still',
       'What happens after it arrives',
     ]) {
       expect(screen.getByRole('button', { name: headline })).toBeInTheDocument();
@@ -414,16 +411,16 @@ describe('SettingsView', () => {
     expect(screen.getByText(/thirteen fields, and these are all of them/i)).toBeInTheDocument();
     for (const field of [
       /the word .desktop./i,
-      /a random id for the message itself/i,
-      /a random installation identifier/i,
-      /a random identifier for this run of the app/i,
+      /a random id for the message, so a retry/i,
+      /a random installation id/i,
+      /a random id for this run of the app/i,
       /the event name/i,
       /when it happened/i,
       /when it was delivered/i,
       /your processor architecture/i,
-      /a count rounded into a range/i,
-      /a short label naming which setting you changed/i,
-      /a second such label where an event has two things/i,
+      /a count rounded to a range/i,
+      /a short label .* which setting you changed/i,
+      /a second such label when an event has two things/i,
       /the app version/i,
       /your operating system/i,
     ]) {
@@ -439,23 +436,24 @@ describe('SettingsView', () => {
     // and the id is the component's actual contract.
     const body = document.getElementById(enumeration.getAttribute('aria-controls') ?? '');
     expect(body?.querySelectorAll('li')).toHaveLength(13);
+    // The exclusions live in the same body as the list, so a reader checking
+    // one against the other does not have to open a second row to find them.
+    expect(
+      screen.getByText(/file paths, repository or branch names, token counts/i),
+    ).toBeInTheDocument();
 
     // The rest of the receipts, each behind its own label. Opening them is the
     // assertion as much as the text is — a body that failed to mount would
     // read here as missing copy.
     const open = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
 
-    // What the timestamps enable is stated rather than left to be worked out.
-    open('What the timestamps make possible');
-    expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument();
-    open('The identifier is not you');
+    // Both identifiers, and the concession that a 30-day id plus a timestamp
+    // on every event reveals something. All three claims share one row, so
+    // all three are asserted from it.
+    open('The two identifiers');
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument();
-    // The exclusions are stated in the reader's own terms rather than left as
-    // an absence they would have to notice.
-    open('What is never sent');
-    expect(
-      screen.getByText(/file paths, repository or branch names, token counts/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument();
+    expect(screen.getByText(/quitting antiburn ends it/i)).toBeInTheDocument();
     // Retention is the operator's, and the pane says so rather than promising
     // something this build cannot keep.
     open('What happens after it arrives');
