@@ -19,7 +19,17 @@ import { UsageWindowRows } from "./UsageWindowRows"
 import { ProviderGlyph } from "./ProviderUsagePrimitives"
 
 interface ProviderUsageDetailProps {
-  provider: ProviderUsagePayload
+  /** The provider's own name and canonical id — always known, spend or not. */
+  displayName: string
+  providerId: string
+  /**
+   * The reader's own local spend and sessions, when this provider has ever
+   * produced any. A chip driven purely by a live limit reading — the
+   * provider stated a percentage, but nothing was ever run through it on
+   * this device — has none, and the panel below drops that half rather than
+   * fabricate figures for a provider it has never seen spend from.
+   */
+  provider?: ProviderUsagePayload | null
   /** The provider's own limits, when a source could prove any. */
   live?: LiveProviderUsagePayload | null
   /** Injected so the rendered output is a function of its inputs in tests. */
@@ -43,19 +53,26 @@ interface ProviderUsageDetailProps {
  * a loading state. The first half does have meters, because the provider
  * supplied the denominator. Keeping them visibly separate is the whole reason
  * the plan block carries its own heading in a panel this small.
+ *
+ * The second half is also entirely optional: a provider can reach this panel
+ * on a live limit reading alone, with no local session ever attributed to it,
+ * and the panel then shows only the header and the limits — never a zeroed
+ * spend section standing in for evidence that does not exist.
  */
 export function ProviderUsageDetail({
-  provider,
+  displayName,
+  providerId,
+  provider = null,
   live = null,
   now = 0,
   headingId,
   onViewAll,
 }: ProviderUsageDetailProps) {
-  const stale = stalenessNote(provider)
-  const updated = updatedNote(provider)
+  const stale = provider ? stalenessNote(provider) : null
+  const updated = provider ? updatedNote(provider) : null
   // The broadest window the app can see, so the token split describes as much
   // history as exists rather than only the current day.
-  const month = providerWindow(provider, "month")
+  const month = provider ? providerWindow(provider, "month") : null
 
   return (
     <div className="space-y-3">
@@ -63,14 +80,14 @@ export function ProviderUsageDetail({
         {/* The same glyph the chip carries, so the panel reads as that chip
             opened rather than as an unrelated card. */}
         <ProviderGlyph
-          displayName={provider.displayName}
-          provider={provider.provider}
+          displayName={displayName}
+          provider={providerId}
           size={18}
           className="mt-px"
         />
         <div className="min-w-0 flex-1">
           <h2 id={headingId} className="type-headline truncate text-label">
-            {provider.displayName}
+            {displayName}
           </h2>
           {(stale ?? updated) && (
             <p
@@ -87,23 +104,29 @@ export function ProviderUsageDetail({
 
       {live && <LiveUsageDetail live={live} now={now} />}
 
-      <UsageMetricRows provider={provider} />
+      {provider && month && (
+        <>
+          <UsageMetricRows provider={provider} />
 
-      <UsageWindowRows provider={provider} className="border-t border-separator pt-2.5" />
+          <UsageWindowRows provider={provider} className="border-t border-separator pt-2.5" />
 
-      <div className="space-y-1 border-t border-separator pt-2.5">
-        <p className="type-caption font-medium text-label-secondary">Tokens · this month</p>
-        {tokenRows(month).map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-3">
-            <span className="type-caption text-label-tertiary">{row.label}</span>
-            <span className="type-caption tabular-nums text-label-secondary">{row.value}</span>
+          <div className="space-y-1 border-t border-separator pt-2.5">
+            <p className="type-caption font-medium text-label-secondary">Tokens · this month</p>
+            {tokenRows(month).map((row) => (
+              <div key={row.label} className="flex items-baseline justify-between gap-3">
+                <span className="type-caption text-label-tertiary">{row.label}</span>
+                <span className="type-caption tabular-nums text-label-secondary">
+                  {row.value}
+                </span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
 
-      <p className="type-caption text-label-tertiary">
-        {usageStateDescription(provider.state)}
-      </p>
+          <p className="type-caption text-label-tertiary">
+            {usageStateDescription(provider.state)}
+          </p>
+        </>
+      )}
 
       {onViewAll && (
         <button

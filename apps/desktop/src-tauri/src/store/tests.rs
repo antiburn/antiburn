@@ -21,6 +21,8 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         cwd: Some("/home/avery/code/widgets".into()),
         surface: "cli".into(),
         updated_at_epoch: Some(updated_at),
+        activity_cursor: String::new(),
+        activity_source: "mtime".into(),
         subagent_count: 0,
         fork_parent_session_id: None,
     }
@@ -149,6 +151,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // not something that needs a first-run choice. See `live_usage_active`
     // for the onboarding gate that still applies regardless of this default.
     assert!(defaults.live_usage_enabled);
+    // Open by default, same reasoning: a reader who has limits to see should
+    // see them without an extra click the first time they notice the section.
+    assert!(defaults.overview_limits_expanded);
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -186,6 +191,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             },
             live_usage_enabled: true,
             usage_analytics_enabled: false,
+            overview_limits_expanded: false,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
@@ -200,6 +206,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(!saved.milestones_weekly.any());
     assert!(saved.milestones_5h.at75 && !saved.milestones_5h.at50);
     assert!(saved.live_usage_enabled);
+    assert!(!saved.overview_limits_expanded);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
     // Each notification preference is stored on its own key, so a reader who
@@ -253,10 +260,10 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert_eq!(store.settings().unwrap(), saved);
 }
 
-/// Pin the shipped v1 shape so migrations remain deliberate. This is not a
-/// restriction on what a future local visibility feature may store.
+/// Pin the current session shape so migrations remain deliberate. This is not
+/// a restriction on what a future local visibility feature may store.
 #[test]
-fn the_v1_session_table_shape_is_stable() {
+fn the_session_table_shape_is_stable() {
     let store = store();
     let connection = store.lock();
     let mut statement = connection
@@ -285,6 +292,8 @@ fn the_v1_session_table_shape_is_stable() {
             "subagent_count",
             "first_seen_at",
             "last_seen_at",
+            "activity_source",
+            "activity_cursor",
         ]
     );
 }
@@ -416,7 +425,7 @@ fn a_session_round_trips_and_a_rescan_updates_it_in_place() {
     store.upsert_sessions(std::slice::from_ref(&later)).unwrap();
 
     // Idempotent: a rescan that sees the same session again must not duplicate
-    // it, and must not rewind the heartbeat.
+    // it, and must not rewind the activity timestamp.
     store.upsert_sessions(&[session("abc", 1_500)]).unwrap();
 
     assert_eq!(store.recent_sessions(0, 100).unwrap().len(), 1);
@@ -427,6 +436,50 @@ fn a_session_round_trips_and_a_rescan_updates_it_in_place() {
     assert_eq!(stored.updated_at_epoch, Some(2_000));
     assert_eq!(stored.subagent_count, 0, "the last scan saw no sub-agents");
     assert_eq!(stored.title.as_deref(), Some("Wire the popover"));
+}
+
+#[test]
+fn an_event_timestamp_survives_a_newer_mtime_only_upsert() {
+    let store = store();
+    let mut event = session("semantic", 1_000);
+    event.activity_cursor = "[\"parent\",10]".into();
+    event.activity_source = "event".into();
+    store.upsert_sessions(&[event]).unwrap();
+
+    let mut mtime = session("semantic", 2_000);
+    mtime.activity_cursor = "[\"parent\",20]".into();
+    mtime.activity_source = "mtime".into();
+    store.upsert_sessions(&[mtime]).unwrap();
+
+    let stored = store
+        .session(&SessionKey::new("native", "claude-code", "semantic"))
+        .unwrap()
+        .expect("session");
+    assert_eq!(stored.updated_at_epoch, Some(1_000));
+    assert_eq!(stored.activity_source, "event");
+    assert_eq!(stored.activity_cursor, "[\"parent\",20]");
+}
+
+#[test]
+fn activity_cursors_do_not_collide_across_environments() {
+    let store = store();
+    let native = session("shared", 1_000);
+    let mut wsl = native.clone();
+    wsl.key = SessionKey::new("wsl:ubuntu", "claude-code", "shared");
+    store.upsert_sessions(&[native, wsl]).unwrap();
+
+    let states = store.session_activity_states().unwrap();
+    assert_eq!(states.len(), 2);
+    assert!(states.contains_key(&SessionActivityKey::new(
+        "native",
+        "claude-code",
+        "/home/avery/.claude/projects/demo/shared.jsonl",
+    )));
+    assert!(states.contains_key(&SessionActivityKey::new(
+        "wsl:ubuntu",
+        "claude-code",
+        "/home/avery/.claude/projects/demo/shared.jsonl",
+    )));
 }
 
 #[test]

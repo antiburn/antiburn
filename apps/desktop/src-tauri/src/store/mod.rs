@@ -42,8 +42,8 @@ use crate::dto::DeferredPermissionDir;
 
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS,
-    Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
-    SessionRecord, ThemePreference, UsageEvidenceRecord,
+    Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey,
+    SessionActivityState, SessionKey, SessionRecord, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -486,12 +486,13 @@ impl Store {
         Ok(())
     }
 
-    /// Sessions whose heartbeat falls at or after `since_epoch`, newest first.
+    /// Sessions whose activity falls at or after `since_epoch`, newest first.
     pub fn recent_sessions(&self, since_epoch: i64, limit: usize) -> Result<Vec<SessionRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-                    title, title_source, cwd, surface, updated_at_epoch, subagent_count,
+                    title, title_source, cwd, surface, updated_at_epoch,
+                    activity_cursor, activity_source, subagent_count,
                     (SELECT related_id FROM session_relation r
                        WHERE r.environment_key = s.environment_key
                          AND r.agent = s.agent
@@ -507,12 +508,47 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Return the persisted activity cursor keyed by environment,
+    /// agent, and source label. A single map keeps the scan's cheap size gate
+    /// outside the SQLite lock without allowing native/WSL rows to collide.
+    pub fn session_activity_states(
+        &self,
+    ) -> Result<HashMap<SessionActivityKey, SessionActivityState>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT environment_key, agent, source_label, activity_cursor,
+                    updated_at_epoch, activity_source
+               FROM session",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                SessionActivityKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ),
+                SessionActivityState {
+                    activity_cursor: row.get(3)?,
+                    updated_at_epoch: row.get(4)?,
+                    activity_source: row.get(5)?,
+                },
+            ))
+        })?;
+        let mut states = HashMap::new();
+        for row in rows {
+            let (key, state) = row?;
+            states.insert(key, state);
+        }
+        Ok(states)
+    }
+
     /// One session's cached metadata, when it has been seen.
     pub fn session(&self, key: &SessionKey) -> Result<Option<SessionRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-                    title, title_source, cwd, surface, updated_at_epoch, subagent_count,
+                    title, title_source, cwd, surface, updated_at_epoch,
+                    activity_cursor, activity_source, subagent_count,
                     (SELECT related_id FROM session_relation r
                        WHERE r.environment_key = s.environment_key
                          AND r.agent = s.agent
@@ -645,7 +681,7 @@ impl Store {
             .optional()?)
     }
 
-    /// Agent, heartbeat, and token breakdown for every session at or after
+    /// Agent, activity timestamp, and token breakdown for every session at or after
     /// `since_epoch`.
     ///
     /// One join rather than a listing plus a lookup per row: provider usage
@@ -994,6 +1030,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
                     .unwrap_or(false);
                 !finished && defaults.usage_analytics_enabled
             }),
+        overview_limits_expanded: stored
+            .get("overviewLimitsExpanded")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.overview_limits_expanded),
     }
     .normalized())
 }
@@ -1072,6 +1112,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         "usageAnalyticsEnabled",
         bool_text(settings.usage_analytics_enabled)
     ])?;
+    put.execute(params![
+        "overviewLimitsExpanded",
+        bool_text(settings.overview_limits_expanded)
+    ])?;
     Ok(())
 }
 
@@ -1109,11 +1153,12 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
     connection.execute(
         "INSERT INTO session (
              environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-             title, title_source, cwd, surface, updated_at_epoch, subagent_count,
+             title, title_source, cwd, surface, updated_at_epoch,
+             activity_cursor, activity_source, subagent_count,
              first_seen_at, last_seen_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END,
-                 ?9, ?10, ?11, ?12, ?13, ?13)
+                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
          ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
              source_kind = excluded.source_kind,
              source_label = excluded.source_label,
@@ -1126,8 +1171,27 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
              END,
              cwd = COALESCE(excluded.cwd, session.cwd),
              surface = excluded.surface,
-             updated_at_epoch = MAX(COALESCE(excluded.updated_at_epoch, 0),
-                                    COALESCE(session.updated_at_epoch, 0)),
+             updated_at_epoch = CASE
+                 WHEN session.activity_source = 'event'
+                      AND excluded.activity_source <> 'event'
+                     THEN session.updated_at_epoch
+                 WHEN excluded.activity_source = 'event'
+                      AND session.activity_source = 'event'
+                     THEN MAX(COALESCE(excluded.updated_at_epoch, 0),
+                              COALESCE(session.updated_at_epoch, 0))
+                 WHEN excluded.activity_source = 'event'
+                     THEN excluded.updated_at_epoch
+                 ELSE MAX(COALESCE(excluded.updated_at_epoch, 0),
+                          COALESCE(session.updated_at_epoch, 0))
+             END,
+             activity_cursor = excluded.activity_cursor,
+             activity_source = CASE
+                 WHEN excluded.activity_source = 'event'
+                     THEN 'event'
+                 WHEN session.activity_source = 'event'
+                     THEN 'event'
+                 ELSE excluded.activity_source
+             END,
              subagent_count = excluded.subagent_count,
              last_seen_at = excluded.last_seen_at",
         params![
@@ -1142,6 +1206,8 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
             record.cwd,
             record.surface,
             record.updated_at_epoch,
+            record.activity_cursor,
+            record.activity_source,
             record.subagent_count,
             now,
         ],
@@ -1205,7 +1271,9 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
         cwd: row.get(8)?,
         surface: row.get(9)?,
         updated_at_epoch: row.get(10)?,
-        subagent_count: row.get(11)?,
-        fork_parent_session_id: row.get(12)?,
+        activity_cursor: row.get(11)?,
+        activity_source: row.get(12)?,
+        subagent_count: row.get(13)?,
+        fork_parent_session_id: row.get(14)?,
     })
 }

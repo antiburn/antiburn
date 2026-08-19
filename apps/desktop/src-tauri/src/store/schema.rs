@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -65,7 +65,8 @@ CREATE TABLE session (
     title_source     TEXT,
     cwd              TEXT,
     surface          TEXT NOT NULL DEFAULT 'unknown',
-    -- Transcript heartbeat (unix seconds), as discovery reported it.
+    -- Most recent meaningful transcript activity (unix seconds), as the scan
+    -- reported it. File mtime is only a fallback for sources without events.
     updated_at_epoch INTEGER,
     subagent_count   INTEGER NOT NULL DEFAULT 0,
     first_seen_at    TEXT NOT NULL,
@@ -181,7 +182,22 @@ const V3: &str = r#"
 DELETE FROM setting WHERE key = 'liveUsageEnabled';
 "#;
 
-/// v4 — the anonymised application-event queue (D-027, deviations D-28).
+/// v4 — activity cursor and timestamp provenance.
+///
+/// Existing rows are marked as mtime-derived so the next scan gets one chance
+/// to replace a stale mtime-derived timestamp with one from transcript content.
+const V4: &str = r#"
+ALTER TABLE session ADD COLUMN activity_source TEXT NOT NULL DEFAULT 'mtime';
+ALTER TABLE session ADD COLUMN activity_cursor TEXT NOT NULL DEFAULT '';
+"#;
+
+/// v5 — the anonymised application-event queue (D-027, deviations D-28).
+///
+/// Numbered 4 on its own branch until this merge, where the activity migration
+/// above had already taken that index on `main`. Renumbering is only safe
+/// because no release ever carried the old number; a database built from the
+/// branch beforehand is stamped 4 and will abort here rather than diverge,
+/// which is the intended outcome and is repaired by rewinding it to 3.
 ///
 /// # Data policy (schema-level contract)
 ///
@@ -194,7 +210,7 @@ DELETE FROM setting WHERE key = 'liveUsageEnabled';
 ///
 /// `attempts` bounds the queue by age of failure, as `store::mod` bounds it by
 /// row count. Opting out deletes every row in both tables.
-const V4: &str = r#"
+const V5: &str = r#"
 CREATE TABLE usage_analytics_event (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     name      TEXT NOT NULL,

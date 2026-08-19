@@ -31,8 +31,8 @@ pub struct ActivityEntry {
     pub repo: String,
     /// ISO-8601 stamp of the session's most recent transcript activity.
     pub timestamp: String,
-    /// Whether the transcript is still being written (heartbeat inside the
-    /// engine's active-session window).
+    /// Whether meaningful session activity fell inside the engine's
+    /// active-session window.
     pub is_active: bool,
     /// `cli`, `ide_desktop`, or `unknown`.
     pub surface: String,

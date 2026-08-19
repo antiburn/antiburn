@@ -4,11 +4,11 @@
 
 import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from "react"
 
-import { AlertTriangle } from "lucide-react"
+import { AlertTriangle, Settings } from "lucide-react"
 
 import { LocalActivityList } from "../components/activity/LocalActivityList"
 import type { LocalActivityEntry } from "../components/activity/LocalActivityList"
-import { ProviderUsageCluster } from "../components/providerUsage"
+import { UsageLimitsSection } from "../components/providerUsage"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
@@ -116,6 +116,36 @@ function usageEvidence(
 ): "live" | "estimated_only" | "none" {
   if (live.providers.length > 0) return "live"
   return (usage?.providers.length ?? 0) > 0 ? "estimated_only" : "none"
+}
+
+/**
+ * The activity surface's bottom bar: the app's name, which also carries the
+ * surface's focus heading (see the class doc below), and the way to the
+ * standalone Settings window.
+ *
+ * This used to also hold a chip per provider used today. Those moved to the
+ * usage-limits section at the top of the surface, collapsed — the same
+ * chips, just relocated, so the footer here is name and gear and nothing
+ * else.
+ */
+function PopoverFooter({ onOpenSettings }: { onOpenSettings: () => void }) {
+  return (
+    <div className="flex h-11 shrink-0 items-center gap-2 border-t border-separator px-4">
+      {/* Focused by the popover when this surface takes over, so a keyboard
+          or screen-reader user lands in the view rather than on <body>. */}
+      <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
+        antiburn
+      </h1>
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        aria-label="Open settings"
+        className="-mr-0.5 ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary hover:bg-surface-hover"
+      >
+        <Settings size={14} strokeWidth={1.75} aria-hidden="true" />
+      </button>
+    </div>
+  )
 }
 
 export function PopoverView() {
@@ -226,16 +256,13 @@ export function PopoverView() {
       )
     }
 
+    const limitsExpanded =
+      state.settings?.overviewLimitsExpanded ?? DEFAULT_SETTINGS.overviewLimitsExpanded
+
     return (
       <div className="flex h-full flex-col">
-        <header className="flex h-11 shrink-0 items-center gap-2 px-4">
-          <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-            antiburn
-          </h1>
-        </header>
-
         {banners.length > 0 && (
-          <div className="shrink-0 space-y-1 px-2 pb-1.5">
+          <div className="shrink-0 space-y-1 px-2 pt-2 pb-1.5">
             {banners.map((banner) => (
               <Banner
                 key={banner.id}
@@ -256,6 +283,26 @@ export function PopoverView() {
           </div>
         )}
 
+        <UsageLimitsSection
+          providers={state.usage?.providers ?? []}
+          live={state.liveUsage}
+          expanded={limitsExpanded}
+          onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
+          refreshing={state.usageRefreshing}
+          onViewAll={() => {
+            // The chips moved out of the footer and into this section, and the
+            // event moved with them: this is still the one place the reader
+            // asks for the full Usage view from the activity surface. Counts
+            // and a three-value evidence label, never a per-provider list.
+            noteInteraction({
+              kind: "usageViewed",
+              providers: state.usage?.providers.length ?? 0,
+              evidence: usageEvidence(state.usage, state.liveUsage),
+            })
+            session.setShowUsage(true)
+          }}
+        />
+
         <div className="min-h-0 flex-1">
           {state.entries == null ? (
             <ActivitySkeleton />
@@ -263,9 +310,6 @@ export function PopoverView() {
             <LocalActivityList
               entries={state.entries}
               days={windowDays}
-              // The affordance sits on the day-range label, so it lands on the
-              // pane that owns "Show the last" rather than the last-open pane.
-              onOpenSettings={() => void openSettingsWindow("general")}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return
                 // The card click, not the traversal inside a session — the
@@ -287,19 +331,7 @@ export function PopoverView() {
           )}
         </div>
 
-        <ProviderUsageCluster
-          providers={state.usage?.providers ?? []}
-          live={state.liveUsage}
-          onViewAll={() => {
-            noteInteraction({
-              kind: "usageViewed",
-              providers: state.usage?.providers.length ?? 0,
-              evidence: usageEvidence(state.usage, state.liveUsage),
-            })
-            session.setShowUsage(true)
-          }}
-          onOpenSettings={() => void openSettingsWindow()}
-        />
+        <PopoverFooter onOpenSettings={() => void openSettingsWindow()} />
       </div>
     )
   }

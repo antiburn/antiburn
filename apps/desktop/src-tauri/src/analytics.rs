@@ -463,7 +463,9 @@ pub fn sorted_models(breakdown: &HashMap<String, ModelTokens>) -> Vec<String> {
     models
 }
 
-/// Whether a transcript heartbeat means the session is still being written.
+/// Whether meaningful session activity fell inside the active window. The
+/// timestamp is semantic when the transcript provides one, rather than a
+/// filesystem-touch heartbeat.
 pub fn is_active(updated_at_epoch: Option<i64>, now: i64) -> bool {
     updated_at_epoch.is_some_and(|updated| now.saturating_sub(updated) < ACTIVE_SESSION_WINDOW_SECS)
 }

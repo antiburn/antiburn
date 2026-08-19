@@ -115,6 +115,13 @@ export interface AppSettings {
    * endpoint transmits at all — see `AppInfo.usageAnalyticsSupported`.
    */
   usageAnalyticsEnabled: boolean
+  /**
+   * Whether the popover's usage-limits section is expanded to its
+   * per-provider rows, rather than collapsed to the chip row. Purely a
+   * display preference — it never gates a fetch — so it defaults open and
+   * stays wherever the reader last left it.
+   */
+  overviewLimitsExpanded: boolean
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -570,6 +577,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestonesWeekly: { at50: true, at75: true, at90: true },
   liveUsageEnabled: true,
   usageAnalyticsEnabled: true,
+  overviewLimitsExpanded: true,
 }
 
 /* -------------------------------------------------------------------------

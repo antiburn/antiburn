@@ -1267,6 +1267,87 @@ pub fn max_event_epoch(content: &str) -> Option<i64> {
     max_ts
 }
 
+/// Return the latest timestamp on a record that represents actual agent work.
+///
+/// Transcript files also contain records for titles, mode changes, token
+/// accounting, permissions, and other bookkeeping. Those records may be
+/// written by a harness while an otherwise idle TUI is open, so their
+/// timestamps must not move the Recent Activity row. This deliberately keeps
+/// the provider-specific allowlist small and fail-closed: callers can fall
+/// back to the source heartbeat when a format has no recognised event time.
+pub fn max_activity_event_epoch(content: &str, agent: AgentKind) -> Option<i64> {
+    fn timestamp(value: &serde_json::Value) -> Option<i64> {
+        [
+            value.get("timestamp"),
+            value.get("time"),
+            value.get("created_at"),
+            value.get("createdAt"),
+            value.get("creationDate"),
+            value.pointer("/payload/timestamp"),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| {
+            parse_timestamp(candidate).or_else(|| parse_numeric_timestamp(candidate))
+        })
+    }
+
+    fn claude_activity(value: &serde_json::Value) -> bool {
+        matches!(
+            value.get("type").and_then(serde_json::Value::as_str),
+            Some("user")
+                | Some("assistant")
+                | Some("tool_use")
+                | Some("tool_result")
+                | Some("function_call")
+                | Some("function_call_output")
+        )
+    }
+
+    fn codex_activity(value: &serde_json::Value) -> bool {
+        let top_type = value.get("type").and_then(serde_json::Value::as_str);
+        match top_type {
+            Some("function_call") | Some("function_call_output") => true,
+            Some("response_item") => {
+                let payload_type = value
+                    .pointer("/payload/type")
+                    .and_then(serde_json::Value::as_str);
+                matches!(
+                    payload_type,
+                    Some("message")
+                        | Some("reasoning")
+                        | Some("function_call")
+                        | Some("function_call_output")
+                        | Some("custom_tool_call")
+                        | Some("custom_tool_call_output")
+                        | Some("local_shell_call")
+                        | Some("local_shell_call_output")
+                )
+            }
+            Some("event_msg") => matches!(
+                value
+                    .pointer("/payload/type")
+                    .and_then(serde_json::Value::as_str),
+                Some("agent_message") | Some("task_started") | Some("task_complete")
+            ),
+            _ => false,
+        }
+    }
+
+    let is_activity = |value: &serde_json::Value| match agent {
+        AgentKind::Claude => claude_activity(value),
+        AgentKind::Codex => codex_activity(value),
+        _ => false,
+    };
+
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .filter(is_activity)
+        .filter_map(|value| timestamp(&value))
+        .max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1302,6 +1383,44 @@ mod tests {
         // No parseable timestamp anywhere → None so callers fall back to mtime.
         assert_eq!(max_event_epoch(r#"{"type":"user","text":"hi"}"#), None);
         assert_eq!(max_event_epoch(""), None);
+    }
+
+    #[test]
+    fn max_activity_event_epoch_ignores_claude_housekeeping_records() {
+        let content = concat!(
+            r#"{"type":"user","timestamp":"2026-06-26T21:20:00Z"}"#,
+            "\n",
+            r#"{"type":"custom-title","timestamp":"2026-08-19T17:07:32Z"}"#,
+            "\n",
+            r#"{"type":"permission-mode","timestamp":"2026-08-19T17:07:33Z"}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-26T21:30:15Z"}"#,
+        );
+        let expected = OffsetDateTime::parse("2026-06-26T21:30:15Z", &Rfc3339)
+            .unwrap()
+            .unix_timestamp();
+        assert_eq!(
+            max_activity_event_epoch(content, AgentKind::Claude),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn max_activity_event_epoch_ignores_codex_metadata_and_token_counts() {
+        let content = concat!(
+            r#"{"timestamp":"2026-06-26T21:20:00Z","type":"session_meta","payload":{"id":"x"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-06-26T21:30:15Z","type":"response_item","payload":{"type":"function_call","name":"exec_command"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-19T17:07:32Z","type":"event_msg","payload":{"type":"token_count"}}"#,
+        );
+        let expected = OffsetDateTime::parse("2026-06-26T21:30:15Z", &Rfc3339)
+            .unwrap()
+            .unix_timestamp();
+        assert_eq!(
+            max_activity_event_epoch(content, AgentKind::Codex),
+            Some(expected)
+        );
     }
 
     async fn write_temp_file(dir: &Path, name: &str, content: &str) -> std::path::PathBuf {

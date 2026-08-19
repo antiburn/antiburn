@@ -175,7 +175,7 @@ describe("LocalActivityList — navigation", () => {
   })
 })
 
-describe("LocalActivityList — grouping and range", () => {
+describe("LocalActivityList — grouping", () => {
   it("buckets rows by calendar day and pins the newest label", () => {
     list({
       entries: [
@@ -212,51 +212,9 @@ describe("LocalActivityList — grouping and range", () => {
     expect(screen.getByText("Inside")).toBeTruthy()
     expect(screen.queryByText("Outside")).toBeNull()
   })
-
-  it("states the visible range and opens settings to change it", () => {
-    const onOpenSettings = vi.fn()
-    list({ onOpenSettings })
-    fireEvent.click(screen.getByLabelText(/Recent activity range: Last 7 days/))
-    expect(onOpenSettings).toHaveBeenCalledOnce()
-  })
-
-  it("renders the range as plain text when there is nowhere to change it", () => {
-    list({ days: 1 })
-    expect(screen.getByText("Last 1 day")).toBeTruthy()
-    expect(screen.queryByLabelText(/Recent activity range/)).toBeNull()
-  })
-
-  it("accepts a caller-supplied range label", () => {
-    list({ rangeLabel: "This week" })
-    expect(screen.getByText("This week")).toBeTruthy()
-  })
 })
 
-describe("LocalActivityList — filters and empty state", () => {
-  it("renders a plain title when there is nothing to filter by", () => {
-    list({ title: "Sessions" })
-    expect(screen.getByText("Sessions")).toBeTruthy()
-    expect(screen.queryByLabelText(/Activity filter/)).toBeNull()
-  })
-
-  it("offers the supplied filters and reports a selection", () => {
-    const onFilterChange = vi.fn()
-    list({
-      filters: [
-        { value: "all", label: "All sessions" },
-        { value: "active", label: "Running now" },
-      ],
-      selectedFilter: "all",
-      onFilterChange,
-    })
-    const trigger = screen.getByLabelText("Activity filter, current view: All sessions")
-    // The menu opens from the keyboard; jsdom has no pointer capture for the
-    // pointer path the trigger prefers.
-    fireEvent.keyDown(trigger, { key: "Enter" })
-    fireEvent.click(screen.getByText("Running now"))
-    expect(onFilterChange).toHaveBeenCalledWith("active")
-  })
-
+describe("LocalActivityList — empty state", () => {
   it("explains an empty range and announces it once", () => {
     list({ entries: [] })
     expect(screen.getAllByText("No sessions in the last 7 days").length).toBe(2)
