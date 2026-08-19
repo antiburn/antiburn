@@ -6,6 +6,7 @@ import { Settings } from "lucide-react"
 import { useCallback, useId, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
+import { cn } from "../../lib/cn"
 import type { LiveUsageSummaryPayload, ProviderUsagePayload } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import {
@@ -259,9 +260,10 @@ export function ProviderUsageCluster({
                 panelRef.current?.querySelector<HTMLElement>(FOCUSABLE) ?? panelRef.current
               target?.focus()
             }}
-            className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-control px-1.5 type-caption tabular-nums leading-none text-label-secondary hover:bg-surface-hover ${
-              isOpen ? "bg-surface-hover" : ""
-            }`.trimEnd()}
+            className={cn(
+              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-control px-1.5 type-caption tabular-nums leading-none text-label-secondary hover:bg-surface-hover",
+              isOpen && "bg-surface-hover",
+            )}
           >
             {headline ? (
               // The ring carries the provider's initial rather than replacing

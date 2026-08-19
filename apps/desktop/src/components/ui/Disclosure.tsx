@@ -5,6 +5,8 @@
 import { ChevronDown } from "lucide-react"
 import { useId, useState, type ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 /**
  * A single collapsible disclosure: a full-width header button that reveals its
  * body. Hairline-separated and chrome-free by design — it sits directly on the
@@ -33,7 +35,7 @@ export function Disclosure({
   const bodyId = useId()
 
   return (
-    <div className={`border-b border-separator last:border-b-0 ${className}`.trimEnd()}>
+    <div className={cn("border-b border-separator last:border-b-0", className)}>
       <button
         type="button"
         aria-expanded={open}
@@ -53,9 +55,10 @@ export function Disclosure({
           size={14}
           strokeWidth={2}
           aria-hidden="true"
-          className={`shrink-0 text-label-secondary transition-transform duration-[120ms] ease-out ${
-            open ? "rotate-180" : ""
-          }`.trimEnd()}
+          className={cn(
+            "shrink-0 text-label-secondary transition-transform duration-[120ms] ease-out",
+            open && "rotate-180",
+          )}
         />
       </button>
       {/* Unmounted rather than hidden when collapsed, so collapsed prose stays
@@ -77,5 +80,5 @@ export function DisclosureGroup({
   children: ReactNode
   className?: string
 }) {
-  return <div className={`border-t border-separator ${className}`.trimEnd()}>{children}</div>
+  return <div className={cn("border-t border-separator", className)}>{children}</div>
 }

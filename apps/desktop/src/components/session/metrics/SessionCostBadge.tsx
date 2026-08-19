@@ -4,6 +4,7 @@
 
 import { Flame } from "lucide-react"
 
+import { cn } from "../../../lib/cn"
 import {
   formatCost,
   HIGH_COST_MEDIAN_MULTIPLE,
@@ -116,11 +117,13 @@ export function SessionCostBadge({
             ? `${figureLabel} ${formatCost(totalUsd)}, higher than usual`
             : `${figureLabel} ${formatCost(totalUsd)}`
         }
-        className={`${COST_PILL_CLASS} ${
+        className={cn(
+          COST_PILL_CLASS,
           isHighCost
             ? "bg-system-red/15 text-system-red-text"
-            : "bg-system-gold/15 text-system-gold-text"
-        }${className ? ` ${className}` : ""}`}
+            : "bg-system-gold/15 text-system-gold-text",
+          className,
+        )}
       >
         {isHighCost && <Flame size={11} className="shrink-0" aria-hidden="true" />}
         <TextRoll text={formatCost(totalUsd)} />
@@ -135,7 +138,7 @@ export function SessionCostBadge({
   // tooltip is open, and the trigger sets that attribute on the pill, which has
   // to be a *descendant* for `:has` to match.
   if (revealClassName && !isHighCost) {
-    return <span className={`flex shrink-0 ${revealClassName}`}>{badge}</span>
+    return <span className={cn("flex shrink-0", revealClassName)}>{badge}</span>
   }
   return badge
 }

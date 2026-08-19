@@ -5,6 +5,8 @@
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 /** The two documented push-button treatments. `primary` is the accent-filled
  *  variant; everything else is the default secondary. */
 export type PushButtonVariant = "secondary" | "primary"
@@ -54,9 +56,11 @@ export function PushButton({
       disabled={disabled}
       onClick={onClick}
       autoFocus={autoFocus}
-      className={`ui-push-button gap-1 whitespace-nowrap disabled:opacity-50 ${variantClass} ${className}`
-        .replace(/\s+/g, " ")
-        .trimEnd()}
+      className={cn(
+        "ui-push-button gap-1 whitespace-nowrap disabled:opacity-50",
+        variantClass,
+        className,
+      )}
     >
       {children}
       {TrailingIcon && (

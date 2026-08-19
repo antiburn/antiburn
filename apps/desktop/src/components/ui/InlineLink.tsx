@@ -4,6 +4,8 @@
 
 import type { ReactNode } from "react"
 
+import { cn } from "../../lib/cn"
+
 /**
  * A link rendered inline within a sentence.
  *
@@ -30,7 +32,10 @@ export function InlineLink({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-control text-label underline decoration-label-tertiary underline-offset-2 transition-colors duration-[120ms] ease-out hover:decoration-label ${className}`.trimEnd()}
+      className={cn(
+        "rounded-control text-label underline decoration-label-tertiary underline-offset-2 transition-colors duration-[120ms] ease-out hover:decoration-label",
+        className,
+      )}
     >
       {children}
     </button>

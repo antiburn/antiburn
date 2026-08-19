@@ -4,6 +4,8 @@
 
 import { X, type LucideIcon } from "lucide-react"
 
+import { cn } from "../../lib/cn"
+
 /** How loudly a banner reads. */
 export type BannerTone = "warning" | "info"
 
@@ -62,7 +64,7 @@ export function Banner({
       data-testid="banner"
       // 8px horizontal padding, so a caller that lays banners out on the same
       // 8px gutter as a list gets text starting on the list's own left edge.
-      className={`flex items-start gap-2 rounded-control px-2 py-1.5 ${toneClass} ${className}`.trimEnd()}
+      className={cn("flex items-start gap-2 rounded-control px-2 py-1.5", toneClass, className)}
     >
       {Icon && (
         <Icon size={12} strokeWidth={2} aria-hidden="true" className="mt-0.5 shrink-0" />

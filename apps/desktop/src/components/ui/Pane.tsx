@@ -4,6 +4,8 @@
 
 import type { ReactNode, Ref } from "react"
 
+import { cn } from "../../lib/cn"
+
 /** Title bar of a content pane: an optional leading control (a back arrow, say),
  *  the pane title, and an optional trailing action.
  *
@@ -34,7 +36,7 @@ export function PaneHeader({
   className?: string
 }) {
   return (
-    <div className={`mb-6 flex items-center gap-2 ${className}`.trimEnd()}>
+    <div className={cn("mb-6 flex items-center gap-2", className)}>
       {leading}
       <h1
         ref={headingRef}
@@ -70,7 +72,7 @@ export function Pane({
   return (
     <>
       <PaneHeader title={title} trailing={trailing} />
-      <div className={`space-y-6 ${className}`.trimEnd()}>{children}</div>
+      <div className={cn("space-y-6", className)}>{children}</div>
     </>
   )
 }

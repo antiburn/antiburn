@@ -80,7 +80,7 @@ export function LiveUsageDetail({
         {liveMetricRows(primary, now).map((row) => (
           <div key={row.key} className="flex items-baseline justify-between gap-3">
             <dt className="type-caption text-label-tertiary">{row.label}</dt>
-            <dd className={`type-caption tabular-nums ${row.toneClass}`}>{row.value}</dd>
+            <dd className={cn("type-caption tabular-nums", row.toneClass)}>{row.value}</dd>
           </div>
         ))}
       </dl>

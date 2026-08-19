@@ -6,6 +6,7 @@ import { X } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore, type AnimationEvent } from "react"
 
 import appIcon from "../assets/app-icon.png"
+import { cn } from "../lib/cn"
 import { NudgeSession } from "./nudge/NudgeSession"
 
 /**
@@ -89,9 +90,10 @@ export function NudgeView() {
         // the hover state) rather than CSS `:hover`/`group-hover`: the pointer
         // events CSS hover depends on don't reach this window while another
         // antiburn window holds macOS key status — see `NudgeSession.applyHover`.
-        className={`relative overflow-hidden bg-surface text-label select-none ${
-          exiting ? "animate-nudge-out" : entering ? "animate-nudge-in" : ""
-        }`}
+        className={cn(
+          "relative overflow-hidden bg-surface text-label select-none",
+          exiting ? "animate-nudge-out" : entering && "animate-nudge-in",
+        )}
         onAnimationEnd={handleAnimationEnd}
       >
         {/* The clickable body. Bound here rather than on the card so the action
@@ -117,18 +119,20 @@ export function NudgeView() {
                 </p>
                 {/* Timestamp fades on hover as the card expands and the close appears. */}
                 <span
-                  className={`type-footnote shrink-0 text-label-tertiary transition-opacity ${
-                    expanded ? "opacity-0" : "opacity-100"
-                  }`}
+                  className={cn(
+                    "type-footnote shrink-0 text-label-tertiary transition-opacity",
+                    expanded ? "opacity-0" : "opacity-100",
+                  )}
                 >
                   {elapsedLabel}
                 </span>
               </div>
               {nudge.reason && (
                 <p
-                  className={`type-body mt-0.5 leading-snug text-label-secondary ${
-                    expanded ? "" : "line-clamp-2"
-                  }`}
+                  className={cn(
+                    "type-body mt-0.5 leading-snug text-label-secondary",
+                    !expanded && "line-clamp-2",
+                  )}
                 >
                   {nudge.reason}
                 </p>
@@ -162,9 +166,11 @@ export function NudgeView() {
               <button
                 key={action.id}
                 onClick={() => session.handleAction(action)}
-                className={`type-body flex-1 py-2.5 text-center transition-colors outline-none hover:bg-surface-hover focus-visible:outline-none ${
-                  i > 0 ? "border-l border-separator" : ""
-                } ${action.primary ? "font-medium text-accent" : "text-label"}`}
+                className={cn(
+                  "type-body flex-1 py-2.5 text-center transition-colors outline-none hover:bg-surface-hover focus-visible:outline-none",
+                  i > 0 && "border-l border-separator",
+                  action.primary ? "font-medium text-accent" : "text-label",
+                )}
               >
                 {action.label}
               </button>
@@ -177,9 +183,10 @@ export function NudgeView() {
         <button
           onClick={session.handleClose}
           aria-label="Close"
-          className={`absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-surface-secondary text-label-secondary transition-opacity outline-none hover:text-label focus-visible:outline-none ${
-            expanded ? "opacity-100" : "opacity-0"
-          }`}
+          className={cn(
+            "absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-surface-secondary text-label-secondary transition-opacity outline-none hover:text-label focus-visible:outline-none",
+            expanded ? "opacity-100" : "opacity-0",
+          )}
         >
           <X size={12} aria-hidden />
         </button>

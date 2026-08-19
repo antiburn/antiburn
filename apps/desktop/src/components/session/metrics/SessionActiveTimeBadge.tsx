@@ -4,6 +4,7 @@
 
 import { Clock } from "lucide-react"
 
+import { cn } from "../../../lib/cn"
 import { formatDuration } from "../../../lib/presentation/sessionAnalytics"
 import { Tooltip } from "../../presentation/Tooltip"
 
@@ -55,9 +56,10 @@ export function SessionActiveTimeBadge({
       }
     >
       <span
-        className={`flex shrink-0 items-center gap-0.5 rounded-full bg-label/[0.06] px-1.5 py-px type-caption font-medium leading-[13px] text-label-secondary tabular-nums${
-          className ? ` ${className}` : ""
-        }`}
+        className={cn(
+          "flex shrink-0 items-center gap-0.5 rounded-full bg-label/[0.06] px-1.5 py-px type-caption font-medium leading-[13px] text-label-secondary tabular-nums",
+          className,
+        )}
       >
         <Clock size={11} className="shrink-0" aria-hidden="true" />
         {formatDuration(activeSecs)}

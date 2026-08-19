@@ -14,6 +14,7 @@ import {
 } from "simple-icons"
 
 import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from "../../lib/brandMarks"
+import { cn } from "../../lib/cn"
 import type { ProviderUsageState } from "../../lib/ipc"
 import {
   providerInitial,
@@ -97,7 +98,7 @@ export function ProviderGlyph({
         height={size}
         fill="currentColor"
         data-provider-icon={provider}
-        className={`shrink-0 text-label-secondary ${className}`.trimEnd()}
+        className={cn("shrink-0 text-label-secondary", className)}
       >
         <path d={mark.path} />
       </svg>
@@ -108,7 +109,10 @@ export function ProviderGlyph({
       aria-hidden="true"
       data-provider-icon="letter"
       style={{ width: size, height: size, fontSize: Math.round(size * 0.58) }}
-      className={`inline-flex shrink-0 items-center justify-center rounded-[4px] bg-surface-secondary font-medium leading-none text-label-secondary ${className}`.trimEnd()}
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-[4px] bg-surface-secondary font-medium leading-none text-label-secondary",
+        className,
+      )}
     >
       {providerInitial(displayName)}
     </span>
@@ -135,9 +139,11 @@ interface UsageStateBadgeProps {
 export function UsageStateBadge({ state, className = "" }: UsageStateBadgeProps) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-px type-caption font-medium leading-[13px] ${usageStateToneClass(
-        state,
-      )} ${className}`.trimEnd()}
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full px-1.5 py-px type-caption font-medium leading-[13px]",
+        usageStateToneClass(state),
+        className,
+      )}
     >
       {usageStateLabel(state)}
     </span>

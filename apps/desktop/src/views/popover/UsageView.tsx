@@ -9,6 +9,7 @@ import { LiveUsageDetail } from "../../components/providerUsage/LiveUsageDetail"
 import { UsageMetricRows } from "../../components/providerUsage/UsageMetricRows"
 import { UsageWindowRows } from "../../components/providerUsage/UsageWindowRows"
 import { ScrollPane } from "../../components/ui/ScrollPane"
+import { cn } from "../../lib/cn"
 import type {
   LiveProviderUsagePayload,
   LiveUsageSummaryPayload,
@@ -208,7 +209,10 @@ function ProviderCard({
           </div>
           {(stale ?? updated) && (
             <p
-              className={`type-caption ${stale ? "text-system-orange" : "text-label-tertiary"}`}
+              className={cn(
+                "type-caption",
+                stale ? "text-system-orange" : "text-label-tertiary",
+              )}
             >
               {stale ?? updated}
             </p>
