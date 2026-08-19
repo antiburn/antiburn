@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useRef } from 'react';
+import { useRef } from "react"
 
 /** A horizontal value slider.
  *
@@ -23,31 +23,31 @@ export function RangeSlider({
   ariaLabel,
   ariaValueText,
   disabled = false,
-  className = '',
+  className = "",
 }: {
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  onChange: (next: number) => void;
+  value: number
+  min: number
+  max: number
+  step?: number
+  onChange: (next: number) => void
   /** Fires once when a drag or key gesture settles and changed the value. */
-  onCommit?: (next: number) => void;
-  ariaLabel: string;
-  ariaValueText?: string;
-  disabled?: boolean;
-  className?: string;
+  onCommit?: (next: number) => void
+  ariaLabel: string
+  ariaValueText?: string
+  disabled?: boolean
+  className?: string
 }) {
-  const gestureStart = useRef<number | null>(null);
+  const gestureStart = useRef<number | null>(null)
 
   function beginGesture() {
-    if (gestureStart.current === null) gestureStart.current = value;
+    if (gestureStart.current === null) gestureStart.current = value
   }
 
   function endGesture(next: number) {
-    const started = gestureStart.current;
-    gestureStart.current = null;
-    if (started === null || started === next) return;
-    onCommit?.(next);
+    const started = gestureStart.current
+    gestureStart.current = null
+    if (started === null || started === next) return
+    onCommit?.(next)
   }
 
   return (
@@ -69,5 +69,5 @@ export function RangeSlider({
       aria-valuetext={ariaValueText}
       className={`h-1 w-full cursor-default appearance-none rounded-full bg-surface-secondary accent-[var(--color-accent-fill)] disabled:cursor-not-allowed ${className}`.trimEnd()}
     />
-  );
+  )
 }

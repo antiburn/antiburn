@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { activityDayAge, isWithinActivityDays } from './activityWindow';
+import { activityDayAge, isWithinActivityDays } from "./activityWindow"
 
 /**
  * The ordering and grouping half of an activity list, as pure functions over
@@ -14,15 +14,15 @@ import { activityDayAge, isWithinActivityDays } from './activityWindow';
 /** The minimum an item must carry to take a place in the list. */
 export interface ActivityFeedItem {
   /** ISO timestamp the item sorts and buckets by. */
-  at: string;
+  at: string
   /** Stable React identity — never the timestamp, which moves under live rows. */
-  key: string;
+  key: string
 }
 
 /** One calendar-day bucket, newest day first. */
 export interface ActivityDayGroup<T> {
-  label: string;
-  items: T[];
+  label: string
+  items: T[]
 }
 
 /**
@@ -32,22 +32,22 @@ export interface ActivityDayGroup<T> {
  * NaN comparisons that scramble the order.
  */
 function atMs(at: string): number {
-  const ms = new Date(at).getTime();
-  return Number.isNaN(ms) ? -Infinity : ms;
+  const ms = new Date(at).getTime()
+  return Number.isNaN(ms) ? -Infinity : ms
 }
 
 /** Newest first, without mutating the input. */
 export function newestFirst<T extends ActivityFeedItem>(items: readonly T[]): T[] {
   return [...items].sort((a, b) => {
-    const x = atMs(b.at);
-    const y = atMs(a.at);
-    return x < y ? -1 : x > y ? 1 : 0;
-  });
+    const x = atMs(b.at)
+    const y = atMs(a.at)
+    return x < y ? -1 : x > y ? 1 : 0
+  })
 }
 
 /** How a day bucket names itself. */
 export function activityDayLabel(age: number): string {
-  return age === 0 ? 'Today' : age === 1 ? 'Yesterday' : `${age} days ago`;
+  return age === 0 ? "Today" : age === 1 ? "Yesterday" : `${age} days ago`
 }
 
 /**
@@ -63,17 +63,17 @@ export function groupActivityByDay<T extends ActivityFeedItem>(
   items: readonly T[],
   { days, now = new Date() }: { days: number; now?: Date },
 ): ActivityDayGroup<T>[] {
-  const inRange = items.filter((item) => isWithinActivityDays(item.at, days, now));
-  const groups: ActivityDayGroup<T>[] = [];
+  const inRange = items.filter((item) => isWithinActivityDays(item.at, days, now))
+  const groups: ActivityDayGroup<T>[] = []
   for (let age = 0; age < days; age += 1) {
-    const dayItems = inRange.filter((item) => activityDayAge(item.at, now) === age);
-    if (dayItems.length === 0) continue;
-    groups.push({ label: activityDayLabel(age), items: newestFirst(dayItems) });
+    const dayItems = inRange.filter((item) => activityDayAge(item.at, now) === age)
+    if (dayItems.length === 0) continue
+    groups.push({ label: activityDayLabel(age), items: newestFirst(dayItems) })
   }
-  return groups;
+  return groups
 }
 
 /** How many items the grouped list will actually render. */
 export function countGroupedItems<T>(groups: readonly ActivityDayGroup<T>[]): number {
-  return groups.reduce((count, group) => count + group.items.length, 0);
+  return groups.reduce((count, group) => count + group.items.length, 0)
 }

@@ -2,27 +2,27 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from "react"
 
-import { Card } from '../../components/ui/Card';
-import { Pane } from '../../components/ui/Pane';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { revealSource, type AppInfo } from '../../lib/ipc';
-import { detectPlatform, type Platform } from '../../lib/platform';
-import type { SettingsPane } from '../../lib/settingsPanes';
-import { PushButton } from '../../components/ui/PushButton';
-import { AboutDocumentView, type AboutDocumentId } from './AboutDocumentView';
-import { UpdatesSection } from './UpdatesSection';
-import type { AppSettingsController } from './useAppSettings';
+import { Card } from "../../components/ui/Card"
+import { Pane } from "../../components/ui/Pane"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { revealSource, type AppInfo } from "../../lib/ipc"
+import { detectPlatform, type Platform } from "../../lib/platform"
+import type { SettingsPane } from "../../lib/settingsPanes"
+import { PushButton } from "../../components/ui/PushButton"
+import { AboutDocumentView, type AboutDocumentId } from "./AboutDocumentView"
+import { UpdatesSection } from "./UpdatesSection"
+import type { AppSettingsController } from "./useAppSettings"
 
 /** Display names for the masthead; `detectPlatform` reports lowercase ids. */
 const PLATFORM_LABELS: Record<Platform, string> = {
-  macos: 'macOS',
-  windows: 'Windows',
-  linux: 'Linux',
-  unknown: 'Unknown',
-};
+  macos: "macOS",
+  windows: "Windows",
+  linux: "Linux",
+  unknown: "Unknown",
+}
 
 /**
  * About: what this build is, where its data lives, and what it is licensed
@@ -48,43 +48,37 @@ const PLATFORM_LABELS: Record<Platform, string> = {
  * moves the window to the Privacy pane, which is a section in its own right.
  */
 export interface AboutPaneProps extends AppSettingsController {
-  info: AppInfo | null;
+  info: AppInfo | null
   /** Move the window to another pane; About links to content, not to URLs. */
-  onOpenPane?: (pane: SettingsPane) => void;
+  onOpenPane?: (pane: SettingsPane) => void
 }
 
 /** Ids of the `Open` buttons, so focus can return to the one that was pressed
  *  once its document closes — by then React has unmounted the original node. */
 const OPEN_BUTTON_ID: Record<AboutDocumentId, string> = {
-  licence: 'about-open-licence',
-  notices: 'about-open-notices',
-  attributions: 'about-open-attributions',
-};
+  licence: "about-open-licence",
+  notices: "about-open-notices",
+  attributions: "about-open-attributions",
+}
 
 export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutPaneProps) {
-  const [openDocument, setOpenDocument] = useState<AboutDocumentId | null>(null);
-  // A ref, not state: which row to hand focus back to is a note to the next
-  // effect, and nothing renders differently for it.
-  const returnFocusTo = useRef<AboutDocumentId | null>(null);
-
-  // Back from a document returns focus to the row that opened it, so a keyboard
-  // reader resumes where they left the card rather than at the top of About.
-  useEffect(() => {
-    if (openDocument || !returnFocusTo.current) return;
-    document.getElementById(OPEN_BUTTON_ID[returnFocusTo.current])?.focus();
-    returnFocusTo.current = null;
-  }, [openDocument]);
+  const [openDocument, setOpenDocument] = useState<AboutDocumentId | null>(null)
+  // Which row to hand focus back to, once its document closes and this pane
+  // remounts the button that opened it. `autoFocus` on that button (below)
+  // acts the moment the node is created, so there is no separate step needed
+  // to move focus there — unlike a ref an effect would have to read.
+  const [returnFocusTo, setReturnFocusTo] = useState<AboutDocumentId | null>(null)
 
   if (openDocument) {
     return (
       <AboutDocumentView
         id={openDocument}
         onBack={() => {
-          returnFocusTo.current = openDocument;
-          setOpenDocument(null);
+          setReturnFocusTo(openDocument)
+          setOpenDocument(null)
         }}
       />
-    );
+    )
   }
 
   return (
@@ -100,10 +94,10 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
           </p>
         </div>
         <div>
-          <p className="type-body tabular-nums text-label">Version {info?.appVersion ?? '—'}</p>
+          <p className="type-body tabular-nums text-label">Version {info?.appVersion ?? "—"}</p>
           <p className="type-footnote text-label-secondary">
             {PLATFORM_LABELS[detectPlatform()]}
-            {info?.arch ? ` · ${info.arch}` : ''}
+            {info?.arch ? ` · ${info.arch}` : ""}
           </p>
         </div>
       </div>
@@ -117,7 +111,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
             description="Review date of the bundled price list every cost estimate is computed from. Prices are never fetched."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
-                {info?.pricingCatalogVersion ?? '—'}
+                {info?.pricingCatalogVersion ?? "—"}
               </span>
             }
           />
@@ -126,7 +120,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
             description="Schema version of antiburn's own store. It keeps local session data needed for visibility and analysis; nothing in it is uploaded. See Privacy."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
-                v{info?.schemaVersion ?? '—'}
+                v{info?.schemaVersion ?? "—"}
               </span>
             }
           />
@@ -154,7 +148,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
                 <PushButton
                   id={OPEN_BUTTON_ID.licence}
                   ariaLabel="Open licence text"
-                  onClick={() => setOpenDocument('licence')}
+                  onClick={() => setOpenDocument("licence")}
+                  autoFocus={returnFocusTo === "licence"}
                 >
                   Open
                 </PushButton>
@@ -168,7 +163,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
               trailing={
                 <PushButton
                   ariaLabel="Open privacy and data handling"
-                  onClick={() => onOpenPane('privacy')}
+                  onClick={() => onOpenPane("privacy")}
                 >
                   Open
                 </PushButton>
@@ -182,7 +177,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
               <PushButton
                 id={OPEN_BUTTON_ID.notices}
                 ariaLabel="Open legal notices"
-                onClick={() => setOpenDocument('notices')}
+                onClick={() => setOpenDocument("notices")}
+                autoFocus={returnFocusTo === "notices"}
               >
                 Open
               </PushButton>
@@ -195,7 +191,8 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
               <PushButton
                 id={OPEN_BUTTON_ID.attributions}
                 ariaLabel="Open third-party attributions"
-                onClick={() => setOpenDocument('attributions')}
+                onClick={() => setOpenDocument("attributions")}
+                autoFocus={returnFocusTo === "attributions"}
               >
                 Open
               </PushButton>
@@ -208,11 +205,11 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
         <Card>
           <Row
             label="Data folder"
-            description={info?.dataDir ?? 'Unavailable outside the antiburn app.'}
+            description={info?.dataDir ?? "Unavailable outside the antiburn app."}
             trailing={
               <PushButton
                 onClick={() => {
-                  if (info?.dataDir) void revealSource(info.dataDir);
+                  if (info?.dataDir) void revealSource(info.dataDir)
                 }}
                 disabled={!info?.dataDir}
               >
@@ -223,5 +220,5 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
         </Card>
       </SectionGroup>
     </Pane>
-  );
+  )
 }

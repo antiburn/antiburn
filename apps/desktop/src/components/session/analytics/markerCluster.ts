@@ -20,24 +20,24 @@
  * `preserveAspectRatio="none"`, an x of 0..VIEW_W is also a percentage of the
  * chart's rendered width.
  */
-export const VIEW_W = 100;
+export const VIEW_W = 100
 
 /**
  * Phase 1 of clustering, width-independent: markers within this share of the
  * chart width are the *same instant* and merge. A viewBox-percent gap; small,
  * just enough to collapse near-coincident timestamps.
  */
-const MERGE_GAP_PCT = 2.5;
+const MERGE_GAP_PCT = 2.5
 /**
  * Phase 2, size-aware: breathing room left between two adjacent dots' edges,
  * in px. Dots closer than `rA + rB + DOT_GAP_PX` merge so the size-scaled dots
  * never visually collide.
  */
-const DOT_GAP_PX = 2;
+const DOT_GAP_PX = 2
 /** Cluster-dot diameter in px: base for a lone dot, growing per extra member. */
-const DOT_BASE = 22;
-const DOT_STEP = 0.5;
-const DOT_MAX = 24;
+const DOT_BASE = 22
+const DOT_STEP = 0.5
+const DOT_MAX = 24
 
 /**
  * The minimal shape clustering needs from a laid-out ribbon segment: its
@@ -45,11 +45,11 @@ const DOT_MAX = 24;
  * geometry is structurally a superset, so it satisfies this directly.
  */
 export interface SegmentSpan {
-  x0: number;
-  x1: number;
+  x0: number
+  x1: number
   /** Cumulative active ms at this segment's start. */
-  cumStartMs: number;
-  activeMs: number;
+  cumStartMs: number
+  activeMs: number
 }
 
 /**
@@ -57,20 +57,20 @@ export interface SegmentSpan {
  * opaque payload the chart and its marker kind interpret.
  */
 export interface TimelineMarker<T> {
-  progress: number;
-  data: T;
+  progress: number
+  data: T
 }
 
 /** A dot after clustering: a chart position and the markers merged into it. */
 export interface Cluster<T> {
   /** x in 0..100 viewBox units (equivalently, a percentage of chart width). */
-  x: number;
+  x: number
   /** Members in left-to-right order. */
-  members: TimelineMarker<T>[];
+  members: TimelineMarker<T>[]
 }
 
 function clamp01(value: number): number {
-  return Math.min(Math.max(value, 0), 1);
+  return Math.min(Math.max(value, 0), 1)
 }
 
 /**
@@ -81,15 +81,15 @@ function clamp01(value: number): number {
  * within its painted span.
  */
 export function markerX(progress: number, geom: SegmentSpan[]): number {
-  const last = geom[geom.length - 1];
-  if (!last) return 0;
-  const totalMs = last.cumStartMs + last.activeMs;
-  if (totalMs <= 0) return clamp01(progress) * VIEW_W;
-  const targetMs = clamp01(progress) * totalMs;
+  const last = geom[geom.length - 1]
+  if (!last) return 0
+  const totalMs = last.cumStartMs + last.activeMs
+  if (totalMs <= 0) return clamp01(progress) * VIEW_W
+  const targetMs = clamp01(progress) * totalMs
   const seg =
-    geom.find((g) => targetMs >= g.cumStartMs && targetMs <= g.cumStartMs + g.activeMs) ?? last;
-  const within = seg.activeMs > 0 ? (targetMs - seg.cumStartMs) / seg.activeMs : 0;
-  return seg.x0 + within * (seg.x1 - seg.x0);
+    geom.find((g) => targetMs >= g.cumStartMs && targetMs <= g.cumStartMs + g.activeMs) ?? last
+  const within = seg.activeMs > 0 ? (targetMs - seg.cumStartMs) / seg.activeMs : 0
+  return seg.x0 + within * (seg.x1 - seg.x0)
 }
 
 /**
@@ -112,46 +112,46 @@ export function clusterMarkers<T>(
 ): Cluster<T>[] {
   const points = markers
     .map((marker) => ({ x: markerX(marker.progress, geom), marker }))
-    .sort((a, b) => a.x - b.x);
+    .sort((a, b) => a.x - b.x)
 
-  const accumulated: { sumX: number; lastX: number; members: TimelineMarker<T>[] }[] = [];
+  const accumulated: { sumX: number; lastX: number; members: TimelineMarker<T>[] }[] = []
   for (const point of points) {
-    const last = accumulated[accumulated.length - 1];
+    const last = accumulated[accumulated.length - 1]
     if (last && point.x - last.lastX <= MERGE_GAP_PCT) {
-      last.members.push(point.marker);
-      last.sumX += point.x;
-      last.lastX = point.x;
+      last.members.push(point.marker)
+      last.sumX += point.x
+      last.lastX = point.x
     } else {
-      accumulated.push({ sumX: point.x, lastX: point.x, members: [point.marker] });
+      accumulated.push({ sumX: point.x, lastX: point.x, members: [point.marker] })
     }
   }
   const clusters: Cluster<T>[] = accumulated.map((c) => ({
     x: c.sumX / c.members.length,
     members: c.members,
-  }));
+  }))
 
   if (widthPx > 0) {
-    const toPx = (xPct: number) => (xPct / 100) * widthPx;
+    const toPx = (xPct: number) => (xPct / 100) * widthPx
     for (let i = 0; i < clusters.length - 1;) {
-      const a = clusters[i];
-      const b = clusters[i + 1];
-      if (!a || !b) break;
-      const need = dotSize(a.members.length) / 2 + dotSize(b.members.length) / 2 + DOT_GAP_PX;
+      const a = clusters[i]
+      const b = clusters[i + 1]
+      if (!a || !b) break
+      const need = dotSize(a.members.length) / 2 + dotSize(b.members.length) / 2 + DOT_GAP_PX
       if (toPx(b.x - a.x) < need) {
-        const members = [...a.members, ...b.members];
-        const x = (a.x * a.members.length + b.x * b.members.length) / members.length;
-        clusters.splice(i, 2, { x, members });
+        const members = [...a.members, ...b.members]
+        const x = (a.x * a.members.length + b.x * b.members.length) / members.length
+        clusters.splice(i, 2, { x, members })
         // The wider merged dot may now overlap its left neighbour.
-        if (i > 0) i--;
+        if (i > 0) i--
       } else {
-        i++;
+        i++
       }
     }
   }
-  return clusters;
+  return clusters
 }
 
 /** Cluster-dot diameter in px: grows with member count, capped for legibility. */
 export function dotSize(n: number): number {
-  return Math.min(DOT_BASE + (n - 1) * DOT_STEP, DOT_MAX);
+  return Math.min(DOT_BASE + (n - 1) * DOT_STEP, DOT_MAX)
 }

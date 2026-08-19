@@ -186,6 +186,11 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(defaults, AppSettings::default());
     assert!(!defaults.onboarding_completed);
     assert!(defaults.launch_at_login);
+    // On by default: fetching the reader's own usage from a provider they
+    // already use, with a credential they already hold, is ordinary traffic,
+    // not something that needs a first-run choice. See `live_usage_active`
+    // for the onboarding gate that still applies regardless of this default.
+    assert!(defaults.live_usage_enabled);
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -837,6 +842,126 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
     // The bound is inclusive and excludes everything below it.
     assert_eq!(store.usage_evidence(2_000).unwrap().len(), 1);
     assert!(store.usage_evidence(2_001).unwrap().is_empty());
+}
+
+#[test]
+fn live_usage_is_only_active_once_both_the_switch_and_onboarding_agree() {
+    // The switch defaults on, but that alone must never be enough: the
+    // credential read this feature depends on — and, on macOS, the Keychain
+    // prompt it can trigger — must wait for onboarding to finish.
+    let mut settings = AppSettings::default();
+    assert!(settings.live_usage_enabled, "the default is on");
+    assert!(!settings.onboarding_completed, "the default is not");
+    assert!(!settings.live_usage_active());
+
+    settings.onboarding_completed = true;
+    assert!(settings.live_usage_active());
+
+    settings.live_usage_enabled = false;
+    assert!(!settings.live_usage_active(), "the opt-out still works");
+}
+
+#[test]
+fn migrating_forward_drops_a_legacy_live_usage_off_row_so_the_new_default_applies() {
+    // Before this build, `liveUsageEnabled` defaulted to false, and
+    // `write_settings` writes every key on every save regardless of whether
+    // it changed — so any install that ever saved settings at all (finishing
+    // onboarding is enough) already carries an explicit `liveUsageEnabled|
+    // false` row from that old default, indistinguishable from a reader who
+    // deliberately opted out. antiburn has no public installs yet to protect
+    // from losing one, so migration V3 just drops the row. Simulated here by
+    // building a v2 database by hand — a real fresh `Store::open_in_memory`
+    // would already be at the latest version and could not exercise the
+    // migration path at all.
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..2] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO setting (key, value) VALUES ('liveUsageEnabled', 'false')",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 2i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
+    )
+    .expect("migrates cleanly to the latest version");
+
+    assert_eq!(
+        store.schema_version().unwrap(),
+        super::schema::MIGRATIONS.len() as i64
+    );
+    let remaining: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM setting WHERE key = 'liveUsageEnabled'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0, "the row is gone, not merely reinterpreted");
+    assert!(
+        store.settings().unwrap().live_usage_enabled,
+        "with the legacy row gone, the read path falls through to the new default"
+    );
+}
+
+#[test]
+fn a_database_already_at_v3_still_gets_the_analytics_tables() {
+    // The case this test exists for is not hypothetical: two branches added a
+    // migration numbered V3 at the same time — one dropping the legacy
+    // `liveUsageEnabled` row, one creating these two tables — and only one of
+    // them could keep the number. `MIGRATIONS` is index-addressed, so an
+    // install that had already run the other side's V3 records itself as
+    // version 3 and would never look at the ladder again. Renumbering to V4 is
+    // what makes it look; this asserts that it does.
+    //
+    // Built by hand at exactly v3, which is the state of every machine that
+    // ran main between the two migrations landing.
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..3] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .pragma_update(None, "user_version", 3i64)
+        .unwrap();
+
+    // Neither table exists yet, or the premise of the test is wrong.
+    let before: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'usage_analytics%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, 0, "a v3 database has no analytics tables");
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-v3-migration-test").to_path_buf(),
+    )
+    .expect("migrates cleanly from v3 to the latest version");
+
+    assert_eq!(
+        store.schema_version().unwrap(),
+        super::schema::MIGRATIONS.len() as i64
+    );
+    // The queue works end to end, which is a stronger claim than the tables
+    // merely existing — a partially applied migration would satisfy the latter.
+    store
+        .set_usage_analytics_identity("22222222-2222-4222-8222-222222222222")
+        .unwrap();
+    store
+        .queue_usage_analytics_event("app_launched", "{}")
+        .unwrap();
+    assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+    assert!(store.usage_analytics_identity().unwrap().is_some());
 }
 
 #[test]

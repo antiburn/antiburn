@@ -149,13 +149,19 @@ version exists, and which the app never depends on.
 - There is **no third-party analytics, telemetry, or crash-reporting SDK** in this
   application. The channel above is first-party and is the only one.
 
-**One setting causes traffic that is not antiburn's.** Settings → Usage has a switch,
-off by default, that lets antiburn run your coding agent in the background — about
-every ten minutes — so the agent refreshes its own usage reading. The agent goes
-online to do that, exactly as it does when you use it yourself. antiburn reads the
-file the agent writes and opens no connection of its own; it does not read, parse, or
-store anything the agent prints. With the switch off, nothing runs and plan limits are
-read from whatever your agent last cached on this machine.
+**One setting makes antiburn go online as you.** Settings → Usage has a switch,
+on by default once first-run setup is complete, that lets antiburn ask each
+provider directly for your current plan usage — about every ten minutes — using
+the credential your coding tool already keeps on this machine (for example, the
+Claude CLI's own OAuth credential, or the Codex CLI's own). It runs by default
+because this is your own traffic: your usage, from a provider you already use,
+with a credential you already hold, over your own connection — no antiburn
+server sees the request or the response. When a provider's endpoint cannot be
+reached directly, antiburn falls back to asking your coding tool's own local
+process the same question, over its own protocol, rather than leaving the
+reading blank. Turn the switch off if you want none of this — no background
+traffic at all, whatever the reason — and antiburn stops asking, reads no
+credential, and has no plan limits to show.
 
 **Notifications are local.** antiburn shows them in its own small notification
 window and posts exactly these: an update check that found a newer version, the

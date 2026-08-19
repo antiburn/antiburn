@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronDown } from 'lucide-react';
-import { useId, useState, type ReactNode } from 'react';
+import { ChevronDown } from "lucide-react"
+import { useId, useState, type ReactNode } from "react"
 
 /** Horizontal inset for a disclosure's header and body.
  *
@@ -11,9 +11,9 @@ import { useId, useState, type ReactNode } from 'react';
  *  header, for prose that would read as an over-built list if every paragraph
  *  were given a container. `card` matches `Row`'s 16px, so a group dropped
  *  inside a `Card` lines up with the card rows above it. */
-export type DisclosureInset = 'surface' | 'card';
+export type DisclosureInset = "surface" | "card"
 
-const INSET = { surface: 'px-1', card: 'px-4' } as const;
+const INSET = { surface: "px-1", card: "px-4" } as const
 
 /**
  * A single collapsible disclosure: a full-width header button that reveals its
@@ -30,17 +30,17 @@ export function Disclosure({
   label,
   children,
   defaultOpen = false,
-  inset = 'surface',
-  className = '',
+  inset = "surface",
+  className = "",
 }: {
-  label: string;
-  children: ReactNode;
-  defaultOpen?: boolean;
-  inset?: DisclosureInset;
-  className?: string;
+  label: string
+  children: ReactNode
+  defaultOpen?: boolean
+  inset?: DisclosureInset
+  className?: string
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const bodyId = useId();
+  const [open, setOpen] = useState(defaultOpen)
+  const bodyId = useId()
 
   return (
     <div className={`border-b border-separator last:border-b-0 ${className}`.trimEnd()}>
@@ -64,7 +64,7 @@ export function Disclosure({
           strokeWidth={2}
           aria-hidden="true"
           className={`shrink-0 text-label-secondary transition-transform duration-[120ms] ease-out ${
-            open ? 'rotate-180' : ''
+            open ? "rotate-180" : ""
           }`.trimEnd()}
         />
       </button>
@@ -79,7 +79,7 @@ export function Disclosure({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 /** A hairline-separated stack of `Disclosure`s.
@@ -89,18 +89,18 @@ export function Disclosure({
  *  border is already that line, and a second one lands directly on it. */
 export function DisclosureGroup({
   children,
-  inset = 'surface',
-  className = '',
+  inset = "surface",
+  className = "",
 }: {
-  children: ReactNode;
-  inset?: DisclosureInset;
-  className?: string;
+  children: ReactNode
+  inset?: DisclosureInset
+  className?: string
 }) {
   return (
     <div
-      className={`${inset === 'surface' ? 'border-t border-separator' : ''} ${className}`.trim()}
+      className={`${inset === "surface" ? "border-t border-separator" : ""} ${className}`.trim()}
     >
       {children}
     </div>
-  );
+  )
 }

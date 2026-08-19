@@ -2,85 +2,86 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useRef, useState } from "react"
 
 import {
   formatCompact,
   formatDuration,
   phaseColor,
   phaseLabel,
-} from '../../../lib/presentation/sessionAnalytics';
-import { useDarkTheme } from '../../../lib/theme';
-import type { PhaseSegment, SessionPhase } from '../../../lib/types/session';
-import { traceRibbon, type Rect } from './hypnogramGeometry';
-import { HypnogramMarkers, type MarkerKind, type ResolvedDot } from './HypnogramMarkers';
-import { coalesce } from './HypnogramSegments.logic';
-import { clusterMarkers, dotSize, VIEW_W, type TimelineMarker } from './markerCluster';
-import { GLASS_TOOLTIP_STYLE, useTooltipPosition } from './tooltip';
+} from "../../../lib/presentation/sessionAnalytics"
+import { useDarkTheme } from "../../../lib/theme"
+import { useElementWidth } from "../../../lib/useElementWidth"
+import type { PhaseSegment, SessionPhase } from "../../../lib/types/session"
+import { traceRibbon, type Rect } from "./hypnogramGeometry"
+import { HypnogramMarkers, type MarkerKind, type ResolvedDot } from "./HypnogramMarkers"
+import { coalesce } from "./HypnogramSegments.logic"
+import { clusterMarkers, dotSize, VIEW_W, type TimelineMarker } from "./markerCluster"
+import { GLASS_TOOLTIP_STYLE, useTooltipPosition } from "./tooltip"
 
 /** Lanes top → bottom, matching the bucket hypnogram. */
 const LANES: readonly SessionPhase[] = [
-  'disruption',
-  'thinking',
-  'exploring',
-  'testing',
-  'implementing',
-];
+  "disruption",
+  "thinking",
+  "exploring",
+  "testing",
+  "implementing",
+]
 
-const VIEW_H = 40;
-const LANE_GAP = 2;
-const LANE_H = (VIEW_H - LANE_GAP * (LANES.length - 1)) / LANES.length;
+const VIEW_H = 40
+const LANE_GAP = 2
+const LANE_H = (VIEW_H - LANE_GAP * (LANES.length - 1)) / LANES.length
 
 /**
  * Each segment is exactly one mode at full intensity, so thickness is constant
  * — there is no dominance to encode. Kept under the lane pitch so lanes stay
  * visually separated.
  */
-const HALF = 3.4;
+const HALF = 3.4
 /** Corner radius for the rounded steps, in viewBox units. */
-const CORNER_R = 1.4;
+const CORNER_R = 1.4
 /** Minimum painted width per segment so a brief turn still shows. */
-const MIN_W = 0.6;
+const MIN_W = 0.6
 /** Half-width of the vertical connector bridging two lanes. */
-const RISER_HALF = 0.2;
+const RISER_HALF = 0.2
 /**
  * Markers float just *below* the ribbon band of the phase that was active when
  * each landed, anchored in lane and time. A fine connector runs from the band's
  * center down to the dot; this is the gap between band edge and dot top, in px.
  */
-const TETHER_PX = 5;
+const TETHER_PX = 5
 /**
  * Vertical de-collision for stacked marker layers: each layer beyond the first
  * is biased down by this many px, so two species at the same instant land on
  * different rows rather than overprinting. Each layer still clusters only
  * within itself.
  */
-const LAYER_PITCH_PX = 26;
+const LAYER_PITCH_PX = 26
 
 const LANE_CENTER: Record<SessionPhase, number> = LANES.reduce(
   (acc, phase, i) => {
-    acc[phase] = i * (LANE_H + LANE_GAP) + LANE_H / 2;
-    return acc;
+    acc[phase] = i * (LANE_H + LANE_GAP) + LANE_H / 2
+    return acc
   },
   {} as Record<SessionPhase, number>,
-);
+)
 
 interface Geom {
-  x0: number;
-  x1: number;
-  cy: number;
-  phase: SessionPhase;
+  x0: number
+  x1: number
+  cy: number
+  phase: SessionPhase
   /** Cumulative active ms at this segment's start (for the hover elapsed label). */
-  cumStartMs: number;
-  activeMs: number;
-  tokensIn: number;
-  tokensOut: number;
-  contextTokens: number;
+  cumStartMs: number
+  activeMs: number
+  tokensIn: number
+  tokensOut: number
+  contextTokens: number
 }
 
 /** Phase of the ribbon segment covering chart-x `x`, if any. */
 function phaseAtX(x: number, geom: Geom[]): SessionPhase | null {
-  return geom.find((s) => x >= s.x0 && x <= s.x1)?.phase ?? null;
+  return geom.find((s) => x >= s.x0 && x <= s.x1)?.phase ?? null
 }
 
 /**
@@ -90,16 +91,16 @@ function phaseAtX(x: number, geom: Geom[]): SessionPhase | null {
  * overflow the chart.
  */
 function layout(segments: PhaseSegment[]): Geom[] {
-  const total = segments.reduce((sum, seg) => sum + Math.max(seg.activeMs, 0), 0) || 1;
-  const n = segments.length;
-  const base = n * MIN_W < VIEW_W ? MIN_W : 0;
-  const remainder = VIEW_W - base * n;
-  const geom: Geom[] = [];
-  let x = 0;
-  let cum = 0;
+  const total = segments.reduce((sum, seg) => sum + Math.max(seg.activeMs, 0), 0) || 1
+  const n = segments.length
+  const base = n * MIN_W < VIEW_W ? MIN_W : 0
+  const remainder = VIEW_W - base * n
+  const geom: Geom[] = []
+  let x = 0
+  let cum = 0
   for (const seg of segments) {
-    const ms = Math.max(seg.activeMs, 0);
-    const w = base + (ms / total) * remainder;
+    const ms = Math.max(seg.activeMs, 0)
+    const w = base + (ms / total) * remainder
     geom.push({
       x0: x,
       x1: x + w,
@@ -110,13 +111,13 @@ function layout(segments: PhaseSegment[]): Geom[] {
       tokensIn: seg.tokensIn,
       tokensOut: seg.tokensOut,
       contextTokens: seg.contextTokens,
-    });
-    x += w;
-    cum += ms;
+    })
+    x += w
+    cum += ms
   }
-  const last = geom[geom.length - 1];
-  if (last) last.x1 = VIEW_W; // absorb float drift
-  return geom;
+  const last = geom[geom.length - 1]
+  if (last) last.x1 = VIEW_W // absorb float drift
+  return geom
 }
 
 /**
@@ -126,26 +127,26 @@ function layout(segments: PhaseSegment[]): Geom[] {
  * band.
  */
 function ribbonPath(geom: Geom[]): string {
-  if (geom.length === 0) return '';
+  if (geom.length === 0) return ""
   const rects: Rect[] = geom.map((g) => ({
     x0: g.x0,
     x1: g.x1,
     y0: g.cy - HALF,
     y1: g.cy + HALF,
-  }));
+  }))
   for (let i = 0; i < geom.length - 1; i++) {
-    const current = geom[i];
-    const next = geom[i + 1];
-    if (!current || !next || current.cy === next.cy) continue;
-    const xb = current.x1;
+    const current = geom[i]
+    const next = geom[i + 1]
+    if (!current || !next || current.cy === next.cy) continue
+    const xb = current.x1
     rects.push({
       x0: xb - RISER_HALF,
       x1: xb + RISER_HALF,
       y0: Math.min(current.cy, next.cy) - HALF,
       y1: Math.max(current.cy, next.cy) + HALF,
-    });
+    })
   }
-  return traceRibbon(rects, VIEW_W, CORNER_R);
+  return traceRibbon(rects, VIEW_W, CORNER_R)
 }
 
 /**
@@ -154,23 +155,23 @@ function ribbonPath(geom: Geom[]): string {
  * takes a list of these so several species can coexist, each on its own row.
  */
 export interface MarkerLayer<T = unknown> {
-  markers: TimelineMarker<T>[];
-  kind: MarkerKind<T>;
+  markers: TimelineMarker<T>[]
+  kind: MarkerKind<T>
 }
 
 export interface HypnogramSegmentsProps {
-  segments: PhaseSegment[];
-  height?: number;
+  segments: PhaseSegment[]
+  height?: number
   /** Total active time, used to label the hover position. */
-  activeSecs: number;
+  activeSecs: number
   /** Model context window; 0 when unknown, which reads as "unavailable". */
-  contextWindow: number;
+  contextWindow: number
   /**
    * Marker layers overlaid on the ribbon. Each is clustered independently and
    * biased onto its own row, so species never merge or overprint. Absent or
    * empty renders the ribbon exactly as it would be without.
    */
-  layers?: MarkerLayer[];
+  layers?: MarkerLayer[]
 }
 
 /**
@@ -187,39 +188,28 @@ export function HypnogramSegments({
   contextWindow,
   layers,
 }: HypnogramSegmentsProps) {
-  const id = useId().replace(/:/g, '');
-  const dark = useDarkTheme();
-  const geom = layout(coalesce(segments));
+  const id = useId().replace(/:/g, "")
+  const dark = useDarkTheme()
+  const geom = layout(coalesce(segments))
 
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const tipRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const tipRef = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{
-    index: number;
-    clientX: number;
-    clientY: number;
-  } | null>(null);
+    index: number
+    clientX: number
+    clientY: number
+  } | null>(null)
   // Which marker layer currently owns the open hover card. Lifted here so
   // sibling layers coordinate: only one card shows at a time.
-  const [activeMarkerLayer, setActiveMarkerLayer] = useState<number | null>(null);
+  const [activeMarkerLayer, setActiveMarkerLayer] = useState<number | null>(null)
   // The chart's rendered pixel width, tracked so dots can be clustered
   // size-aware (a dot's diameter is in px, but its x is a viewBox percent).
   // 0 until measured — clustering falls back to its width-independent pass.
-  const [widthPx, setWidthPx] = useState(0);
-
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const update = () => setWidthPx(el.getBoundingClientRect().width);
-    update();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+  const widthPx = useElementWidth(wrapRef)
 
   // The SVG renders at a fixed pixel height with `preserveAspectRatio="none"`,
   // so its vertical scale is constant regardless of width.
-  const scaleY = height / VIEW_H;
+  const scaleY = height / VIEW_H
 
   // Resolve one layer's markers to positioned dots. Markers are clustered so a
   // quick fan-out does not overprint, then each dot floats just below the
@@ -231,17 +221,17 @@ export function HypnogramSegments({
     markers: TimelineMarker<unknown>[],
     layerIndex: number,
   ): ResolvedDot<unknown>[] => {
-    const clusters = geom.length > 0 ? clusterMarkers(markers, geom, widthPx) : [];
+    const clusters = geom.length > 0 ? clusterMarkers(markers, geom, widthPx) : []
     return clusters.map((cluster) => {
-      const phase = phaseAtX(cluster.x, geom) ?? geom[0]?.phase ?? 'thinking';
-      const size = dotSize(cluster.members.length);
+      const phase = phaseAtX(cluster.x, geom) ?? geom[0]?.phase ?? "thinking"
+      const size = dotSize(cluster.members.length)
       // The dot's horizontal half-extent (plus a small pad) in viewBox units,
       // so we can test which ribbon segments it would overlap.
-      const halfVB = widthPx > 0 ? ((size / 2 + 3) / widthPx) * VIEW_W : 2;
-      let deepestCy = LANE_CENTER[phase];
+      const halfVB = widthPx > 0 ? ((size / 2 + 3) / widthPx) * VIEW_W : 2
+      let deepestCy = LANE_CENTER[phase]
       for (const g of geom) {
         if (g.x1 >= cluster.x - halfVB && g.x0 <= cluster.x + halfVB) {
-          deepestCy = Math.max(deepestCy, g.cy);
+          deepestCy = Math.max(deepestCy, g.cy)
         }
       }
       return {
@@ -251,45 +241,45 @@ export function HypnogramSegments({
         centerY:
           (deepestCy + HALF) * scaleY + TETHER_PX + size / 2 + layerIndex * LAYER_PITCH_PX,
         members: cluster.members,
-      };
-    });
-  };
+      }
+    })
+  }
 
   const resolvedLayers = (layers ?? []).map((layer, i) => ({
     kind: layer.kind,
     dots: resolveDots(layer.markers, i),
-  }));
+  }))
   // Dots in the deepest lane (and lower layers) spill past the chart's bottom,
   // so reserve flow space below for the lowest one across every layer.
   const reserveBottom = Math.max(
     0,
     ...resolvedLayers.flatMap((l) => l.dots).map((d) => d.centerY + d.size / 2 - height),
-  );
+  )
 
   // Bound to the chart-area div, so it reads that element's rect and fires
   // while the cursor is over the ribbon. Marker dots overlay the chart as
   // opaque buttons, so the pointer lands on them and no phantom segment
   // tooltip shows beneath a dot.
   function onMove(event: React.MouseEvent<HTMLDivElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const xVB = ((event.clientX - rect.left) / rect.width) * VIEW_W;
-    const index = geom.findIndex((g) => xVB >= g.x0 && xVB <= g.x1);
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const xVB = ((event.clientX - rect.left) / rect.width) * VIEW_W
+    const index = geom.findIndex((g) => xVB >= g.x0 && xVB <= g.x1)
     if (index < 0) {
-      setHover(null);
-      return;
+      setHover(null)
+      return
     }
-    setHover({ index, clientX: event.clientX, clientY: event.clientY });
+    setHover({ index, clientX: event.clientX, clientY: event.clientY })
   }
 
-  const tipPos = useTooltipPosition(hover, wrapRef, tipRef);
+  const tipPos = useTooltipPosition(hover, wrapRef, tipRef)
 
-  const hovered = hover ? geom[hover.index] : null;
-  const lastGeom = geom[geom.length - 1];
-  const totalMs = lastGeom ? lastGeom.cumStartMs + lastGeom.activeMs : 0;
+  const hovered = hover ? geom[hover.index] : null
+  const lastGeom = geom[geom.length - 1]
+  const totalMs = lastGeom ? lastGeom.cumStartMs + lastGeom.activeMs : 0
   const fraction =
-    hovered && totalMs > 0 ? (hovered.cumStartMs + hovered.activeMs / 2) / totalMs : 0;
-  const cursorX = hovered ? (hovered.x0 + hovered.x1) / 2 : 0;
+    hovered && totalMs > 0 ? (hovered.cumStartMs + hovered.activeMs / 2) / totalMs : 0
+  const cursorX = hovered ? (hovered.x0 + hovered.x1) / 2 : 0
 
   return (
     <div
@@ -307,8 +297,8 @@ export function HypnogramSegments({
           role="img"
           aria-label="Session mode over time"
           style={{
-            display: 'block',
-            border: '1px solid color-mix(in srgb, var(--color-separator) 50%, transparent)',
+            display: "block",
+            border: "1px solid color-mix(in srgb, var(--color-separator) 50%, transparent)",
           }}
         >
           <defs>
@@ -324,19 +314,19 @@ export function HypnogramSegments({
               y2={VIEW_H}
             >
               {LANES.flatMap((phase, i) => {
-                const top = (i * (LANE_H + LANE_GAP)) / VIEW_H;
-                const bottom = (i * (LANE_H + LANE_GAP) + LANE_H) / VIEW_H;
-                const color = phaseColor(phase);
+                const top = (i * (LANE_H + LANE_GAP)) / VIEW_H
+                const bottom = (i * (LANE_H + LANE_GAP) + LANE_H) / VIEW_H
+                const color = phaseColor(phase)
                 return [
                   <stop key={`${phase}-top`} offset={top} stopColor={color} />,
                   <stop key={`${phase}-bottom`} offset={bottom} stopColor={color} />,
-                ];
+                ]
               })}
             </linearGradient>
           </defs>
 
           {LANES.slice(0, -1).map((phase, i) => {
-            const y = i * (LANE_H + LANE_GAP) + LANE_H + LANE_GAP / 2;
+            const y = i * (LANE_H + LANE_GAP) + LANE_H + LANE_GAP / 2
             return (
               <line
                 key={`lane-divider-${phase}`}
@@ -349,7 +339,7 @@ export function HypnogramSegments({
                 strokeDasharray="3 3"
                 vectorEffect="non-scaling-stroke"
               />
-            );
+            )
           })}
 
           <path d={ribbonPath(geom)} fill={`url(#${id}-lane)`} />
@@ -392,10 +382,10 @@ export function HypnogramSegments({
             ...GLASS_TOOLTIP_STYLE,
             left: tipPos?.left ?? 0,
             top: tipPos?.top ?? 0,
-            visibility: tipPos ? 'visible' : 'hidden',
-            whiteSpace: 'nowrap',
+            visibility: tipPos ? "visible" : "hidden",
+            whiteSpace: "nowrap",
             lineHeight: 1.4,
-            padding: '6px 9px',
+            padding: "6px 9px",
           }}
         >
           <div className="mb-1.5 text-label-secondary" style={{ fontWeight: 500 }}>
@@ -414,13 +404,13 @@ export function HypnogramSegments({
           </div>
           <div className="mt-1 text-label-tertiary">
             {formatCompact(hovered.tokensIn)} in · {formatCompact(hovered.tokensOut)} out ·
-            context{' '}
+            context{" "}
             {contextWindow > 0
               ? `${Math.min(100, Math.round((hovered.contextTokens / contextWindow) * 100))}%`
-              : 'unavailable'}
+              : "unavailable"}
           </div>
         </div>
       )}
     </div>
-  );
+  )
 }

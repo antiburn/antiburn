@@ -2,11 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Bot } from 'lucide-react';
+import { Bot } from "lucide-react"
 
-import { scoreColor } from '../../../lib/presentation/sessionAnalytics';
-import { SubagentRosterRow, type AgentIconRenderer } from '../orchestration/SubagentRosterRow';
-import type { MarkerKind } from './HypnogramMarkers';
+import { scoreColor } from "../../../lib/presentation/sessionAnalytics"
+import { SubagentRosterRow, type AgentIconRenderer } from "../orchestration/SubagentRosterRow"
+import type { MarkerKind } from "./HypnogramMarkers"
 
 /**
  * The payload a sub-agent spawn marker carries. `open` opens that sub-agent's
@@ -14,14 +14,14 @@ import type { MarkerKind } from './HypnogramMarkers';
  * orchestrator's active-time axis.
  */
 export interface SpawnPayload {
-  patternScore: number;
-  agent: string;
-  label: string;
-  open: () => void;
+  patternScore: number
+  agent: string
+  label: string
+  open: () => void
 }
 
 export interface SpawnMarkerKindOptions {
-  renderAgentIcon?: AgentIconRenderer;
+  renderAgentIcon?: AgentIconRenderer
 }
 
 /**
@@ -40,11 +40,11 @@ export function createSpawnMarkerKind(
     maxWidth: 270,
     dotFill: (dark) =>
       dark
-        ? 'color-mix(in srgb, var(--color-system-indigo) 55%, transparent)'
-        : 'color-mix(in srgb, var(--color-system-indigo) 20%, transparent)',
-    tetherColor: 'var(--color-system-indigo-text)',
-    textColor: 'var(--color-system-indigo-text)',
-    textStroke: (dark) => (dark ? '0.5px var(--color-system-indigo-text)' : undefined),
+        ? "color-mix(in srgb, var(--color-system-indigo) 55%, transparent)"
+        : "color-mix(in srgb, var(--color-system-indigo) 20%, transparent)",
+    tetherColor: "var(--color-system-indigo-text)",
+    textColor: "var(--color-system-indigo-text)",
+    textStroke: (dark) => (dark ? "0.5px var(--color-system-indigo-text)" : undefined),
     // A merged cluster shows its count; a lone dot shows the glyph, matching
     // the card header, so a single dot still reads as "a sub-agent".
     dotContent: (members) =>
@@ -52,7 +52,7 @@ export function createSpawnMarkerKind(
     ariaLabel: (members) =>
       members.length > 1
         ? `${members.length} sub-agents spawned`
-        : `Sub-agent spawned: ${members[0]?.data.label ?? 'unknown'}`,
+        : `Sub-agent spawned: ${members[0]?.data.label ?? "unknown"}`,
     onLoneClick: (member) => member.data.open(),
     renderTooltip: (members, close) => (
       <div className="flex flex-col">
@@ -69,7 +69,7 @@ export function createSpawnMarkerKind(
             right padding keeps the rows clear of it. */}
         <div
           className="-mr-1.5 overflow-y-auto overscroll-contain pr-2.5"
-          style={{ maxHeight: 'min(260px, 55vh)' }}
+          style={{ maxHeight: "min(260px, 55vh)" }}
         >
           {members.map((member, i) => (
             <SubagentRosterRow
@@ -87,16 +87,16 @@ export function createSpawnMarkerKind(
                 </span>
               }
               onClick={() => {
-                close();
-                member.data.open();
+                close()
+                member.data.open()
               }}
             />
           ))}
         </div>
       </div>
     ),
-  };
+  }
 }
 
 /** The spawn marker species with no icon renderer wired in. */
-export const spawnMarkerKind: MarkerKind<SpawnPayload> = createSpawnMarkerKind();
+export const spawnMarkerKind: MarkerKind<SpawnPayload> = createSpawnMarkerKind()

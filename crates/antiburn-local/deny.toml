@@ -1,6 +1,7 @@
 # cargo-deny configuration for the antiburn-local engine.
 #
-# CI runs `cargo deny check bans licenses` against the engine's own lockfile.
+# CI runs `cargo deny --locked check bans licenses` and
+# `cargo deny --locked check advisories` against the engine's own lockfile.
 # Both halves matter and both are run: every dependency must carry one of the
 # allowed permissive licenses (MPL-2.0 is the project's own), and none of the
 # telemetry/analytics SDKs in the `[bans]` block below may appear at all —

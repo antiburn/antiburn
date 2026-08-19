@@ -2,22 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts';
+import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts"
 
-import { toolMixSlices } from '../../../lib/presentation/sessionAnalytics';
-import type { ActiveSessionsSummary } from '../../../lib/types/session';
+import { toolMixSlices } from "../../../lib/presentation/sessionAnalytics"
+import type { ActiveSessionsSummary } from "../../../lib/types/session"
 
 export interface ToolMixChartProps {
-  summary: ActiveSessionsSummary;
+  summary: ActiveSessionsSummary
 }
 
 /** Tool-usage donut with a legend and a search callout. */
 export function ToolMixChart({ summary }: ToolMixChartProps) {
-  const slices = toolMixSlices(summary);
-  const total = slices.reduce((acc, s) => acc + s.value, 0);
+  const slices = toolMixSlices(summary)
+  const total = slices.reduce((acc, s) => acc + s.value, 0)
 
   if (total === 0) {
-    return <p className="type-footnote text-label-tertiary">No tool calls yet.</p>;
+    return <p className="type-footnote text-label-tertiary">No tool calls yet.</p>
   }
 
   return (
@@ -62,10 +62,10 @@ export function ToolMixChart({ summary }: ToolMixChartProps) {
         ))}
         {summary.grepTotal > 0 && (
           <div className="col-span-2 mt-0.5 type-caption text-label-tertiary">
-            {summary.grepTotal} search{summary.grepTotal === 1 ? '' : 'es'} (grep/glob)
+            {summary.grepTotal} search{summary.grepTotal === 1 ? "" : "es"} (grep/glob)
           </div>
         )}
       </div>
     </div>
-  );
+  )
 }

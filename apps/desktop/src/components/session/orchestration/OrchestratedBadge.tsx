@@ -2,24 +2,24 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Bot } from 'lucide-react';
+import { Bot } from "lucide-react"
 
-import { scoreColor } from '../../../lib/presentation/sessionAnalytics';
-import type { LocalOrchestrationStatus } from '../../../lib/types/session';
-import { CollapsibleOrchestrationCard } from './CollapsibleOrchestrationCard';
-import { SubagentRosterRow, type AgentIconRenderer } from './SubagentRosterRow';
+import { scoreColor } from "../../../lib/presentation/sessionAnalytics"
+import type { LocalOrchestrationStatus } from "../../../lib/types/session"
+import { CollapsibleOrchestrationCard } from "./CollapsibleOrchestrationCard"
+import { SubagentRosterRow, type AgentIconRenderer } from "./SubagentRosterRow"
 
 export interface OrchestratedBadgeProps {
   /** The sub-agents this session launched, as discovered on disk. */
-  status: LocalOrchestrationStatus;
+  status: LocalOrchestrationStatus
   /** Open one sub-agent's own analytics. */
   onOpenSubagent: (
     parentAgent: string,
     parentSessionId: string,
     subagentId: string,
     label: string,
-  ) => void;
-  renderAgentIcon?: AgentIconRenderer | undefined;
+  ) => void
+  renderAgentIcon?: AgentIconRenderer | undefined
 }
 
 /**
@@ -67,5 +67,5 @@ export function OrchestratedBadge({
         />
       ))}
     </CollapsibleOrchestrationCard>
-  );
+  )
 }

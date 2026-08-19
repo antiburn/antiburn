@@ -2,42 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { open } from '@tauri-apps/plugin-dialog';
-import { FolderPlus, RefreshCw, X } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { FolderPlus, RefreshCw, X } from "lucide-react"
+import { useCallback, useState, useSyncExternalStore } from "react"
 
-import { FolderPermissionNotice } from '../../components/repositories/FolderPermissionNotice';
-import { LocalRepositoryList } from '../../components/repositories/LocalRepositoryList';
-import { Card } from '../../components/ui/Card';
-import { PaneHeader } from '../../components/ui/Pane';
-import { PushButton } from '../../components/ui/PushButton';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { StatusText } from '../../components/ui/StatusText';
-import {
-  addScanRoot,
-  getFolderPermissions,
-  getScanStatus,
-  listRepositories,
-  listScanRoots,
-  getConsentDiagnostics,
-  onScanEvent,
-  openFolderAccessSettings,
-  recheckFolderPermissions,
-  refreshRepositories,
-  removeScanRoot,
-  scanNow,
-  setRepositoryEnabled,
-  type RepositoryItemPayload,
-  type ScanStatus,
-} from '../../lib/ipc';
-import type {
-  FolderPermissions,
-  LocalRepositoryItem,
-  LocalRepositoryStatus,
-} from '../../lib/types/repository';
-import { useFolderPermissionFlow } from '../../lib/useFolderPermissionFlow';
-import { scanStatusLabel } from '../popover/ScanStatusBar';
-import { useAppSettings } from './useAppSettings';
+import { FolderPermissionNotice } from "../../components/repositories/FolderPermissionNotice"
+import { LocalRepositoryList } from "../../components/repositories/LocalRepositoryList"
+import { Card } from "../../components/ui/Card"
+import { PaneHeader } from "../../components/ui/Pane"
+import { PushButton } from "../../components/ui/PushButton"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { StatusText } from "../../components/ui/StatusText"
+import { openFolderAccessSettings, scanNow } from "../../lib/ipc"
+import { scanStatusStore } from "../../lib/scanStatusStore"
+import type { LocalRepositoryItem } from "../../lib/types/repository"
+import { useFolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
+import { scanStatusLabel } from "../popover/ScanStatusBar"
+import { SourcesSession } from "./SourcesSession"
 
 /**
  * Sources: which repositories antiburn watches, and where it looks for them.
@@ -46,168 +26,59 @@ import { useAppSettings } from './useAppSettings';
  * turned off — and turning one off does more than hide a row: the shell also
  * records the path in the engine's opt-out store, so the *next scan* skips its
  * sessions entirely.
+ *
+ * The repository list, scan roots and folder permissions live in
+ * `SourcesSession` (the external-system boundary this component subscribes
+ * to); scan *status* is a separate subscription to `scanStatusStore`, shared
+ * with `GeneralPane` — the two panes never mount at once.
  */
 
-/** Narrow the shell's status string to the list's union. */
-function statusOf(payload: RepositoryItemPayload): LocalRepositoryStatus {
-  switch (payload.status) {
-    case 'accessible':
-    case 'permission_denied':
-    case 'not_cloned':
-    case 'disabled':
-      return payload.status;
-    default:
-      return 'accessible';
-  }
+export interface SourcesPaneProps {
+  discoveryPaused: boolean
 }
 
-function toItems(payloads: readonly RepositoryItemPayload[]): LocalRepositoryItem[] {
-  return payloads.map((payload) => ({
-    key: payload.key,
-    repoName: payload.repoName,
-    fullName: payload.fullName,
-    status: statusOf(payload),
-    repoRoot: payload.repoRoot,
-    suspectedPath: payload.suspectedPath,
-    worktreeCount: payload.worktreeCount,
-    sessionCount: payload.sessionCount,
-    wslDistro: payload.wslDistro,
-    enabled: payload.enabled,
-  }));
-}
-
-export function SourcesPane() {
-  const { settings: appSettings } = useAppSettings();
-  const [repositories, setRepositories] = useState<LocalRepositoryItem[]>([]);
-  const [scanRoots, setScanRoots] = useState<string[]>([]);
-  const [scanning, setScanning] = useState(true);
-  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
-  const [permissions, setPermissions] = useState<FolderPermissions>({
-    deferred: [],
-    granted: [],
-    supported: false,
-  });
-
-  // The main view no longer carries a scan status line; this pane is where a
-  // reader checks on and re-runs scanning, so it stays live via scan events.
-  useEffect(() => {
-    let active = true;
-    void getScanStatus()
-      .then((status) => {
-        if (active) setScanStatus(status);
-      })
-      .catch(() => undefined);
-    const unlisten = onScanEvent((status) => setScanStatus(status));
-    return () => {
-      active = false;
-      void unlisten.then((dispose) => dispose());
-    };
-  }, []);
+export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
+  const [session] = useState(() => new SourcesSession())
+  const { repositories, scanRoots, permissions, scanning } = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+  )
+  const scanStatus = useSyncExternalStore(
+    scanStatusStore.subscribe,
+    scanStatusStore.getSnapshot,
+  )
 
   const handleRescanSessions = useCallback(async () => {
-    const status = await scanNow().catch(() => null);
-    if (status) setScanStatus(status);
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      const [repos, roots] = await Promise.all([
-        listRepositories().catch(() => []),
-        listScanRoots().catch(() => []),
-      ]);
-      if (!active) return;
-      setRepositories(toItems(repos));
-      setScanRoots(roots);
-      setScanning(false);
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const loadPermissions = useCallback(async () => {
-    const next = await getFolderPermissions().catch(() => null);
-    if (next) setPermissions(next);
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    void getFolderPermissions()
-      .then((next) => {
-        if (active && next) setPermissions(next);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const handleRefresh = useCallback(async () => {
-    setScanning(true);
-    const repos = await refreshRepositories().catch(() => []);
-    setRepositories(toItems(repos));
-    setScanning(false);
-    // A pass that just ran may have granted or lost access; the notice above
-    // the list has to agree with the list.
-    await loadPermissions();
-  }, [loadPermissions]);
+    const status = await scanNow().catch(() => null)
+    if (status) scanStatusStore.set(status)
+  }, [])
 
   // Granting is the one path that can add repositories the reader is waiting
   // for, so each grant refreshes the list rather than making them wait for the
   // whole queue.
   const permissionFlow = useFolderPermissionFlow(permissions.deferred, () => {
-    void handleRefresh();
-  });
-  const [rechecking, setRechecking] = useState(false);
+    void session.refresh()
+  })
+  const [rechecking, setRechecking] = useState(false)
 
-  /**
-   * Look for access granted in System Settings rather than through antiburn.
-   *
-   * The way out of a remembered refusal: macOS will not prompt again, so the
-   * only path is the system pane, and nothing notices that until something
-   * looks. This is the looking.
-   */
   const handleRecheck = useCallback(async () => {
-    setRechecking(true);
-    const found = await recheckFolderPermissions().catch(() => []);
-    if (found.length > 0) await handleRefresh();
-    else await loadPermissions();
-    setRechecking(false);
-  }, [handleRefresh, loadPermissions]);
+    setRechecking(true)
+    await session.recheck()
+    setRechecking(false)
+  }, [session])
 
-  /** Probe history, for a bug report. */
-  const handleCopyDiagnostics = useCallback(async () => {
-    const probes = await getConsentDiagnostics().catch(() => []);
-    const text = probes
-      .map((probe) => `${probe.outcome}\t${probe.elapsedMs}ms\t${probe.target}`)
-      .join('\n');
-    await navigator.clipboard.writeText(text || 'No folder-access probes this run.');
-  }, []);
+  const handleCopyDiagnostics = useCallback(() => session.copyDiagnostics(), [session])
 
-  const handleToggle = useCallback(async (item: LocalRepositoryItem, enabled: boolean) => {
-    const repos = await setRepositoryEnabled(item.key, enabled).catch(
-      () => [] as RepositoryItemPayload[],
-    );
-    if (repos.length > 0) setRepositories(toItems(repos));
-  }, []);
+  const handleToggle = useCallback(
+    (item: LocalRepositoryItem, enabled: boolean) => session.toggleRepository(item, enabled),
+    [session],
+  )
 
-  /**
-   * "Locate" points the scanner at the folder a missing repository lives in,
-   * rather than at the repository itself: the engine's scan roots are
-   * directories it walks, and the parent is what makes the clone — and its
-   * siblings — findable on the next pass.
-   */
-  const handleLocate = useCallback(async () => {
-    const picked = await open({ directory: true, multiple: false });
-    if (typeof picked !== 'string') return;
-    setScanRoots(await addScanRoot(picked));
-    await handleRefresh();
-  }, [handleRefresh]);
+  const handleLocate = useCallback(() => session.locate(), [session])
 
-  const handleRemoveRoot = useCallback(async (path: string) => {
-    setScanRoots(await removeScanRoot(path));
-  }, []);
+  const handleRemoveRoot = useCallback((path: string) => session.removeRoot(path), [session])
+
+  const handleRefresh = useCallback(() => session.refresh(), [session])
 
   return (
     <>
@@ -233,7 +104,7 @@ export function SourcesPane() {
           title="Scanning"
           trailing={
             <StatusText tone="secondary">
-              {scanStatusLabel(scanStatus, appSettings.discoveryPaused)}
+              {scanStatusLabel(scanStatus, discoveryPaused)}
             </StatusText>
           }
         >
@@ -248,7 +119,7 @@ export function SourcesPane() {
                 onClick={() => void handleRescanSessions()}
               >
                 <RefreshCw size={12} aria-hidden="true" />
-                {scanStatus?.running ? 'Scanning…' : 'Rescan'}
+                {scanStatus?.running ? "Scanning…" : "Rescan"}
               </PushButton>
             </div>
           </Card>
@@ -259,8 +130,8 @@ export function SourcesPane() {
           trailing={
             <StatusText tone="secondary">
               {scanRoots.length === 0
-                ? 'Defaults only'
-                : `${scanRoots.length} extra ${scanRoots.length === 1 ? 'folder' : 'folders'}`}
+                ? "Defaults only"
+                : `${scanRoots.length} extra ${scanRoots.length === 1 ? "folder" : "folders"}`}
             </StatusText>
           }
         >
@@ -314,5 +185,5 @@ export function SourcesPane() {
         </SectionGroup>
       </div>
     </>
-  );
+  )
 }

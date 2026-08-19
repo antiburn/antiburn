@@ -1,7 +1,7 @@
 ---
 version: alpha
 name: antiburn Desktop
-description: 'antiburn desktop design system (native-feeling, Tauri; ships macOS/Windows/Linux). Light and Dark are documented together: every colors entry carries both values. Use semantic Tailwind utilities for shared product chrome; promote recurring feature values to tokens and keep one-off visualization or geometry values local and documented.'
+description: "antiburn desktop design system (native-feeling, Tauri; ships macOS/Windows/Linux). Light and Dark are documented together: every colors entry carries both values. Use semantic Tailwind utilities for shared product chrome; promote recurring feature values to tokens and keep one-off visualization or geometry values local and documented."
 sources:
   - src/styles/tokens.css
   - src/styles/base.css
@@ -17,140 +17,140 @@ colors:
   # light = the default :root palette · dark = the explicit [data-theme="dark"] palette
   # System-preference (@media) values are noted where they differ from the explicit ones.
   surface:
-    light: 'rgb(255 255 255 / 0.58)' # reduced-transparency: rgb(255 255 255)
-    dark: 'rgb(30 30 30 / 0.92)' # @media dark: rgb(30 30 30 / 0.40)
+    light: "rgb(255 255 255 / 0.58)" # reduced-transparency: rgb(255 255 255)
+    dark: "rgb(30 30 30 / 0.92)" # @media dark: rgb(30 30 30 / 0.40)
   surface-secondary:
-    light: 'rgb(0 0 0 / 0.08)'
-    dark: 'rgb(255 255 255 / 0.12)'
+    light: "rgb(0 0 0 / 0.08)"
+    dark: "rgb(255 255 255 / 0.12)"
   surface-tertiary:
-    light: 'rgb(0 0 0 / 0.12)'
-    dark: 'rgb(255 255 255 / 0.18)'
+    light: "rgb(0 0 0 / 0.12)"
+    dark: "rgb(255 255 255 / 0.18)"
   surface-card:
-    light: 'rgb(0 0 0 / 0.04)'
-    dark: 'rgb(255 255 255 / 0.08)'
+    light: "rgb(0 0 0 / 0.04)"
+    dark: "rgb(255 255 255 / 0.08)"
   surface-hover:
-    light: 'rgb(0 0 0 / 0.08)' # @media light: rgb(0 0 0 / 0.04)
-    dark: 'rgb(255 255 255 / 0.04)' # @media dark: rgb(255 255 255 / 0.07)
+    light: "rgb(0 0 0 / 0.08)" # @media light: rgb(0 0 0 / 0.04)
+    dark: "rgb(255 255 255 / 0.04)" # @media dark: rgb(255 255 255 / 0.07)
   surface-window: # standard decorated window
-    light: 'rgb(246 246 246)' # @media light: rgb(246 246 246 / 0.80)
-    dark: 'rgb(32 32 32)' # @media dark: rgb(40 40 40 / 0.80)
+    light: "rgb(246 246 246)" # @media light: rgb(246 246 246 / 0.80)
+    dark: "rgb(32 32 32)" # @media dark: rgb(40 40 40 / 0.80)
   surface-sidebar: # source-list / sidebar material
-    light: 'rgb(0 0 0 / 0.03)'
-    dark: 'rgb(255 255 255 / 0.04)'
+    light: "rgb(0 0 0 / 0.03)"
+    dark: "rgb(255 255 255 / 0.04)"
   surface-selected: # selected row in a list or source list (accent-fill stays for controls)
-    light: 'rgb(0 0 0 / 0.09)'
-    dark: 'rgb(255 255 255 / 0.14)'
+    light: "rgb(0 0 0 / 0.09)"
+    dark: "rgb(255 255 255 / 0.14)"
   input-fill:
-    light: 'rgb(255 255 255)' # @media light: rgb(255 255 255 / 0.50)
-    dark: 'rgb(58 58 60)' # @media dark: rgb(255 255 255 / 0.08)
+    light: "rgb(255 255 255)" # @media light: rgb(255 255 255 / 0.50)
+    dark: "rgb(58 58 60)" # @media dark: rgb(255 255 255 / 0.08)
   label: # live system label token where available
-    light: 'rgb(0 0 0 / 0.85)'
-    dark: 'rgb(255 255 255 / 0.92)'
+    light: "rgb(0 0 0 / 0.85)"
+    dark: "rgb(255 255 255 / 0.92)"
   label-secondary:
-    light: 'rgb(60 60 67 / 0.85)'
-    dark: 'rgb(235 235 245 / 0.72)'
+    light: "rgb(60 60 67 / 0.85)"
+    dark: "rgb(235 235 245 / 0.72)"
   label-tertiary:
-    light: 'rgb(60 60 67 / 0.5)'
-    dark: 'rgb(235 235 245 / 0.45)' # @media dark: rgb(235 235 245 / 0.35)
+    light: "rgb(60 60 67 / 0.5)"
+    dark: "rgb(235 235 245 / 0.45)" # @media dark: rgb(235 235 245 / 0.35)
   separator: # live system separator token where available
-    light: 'rgb(0 0 0 / 0.15)'
-    dark: 'rgb(255 255 255 / 0.18)'
+    light: "rgb(0 0 0 / 0.15)"
+    dark: "rgb(255 255 255 / 0.18)"
   accent: # live system accent token where available
-    light: 'rgb(0 122 255)'
-    dark: 'rgb(10 132 255)'
+    light: "rgb(0 122 255)"
+    dark: "rgb(10 132 255)"
   accent-hover:
-    light: 'rgb(0 122 255 / 0.85)'
-    dark: 'rgb(10 132 255 / 0.85)'
+    light: "rgb(0 122 255 / 0.85)"
+    dark: "rgb(10 132 255 / 0.85)"
   accent-fill: # concrete fill; use bg-accent-fill for backgrounds
-    light: 'rgb(0 122 255)'
-    dark: 'rgb(10 132 255)'
+    light: "rgb(0 122 255)"
+    dark: "rgb(10 132 255)"
   system-green:
-    light: 'rgb(36 138 61)'
-    dark: 'rgb(48 219 91)'
+    light: "rgb(36 138 61)"
+    dark: "rgb(48 219 91)"
   system-orange:
-    light: 'rgb(179 81 0)'
-    dark: 'rgb(255 179 64)'
+    light: "rgb(179 81 0)"
+    dark: "rgb(255 179 64)"
   system-orange-tint:
-    light: 'rgb(255 149 0)'
-    dark: 'rgb(255 159 10)'
+    light: "rgb(255 149 0)"
+    dark: "rgb(255 159 10)"
   system-yellow:
-    light: 'rgb(160 90 0)'
-    dark: 'rgb(255 212 38)'
+    light: "rgb(160 90 0)"
+    dark: "rgb(255 212 38)"
   system-red:
-    light: 'rgb(215 0 21)'
-    dark: 'rgb(255 105 97)'
+    light: "rgb(215 0 21)"
+    dark: "rgb(255 105 97)"
   system-red-text:
-    light: 'rgb(190 0 20)'
-    dark: 'rgb(255 138 128)'
+    light: "rgb(190 0 20)"
+    dark: "rgb(255 138 128)"
   system-blue:
-    light: 'rgb(0 122 255)'
-    dark: 'rgb(10 132 255)'
+    light: "rgb(0 122 255)"
+    dark: "rgb(10 132 255)"
   system-indigo:
-    light: 'rgb(88 86 214)'
-    dark: 'rgb(94 92 230)'
+    light: "rgb(88 86 214)"
+    dark: "rgb(94 92 230)"
   system-indigo-text:
-    light: 'rgb(88 86 214)'
-    dark: 'rgb(150 148 255)'
+    light: "rgb(88 86 214)"
+    dark: "rgb(150 148 255)"
   system-gold:
-    light: 'rgb(202 138 4)'
-    dark: 'rgb(255 204 0)'
+    light: "rgb(202 138 4)"
+    dark: "rgb(255 204 0)"
   system-gold-text:
-    light: 'rgb(146 100 0)'
-    dark: 'rgb(245 203 92)'
+    light: "rgb(146 100 0)"
+    dark: "rgb(245 203 92)"
   agent-mark: # vendor brand-mark ink; see the Vendor brand marks note below
-    light: 'rgb(38 37 30)'
-    dark: 'rgb(247 247 244)'
+    light: "rgb(38 37 30)"
+    dark: "rgb(247 247 244)"
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
   mode-implementing:
-    light: 'rgb(29 78 216)'
-    dark: 'rgb(37 99 235)'
+    light: "rgb(29 78 216)"
+    dark: "rgb(37 99 235)"
   mode-testing:
-    light: 'rgb(5 150 105)'
-    dark: 'rgb(52 211 153)'
+    light: "rgb(5 150 105)"
+    dark: "rgb(52 211 153)"
   mode-exploring:
-    light: 'rgb(59 130 246)'
-    dark: 'rgb(96 165 250)'
+    light: "rgb(59 130 246)"
+    dark: "rgb(96 165 250)"
   mode-thinking:
-    light: 'rgb(6 182 212)'
-    dark: 'rgb(34 211 238)'
+    light: "rgb(6 182 212)"
+    dark: "rgb(34 211 238)"
   mode-disruption:
-    light: 'rgb(234 88 12)'
-    dark: 'rgb(255 149 10)'
+    light: "rgb(234 88 12)"
+    dark: "rgb(255 149 10)"
   context-fill-top:
-    light: 'rgb(59 130 246 / 0.55)'
-    dark: 'rgb(96 165 250 / 0.6)'
+    light: "rgb(59 130 246 / 0.55)"
+    dark: "rgb(96 165 250 / 0.6)"
   context-fill-base:
-    light: 'rgb(59 130 246 / 0.08)'
-    dark: 'rgb(96 165 250 / 0.1)'
+    light: "rgb(59 130 246 / 0.08)"
+    dark: "rgb(96 165 250 / 0.1)"
   context-fixed:
-    light: 'rgb(100 116 139)'
-    dark: 'rgb(148 163 184)'
+    light: "rgb(100 116 139)"
+    dark: "rgb(148 163 184)"
   context-system:
-    light: 'rgb(124 58 237)'
-    dark: 'rgb(167 139 250)'
+    light: "rgb(124 58 237)"
+    dark: "rgb(167 139 250)"
   token-in:
-    light: 'rgb(59 130 246)'
-    dark: 'rgb(96 165 250)'
+    light: "rgb(59 130 246)"
+    dark: "rgb(96 165 250)"
   token-out:
-    light: 'rgb(167 139 250)'
-    dark: 'rgb(196 181 253)'
+    light: "rgb(167 139 250)"
+    dark: "rgb(196 181 253)"
   pattern-drifting:
-    light: 'rgb(217 119 6)'
-    dark: 'rgb(255 159 10)'
+    light: "rgb(217 119 6)"
+    dark: "rgb(255 159 10)"
 fonts:
-  sans: '-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif'
-  mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace' # via `font-mono`
+  sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
+  mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`
 typography:
   # class .type-<name> · [fontSize, fontWeight, lineHeight, letterSpacing] · family = fonts.sans
-  large-title: { fontSize: 26px, fontWeight: 400, lineHeight: 1.4, letterSpacing: '0.36px' }
-  title-1: { fontSize: 22px, fontWeight: 400, lineHeight: 1.4, letterSpacing: '0.35px' }
-  title-2: { fontSize: 17px, fontWeight: 600, lineHeight: 1.4, letterSpacing: '-0.43px' }
-  title-3: { fontSize: 15px, fontWeight: 600, lineHeight: 1.4, letterSpacing: '-0.23px' }
-  headline: { fontSize: 13px, fontWeight: 600, lineHeight: 1.4, letterSpacing: '-0.08px' }
-  body: { fontSize: 13px, fontWeight: 400, lineHeight: 1.4, letterSpacing: '-0.08px' }
-  callout: { fontSize: 12px, fontWeight: 400, lineHeight: 1.4, letterSpacing: '0' }
-  footnote: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: '0.12px' }
-  caption: { fontSize: 10px, fontWeight: 400, lineHeight: 1.4, letterSpacing: '0.06px' }
+  large-title: { fontSize: 26px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.36px" }
+  title-1: { fontSize: 22px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.35px" }
+  title-2: { fontSize: 17px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.43px" }
+  title-3: { fontSize: 15px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.23px" }
+  headline: { fontSize: 13px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.08px" }
+  body: { fontSize: 13px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "-0.08px" }
+  callout: { fontSize: 12px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0" }
+  footnote: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.12px" }
+  caption: { fontSize: 10px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.06px" }
 spacing:
   1: 4px
   2: 8px
@@ -178,81 +178,81 @@ rounded:
   popover: 10px
   full: 9999px
 shadow:
-  popover: '0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08)'
-  tooltip: '0 2px 8px rgb(0 0 0 / 0.12), 0 0.5px 2px rgb(0 0 0 / 0.06)'
-  raised: '0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)'
+  popover: "0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08)"
+  tooltip: "0 2px 8px rgb(0 0 0 / 0.12), 0 0.5px 2px rgb(0 0 0 / 0.06)"
+  raised: "0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)"
 motion:
-  button: 'transform 80ms / opacity 120ms ease-out; :active scale(0.98) opacity 0.85'
-  menu-in: '120ms ease-out from trigger origin'
-  tooltip-in: '100ms'
-  switch: '180ms ease-out track + thumb'
-  progress-pulse: '1.5s loop'
-  segmented-indicator: '120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade'
-  text-roll: '300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease'
+  button: "transform 80ms / opacity 120ms ease-out; :active scale(0.98) opacity 0.85"
+  menu-in: "120ms ease-out from trigger origin"
+  tooltip-in: "100ms"
+  switch: "180ms ease-out track + thumb"
+  progress-pulse: "1.5s loop"
+  segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
+  text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
 components:
   button-secondary:
     className: ui-push-button
-    backgroundColor: '{colors.surface-secondary}'
-    textColor: '{colors.label}'
-    borderColor: '{colors.separator}'
-    typography: '{typography.callout}'
-    rounded: '{rounded.control}'
-    padding: '0 10px'
+    backgroundColor: "{colors.surface-secondary}"
+    textColor: "{colors.label}"
+    borderColor: "{colors.separator}"
+    typography: "{typography.callout}"
+    rounded: "{rounded.control}"
+    padding: "0 10px"
     height: 22px
   button-primary:
-    className: 'ui-push-button bg-accent-fill text-white border-transparent'
-    backgroundColor: '{colors.accent}'
-    textColor: '#ffffff'
-    typography: '{typography.callout}'
-    rounded: '{rounded.control}'
-    padding: '0 10px'
+    className: "ui-push-button bg-accent-fill text-white border-transparent"
+    backgroundColor: "{colors.accent}"
+    textColor: "#ffffff"
+    typography: "{typography.callout}"
+    rounded: "{rounded.control}"
+    padding: "0 10px"
     height: 22px
   button-cta:
-    backgroundColor: '{colors.accent-hover}'
-    textColor: '#ffffff'
+    backgroundColor: "{colors.accent-hover}"
+    textColor: "#ffffff"
     fontWeight: 500
-    typography: '{typography.body}'
-    rounded: '{rounded.control}'
-    padding: '10px 16px'
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
+    padding: "10px 16px"
   input:
-    backgroundColor: '{colors.input-fill}'
-    textColor: '{colors.label}'
-    borderColor: '{colors.separator}'
-    typography: '{typography.body}'
-    rounded: '{rounded.control}'
-    padding: '0 8px'
+    backgroundColor: "{colors.input-fill}"
+    textColor: "{colors.label}"
+    borderColor: "{colors.separator}"
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
+    padding: "0 8px"
     height: 22px
   menu:
     className: ui-menu
-    backgroundColor: { light: 'rgb(235 235 235 / 0.92)', dark: 'rgb(50 50 50 / 0.96)' }
-    backdropFilter: 'blur(20px) saturate(180%)'
-    borderColor: '{colors.separator}'
-    rounded: '{rounded.control}'
-    shadow: '{shadow.popover}'
+    backgroundColor: { light: "rgb(235 235 235 / 0.92)", dark: "rgb(50 50 50 / 0.96)" }
+    backdropFilter: "blur(20px) saturate(180%)"
+    borderColor: "{colors.separator}"
+    rounded: "{rounded.control}"
+    shadow: "{shadow.popover}"
   tooltip:
     className: ui-tooltip
-    backgroundColor: { light: 'rgb(235 235 235 / 0.92)', dark: 'rgb(50 50 50 / 0.96)' }
-    backdropFilter: 'blur(20px) saturate(180%)'
-    textColor: '{colors.label}'
+    backgroundColor: { light: "rgb(235 235 235 / 0.92)", dark: "rgb(50 50 50 / 0.96)" }
+    backdropFilter: "blur(20px) saturate(180%)"
+    textColor: "{colors.label}"
     rounded: 3px
-    shadow: '{shadow.tooltip}'
+    shadow: "{shadow.tooltip}"
     maxWidth: 250px
   switch:
-    className: 'ui-switch + ui-switch-thumb'
-    size: '32x20px'
-    checkedColor: '{colors.accent}'
+    className: "ui-switch + ui-switch-thumb"
+    size: "32x20px"
+    checkedColor: "{colors.accent}"
   radio:
-    className: 'ui-radio-indicator + ui-radio-dot'
-    size: '12px ring / 6px dot'
-    checkedColor: '{colors.accent}'
+    className: "ui-radio-indicator + ui-radio-dot"
+    size: "12px ring / 6px dot"
+    checkedColor: "{colors.accent}"
   progress:
-    className: 'ui-progress + ui-progress-indicator'
+    className: "ui-progress + ui-progress-indicator"
     height: 6px
-    indicatorColor: '{colors.accent}'
+    indicatorColor: "{colors.accent}"
   scroll:
-    className: 'ui-scrollbar + ui-scrollbar-thumb'
+    className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
-    topEdgeFade: 'ScrollPane topEdgeFade opt-in; activates above scrollTop 1px; alpha 25% at 0px, 75% at 5px, 100% at 12px'
+    topEdgeFade: "ScrollPane topEdgeFade opt-in; activates above scrollTop 1px; alpha 25% at 0px, 75% at 5px, 100% at 12px"
 ---
 
 # antiburn Desktop — Design System

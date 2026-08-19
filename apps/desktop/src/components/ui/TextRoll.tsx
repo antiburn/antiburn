@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { memo, useState, type CSSProperties } from 'react';
+import { memo, useState, type CSSProperties } from "react"
 
-import './text-roll.css';
+import "./text-roll.css"
 
 /**
  * Per-character jitter so a multi-digit roll reads as a cascade of individual
@@ -13,31 +13,31 @@ import './text-roll.css';
  * internal: consumers tune the shared feel via the `--text-roll-*` custom
  * properties, not the per-glyph personality.
  */
-const DURATION_JITTER = 0.25;
-const STAGGER_JITTER = 0.2;
-const MAX_TILT_DEG = 3;
+const DURATION_JITTER = 0.25
+const STAGGER_JITTER = 0.2
+const MAX_TILT_DEG = 3
 
 /** Defaults mirrored from text-roll.css, used only to rank which cell's
  *  animation finishes last (the settle signal). If a consumer overrides the
  *  CSS variables with wildly different ratios the ranking can be slightly off,
  *  which at worst snaps the true last cell to rest a moment early. */
-const BASE_DURATION_MS = 300;
-const BASE_STAGGER_MS = 45;
+const BASE_DURATION_MS = 300
+const BASE_STAGGER_MS = 45
 
 /** Deterministic pseudo-random value in [-1, 1] for a (index, channel) pair. */
 function jitter(index: number, channel: number): number {
-  const seed = Math.sin((index + 1) * 12.9898 + channel * 78.233) * 43758.5453;
-  return (seed - Math.floor(seed)) * 2 - 1;
+  const seed = Math.sin((index + 1) * 12.9898 + channel * 78.233) * 43758.5453
+  return (seed - Math.floor(seed)) * 2 - 1
 }
 
 interface CellPlan {
-  key: string;
-  char: string;
-  prevChar: string | undefined;
-  changed: boolean;
-  style: CSSProperties | undefined;
+  key: string
+  char: string
+  prevChar: string | undefined
+  changed: boolean
+  style: CSSProperties | undefined
   /** Approximate animation end time, for picking the settle reporter. */
-  endMs: number;
+  endMs: number
 }
 
 function planCells(chars: string[], prevChars: string[] | null): CellPlan[] {
@@ -46,23 +46,23 @@ function planCells(chars: string[], prevChars: string[] | null): CellPlan[] {
   // the decimal point and trailing digits aligned ($9.99 -> $10.00 rolls the
   // leading digits and leaves "." alone) instead of rolling punctuation into
   // digits the way a left-aligned index diff would.
-  const offset = prevChars === null ? 0 : prevChars.length - chars.length;
+  const offset = prevChars === null ? 0 : prevChars.length - chars.length
 
   return chars.map((char, index) => {
-    const prevChar = prevChars?.[index + offset];
-    const changed = prevChars !== null && prevChar !== char;
-    let style: CSSProperties | undefined;
-    let endMs = 0;
+    const prevChar = prevChars?.[index + offset]
+    const changed = prevChars !== null && prevChar !== char
+    let style: CSSProperties | undefined
+    let endMs = 0
     if (changed) {
-      const durationMultiplier = 1 + DURATION_JITTER * jitter(index, 1);
-      const staggerPosition = index * (1 + STAGGER_JITTER * jitter(index, 2));
-      const tiltDeg = MAX_TILT_DEG * jitter(index, 3);
+      const durationMultiplier = 1 + DURATION_JITTER * jitter(index, 1)
+      const staggerPosition = index * (1 + STAGGER_JITTER * jitter(index, 2))
+      const tiltDeg = MAX_TILT_DEG * jitter(index, 3)
       style = {
-        '--tr-dm': durationMultiplier.toFixed(3),
-        '--tr-sp': staggerPosition.toFixed(3),
-        '--tr-tilt': `${tiltDeg.toFixed(2)}deg`,
-      } as CSSProperties;
-      endMs = staggerPosition * BASE_STAGGER_MS + durationMultiplier * BASE_DURATION_MS;
+        "--tr-dm": durationMultiplier.toFixed(3),
+        "--tr-sp": staggerPosition.toFixed(3),
+        "--tr-tilt": `${tiltDeg.toFixed(2)}deg`,
+      } as CSSProperties
+      endMs = staggerPosition * BASE_STAGGER_MS + durationMultiplier * BASE_DURATION_MS
     }
     return {
       // Keyed by distance from the right edge so the stable tail of the
@@ -73,15 +73,15 @@ function planCells(chars: string[], prevChars: string[] | null): CellPlan[] {
       changed,
       style,
       endMs,
-    };
-  });
+    }
+  })
 }
 
 export interface TextRollProps {
   /** The text to display. Changed characters roll to their new value. */
-  text: string;
+  text: string
   /** Extra classes for the root span (inherits font styles from context). */
-  className?: string;
+  className?: string
 }
 
 /**
@@ -109,16 +109,16 @@ export const TextRoll = memo(function TextRoll({ text, className }: TextRollProp
   // Derived-state-during-render (the React-documented alternative to a
   // useEffect reset): adopt the new text and remember the previous one so the
   // render below can diff them.
-  const [state, setState] = useState({ text, prev: null as string | null });
+  const [state, setState] = useState({ text, prev: null as string | null })
   if (text !== state.text) {
-    setState((s) => ({ text, prev: s.text }));
+    setState((s) => ({ text, prev: s.text }))
   }
 
   // Code-point split. Sufficient for the numeric/ASCII labels this is built
   // for; swap in Intl.Segmenter here if grapheme clusters ever matter.
-  const chars = Array.from(state.text);
-  const prevChars = state.prev === null ? null : Array.from(state.prev);
-  const cells = planCells(chars, prevChars);
+  const chars = Array.from(state.text)
+  const prevChars = state.prev === null ? null : Array.from(state.prev)
+  const cells = planCells(chars, prevChars)
 
   // The changed cell whose animation ends last reports the settle, collapsing
   // the roll structure. Guarded against a newer text having arrived meanwhile.
@@ -126,14 +126,14 @@ export const TextRoll = memo(function TextRoll({ text, className }: TextRollProp
     (last, cell, index) =>
       cell.changed && cell.endMs > (cells[last]?.endMs ?? -1) ? index : last,
     -1,
-  );
-  const settledText = state.text;
+  )
+  const settledText = state.text
   const handleSettle = () => {
-    setState((s) => (s.text === settledText ? { text: s.text, prev: null } : s));
-  };
+    setState((s) => (s.text === settledText ? { text: s.text, prev: null } : s))
+  }
 
   return (
-    <span className={className ? `text-roll ${className}` : 'text-roll'}>
+    <span className={className ? `text-roll ${className}` : "text-roll"}>
       {/* Assistive tech reads the plain string; the animated cells below are
           presentation-only (and excluded from text selection, so copying the
           element yields the string exactly once). */}
@@ -150,8 +150,8 @@ export const TextRoll = memo(function TextRoll({ text, className }: TextRollProp
                 not affect layout, so the cell keeps its width even while the
                 glyph is translated out of view. */}
             <span
-              key={cell.changed ? `in-${cell.char}` : 'static'}
-              className={cell.changed ? 'text-roll-in' : undefined}
+              key={cell.changed ? `in-${cell.char}` : "static"}
+              className={cell.changed ? "text-roll-in" : undefined}
               onAnimationEnd={index === settleIndex ? handleSettle : undefined}
             >
               {cell.char}
@@ -160,5 +160,5 @@ export const TextRoll = memo(function TextRoll({ text, className }: TextRollProp
         ))}
       </span>
     </span>
-  );
-});
+  )
+})

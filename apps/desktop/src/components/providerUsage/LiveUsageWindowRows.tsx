@@ -2,14 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LiveProviderUsagePayload } from '../../lib/ipc';
+import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
   liveResetLabel,
   liveWindowElapsed,
   liveWindowLabel,
   liveWindowValueLabel,
   liveWindows,
-} from '../../lib/presentation/liveUsage';
+} from "../../lib/presentation/liveUsage"
 
 /**
  * The provider's own limits, one row each.
@@ -30,21 +30,21 @@ import {
 export function LiveUsageWindowRows({
   provider,
   now,
-  className = '',
+  className = "",
 }: {
-  provider: LiveProviderUsagePayload;
+  provider: LiveProviderUsagePayload
   /** Injected so the rendered output is a function of its inputs in tests. */
-  now: number;
-  className?: string;
+  now: number
+  className?: string
 }) {
-  const windows = liveWindows(provider);
-  if (windows.length === 0) return null;
+  const windows = liveWindows(provider)
+  if (windows.length === 0) return null
 
   return (
     <dl className={`space-y-2 ${className}`.trim()}>
       {windows.map((window) => {
-        const used = window.usedPercent;
-        const elapsed = liveWindowElapsed(window, now);
+        const used = window.usedPercent
+        const elapsed = liveWindowElapsed(window, now)
         return (
           <div key={window.id}>
             <div className="flex items-baseline justify-between gap-3">
@@ -63,13 +63,13 @@ export function LiveUsageWindowRows({
               aria-valuenow={used ?? undefined}
               aria-valuetext={
                 used == null
-                  ? 'Usage unknown'
+                  ? "Usage unknown"
                   : elapsed == null
                     ? `${Math.round(used)}% used`
                     : `${Math.round(used)}% used; ${Math.round(elapsed * 100)}% of the period elapsed`
               }
               className="relative mt-1 w-full overflow-hidden rounded-full"
-              style={{ height: 3, backgroundColor: 'var(--color-separator)' }}
+              style={{ height: 3, backgroundColor: "var(--color-separator)" }}
             >
               {used != null && (
                 <div
@@ -79,7 +79,7 @@ export function LiveUsageWindowRows({
                     width: `${Math.min(100, Math.max(0, used))}%`,
                     // accent-fill, not accent: the live macOS system-accent
                     // token breaks as a background-color (see tokens.css).
-                    backgroundColor: 'var(--color-accent-fill, var(--color-accent-fill-val))',
+                    backgroundColor: "var(--color-accent-fill, var(--color-accent-fill-val))",
                   }}
                 />
               )}
@@ -91,7 +91,7 @@ export function LiveUsageWindowRows({
                   style={{
                     left: `${Math.min(100, Math.max(0, elapsed * 100))}%`,
                     width: 1,
-                    backgroundColor: 'var(--color-label)',
+                    backgroundColor: "var(--color-label)",
                   }}
                 />
               )}
@@ -100,8 +100,8 @@ export function LiveUsageWindowRows({
               {liveResetLabel(window, now)}
             </p>
           </div>
-        );
+        )
       })}
     </dl>
-  );
+  )
 }

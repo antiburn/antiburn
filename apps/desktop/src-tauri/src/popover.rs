@@ -4,10 +4,10 @@
 
 //! The tray-anchored popover window.
 //!
-//! The popover is created once, hidden, at startup and then shown and hidden
-//! for the rest of the process lifetime. Creating it lazily would make the
-//! first open visibly slower (a webview has to boot and the bundle has to
-//! parse) and would lose any state the views accumulate.
+//! The popover is created lazily on the first tray click. After dismissal it
+//! stays warm briefly so a quick reopen is instant, then its webview is
+//! destroyed to release WebKit's resident memory. The next click rebuilds it
+//! from the durable shell state.
 //!
 //! # Geometry
 //!
@@ -42,12 +42,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Window,
 };
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "popover";
+
+/// Emitted the moment the popover reaches the screen, following the same
+/// `module:event` naming [`crate::scan`]'s events use. The webview listens
+/// for this to refresh live usage — see [`note_shown`] for why that refresh
+/// does not simply ride the scan events this same function also kicks.
+pub const EVENT_SHOWN: &str = "popover:shown";
 
 /// Popover width in logical pixels. Fixed: the views size themselves to it.
 const WIDTH: f64 = 380.0;
@@ -98,6 +104,12 @@ const SCREEN_MARGIN: f64 = 8.0;
 /// and immediately reopen it. This window swallows that second half.
 const REOPEN_SUPPRESSION: Duration = Duration::from_millis(250);
 
+/// How long a hidden popover stays warm for a quick reopen.
+///
+/// Fifteen seconds covers the common "closed it, need one more look" gesture
+/// without leaving a background utility's largest webview resident at idle.
+pub const TEARDOWN_DELAY: Duration = Duration::from_secs(15);
+
 /// The menu-bar item's rectangle, in physical pixels on the display it lives
 /// on. Kept as plain numbers rather than a [`Rect`] so a height change can
 /// re-anchor without the tray handing the rectangle over a second time.
@@ -118,6 +130,9 @@ pub struct PopoverState {
     /// Bumped by every height request, so an animation still in flight can see
     /// that a newer one superseded it and stop rather than fight it.
     resize_generation: AtomicU64,
+    /// Bumped whenever visibility changes. A delayed teardown may destroy the
+    /// webview only while the generation it captured is still current.
+    teardown_generation: AtomicU64,
     /// While positive, losing focus does not hide the popover. Held around
     /// native dialogs (the folder picker) the popover itself opens: the dialog
     /// takes focus by design, and hiding would tear down the surface the
@@ -139,6 +154,7 @@ impl Default for PopoverState {
             anchor: Mutex::new(None),
             height: Mutex::new(DEFAULT_HEIGHT),
             resize_generation: AtomicU64::new(0),
+            teardown_generation: AtomicU64::new(0),
             focus_hold: AtomicU64::new(0),
             pinned: AtomicBool::new(false),
         }
@@ -235,6 +251,21 @@ impl PopoverState {
     fn resize_is_current(&self, generation: u64) -> bool {
         self.resize_generation.load(Ordering::SeqCst) == generation
     }
+
+    /// Start or cancel a delayed teardown. Both are the same operation: move
+    /// the generation forward so any older task loses ownership.
+    fn advance_teardown(&self) -> u64 {
+        self.teardown_generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn teardown_is_current(&self, generation: u64) -> bool {
+        self.teardown_generation.load(Ordering::SeqCst) == generation
+    }
+
+    fn reset_after_destroy(&self) {
+        self.set_height(DEFAULT_HEIGHT);
+        self.begin_resize();
+    }
 }
 
 /// A requested height, held inside the bounds the window can actually be.
@@ -252,11 +283,19 @@ fn ease_out(progress: f64) -> f64 {
     1.0 - remaining * remaining * remaining
 }
 
-/// Creates the popover window, hidden and off the taskbar.
-pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+/// Return the popover, creating it hidden and off the taskbar on first use.
+fn get_or_create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        return Ok(window);
+    }
+
+    let height = app
+        .try_state::<PopoverState>()
+        .map(|state| state.height())
+        .unwrap_or(DEFAULT_HEIGHT);
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("antiburn")
-        .inner_size(WIDTH, DEFAULT_HEIGHT)
+        .inner_size(WIDTH, height)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -272,7 +311,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     #[cfg(target_os = "macos")]
     let builder = builder.accept_first_mouse(true);
 
-    builder.build()
+    match builder.build() {
+        Ok(window) => Ok(window),
+        // A tray click and a pin request can race into this function. Return
+        // whichever build won instead of dropping the user's request.
+        Err(error) => app.get_webview_window(LABEL).ok_or(error),
+    }
 }
 
 /// Handles a click on the menu-bar item.
@@ -291,11 +335,9 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
         return;
     }
 
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
-
-    if window.is_visible().unwrap_or(false) {
+    if let Some(window) = app.get_webview_window(LABEL)
+        && window.is_visible().unwrap_or(false)
+    {
         // A pinned popover has no hide half to its toggle. Raise it instead of
         // doing nothing: a menu-bar item that swallows a click reads as broken,
         // and re-anchoring picks up a menu bar that has since moved display.
@@ -316,6 +358,14 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     {
         return;
     }
+
+    let window = match get_or_create(app) {
+        Ok(window) => window,
+        Err(error) => {
+            eprintln!("antiburn: could not create the popover ({error})");
+            return;
+        }
+    };
 
     if let Err(error) = anchor_to(&window, anchor) {
         // Positioning is best-effort: a popover in the wrong place still beats
@@ -498,6 +548,11 @@ pub fn end_focus_hold(app: &AppHandle) {
         && window.is_visible().unwrap_or(false)
     {
         let _ = window.set_focus();
+    } else {
+        // A toggle can hide the window while a native dialog still owns the
+        // hold. Once the dialog returns, give that hidden window a fresh idle
+        // deadline instead of keeping it alive forever.
+        schedule_teardown(app);
     }
 }
 
@@ -534,10 +589,28 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };
-    let Some(window) = app.get_webview_window(LABEL) else {
+    if !pinned {
+        state.set_pinned(false);
+        state.advance_teardown();
+        if let Some(window) = app.get_webview_window(LABEL)
+            && window.is_visible().unwrap_or(false)
+        {
+            let _ = window.set_focus();
+        } else {
+            schedule_teardown(app);
+        }
         return;
+    }
+
+    let window = match get_or_create(app) {
+        Ok(window) => window,
+        Err(error) => {
+            eprintln!("antiburn: could not create the pinned popover ({error})");
+            return;
+        }
     };
-    state.set_pinned(pinned);
+    state.set_pinned(true);
+    state.advance_teardown();
 
     // Only a pin re-opens, and only from hidden: re-anchoring a window already
     // on screen would move it for no reason the reader asked for.
@@ -590,12 +663,30 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
 /// highlight with visibility is structural rather than something each caller
 /// has to remember.
 fn note_shown(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.advance_teardown();
+    }
     if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
         controller.set_popover_visible(true);
         // Opening the popover is the one moment a reader is guaranteed to be
         // looking, so refresh immediately instead of waiting out a tick.
         controller.request();
     }
+    // A separate signal from the scan kick just above, on purpose, rather
+    // than something the webview infers from `scan:finished`. Two things
+    // about the scan kick make it the wrong vehicle for a usage refresh:
+    // `request()` itself always wakes the scheduler loop, but the pass that
+    // wake-up would run is silently skipped whenever discovery is paused or
+    // onboarding has not finished (`scheduled_scanning_allowed` in
+    // `crate::scan`), which would leave usage silently stuck too even
+    // though nothing about reading a provider's own limits depends on
+    // whether local disk discovery is allowed to run; and even when a scan
+    // does run, it is a full disk walk, so gating the usage refresh on its
+    // completion would make "reopen the popover" mean "wait out a scan" for
+    // a figure that has nothing to do with what is on disk. Emitting this
+    // unconditionally, the instant the popover is on screen, keeps the two
+    // refreshes independent the way the data they show already is.
+    let _ = app.emit(EVENT_SHOWN, ());
     crate::tray::set_highlight(app, true);
 }
 
@@ -614,6 +705,43 @@ pub fn note_hidden(app: &AppHandle) {
         controller.set_popover_visible(false);
     }
     crate::tray::set_highlight(app, false);
+    schedule_teardown(app);
+}
+
+/// Destroy a popover that remains hidden after [`TEARDOWN_DELAY`].
+///
+/// Every show, pin, and later hide advances the generation. The task therefore
+/// needs no cancellation handle: stale tasks observe that they no longer own
+/// the lifecycle and exit.
+fn schedule_teardown(app: &AppHandle) {
+    if app.get_webview_window(LABEL).is_none() {
+        return;
+    }
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    let generation = state.advance_teardown();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(TEARDOWN_DELAY).await;
+        let check_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(state) = check_app.try_state::<PopoverState>() else {
+                return;
+            };
+            if !state.teardown_is_current(generation) || state.is_pinned() || state.holds_focus() {
+                return;
+            }
+            let Some(window) = check_app.get_webview_window(LABEL) else {
+                return;
+            };
+            if window.is_visible().unwrap_or(false) {
+                return;
+            }
+            state.reset_after_destroy();
+            let _ = window.destroy();
+        });
+    });
 }
 
 /// Records the menu-bar item's rectangle and places the popover against it.
@@ -932,6 +1060,32 @@ mod tests {
             !state.resize_is_current(first),
             "the superseded animation must stop rather than fight the new one"
         );
+    }
+
+    #[test]
+    fn a_newer_visibility_transition_invalidates_a_scheduled_teardown() {
+        let state = PopoverState::default();
+        let hidden = state.advance_teardown();
+        assert!(state.teardown_is_current(hidden));
+
+        let shown = state.advance_teardown();
+        assert!(state.teardown_is_current(shown));
+        assert!(
+            !state.teardown_is_current(hidden),
+            "reopening must cancel the teardown scheduled by the prior hide"
+        );
+    }
+
+    #[test]
+    fn destroying_the_webview_resets_ephemeral_geometry() {
+        let state = PopoverState::default();
+        state.set_height(MAX_HEIGHT);
+        let resize = state.begin_resize();
+
+        state.reset_after_destroy();
+
+        assert_eq!(state.height(), DEFAULT_HEIGHT);
+        assert!(!state.resize_is_current(resize));
     }
 
     #[test]

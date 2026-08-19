@@ -2,85 +2,87 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useEffect, useState } from 'react';
+import { useState, useSyncExternalStore } from "react"
 
-import { Card } from '../../components/ui/Card';
-import { Pane } from '../../components/ui/Pane';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { ToggleRow } from '../../components/ui/ToggleRow';
-import { getLiveUsage, EMPTY_LIVE_USAGE, type LiveUsageSummaryPayload } from '../../lib/ipc';
-import { liveSourceNote } from '../../lib/presentation/liveUsage';
-import type { AppSettingsController } from './useAppSettings';
+import { Card } from "../../components/ui/Card"
+import { Pane } from "../../components/ui/Pane"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { ToggleRow } from "../../components/ui/ToggleRow"
+import { createExternalStore } from "../../lib/externalStore"
+import { getLiveUsage, EMPTY_LIVE_USAGE } from "../../lib/ipc"
+import { liveSourceNote } from "../../lib/presentation/liveUsage"
+import type { AppSettingsController } from "./useAppSettings"
 
 /**
- * Usage: where the plan limits come from, and the one switch that changes it.
+ * Usage: where the plan limits come from, and the one switch that turns it
+ * off.
  *
- * The pane exists because this feature has two tiers with genuinely different
- * costs, and a reader cannot consent to the second without being told which is
- * which:
+ * The switch below is on by default: antiburn asks each provider directly for
+ * your current usage, about every ten minutes, using the credentials your own
+ * coding tools already hold, entirely over your own connection. That is
+ * ordinary traffic — your own usage, from a provider you already use, with a
+ * credential you already hold — so it runs without asking first, the same way
+ * every other local reading in this app does. The switch exists for a reader
+ * who wants none of it: turn it off and this pane has nothing to show, no
+ * request is made, and no credential is read.
  *
- * - **Reading what your agent cached** happens always. It is a file on this
- *   disk, and it needs no permission any more than the session index does.
- * - **Asking your agent to refresh** runs the agent, which goes online. That
- *   is the switch below, and it is off until a reader turns it on.
- *
- * The copy says what turning it on does in both directions — it makes readings
- * current, *and* it lets milestone notifications fire — because one switch
- * with two consequences has to name both or it is not consent.
+ * The copy names both things the switch controls — it is what makes readings
+ * possible at all, *and* it is what lets milestone notifications fire —
+ * because a switch with two consequences has to say both or a reader turning
+ * it off for one reason is surprised by the other.
  */
 
-export type UsagePaneProps = AppSettingsController;
+export type UsagePaneProps = AppSettingsController
 
 /** What a failed source means, phrased as something a reader could act on. */
 function errorNote(category: string): string {
   switch (category) {
-    case 'authentication':
-      return 'Your agent could not read your plan usage. Sign in again there.';
-    case 'rateLimited':
-      return 'Your provider asked antiburn to slow down. It will try again later.';
-    case 'schema':
-      return 'Your agent reported usage in a shape antiburn does not recognise.';
+    case "authentication":
+      return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
+    case "rateLimited":
+      return "Your provider asked antiburn to slow down. It will try again later."
+    case "schema":
+      return "Your provider reported usage in a shape antiburn does not recognise."
     default:
-      return 'antiburn could not reach your agent’s usage. It will try again later.';
+      return "antiburn could not reach your provider for usage. It will try again later."
   }
 }
 
 export function UsagePane({ settings, update }: UsagePaneProps) {
-  const [live, setLive] = useState<LiveUsageSummaryPayload>(EMPTY_LIVE_USAGE);
+  // One read on open, and one after the switch moves (from the ToggleRow's
+  // onChange below). Not a subscription: this pane is a place a reader visits
+  // deliberately, and a limit figure that ticked over while they were looking
+  // at a preference would be noise. Per-instance rather than a module
+  // singleton: each mount gets its own read, matching the effect this
+  // replaced.
+  const [store] = useState(() =>
+    createExternalStore({
+      initial: EMPTY_LIVE_USAGE,
+      load: () => getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+    }),
+  )
+  const live = useSyncExternalStore(store.subscribe, store.getSnapshot)
 
-  // One read on open, and one after the switch moves. Not a subscription: this
-  // pane is a place a reader visits deliberately, and a limit figure that
-  // ticked over while they were looking at a preference would be noise.
-  useEffect(() => {
-    let active = true;
-    void getLiveUsage()
-      .then((next) => {
-        if (active) setLive(next);
-      })
-      .catch(() => {
-        if (active) setLive(EMPTY_LIVE_USAGE);
-      });
-    return () => {
-      active = false;
-    };
-  }, [settings?.liveUsageEnabled]);
-
-  const on = settings?.liveUsageEnabled ?? false;
+  const on = settings?.liveUsageEnabled ?? false
 
   return (
     <Pane title="Usage">
       <SectionGroup title="Keeping limits current">
         <Card>
           <ToggleRow
-            label="Ask my agent to refresh"
-            description="Runs your coding agent in the background about every ten minutes to refresh its own usage reading, then reads the file it writes — or reads a provider's figures directly, using the credentials your tools already have. Either way, that's your own connection, made as you; no antiburn server is involved. Turning this on also lets usage milestone notifications fire, since they need readings that keep moving."
+            label="Keep my plan limits current"
+            description="Asks each provider directly for your current usage, about every ten minutes, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this off also stops usage milestone notifications, since they need readings that keep moving."
             checked={on}
-            onChange={(next) => void update({ liveUsageEnabled: next })}
+            onChange={(next) =>
+              void Promise.resolve(update({ liveUsageEnabled: next })).then(() =>
+                store.refresh(),
+              )
+            }
           />
           <Row
-            label="Without this"
-            description="antiburn reads whatever usage figure your agent last cached on this machine. Nothing runs in the background to update it, and every reading on the Usage screen says how old it is."
+            label="With this off"
+            description="antiburn makes none of these requests and shows no plan limits at all."
           />
         </Card>
       </SectionGroup>
@@ -90,7 +92,11 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
           {live.providers.length === 0 && live.errors.length === 0 && (
             <Row
               label="No plan limits found"
-              description="No agent on this machine has cached a usage reading yet. Use your agent once and this fills in."
+              description={
+                on
+                  ? "No provider credentials were found on this machine yet. Sign in with a coding tool and this fills in."
+                  : "Turn the switch above back on to ask your providers for current plan limits."
+              }
             />
           )}
           {live.providers.map((provider) => (
@@ -98,7 +104,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               key={provider.provider}
               label={provider.displayName}
               description={`${provider.sourceLabel}. ${provider.windows.length} limit${
-                provider.windows.length === 1 ? '' : 's'
+                provider.windows.length === 1 ? "" : "s"
               } reported.`}
               trailing={
                 <span className="type-caption tabular-nums text-label-tertiary">
@@ -117,5 +123,5 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         </Card>
       </SectionGroup>
     </Pane>
-  );
+  )
 }

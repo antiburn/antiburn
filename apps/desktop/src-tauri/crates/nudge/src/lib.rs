@@ -36,7 +36,9 @@ pub mod model;
 mod win;
 mod window;
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -78,6 +80,27 @@ pub const NUDGE_HOVER_EVENT: &str = "nudge:hover";
 type ActionCallback = Arc<dyn Fn(NudgeActionEvent) + Send + Sync + 'static>;
 type PlacementProvider = Arc<dyn Fn() -> NudgePlacement + Send + Sync + 'static>;
 
+/// Leave enough time for a dismissing IPC command to return before destroying
+/// the webview that sent it. A replacement nudge cancels the task.
+const TEARDOWN_DELAY: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct TeardownGeneration(AtomicU64);
+
+impl TeardownGeneration {
+    fn advance(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == generation
+    }
+
+    fn current(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 /// Where the notification should appear when it is revealed.
 #[derive(Debug, Clone)]
 pub enum NudgePlacement {
@@ -99,12 +122,16 @@ pub struct NudgeManager {
     /// `listen()` may not have been attached when [`Self::show`] first emitted).
     /// Cleared on [`Self::dismiss`].
     pending: Mutex<Option<Nudge>>,
+    /// Serializes window creation/reuse with the final teardown check and
+    /// destruction. The generation remains the cheap stale-task filter; this
+    /// gate closes the check-then-destroy race with a replacement `show`.
+    lifecycle: Mutex<()>,
+    teardown_generation: TeardownGeneration,
 }
 
 impl NudgeManager {
     /// Capture the app handle and the on-action callback. The (hidden)
-    /// notification window itself is created lazily on first
-    /// [`Self::prewarm`]/[`Self::show`].
+    /// notification window itself is created lazily on first [`Self::show`].
     ///
     /// `on_action` is invoked with `{ kind, action_id }` when the user clicks a
     /// CTA; the notification is then dismissed automatically. The app implements
@@ -129,21 +156,21 @@ impl NudgeManager {
             on_action: Arc::new(on_action),
             placement: Arc::new(placement),
             pending: Mutex::new(None),
+            lifecycle: Mutex::new(()),
+            teardown_generation: TeardownGeneration::default(),
         })
-    }
-
-    /// Build the hidden notification window ahead of time so its webview is
-    /// mounted and listening before the first nudge fires. Call this once,
-    /// deferred a little after setup (like the popover) so the app has a valid
-    /// display context and avoids the WebKit "page has no displayID" warning.
-    pub fn prewarm(&self) {
-        let _ = window::get_or_create_nudge_window(&self.app);
     }
 
     /// Present `nudge`: position the notification at the OS-native corner,
     /// reveal it without taking focus, and push the payload to the webview.
     /// Policy-free — the caller has already decided this should be shown.
     pub fn show(&self, nudge: Nudge) {
+        let Ok(_lifecycle) = self.lifecycle.lock() else {
+            return;
+        };
+        // Invalidate a dismiss task before it can retire the window this show
+        // is about to reuse (or the new one it is about to create).
+        self.teardown_generation.advance();
         let Ok(window) = window::get_or_create_nudge_window(&self.app) else {
             return;
         };
@@ -182,6 +209,34 @@ impl NudgeManager {
     /// before it's shown, so it never resizes on screen. Called by the
     /// `nudge_reveal` command once the frontend has measured its content.
     pub fn reveal(&self, height: f64) {
+        let generation = self.teardown_generation.current();
+        let _lifecycle = match self.lifecycle.try_lock() {
+            Ok(lifecycle) => lifecycle,
+            Err(TryLockError::WouldBlock) => {
+                let app = self.app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let Some(manager) = app.try_state::<NudgeManager>() else {
+                        return;
+                    };
+                    let Ok(_lifecycle) = manager.lifecycle.lock() else {
+                        return;
+                    };
+                    if !manager.teardown_generation.is_current(generation) {
+                        return;
+                    }
+                    manager.reveal_locked(height);
+                });
+                return;
+            }
+            Err(TryLockError::Poisoned(_)) => return,
+        };
+        self.reveal_locked(height);
+    }
+
+    fn reveal_locked(&self, height: f64) {
+        if !self.is_showing() {
+            return;
+        }
         if let Some(window) = self.app.get_webview_window(NUDGE_LABEL) {
             window::reveal(&window, height, (self.placement)());
         }
@@ -221,6 +276,31 @@ impl NudgeManager {
 
     /// Hide the notification without invoking any action.
     pub fn dismiss(&self) {
+        let generation = self.teardown_generation.current();
+        let _lifecycle = match self.lifecycle.try_lock() {
+            Ok(lifecycle) => lifecycle,
+            Err(TryLockError::WouldBlock) => {
+                let app = self.app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let Some(manager) = app.try_state::<NudgeManager>() else {
+                        return;
+                    };
+                    let Ok(_lifecycle) = manager.lifecycle.lock() else {
+                        return;
+                    };
+                    if !manager.teardown_generation.is_current(generation) {
+                        return;
+                    }
+                    manager.dismiss_locked();
+                });
+                return;
+            }
+            Err(TryLockError::Poisoned(_)) => return,
+        };
+        self.dismiss_locked();
+    }
+
+    fn dismiss_locked(&self) {
         // Clear the retained payload so a later `nudge_ready` (e.g. a dev
         // webview reload) doesn't resurrect a nudge the user already dismissed.
         if let Ok(mut pending) = self.pending.lock() {
@@ -229,6 +309,42 @@ impl NudgeManager {
         if let Some(window) = self.app.get_webview_window(NUDGE_LABEL) {
             window::hide(&window);
         }
+        self.schedule_teardown();
+    }
+
+    fn schedule_teardown(&self) {
+        let generation = self.teardown_generation.advance();
+        Self::schedule_teardown_attempt(self.app.clone(), generation, TEARDOWN_DELAY);
+    }
+
+    fn schedule_teardown_attempt(app: AppHandle, generation: u64, delay: Duration) {
+        tauri::async_runtime::spawn_blocking(move || {
+            std::thread::sleep(delay);
+            let check_app = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let Some(manager) = check_app.try_state::<NudgeManager>() else {
+                    return;
+                };
+                let _lifecycle = match manager.lifecycle.try_lock() {
+                    Ok(lifecycle) => lifecycle,
+                    Err(TryLockError::WouldBlock) => {
+                        Self::schedule_teardown_attempt(
+                            check_app.clone(),
+                            generation,
+                            Duration::from_millis(25),
+                        );
+                        return;
+                    }
+                    Err(TryLockError::Poisoned(_)) => return,
+                };
+                if !manager.teardown_generation.is_current(generation) || manager.is_showing() {
+                    return;
+                }
+                if let Some(window) = check_app.get_webview_window(NUDGE_LABEL) {
+                    window::destroy(&window);
+                }
+            });
+        });
     }
 
     /// Whether a nudge is currently on screen or in flight to the webview — a
@@ -268,5 +384,21 @@ impl NudgeManager {
         {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TeardownGeneration;
+
+    #[test]
+    fn a_replacement_nudge_invalidates_the_pending_teardown() {
+        let generation = TeardownGeneration::default();
+        let dismissed = generation.advance();
+        assert!(generation.is_current(dismissed));
+
+        let shown = generation.advance();
+        assert!(generation.is_current(shown));
+        assert!(!generation.is_current(dismissed));
     }
 }

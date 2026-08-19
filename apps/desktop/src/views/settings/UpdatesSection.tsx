@@ -2,19 +2,20 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { check } from '@tauri-apps/plugin-updater';
-import { AlertTriangle, Check as CheckGlyph, Download, Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { check } from "@tauri-apps/plugin-updater"
+import { AlertTriangle, Check as CheckGlyph, Download, Loader2 } from "lucide-react"
+import { useCallback, useSyncExternalStore } from "react"
 
-import { Card } from '../../components/ui/Card';
-import { PushButton } from '../../components/ui/PushButton';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { StatusText } from '../../components/ui/StatusText';
-import { ToggleRow } from '../../components/ui/ToggleRow';
-import { relativeTime } from '../../lib/presentation/relativeTime';
-import { onUpdateStatus, type AppInfo, type UpdateStatusPayload } from '../../lib/ipc';
-import type { AppSettingsController } from './useAppSettings';
+import { Card } from "../../components/ui/Card"
+import { PushButton } from "../../components/ui/PushButton"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { StatusText } from "../../components/ui/StatusText"
+import { ToggleRow } from "../../components/ui/ToggleRow"
+import { createExternalStore } from "../../lib/externalStore"
+import { relativeTime } from "../../lib/presentation/relativeTime"
+import { onUpdateStatus, type AppInfo, type UpdateStatusPayload } from "../../lib/ipc"
+import type { AppSettingsController } from "./useAppSettings"
 
 /**
  * The Updates section of the About pane.
@@ -39,95 +40,105 @@ import type { AppSettingsController } from './useAppSettings';
  */
 
 type CheckState =
-  | { kind: 'idle' }
-  | { kind: 'checking' }
-  | { kind: 'current' }
-  | { kind: 'available'; version: string }
-  | { kind: 'failed'; message: string };
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "current" }
+  | { kind: "available"; version: string }
+  | { kind: "failed"; message: string }
 
 export interface UpdatesSectionProps extends AppSettingsController {
   /** Absent until the shell answers; `null` outside the shell entirely. */
-  info: AppInfo | null;
+  info: AppInfo | null
 }
 
 /** Fold a shell-reported check outcome into the section's own state. */
-export function stateFromEvent(status: UpdateStatusPayload): CheckState {
+function stateFromEvent(status: UpdateStatusPayload): CheckState {
   switch (status.kind) {
-    case 'available':
-      return { kind: 'available', version: status.version ?? '' };
-    case 'current':
-      return { kind: 'current' };
-    case 'failed':
-      return { kind: 'failed', message: status.message ?? 'The check could not be completed' };
+    case "available":
+      return { kind: "available", version: status.version ?? "" }
+    case "current":
+      return { kind: "current" }
+    case "failed":
+      return { kind: "failed", message: status.message ?? "The check could not be completed" }
     default:
-      return { kind: 'idle' };
+      return { kind: "idle" }
   }
 }
 
 function CheckStatus({ state }: { state: CheckState }) {
   switch (state.kind) {
-    case 'checking':
+    case "checking":
       return (
         <StatusText icon={Loader2} iconClassName="animate-spin" tone="secondary">
           Checking…
         </StatusText>
-      );
-    case 'current':
+      )
+    case "current":
       return (
         <StatusText icon={CheckGlyph} iconStrokeWidth={2.5} tone="secondary">
           Up to date
         </StatusText>
-      );
-    case 'available':
+      )
+    case "available":
       return (
         <StatusText icon={Download} tone="primary">
           Version {state.version} is available
         </StatusText>
-      );
-    case 'failed':
+      )
+    case "failed":
       return (
         <StatusText icon={AlertTriangle} tone="secondary">
           {state.message}
         </StatusText>
-      );
+      )
     default:
-      return null;
+      return null
   }
 }
 
-export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) {
-  const [state, setState] = useState<CheckState>({ kind: 'idle' });
+type UpdatesSnapshot = {
+  state: CheckState
   /** When the shell last checked on its own, as it reported it. */
-  const [lastAutomatic, setLastAutomatic] = useState<string | null>(null);
-  const supported = info?.updatesSupported ?? false;
+  lastAutomatic: string | null
+}
 
+// Module-level: the shell's automatic-check schedule and a manual check both
+// land here regardless of how many settings windows are open to see them.
+const updateStatusStore = createExternalStore<UpdatesSnapshot>({
+  initial: { state: { kind: "idle" }, lastAutomatic: null },
   // The shell owns the schedule, so this section learns about an automatic
   // check the same way it learns about anything else the shell did: an event.
-  useEffect(() => {
-    let active = true;
-    const pending = onUpdateStatus((status) => {
-      if (!active) return;
-      setState(stateFromEvent(status));
-      if (status.automatic) setLastAutomatic(status.checkedAt);
-    });
-    return () => {
-      active = false;
-      void pending.then((unlisten) => unlisten());
-    };
-  }, []);
+  subscribe: (set) =>
+    onUpdateStatus((status) => {
+      const current = updateStatusStore.getSnapshot()
+      set({
+        state: stateFromEvent(status),
+        lastAutomatic: status.automatic ? status.checkedAt : current.lastAutomatic,
+      })
+    }),
+})
+
+export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) {
+  const { state, lastAutomatic } = useSyncExternalStore(
+    updateStatusStore.subscribe,
+    updateStatusStore.getSnapshot,
+  )
+  const supported = info?.updatesSupported ?? false
 
   const runCheck = useCallback(async () => {
-    setState({ kind: 'checking' });
+    const setState = (next: CheckState) =>
+      updateStatusStore.set({ ...updateStatusStore.getSnapshot(), state: next })
+    setState({ kind: "checking" })
     try {
-      const found = await check();
-      setState(found ? { kind: 'available', version: found.version } : { kind: 'current' });
+      const found = await check()
+      setState(found ? { kind: "available", version: found.version } : { kind: "current" })
     } catch (error) {
       setState({
-        kind: 'failed',
-        message: error instanceof Error ? error.message : 'The check could not be completed',
-      });
+        kind: "failed",
+        message: error instanceof Error ? error.message : "The check could not be completed",
+      })
     }
-  }, []);
+  }, [])
 
   return (
     <SectionGroup title="Updates">
@@ -137,7 +148,7 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
           description={
             supported
               ? undefined
-              : 'Updates are unavailable in this build — the updater is installed in packaged releases only.'
+              : "Updates are unavailable in this build — the updater is installed in packaged releases only."
           }
           trailing={
             <PushButton onClick={() => void runCheck()} disabled={!supported}>
@@ -145,7 +156,7 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
             </PushButton>
           }
         >
-          {supported && state.kind !== 'idle' && (
+          {supported && state.kind !== "idle" && (
             <div className="mt-1.5">
               <CheckStatus state={state} />
             </div>
@@ -157,7 +168,7 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
             description={
               lastAutomatic
                 ? `A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else; last checked ${relativeTime(lastAutomatic)}.`
-                : 'A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else — nothing about your sessions is ever sent.'
+                : "A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else — nothing about your sessions is ever sent."
             }
             checked={settings.autoUpdate}
             onChange={(next) => void update({ autoUpdate: next })}
@@ -173,5 +184,5 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
         )}
       </Card>
     </SectionGroup>
-  );
+  )
 }

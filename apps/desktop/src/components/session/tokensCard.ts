@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { formatCompact, formatCost } from '../../lib/presentation/sessionAnalytics';
-import type { LocalCostSubject, LocalSessionCost } from '../../lib/presentation/sessionCosts';
+import { formatCompact, formatCost } from "../../lib/presentation/sessionAnalytics"
+import type { LocalCostSubject, LocalSessionCost } from "../../lib/presentation/sessionCosts"
 
 /**
  * What the Tokens card says, as a pure function of the cost figures the view
@@ -17,31 +17,31 @@ import type { LocalCostSubject, LocalSessionCost } from '../../lib/presentation/
 
 /** The parent/sub-agents split shown above the Tokens breakdown. */
 export interface TokensCostSplit {
-  parent: LocalSessionCost;
-  subagents: LocalSessionCost;
-  subagentCount: number;
+  parent: LocalSessionCost
+  subagents: LocalSessionCost
+  subagentCount: number
 }
 
 /** Everything the Tokens card needs beyond its chart. */
 export interface TokensCardModel {
   /** The headline cost, or null when nothing priced this session. */
-  costTotal: number | null;
+  costTotal: number | null
   /**
    * Parent/sub-agents split, only when both sides describe the same session as
    * the headline. Mixing subjects would produce rows that do not add up.
    */
-  split: TokensCostSplit | null;
+  split: TokensCostSplit | null
   /** Info-tooltip copy. */
-  info: string;
+  info: string
   /** Right-hand hint: token counts, plus the cost once there is one. */
-  hint: string;
+  hint: string
 }
 
 const TOKENS_INFO_BASE =
-  'In = input tokens sent to the model for the first time (fresh input plus prompt-cache writes; cache reads are excluded); out = tokens it generated. Both accumulate as the session goes on. Cost is an approximate estimate from the model per-token rates.';
+  "In = input tokens sent to the model for the first time (fresh input plus prompt-cache writes; cache reads are excluded); out = tokens it generated. Both accumulate as the session goes on. Cost is an approximate estimate from the model per-token rates."
 
 const TOKENS_INFO_ORCHESTRATOR =
-  'The token chart and in/out counts describe the parent agent — in = input tokens sent to the model for the first time (fresh input plus prompt-cache writes; cache reads are excluded); out = tokens it generated. Cost is inclusive of the parent and its sub-agents; the split below shows each part.';
+  "The token chart and in/out counts describe the parent agent — in = input tokens sent to the model for the first time (fresh input plus prompt-cache writes; cache reads are excluded); out = tokens it generated. Cost is inclusive of the parent and its sub-agents; the split below shows each part."
 
 /** Decide what the Tokens card says, given the already-selected cost figures. */
 export function tokensCardModel(input: {
@@ -49,21 +49,21 @@ export function tokensCardModel(input: {
    * Scope of the subject the headline figure describes. Only an `inclusive`
    * subject can break into parent plus sub-agents.
    */
-  costScope?: LocalCostSubject['scope'] | null;
+  costScope?: LocalCostSubject["scope"] | null
   /** The headline result, or null when nothing was priced. */
-  selectedCost: LocalSessionCost | null;
+  selectedCost: LocalSessionCost | null
   /** The parent-only result. */
-  selectedParentCost: LocalSessionCost | null;
+  selectedParentCost: LocalSessionCost | null
   /** The all-sub-agents result. */
-  selectedSubagentsCost: LocalSessionCost | null;
+  selectedSubagentsCost: LocalSessionCost | null
   /** Whether this session has priced sub-agents at all. */
-  hasCostSubagents: boolean;
+  hasCostSubagents: boolean
   /** How many sub-agents the split names. */
-  costSubagentCount: number;
+  costSubagentCount: number
   /** Fallback total from the metrics summary, when no cost result exists. */
-  summaryCostTotalUsd?: number | null;
-  tokensInTotal: number;
-  tokensOutTotal: number;
+  summaryCostTotalUsd?: number | null
+  tokensInTotal: number
+  tokensOutTotal: number
 }): TokensCardModel {
   const {
     costScope,
@@ -74,19 +74,19 @@ export function tokensCardModel(input: {
     costSubagentCount,
     tokensInTotal,
     tokensOutTotal,
-  } = input;
+  } = input
 
-  const costTotal = selectedCost?.totalCostUsd ?? input.summaryCostTotalUsd ?? null;
+  const costTotal = selectedCost?.totalCostUsd ?? input.summaryCostTotalUsd ?? null
   const split =
-    costScope === 'inclusive' && selectedParentCost && selectedSubagentsCost && hasCostSubagents
+    costScope === "inclusive" && selectedParentCost && selectedSubagentsCost && hasCostSubagents
       ? {
           parent: selectedParentCost,
           subagents: selectedSubagentsCost,
           subagentCount: costSubagentCount,
         }
-      : null;
+      : null
 
-  const tokens = `${formatCompact(tokensInTotal)} in · ${formatCompact(tokensOutTotal)} out`;
+  const tokens = `${formatCompact(tokensInTotal)} in · ${formatCompact(tokensOutTotal)} out`
 
   return {
     costTotal,
@@ -98,5 +98,5 @@ export function tokensCardModel(input: {
           ? `${tokens} · incl. ${formatCost(costTotal)}`
           : `${tokens} · ${formatCost(costTotal)}`
         : tokens,
-  };
+  }
 }

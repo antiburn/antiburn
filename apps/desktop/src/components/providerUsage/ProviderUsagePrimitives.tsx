@@ -11,15 +11,15 @@ import {
   siMistralai,
   siOpenrouter,
   siWindsurf,
-} from 'simple-icons';
+} from "simple-icons"
 
-import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from '../../lib/brandMarks';
-import type { ProviderUsageState } from '../../lib/ipc';
+import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from "../../lib/brandMarks"
+import type { ProviderUsageState } from "../../lib/ipc"
 import {
   providerInitial,
   usageStateLabel,
   usageStateToneClass,
-} from '../../lib/presentation/providerUsage';
+} from "../../lib/presentation/providerUsage"
 
 /**
  * The two marks the usage surfaces repeat: a provider's glyph and its state.
@@ -63,15 +63,15 @@ const PROVIDER_MARKS: Record<string, BrandMark> = {
   openrouter: fromSimpleIcons(siOpenrouter),
   deepseek: fromSimpleIcons(siDeepseek),
   mistral: fromSimpleIcons(siMistralai),
-};
+}
 
-export interface ProviderGlyphProps {
-  displayName: string;
+interface ProviderGlyphProps {
+  displayName: string
   /** Canonical provider id. Without it, every provider gets a letter. */
-  provider?: string;
+  provider?: string
   /** Edge length in pixels. */
-  size?: number;
-  className?: string;
+  size?: number
+  className?: string
 }
 
 /**
@@ -85,9 +85,9 @@ export function ProviderGlyph({
   displayName,
   provider,
   size = 16,
-  className = '',
+  className = "",
 }: ProviderGlyphProps) {
-  const mark = provider ? PROVIDER_MARKS[provider] : undefined;
+  const mark = provider ? PROVIDER_MARKS[provider] : undefined
   if (mark) {
     return (
       <svg
@@ -101,7 +101,7 @@ export function ProviderGlyph({
       >
         <path d={mark.path} />
       </svg>
-    );
+    )
   }
   return (
     <span
@@ -112,17 +112,17 @@ export function ProviderGlyph({
     >
       {providerInitial(displayName)}
     </span>
-  );
+  )
 }
 
 /** The brand mark for a provider, when one exists. Used by the ring. */
 export function providerMark(provider: string): BrandMark | undefined {
-  return PROVIDER_MARKS[provider];
+  return PROVIDER_MARKS[provider]
 }
 
-export interface UsageStateBadgeProps {
-  state: ProviderUsageState;
-  className?: string;
+interface UsageStateBadgeProps {
+  state: ProviderUsageState
+  className?: string
 }
 
 /**
@@ -132,7 +132,7 @@ export interface UsageStateBadgeProps {
  * between a priced estimate and a bare token count survives both a screen
  * reader and a monochrome display.
  */
-export function UsageStateBadge({ state, className = '' }: UsageStateBadgeProps) {
+export function UsageStateBadge({ state, className = "" }: UsageStateBadgeProps) {
   return (
     <span
       className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-px type-caption font-medium leading-[13px] ${usageStateToneClass(
@@ -141,5 +141,5 @@ export function UsageStateBadge({ state, className = '' }: UsageStateBadgeProps)
     >
       {usageStateLabel(state)}
     </span>
-  );
+  )
 }

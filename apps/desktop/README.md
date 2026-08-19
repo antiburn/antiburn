@@ -91,9 +91,8 @@ overrides one field that has to differ: the bundle identifier becomes
   `~/Library/Application Support/ai.antiburn.desktop.debug` (and the platform
   equivalents) rather than the installed app's directory. Before this override
   the split was partial: the store's own file name is branched on
-  `debug_assertions`, but everything beside it — the engine's state files, the
-  live-usage refresh directory — was shared, and a development run wrote into
-  an installed copy's folder.
+  `debug_assertions`, but everything beside it — the engine's state files —
+  was shared, and a development run wrote into an installed copy's folder.
 - **The platform's privacy identity.** On macOS, TCC keys folder-access grants
   by bundle identifier. Sharing one identifier means a bundled debug build is
   the _same privacy subject_ as an installed `/Applications/antiburn.app`: the

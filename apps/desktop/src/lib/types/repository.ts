@@ -22,19 +22,19 @@
  */
 export interface LocalRepositoryDescriptor {
   /** Repository name without its owner (for example `widgets`). */
-  name: string;
+  name: string
   /** Owner-qualified repository name (for example `avery/widgets`). */
-  fullName: string;
+  fullName: string
   /** HTTPS clone URL, used to match a local clone by its git remote. */
-  cloneUrl: string;
+  cloneUrl: string
   /** SSH clone URL, used to match a local clone by its git remote. */
-  sshUrl: string;
+  sshUrl: string
   /**
    * Whether the caller has selected this repository, as a tri-state: `true`
    * selected, `false` explicitly excluded, and `null`/absent "no opinion".
    * Absent is treated as selected — see {@link isRepositorySelected}.
    */
-  enabled?: boolean | null;
+  enabled?: boolean | null
 }
 
 /**
@@ -43,19 +43,19 @@ export interface LocalRepositoryDescriptor {
  * Mirrors engine `RepositoryDescriptor::is_enabled`.
  */
 export function isRepositorySelected(descriptor: LocalRepositoryDescriptor): boolean {
-  return descriptor.enabled ?? true;
+  return descriptor.enabled ?? true
 }
 
 /** Access status for a single repository. Mirrors engine `RepoAccessStatus`. */
 export type LocalRepositoryStatus =
   /** Found on disk and readable. */
-  | 'accessible'
+  | "accessible"
   /** Found on disk, but the operating system blocked reading it. */
-  | 'permission_denied'
+  | "permission_denied"
   /** Known to the caller, but not present on this machine. */
-  | 'not_cloned'
+  | "not_cloned"
   /** Present, but excluded by the user. */
-  | 'disabled';
+  | "disabled"
 
 /**
  * Status of a single repository on the local machine. Mirrors engine
@@ -66,24 +66,24 @@ export interface LocalRepositoryItem {
    * Stable list identity. Build it with `localRepositoryKey` so two clones of
    * the same name in different environments cannot collide.
    */
-  key: string;
+  key: string
   /** Repository name without its owner. */
-  repoName: string;
+  repoName: string
   /** Owner-qualified repository name. */
-  fullName: string;
-  status: LocalRepositoryStatus;
+  fullName: string
+  status: LocalRepositoryStatus
   /** Canonical main repository root, when it is readable. */
-  repoRoot?: string | null;
+  repoRoot?: string | null
   /** Where the repository appears to live, when present but blocked. */
-  suspectedPath?: string | null;
+  suspectedPath?: string | null
   /** Linked worktrees attached to the main root. */
-  worktreeCount?: number;
+  worktreeCount?: number
   /** Recent AI coding sessions whose working directory resolved here. */
-  sessionCount?: number;
+  sessionCount?: number
   /** WSL distribution the repository lives in; absent for native clones. */
-  wslDistro?: string | null;
+  wslDistro?: string | null
   /** Whether the user has this repository included. Selection is opt-out. */
-  enabled: boolean;
+  enabled: boolean
 }
 
 /**
@@ -95,23 +95,23 @@ export interface LocalRepositoryItem {
  */
 export type DeferredPermissionDir = {
   /** The folder's name, for example `Documents`. */
-  dir: string;
+  dir: string
   /** How many known working directories sit inside it. */
-  pathCount: number;
-};
+  pathCount: number
+}
 
 /** What the last pass could and could not read. */
 export type FolderPermissions = {
   /** Folders the last pass declined to read, in the order it met them. */
-  deferred: DeferredPermissionDir[];
+  deferred: DeferredPermissionDir[]
   /** Folder names the reader has already granted. */
-  granted: string[];
+  granted: string[]
   /**
    * Whether this platform guards folders behind consent at all. False
    * everywhere but macOS, where the whole surface is hidden.
    */
-  supported: boolean;
-};
+  supported: boolean
+}
 
 /**
  * How the operating system answered a request for a folder.
@@ -121,14 +121,14 @@ export type FolderPermissions = {
  * does nothing and the reader has to change it in system settings.
  */
 export type FolderAccessOutcome = {
-  outcome: 'granted' | 'denied' | 'recorded-denial';
+  outcome: "granted" | "denied" | "recorded-denial"
   /** How long the system took to answer, in milliseconds. */
-  elapsedMs: number;
-};
+  elapsedMs: number
+}
 
 /** One recorded attempt to read a protected folder. */
 export type ProbeRecord = {
-  target: string;
-  outcome: string;
-  elapsedMs: number;
-};
+  target: string
+  outcome: string
+  elapsedMs: number
+}

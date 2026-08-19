@@ -32,21 +32,21 @@
  * session content, still reaches nothing.
  */
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readdirSync, readFileSync, statSync } from "node:fs"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest"
 
 /**
  * The renderer's source tree. This guard deliberately lives *outside* it: the
  * pattern table below names every banned SDK and host, and a checker that
  * trips its own check is a checker nobody can grep past.
  */
-const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
+const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "src")
 
 /** Extensions worth reading. Everything else in `src/` is styles or assets. */
-const CODE_EXTENSIONS = new Set(['.ts', '.tsx']);
+const CODE_EXTENSIONS = new Set([".ts", ".tsx"])
 
 /**
  * Telemetry, analytics, and crash-reporting SDKs. Each is a distinct way for
@@ -54,18 +54,18 @@ const CODE_EXTENSIONS = new Set(['.ts', '.tsx']);
  * than a set of spellings of one call.
  */
 const TELEMETRY_IMPORTS = [
-  { pattern: /['"]@sentry\//, name: '@sentry/*' },
-  { pattern: /['"]posthog-js/, name: 'posthog-js' },
-  { pattern: /['"]@segment\//, name: '@segment/*' },
-  { pattern: /['"]analytics-node/, name: 'analytics-node' },
-  { pattern: /['"]@amplitude\//, name: '@amplitude/*' },
-  { pattern: /['"]amplitude-js/, name: 'amplitude-js' },
-  { pattern: /['"]mixpanel-browser/, name: 'mixpanel-browser' },
-  { pattern: /['"]react-ga4?['"]/, name: 'react-ga' },
-  { pattern: /['"]@datadog\//, name: '@datadog/*' },
-  { pattern: /['"]@fullstory\//, name: '@fullstory/*' },
-  { pattern: /['"]logrocket/i, name: 'LogRocket' },
-];
+  { pattern: /['"]@sentry\//, name: "@sentry/*" },
+  { pattern: /['"]posthog-js/, name: "posthog-js" },
+  { pattern: /['"]@segment\//, name: "@segment/*" },
+  { pattern: /['"]analytics-node/, name: "analytics-node" },
+  { pattern: /['"]@amplitude\//, name: "@amplitude/*" },
+  { pattern: /['"]amplitude-js/, name: "amplitude-js" },
+  { pattern: /['"]mixpanel-browser/, name: "mixpanel-browser" },
+  { pattern: /['"]react-ga4?['"]/, name: "react-ga" },
+  { pattern: /['"]@datadog\//, name: "@datadog/*" },
+  { pattern: /['"]@fullstory\//, name: "@fullstory/*" },
+  { pattern: /['"]logrocket/i, name: "LogRocket" },
+]
 
 /**
  * Hostnames operated by antiburn or by a telemetry/analytics vendor. A
@@ -73,55 +73,55 @@ const TELEMETRY_IMPORTS = [
  * leave the process to a party that does not already hold it.
  */
 const TELEMETRY_HOSTS = [
-  'sentry.io',
-  'ingest.sentry.io',
-  'posthog.com',
-  'i.posthog.com',
-  'segment.io',
-  'api.segment.io',
-  'google-analytics.com',
-  'googletagmanager.com',
-  'mixpanel.com',
-  'amplitude.com',
-  'datadoghq.com',
-  'fullstory.com',
-];
+  "sentry.io",
+  "ingest.sentry.io",
+  "posthog.com",
+  "i.posthog.com",
+  "segment.io",
+  "api.segment.io",
+  "google-analytics.com",
+  "googletagmanager.com",
+  "mixpanel.com",
+  "amplitude.com",
+  "datadoghq.com",
+  "fullstory.com",
+]
 
 function sourceFiles(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
-    const full = path.join(dir, entry);
+    const full = path.join(dir, entry)
     if (statSync(full).isDirectory()) {
-      sourceFiles(full, found);
+      sourceFiles(full, found)
     } else if (CODE_EXTENSIONS.has(path.extname(entry))) {
-      found.push(full);
+      found.push(full)
     }
   }
-  return found;
+  return found
 }
 
-describe('the renderer reaches no service of ours', () => {
-  it('imports no telemetry, analytics, or crash-reporting SDK anywhere in src/', () => {
-    const violations: string[] = [];
+describe("the renderer reaches no service of ours", () => {
+  it("imports no telemetry, analytics, or crash-reporting SDK anywhere in src/", () => {
+    const violations: string[] = []
 
     for (const file of sourceFiles(SOURCE_ROOT)) {
-      const relative = path.relative(SOURCE_ROOT, file);
-      const contents = readFileSync(file, 'utf8');
+      const relative = path.relative(SOURCE_ROOT, file)
+      const contents = readFileSync(file, "utf8")
       for (const { pattern, name } of TELEMETRY_IMPORTS) {
-        if (pattern.test(contents)) violations.push(`${relative}: imports ${name}`);
+        if (pattern.test(contents)) violations.push(`${relative}: imports ${name}`)
       }
       for (const host of TELEMETRY_HOSTS) {
-        if (contents.includes(host)) violations.push(`${relative}: references ${host}`);
+        if (contents.includes(host)) violations.push(`${relative}: references ${host}`)
       }
     }
 
-    expect(violations).toEqual([]);
-  });
+    expect(violations).toEqual([])
+  })
 
-  it('actually reads the source tree, so a passing run means something', () => {
+  it("actually reads the source tree, so a passing run means something", () => {
     // A guard that silently scans nothing is worse than no guard: this pins the
     // walk to a file it must always find.
-    const files = sourceFiles(SOURCE_ROOT).map((file) => path.relative(SOURCE_ROOT, file));
-    expect(files).toContain(path.join('lib', 'ipc.ts'));
-    expect(files.length).toBeGreaterThan(20);
-  });
-});
+    const files = sourceFiles(SOURCE_ROOT).map((file) => path.relative(SOURCE_ROOT, file))
+    expect(files).toContain(path.join("lib", "ipc.ts"))
+    expect(files.length).toBeGreaterThan(20)
+  })
+})

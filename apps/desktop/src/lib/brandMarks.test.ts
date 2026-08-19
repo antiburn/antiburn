@@ -10,34 +10,34 @@
  * devDependencies, present for exactly this reason and absent from the bundle.
  */
 
-import { icons as logos } from '@iconify-json/logos';
-import { describe, expect, it } from 'vitest';
+import { icons as logos } from "@iconify-json/logos"
+import { describe, expect, it } from "vitest"
 
-import { OPENAI_MARK } from './brandMarks';
+import { OPENAI_MARK } from "./brandMarks"
 
-describe('OPENAI_MARK', () => {
-  it('matches the path published by its recorded source', () => {
-    const upstream = logos.icons[OPENAI_MARK.provenance.icon];
-    expect(upstream, `${OPENAI_MARK.provenance.icon} is gone from the package`).toBeDefined();
+describe("OPENAI_MARK", () => {
+  it("matches the path published by its recorded source", () => {
+    const upstream = logos.icons[OPENAI_MARK.provenance.icon]
+    expect(upstream, `${OPENAI_MARK.provenance.icon} is gone from the package`).toBeDefined()
     // The collection stores a full `<path .../>` element; compare the `d`.
-    const d = /\sd="([^"]+)"/.exec(upstream!.body)?.[1];
-    expect(d).toBe(OPENAI_MARK.path);
-  });
+    const d = /\sd="([^"]+)"/.exec(upstream!.body)?.[1]
+    expect(d).toBe(OPENAI_MARK.path)
+  })
 
-  it('matches the viewBox published by its recorded source', () => {
-    const upstream = logos.icons[OPENAI_MARK.provenance.icon]!;
-    const width = upstream.width ?? logos.width;
-    const height = upstream.height ?? logos.height;
-    expect(OPENAI_MARK.viewBox).toBe(`0 0 ${width} ${height}`);
-  });
+  it("matches the viewBox published by its recorded source", () => {
+    const upstream = logos.icons[OPENAI_MARK.provenance.icon]!
+    const width = upstream.width ?? logos.width
+    const height = upstream.height ?? logos.height
+    expect(OPENAI_MARK.viewBox).toBe(`0 0 ${width} ${height}`)
+  })
 
-  it('names the version of the package it was taken from', () => {
+  it("names the version of the package it was taken from", () => {
     // A bare package name would let a later upgrade silently redefine what the
     // recorded provenance refers to.
-    expect(OPENAI_MARK.provenance.package).toMatch(/@\d+\.\d+\.\d+$/);
-  });
+    expect(OPENAI_MARK.provenance.package).toMatch(/@\d+\.\d+\.\d+$/)
+  })
 
-  it('draws a single path, so it inherits the theme ink', () => {
-    expect(OPENAI_MARK.path).not.toContain('<');
-  });
-});
+  it("draws a single path, so it inherits the theme ink", () => {
+    expect(OPENAI_MARK.path).not.toContain("<")
+  })
+})

@@ -2,13 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { HTMLAttributes, ReactNode } from 'react';
+import type { HTMLAttributes, ReactNode } from "react"
 
 export interface SkeletonProps extends HTMLAttributes<HTMLSpanElement> {
   /** When false the children render untouched, so a call site can wrap its
    *  real content once and flip a flag instead of branching in JSX. */
-  loading?: boolean;
-  children?: ReactNode;
+  loading?: boolean
+  children?: ReactNode
 }
 
 /**
@@ -28,15 +28,13 @@ export interface SkeletonProps extends HTMLAttributes<HTMLSpanElement> {
  * nothing from "loading" repeated once per line; the surface that owns the
  * fetch is the right place for a single live-region message.
  */
-export function Skeleton({ loading = true, children, className = '', ...rest }: SkeletonProps) {
+export function Skeleton({ loading = true, children, className = "", ...rest }: SkeletonProps) {
   if (!loading) {
-    return <>{children}</>;
+    return <>{children}</>
   }
 
-  const wrapping = children !== undefined && children !== null && children !== false;
-  const shape = wrapping
-    ? 'inline-block text-transparent [&_*]:invisible'
-    : 'block min-h-[1ex]';
+  const wrapping = children !== undefined && children !== null && children !== false
+  const shape = wrapping ? "inline-block text-transparent [&_*]:invisible" : "block min-h-[1ex]"
 
   return (
     <span
@@ -45,20 +43,20 @@ export function Skeleton({ loading = true, children, className = '', ...rest }: 
       tabIndex={-1}
       data-placeholder=""
       className={`pointer-events-none animate-pulse select-none rounded-small bg-surface-tertiary ${shape} ${className}`
-        .replace(/\s+/g, ' ')
+        .replace(/\s+/g, " ")
         .trimEnd()}
     >
       {children}
     </span>
-  );
+  )
 }
 
 export interface SkeletonCardProps {
   /** Reserve a small square ahead of the lines, for a leading control or icon. */
-  leading?: boolean;
+  leading?: boolean
   /** One width class per placeholder line, top to bottom. */
-  lines?: string[];
-  className?: string;
+  lines?: string[]
+  className?: string
 }
 
 /**
@@ -67,8 +65,8 @@ export interface SkeletonCardProps {
  */
 export function SkeletonCard({
   leading = false,
-  lines = ['w-32', 'w-44'],
-  className = '',
+  lines = ["w-32", "w-44"],
+  className = "",
 }: SkeletonCardProps) {
   return (
     <div
@@ -83,5 +81,5 @@ export function SkeletonCard({
         </div>
       </div>
     </div>
-  );
+  )
 }

@@ -22,12 +22,6 @@ use fundsp::prelude32::*;
 /// from it cleanly.
 pub const SR: f64 = 48_000.0;
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Wave4 {
-    Sine,
-    Triangle,
-}
-
 /// One sound's parameters, one-to-one with the lab's panel.
 #[derive(Clone, Copy)]
 pub struct Voice {
@@ -37,7 +31,6 @@ pub struct Voice {
     pub root: f32,
     /// Semitone offsets played together. `UNISON` is a single note.
     pub chord: &'static [f32],
-    pub wave: Wave4,
     /// Spread between the three copies, in cents.
     pub detune: f32,
     /// How much the detune narrows as notes get higher, 0 to 1.
@@ -108,26 +101,16 @@ fn note_layer(v: &Voice, f: f32, gain: f32) -> Wave {
     // FM modulates the carrier frequency, with the index decaying faster than the
     // amplitude — the asymmetry that makes it read as struck rather than blown.
     let (fm_a, fm_r) = (v.fm_amount, v.fm_ratio);
-    let wave = v.wave;
-
-    // Type-erased so both waveforms and the FM branch share one chain.
+    // Type-erased so the FM and non-FM branches share one chain.
     let osc = |fd: f32| -> Box<dyn AudioUnit> {
         if fm_a > 0.0 {
-            // The modulator sums into the carrier frequency, then drives whichever
-            // waveform the patch selected. Hardcoding a sine here was a bug once:
-            // the warning specifies a triangle, and a sine carrier produces far
-            // fewer sidebands, so the port was not the same instrument.
+            // The modulator sums into the carrier frequency before the sine
+            // carrier, matching the sound-lab patch used by the app.
             let m = sine_hz(fd * fm_r) * envelope(move |t: f32| fm_a * (-t * rel * 2.2).exp()) + fd;
             let e = envelope(move |t: f32| shape(t, att, rel));
-            match wave {
-                Wave4::Sine => Box::new((m >> sine()) * e * gain),
-                Wave4::Triangle => Box::new((m >> triangle()) * e * gain),
-            }
+            Box::new((m >> sine()) * e * gain)
         } else {
-            match wave {
-                Wave4::Sine => Box::new(sine_hz(fd) * envelope(env) * gain),
-                Wave4::Triangle => Box::new(triangle_hz(fd) * envelope(env) * gain),
-            }
+            Box::new(sine_hz(fd) * envelope(env) * gain)
         }
     };
 

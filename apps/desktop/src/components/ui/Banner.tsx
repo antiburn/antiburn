@@ -2,10 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { X, type LucideIcon } from 'lucide-react';
+import { X, type LucideIcon } from "lucide-react"
 
 /** How loudly a banner reads. */
-export type BannerTone = 'warning' | 'info';
+export type BannerTone = "warning" | "info"
 
 /**
  * One line of attention: a glyph, a short message, an optional action, and a
@@ -26,34 +26,34 @@ export type BannerTone = 'warning' | 'info';
  * should learn about, not something that interrupts what they are reading.
  */
 export function Banner({
-  tone = 'warning',
+  tone = "warning",
   icon: Icon,
   message,
   actionLabel,
   onAction,
   onDismiss,
-  dismissLabel = 'Dismiss',
-  className = '',
+  dismissLabel = "Dismiss",
+  className = "",
 }: {
-  tone?: BannerTone;
+  tone?: BannerTone
   /** Decorative: the message carries the meaning. */
-  icon?: LucideIcon;
-  message: string;
+  icon?: LucideIcon
+  message: string
   /** Omit both action props for a banner that only reports. */
-  actionLabel?: string;
-  onAction?: () => void;
-  onDismiss: () => void;
+  actionLabel?: string
+  onAction?: () => void
+  onDismiss: () => void
   /** Accessible name of the dismiss control, when "Dismiss" is too vague. */
-  dismissLabel?: string;
-  className?: string;
+  dismissLabel?: string
+  className?: string
 }) {
   // Tinted fills rather than a solid status colour: the popover's surfaces are
   // translucent, and a saturated band across one would read as a different
   // window rather than a note inside this one.
   const toneClass =
-    tone === 'warning'
-      ? 'bg-system-orange-tint/12 text-system-orange'
-      : 'bg-surface-secondary text-label-secondary';
+    tone === "warning"
+      ? "bg-system-orange-tint/12 text-system-orange"
+      : "bg-surface-secondary text-label-secondary"
 
   return (
     <div
@@ -86,5 +86,5 @@ export function Banner({
         <X size={11} strokeWidth={2.5} aria-hidden="true" />
       </button>
     </div>
-  );
+  )
 }

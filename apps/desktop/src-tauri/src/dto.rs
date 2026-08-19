@@ -367,21 +367,12 @@ pub struct AppInfo {
  * the limit path, and the views can layer two payloads perfectly well.
  * ---------------------------------------------------------------------- */
 
-/// How trustworthy a live reading is, as a word the view can print.
-///
-/// Deliberately the same vocabulary as [`ProviderUsageState`], so a reader who
-/// has learnt "Live" and "Observed" on one surface has learnt them on both.
+/// Marks figures stated directly by a provider rather than locally estimated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LiveUsageSupport {
     /// The provider stated this allowance. A determinate meter is honest.
     Live,
-    /// The allowance is modelled rather than stated.
-    Estimated,
-    /// Activity is known; no trustworthy allowance is.
-    Observed,
-    /// An account was found, with nothing quantified.
-    Detected,
 }
 
 /// Whether a reading still describes the present.

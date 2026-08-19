@@ -2,19 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { confirm } from '@tauri-apps/plugin-dialog';
-import { useCallback, useState } from 'react';
+import { confirm } from "@tauri-apps/plugin-dialog"
+import { useCallback, useState } from "react"
 
-import { Card } from '../../components/ui/Card';
-import { Disclosure, DisclosureGroup } from '../../components/ui/Disclosure';
-import { Pane } from '../../components/ui/Pane';
-import { PushButton } from '../../components/ui/PushButton';
-import { Row } from '../../components/ui/Row';
-import { SectionGroup } from '../../components/ui/SectionGroup';
-import { StatusText } from '../../components/ui/StatusText';
-import { ToggleRow } from '../../components/ui/ToggleRow';
-import { clearLocalIndex, type AppInfo } from '../../lib/ipc';
-import type { AppSettingsController } from './useAppSettings';
+import { Card } from "../../components/ui/Card"
+import { Disclosure, DisclosureGroup } from "../../components/ui/Disclosure"
+import { Pane } from "../../components/ui/Pane"
+import { PushButton } from "../../components/ui/PushButton"
+import { Row } from "../../components/ui/Row"
+import { SectionGroup } from "../../components/ui/SectionGroup"
+import { StatusText } from "../../components/ui/StatusText"
+import { ToggleRow } from "../../components/ui/ToggleRow"
+import { clearLocalIndex, type AppInfo } from "../../lib/ipc"
+import type { AppSettingsController } from "./useAppSettings"
 
 /**
  * Privacy: what antiburn reads, what it keeps, what leaves the machine, and how
@@ -32,20 +32,20 @@ import type { AppSettingsController } from './useAppSettings';
 
 /** What the "forget everything" action is currently doing. */
 type ClearState =
-  | { kind: 'idle' }
-  | { kind: 'clearing' }
-  | { kind: 'cleared'; sessions: number }
-  | { kind: 'failed' };
+  | { kind: "idle" }
+  | { kind: "clearing" }
+  | { kind: "cleared"; sessions: number }
+  | { kind: "failed" }
 
-export type PrivacyPaneProps = AppSettingsController & { info: AppInfo | null };
+export type PrivacyPaneProps = AppSettingsController & { info: AppInfo | null }
 
 export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps) {
-  const [clearState, setClearState] = useState<ClearState>({ kind: 'idle' });
+  const [clearState, setClearState] = useState<ClearState>({ kind: "idle" })
   // Derived from the running build, never from a compile-time guess: a build
   // with no injected endpoint cannot send anything, and this pane's whole job
   // is to not overstate what the application does.
-  const usageAnalyticsSupported = info?.usageAnalyticsSupported ?? false;
-  const operator = info?.usageAnalyticsOperator ?? null;
+  const usageAnalyticsSupported = info?.usageAnalyticsSupported ?? false
+  const operator = info?.usageAnalyticsOperator ?? null
 
   /**
    * Clearing the index is confirmed first, and the confirmation says the two
@@ -54,19 +54,19 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
    */
   const handleClear = useCallback(async () => {
     const proceed = await confirm(
-      'This removes every session, analysis, and scan record antiburn has stored on this machine. Your agents’ own transcript files are not touched, and antiburn will rediscover them the next time it scans.',
-      { title: 'Clear the local index?', kind: 'warning', okLabel: 'Clear index' },
-    );
-    if (!proceed) return;
+      "This removes every session, analysis, and scan record antiburn has stored on this machine. Your agents’ own transcript files are not touched, and antiburn will rediscover them the next time it scans.",
+      { title: "Clear the local index?", kind: "warning", okLabel: "Clear index" },
+    )
+    if (!proceed) return
 
-    setClearState({ kind: 'clearing' });
+    setClearState({ kind: "clearing" })
     try {
-      const sessions = await clearLocalIndex();
-      setClearState({ kind: 'cleared', sessions });
+      const sessions = await clearLocalIndex()
+      setClearState({ kind: "cleared", sessions })
     } catch {
-      setClearState({ kind: 'failed' });
+      setClearState({ kind: "failed" })
     }
-  }, []);
+  }, [])
 
   return (
     <Pane title="Privacy">
@@ -78,10 +78,10 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
         <p className="type-body px-1 text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine and
           keeps the data it needs locally. Your sessions, prompts, and file paths never leave
-          it.{' '}
+          it.{" "}
           {usageAnalyticsSupported
-            ? 'The one thing antiburn reports about itself is anonymised usage analytics, which you can turn off below.'
-            : 'This build sends no analytics at all — see below.'}{' '}
+            ? "The one thing antiburn reports about itself is anonymised usage analytics, which you can turn off below."
+            : "This build sends no analytics at all — see below."}{" "}
           Each promise opens into the specifics a reader could reasonably want to check.
         </p>
         {/* Disclosures rather than Card rows: this is explanatory prose, and a
@@ -117,16 +117,19 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             Those analytics are the one thing that goes to us; they are listed field by field
             below, and they contain none of your work. This build
             {usageAnalyticsSupported
-              ? ' can send them.'
-              : ' has no analytics endpoint, so it cannot send them at all.'}
+              ? " can send them."
+              : " has no analytics endpoint, so it cannot send them at all."}
           </Disclosure>
           <Disclosure label="One setting lets antiburn go online for current figures">
-            Settings &rarr; Usage has a switch, off by default, for keeping plan limits current.
-            Turned on, antiburn can run your coding agent in the background to refresh its own
-            usage reading, or read a provider&rsquo;s figures directly with the credentials your
-            tools already have — either way, that is antiburn acting as you, online with what
-            you already have access to. With the switch off, plan limits are read from whatever
-            was last cached here, and nothing runs in the background to update them.
+            Settings &rarr; Usage has a switch, on by default once first-run setup is complete,
+            for keeping plan limits current. On, antiburn asks each provider directly for your
+            current usage, using the credentials your own coding tools already have — that is
+            antiburn acting as you, online with what you already have access to, and it runs
+            without asking first because it is your own ordinary traffic, not something that
+            needs a separate go-ahead. When a provider cannot be reached directly, antiburn
+            falls back to asking your coding tool&rsquo;s own local process the same question,
+            over its own protocol. Turn the switch off if you want none of it — no request is
+            made, no credential is read, and antiburn shows no plan limits at all.
           </Disclosure>
           <Disclosure label="Exports describe real work">
             An exported session carries derived analysis plus the session&rsquo;s title and the
@@ -143,9 +146,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             description={
               usageAnalyticsSupported
                 ? `Which features get used and what breaks${
-                    operator ? `, sent to ${operator}` : ''
+                    operator ? `, sent to ${operator}` : ""
                   }. Helps decide what to build next.`
-                : 'This build has no analytics endpoint, so nothing can be sent from it. The switch is shown so the setting is visible, not because it currently does anything.'
+                : "This build has no analytics endpoint, so nothing can be sent from it. The switch is shown so the setting is visible, not because it currently does anything."
             }
             // Gated on `loaded` as well as support. The controller starts from
             // DEFAULT_SETTINGS, where this is on, so an unguarded row would
@@ -279,20 +282,20 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             trailing={
               <PushButton
                 onClick={() => void handleClear()}
-                disabled={clearState.kind === 'clearing'}
+                disabled={clearState.kind === "clearing"}
               >
-                {clearState.kind === 'clearing' ? 'Clearing…' : 'Clear index…'}
+                {clearState.kind === "clearing" ? "Clearing…" : "Clear index…"}
               </PushButton>
             }
           >
-            {clearState.kind !== 'idle' && clearState.kind !== 'clearing' && (
+            {clearState.kind !== "idle" && clearState.kind !== "clearing" && (
               <div className="mt-1.5" aria-live="polite">
-                {clearState.kind === 'cleared' ? (
+                {clearState.kind === "cleared" ? (
                   <StatusText tone="secondary">
                     {clearState.sessions === 0
-                      ? 'There was nothing stored to clear.'
+                      ? "There was nothing stored to clear."
                       : `Cleared ${clearState.sessions} ${
-                          clearState.sessions === 1 ? 'session' : 'sessions'
+                          clearState.sessions === 1 ? "session" : "sessions"
                         }. A scan is running to find them again.`}
                   </StatusText>
                 ) : (
@@ -311,5 +314,5 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
         </Card>
       </SectionGroup>
     </Pane>
-  );
+  )
 }

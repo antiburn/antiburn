@@ -21,46 +21,32 @@ pub fn used_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageErro
     validate_percent(value)
 }
 
-/// Convert a remaining percentage into the consumed percentage this module
-/// stores.
+/// Convert a value that might be a `0..=1` fraction or an already-consumed
+/// percentage into the `0..=100` domain this module stores.
 ///
-/// Presentation may invert it again; storage and arithmetic never do.
-#[allow(dead_code)] // Awaits the first source that reports remaining rather than used.
-pub fn remaining_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
-    Ok(validate_percent(value)?.map(|remaining| 100.0 - remaining))
-}
-
-/// Convert a remaining fraction in `0..=1` into consumed percent in `0..=100`.
-#[allow(dead_code)] // Awaits the first source that reports a fraction.
-pub fn remaining_fraction(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
+/// A provider's own usage endpoint is not always consistent about which shape
+/// it emits — sometimes across the very same payload family, depending on
+/// which field carried the figure. A value at or below `1.0` is read as a
+/// fraction and scaled up; anything above is already a percent. The one input
+/// this cannot disambiguate — a genuine one-percent reading spelled as the
+/// bare integer `1` — reads as 100% instead of 1%, but every payload this
+/// module has seen states single-digit-and-up percentages as two digits or a
+/// larger fraction, so the cost is theoretical, and it is the cheaper mistake
+/// to risk: the alternative is guessing wrong on the shape that is actually
+/// common.
+pub fn used_percent_or_fraction(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
     let Some(value) = value else {
         return Ok(None);
     };
-    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+    if !value.is_finite() {
         return Err(ProviderUsageError::Schema(SchemaReason::InvalidValue));
     }
-    Ok(Some((1.0 - value) * 100.0))
-}
-
-/// Derive a consumed percentage, but only when both a non-negative usage and
-/// a positive limit are known.
-///
-/// A partial input stays unknown rather than becoming a guess; an invalid one
-/// fails.
-#[allow(dead_code)] // Awaits the first source that discloses raw amounts.
-pub fn percent_from_amounts(
-    used: Option<f64>,
-    limit: Option<f64>,
-) -> Result<Option<f64>, ProviderUsageError> {
-    match (used, limit) {
-        (Some(used), Some(limit))
-            if used.is_finite() && limit.is_finite() && used >= 0.0 && limit > 0.0 =>
-        {
-            validate_percent(Some(used / limit * 100.0))
-        }
-        (None, _) | (_, None) => Ok(None),
-        _ => Err(ProviderUsageError::Schema(SchemaReason::InvalidValue)),
-    }
+    let percent = if (0.0..=1.0).contains(&value) {
+        value * 100.0
+    } else {
+        value
+    };
+    used_percent(Some(percent))
 }
 
 fn validate_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageError> {
@@ -71,6 +57,27 @@ fn validate_percent(value: Option<f64>) -> Result<Option<f64>, ProviderUsageErro
         return Err(ProviderUsageError::Schema(SchemaReason::InvalidValue));
     }
     Ok(Some(value))
+}
+
+/// Turn a provider's free-text display name into a lowercase, hyphenated
+/// identifier fragment: alphanumeric runs are kept and lowercased, every run
+/// of anything else collapses into one hyphen, and the ends are trimmed.
+///
+/// Shared by every parser that builds a model-scoped window id out of a
+/// display name the provider could re-punctuate at any time (a space instead
+/// of a dash, different capitalization) — the id has to stay stable across
+/// those changes because it is what the sample history and the milestone
+/// ledger join on, and the display name itself is not.
+pub fn slugify(text: &str) -> String {
+    let mut slug = String::new();
+    for character in text.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_matches('-').to_string()
 }
 
 #[cfg(test)]
@@ -95,21 +102,35 @@ mod tests {
     }
 
     #[test]
-    fn remaining_inverts_into_consumed() {
-        assert_eq!(remaining_percent(Some(25.0)), Ok(Some(75.0)));
-        assert_eq!(remaining_fraction(Some(0.25)), Ok(Some(75.0)));
-        assert_eq!(remaining_fraction(Some(1.5)), Err(INVALID));
+    fn a_fraction_at_or_below_one_is_scaled_up_into_a_percent() {
+        assert_eq!(used_percent_or_fraction(Some(0.81)), Ok(Some(81.0)));
+        assert_eq!(used_percent_or_fraction(Some(0.0)), Ok(Some(0.0)));
+        assert_eq!(used_percent_or_fraction(Some(1.0)), Ok(Some(100.0)));
     }
 
     #[test]
-    fn amounts_need_both_halves_before_they_become_a_percentage() {
-        assert_eq!(percent_from_amounts(Some(5.0), Some(20.0)), Ok(Some(25.0)));
-        // Half the pair is not a quarter of an answer.
-        assert_eq!(percent_from_amounts(Some(5.0), None), Ok(None));
-        assert_eq!(percent_from_amounts(None, Some(20.0)), Ok(None));
-        // A zero limit is not an infinite percentage.
-        assert_eq!(percent_from_amounts(Some(5.0), Some(0.0)), Err(INVALID));
-        // And an over-limit amount is a payload we did not understand.
-        assert_eq!(percent_from_amounts(Some(30.0), Some(20.0)), Err(INVALID));
+    fn a_value_above_one_is_read_as_an_already_stated_percent() {
+        assert_eq!(used_percent_or_fraction(Some(81.0)), Ok(Some(81.0)));
+        assert_eq!(used_percent_or_fraction(Some(100.0)), Ok(Some(100.0)));
+    }
+
+    #[test]
+    fn a_fraction_or_percent_out_of_domain_still_fails_closed() {
+        assert_eq!(used_percent_or_fraction(Some(140.0)), Err(INVALID));
+        assert_eq!(used_percent_or_fraction(Some(-0.5)), Err(INVALID));
+        assert_eq!(used_percent_or_fraction(Some(f64::NAN)), Err(INVALID));
+        assert_eq!(used_percent_or_fraction(None), Ok(None));
+    }
+
+    #[test]
+    fn slugify_lowercases_and_hyphenates_punctuation_runs() {
+        assert_eq!(slugify("Claude Opus 4.5"), "claude-opus-4-5");
+        assert_eq!(slugify("GPT-5.3-Codex-Spark"), "gpt-5-3-codex-spark");
+    }
+
+    #[test]
+    fn slugify_trims_leading_and_trailing_hyphens() {
+        assert_eq!(slugify("  Fable  "), "fable");
+        assert_eq!(slugify("--already--hyphenated--"), "already-hyphenated");
     }
 }

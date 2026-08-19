@@ -30,12 +30,11 @@ tracing = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 # Subclasses the notification window into a non-activating floating NSPanel so
 # it never steals key focus from the user's frontmost app. Not published to
-# crates.io; pinned to a v2 commit for reproducibility.
-tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "18ffb9a201fbf6fedfaa382fd4b92315ea30ab1a" }
+# crates.io; pinned to a v2.1 commit for reproducibility.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 # Finds the display showing the frontmost window (`CGWindowListCopyWindowInfo` +
 # `CGDisplay`), so the notification appears where the user is actually looking
-# rather than always on the primary display. Versions match what `cocoa` (via
-# tauri-nspanel) already pulls in, so this doesn't add a second copy.
+# rather than always on the primary display.
 core-foundation = "0.10"
 core-graphics = "0.25"
 
@@ -54,12 +53,3 @@ gtk = { version = "0.18", features = ["v3_24"] }
 
 [dev-dependencies]
 serde_json = "1"
-
-[lints.rust]
-# `objc` 0.2's `msg_send!` (used for the notification's animated resize in
-# `macos.rs`) expands to a `cfg(feature = "cargo-clippy")` gate that check-cfg
-# flags at our call sites. Declare that value expected so real cfg typos are
-# still caught.
-unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("cargo-clippy"))',
-] }

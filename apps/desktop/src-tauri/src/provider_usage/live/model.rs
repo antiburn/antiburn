@@ -21,27 +21,11 @@
 //!    structurally trustworthy and six hours old; those are different
 //!    questions and the surfaces answer them separately.
 
-// The vocabulary is the contract, and it is wider than any one source. The
-// offline source that ships today states five-hour and weekly percentages and
-// nothing else, so most of the tiers, units, and failure modes below are
-// declared and not yet constructed — which is the point: a view must already
-// render `Estimated`, and the error surface must already group
-// `Authentication`, on the day a source produces one. Narrowing these enums to
-// what the first source happens to emit would make the second source a
-// refactor rather than a registration.
-//
-// The allow is module-wide because these are pure data types with no logic to
-// hide behind it; anything here that stops being reachable stops being
-// reachable in `git log`, not in a compiler warning.
-#![allow(dead_code)]
-
 use time::{Duration, OffsetDateTime};
 
 /// Epistemic strength of a fact, independent of how recently it was observed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Confidence {
-    /// Weak or indirect evidence; consequential calculations stay disabled.
-    Low,
     /// Corroborated evidence, good enough for guarded calculations.
     Medium,
     /// Direct structured evidence from a trusted source.
@@ -71,23 +55,6 @@ impl Freshness {
             Freshness::Stale
         }
     }
-}
-
-/// The strongest level of detail the available evidence justifies.
-///
-/// This is the ladder the views degrade down, and it is deliberately the same
-/// vocabulary as the local-estimate path's `ProviderUsageState`, so a reader
-/// who has learnt one word has learnt both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SupportTier {
-    /// The provider stated this allowance. A determinate meter is honest.
-    Live,
-    /// The allowance is modelled rather than stated, and must say so.
-    Estimated,
-    /// Activity is known; no trustworthy account-wide allowance is.
-    Observed,
-    /// An account or route was found, with nothing quantified.
-    Detected,
 }
 
 /// Why a payload was rejected outright rather than partly believed.
@@ -152,14 +119,8 @@ pub enum WindowRole {
 pub enum UsageWindowKind {
     /// A continuously moving interval, not a calendar boundary.
     Rolling,
-    /// A calendar-day allowance.
-    Daily,
     /// A weekly allowance, on the provider's own boundary.
     Weekly,
-    /// A monthly allowance.
-    Monthly,
-    /// A billing period that need not align with a calendar month.
-    BillingCycle,
     /// Provider semantics retained without coercion.
     Other(String),
 }
@@ -171,21 +132,6 @@ pub enum UsageScope {
     Account,
     /// A single model, keeping the provider's own display name.
     Model(String),
-    /// A provider-defined family or shared bucket of models.
-    ModelGroup(String),
-    /// A scope the provider named that we decline to map onto a standard one.
-    Other(String),
-}
-
-/// The unit attached to raw amounts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageUnit {
-    /// A percentage, which in this module always means capacity consumed.
-    Percent,
-    /// Provider-defined credits, with no assumed currency conversion.
-    Credits,
-    /// Minor currency units, read with the accompanying currency code.
-    CurrencyMinor,
 }
 
 /// One provider allowance.
@@ -197,7 +143,7 @@ pub struct UsageWindow {
     pub role: WindowRole,
     /// Reset behaviour.
     pub kind: UsageWindowKind,
-    /// Account, model, or group this limit covers.
+    /// Account or model this limit covers.
     pub scope: UsageScope,
     /// Consumed capacity in `0..=100`. `None` stays unknown; it is never zero.
     pub used_percent: Option<f64>,
@@ -220,26 +166,13 @@ pub struct CreditBalance {
     pub remaining: Option<f64>,
     /// The ceiling, when disclosed. Absence does not imply unlimited.
     pub limit: Option<f64>,
-    /// The unit every populated amount above is in.
-    pub unit: UsageUnit,
-    /// Currency code when the unit is monetary.
+    /// ISO 4217 currency code for monetary amounts, when disclosed.
     pub currency: Option<String>,
-}
-
-/// Metered capacity that can sit alongside a subscription allowance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SupplementalUsageKind {
-    /// Optional spend beyond the included allowance.
-    ExtraUsage,
-    /// On-demand or overage billing once a primary pool is consumed.
-    Overage,
 }
 
 /// Independent metered usage. Must never replace or downgrade primary quota.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SupplementalUsage {
-    /// Which billing behaviour this meter represents.
-    pub kind: SupplementalUsageKind,
     /// Whether the account permits this path. False differs from missing.
     pub enabled: bool,
     /// Consumed supplemental allowance in `0..=100`.
@@ -277,8 +210,6 @@ pub struct ProviderUsageSnapshot {
     pub observed_at: OffsetDateTime,
     /// Provenance, confidence, and freshness.
     pub source: UsageSource,
-    /// The strongest tier this snapshot's evidence justifies.
-    pub support: SupportTier,
     /// The provider's windows, in the order the parser found them.
     pub windows: Vec<UsageWindow>,
     /// Metered usage alongside the windows, when the provider reports it.

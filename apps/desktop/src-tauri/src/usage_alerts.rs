@@ -24,16 +24,19 @@
 //!
 //! The milestone engine ([`crate::provider_usage::live::milestones`])
 //! evaluates whatever the registered sources report — and those now report
-//! something: the Usage surface shows a provider's own limits, read from what
-//! an agent cached on this machine.
+//! something: the Usage surface shows a provider's own limits, asked for
+//! directly with the reader's own credentials.
 //!
-//! Milestone notifications are gated on `live_usage_enabled` — the Settings →
-//! Usage switch, default off — and that pairing is deliberate rather than
-//! leftover. A milestone is a statement about a threshold being *crossed*, so
-//! it needs readings that keep moving, and only the refresh source makes them
-//! move: without it the cached reading sits still until the reader next uses
-//! their agent, and a crossing would be announced whenever that happened to
-//! be. So the one switch buys both, and its copy names both.
+//! Milestone notifications are gated on `AppSettings::live_usage_active` —
+//! the Settings → Usage switch (on by default) *and* onboarding having
+//! finished — and that pairing is deliberate rather than leftover. Both
+//! consequences of the switch depend on the same traffic: a milestone is a
+//! statement about a threshold being *crossed*, which needs readings that
+//! keep moving, and only the sources this switch unlocks ever make a request
+//! to find out whether one has. So the one switch buys both, and its copy
+//! names both. The onboarding half of the gate holds even while the switch
+//! itself defaults on: no credential is read, and no request or subprocess
+//! runs, until the reader has actually seen this app once.
 
 use std::time::Duration;
 
@@ -66,6 +69,18 @@ const EPISODE_SECS: i64 = 6 * 60 * 60;
 /// Where the last-fired moment survives a relaunch.
 const FIRED_KEY: &str = "internal:usageAnomalyFiredEpoch";
 
+/// How fresh a reading the milestone pass asks each source's cooldown for.
+///
+/// This pass is not shown to anyone — it runs on [`TICK`], whether or not the
+/// popover is even open — so there is no reason to pay for a fetch more
+/// often than the pass itself runs, and every reason not to: it is exactly
+/// the traffic the sources' cooldown (`provider_usage::live::sources::cooldown`)
+/// exists to keep to a small, predictable trickle. Ten minutes matches what
+/// every source's cooldown fixed unconditionally before `max_age` existed,
+/// so this pass's background traffic is unchanged by the popover's own,
+/// much shorter, `max_age` — see `crate::commands::POPOVER_LIVE_USAGE_MAX_AGE`.
+const MILESTONE_MAX_AGE: Duration = Duration::from_secs(600);
+
 /// Spawn the monitor loop; the handle joins the shell's scheduler registry.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
@@ -91,14 +106,17 @@ pub struct LiveUsage {
 }
 
 impl LiveUsage {
-    /// `workspace` is a directory under the app's own data directory, for the
-    /// refresh source's private scratch space. Passed in rather than derived
-    /// here so the shell keeps one answer to "where does this app write".
-    pub fn new(workspace: std::path::PathBuf) -> LiveUsage {
+    pub fn new() -> LiveUsage {
         LiveUsage {
-            sources: provider_usage::live::sources::registered(workspace),
+            sources: provider_usage::live::sources::registered(),
             ledger: std::sync::Mutex::default(),
         }
+    }
+}
+
+impl Default for LiveUsage {
+    fn default() -> LiveUsage {
+        LiveUsage::new()
     }
 }
 
@@ -144,8 +162,11 @@ fn anomaly_pass(app: &AppHandle, store: &Store, settings: &crate::store::AppSett
 fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     // Gate *before* evaluating: selection is destructive (a chosen crossing
     // is recorded as delivered), so a crossing selected while notifications
-    // were off would be silently consumed.
-    if !settings.live_usage_enabled
+    // were off would be silently consumed. `live_usage_active` folds in both
+    // the reader's switch and onboarding having finished, so this can never
+    // fire — and never even collect, which is what would read a credential —
+    // before onboarding is done, whatever the switch's default is.
+    if !settings.live_usage_active()
         || !crate::notifications::allowed(settings, crate::notifications::Kind::UsageMilestone)
     {
         return;
@@ -154,11 +175,15 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
         return;
     };
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
-        provider_usage::live::sources::collect(&live.sources, settings.live_usage_enabled)
-            .snapshots
-            .iter()
-            .map(milestone_snapshot)
-            .collect();
+        provider_usage::live::sources::collect(
+            &live.sources,
+            settings.live_usage_active(),
+            MILESTONE_MAX_AGE,
+        )
+        .snapshots
+        .iter()
+        .map(milestone_snapshot)
+        .collect();
     let mut ledger = live
         .ledger
         .lock()

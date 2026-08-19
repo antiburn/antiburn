@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
   ChevronLeft,
   ChevronRight,
@@ -13,11 +13,11 @@ import {
   Moon,
   Share,
   Trash2,
-} from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+} from "lucide-react"
+import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react"
 
-import { agentDisplayName } from '../../lib/presentation/agents';
-import { sessionIdentityKey } from '../../lib/presentation/localIdentity';
+import { agentDisplayName } from "../../lib/presentation/agents"
+import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
 import {
   formatCompact,
   formatDuration,
@@ -25,8 +25,8 @@ import {
   isEmptySummary,
   PHASES,
   phaseBreakdown,
-} from '../../lib/presentation/sessionAnalytics';
-import type { LocalSessionCost } from '../../lib/presentation/sessionCosts';
+} from "../../lib/presentation/sessionAnalytics"
+import type { LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import type {
   ActiveSessionsSummary,
   LocalOrchestrationStatus,
@@ -34,27 +34,28 @@ import type {
   LocalSessionRelations,
   SessionPhase,
   SkillDetail,
-} from '../../lib/types/session';
-import { Tooltip } from '../presentation/Tooltip';
-import { WslOriginBadge } from '../presentation/WslOriginBadge';
-import { Skeleton } from '../ui/Skeleton';
-import { ContextDriftChart } from './analytics/ContextDriftChart';
-import { CostBreakdown } from './analytics/CostBreakdown';
-import { Hypnogram } from './analytics/Hypnogram';
-import { HypnogramSegments, type MarkerLayer } from './analytics/HypnogramSegments';
-import { InitialContextChart } from './analytics/InitialContextChart';
-import type { TimelineMarker } from './analytics/markerCluster';
-import { PatternScore } from './analytics/PatternScore';
-import { PhaseDonut } from './analytics/PhaseDonut';
-import { createSkillMarkerKind } from './analytics/skillMarkerKind';
-import { createSpawnMarkerKind, type SpawnPayload } from './analytics/spawnMarkerKind';
-import { TokenAreaChart } from './analytics/TokenAreaChart';
-import { ToolMixChart } from './analytics/ToolMixChart';
-import { SessionCostBadge, type SessionCostBadgeProps } from './metrics/SessionCostBadge';
-import { OrchestratedBadge } from './orchestration/OrchestratedBadge';
-import type { AgentIconRenderer } from './orchestration/SubagentRosterRow';
-import { SubagentBadge } from './orchestration/SubagentBadge';
-import { tokensCardModel, type TokensCostSplit } from './tokensCard';
+} from "../../lib/types/session"
+import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
+import { Tooltip } from "../presentation/Tooltip"
+import { WslOriginBadge } from "../presentation/WslOriginBadge"
+import { Skeleton } from "../ui/Skeleton"
+import { ContextDriftChart } from "./analytics/ContextDriftChart"
+import { CostBreakdown } from "./analytics/CostBreakdown"
+import { Hypnogram } from "./analytics/Hypnogram"
+import { HypnogramSegments, type MarkerLayer } from "./analytics/HypnogramSegments"
+import { InitialContextChart } from "./analytics/InitialContextChart"
+import type { TimelineMarker } from "./analytics/markerCluster"
+import { PatternScore } from "./analytics/PatternScore"
+import { PhaseDonut } from "./analytics/PhaseDonut"
+import { createSkillMarkerKind } from "./analytics/skillMarkerKind"
+import { createSpawnMarkerKind, type SpawnPayload } from "./analytics/spawnMarkerKind"
+import { TokenAreaChart } from "./analytics/TokenAreaChart"
+import { ToolMixChart } from "./analytics/ToolMixChart"
+import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
+import { OrchestratedBadge } from "./orchestration/OrchestratedBadge"
+import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
+import { SubagentBadge } from "./orchestration/SubagentBadge"
+import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
 
 /**
  * Skeleton anti-flash timing. A fast load finishes before the delay elapses,
@@ -62,88 +63,88 @@ import { tokensCardModel, type TokensCostSplit } from './tokensCard';
  * Once it does appear it stays for at least the floor, so it cannot flicker on
  * and off in the medium window.
  */
-const SKELETON_DELAY_MS = 200;
-const SKELETON_MIN_VISIBLE_MS = 400;
+const SKELETON_DELAY_MS = 200
+const SKELETON_MIN_VISIBLE_MS = 400
 
 /** Which session this view is scoped to. Absent means the live aggregate. */
-export interface SessionAnalyticsSubject {
-  agent: string;
-  sessionId: string;
-  title?: string;
-  wslDistro?: string | null;
+interface SessionAnalyticsSubject {
+  agent: string
+  sessionId: string
+  title?: string
+  wslDistro?: string | null
   /** Whether the transcript is still being written. */
-  isActive?: boolean;
+  isActive?: boolean
   /**
    * Present when the view is showing a sub-agent rather than a session the
    * user drove themselves.
    */
   subagent?: {
-    parentSessionId: string;
-    subagentId: string;
+    parentSessionId: string
+    subagentId: string
     /** Title of the orchestrator that launched it, for the provenance badge. */
-    parentTitle?: string;
-  };
+    parentTitle?: string
+  }
 }
 
 export interface SessionAnalyticsPresentationProps {
   /** The analysis to render; null while loading or after a failure. */
-  summary: ActiveSessionsSummary | null;
+  summary: ActiveSessionsSummary | null
   /** Whether the analysis is still being produced. */
-  loading?: boolean;
+  loading?: boolean
   /** Whether producing it failed. */
-  error?: boolean;
+  error?: boolean
   /** The session this view describes; omit for the live aggregate. */
-  session?: SessionAnalyticsSubject | undefined;
+  session?: SessionAnalyticsSubject | undefined
   /**
    * False when the engine has no adapter for this agent, which changes the
    * empty state from "nothing happened" to "we cannot read this yet".
    */
-  supportsAnalytics?: boolean;
+  supportsAnalytics?: boolean
 
   /** The cost result the breakdown describes, when one was priced. */
-  cost?: LocalSessionCost | null;
+  cost?: LocalSessionCost | null
   /** Parent/sub-agents split for an orchestration total. */
-  costSplit?: TokensCostSplit | null;
+  costSplit?: TokensCostSplit | null
   /** Display values for the header cost pill. */
-  costBadge?: SessionCostBadgeProps | null;
+  costBadge?: SessionCostBadgeProps | null
   /** Sub-agents this session launched. */
-  orchestration?: LocalOrchestrationStatus | null;
+  orchestration?: LocalOrchestrationStatus | null
   /** Skill invocations to overlay on the per-turn ribbon. */
-  skills?: SkillDetail[];
+  skills?: SkillDetail[]
   /** Direct fork relations resolved from local transcripts. */
-  relations?: LocalSessionRelations | null;
+  relations?: LocalSessionRelations | null
   /** Titles for related sessions, keyed by `sessionIdentityKey`. */
-  relationTitles?: Record<string, string>;
+  relationTitles?: Record<string, string>
 
-  onBack: () => void;
+  onBack: () => void
   /** Navigate to the newer adjacent session; omit when none exists. */
-  onPrev?: () => void;
+  onPrev?: () => void
   /** Navigate to the older adjacent session; omit when none exists. */
-  onNext?: () => void;
+  onNext?: () => void
   /** Open one sub-agent's analytics from the roster or a spawn marker. */
   onOpenSubagent?: (
     parentAgent: string,
     parentSessionId: string,
     subagentId: string,
     label: string,
-  ) => void;
+  ) => void
   /** From a sub-agent view, open the launching orchestrator's analytics. */
-  onOpenOrchestrator?: () => void;
+  onOpenOrchestrator?: () => void
   /** Open a fork parent or child. */
-  onOpenRelatedSession?: (target: LocalSessionRelation, title?: string) => void;
+  onOpenRelatedSession?: (target: LocalSessionRelation, title?: string) => void
 
   /** Export this session's analysis. Omitted hides the control. */
-  onExportSession?: () => void;
+  onExportSession?: () => void
   /** Delete this session's local record. Omitted hides the control. */
-  onDeleteSession?: () => void;
+  onDeleteSession?: () => void
   /** Reveal the session's transcript on disk. Omitted hides the control. */
-  onRevealSource?: () => void;
+  onRevealSource?: () => void
   /** Reveal a skill's `SKILL.md`. Omitted hides that affordance. */
-  onRevealSkillPath?: (path: string) => void;
+  onRevealSkillPath?: (path: string) => void
   /** Wording for the reveal controls, which is host-specific. */
-  revealLabel?: string;
+  revealLabel?: string
 
-  renderAgentIcon?: AgentIconRenderer;
+  renderAgentIcon?: AgentIconRenderer
 }
 
 /* -------------------------------------------------------------------------
@@ -155,19 +156,19 @@ function RelationControl({
   titles,
   onOpen,
 }: {
-  relations: LocalSessionRelations;
-  titles: Record<string, string>;
-  onOpen?: (target: LocalSessionRelation, title?: string) => void;
+  relations: LocalSessionRelations
+  titles: Record<string, string>
+  onOpen?: (target: LocalSessionRelation, title?: string) => void
 }) {
   const titleFor = (target: LocalSessionRelation) => {
-    if (target.title) return target.title;
+    if (target.title) return target.title
     return (
       titles[sessionIdentityKey(target.identity)] ??
       `Session ${target.identity.sessionId.slice(0, 7)}`
-    );
-  };
-  const { parent, children } = relations;
-  const soleChild = children.length === 1 ? children[0] : undefined;
+    )
+  }
+  const { parent, children } = relations
+  const soleChild = children.length === 1 ? children[0] : undefined
 
   return (
     <div className="flex shrink-0 items-center gap-0.5">
@@ -229,7 +230,7 @@ function RelationControl({
             >
               <div className="px-2 py-1 type-caption text-label-tertiary">Direct forks</div>
               {children.map((child) => {
-                const title = titleFor(child);
+                const title = titleFor(child)
                 return (
                   <DropdownMenu.Item
                     key={sessionIdentityKey(child.identity)}
@@ -242,14 +243,14 @@ function RelationControl({
                       <span className="ml-auto pl-2 text-label-tertiary">unavailable</span>
                     )}
                   </DropdownMenu.Item>
-                );
+                )
               })}
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
       )}
     </div>
-  );
+  )
 }
 
 function Card({
@@ -258,10 +259,10 @@ function Card({
   hint,
   children,
 }: {
-  title: string;
-  info?: string;
-  hint?: string;
-  children: ReactNode;
+  title: string
+  info?: string
+  hint?: string
+  children: ReactNode
 }) {
   return (
     <div className="mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
@@ -284,7 +285,7 @@ function Card({
       </div>
       {children}
     </div>
-  );
+  )
 }
 
 function Legend() {
@@ -302,7 +303,7 @@ function Legend() {
         </span>
       ))}
     </div>
-  );
+  )
 }
 
 function PhaseBreakdownRows({
@@ -310,9 +311,9 @@ function PhaseBreakdownRows({
   activePhase,
   onHoverPhase,
 }: {
-  summary: ActiveSessionsSummary;
-  activePhase?: SessionPhase | null;
-  onHoverPhase?: (phase: SessionPhase | null) => void;
+  summary: ActiveSessionsSummary
+  activePhase?: SessionPhase | null
+  onHoverPhase?: (phase: SessionPhase | null) => void
 }) {
   return (
     <div className="mt-1 space-y-1.5">
@@ -320,7 +321,7 @@ function PhaseBreakdownRows({
         <div
           key={row.key}
           className={`-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1 transition-colors ${
-            activePhase === row.key ? 'bg-surface-secondary' : ''
+            activePhase === row.key ? "bg-surface-secondary" : ""
           }`}
           onMouseEnter={() => onHoverPhase?.(row.key)}
           onMouseLeave={() => onHoverPhase?.(null)}
@@ -341,12 +342,12 @@ function PhaseBreakdownRows({
                   <Info size={11} aria-hidden="true" />
                 </button>
               </Tooltip>
-              {row.flag === 'high' && (
+              {row.flag === "high" && (
                 <span className="rounded bg-system-orange-tint/15 px-1 type-caption font-medium text-system-orange">
                   High
                 </span>
               )}
-              {row.flag === 'low' && (
+              {row.flag === "low" && (
                 <span className="rounded bg-surface-secondary px-1 type-caption font-medium text-label-tertiary">
                   Low
                 </span>
@@ -365,7 +366,7 @@ function PhaseBreakdownRows({
         </div>
       ))}
     </div>
-  );
+  )
 }
 
 /** Card shell matching {@link Card}, with a placeholder in place of the heading. */
@@ -375,7 +376,7 @@ function SkeletonCardShell({ children }: { children: ReactNode }) {
       <Skeleton className="mb-3 h-3.5 w-24" />
       {children}
     </div>
-  );
+  )
 }
 
 /**
@@ -448,7 +449,71 @@ function SessionAnalyticsSkeleton() {
         </div>
       </SkeletonCardShell>
     </div>
-  );
+  )
+}
+
+/**
+ * Per-instance timer/timestamp bookkeeping behind {@link useSkeletonVisible}.
+ * Held once per component instance (via `useState`) rather than recreated
+ * each render, so `shownAt` survives the resubscribes that happen every time
+ * `loading` flips: the anti-flash delay and the minimum-visible floor both
+ * depend on remembering *when* the skeleton last appeared, not just whether a
+ * transition is currently in flight.
+ */
+class SkeletonGate {
+  visible = false
+  private shownAt: number | null = null
+  private notify: (() => void) | null = null
+
+  getSnapshot = (): boolean => this.visible
+
+  /**
+   * `useSyncExternalStore`'s `subscribe`, closed over the `loading` value it
+   * was built for. Called fresh whenever `loading` changes (that is the
+   * deliberate keyed resubscription — see useExternalSubscription.ts), so
+   * each call is exactly one loading/not-loading transition.
+   */
+  subscribe =
+    (loading: boolean) =>
+    (onChange: () => void): (() => void) => {
+      this.notify = onChange
+      let timer: ReturnType<typeof setTimeout> | null = null
+
+      if (loading) {
+        timer = setTimeout(() => {
+          timer = null
+          this.shownAt = Date.now()
+          this.setVisible(true)
+        }, SKELETON_DELAY_MS)
+      } else if (this.shownAt != null) {
+        // Loading finished while the skeleton was up: hold it for the rest of
+        // its minimum-visible window.
+        const remaining = SKELETON_MIN_VISIBLE_MS - (Date.now() - this.shownAt)
+        this.shownAt = null
+        if (remaining > 0) {
+          timer = setTimeout(() => {
+            timer = null
+            this.setVisible(false)
+          }, remaining)
+        } else {
+          this.setVisible(false)
+        }
+      } else {
+        // It never showed, so there is nothing to hold.
+        this.setVisible(false)
+      }
+
+      return () => {
+        if (timer != null) clearTimeout(timer)
+        this.notify = null
+      }
+    }
+
+  private setVisible(value: boolean): void {
+    if (this.visible === value) return
+    this.visible = value
+    this.notify?.()
+  }
 }
 
 /**
@@ -458,32 +523,12 @@ function SessionAnalyticsSkeleton() {
  * flicker it. A load that resolves within the delay never flips it at all.
  */
 function useSkeletonVisible(loading: boolean): boolean {
-  const [visible, setVisible] = useState(false);
-  const shownAtRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (loading) {
-      const timer = setTimeout(() => {
-        shownAtRef.current = Date.now();
-        setVisible(true);
-      }, SKELETON_DELAY_MS);
-      return () => clearTimeout(timer);
-    }
-    // Loading finished. If the skeleton is up, hold it for the rest of its
-    // minimum-visible window; otherwise it never showed, so stay hidden.
-    if (shownAtRef.current != null) {
-      const remaining = SKELETON_MIN_VISIBLE_MS - (Date.now() - shownAtRef.current);
-      shownAtRef.current = null;
-      if (remaining > 0) {
-        const timer = setTimeout(() => setVisible(false), remaining);
-        return () => clearTimeout(timer);
-      }
-    }
-    setVisible(false);
-    return;
-  }, [loading]);
-
-  return visible;
+  const [gate] = useState(() => new SkeletonGate())
+  const subscribe = useCallback(
+    (onChange: () => void) => gate.subscribe(loading)(onChange),
+    [gate, loading],
+  )
+  return useSyncExternalStore(subscribe, gate.getSnapshot, gate.getSnapshot)
 }
 
 /* -------------------------------------------------------------------------
@@ -522,53 +567,46 @@ export function SessionAnalyticsPresentation({
   onDeleteSession,
   onRevealSource,
   onRevealSkillPath,
-  revealLabel = 'Reveal in file manager',
+  revealLabel = "Reveal in file manager",
   renderAgentIcon,
 }: SessionAnalyticsPresentationProps) {
-  const [modesPhase, setModesPhase] = useState<SessionPhase | null>(null);
+  const [modesPhase, setModesPhase] = useState<SessionPhase | null>(null)
 
-  const single = !!session;
-  const subagent = session?.subagent;
+  const single = !!session
+  const subagent = session?.subagent
 
   // Left and right arrows traverse adjacent sessions, mirroring the header
   // chevrons. A missing handler is a no-op, matching the chevrons' own state.
-  useEffect(() => {
-    if (!single) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-      if (event.key === 'ArrowLeft' && onPrev) {
-        event.preventDefault();
-        onPrev();
-      } else if (event.key === 'ArrowRight' && onNext) {
-        event.preventDefault();
-        onNext();
-      }
+  useGlobalKeydown(single, (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return
+    const target = event.target as HTMLElement | null
+    if (
+      target &&
+      (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+    ) {
+      return
     }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [single, onPrev, onNext]);
+    if (event.key === "ArrowLeft" && onPrev) {
+      event.preventDefault()
+      onPrev()
+    } else if (event.key === "ArrowRight" && onNext) {
+      event.preventDefault()
+      onNext()
+    }
+  })
 
-  const showSkeleton = useSkeletonVisible(loading && supportsAnalytics);
+  const showSkeleton = useSkeletonVisible(loading && supportsAnalytics)
   // The settled gate the real content, error, and empty states all key off:
   // true only once loading is done *and* the skeleton's minimum-visible
   // window, if any, has elapsed.
-  const ready = !loading && !showSkeleton;
+  const ready = !loading && !showSkeleton
 
-  const empty = !summary || isEmptySummary(summary);
-  const showEmptyState = ready && !error && empty;
+  const empty = !summary || isEmptySummary(summary)
+  const showEmptyState = ready && !error && empty
 
-  const isOrchestrator = single && !subagent && !!orchestration?.orchestrating;
-  const costSubagentCount = orchestration?.subagentCount ?? costSplit?.subagentCount ?? 0;
-  const hasCostSubagents = !subagent && costSubagentCount > 0;
+  const isOrchestrator = single && !subagent && !!orchestration?.orchestrating
+  const costSubagentCount = orchestration?.subagentCount ?? costSplit?.subagentCount ?? 0
+  const hasCostSubagents = !subagent && costSubagentCount > 0
 
   const tokensCard = summary
     ? tokensCardModel({
@@ -582,7 +620,7 @@ export function SessionAnalyticsPresentation({
         tokensInTotal: summary.tokensInTotal,
         tokensOutTotal: summary.tokensOutTotal,
       })
-    : null;
+    : null
 
   // Spawn dots on the parent ribbon: where each discovered sub-agent launched
   // on this session's active-time axis. Unlike the roster, markers do not
@@ -607,13 +645,13 @@ export function SessionAnalyticsPresentation({
                 ),
             },
           }))
-      : [];
+      : []
 
   // Skill dots: where each skill invocation landed. Unlike spawns, these apply
   // to any single session.
   const skillMarkers: TimelineMarker<SkillDetail>[] = single
     ? skills.map((detail) => ({ progress: detail.progress, data: detail }))
-    : [];
+    : []
 
   const markerLayers: MarkerLayer[] = [
     ...(spawnMarkers.length > 0
@@ -635,10 +673,10 @@ export function SessionAnalyticsPresentation({
           } as MarkerLayer,
         ]
       : []),
-  ];
+  ]
 
-  const firstSession = summary?.sessions[0];
-  const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0);
+  const firstSession = summary?.sessions[0]
+  const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-popover bg-surface text-label select-none">
@@ -717,7 +755,7 @@ export function SessionAnalyticsPresentation({
       </div>
 
       <div
-        key={session ? sessionIdentityKey(session) : 'live'}
+        key={session ? sessionIdentityKey(session) : "live"}
         className="min-h-0 flex-1 overflow-y-auto py-3"
       >
         {showSkeleton && <SessionAnalyticsSkeleton />}
@@ -743,8 +781,8 @@ export function SessionAnalyticsPresentation({
                     <p className="type-body text-label">No session health available</p>
                     <p className="mt-1 type-callout text-label-tertiary">
                       {relations?.parent
-                        ? 'This fork has no analyzable child activity yet.'
-                        : 'This session has no analyzable messages in its local transcript.'}
+                        ? "This fork has no analyzable child activity yet."
+                        : "This session has no analyzable messages in its local transcript."}
                     </p>
                   </>
                 )}
@@ -770,14 +808,14 @@ export function SessionAnalyticsPresentation({
             {/* Header */}
             <div className="flex items-start gap-3 px-4 pb-3">
               <span className="mt-0.5 shrink-0">
-                {renderAgentIcon?.(session?.agent ?? 'generic-agent', 20)}
+                {renderAgentIcon?.(session?.agent ?? "generic-agent", 20)}
               </span>
               <div className="min-w-0 flex-1">
                 {single ? (
                   <>
                     <div className="flex items-center gap-1">
                       <div className="min-w-0 flex-1 truncate type-headline text-label">
-                        {relations?.title?.trim() || session?.title?.trim() || 'Session'}
+                        {relations?.title?.trim() || session?.title?.trim() || "Session"}
                       </div>
                       <WslOriginBadge distro={session?.wslDistro} />
                       {/* Traversal lives beside the title; the arrow keys
@@ -800,8 +838,8 @@ export function SessionAnalyticsPresentation({
                             aria-label="Newer session"
                             className={`shrink-0 rounded-md p-1 transition-colors ${
                               onPrev
-                                ? 'text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary'
-                                : 'cursor-default text-label-tertiary opacity-40'
+                                ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                                : "cursor-default text-label-tertiary opacity-40"
                             }`}
                           >
                             <ChevronLeft size={16} aria-hidden="true" />
@@ -824,8 +862,8 @@ export function SessionAnalyticsPresentation({
                             aria-label="Older session"
                             className={`shrink-0 rounded-md p-1 transition-colors ${
                               onNext
-                                ? 'text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary'
-                                : 'cursor-default text-label-tertiary opacity-40'
+                                ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                                : "cursor-default text-label-tertiary opacity-40"
                             }`}
                           >
                             <ChevronRight size={16} aria-hidden="true" />
@@ -837,7 +875,7 @@ export function SessionAnalyticsPresentation({
                       <span>
                         {formatDuration(summary.avgActiveSecs)} active
                         <span className="text-label-tertiary">
-                          {' · '}
+                          {" · "}
                           {formatDuration(summary.avgDurationSecs)} overall
                         </span>
                       </span>
@@ -847,13 +885,13 @@ export function SessionAnalyticsPresentation({
                 ) : (
                   <>
                     <div className="type-title-2 text-label">
-                      {summary.sessionCount} live session{summary.sessionCount === 1 ? '' : 's'}
+                      {summary.sessionCount} live session{summary.sessionCount === 1 ? "" : "s"}
                     </div>
                     <div className="type-callout text-label-secondary">
-                      {summary.sessionCount > 1 ? 'Averaged · ' : ''}
+                      {summary.sessionCount > 1 ? "Averaged · " : ""}
                       {formatDuration(summary.avgActiveSecs)} active
                       <span className="text-label-tertiary">
-                        {' · '}
+                        {" · "}
                         {formatDuration(summary.avgDurationSecs)} overall
                       </span>
                     </div>
@@ -866,7 +904,7 @@ export function SessionAnalyticsPresentation({
                 link up to the orchestrator that launched it. */}
             {single && subagent && (
               <SubagentBadge
-                parentAgent={session?.agent ?? 'generic-agent'}
+                parentAgent={session?.agent ?? "generic-agent"}
                 {...(subagent.parentTitle ? { parentTitle: subagent.parentTitle } : {})}
                 {...(onOpenOrchestrator ? { onOpenOrchestrator } : {})}
                 {...(renderAgentIcon ? { renderAgentIcon } : {})}
@@ -886,9 +924,9 @@ export function SessionAnalyticsPresentation({
               title="Session rhythm"
               info="The leading activity at each moment of the session. Thick bands mean one mode clearly dominated; thin, shifting bands mean it kept switching."
               {...(isOrchestrator
-                ? { hint: 'parent agent' }
+                ? { hint: "parent agent" }
                 : !single && summary.sessionCount > 1
-                  ? { hint: 'averaged' }
+                  ? { hint: "averaged" }
                   : {})}
             >
               <Legend />
@@ -919,7 +957,7 @@ export function SessionAnalyticsPresentation({
             <Card
               title="Modes"
               info="Each mode's share of active time. High and Low flag it against the healthy reference band shown under each mode."
-              {...(isOrchestrator ? { hint: 'parent agent' } : {})}
+              {...(isOrchestrator ? { hint: "parent agent" } : {})}
             >
               <PhaseDonut
                 summary={summary}
@@ -955,7 +993,7 @@ export function SessionAnalyticsPresentation({
                   ? `peak ${formatPct(
                       Math.min(1, summary.peakContextTokens / summary.contextWindow),
                     )}`
-                  : 'unavailable'
+                  : "unavailable"
               }
             >
               {summary.contextAvailable ? (
@@ -995,5 +1033,5 @@ export function SessionAnalyticsPresentation({
         )}
       </div>
     </div>
-  );
+  )
 }

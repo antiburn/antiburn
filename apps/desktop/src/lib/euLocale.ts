@@ -27,49 +27,49 @@
 /** EU member states, the rest of the EEA, and the UK. */
 const CONSENT_FIRST_REGIONS = new Set([
   // EU
-  'AT',
-  'BE',
-  'BG',
-  'HR',
-  'CY',
-  'CZ',
-  'DK',
-  'EE',
-  'FI',
-  'FR',
-  'DE',
-  'GR',
-  'HU',
-  'IE',
-  'IT',
-  'LV',
-  'LT',
-  'LU',
-  'MT',
-  'NL',
-  'PL',
-  'PT',
-  'RO',
-  'SK',
-  'SI',
-  'ES',
-  'SE',
+  "AT",
+  "BE",
+  "BG",
+  "HR",
+  "CY",
+  "CZ",
+  "DK",
+  "EE",
+  "FI",
+  "FR",
+  "DE",
+  "GR",
+  "HU",
+  "IE",
+  "IT",
+  "LV",
+  "LT",
+  "LU",
+  "MT",
+  "NL",
+  "PL",
+  "PT",
+  "RO",
+  "SK",
+  "SI",
+  "ES",
+  "SE",
   // EEA
-  'IS',
-  'LI',
-  'NO',
+  "IS",
+  "LI",
+  "NO",
   // UK GDPR
-  'GB',
-]);
+  "GB",
+])
 
 /** The region subtag of a BCP 47 tag, upper-cased. `de-DE` → `DE`. */
 function region(tag: string): string | null {
-  const parts = tag.split('-');
+  const parts = tag.split("-")
   // Skip the language, and any script subtag (four letters, e.g. `zh-Hant-TW`).
   for (const part of parts.slice(1)) {
-    if (part.length === 2 && /^[A-Za-z]{2}$/.test(part)) return part.toUpperCase();
+    if (part.length === 2 && /^[A-Za-z]{2}$/.test(part)) return part.toUpperCase()
   }
-  return null;
+  return null
 }
 
 /**
@@ -83,22 +83,22 @@ function region(tag: string): string | null {
  */
 export function analyticsDefaultsOff(): boolean {
   const tags: string[] =
-    typeof navigator !== 'undefined'
+    typeof navigator !== "undefined"
       ? [...(navigator.languages ?? []), navigator.language].filter(Boolean)
-      : [];
+      : []
 
   for (const tag of tags) {
-    const found = region(tag);
-    if (found && CONSENT_FIRST_REGIONS.has(found)) return true;
+    const found = region(tag)
+    if (found && CONSENT_FIRST_REGIONS.has(found)) return true
   }
 
   try {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
-    if (zone.startsWith('Europe/')) return true;
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ""
+    if (zone.startsWith("Europe/")) return true
   } catch {
     // A runtime without a resolvable time zone tells us nothing; fall through
     // rather than treating the absence of evidence as evidence.
   }
 
-  return false;
+  return false
 }

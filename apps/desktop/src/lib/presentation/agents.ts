@@ -16,106 +16,101 @@
  */
 
 /** Where a session was discovered from. */
-export type AgentSurface = 'cli' | 'ide_desktop' | 'unknown';
+export type AgentSurface = "cli" | "ide_desktop" | "unknown"
 
 /** Everything the presentation layer knows about one agent. */
-export interface AgentInfo {
-  displayName: string;
+interface AgentInfo {
+  displayName: string
   /** Icon slot name. A name, not an asset — see the module comment. */
-  icon: string;
+  icon: string
   /**
    * Slug-only fallback for the session surface. Bi-modal agents (both a CLI
    * and an editor) return `unknown`; only a classified session can say which.
    */
-  defaultSurface: AgentSurface;
+  defaultSurface: AgentSurface
   /**
    * Whether the analysis engine has a dedicated adapter for this agent's
    * transcript format. Agents on the generic fallback report `false`, and the
    * UI uses that to explain an empty analytics view instead of implying the
    * session was uninteresting.
    */
-  supportsAnalytics: boolean;
+  supportsAnalytics: boolean
 }
 
 /** Fallback icon slot name for a slug the registry does not know. */
-export const GENERIC_AGENT_ICON = 'generic-agent';
+export const GENERIC_AGENT_ICON = "generic-agent"
 
 const AGENTS: Record<string, AgentInfo> = {
-  'claude-code': {
-    displayName: 'Claude Code',
-    icon: 'claude',
-    defaultSurface: 'unknown',
+  "claude-code": {
+    displayName: "Claude Code",
+    icon: "claude",
+    defaultSurface: "unknown",
     supportsAnalytics: true,
   },
   codex: {
-    displayName: 'Codex',
-    icon: 'codex',
-    defaultSurface: 'unknown',
+    displayName: "Codex",
+    icon: "codex",
+    defaultSurface: "unknown",
     supportsAnalytics: true,
   },
   cursor: {
-    displayName: 'Cursor',
-    icon: 'cursor',
-    defaultSurface: 'unknown',
+    displayName: "Cursor",
+    icon: "cursor",
+    defaultSurface: "unknown",
     supportsAnalytics: true,
   },
   copilot: {
-    displayName: 'GitHub Copilot',
-    icon: 'copilot',
-    defaultSurface: 'unknown',
+    displayName: "GitHub Copilot",
+    icon: "copilot",
+    defaultSurface: "unknown",
     supportsAnalytics: false,
   },
   cline: {
-    displayName: 'Cline',
-    icon: 'cline',
-    defaultSurface: 'unknown',
+    displayName: "Cline",
+    icon: "cline",
+    defaultSurface: "unknown",
     supportsAnalytics: false,
   },
   opencode: {
-    displayName: 'OpenCode',
-    icon: 'opencode',
-    defaultSurface: 'cli',
+    displayName: "OpenCode",
+    icon: "opencode",
+    defaultSurface: "cli",
     supportsAnalytics: true,
   },
   kiro: {
-    displayName: 'Kiro',
-    icon: 'kiro',
-    defaultSurface: 'ide_desktop',
+    displayName: "Kiro",
+    icon: "kiro",
+    defaultSurface: "ide_desktop",
     supportsAnalytics: false,
   },
-  'amp-code': {
-    displayName: 'Amp',
-    icon: 'amp',
-    defaultSurface: 'cli',
+  "amp-code": {
+    displayName: "Amp",
+    icon: "amp",
+    defaultSurface: "cli",
     supportsAnalytics: false,
   },
   antigravity: {
-    displayName: 'Antigravity',
-    icon: 'antigravity',
-    defaultSurface: 'unknown',
+    displayName: "Antigravity",
+    icon: "antigravity",
+    defaultSurface: "unknown",
     supportsAnalytics: true,
   },
   windsurf: {
-    displayName: 'Windsurf',
-    icon: 'windsurf',
-    defaultSurface: 'ide_desktop',
+    displayName: "Windsurf",
+    icon: "windsurf",
+    defaultSurface: "ide_desktop",
     supportsAnalytics: false,
   },
   pi: {
-    displayName: 'Pi',
-    icon: 'pi',
-    defaultSurface: 'cli',
+    displayName: "Pi",
+    icon: "pi",
+    defaultSurface: "cli",
     supportsAnalytics: false,
   },
-};
+}
 
 /** Every agent slug the registry knows, in declaration order. */
-export const AGENT_SLUGS: readonly string[] = Object.keys(AGENTS);
-
-/** The full registry entry for a slug, or undefined when it is unknown. */
-export function agentInfo(slug: string): AgentInfo | undefined {
-  return AGENTS[slug];
-}
+export const AGENT_SLUGS: readonly string[] = Object.keys(AGENTS)
 
 /**
  * A user-friendly display name for a slug.
@@ -126,13 +121,13 @@ export function agentInfo(slug: string): AgentInfo | undefined {
 export function agentDisplayName(slug: string): string {
   return (
     AGENTS[slug]?.displayName ??
-    slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-  );
+    slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  )
 }
 
 /** The icon slot name for a slug; {@link GENERIC_AGENT_ICON} when unknown. */
 export function agentIconName(slug: string): string {
-  return AGENTS[slug]?.icon ?? GENERIC_AGENT_ICON;
+  return AGENTS[slug]?.icon ?? GENERIC_AGENT_ICON
 }
 
 /**
@@ -140,7 +135,7 @@ export function agentIconName(slug: string): string {
  * classified surface yet. Bi-modal agents return `unknown` here.
  */
 export function defaultAgentSurface(slug: string): AgentSurface {
-  return AGENTS[slug]?.defaultSurface ?? 'unknown';
+  return AGENTS[slug]?.defaultSurface ?? "unknown"
 }
 
 /**
@@ -148,5 +143,5 @@ export function defaultAgentSurface(slug: string): AgentSurface {
  * on the generic fallback (and unknown slugs) return false.
  */
 export function agentSupportsAnalytics(slug: string): boolean {
-  return AGENTS[slug]?.supportsAnalytics ?? false;
+  return AGENTS[slug]?.supportsAnalytics ?? false
 }

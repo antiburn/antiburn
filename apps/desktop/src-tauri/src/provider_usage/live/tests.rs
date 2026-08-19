@@ -15,12 +15,17 @@ use time::OffsetDateTime;
 
 use super::anthropic;
 use super::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, SupportTier,
-    UsageScope, UsageSource, UsageWindowKind, WindowRole,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageScope,
+    UsageSource, UsageWindowKind, WindowRole,
 };
 use super::{LiveUsageSource, SourceOutcome, sources, summarize};
 
 const NOW: i64 = 1_800_000_000;
+
+/// A background-caller-shaped `max_age` for tests that only exercise the
+/// source ladder and payload shaping, not the cooldown's freshness budget —
+/// `sources/cooldown.rs`'s own suite owns that.
+const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
 
 fn at(seconds: i64) -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(seconds).expect("valid timestamp")
@@ -206,6 +211,35 @@ fn raw_amounts_without_a_currency_fail_closed() {
     assert_eq!(balance.currency.as_deref(), Some("USD"));
 }
 
+#[test]
+fn a_fraction_shaped_utilization_is_scaled_the_same_as_an_already_stated_percent() {
+    // The endpoint is not consistent about which shape it emits: this fixture
+    // states the session window as a `0..=1` fraction and the weekly window
+    // as an already-multiplied percent, in the same payload.
+    let mixed = r#"{"limits": [
+      {"kind": "session", "utilization": 0.42, "resets_at": null, "scope": null},
+      {"kind": "weekly_all", "percent": 65, "resets_at": null, "scope": null}
+    ]}"#;
+    let usage = anthropic::parse_usage(mixed).expect("parses");
+    assert_eq!(usage.windows[0].used_percent, Some(42.0));
+    assert_eq!(usage.windows[1].used_percent, Some(65.0));
+}
+
+#[test]
+fn resets_at_is_read_whether_it_is_epoch_seconds_or_rfc_3339() {
+    let mixed = r#"{"limits": [
+      {"kind": "session", "percent": 10, "resets_at": 1800003600, "scope": null},
+      {"kind": "weekly_all", "percent": 20,
+       "resets_at": "2027-01-15T02:19:59+00:00", "scope": null}
+    ]}"#;
+    let usage = anthropic::parse_usage(mixed).expect("parses");
+    assert_eq!(
+        usage.windows[0].resets_at,
+        OffsetDateTime::from_unix_timestamp(1_800_003_600).ok()
+    );
+    assert!(usage.windows[1].resets_at.is_some());
+}
+
 /* -------------------------------------------------------------------------
  * The source ladder
  * ---------------------------------------------------------------------- */
@@ -216,7 +250,7 @@ impl LiveUsageSource for Fixed {
     fn id(&self) -> &'static str {
         self.0
     }
-    fn fetch(&self) -> SourceOutcome {
+    fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
         SourceOutcome::found(self.1.clone())
     }
 }
@@ -227,17 +261,12 @@ impl LiveUsageSource for Broken {
     fn id(&self) -> &'static str {
         self.0
     }
-    fn fetch(&self) -> SourceOutcome {
+    fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
         SourceOutcome::failed(self.1)
     }
 }
 
-fn snapshot(
-    support: SupportTier,
-    freshness: Freshness,
-    observed: i64,
-    percent: f64,
-) -> ProviderUsageSnapshot {
+fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
@@ -249,7 +278,6 @@ fn snapshot(
             confidence: Confidence::High,
             freshness,
         },
-        support,
         windows: vec![super::UsageWindow {
             id: "five-hour".into(),
             role: WindowRole::PrimaryShort,
@@ -265,66 +293,27 @@ fn snapshot(
 }
 
 #[test]
-fn a_stated_figure_beats_a_fresher_modelled_one() {
-    // Old news about the truth beats fresh news about a guess.
-    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
-        Box::new(Fixed(
-            "modelled",
-            vec![snapshot(
-                SupportTier::Estimated,
-                Freshness::Fresh,
-                NOW,
-                10.0,
-            )],
-        )),
-        Box::new(Fixed(
-            "stated",
-            vec![snapshot(
-                SupportTier::Live,
-                Freshness::Stale,
-                NOW - 7_200,
-                81.0,
-            )],
-        )),
-    ];
-    let summary = summarize(&sources, None, NOW, 0);
-    assert_eq!(summary.providers.len(), 1);
-    assert_eq!(summary.providers[0].windows[0].used_percent, Some(81.0));
-}
-
-#[test]
 fn between_two_stated_figures_the_fresher_one_wins() {
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![
         Box::new(Fixed(
             "old",
-            vec![snapshot(
-                SupportTier::Live,
-                Freshness::Stale,
-                NOW - 7_200,
-                40.0,
-            )],
+            vec![snapshot(Freshness::Stale, NOW - 7_200, 40.0)],
         )),
-        Box::new(Fixed(
-            "new",
-            vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
-        )),
+        Box::new(Fixed("new", vec![snapshot(Freshness::Fresh, NOW, 81.0)])),
     ];
-    let summary = summarize(&sources, None, NOW, 0);
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
     assert_eq!(summary.providers[0].windows[0].used_percent, Some(81.0));
 }
 
 #[test]
 fn two_accounts_at_one_provider_never_merge() {
-    let mut other = snapshot(SupportTier::Live, Freshness::Fresh, NOW, 12.0);
+    let mut other = snapshot(Freshness::Fresh, NOW, 12.0);
     other.account = Some("account-b".into());
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
         "both",
-        vec![
-            snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0),
-            other,
-        ],
+        vec![snapshot(Freshness::Fresh, NOW, 81.0), other],
     ))];
-    let collected = sources::collect(&sources, true);
+    let collected = sources::collect(&sources, true, MAX_AGE);
     assert_eq!(collected.snapshots.len(), 2);
 }
 
@@ -333,11 +322,11 @@ fn a_failed_source_reports_its_category_without_erasing_a_working_one() {
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![
         Box::new(Fixed(
             "working",
-            vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
+            vec![snapshot(Freshness::Fresh, NOW, 81.0)],
         )),
         Box::new(Broken("signed-out", ProviderUsageError::Authentication)),
     ];
-    let summary = summarize(&sources, None, NOW, 0);
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
     assert_eq!(summary.providers.len(), 1);
     assert_eq!(summary.errors.len(), 1);
     assert_eq!(summary.errors[0].source, "signed-out");
@@ -346,7 +335,7 @@ fn a_failed_source_reports_its_category_without_erasing_a_working_one() {
 
 #[test]
 fn no_sources_is_an_empty_summary_and_not_an_error() {
-    let summary = summarize(&[], None, NOW, 0);
+    let summary = summarize(&[], None, NOW, 0, MAX_AGE);
     assert!(summary.providers.is_empty());
     assert!(summary.errors.is_empty());
     assert_eq!(summary.generated_at, "2027-01-15T08:00:00Z");
@@ -363,9 +352,9 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
     // with the provenance that makes them readable.
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
         "fixture",
-        vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 81.0)],
+        vec![snapshot(Freshness::Fresh, NOW, 81.0)],
     ))];
-    let json = serde_json::to_string(&summarize(&sources, None, NOW, 0)).unwrap();
+    let json = serde_json::to_string(&summarize(&sources, None, NOW, 0, MAX_AGE)).unwrap();
 
     for required in [
         "usedPercent",
@@ -402,14 +391,9 @@ impl LiveUsageSource for Counted {
     fn requires_online_opt_in(&self) -> bool {
         true
     }
-    fn fetch(&self) -> SourceOutcome {
+    fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
         self.0.fetch_add(1, Ordering::SeqCst);
-        SourceOutcome::found(vec![snapshot(
-            SupportTier::Live,
-            Freshness::Fresh,
-            NOW,
-            99.0,
-        )])
+        SourceOutcome::found(vec![snapshot(Freshness::Fresh, NOW, 99.0)])
     }
 }
 
@@ -422,29 +406,74 @@ fn a_gated_source_is_never_called_while_the_opt_in_is_off() {
     let calls = Arc::new(AtomicUsize::new(0));
     let sources: Vec<Box<dyn LiveUsageSource>> = vec![
         Box::new(Fixed(
-            "offline",
-            vec![snapshot(SupportTier::Live, Freshness::Fresh, NOW, 40.0)],
+            "ungated",
+            vec![snapshot(Freshness::Fresh, NOW, 40.0)],
         )),
         Box::new(Counted(Arc::clone(&calls))),
     ];
 
-    let off = sources::collect(&sources, false);
+    let off = sources::collect(&sources, false, MAX_AGE);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     // The ungated source still ran, so turning the opt-in off costs the
-    // reader the refresh and nothing else.
+    // reader the gated source's readings and nothing else.
     assert_eq!(off.snapshots.len(), 1);
     assert_eq!(off.snapshots[0].windows[0].used_percent, Some(40.0));
 
-    sources::collect(&sources, true);
+    sources::collect(&sources, true, MAX_AGE);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn an_offline_source_is_ungated_by_default() {
+fn a_source_is_ungated_by_default() {
     // The default is what a new source inherits, so it has to be the right
-    // answer for a file read and the wrong one loudly for anything else —
-    // which is why the refresh source overrides it explicitly.
-    assert!(!Fixed("offline", Vec::new()).requires_online_opt_in());
+    // answer for a source that only reads local state and the wrong one
+    // loudly for anything that makes a request — which is why every
+    // direct-fetch source overrides it explicitly.
+    assert!(!Fixed("ungated", Vec::new()).requires_online_opt_in());
+}
+
+#[test]
+fn a_gated_source_stays_uncalled_before_onboarding_finishes_even_with_the_switch_on() {
+    // `liveUsageEnabled` now defaults to true, but the credential read this
+    // unlocks — and the macOS Keychain prompt it can trigger — must never
+    // land before the reader has gotten through first-run setup. Exercised
+    // through `summarize`'s real store, not the bare `online: bool` collect
+    // gate, so the onboarding half of `AppSettings::live_usage_active` is
+    // actually proven, not merely assumed.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Counted(Arc::clone(&calls)))];
+    let store = crate::store::Store::open_in_memory(std::path::Path::new(
+        "/tmp/antiburn-live-usage-onboarding-test",
+    ))
+    .expect("in-memory store");
+
+    store
+        .save_settings(&crate::store::AppSettings {
+            live_usage_enabled: true,
+            onboarding_completed: false,
+            ..crate::store::AppSettings::default()
+        })
+        .unwrap();
+    summarize(&sources, Some(&store), NOW, 0, MAX_AGE);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the switch alone is not enough before onboarding completes"
+    );
+
+    store
+        .save_settings(&crate::store::AppSettings {
+            live_usage_enabled: true,
+            onboarding_completed: true,
+            ..crate::store::AppSettings::default()
+        })
+        .unwrap();
+    summarize(&sources, Some(&store), NOW, 0, MAX_AGE);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "once onboarding is done, the already-on switch is enough on its own"
+    );
 }
 
 /* -------------------------------------------------------------------------
@@ -474,7 +503,6 @@ fn weekly_scoped_snapshot(
             confidence: Confidence::High,
             freshness: Freshness::Fresh,
         },
-        support: SupportTier::Live,
         windows: vec![super::UsageWindow {
             id: "weekly-some-model".into(),
             role: WindowRole::Supplemental,
@@ -504,7 +532,7 @@ fn a_supplemental_window_turns_on_and_stays_on_through_the_period() {
         "fixture",
         vec![weekly_scoped_snapshot(NOW - 7_200, Some(0.0), reset)],
     ))];
-    let summary = summarize(&quiet, Some(&store), NOW - 7_200, 0);
+    let summary = summarize(&quiet, Some(&store), NOW - 7_200, 0, MAX_AGE);
     assert!(!summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
 
     // A real reading arrives.
@@ -512,7 +540,7 @@ fn a_supplemental_window_turns_on_and_stays_on_through_the_period() {
         "fixture",
         vec![weekly_scoped_snapshot(NOW - 3_600, Some(6.0), reset)],
     ))];
-    let summary = summarize(&used, Some(&store), NOW - 3_600, 0);
+    let summary = summarize(&used, Some(&store), NOW - 3_600, 0, MAX_AGE);
     assert!(summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
 
     // A later reading with no percentage at all must not erase what the
@@ -521,7 +549,7 @@ fn a_supplemental_window_turns_on_and_stays_on_through_the_period() {
         "fixture",
         vec![weekly_scoped_snapshot(NOW, None, reset)],
     ))];
-    let summary = summarize(&unknown, Some(&store), NOW, 0);
+    let summary = summarize(&unknown, Some(&store), NOW, 0, MAX_AGE);
     assert!(summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
 }
 
@@ -534,7 +562,7 @@ fn a_reset_clears_the_flag_for_the_new_period() {
         "fixture",
         vec![weekly_scoped_snapshot(NOW - 3_600, Some(30.0), first_reset)],
     ))];
-    let summary = summarize(&used, Some(&store), NOW - 3_600, 0);
+    let summary = summarize(&used, Some(&store), NOW - 3_600, 0, MAX_AGE);
     assert!(summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
 
     // The window reset: the percentage dropped, and the provider now states a
@@ -545,6 +573,6 @@ fn a_reset_clears_the_flag_for_the_new_period() {
         "fixture",
         vec![weekly_scoped_snapshot(NOW, Some(0.0), second_reset)],
     ))];
-    let summary = summarize(&rolled, Some(&store), NOW, 0);
+    let summary = summarize(&rolled, Some(&store), NOW, 0, MAX_AGE);
     assert!(!summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
 }

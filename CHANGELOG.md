@@ -61,6 +61,23 @@ CI changes, and documentation that no user acts on stay out — see
   even past a reading that comes back without a percentage — so a limit you
   are genuinely drawing on never looks like it disappeared.
 
+- **Plan limits are now fetched directly, not read from a file your agent
+  happened to cache — and that runs by default.** Settings → Usage's switch
+  asks each provider's own usage endpoint directly, with the credential your
+  coding tool already keeps on this machine — on macOS, that is usually the
+  same Keychain item the Claude CLI itself reads and writes, with its
+  credentials file as a fallback — instead of running your coding agent in the
+  background and reading the file it wrote. If Codex's endpoint can't be
+  reached directly, antiburn falls back to asking the local `codex app-server`
+  process the same question over its own protocol, rather than showing
+  nothing. This is your own connection, made as you, to a provider you already
+  use, with a credential you already hold — ordinary traffic, not something
+  antiburn asks permission for — so the switch is on by default once first-run
+  setup is complete, and no source runs a moment before that. One switch in
+  Settings → Usage turns all of it off, for anyone who wants no background
+  traffic at all; with it off, antiburn has no plan limits to show, since there
+  is no longer a cached file it reads on its own.
+
 ### Fixed
 
 - **Session names in recent activity.** antiburn now reads authoritative names

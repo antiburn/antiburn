@@ -24,36 +24,36 @@
  * ---------------------------------------------------------------------- */
 
 /** The hypnogram bands, deepest → shallowest. Mirrors engine `Phase`. */
-export type SessionPhase = 'implementing' | 'testing' | 'exploring' | 'thinking' | 'disruption';
+export type SessionPhase = "implementing" | "testing" | "exploring" | "thinking" | "disruption"
 
 /** Per-phase share of a bucket or session. Mirrors engine `PhaseDistribution`. */
 export interface PhaseDistribution {
-  implementing: number;
-  testing: number;
-  exploring: number;
-  thinking: number;
-  disruption: number;
+  implementing: number
+  testing: number
+  exploring: number
+  thinking: number
+  disruption: number
 }
 
 /** Tool-call counts by category. Mirrors engine `ToolMix`. */
-export interface ToolMix {
-  edit: number;
-  read: number;
-  search: number;
-  test: number;
-  bash: number;
-  other: number;
+interface ToolMix {
+  edit: number
+  read: number
+  search: number
+  test: number
+  bash: number
+  other: number
 }
 
 /** One point on the shared 0→100% session-progress grid. Mirrors engine `Bucket`. */
 export interface SessionBucket {
-  dominantPhase: SessionPhase | null;
-  distribution: PhaseDistribution;
-  tokensIn: number;
-  tokensOut: number;
-  contextTokens: number;
+  dominantPhase: SessionPhase | null
+  distribution: PhaseDistribution
+  tokensIn: number
+  tokensOut: number
+  contextTokens: number
   /** True when a real compaction boundary landed in this bucket. */
-  isCompactionBoundary: boolean;
+  isCompactionBoundary: boolean
 }
 
 /**
@@ -61,12 +61,12 @@ export interface SessionBucket {
  * hypnogram). Mirrors engine `PhaseSegment`.
  */
 export interface PhaseSegment {
-  phase: SessionPhase;
+  phase: SessionPhase
   /** Active time this run occupied (idle gaps capped), in milliseconds. */
-  activeMs: number;
-  tokensIn: number;
-  tokensOut: number;
-  contextTokens: number;
+  activeMs: number
+  tokensIn: number
+  tokensOut: number
+  contextTokens: number
 }
 
 /* -------------------------------------------------------------------------
@@ -76,18 +76,18 @@ export interface PhaseSegment {
 
 /** Source dimension for tokens loaded before the agent's first response. */
 export type InitialContextSource =
-  | 'agent_instructions'
-  | 'system_instructions'
-  | 'skill_instructions'
-  | 'mcp_instructions'
-  | 'unattributed';
+  | "agent_instructions"
+  | "system_instructions"
+  | "skill_instructions"
+  | "mcp_instructions"
+  | "unattributed"
 
 /** One source/source-name token count in the initial-context breakdown. */
-export interface InitialContextSourceCount {
-  source: InitialContextSource;
+interface InitialContextSourceCount {
+  source: InitialContextSource
   /** Skill name, MCP server name, or instruction file — `null` when unnamed. */
-  sourceName: string | null;
-  tokenCount: number;
+  sourceName: string | null
+  tokenCount: number
 }
 
 /**
@@ -96,9 +96,9 @@ export interface InitialContextSourceCount {
  */
 export interface InitialContextBreakdown {
   /** `tracked` = fully attributed; `trackedPartial` = some `unattributed`. */
-  trackingStatus: 'tracked' | 'trackedPartial';
-  totalTokens: number | null;
-  sources: InitialContextSourceCount[];
+  trackingStatus: "tracked" | "trackedPartial"
+  totalTokens: number | null
+  sources: InitialContextSourceCount[]
 }
 
 /* -------------------------------------------------------------------------
@@ -107,19 +107,19 @@ export interface InitialContextBreakdown {
 
 /** On-device cost estimate for a session, split by billable component. */
 export interface SessionCostComponents {
-  totalUsd: number;
-  inputUsd: number;
-  outputUsd: number;
-  cacheReadUsd: number;
-  cacheWriteUsd: number;
+  totalUsd: number
+  inputUsd: number
+  outputUsd: number
+  cacheReadUsd: number
+  cacheWriteUsd: number
 }
 
 /** Billable token counts retained per normalized model key. */
-export interface ModelTokens {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
+interface ModelTokens {
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
 }
 
 /* -------------------------------------------------------------------------
@@ -128,39 +128,39 @@ export interface ModelTokens {
 
 /** Metrics for a single analyzed session. Mirrors engine `SessionMetrics`. */
 export interface SessionMetrics {
-  agent: string;
-  sessionId: string;
+  agent: string
+  sessionId: string
   /** Earliest event timestamp (epoch ms), or null when the session is untimed. */
-  firstTsMs?: number | null;
-  durationSecs: number;
+  firstTsMs?: number | null
+  durationSecs: number
   /** Wall-clock span minus idle gaps; time the session was genuinely active. */
-  activeSecs: number;
-  eventCount: number;
-  tokensIn: number;
-  tokensOut: number;
-  peakContextTokens: number;
-  contextFraction: number;
+  activeSecs: number
+  eventCount: number
+  tokensIn: number
+  tokensOut: number
+  peakContextTokens: number
+  contextFraction: number
   /** False when the model's context window is unknown. */
-  contextAvailable?: boolean;
-  contextWindow: number;
-  toolMix: ToolMix;
-  grepCount: number;
-  disruptionCount: number;
-  phaseDistribution: PhaseDistribution;
-  patternScore: number;
-  signals: string[];
-  buckets: SessionBucket[];
+  contextAvailable?: boolean
+  contextWindow: number
+  toolMix: ToolMix
+  grepCount: number
+  disruptionCount: number
+  phaseDistribution: PhaseDistribution
+  patternScore: number
+  signals: string[]
+  buckets: SessionBucket[]
   /** Per-turn mode runs on the active-time axis (single-session hypnogram). */
-  segments: PhaseSegment[];
-  initialContext?: InitialContextBreakdown | null;
-  model?: string | null;
-  billableInputTokens?: number;
-  billableOutputTokens?: number;
-  billableCacheReadTokens?: number;
-  billableCacheCreationTokens?: number;
-  modelBreakdown?: Record<string, ModelTokens>;
-  cost?: SessionCostComponents | null;
-  skillUses?: SkillUse[];
+  segments: PhaseSegment[]
+  initialContext?: InitialContextBreakdown | null
+  model?: string | null
+  billableInputTokens?: number
+  billableOutputTokens?: number
+  billableCacheReadTokens?: number
+  billableCacheCreationTokens?: number
+  modelBreakdown?: Record<string, ModelTokens>
+  cost?: SessionCostComponents | null
+  skillUses?: SkillUse[]
 }
 
 /**
@@ -169,23 +169,23 @@ export interface SessionMetrics {
  * Mirrors engine `ActiveSessionsSummary`.
  */
 export interface ActiveSessionsSummary {
-  sessionCount: number;
-  avgDurationSecs: number;
-  avgActiveSecs: number;
-  avgPatternScore: number;
-  phaseDistribution: PhaseDistribution;
-  toolMix: ToolMix;
-  grepTotal: number;
-  tokensInTotal: number;
-  tokensOutTotal: number;
-  peakContextTokens: number;
+  sessionCount: number
+  avgDurationSecs: number
+  avgActiveSecs: number
+  avgPatternScore: number
+  phaseDistribution: PhaseDistribution
+  toolMix: ToolMix
+  grepTotal: number
+  tokensInTotal: number
+  tokensOutTotal: number
+  peakContextTokens: number
   /** Whether at least one included session has a known context window. */
-  contextAvailable?: boolean;
-  contextWindow: number;
-  costTotalUsd?: number | null;
-  buckets: SessionBucket[];
-  signals: string[];
-  sessions: SessionMetrics[];
+  contextAvailable?: boolean
+  contextWindow: number
+  costTotalUsd?: number | null
+  buckets: SessionBucket[]
+  signals: string[]
+  sessions: SessionMetrics[]
 }
 
 /* -------------------------------------------------------------------------
@@ -194,34 +194,34 @@ export interface ActiveSessionsSummary {
  * ---------------------------------------------------------------------- */
 
 /** Where an invoked skill's `SKILL.md` was resolved from. */
-export type SkillScope = 'global' | 'project' | 'plugin' | 'unknown';
+export type SkillScope = "global" | "project" | "plugin" | "unknown"
 
 /** One skill invocation extracted from a transcript. Mirrors engine `SkillUse`. */
-export interface SkillUse {
-  name: string;
+interface SkillUse {
+  name: string
   /** 0..1 position on the session's active-time axis (the hypnogram x-axis). */
-  progress: number;
-  description?: string;
+  progress: number
+  description?: string
   /** Idle-capped gap to the next event (ms). */
-  durationMs?: number;
-  tokensOut: number;
-  contextTokens: number;
+  durationMs?: number
+  tokensOut: number
+  contextTokens: number
 }
 
 /** Locally-read `SKILL.md` enrichment. Mirrors engine `LocalSkillDetails`. */
 export interface LocalSkillDetails {
-  version?: string;
+  version?: string
   /** Authoritative description, from the `SKILL.md` frontmatter. */
-  description?: string;
+  description?: string
   /** Declared tools (frontmatter `allowed-tools`/`tools`); omitted when none. */
-  allowedTools?: string[];
-  license?: string;
-  scope: SkillScope;
+  allowedTools?: string[]
+  license?: string
+  scope: SkillScope
   /** Absolute path to the resolved `SKILL.md`. */
-  path?: string;
-  modifiedAtMs?: number;
-  sizeBytes?: number;
-  available: boolean;
+  path?: string
+  modifiedAtMs?: number
+  sizeBytes?: number
+  available: boolean
 }
 
 /**
@@ -230,7 +230,7 @@ export interface LocalSkillDetails {
  * Mirrors engine `SkillDetail`.
  */
 export interface SkillDetail extends SkillUse {
-  local?: LocalSkillDetails;
+  local?: LocalSkillDetails
 }
 
 /* -------------------------------------------------------------------------
@@ -242,36 +242,36 @@ export interface SkillDetail extends SkillUse {
  * Minimum sub-agents before a session reads as an orchestrator. One delegated
  * task is ordinary; two or more is genuine fan-out worth surfacing.
  */
-export const MIN_ORCHESTRATED_SUBAGENTS = 2;
+export const MIN_ORCHESTRATED_SUBAGENTS = 2
 
 /** One sub-agent launched by an orchestrator — one roster row. */
 export interface SubagentMember {
   /** Orchestrator app slug (for example `claude-code`). */
-  agent: string;
+  agent: string
   /** The sub-agent's transcript id, used to open its own analytics. */
-  subagentId: string;
+  subagentId: string
   /** First task prompt (truncated), or a persona/slug fallback. */
-  label: string;
+  label: string
   /** Health score (0–100); the roster colors each row by it. */
-  patternScore: number;
+  patternScore: number
   /**
    * Where this sub-agent was spawned along the orchestrator's hypnogram: a
    * 0..1 position on the orchestrator's active-time axis. Absent when it
    * cannot be mapped.
    */
-  spawnProgress?: number | null;
+  spawnProgress?: number | null
 }
 
 /** Sub-agent picture for one orchestrator session. */
 export interface LocalOrchestrationStatus {
   /** At least {@link MIN_ORCHESTRATED_SUBAGENTS} sub-agents — genuine fan-out. */
-  orchestrating: boolean;
+  orchestrating: boolean
   /** App slug of the orchestrator session. */
-  orchestratorAgent: string;
+  orchestratorAgent: string
   /** The orchestrator's own session id. */
-  orchestratorSessionId: string;
-  subagentCount: number;
-  members: SubagentMember[];
+  orchestratorSessionId: string
+  subagentCount: number
+  members: SubagentMember[]
 }
 
 /* -------------------------------------------------------------------------
@@ -280,23 +280,23 @@ export interface LocalOrchestrationStatus {
 
 /** Identity of a local session on this machine. */
 export interface LocalSessionIdentity {
-  agent: string;
-  sessionId: string;
-  wslDistro?: string | null;
+  agent: string
+  sessionId: string
+  wslDistro?: string | null
 }
 
 /** One end of a local fork relation. */
 export interface LocalSessionRelation {
-  identity: LocalSessionIdentity;
-  title?: string | null;
+  identity: LocalSessionIdentity
+  title?: string | null
   /** False when the related session's transcript is no longer on this machine. */
-  available: boolean;
+  available: boolean
 }
 
 /** Direct fork relations for one session, resolved from local transcripts. */
 export interface LocalSessionRelations {
   /** Title the relation graph resolved for the session itself, when known. */
-  title?: string | null;
-  parent: LocalSessionRelation | null;
-  children: LocalSessionRelation[];
+  title?: string | null
+  parent: LocalSessionRelation | null
+  children: LocalSessionRelation[]
 }

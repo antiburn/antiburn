@@ -2,16 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import {
-  useState,
-  useSyncExternalStore,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from 'react';
+import { useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from "react"
 
-import { PushButton } from '../components/ui/PushButton';
-import { closeCurrentWindow } from '../lib/ipc';
-import { OnboardingFlow } from './onboarding/OnboardingFlow';
-import { OnboardingSession } from './onboarding/OnboardingSession';
+import { PushButton } from "../components/ui/PushButton"
+import { closeCurrentWindow } from "../lib/ipc"
+import { OnboardingFlow } from "./onboarding/OnboardingFlow"
+import { OnboardingSession } from "./onboarding/OnboardingSession"
 
 /**
  * The first-run window.
@@ -21,14 +17,14 @@ import { OnboardingSession } from './onboarding/OnboardingSession';
  * `OnboardingSession`, the external-system boundary subscribed below.
  */
 export function OnboardingView() {
-  const [session] = useState(() => new OnboardingSession());
+  const [session] = useState(() => new OnboardingSession())
   const state = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
-  );
+  )
 
-  if (state.loadState === 'loading') {
+  if (state.loadState === "loading") {
     return (
       <div
         className="flex h-full items-center justify-center type-footnote text-label-secondary"
@@ -36,10 +32,10 @@ export function OnboardingView() {
       >
         Preparing antiburn…
       </div>
-    );
+    )
   }
 
-  if (state.loadState === 'error') {
+  if (state.loadState === "error") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
         <h1 className="type-title-3 text-label">antiburn could not start setup</h1>
@@ -48,14 +44,14 @@ export function OnboardingView() {
           Try again
         </PushButton>
       </div>
-    );
+    )
   }
 
   const blockedRoots = blockedDefaultRoots(
     state.defaultRoots,
     state.permissions.supported,
     state.permissions.deferred.map((entry) => entry.dir),
-  );
+  )
 
   return (
     <div className="h-full" onKeyDownCapture={handleWindowKeyDown}>
@@ -86,13 +82,13 @@ export function OnboardingView() {
         onFinish={session.finish}
       />
     </div>
-  );
+  )
 }
 
 function handleWindowKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'w') {
-    event.preventDefault();
-    void closeCurrentWindow();
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "w") {
+    event.preventDefault()
+    void closeCurrentWindow()
   }
 }
 
@@ -101,8 +97,8 @@ function blockedDefaultRoots(
   permissionsSupported: boolean,
   blockedDirectories: string[],
 ): string[] {
-  if (!permissionsSupported || blockedDirectories.length === 0) return [];
+  if (!permissionsSupported || blockedDirectories.length === 0) return []
   return defaultRoots.filter((root) =>
     blockedDirectories.some((dir) => root.split(/[\\/]/).includes(dir)),
-  );
+  )
 }

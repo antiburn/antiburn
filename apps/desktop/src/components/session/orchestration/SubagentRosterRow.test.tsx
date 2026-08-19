@@ -2,17 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { CollapsibleOrchestrationCard } from './CollapsibleOrchestrationCard';
-import { SubagentRosterRow } from './SubagentRosterRow';
+import { CollapsibleOrchestrationCard } from "./CollapsibleOrchestrationCard"
+import { SubagentRosterRow } from "./SubagentRosterRow"
 
-afterEach(cleanup);
+afterEach(cleanup)
 
-describe('SubagentRosterRow', () => {
-  it('renders the label and trailing value as one activatable row', () => {
-    const onClick = vi.fn();
+describe("SubagentRosterRow", () => {
+  it("renders the label and trailing value as one activatable row", () => {
+    const onClick = vi.fn()
     render(
       <SubagentRosterRow
         agent="codex"
@@ -20,74 +20,74 @@ describe('SubagentRosterRow', () => {
         trailing={<span>80%</span>}
         onClick={onClick}
       />,
-    );
-    const row = screen.getByRole('button', { name: /Refactor auth/ });
-    expect(row.textContent).toContain('80%');
-    fireEvent.click(row);
-    expect(onClick).toHaveBeenCalledOnce();
-  });
+    )
+    const row = screen.getByRole("button", { name: /Refactor auth/ })
+    expect(row.textContent).toContain("80%")
+    fireEvent.click(row)
+    expect(onClick).toHaveBeenCalledOnce()
+  })
 
-  it('renders no artwork of its own when no icon renderer is supplied', () => {
-    const { container } = render(<SubagentRosterRow agent="codex" label="Refactor auth" />);
+  it("renders no artwork of its own when no icon renderer is supplied", () => {
+    const { container } = render(<SubagentRosterRow agent="codex" label="Refactor auth" />)
     // Only the hover chevron, which is decorative.
-    expect(container.querySelectorAll('svg')).toHaveLength(1);
-  });
+    expect(container.querySelectorAll("svg")).toHaveLength(1)
+  })
 
-  it('passes the agent slug and size to the injected icon renderer', () => {
-    const renderAgentIcon = vi.fn(() => <span data-testid="slot" />);
+  it("passes the agent slug and size to the injected icon renderer", () => {
+    const renderAgentIcon = vi.fn(() => <span data-testid="slot" />)
     render(
       <SubagentRosterRow
         agent="claude-code"
         label="Investigate"
         renderAgentIcon={renderAgentIcon}
       />,
-    );
-    expect(renderAgentIcon).toHaveBeenCalledWith('claude-code', 14);
-    expect(screen.getByTestId('slot')).toBeTruthy();
-  });
+    )
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14)
+    expect(screen.getByTestId("slot")).toBeTruthy()
+  })
 
-  it('tightens its padding in the dense variant', () => {
-    const { container } = render(<SubagentRosterRow agent="codex" label="Dense" dense />);
-    expect(container.querySelector('button')?.className).toContain('px-1 py-1');
-  });
-});
+  it("tightens its padding in the dense variant", () => {
+    const { container } = render(<SubagentRosterRow agent="codex" label="Dense" dense />)
+    expect(container.querySelector("button")?.className).toContain("px-1 py-1")
+  })
+})
 
-describe('CollapsibleOrchestrationCard', () => {
-  it('keeps its body collapsed until the header is activated', () => {
+describe("CollapsibleOrchestrationCard", () => {
+  it("keeps its body collapsed until the header is activated", () => {
     render(
       <CollapsibleOrchestrationCard title="Orchestrated 3 agents">
         <p>roster</p>
       </CollapsibleOrchestrationCard>,
-    );
-    const header = screen.getByRole('button', { name: /Orchestrated 3 agents/ });
-    expect(header.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText('roster')).toBeNull();
+    )
+    const header = screen.getByRole("button", { name: /Orchestrated 3 agents/ })
+    expect(header.getAttribute("aria-expanded")).toBe("false")
+    expect(screen.queryByText("roster")).toBeNull()
 
-    fireEvent.click(header);
-    expect(header.getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByText('roster')).toBeTruthy();
+    fireEvent.click(header)
+    expect(header.getAttribute("aria-expanded")).toBe("true")
+    expect(screen.getByText("roster")).toBeTruthy()
 
-    fireEvent.click(header);
-    expect(screen.queryByText('roster')).toBeNull();
-  });
+    fireEvent.click(header)
+    expect(screen.queryByText("roster")).toBeNull()
+  })
 
-  it('renders the leading glyph slot when one is given', () => {
+  it("renders the leading glyph slot when one is given", () => {
     render(
       <CollapsibleOrchestrationCard title="Titled" icon={<span data-testid="glyph" />}>
         <p>body</p>
       </CollapsibleOrchestrationCard>,
-    );
-    expect(screen.getByTestId('glyph')).toBeTruthy();
-  });
+    )
+    expect(screen.getByTestId("glyph")).toBeTruthy()
+  })
 
-  it('applies the caller body classes only once expanded', () => {
+  it("applies the caller body classes only once expanded", () => {
     const { container } = render(
       <CollapsibleOrchestrationCard title="Titled" bodyClassName="space-y-0.5">
         <p>body</p>
       </CollapsibleOrchestrationCard>,
-    );
-    expect(container.querySelector('.space-y-0\\.5')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Titled/ }));
-    expect(container.querySelector('.space-y-0\\.5')).toBeTruthy();
-  });
-});
+    )
+    expect(container.querySelector(".space-y-0\\.5")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: /Titled/ }))
+    expect(container.querySelector(".space-y-0\\.5")).toBeTruthy()
+  })
+})

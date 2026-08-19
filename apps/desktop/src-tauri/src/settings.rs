@@ -6,8 +6,8 @@
 //!
 //! Unlike the popover this is an ordinary window with real decorations: a
 //! place to read and change configuration, not a transient surface. It is
-//! fixed at 960×680, created on first use, and then reused, because a
-//! menu-bar app can be asked to open settings many times per session.
+//! fixed at 960×680 and created on demand. Closing it destroys its webview;
+//! the next request rebuilds it from settings already persisted by the shell.
 //!
 //! On macOS the title bar is an overlay: decorations (traffic lights, system
 //! shadow, real close semantics) are kept, the bar itself is transparent, and
@@ -72,12 +72,9 @@ const HEIGHT: f64 = 680.0;
 /// about, instead of on whichever pane they last left open.
 pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
     if let Some(existing) = app.get_webview_window(LABEL) {
-        // Re-centered on every open, not just the first: this window hides on
-        // close rather than being destroyed, so without this a reader who
-        // moved desks (or just works across monitors) would have Settings
-        // reappear on whichever display it was last dismissed on. The private
-        // app gets the same behavior for free by destroying the window and
-        // letting the OS place the rebuild.
+        // Re-centered on every open, not just the first: this path covers a
+        // second request while Settings is already open, possibly after the
+        // reader moved the window to another display.
         center_on_active_monitor(&existing, WIDTH, HEIGHT);
         existing.show()?;
         existing.unminimize()?;

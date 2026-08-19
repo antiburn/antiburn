@@ -2,15 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from "lucide-react"
 
-import { scoreColor, scoreLabel } from '../../../lib/presentation/sessionAnalytics';
+import { scoreColor, scoreLabel } from "../../../lib/presentation/sessionAnalytics"
 
 export interface PatternScoreProps {
   /** 0–100 session-health score. */
-  score: number;
+  score: number
   /** Contributing signals, worst first, as short human sentences. */
-  signals: string[];
+  signals: string[]
 }
 
 /**
@@ -21,7 +21,7 @@ export interface PatternScoreProps {
  * on distinguishing green from amber.
  */
 export function PatternScore({ score, signals }: PatternScoreProps) {
-  const color = scoreColor(score);
+  const color = scoreColor(score)
 
   return (
     <div>
@@ -60,5 +60,5 @@ export function PatternScore({ score, signals }: PatternScoreProps) {
         </ul>
       )}
     </div>
-  );
+  )
 }

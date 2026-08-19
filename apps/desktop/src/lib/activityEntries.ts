@@ -12,21 +12,21 @@
  * one place the two meet, kept pure so it can be tested without a shell.
  */
 
-import type { LocalActivityEntry } from '../components/activity/LocalActivityList';
-import type { ActivityEntryPayload } from './ipc';
-import { defaultAgentSurface, type AgentSurface } from './presentation/agents';
+import type { LocalActivityEntry } from "../components/activity/LocalActivityList"
+import type { ActivityEntryPayload } from "./ipc"
+import { defaultAgentSurface, type AgentSurface } from "./presentation/agents"
 import {
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
-} from './presentation/sessionAnalytics';
+} from "./presentation/sessionAnalytics"
 
 /** Narrow the shell's surface string to the presentation layer's union. */
 function surfaceOf(payload: ActivityEntryPayload): AgentSurface {
-  if (payload.surface === 'cli' || payload.surface === 'ide_desktop') return payload.surface;
+  if (payload.surface === "cli" || payload.surface === "ide_desktop") return payload.surface
   // `unknown` from the shell means "not classified", which is exactly what the
   // registry's slug-only fallback answers.
-  return defaultAgentSurface(payload.agent);
+  return defaultAgentSurface(payload.agent)
 }
 
 /**
@@ -42,8 +42,8 @@ export function toActivityEntries(
   const threshold = costOutlierThreshold(
     payloads
       .map((payload) => payload.cost?.totalUsd)
-      .filter((usd): usd is number => typeof usd === 'number'),
-  );
+      .filter((usd): usd is number => typeof usd === "number"),
+  )
 
   return payloads.map((payload) => ({
     agent: payload.agent,
@@ -70,7 +70,7 @@ export function toActivityEntries(
       payload.activeSecs != null
         ? { activeSecs: payload.activeSecs, durationSecs: payload.durationSecs }
         : null,
-  }));
+  }))
 }
 
 /**
@@ -88,5 +88,5 @@ export function indexOfSession(
       entry.agent === agent &&
       entry.sessionId === sessionId &&
       (entry.wslDistro ?? null) === (wslDistro ?? null),
-  );
+  )
 }

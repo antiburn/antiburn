@@ -2,16 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LucideIcon } from 'lucide-react';
-import { Fragment, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import type { LucideIcon } from "lucide-react"
+import { Fragment, useRef, type KeyboardEvent, type ReactNode } from "react"
 
 export type SidebarNavItem = {
-  id: string;
-  label: string;
-  icon: LucideIcon;
+  id: string
+  label: string
+  icon: LucideIcon
   /** Draw a hairline above this row to set it apart from the group before it. */
-  separatorBefore?: boolean;
-};
+  separatorBefore?: boolean
+}
 
 /** Source-list navigation for a multi-pane window.
  *
@@ -31,39 +31,39 @@ export function SidebarNav({
   value,
   onChange,
   ariaLabel,
-  className = '',
+  className = "",
   header,
   footer,
 }: {
-  items: ReadonlyArray<SidebarNavItem>;
-  value: string;
-  onChange: (next: string) => void;
-  ariaLabel: string;
-  className?: string;
+  items: ReadonlyArray<SidebarNavItem>
+  value: string
+  onChange: (next: string) => void
+  ariaLabel: string
+  className?: string
   /** Optional non-tab content above the row list. */
-  header?: ReactNode;
+  header?: ReactNode
   /** Optional non-tab content pinned below the row list, past a hairline. */
-  footer?: ReactNode;
+  footer?: ReactNode
 }) {
-  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>())
 
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (items.length === 0) return;
-    const current = items.findIndex((item) => item.id === value);
-    let next: number;
-    if (e.key === 'ArrowDown') next = (current + 1) % items.length;
-    else if (e.key === 'ArrowUp') next = (current - 1 + items.length) % items.length;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = items.length - 1;
-    else return;
+    if (items.length === 0) return
+    const current = items.findIndex((item) => item.id === value)
+    let next: number
+    if (e.key === "ArrowDown") next = (current + 1) % items.length
+    else if (e.key === "ArrowUp") next = (current - 1 + items.length) % items.length
+    else if (e.key === "Home") next = 0
+    else if (e.key === "End") next = items.length - 1
+    else return
 
-    e.preventDefault();
-    const target = items[next];
-    if (!target || target.id === value) return;
-    onChange(target.id);
+    e.preventDefault()
+    const target = items[next]
+    if (!target || target.id === value) return
+    onChange(target.id)
     // The row already exists in the DOM regardless of selection, so focus can
     // move synchronously — no need to wait for the re-render.
-    rowRefs.current.get(target.id)?.focus();
+    rowRefs.current.get(target.id)?.focus()
   }
 
   // Geometry, all on the 4px spacing scale: `h-9` (36px) rows spaced by `gap-2`
@@ -85,8 +85,8 @@ export function SidebarNav({
         className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 py-3"
       >
         {items.map((item) => {
-          const Icon = item.icon;
-          const selected = item.id === value;
+          const Icon = item.icon
+          const selected = item.id === value
           return (
             <Fragment key={item.id}>
               {item.separatorBefore && (
@@ -94,8 +94,8 @@ export function SidebarNav({
               )}
               <button
                 ref={(node) => {
-                  if (node) rowRefs.current.set(item.id, node);
-                  else rowRefs.current.delete(item.id);
+                  if (node) rowRefs.current.set(item.id, node)
+                  else rowRefs.current.delete(item.id)
                 }}
                 type="button"
                 role="tab"
@@ -106,15 +106,15 @@ export function SidebarNav({
                 onClick={() => onChange(item.id)}
                 className={`type-body flex h-9 items-center gap-3 rounded-control px-3 transition-colors duration-[120ms] ease-out ${
                   selected
-                    ? 'bg-surface-selected text-label'
-                    : 'text-label hover:bg-surface-hover'
+                    ? "bg-surface-selected text-label"
+                    : "text-label hover:bg-surface-hover"
                 }`}
               >
                 <Icon size={16} strokeWidth={2} className="shrink-0" aria-hidden="true" />
                 <span className="truncate">{item.label}</span>
               </button>
             </Fragment>
-          );
+          )
         })}
       </div>
       {footer && (
@@ -124,5 +124,5 @@ export function SidebarNav({
         </div>
       )}
     </div>
-  );
+  )
 }

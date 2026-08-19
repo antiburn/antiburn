@@ -61,22 +61,6 @@ struct CursorDiscoveredSession {
     log: SessionLog,
 }
 
-#[allow(dead_code)]
-/// Return all Cursor log directories for use by the post-commit hook.
-pub async fn log_dirs() -> Vec<PathBuf> {
-    let home = match home_dir() {
-        Some(h) => h,
-        None => return Vec::new(),
-    };
-    log_dirs_in(&home).await
-}
-
-#[allow(dead_code)]
-/// Return all Cursor log directories for backfill (not repo-scoped).
-pub async fn all_log_dirs() -> Vec<PathBuf> {
-    log_dirs().await
-}
-
 /// Cursor discovery over the vendor's own stores.
 pub struct CursorExplorer {
     /// How to decide that one desktop composer was duplicated from another.
@@ -214,7 +198,7 @@ async fn discover_recent_in(
     logs
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
