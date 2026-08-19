@@ -148,33 +148,18 @@ describe("UsageLimitsSection — expanded", () => {
     expect(screen.queryByTestId("provider-usage-chips")).not.toBeInTheDocument()
   })
 
-  it("overlays the toggle on the corner rather than spending a row on it", () => {
+  it("sits the toggle in the left rail beside the vertical heading, not over the subsections", () => {
     const { container } = section()
     const toggle = screen.getByRole("button", { name: "Collapse usage limits" })
-    // Overlaid, not its own flow row: the toggle's row lives outside the
-    // document's normal layout, so it costs no vertical space of its own.
-    expect(toggle.parentElement).toHaveClass("absolute")
+    const heading = screen.getByRole("heading", { name: "Limits", level: 2 })
+    // The toggle shares the narrow left rail with the heading rather than
+    // floating over the subsection content, so it never needs to reserve
+    // space in any subsection's header.
+    expect(toggle.parentElement).toBe(heading.parentElement)
+    // Only the spinner is overlaid on the corner, costing no layout space.
     expect(container.querySelector('[data-testid="usage-limits-section"]')).toHaveClass(
       "relative",
     )
-  })
-
-  it("reserves right-hand space in only the first subsection's header, clear of the overlay", () => {
-    section({
-      live: liveSummary([
-        liveProvider({ provider: "anthropic", displayName: "Claude" }),
-        liveProvider({
-          provider: "openai",
-          displayName: "Codex",
-          windows: [liveWindow({ id: "five-hour", role: "primaryShort", usedPercent: 10 })],
-        }),
-      ]),
-    })
-
-    const firstHeader = screen.getByText("Claude").parentElement
-    const secondHeader = screen.getByText("Codex").parentElement
-    expect(firstHeader).toHaveClass("pr-8")
-    expect(secondHeader).not.toHaveClass("pr-8")
   })
 
   it('labels the section by its vertical "Limits" heading rather than a redundant aria-label', () => {
@@ -194,7 +179,7 @@ describe("UsageLimitsSection — collapsed", () => {
     section({ expanded: false })
     expect(screen.getByTestId("provider-usage-chips")).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Claude, $1.25 today, estimated, weekly limit 42%" }),
+      screen.getByRole("button", { name: "Claude, estimated, weekly limit 42%" }),
     ).toBeInTheDocument()
   })
 
@@ -234,7 +219,10 @@ describe("UsageLimitsSection — toggle and spinner", () => {
 
   it("shows a spinner while a refresh is in flight, and hides it once settled", () => {
     const { rerender } = section({ refreshing: true })
-    expect(screen.getByRole("status")).toBeInTheDocument()
+    const status = screen.getByRole("status")
+    expect(status).toBeInTheDocument()
+    // The spinner alone is overlaid on the corner, costing no layout space.
+    expect(status.parentElement).toHaveClass("absolute")
 
     rerender(
       <UsageLimitsSection

@@ -12,15 +12,14 @@ import {
   headlineWindow,
   liveForProvider,
   liveWindowLabel,
+  liveWindows,
   liveWindowValueLabel,
 } from "../../lib/presentation/liveUsage"
 import {
   providerInitial,
   providersForWindow,
-  providerWindow,
   stalenessNote,
   usageStateLabel,
-  usageValueLabel,
 } from "../../lib/presentation/providerUsage"
 import { useDialogDismissal } from "../../lib/useDialogDismissal"
 import { useHoverIntent } from "../../lib/useHoverIntent"
@@ -207,8 +206,6 @@ export function ProviderUsageChips({
       className={cn("relative flex min-w-0 items-center gap-1", className)}
     >
       {visible.map((provider) => {
-        const window = providerWindow(provider, "today")
-        const value = usageValueLabel(window)
         const stale = stalenessNote(provider)
         const isOpen = open?.provider === provider.provider
         // The ring is drawn only where the provider stated a percentage. The
@@ -217,7 +214,17 @@ export function ProviderUsageChips({
         // the ring shows is `headlineWindow`'s decision, and it is the
         // account-wide one rather than the fullest — see its doc.
         const limits = liveForProvider(live, provider.provider)
+        const windows = limits ? liveWindows(limits) : []
         const headline = limits ? headlineWindow(limits) : null
+        // A dollar figure here would be the local estimate, which has no
+        // denominator to read against — showing it beside a ring drawn from
+        // the provider's own percentage would imply a relationship that is
+        // not there. So the chip shows only what the provider itself stated:
+        // every live window's percentage, in the same order the panel lists
+        // them. A provider with no live windows shows no value text at all —
+        // the glyph alone, rather than falling back to a dollar figure the
+        // ring beside it does not agree with.
+        const value = windows.map((window) => liveWindowValueLabel(window)).join(" / ")
         return (
           <button
             key={provider.provider}
@@ -225,19 +232,20 @@ export function ProviderUsageChips({
             aria-haspopup="dialog"
             aria-expanded={isOpen}
             aria-controls={isOpen ? panelId : undefined}
-            // The chip shows a glyph and a number; the name, the window, and
-            // what kind of figure it is have to live in the accessible name or
-            // they are lost. The ring adds a second fact, so it adds a clause:
-            // a shape with no text is invisible to a screen reader.
-            aria-label={`${provider.displayName}, ${value} today, ${usageStateLabel(
+            // The chip shows a glyph and, where the provider stated any live
+            // windows, a number per window; the name, each window, and what
+            // kind of figure it is have to live in the accessible name or
+            // they are lost.
+            aria-label={`${provider.displayName}, ${usageStateLabel(
               provider.state,
-            ).toLocaleLowerCase()}${
-              headline
-                ? `, ${liveWindowLabel(headline).toLocaleLowerCase()} ${liveWindowValueLabel(
-                    headline,
-                  ).toLocaleLowerCase()}`
-                : ""
-            }${stale ? `, ${stale.toLocaleLowerCase()}` : ""}`}
+            ).toLocaleLowerCase()}${windows
+              .map(
+                (window) =>
+                  `, ${liveWindowLabel(window).toLocaleLowerCase()} ${liveWindowValueLabel(
+                    window,
+                  ).toLocaleLowerCase()}`,
+              )
+              .join("")}${stale ? `, ${stale.toLocaleLowerCase()}` : ""}`}
             onPointerEnter={(event) => {
               // Touch reports a pointer enter immediately before the click it
               // is about to fire; opening on it would make the tap a toggle
@@ -294,7 +302,7 @@ export function ProviderUsageChips({
                 size={18}
               />
             )}
-            <TextRoll text={value} />
+            {windows.length > 0 && <TextRoll text={value} />}
           </button>
         )
       })}

@@ -12,11 +12,7 @@ import type {
   ProviderUsagePayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
-import {
-  liveFreshnessToneClass,
-  liveSourceNote,
-  liveWindows,
-} from "../../lib/presentation/liveUsage"
+import { liveSourceNote, liveWindows } from "../../lib/presentation/liveUsage"
 import { LiveUsageWindowRows } from "./LiveUsageWindowRows"
 import { ProviderUsageChips } from "./ProviderUsageChips"
 
@@ -121,12 +117,8 @@ export function UsageLimitsSection({
             </div>
 
             <div className="min-w-0 flex-1 space-y-2.5 py-3 px-2">
-              {limited.map((provider, index) => (
-                <ProviderLimitSubsection
-                  key={provider.provider}
-                  provider={provider}
-                  now={at}
-                />
+              {limited.map((provider) => (
+                <ProviderLimitSubsection key={provider.provider} provider={provider} now={at} />
               ))}
             </div>
           </div>
@@ -154,18 +146,15 @@ export function UsageLimitsSection({
 function ProviderLimitSubsection({
   provider,
   now,
-  reserveToggleSpace = false,
 }: {
   provider: LiveProviderUsagePayload
   now: number
 }) {
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-2 px-1 pb-1 group">
-        <h3 className="truncate text-label-secondary">
-          {provider.displayName}
-        </h3>
-        <span className="shrink-0 type-caption text-label-tertiary hidden group-hover:inline">
+      <div className="group flex items-baseline justify-between gap-2 px-1 pb-1">
+        <h3 className="truncate text-label-secondary">{provider.displayName}</h3>
+        <span className="type-caption hidden shrink-0 text-label-tertiary group-hover:inline">
           {liveSourceNote(provider)}
         </span>
       </div>

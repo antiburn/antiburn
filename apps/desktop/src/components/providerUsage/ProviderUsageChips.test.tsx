@@ -51,17 +51,18 @@ function ranked(count: number): ProviderUsagePayload[] {
 }
 
 describe("ProviderUsageChips", () => {
-  it("shows a chip per provider used today, with the figure in its name", () => {
+  it("shows a chip per provider used today, glyph-only where the provider stated no live limit", () => {
     render(<ProviderUsageChips providers={[provider()]} onViewAll={vi.fn()} />)
 
-    // The chip renders a glyph and a number; everything a reader needs to know
-    // about what that number *is* has to be in the accessible name.
-    expect(
-      screen.getByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    ).toBeInTheDocument()
+    // No live summary was given, so there is nothing to read a percentage
+    // from — and no dollar figure either, since that number has no
+    // denominator to sit beside a ring's percentage meaningfully.
+    const chip = screen.getByRole("button", { name: "Anthropic, estimated" })
+    expect(chip).toBeInTheDocument()
+    expect(chip).toHaveTextContent("")
   })
 
-  it("shows a token count when the provider could not be priced", () => {
+  it("still shows the chip for a provider that could not be priced", () => {
     const window = usageWindow({ tokensIn: 12_000, sessionCount: 2 })
     render(
       <ProviderUsageChips
@@ -75,9 +76,7 @@ describe("ProviderUsageChips", () => {
       />,
     )
 
-    expect(
-      screen.getByRole("button", { name: "Anthropic, 12.0k today, observed" }),
-    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Anthropic, observed" })).toBeInTheDocument()
   })
 
   it("carries staleness into the chip name rather than only into a color", () => {
@@ -95,7 +94,7 @@ describe("ProviderUsageChips", () => {
 
     expect(
       screen.getByRole("button", {
-        name: /anthropic, \$1\.25 today, estimated, last used 2d ago/i,
+        name: /anthropic, estimated, last used 2d ago/i,
       }),
     ).toBeInTheDocument()
   })
@@ -223,7 +222,7 @@ describe("ProviderUsageChips", () => {
     // to an unknown branch the day a reviewed passive source does.
     render(<ProviderUsageChips providers={[provider({ state: "live" })]} onViewAll={vi.fn()} />)
 
-    fireEvent.click(screen.getByRole("button", { name: /anthropic, \$1\.25 today, live/i }))
+    fireEvent.click(screen.getByRole("button", { name: /anthropic, live/i }))
     expect(screen.getByText("Live")).toBeInTheDocument()
     expect(screen.getByText(/reported this usage directly/i)).toBeInTheDocument()
   })
@@ -348,6 +347,51 @@ describe("ProviderUsageChips — the limit ring", () => {
     expect(panel).toHaveTextContent("88%")
     // And the spend half is still there, below it.
     expect(panel).toHaveTextContent("Last 7 days")
+  })
+})
+
+describe("ProviderUsageChips — chip value", () => {
+  it("shows every live window's percentage, joined, in place of the dollar figure", () => {
+    render(
+      <ProviderUsageChips
+        providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
+        live={liveSummary(19)}
+        onViewAll={vi.fn()}
+      />,
+    )
+
+    // five-hour 12%, weekly (seven-day) 19% — in `liveWindows` order, not the
+    // dollar spend the provider prop carries.
+    expect(screen.getByRole("button", { name: /^Anthropic,/ })).toHaveTextContent("12% / 19%")
+  })
+
+  it("names each window's percentage in the accessible name, and drops the dollar clause", () => {
+    render(
+      <ProviderUsageChips
+        providers={[provider({ provider: "anthropic", displayName: "Anthropic" })]}
+        live={liveSummary(19)}
+        onViewAll={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByRole("button", {
+        name: "Anthropic, estimated, 5-hour limit 12%, weekly limit 19%",
+      }),
+    ).toBeInTheDocument()
+  })
+
+  it("shows the glyph alone, with no value text, for a provider with no live windows", () => {
+    render(
+      <ProviderUsageChips
+        providers={[provider({ provider: "openai", displayName: "OpenAI" })]}
+        live={liveSummary(19)}
+        onViewAll={vi.fn()}
+      />,
+    )
+
+    const chip = screen.getByRole("button", { name: "OpenAI, estimated" })
+    expect(chip).toHaveTextContent("")
   })
 })
 

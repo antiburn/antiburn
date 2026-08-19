@@ -355,9 +355,7 @@ describe("PopoverView", () => {
     expect(invoke).toHaveBeenCalledWith("get_provider_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })
-    expect(
-      screen.getByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Anthropic, estimated" })).toBeInTheDocument()
   })
 
   it("shows the plain title-and-gear footer, with none of the usage chips in it", async () => {
@@ -373,9 +371,7 @@ describe("PopoverView", () => {
   it("opens the full usage view through a provider panel and comes back", async () => {
     render(<PopoverView />)
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
 
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
@@ -661,9 +657,7 @@ describe("PopoverView — window behaviour", () => {
       }),
     )
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_popover_height", {
@@ -704,9 +698,7 @@ describe("PopoverView — window behaviour", () => {
   it("lets an open provider panel claim Escape before the window does", async () => {
     render(<PopoverView />)
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
     const panel = await screen.findByRole("dialog")
     expect(panel).toBeInTheDocument()
 
@@ -722,9 +714,7 @@ describe("PopoverView — window behaviour", () => {
     const activity = await screen.findByRole("heading", { name: "antiburn" })
     await waitFor(() => expect(activity).toHaveFocus())
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Anthropic, $1.25 today, estimated" }),
-    )
+    fireEvent.click(await screen.findByRole("button", { name: "Anthropic, estimated" }))
     fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
 
     const usage = await screen.findByRole("heading", { name: "Usage" })
