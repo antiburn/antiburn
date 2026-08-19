@@ -286,6 +286,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Use Canonical Ubuntu package archive
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i \
+              -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              {} +
+
       # WebKitGTK, GTK and the AppIndicator tray are the shell's Linux
       # backend; desktop-file-utils, patchelf and file are what the AppImage
       # and .deb bundlers shell out to.
