@@ -11,6 +11,11 @@
 > Nothing in the app links here until the placeholders are resolved. Publishing
 > a policy with gaps in it is worse than having none, because a gap reads as an
 > answer.
+>
+> **When this is due:** before `ANTIBURN_ANALYTICS_URL` is set as a repository
+> secret. That is the moment a shipped build starts transmitting, and until it
+> happens no build sends anything at all, whatever the switch says. The release
+> workflow carries the same note beside the secret itself.
 
 ## What this policy covers
 
