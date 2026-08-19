@@ -2,6 +2,7 @@
 **/target/
 node_modules/
 .DS_Store
+.*.sw?
 
 # Local agent worktrees and metadata are not repository content.
 /.claude/
