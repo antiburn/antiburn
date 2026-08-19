@@ -26,7 +26,10 @@ use serde::{Deserialize, Serialize};
 pub enum EventName {
     /// The application started.
     AppLaunched,
-    /// The first run finished, or was abandoned at a named step.
+    /// The first run finished. Carries nothing: which step a reader stopped
+    /// on would be worth knowing, but nothing reports abandonment, and a doc
+    /// comment describing an unbuilt capability is how a catalog starts to
+    /// overstate itself.
     OnboardingFinished,
     /// A discovery pass completed, with a bucketed count of what it found.
     ScanCompleted,
@@ -455,6 +458,54 @@ mod tests {
                 doc.contains(name.as_str()),
                 "{} is sent but is not in docs/usage-analytics.md",
                 name.as_str()
+            );
+        }
+    }
+
+    /// Every document that counts the fields counts the same number.
+    ///
+    /// Three of them do, in the reader's own words, and none is generated
+    /// from this struct — so the count is a hand-copied number in four
+    /// places. It has already drifted once: `detail` was added, three
+    /// documents were updated to thirteen, and the privacy policy went on
+    /// saying twelve. Counting from the payload here is the only way that
+    /// stays true without somebody remembering.
+    #[test]
+    fn every_document_that_counts_the_fields_counts_the_same_number() {
+        let json = serde_json::to_value(sample()).expect("serializes");
+        let object = json.as_object().expect("an object");
+        let counted = object
+            .values()
+            .map(|value| match value.as_object() {
+                // `properties` and `context` are containers; their leaves are
+                // what a reader counts, not the container itself.
+                Some(nested) => nested.len(),
+                None => 1,
+            })
+            .sum::<usize>()
+            // `sentAt` is stamped at delivery rather than at capture, so it
+            // is absent from the struct and present on the wire. A reader
+            // counting what arrives counts it.
+            + 1;
+
+        let word = match counted {
+            12 => "twelve",
+            13 => "thirteen",
+            14 => "fourteen",
+            other => panic!("no word for {other} fields; add one and update the documents"),
+        };
+
+        for path in [
+            "/../../../docs/usage-analytics.md",
+            "/../../../docs/privacy-policy.md",
+            "/../../../docs/support.md",
+            "/../src/views/settings/PrivacyPane.tsx",
+        ] {
+            let doc = std::fs::read_to_string(env!("CARGO_MANIFEST_DIR").to_owned() + path)
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+            assert!(
+                doc.to_lowercase().contains(&format!("{word} fields")),
+                "{path} does not say \"{word} fields\"; the payload now has {counted}"
             );
         }
     }

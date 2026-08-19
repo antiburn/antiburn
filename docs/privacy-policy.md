@@ -30,11 +30,12 @@ enforced by a closed type in the source rather than by a promise in a document.
 
 ## What is sent, in summary
 
-Each event carries twelve fields: a constant naming the surface class, a random
-per-event id, a random installation identifier, a random identifier for one run
-of the app, the event name, when it happened, when it was delivered, your
-processor architecture, a count rounded into a range where the event has one, a
-short label from a fixed vocabulary, the application version, and your
+Each event carries thirteen fields: a constant naming the surface class, a
+random per-event id, a random installation identifier, a random identifier for
+one run of the app, the event name, when it happened, when it was delivered,
+your processor architecture, a count rounded into a range where the event has
+one, a short label from a fixed vocabulary, a second such label where an event
+has two things worth telling apart, the application version, and your
 operating-system family.
 
 Two identifiers appear, and they are not equally durable:
