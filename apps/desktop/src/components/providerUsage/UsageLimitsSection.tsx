@@ -77,7 +77,7 @@ export function UsageLimitsSection({
       onClick={onToggleExpanded}
       aria-expanded={expanded}
       aria-label={expanded ? "Collapse usage limits" : "Expand usage limits"}
-      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-control text-label-tertiary hover:bg-surface-hover"
+      className="flex items-center justify-center h-6 w-6 rounded-md text-label-tertiary hover:bg-surface-hover"
     >
       <ChevronDown
         size={13}
@@ -85,7 +85,7 @@ export function UsageLimitsSection({
         aria-hidden="true"
         className={cn(
           "transition-transform duration-[120ms] ease-out",
-          expanded && "rotate-180",
+          expanded && "rotate-270",
         )}
       />
     </button>
@@ -101,53 +101,40 @@ export function UsageLimitsSection({
   return (
     <div
       data-testid="usage-limits-section"
-      className="relative shrink-0 border-b border-separator px-2 pt-2 pb-2.5"
-      // The vertical "Limits" label is this section's visible name while
-      // expanded, so it doubles as the accessible one — a region labelled by
-      // a heading, rather than a redundant aria-label restating text already
-      // on screen. Collapsed, the chips already carry their own accessible
-      // names and there is no heading to point to.
+      className="relative shrink-0 border-b border-separator"
       {...(expanded ? { role: "region", "aria-labelledby": headingId } : {})}
     >
       {expanded ? (
         <>
-          {/* Overlaid on the corner rather than given its own row: the
-              product goal is minimal vertical footprint, and a toggle plus a
-              spinner is not worth a whole row of its own. The first
-              subsection reserves the horizontal space this needs — see
-              `reserveToggleSpace` below. */}
-          <div className="absolute top-2 right-2 flex items-center gap-1">
-            {spinner}
-            {toggle}
-          </div>
-          <div className="flex gap-2">
-            {/* A vertical label rather than a horizontal heading row: the
-                whole point is a header that costs no vertical space. Centred
-                by flexbox's default stretch — this column and the
-                subsections beside it share one cross-axis, so centring
-                within the column centres against the full stack of them. */}
-            <div className="flex w-4 shrink-0 items-center justify-center">
+          <div className="absolute top-2 right-2 flex items-center gap-1">{spinner}</div>
+
+          <div className="flex">
+            <div className="flex flex-col w-7 gap-y-2 py-2 shrink-0 items-center bg-surface-secondary">
+              {toggle}
+
               <h2
                 id={headingId}
-                className="[writing-mode:vertical-rl] rotate-180 type-caption font-medium tracking-wider text-label-tertiary uppercase"
+                className="[writing-mode:vertical-rl] [text-orientation:upright] type-caption font-medium tracking-wider text-label-tertiary uppercase"
               >
                 Limits
               </h2>
             </div>
-            <div className="min-w-0 flex-1 space-y-2.5">
+
+            <div className="min-w-0 flex-1 space-y-2.5 py-3 px-2">
               {limited.map((provider, index) => (
                 <ProviderLimitSubsection
                   key={provider.provider}
                   provider={provider}
                   now={at}
-                  reserveToggleSpace={index === 0}
                 />
               ))}
             </div>
           </div>
         </>
       ) : (
-        <div className="flex min-w-0 items-center gap-1">
+        <div className="flex min-w-0 items-center gap-1 px-1 py-1">
+          {toggle}
+
           <ProviderUsageChips
             providers={providers}
             live={live}
@@ -156,8 +143,8 @@ export function UsageLimitsSection({
             panelAnchor="down"
             className="min-w-0 flex-1"
           />
+
           {spinner}
-          {toggle}
         </div>
       )}
     </div>
@@ -171,28 +158,14 @@ function ProviderLimitSubsection({
 }: {
   provider: LiveProviderUsagePayload
   now: number
-  /**
-   * Leaves room on the right of the header row for the toggle (and spinner)
-   * overlaid on the section's top-right corner, so a "Live Xm ago" note never
-   * renders under it. Only the first subsection needs this — the toggle sits
-   * over the top of the section, not beside every subsection below it.
-   */
-  reserveToggleSpace?: boolean
 }) {
   return (
     <div>
-      <div
-        className={cn(
-          "flex items-baseline justify-between gap-2 px-1 pb-1",
-          reserveToggleSpace && "pr-8",
-        )}
-      >
-        <h3 className="truncate type-caption font-medium text-label-secondary">
+      <div className="flex items-baseline justify-between gap-2 px-1 pb-1 group">
+        <h3 className="truncate text-label-secondary">
           {provider.displayName}
         </h3>
-        <span
-          className={cn("shrink-0 type-caption", liveFreshnessToneClass(provider.freshness))}
-        >
+        <span className="shrink-0 type-caption text-label-tertiary hidden group-hover:inline">
           {liveSourceNote(provider)}
         </span>
       </div>

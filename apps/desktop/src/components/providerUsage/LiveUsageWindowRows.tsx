@@ -51,7 +51,7 @@ export function LiveUsageWindowRows({
             <div className="flex items-baseline justify-between gap-x-2">
               <span className="type-footnote text-label-secondary">
                 {liveWindowLabel(window)}
-                <span className="hidden group-hover:inline">
+                <span className="hidden group-hover:inline text-label-tertiary">
                   {" "}
                   ({liveResetLabel(window, now)})
                 </span>
