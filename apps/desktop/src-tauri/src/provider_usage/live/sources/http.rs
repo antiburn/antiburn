@@ -32,6 +32,21 @@ const MAX_RESPONSE_BYTES: u64 = 512 * 1024;
 /// hosts. The `rustls-no-provider` feature this crate builds `reqwest`
 /// against leaves the process-wide crypto provider unset, so the first call
 /// here installs it — see the `rustls` dependency comment in `Cargo.toml`.
+///
+/// Blocking, and only ever to be called where blocking is allowed. A caller
+/// holding a runtime has to hand the work to a blocking thread first, and
+/// both callers do: `crate::usage_alerts::blocking::run` for the background
+/// monitor, `crate::commands::get_live_usage` for the popover.
+///
+/// The cost of getting that wrong differs by profile, and both are worth
+/// knowing. In release, a blocking call parks the calling thread until the
+/// response or [`TIMEOUT`] — bad enough on a runtime worker, worse on the
+/// main thread. In debug, `reqwest` additionally builds and drops a `tokio`
+/// runtime on the calling thread purely to assert it is not inside one
+/// (`reqwest::blocking::wait::enter`, `#[cfg(debug_assertions)]`), and
+/// dropping a runtime inside an asynchronous context panics outright. So a
+/// debug build fails loudly where a release build only stalls: the rule is
+/// the same either way, and only the symptom of breaking it changes.
 pub fn client() -> &'static reqwest::blocking::Client {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {

@@ -431,32 +431,50 @@ const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::fro
 /// `utc_offset_minutes` travels for one reason only: "used today" is a claim
 /// about the reader's calendar day. The windows themselves are the provider's
 /// own boundaries, stated as absolute instants, and owe nothing to it.
+///
+/// `async`, and every byte of the work handed to a blocking thread, for one
+/// reason: a synchronous `#[tauri::command]` is run inline on the thread that
+/// delivered the IPC message, and the summary this returns reaches a provider
+/// over the network with `reqwest::blocking` — see
+/// `provider_usage::live::sources::http::client`. A provider that accepts a
+/// connection and then says nothing would hold that thread for the full
+/// fifteen-second timeout, once per source, and the popover polls this about
+/// once a minute while it is open. The reader would watch the whole app —
+/// tray, popover, every window — stop answering. Nothing here needs the main
+/// thread, so nothing here stays on it.
 #[tauri::command]
 pub async fn get_live_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
     // The sources deliberately expose a synchronous interface and include
-    // blocking HTTP, Keychain, and subprocess work. An async command keeps the
-    // IPC handler responsive; the blocking pool is the boundary for that work.
+    // blocking HTTP, Keychain, and subprocess work. The blocking pool is the
+    // boundary for all of it.
+    let utc_offset_minutes = utc_offset_minutes.unwrap_or(0);
     tauri::async_runtime::spawn_blocking(move || {
+        // Read here rather than before the hop: this summary is stamped with
+        // the moment it was produced, and a caller queued behind another
+        // summarization can wait a while for its turn.
         let now = scan::unix_now();
         let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() else {
-            return Ok(LiveUsageSummary {
+            return LiveUsageSummary {
                 generated_at: crate::store::iso_from_epoch(Some(now)),
                 ..LiveUsageSummary::default()
-            });
+            };
         };
-        Ok(provider_usage::live::summarize(
+        // Held for the whole pass: two of these can now genuinely overlap,
+        // and the reading history they append to is not written atomically.
+        let _summarizing = live.summarizing();
+        provider_usage::live::summarize(
             &live.sources,
             app.try_state::<Store>().as_deref(),
             now,
-            utc_offset_minutes.unwrap_or(0),
+            utc_offset_minutes,
             POPOVER_LIVE_USAGE_MAX_AGE,
-        ))
+        )
     })
     .await
-    .map_err(fail)?
+    .map_err(fail)
 }
 
 /* -------------------------------------------------------------------------
