@@ -146,11 +146,12 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     // pointing at, so the reader's first sight of it is the thing the icon
     // does rather than a settings pane about it.
     if event.kind == NudgeKind::MenuBarLocation {
-        if let Some(rect) = app
+        match app
             .tray_by_id("antiburn")
             .and_then(|tray| tray.rect().ok().flatten())
         {
-            crate::popover::toggle(app, rect);
+            Some(rect) => crate::popover::toggle(app, rect),
+            None => open_without_a_tray_rect(app),
         }
         return;
     }
@@ -167,6 +168,21 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     };
     let _ = crate::settings::open(app, pane.map(str::to_string));
 }
+
+/// The same CTA where the tray backend reports no rectangle.
+///
+/// On Linux that is every time: the AppIndicator backend has no item geometry
+/// to give, so the button would do nothing at all. The tray menu's own open
+/// path already knows how to make an anchor, so send the reader through it.
+#[cfg(target_os = "linux")]
+fn open_without_a_tray_rect(app: &AppHandle) {
+    crate::popover::open_from_tray_menu(app);
+}
+
+/// macOS and Windows do report a rectangle, so a missing one means the tray
+/// item is not there yet. Doing nothing is what this CTA already did.
+#[cfg(not(target_os = "linux"))]
+fn open_without_a_tray_rect(_app: &AppHandle) {}
 
 #[cfg(test)]
 mod tests {
