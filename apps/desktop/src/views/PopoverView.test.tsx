@@ -40,6 +40,18 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: openDialog,
 }))
 
+const platform = vi.hoisted(() => ({ mac: false }))
+vi.mock("../lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return { ...actual, isMacOS: () => platform.mac }
+})
+
+const hudPreference = vi.hoisted(() => ({ enabled: false }))
+vi.mock("../lib/overlayWindow", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return { ...actual, isFloatingHudEnabled: () => hudPreference.enabled }
+})
+
 /** Push a shell event at whatever subscribed to it. */
 function emit(name: string, payload: unknown) {
   act(() => (listeners.get(name) ?? []).forEach((handler) => handler({ payload })))
@@ -267,7 +279,7 @@ describe("PopoverView", () => {
     // The session pane is a lazy-loaded chunk: its own "Session Analytics"
     // heading briefly shares text with the Suspense fallback's, so wait for a
     // control unique to the loaded pane before treating it as ready.
-    fireEvent.click(await screen.findByRole("button", { name: "Back" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
 
     expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
     expect(screen.queryByRole("heading", { name: "Session Analytics" })).not.toBeInTheDocument()
@@ -792,5 +804,39 @@ describe("PopoverView — window behaviour", () => {
 
     const usage = await screen.findByRole("heading", { name: "Usage" })
     await waitFor(() => expect(usage).toHaveFocus())
+  })
+})
+
+describe("PopoverView — floating HUD restore", () => {
+  beforeEach(() => {
+    invoke.mockReset()
+    confirmDialog.mockReset()
+    saveDialog.mockReset()
+    openDialog.mockReset()
+    listeners.clear()
+    mockCommands()
+    platform.mac = false
+    hudPreference.enabled = false
+  })
+
+  it("reopens the stored HUD at popover startup", async () => {
+    platform.mac = true
+    hudPreference.enabled = true
+    render(<PopoverView />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+  })
+
+  it("does not restore an off preference", async () => {
+    platform.mac = true
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+  })
+
+  it("does not restore the HUD outside macOS", async () => {
+    hudPreference.enabled = true
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
   })
 })
