@@ -293,8 +293,6 @@ export function LocalActivityList({
               const headingId = `activity-${group.label.replaceAll(" ", "-").toLowerCase()}`
               return (
                 <section key={group.label} aria-labelledby={headingId}>
-                  <div className="w-full h-0 border-b-1"></div>
-
                   <h3
                     ref={registerHeading(group.label)}
                     id={headingId}
