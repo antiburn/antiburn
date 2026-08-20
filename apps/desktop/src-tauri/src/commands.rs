@@ -475,7 +475,7 @@ pub fn get_provider_usage(
     Ok(provider_usage::summarize(&evidence, now, offset))
 }
 
-/// How fresh a reading this command asks each source's cooldown for.
+/// How fresh a reading the refresh command asks each source's cooldown for.
 ///
 /// This command is called from the popover, which polls it roughly once a
 /// minute for as long as the popover stays visible — see
@@ -489,18 +489,39 @@ pub fn get_provider_usage(
 /// takes back over (see `usage_alerts::MILESTONE_MAX_AGE`).
 const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
 
-/// The provider's own limit figures, when a registered source can prove them.
+/// Return the last provider limit snapshot without reading a provider.
 ///
-/// Deliberately a second command rather than a field on
-/// [`get_provider_usage`]: that payload's guarantee is that it carries no
+/// This remains separate from [`get_provider_usage`]. That payload carries no
 /// percentage, allowance, or reset anywhere, and a test proves it by
 /// serializing the whole thing. Keeping the two apart means a limit surface
 /// can exist without weakening the estimate surface's contract, and the views
 /// layer them.
 ///
-/// An empty summary is the ordinary answer — no source with anything to say —
-/// and is not an error. Sources that *failed* report separately, so "nothing
-/// found" and "something broke" never look alike on screen.
+/// The live-usage setting gates the cached value too. Turning the feature off
+/// removes its figures immediately without waiting for another refresh.
+#[tauri::command]
+pub fn get_live_usage(
+    app: tauri::AppHandle,
+    _utc_offset_minutes: Option<i32>,
+) -> CommandResult<LiveUsageSummary> {
+    let active = app
+        .try_state::<Store>()
+        .and_then(|store| store.settings().ok())
+        .is_some_and(|settings| settings.live_usage_active());
+    if !active {
+        return Ok(LiveUsageSummary::default());
+    }
+    Ok(app
+        .try_state::<crate::usage_alerts::LiveUsage>()
+        .map(|live| live.snapshot())
+        .unwrap_or_default())
+}
+
+/// Refresh the provider's own limit figures and publish the new snapshot.
+///
+/// An empty summary is the ordinary answer: no source has anything to say.
+/// Sources that fail report separately, so absence and failure stay distinct.
+///
 /// `utc_offset_minutes` travels for one reason only: "used today" is a claim
 /// about the reader's calendar day. The windows themselves are the provider's
 /// own boundaries, stated as absolute instants, and owe nothing to it.
@@ -516,7 +537,7 @@ const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::fro
 /// tray, popover, every window — stop answering. Nothing here needs the main
 /// thread, so nothing here stays on it.
 #[tauri::command]
-pub async fn get_live_usage(
+pub async fn refresh_live_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
@@ -535,16 +556,20 @@ pub async fn get_live_usage(
                 ..LiveUsageSummary::default()
             };
         };
+        let store = app.try_state::<Store>();
         // Held for the whole pass: two of these can now genuinely overlap,
         // and the reading history they append to is not written atomically.
         let _summarizing = live.summarizing();
-        provider_usage::live::summarize(
+        let summary = provider_usage::live::summarize(
             &live.sources,
-            app.try_state::<Store>().as_deref(),
+            store.as_deref(),
             now,
             utc_offset_minutes,
             POPOVER_LIVE_USAGE_MAX_AGE,
-        )
+        );
+        live.replace_snapshot(summary.clone(), store.as_deref());
+        let _ = app.emit(crate::usage_alerts::EVENT_CHANGED, &summary);
+        summary
     })
     .await
     .map_err(fail)

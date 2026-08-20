@@ -42,8 +42,15 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
+use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
 use crate::provider_usage;
 use crate::store::Store;
+
+/// Emitted after a provider refresh replaces the cached live-usage snapshot.
+pub const EVENT_CHANGED: &str = "live-usage:changed";
+
+/// Where the last complete view payload survives an application restart.
+const SNAPSHOT_KEY: &str = "internal:liveUsageSnapshot";
 
 /// How often the monitor looks. Coarser than the scan tick on purpose: an
 /// anomaly is a trend, and a trend does not change by the minute.
@@ -138,12 +145,13 @@ mod blocking {
 /// The registered live usage sources and the milestone engine's ledger.
 ///
 /// Held as app state so both the milestone pass below and
-/// [`crate::commands::get_live_usage`] read the same registry — one place
+/// [`crate::commands::refresh_live_usage`] read the same registry — one place
 /// that knows what this build can prove.
 pub struct LiveUsage {
     pub sources: Vec<Box<dyn provider_usage::live::LiveUsageSource>>,
     ledger: std::sync::Mutex<provider_usage::live::MilestoneLedger>,
     summarizing: std::sync::Mutex<()>,
+    snapshot: std::sync::Mutex<LiveUsageSummary>,
 }
 
 impl LiveUsage {
@@ -152,6 +160,42 @@ impl LiveUsage {
             sources: provider_usage::live::sources::registered(),
             ledger: std::sync::Mutex::default(),
             summarizing: std::sync::Mutex::default(),
+            snapshot: std::sync::Mutex::default(),
+        }
+    }
+
+    /// Start with the last snapshot that the local store can read.
+    pub fn from_store(store: &Store) -> LiveUsage {
+        let live = LiveUsage::new();
+        let mut snapshot: LiveUsageSummary = store
+            .internal_value(SNAPSHOT_KEY)
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        for provider in &mut snapshot.providers {
+            provider.freshness = LiveUsageFreshness::Stale;
+        }
+        live.replace_snapshot(snapshot, None);
+        live
+    }
+
+    /// Return the cached snapshot without reading a provider.
+    pub fn snapshot(&self) -> LiveUsageSummary {
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Replace and persist the snapshot produced by one complete refresh.
+    pub fn replace_snapshot(&self, snapshot: LiveUsageSummary, store: Option<&Store>) {
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot.clone();
+        if let Some(store) = store
+            && let Ok(raw) = serde_json::to_string(&snapshot)
+        {
+            store.set_internal_value(SNAPSHOT_KEY, &raw);
         }
     }
 
@@ -159,11 +203,9 @@ impl LiveUsage {
     ///
     /// `provider_usage::live::history::record` appends a pass's readings by
     /// loading the stored series, adding to it, and writing the whole thing
-    /// back. That is safe while only one caller is ever mid-pass, which used
-    /// to be guaranteed for free: [`crate::commands::get_live_usage`] was the
-    /// only caller that records, and a synchronous command runs inline on the
-    /// thread that delivered the IPC message, so two of them could not
-    /// interleave. Now that the command hands its work to a blocking thread,
+    /// back. That is safe while only one caller is ever mid-pass. The old
+    /// synchronous command guaranteed this because it ran on the IPC thread.
+    /// Now that the refresh command hands its work to a blocking thread,
     /// they can — the popover and Settings → Usage each ask on their own
     /// schedule — and an interleaved read-modify-write silently drops one
     /// pass's samples. This restores the guarantee explicitly, and spares the
@@ -327,7 +369,52 @@ fn anomaly(evidence: &[crate::store::UsageEvidenceRecord], now: i64) -> Option<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::{
+        LiveProviderUsage, LiveUsageFreshness, LiveUsageSourceError, LiveUsageSummary,
+        LiveUsageSupport,
+    };
     use crate::store::UsageEvidenceRecord;
+
+    #[test]
+    fn the_latest_live_usage_snapshot_survives_a_restart() {
+        let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-live-usage-cache"))
+            .expect("in-memory store");
+        let stored = LiveUsageSummary {
+            providers: vec![LiveProviderUsage {
+                provider: "openai".into(),
+                display_name: "Codex".into(),
+                support: LiveUsageSupport::Live,
+                freshness: LiveUsageFreshness::Fresh,
+                source_label: "fixture".into(),
+                observed_at: "2026-08-20T00:00:00Z".into(),
+                windows: vec![],
+                extra_usage: None,
+            }],
+            errors: vec![LiveUsageSourceError {
+                source: "fixture".into(),
+                category: "unavailable".into(),
+            }],
+            generated_at: "2026-08-20T00:00:00Z".into(),
+        };
+
+        LiveUsage::new().replace_snapshot(stored.clone(), Some(&store));
+
+        let mut expected = stored;
+        expected.providers[0].freshness = LiveUsageFreshness::Stale;
+        assert_eq!(LiveUsage::from_store(&store).snapshot(), expected);
+    }
+
+    #[test]
+    fn an_unreadable_live_usage_snapshot_starts_empty() {
+        let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-live-usage-cache"))
+            .expect("in-memory store");
+        store.set_internal_value(SNAPSHOT_KEY, "not json");
+
+        assert_eq!(
+            LiveUsage::from_store(&store).snapshot(),
+            LiveUsageSummary::default()
+        );
+    }
 
     /// A pass must land somewhere blocking is allowed.
     ///

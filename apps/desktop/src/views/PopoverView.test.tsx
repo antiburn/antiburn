@@ -210,6 +210,7 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       case "get_provider_usage":
         return Promise.resolve(PROVIDER_USAGE)
       case "get_live_usage":
+      case "refresh_live_usage":
         return Promise.resolve(LIVE_USAGE)
       case "get_scan_status":
       case "scan_now":
@@ -408,6 +409,28 @@ describe("PopoverView", () => {
     expect(screen.getByRole("button", { name: "Codex, weekly limit 40%" })).toBeInTheDocument()
   })
 
+  it("shows cached limits and sessions while the provider refresh is still running", async () => {
+    let finishRefresh: (() => void) | null = null
+    const baseInvoke = invoke.getMockImplementation()!
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command !== "refresh_live_usage") return baseInvoke(command, args)
+      return new Promise((resolve) => {
+        finishRefresh = () => resolve(LIVE_USAGE)
+      })
+    })
+
+    render(<PopoverView />)
+
+    expect(await screen.findByTestId("provider-usage-chips")).toBeInTheDocument()
+    expect(screen.getByText("Wire the tray popover")).toBeInTheDocument()
+    expect(screen.getByRole("status")).toBeInTheDocument()
+
+    await act(async () => {
+      finishRefresh?.()
+      await Promise.resolve()
+    })
+  })
+
   it("shows the plain title-and-gear footer, with none of the usage chips in it", async () => {
     render(<PopoverView />)
     await screen.findByTestId("provider-usage-chips")
@@ -446,7 +469,8 @@ describe("PopoverView", () => {
   })
 
   it("withholds the usage-limits section entirely when no provider has a limit to show", async () => {
-    mockCommands({ get_live_usage: { providers: [], errors: [], generatedAt: "" } })
+    const noLiveUsage = { providers: [], errors: [], generatedAt: "" }
+    mockCommands({ get_live_usage: noLiveUsage, refresh_live_usage: noLiveUsage })
     render(<PopoverView />)
 
     await screen.findByText("Wire the tray popover")
@@ -479,11 +503,11 @@ describe("PopoverView", () => {
     let resolveSecondLoad: (() => void) | null = null
     let liveCalls = 0
     invoke.mockImplementation((command: string, args?: unknown) => {
-      if (command === "get_live_usage") {
+      if (command === "get_live_usage") return Promise.resolve(LIVE_USAGE)
+      if (command === "refresh_live_usage") {
         liveCalls += 1
-        // The first call is the initial load, which must settle so the view
-        // reaches its resting state; the second is the one this test holds
-        // open to observe the spinner.
+        // The first refresh settles so the view reaches its resting state.
+        // The second refresh stays open so the test can observe the spinner.
         if (liveCalls === 1) return Promise.resolve(LIVE_USAGE)
         return new Promise((resolve) => {
           resolveSecondLoad = () => resolve(LIVE_USAGE)
@@ -527,7 +551,7 @@ describe("PopoverView", () => {
     await screen.findByTestId("provider-usage-chips")
 
     const callsBeforeShown = invoke.mock.calls.filter(
-      ([command]) => command === "get_live_usage",
+      ([command]) => command === "refresh_live_usage",
     ).length
 
     // `popover:shown` carries no payload — it is a pure signal, unlike the
@@ -536,7 +560,7 @@ describe("PopoverView", () => {
 
     await waitFor(() =>
       expect(
-        invoke.mock.calls.filter(([command]) => command === "get_live_usage").length,
+        invoke.mock.calls.filter(([command]) => command === "refresh_live_usage").length,
       ).toBeGreaterThan(callsBeforeShown),
     )
     // Not riding the scan pipeline: no scan command was ever asked for.

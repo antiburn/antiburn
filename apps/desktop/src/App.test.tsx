@@ -70,6 +70,7 @@ describe("App", () => {
 
     render(<App />)
 
+    expect(screen.queryByTestId("route-loading")).not.toBeInTheDocument()
     await screen.findByRole("heading", { name: "antiburn" })
     expect(
       screen.queryByRole("heading", { name: "Stop hitting your token limits." }),

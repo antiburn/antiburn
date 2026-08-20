@@ -368,7 +368,7 @@ pub struct AppInfo {
  * ---------------------------------------------------------------------- */
 
 /// Marks figures stated directly by a provider rather than locally estimated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LiveUsageSupport {
     /// The provider stated this allowance. A determinate meter is honest.
@@ -376,7 +376,7 @@ pub enum LiveUsageSupport {
 }
 
 /// Whether a reading still describes the present.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LiveUsageFreshness {
     Fresh,
@@ -392,7 +392,7 @@ pub enum LiveUsageFreshness {
 /// different facts. The last two fields are the exception, and both are
 /// derived from this window's own sample history rather than stated by
 /// anyone.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveUsageWindow {
     /// Stable id within the provider: `five-hour`, `seven-day`, `weekly-<model>`.
@@ -427,7 +427,7 @@ pub struct LiveUsageWindow {
 /// That is not a formality — "we have not seen enough of your week to say"
 /// and "you are on track" are different answers, and only one of them is
 /// reassuring. A null here always means the former.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveUsageForecast {
     /// `stale`, `transition`, or `sparseHistory`. Null when there *is* a
@@ -451,7 +451,7 @@ pub struct LiveUsageForecast {
 }
 
 /// One provider account's live usage.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveProviderUsage {
     /// Canonical provider id, matching [`ProviderUsage::provider`] so the
@@ -472,7 +472,7 @@ pub struct LiveProviderUsage {
 }
 
 /// Metered spend alongside the allowance.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveExtraUsage {
     /// Whether the account permits this path. `false` differs from unknown.
@@ -486,7 +486,7 @@ pub struct LiveExtraUsage {
 }
 
 /// A source that failed, in terms a reader can act on.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveUsageSourceError {
     /// The source's stable id.
@@ -501,7 +501,7 @@ pub struct LiveUsageSourceError {
 /// none with anything to say — and the views render nothing rather than an
 /// empty frame. `errors` is separate so that "nothing found" and "something
 /// broke" never look alike.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveUsageSummary {
     pub providers: Vec<LiveProviderUsage>,

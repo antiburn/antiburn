@@ -22,9 +22,9 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Agents
 
-antiburn reads what a coding agent has already written to disk. One opt-in
-setting *runs* an agent — see [Network](#network) — but even then antiburn
-reads the file the agent writes, not the agent's output.
+antiburn reads session data that a coding agent has already written to disk.
+Plan limits are separate: antiburn can ask a provider for those figures as
+described in [Network](#network).
 
 | Agent | Native (macOS / Windows / Linux) | WSL | Notes |
 | --- | --- | --- | --- |
@@ -64,21 +64,20 @@ Provider Usage shows what was *spent* on this machine. It never shows a percenta
 an allowance, a remaining balance, or a reset time: a transcript records spend, and a
 denominator would have to be invented.
 
-**Plan limits are a separate thing, from a separate place.** When one of your agents
-has cached its own usage reading on this machine, antiburn reads that file and shows
-the figures your provider stated — a percentage of a five-hour or weekly allowance,
-and when it resets. Those are the provider's numbers, not ours:
+**Plan limits are a separate thing, from a separate place.** antiburn asks each
+provider directly and shows the figures that provider stated — a percentage of a
+five-hour or weekly allowance, and when it resets. Those are the provider's numbers,
+not ours:
 
-- antiburn itself calls no provider to get them: by default it simply reads the
-  file the agent already wrote the last time *it* was online, the same way it
-  reads everything else. One opt-in setting can ask the agent to refresh that
-  file on antiburn's behalf — see [Network](#network);
-- every reading is shown with the moment the provider stated it, and a reading older
-  than an hour is marked as such rather than ageing quietly on screen;
+- when the popover opens, antiburn shows its last successful reading immediately
+  and asks for a current reading in the background;
+- the current response replaces the saved reading. If antiburn has no saved reading,
+  the limits section stays absent until the first response arrives;
+- every reading shows when antiburn received it. A reading older than an hour is
+  marked as stale rather than ageing quietly on screen;
 - a figure the provider did not state is shown as unknown, never as zero;
-- they appear above the spend estimates and never replace them. If no agent has
-  cached a reading, the limits section is simply absent and the spend estimates are
-  unchanged.
+- the limits appear above the spend estimates and never replace them. See
+  [Network](#network) for the connections and the switch that controls them.
 
 ## What antiburn stores
 
@@ -86,8 +85,9 @@ antiburn keeps its own local data under the application's data directory. Settin
 About shows the exact path. It may retain the session content and derived data it
 needs to provide visibility and analysis, including messages, tool activity, file
 content recorded in a transcript, session identity and locations, counts, durations,
-token totals, phase distributions, cost estimates, skill details, and session
-relations. This data stays on the device and is never uploaded.
+token totals, phase distributions, cost estimates, skill details, session
+relations, and the last successful plan-limit reading. This data stays on the
+device and is never uploaded.
 
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.

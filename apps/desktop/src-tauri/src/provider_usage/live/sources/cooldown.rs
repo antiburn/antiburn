@@ -9,7 +9,7 @@
 //! the Codex fallback it can mean spawning a whole process. Two callers ask
 //! every source to [`fetch`](super::super::LiveUsageSource::fetch) while the
 //! opt-in is on: the background monitor, every five minutes, and
-//! [`crate::commands::get_live_usage`], every time the popover — while it is
+//! [`crate::commands::refresh_live_usage`], every time the popover — while it is
 //! visible — polls for a reading. Those two callers do not want the same
 //! thing. The monitor is not shown to anyone and can happily read a
 //! ten-minute-old figure; the popover is on screen right now, being polled
