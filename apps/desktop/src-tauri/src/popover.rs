@@ -23,6 +23,11 @@
 //! last known rectangle, because a taller popover on a bottom-anchored panel
 //! (Windows, most Linux panels) has to move as well as grow.
 //!
+//! On Linux the tray backend reports no item rectangle. The tray menu's "Open
+//! antiburn" item makes an anchor from the cursor position, or from the
+//! top-right corner of the work area. That placement needs the X11 backend
+//! `main.rs` selects.
+//!
 //! # Dismissal
 //!
 //! Three things put the popover away everywhere: looking at something else
@@ -119,6 +124,159 @@ struct AnchorRect {
     y: f64,
     width: f64,
     height: f64,
+}
+
+/// A display's usable region in physical pixels — the part panels and docks do
+/// not cover. Only the top edge and the right edge are of interest here, so the
+/// height is not carried.
+#[cfg(any(target_os = "linux", test))]
+struct WorkArea {
+    x: f64,
+    y: f64,
+    width: f64,
+}
+
+/// Makes an anchor for a popover that has no menu-bar rectangle to hang off.
+///
+/// The tray backend on Linux reports no item rectangle, so the popover needs
+/// another point to open against. The cursor is that point: when this runs the
+/// reader has just chosen an item in the tray menu, so the pointer is on the
+/// panel, next to the tray item.
+///
+/// The rectangle has no width and no height. [`compute_position`] then centers
+/// the popover on the point and drops it [`ANCHOR_GAP`] below. A bottom panel
+/// flips it above and the display edges clamp it, through the same code every
+/// platform already uses.
+///
+/// A cursor reading that is not a number is not a point, so it falls through to
+/// the work area. Its top-right corner is the last resort, because most Linux
+/// panels keep the tray at that end.
+///
+/// The placement needs the X11 backend `main.rs` selects. A session with no X
+/// server leaves the position to the compositor.
+#[cfg(any(target_os = "linux", test))]
+fn synthesized_anchor(
+    cursor: Option<(f64, f64)>,
+    work_area: Option<WorkArea>,
+) -> Option<AnchorRect> {
+    if let Some((x, y)) = cursor
+        && x.is_finite()
+        && y.is_finite()
+    {
+        return Some(AnchorRect {
+            x,
+            y,
+            width: 0.0,
+            height: 0.0,
+        });
+    }
+
+    let area = work_area?;
+    Some(AnchorRect {
+        x: area.x + area.width,
+        y: area.y,
+        width: 0.0,
+        height: 0.0,
+    })
+}
+
+/// The anchor the Linux popover opens against.
+///
+/// Both readings stay in **physical** pixels, which is what [`compute_position`]
+/// expects: it divides by the containing monitor's own scale, so logical values
+/// here would be scaled a second time.
+///
+/// The monitor lookup follows the hit-test pattern already in
+/// [`crate::window_placement`] rather than new maths. It carries the mixed-DPI
+/// hazard the nudge crate records in `crates/nudge/src/window.rs`: tao builds
+/// each Linux monitor rect by scaling that monitor's logical geometry by its own
+/// factor, so a fractional-scaling multi-monitor session can resolve the wrong
+/// monitor.
+///
+/// The work area is read whether or not the cursor answered, because a cursor
+/// reading that is not a number has to have somewhere to fall back to.
+#[cfg(target_os = "linux")]
+fn linux_anchor(app: &AppHandle, window: &WebviewWindow) -> Option<AnchorRect> {
+    let cursor = app.cursor_position().ok().map(|point| (point.x, point.y));
+    let area = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .map(|monitor| {
+            let area = monitor.work_area();
+            WorkArea {
+                x: f64::from(area.position.x),
+                y: f64::from(area.position.y),
+                width: f64::from(area.size.width),
+            }
+        });
+    synthesized_anchor(cursor, area)
+}
+
+/// Opens the popover from the tray menu's Open item.
+///
+/// This is the only route into the popover on Linux. The AppIndicator backend
+/// reports no click events, so [`toggle`] never runs there.
+///
+/// The item shows the popover; it never toggles it. A toggle is unreachable
+/// through a menu: where opening the menu takes focus, the popover is already
+/// hidden by the time the reader chooses the item, and an item that reads "Open
+/// antiburn" but hides the window reads as broken. Escape, focus loss, and the
+/// pin stay the ways to put it away.
+#[cfg(target_os = "linux")]
+pub fn open_from_tray_menu(app: &AppHandle) {
+    // The same gate [`toggle`] applies: before the first run is finished the
+    // popover has nothing to show, so send the reader to the flow they are owed.
+    if crate::onboarding::is_pending(app) {
+        if let Err(error) = crate::onboarding::open(app) {
+            eprintln!("antiburn: could not open the first-run window ({error})");
+        }
+        return;
+    }
+
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+
+    // Opening the AppIndicator menu takes focus from an unpinned popover, which
+    // dismisses it and arms the reopen suppression. A menu item is an explicit
+    // command, not the second half of that gesture, so clear the latch rather
+    // than read it. `set_pinned` clears it for the same reason. If this read the
+    // latch, the item would do nothing right after the menu opens.
+    state.clear_auto_hide();
+
+    let window = match get_or_create(app) {
+        Ok(window) => window,
+        Err(error) => {
+            eprintln!("antiburn: could not create the popover ({error})");
+            return;
+        }
+    };
+
+    // Record the anchor as well as use it: `apply_height` places the window
+    // against the recorded one on every view height change.
+    //
+    // With no anchor, skip placement. The window manager decides, which is what
+    // it does today; invented coordinates would be worse.
+    if let Some(anchor) = linux_anchor(app, &window) {
+        state.record_anchor(anchor);
+        if let Err(error) = place(&window, anchor, WIDTH, state.height()) {
+            // Positioning is best-effort here as everywhere else.
+            eprintln!("antiburn: could not anchor the popover ({error})");
+        }
+    }
+
+    if window.is_visible().unwrap_or(false) {
+        // Already on screen, and now re-placed. The scan gate is open, so
+        // `note_shown` has nothing left to do.
+        let _ = window.set_focus();
+        return;
+    }
+
+    let _ = window.show();
+    let _ = window.set_focus();
+    note_shown(app);
 }
 
 /// Shared show/hide bookkeeping, registered as Tauri managed state.
@@ -629,7 +787,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
             Some(rect) => anchor_to(&window, rect),
             None => match state.anchor() {
                 Some(anchor) => place(&window, anchor, WIDTH, state.height()),
-                None => Ok(()),
+                None => fallback_place(&window, &state),
             },
         };
         if let Err(error) = placed {
@@ -767,6 +925,29 @@ fn anchor_to(window: &WebviewWindow, anchor: Rect) -> tauri::Result<()> {
     // height is the shell's bookkeeping, so no physical size read (whose scale
     // depends on where the window last was) is involved.
     place(window, anchor, WIDTH, state.height())
+}
+
+/// The last placement a pinned show can try: the tray backend reports no
+/// rectangle, and no earlier open left an anchor behind.
+///
+/// Linux only, because it is the only platform that reaches here. A pin on a
+/// cold start would otherwise leave the window wherever the window manager put
+/// it, which is the middle of the screen.
+///
+/// Records the anchor as well as using it, so the next height change places the
+/// window against the same point.
+#[cfg(target_os = "linux")]
+fn fallback_place(window: &WebviewWindow, state: &PopoverState) -> tauri::Result<()> {
+    let Some(anchor) = linux_anchor(window.app_handle(), window) else {
+        return Ok(());
+    };
+    state.record_anchor(anchor);
+    place(window, anchor, WIDTH, state.height())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fallback_place(_window: &WebviewWindow, _state: &PopoverState) -> tauri::Result<()> {
+    Ok(())
 }
 
 /// The display's usable frame in logical coordinates, plus the scale that maps
@@ -1095,6 +1276,137 @@ mod tests {
         // Ease-out: more than half the distance is covered by the halfway point.
         assert!(ease_out(0.5) > 0.5);
         assert!(ease_out(0.25) < ease_out(0.75));
+    }
+
+    /// The pointer is on the panel next to the tray item when the reader
+    /// chooses the menu's Open item, so the anchor is the pointer itself.
+    #[test]
+    fn a_cursor_reading_becomes_a_zero_size_anchor_at_the_pointer() {
+        let anchor = synthesized_anchor(
+            Some((1712.0, 18.0)),
+            Some(WorkArea {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+            }),
+        );
+        assert_eq!(
+            anchor,
+            Some(AnchorRect {
+                x: 1712.0,
+                y: 18.0,
+                width: 0.0,
+                height: 0.0,
+            })
+        );
+    }
+
+    /// Most Linux panels keep the tray at the top right, so that corner is the
+    /// best guess left when the cursor cannot be read.
+    #[test]
+    fn a_missing_cursor_anchors_at_the_top_right_of_the_work_area() {
+        let anchor = synthesized_anchor(
+            None,
+            Some(WorkArea {
+                x: 100.0,
+                y: 40.0,
+                width: 1820.0,
+            }),
+        );
+        assert_eq!(
+            anchor,
+            Some(AnchorRect {
+                x: 1920.0,
+                y: 40.0,
+                width: 0.0,
+                height: 0.0,
+            })
+        );
+    }
+
+    /// tao hands back a fixed cursor position on a session it cannot read. A
+    /// reading that is not a number must not become an anchor that is not a
+    /// number, or every later placement carries it.
+    #[test]
+    fn a_cursor_reading_that_is_not_a_number_falls_back_to_the_work_area() {
+        let anchor = synthesized_anchor(
+            Some((f64::NAN, 18.0)),
+            Some(WorkArea {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+            }),
+        );
+        assert_eq!(
+            anchor,
+            Some(AnchorRect {
+                x: 1920.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+            })
+        );
+    }
+
+    /// Nothing to place against is not an excuse to invent coordinates: the
+    /// window manager keeps the decision.
+    #[test]
+    fn no_cursor_and_no_monitor_leaves_the_placement_to_the_window_manager() {
+        assert_eq!(synthesized_anchor(None, None), None);
+    }
+
+    /// A point anchor under a top panel: the popover centers on the pointer and
+    /// hangs one gap below it.
+    #[test]
+    fn a_point_anchor_under_a_top_panel_opens_below_the_cursor() {
+        let frame = MonitorFrame {
+            left: 0.0,
+            top: 0.0,
+            right: 1920.0,
+            bottom: 1080.0,
+            scale: 1.0,
+        };
+        let anchor = synthesized_anchor(Some((960.0, 30.0)), None).expect("the cursor answered");
+        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
+        assert!((x - (960.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
+        assert!((y - (30.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
+    }
+
+    /// The same point anchor over a bottom panel. There is no room below, so
+    /// the popover flips above the pointer.
+    #[test]
+    fn a_point_anchor_over_a_bottom_panel_flips_the_popover_above_the_cursor() {
+        let frame = MonitorFrame {
+            left: 0.0,
+            top: 0.0,
+            right: 1920.0,
+            bottom: 1080.0,
+            scale: 1.0,
+        };
+        let anchor = synthesized_anchor(Some((960.0, 1050.0)), None).expect("the cursor answered");
+        let (_, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
+        assert!(
+            (y - (1050.0 - DEFAULT_HEIGHT - ANCHOR_GAP)).abs() < 0.5,
+            "y was {y}"
+        );
+    }
+
+    /// The contract the Linux glue depends on: the cursor goes in physical, the
+    /// window position comes out logical. A 2x display halves both numbers.
+    #[test]
+    fn a_high_dpi_point_anchor_is_placed_in_its_displays_logical_space() {
+        let frame = MonitorFrame {
+            left: 0.0,
+            top: 0.0,
+            right: 1280.0, // 2560 physical / 2.0
+            bottom: 720.0, // 1440 physical / 2.0
+            scale: 2.0,
+        };
+        let anchor = synthesized_anchor(Some((2000.0, 60.0)), None).expect("the cursor answered");
+        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, MIN_HEIGHT);
+        // Logical pointer is (1000, 30).
+        assert!((x - (1000.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
+        assert!((y - (30.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
     }
 
     #[test]
