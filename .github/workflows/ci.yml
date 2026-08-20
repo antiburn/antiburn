@@ -41,7 +41,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Test the CI control plane
-        run: node --test scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
 
       - name: Classify the diff
         id: changes
@@ -354,9 +354,9 @@ jobs:
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
       - name: Compile the release target without bundling or signing
-        env:
-          TARGET: ${{ matrix.target }}
-        run: pnpm --filter @antiburn/desktop exec tauri build --features distribution --target "$TARGET" --no-bundle
+        # This matrix includes PowerShell on Windows and POSIX shells elsewhere.
+        # Let Actions substitute the value before either shell sees the command.
+        run: pnpm --filter @antiburn/desktop exec tauri build --features distribution --target "${{ matrix.target }}" --no-bundle
 
   boundary:
     name: whole-tree source boundary
