@@ -539,6 +539,31 @@ jobs:
           APPLE_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_TEAM_ID || '' }}
+          # The consented analytics channel (D-027). Injected here and
+          # nowhere else: neither the endpoint nor the operator's name is in
+          # the public tree, which is what makes a build from a clean
+          # checkout provably unable to transmit.
+          #
+          # Deliberately not a hard requirement, unlike the updater key. An
+          # absent secret arrives as an empty string, `config::endpoint()`
+          # reads that as unconfigured, and the result is a release that
+          # works in every respect except that it reports nothing. That is a
+          # degraded build, not a broken one, so it must not fail the release
+          # the way an unsigned update would.
+          #
+          # Setting ANTIBURN_ANALYTICS_URL as a repository secret is what turns
+          # this channel on for real people, so it is also the deadline for
+          # docs/privacy-policy.md. That file is a skeleton: nine sections are
+          # marked [TO BE COMPLETED] because they are the operator's decisions
+          # — retention, whether the receiver logs IP, sub-processors, the
+          # legal entity — and deviations D-28 places them there deliberately,
+          # rather than in the app, because the client cannot keep a promise
+          # about what happens after delivery. Answer them and link the policy
+          # from Settings -> Privacy before adding the secret, not after. Until
+          # the secret exists no build transmits, which is why this is
+          # sequencing rather than a blocker.
+          ANTIBURN_ANALYTICS_URL: ${{ secrets.ANTIBURN_ANALYTICS_URL }}
+          ANTIBURN_ANALYTICS_OPERATOR: ${{ secrets.ANTIBURN_ANALYTICS_OPERATOR }}
           # linuxdeploy cannot mount a FUSE filesystem on a GitHub runner.
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |

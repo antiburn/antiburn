@@ -13,7 +13,13 @@ import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
 import { indexOfSession } from "../lib/activityEntries"
 import { attentionBanners } from "../lib/attention"
-import { DEFAULT_SETTINGS, openSettingsWindow } from "../lib/ipc"
+import {
+  DEFAULT_SETTINGS,
+  noteInteraction,
+  openSettingsWindow,
+  type LiveUsageSummaryPayload,
+  type ProviderUsageSummaryPayload,
+} from "../lib/ipc"
 import type { PopoverSurface } from "../lib/popoverHeight"
 import { PopoverSession, sessionKey } from "./popover/PopoverSession"
 import { UsageView } from "./popover/UsageView"
@@ -93,6 +99,22 @@ function SessionPaneLoading() {
       </div>
     </div>
   )
+}
+
+/**
+ * What the usage view had to show when it opened.
+ *
+ * The product question is whether an installation ever gets the provider's own
+ * limit figures or only antiburn's estimates from local transcripts. Three
+ * values answer that; a per-provider breakdown would answer it no better and
+ * would say more about the reader than the question needs.
+ */
+function usageEvidence(
+  usage: ProviderUsageSummaryPayload | null,
+  live: LiveUsageSummaryPayload,
+): "live" | "estimated_only" | "none" {
+  if (live.providers.length > 0) return "live"
+  return (usage?.providers.length ?? 0) > 0 ? "estimated_only" : "none"
 }
 
 /**
@@ -266,7 +288,18 @@ export function PopoverView() {
           expanded={limitsExpanded}
           onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
           refreshing={state.usageRefreshing}
-          onViewAll={() => session.setShowUsage(true)}
+          onViewAll={() => {
+            // The chips moved out of the footer and into this section, and the
+            // event moved with them: this is still the one place the reader
+            // asks for the full Usage view from the activity surface. Counts
+            // and a three-value evidence label, never a per-provider list.
+            noteInteraction({
+              kind: "usageViewed",
+              providers: state.usage?.providers.length ?? 0,
+              evidence: usageEvidence(state.usage, state.liveUsage),
+            })
+            session.setShowUsage(true)
+          }}
         />
 
         <div className="min-h-0 flex-1">
@@ -278,6 +311,18 @@ export function PopoverView() {
               days={windowDays}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return
+                // The card click, not the traversal inside a session — the
+                // question is how often the list leads anywhere, and the
+                // newer/older arrows would drown that out. Instrumented here
+                // at the call site rather than in `PopoverSession.openSession`,
+                // which the session pane also calls to open a sub-agent.
+                // Which agent, and native or WSL; never the distribution's
+                // name, which the reader chose.
+                noteInteraction({
+                  kind: "sessionOpened",
+                  agent: entry.agent,
+                  environment: entry.wslDistro ? "wsl" : "native",
+                })
                 session.openSession(subjectFor(entry))
               }}
               renderAgentIcon={renderAgentIcon}

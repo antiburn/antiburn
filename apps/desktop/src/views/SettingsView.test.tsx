@@ -357,7 +357,9 @@ describe("SettingsView", () => {
     const stored = await screen.findByRole("button", {
       name: "Visibility data stays on this machine",
     })
-    expect(screen.getByRole("button", { name: "Nothing is uploaded" })).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Your work is never uploaded" }),
+    ).toBeInTheDocument()
 
     // …and each opens into its receipts. Collapsed bodies are unmounted, so
     // the specifics genuinely appear on expansion rather than being hidden.
@@ -369,6 +371,117 @@ describe("SettingsView", () => {
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
     expect(screen.getByText(/antiburn cannot do this, by design/i)).toBeInTheDocument()
+  })
+
+  /// The analytics section is the one place this pane describes something
+  /// leaving the machine, so it is the one place vagueness would cost the most.
+  it("names every field the analytics channel sends, and what it never sends", async () => {
+    render(<SettingsView />)
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+
+    expect(
+      await screen.findByRole("switch", { name: "Send anonymised usage analytics" }),
+    ).toBeInTheDocument()
+
+    // What a reader sees without clicking anything: four headlines and
+    // nothing else. Collapsed disclosures are unmounted, so this is the
+    // entire always-visible contract — worth an assertion of its own, because
+    // a label quietly renamed or dropped would otherwise only show up as a
+    // missing body far below.
+    for (const headline of [
+      "Exactly what is sent",
+      "The two identifiers",
+      "How the starting default is chosen",
+      "What happens after it arrives",
+    ]) {
+      expect(screen.getByRole("button", { name: headline })).toBeInTheDocument()
+    }
+
+    // The complete enumeration, one assertion per field on the wire. The
+    // earlier version of this test sampled two of them, which is how five
+    // fields went unnamed in the pane while the copy claimed to list them all.
+    // `usage_analytics::event::Event` is the other half of this pair, and its
+    // `the_wire_payload_is_exactly_these_thirteen_fields` pins the same number
+    // from the Rust side.
+    const enumeration = screen.getByRole("button", { name: "Exactly what is sent" })
+    fireEvent.click(enumeration)
+    // The count sits beside the list it counts. The Rust guard
+    // `every_document_that_counts_the_fields_counts_the_same_number` greps
+    // this pane for that phrase, so it has to survive edits to this section.
+    expect(screen.getByText(/thirteen fields, and these are all of them/i)).toBeInTheDocument()
+    for (const field of [
+      /the word .desktop./i,
+      /a random id for the message, so a retry/i,
+      /a random installation id/i,
+      /a random id for this run of the app/i,
+      /the event name/i,
+      /when it happened/i,
+      /when it was delivered/i,
+      /your processor architecture/i,
+      /a count rounded to a range/i,
+      /a short label .* which setting you changed/i,
+      /a second such label when an event has two things/i,
+      /the app version/i,
+      /your operating system/i,
+    ]) {
+      expect(screen.getByText(field)).toBeInTheDocument()
+    }
+    // And the count itself, because the copy claims a number. A field added to
+    // the payload without a line here leaves the pane saying "thirteen" over a
+    // list of fourteen, which is the one way this enumeration can lie while
+    // every individual assertion above still passes.
+    //
+    // Anchored on the disclosure's own `aria-controls` rather than on a
+    // neighbouring paragraph: the body is a sibling of nothing predictable,
+    // and the id is the component's actual contract.
+    const body = document.getElementById(enumeration.getAttribute("aria-controls") ?? "")
+    expect(body?.querySelectorAll("li")).toHaveLength(13)
+    // The exclusions live in the same body as the list, so a reader checking
+    // one against the other does not have to open a second row to find them.
+    expect(
+      screen.getByText(/file paths, repository or branch names, token counts/i),
+    ).toBeInTheDocument()
+
+    // The rest of the receipts, each behind its own label. Opening them is the
+    // assertion as much as the text is — a body that failed to mount would
+    // read here as missing copy.
+    const open = (name: string) => fireEvent.click(screen.getByRole("button", { name }))
+
+    // Both identifiers, and the concession that a 30-day id plus a timestamp
+    // on every event reveals something. All three claims share one row, so
+    // all three are asserted from it.
+    open("The two identifiers")
+    expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument()
+    expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument()
+    expect(screen.getByText(/quitting antiburn ends it/i)).toBeInTheDocument()
+    // Shown to everyone, because the locale read it describes happens to
+    // everyone. Asserted unconditionally for the same reason — a regression
+    // that gated this row would pass a test that only ran it one way.
+    open("How the starting default is chosen")
+    expect(
+      screen.getByText(/nothing is looked up, nothing is asked of you/i),
+    ).toBeInTheDocument()
+    // Retention is the operator's, and the pane says so rather than promising
+    // something this build cannot keep.
+    open("What happens after it arrives")
+    expect(
+      screen.getByText(/are the operator’s decisions rather than the app’s/i),
+    ).toBeInTheDocument()
+  })
+
+  /// A build with no injected endpoint cannot transmit, and the row says so
+  /// rather than offering a live switch over nothing. `app_info` in these
+  /// tests reports the shell's real answer, which for a test build is false.
+  it("disables the analytics switch in a build that has no endpoint", async () => {
+    render(<SettingsView />)
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+
+    const toggle = await screen.findByRole("switch", {
+      name: "Send anonymised usage analytics",
+    })
+    expect(toggle).toBeDisabled()
+    expect(toggle).not.toBeChecked()
+    expect(screen.getByText(/this build has no analytics endpoint/i)).toBeInTheDocument()
   })
 
   it("adds a scan folder through the directory picker", async () => {

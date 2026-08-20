@@ -7,9 +7,13 @@ The app discovers the coding-agent sessions already on this machine, analyzes
 them with the engine, and shows activity, per-session analytics, and
 API-equivalent cost estimates. Everything runs on the device, as you: antiburn
 needs no antiburn account, server, or backend of any kind, and nothing about
-your sessions is uploaded. The one call it makes to a service of ours is an
-optional convenience the app never depends on — the updater plugin, registered
-in release builds only, asking whether a newer version exists.
+your sessions is uploaded. It makes two calls to a service of ours, neither of
+which it depends on: the updater plugin, registered in release builds only,
+asking whether a newer version exists; and the anonymised usage-analytics
+channel in [`src-tauri/src/usage_analytics`](src-tauri/src/usage_analytics),
+which reports on the application itself behind a control the reader meets on
+the first-run Ready screen. A build with no endpoint injected — which is every
+build from a clean checkout — sends nothing at all.
 
 ## Layout
 
@@ -119,9 +123,11 @@ Three independent checks, none of which relies on review:
    scans every file for prohibited concepts, including telemetry SDKs,
    commercial identifiers, and raw socket types.
 3. [`tests/no-exfiltration.test.ts`](tests/no-exfiltration.test.ts) walks
-   `src/` and fails on any browser networking API (`fetch`, `XMLHttpRequest`,
-   `WebSocket`, `EventSource`, `sendBeacon`, remote dynamic imports): the
-   webview itself talks to nothing. It lives outside `src/` on purpose: it
+   `src/` and fails on any imported telemetry, analytics, or crash-reporting
+   SDK, and on any hardcoded reporting host. Browser networking APIs are
+   permitted — the renderer may call a provider with the reader's own
+   credentials — and the usage-analytics channel is Rust-side, so the renderer
+   still imports no reporting client. It lives outside `src/` on purpose: it
    names every API it bans, so a guard inside the tree it checks would trip
    its own check.
 

@@ -20,11 +20,16 @@
  *    imported analytics SDK or a hardcoded reporting host would be invisible
  *    to both of the above.
  *
- * The one deliberate exception is the updater plugin, which is registered in
- * release builds only and talks to antiburn's own release feed — a feed that
- * carries no reader data — never to anything carrying session data. It is a
- * Tauri plugin invoked over IPC, so it needs no browser networking API and
- * does not appear here.
+ * There are two deliberate exceptions, and both live in the shell rather than
+ * here. The updater plugin is registered in release builds only and talks to
+ * antiburn's own release feed — a feed that carries no reader data. The
+ * anonymised usage-analytics channel (`src-tauri/src/usage_analytics`, recorded
+ * as D-027 and deviations D-28) reports on the application itself, behind a
+ * control the reader meets before anything is sent. Neither is reachable from
+ * the renderer: both are Rust-side and invoked over IPC, so they need no browser
+ * networking API and do not appear here. That is the point of this file
+ * continuing to pass unchanged — the renderer, which is the half that handles
+ * session content, still reaches nothing.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs"

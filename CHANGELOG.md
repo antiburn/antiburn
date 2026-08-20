@@ -123,6 +123,21 @@ shows its unidentified-developer warning.
 
 ### Added
 
+- Anonymised usage analytics about the application itself, on by default with
+  the control on the first-run Ready screen and in Settings → Privacy. Events
+  carry thirteen fields — platform, a per-message id, a rotating installation
+  identifier, an in-memory identifier for one run of the app, the event name,
+  capture and delivery timestamps, architecture, a bucketed count, a
+  closed-vocabulary label, a second such label where an event has two things
+  worth telling apart, app version, and operating system — and never
+  sessions, prompts, titles, file paths, repository names, token counts, costs,
+  or credentials. Settings → Privacy enumerates all of them, and
+  `docs/usage-analytics.md` carries the full catalog plus the commands to check
+  any of it yourself. Nothing is sent until the first run completes; in the EU,
+  the EEA, and the UK the control starts off rather than on; and a build with no
+  endpoint injected sends nothing at all. Recorded as D-027 in
+  `docs/oss/source-denylist.toml` and D-28 in `docs/deviations.md`, which also
+  resolves D-5.
 - **Launch antiburn when you sign in.** New installs opt in by default from the
   final setup step so the menu-bar or tray utility is available without being
   opened by hand. The same switch is available later in Settings → General,

@@ -37,6 +37,50 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
     );
 }
 
+/// Opting out is a withdrawal, not a pause: nothing queued survives it, and
+/// neither does the identifier that would let a later opt-in be joined to it.
+#[test]
+fn opting_out_destroys_the_queue_and_the_installation_identity() {
+    let store = store();
+    store
+        .set_usage_analytics_identity("11111111-1111-4111-8111-111111111111")
+        .unwrap();
+    store
+        .queue_usage_analytics_event("app_launched", "{}")
+        .unwrap();
+    assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+    assert!(store.usage_analytics_identity().unwrap().is_some());
+
+    store.clear_usage_analytics().unwrap();
+
+    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
+    assert!(store.usage_analytics_identity().unwrap().is_none());
+}
+
+/// An undeliverable event is dropped rather than retried forever: a queue that
+/// grows without bound on a machine that is offline for a week is a
+/// disk-space bug, not a feature.
+#[test]
+fn events_are_given_up_on_after_a_bounded_number_of_attempts() {
+    let store = store();
+    store
+        .queue_usage_analytics_event("app_launched", "{}")
+        .unwrap();
+    let ids: Vec<i64> = store
+        .pending_usage_analytics_events(10)
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+
+    for _ in 0..2 {
+        assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 0);
+        assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+    }
+    assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 1);
+    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
+}
+
 #[test]
 fn consent_grants_round_trip_and_revoke_individually() {
     let store = store();
@@ -146,6 +190,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
                 at90: false,
             },
             live_usage_enabled: true,
+            usage_analytics_enabled: false,
             overview_limits_expanded: false,
         })
         .unwrap();

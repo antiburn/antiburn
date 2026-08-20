@@ -40,15 +40,20 @@ import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
  * header carries a `data-tauri-drag-region` strip on macOS, where the window's
  * title bar is an overlay and the webview covers its area.
  *
- * ## Deliberate copy deviation
+ * ## The analytics control
  *
- * The ratified onboarding row specifies Welcome copy that mentions "anonymous
- * analytics is sent only after a separate, default-off opt-in". This build
- * ships **no analytics of any kind** — no client, no consent surface, no
- * endpoint — so promising a control that does not exist would be the exact
- * failure the honesty rule is there to prevent. The Welcome step says what is
- * true instead, and the divergence is recorded rather than hidden. If analytics
- * are ever built, the copy and the matrix row can be reconciled then.
+ * The ratified onboarding row asks Welcome to *mention* anonymised analytics
+ * and to put the opt-in somewhere separate. That is the shape here: Welcome
+ * names the channel and says it is optional, and the switch itself is on the
+ * Ready step in its own card, which points at Settings → Privacy for later.
+ * The matrix specifies default-off while this build ships default-on — a real
+ * divergence, recorded as D-28 rather than smoothed over. D-5 tracks the
+ * channel itself.
+ *
+ * The switch is on the *last* step rather than the first because this flow
+ * writes nothing until its final button. A reader who turns analytics off on
+ * the Ready screen is never counted once, rather than counted and then
+ * withdrawn — and that is only true while this step is the one that commits.
  */
 
 export interface OnboardingFlowProps {
@@ -88,6 +93,13 @@ export interface OnboardingFlowProps {
   /** Whether the installed app should start after the reader signs in. */
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
+  /** The consented analytics channel. On by default, and nothing is sent
+   *  until this flow finishes — so switching it off here means never. */
+  usageAnalyticsEnabled: boolean
+  onAnalyticsEnabledChange: (enabled: boolean) => void
+  /** Whether this build can send analytics at all. False in development and
+   *  in any build from a clean checkout, where the row says so instead. */
+  usageAnalyticsSupported: boolean
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void
   finishing: boolean
@@ -138,7 +150,7 @@ function StepDots({ step }: { step: Step }) {
  */
 const CENTRED_COLUMN = "mx-auto flex max-w-[440px] flex-col items-center"
 
-function Welcome() {
+function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
@@ -152,24 +164,36 @@ function Welcome() {
           draggable={false}
         />
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
-          Everything stays on this machine
+          Stop hitting your token limits.
         </h2>
+        {/* One paragraph, not a claim and a footnote walking it back. This
+            screen used to be headed "Everything stays on this machine", an
+            absolute the app cannot keep, so every line under it spent words
+            retreating from it. The heading now names what antiburn is for
+            and the privacy promise sits in the sentence below, where it is
+            stated exactly rather than as a slogan.
+
+            "only" closes the list, which is what makes naming the
+            destinations a complete disclosure rather than a sample. It was
+            briefly a count — "for three things" — and a count is the worse
+            way to say this: it goes stale on any change to the list, where
+            "only" goes stale solely on the change that matters, a
+            destination missing from the sentence. Either way this line is
+            part of the network surface: adding an outbound call means
+            editing it. Gated on support, because a build with no injected
+            endpoint cannot send analytics at all and this is the first
+            screen anyone sees. Settings → Privacy remains the long form. */}
         <p className="mt-2 text-balance type-callout text-label-secondary">
-          antiburn reads the coding-agent sessions already on your disk, analyzes them here, and
-          shows you what they cost and how they went. No account, nothing uploaded, and no usage
-          data collected.
-        </p>
-        {/* This sentence has to keep matching what "local" actually promises:
-            antiburn goes online as your own agent — reading a provider's
-            current usage figures with your credentials, checking GitHub
-            Releases for new versions — and what makes it local is that none
-            of that depends on any service of ours, and nothing about you
-            goes to one. */}
-        <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          antiburn goes online as your own agent — to read a provider&rsquo;s current usage
-          figures with your own credentials, and to check GitHub Releases for new versions. None
-          of it needs an antiburn account or an antiburn server — there isn&rsquo;t one — and
-          nothing about you or your sessions goes anywhere else.
+          antiburn reads the coding-agent sessions already on your disk and shows what they
+          cost, how they went, and how close your limits are. No account, and nothing from your
+          sessions is ever uploaded.{" "}
+          {usageAnalyticsSupported
+            ? // The opt-out gets its own sentence. Trailing the list, "which you
+              // can opt out of" modified all three items — and a reader cannot
+              // opt out of a version check. "only" still closes the list; what
+              // moved is the scope of the offer.
+              "It only goes online for your provider’s usage figures, a version check, and anonymised analytics about the app. You can opt out of the analytics."
+            : "It only goes online for your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself."}
         </p>
       </div>
     </div>
@@ -458,11 +482,17 @@ function Ready({
   sessions,
   launchAtLogin,
   onLaunchAtLoginChange,
+  usageAnalyticsEnabled,
+  onAnalyticsEnabledChange,
+  usageAnalyticsSupported,
   finishError,
 }: {
   sessions: number
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
+  usageAnalyticsEnabled: boolean
+  onAnalyticsEnabledChange: (enabled: boolean) => void
+  usageAnalyticsSupported: boolean
   finishError: string | null
 }) {
   return (
@@ -488,6 +518,31 @@ function Ready({
             description="Starts automatically in the menu bar. Change anytime in Settings."
             checked={launchAtLogin}
             onChange={onLaunchAtLoginChange}
+          />
+        </Card>
+        {/* Its own card, with a gap, rather than a second row in the one
+            above. Both switches default on, and a consent control stacked
+            under a convenience control reads as part of it — one glance,
+            one decision, which is exactly the reading this must not get.
+            Nothing has been sent at this point: the flow writes the setting
+            only when the button below is pressed, so switching this off here
+            means no event is ever recorded rather than recorded and then
+            withdrawn. */}
+        <Card className="mt-3 w-full text-left">
+          <ToggleRow
+            label="Send anonymised usage analytics"
+            description={
+              usageAnalyticsSupported
+                ? // Names no recipient. Settings → Privacy does, and is one click
+                  // from here; a first-run switch reads better without a party
+                  // the reader has no context for yet.
+                  "Only sends which features are used, and what breaks. Never anything to do with your sessions. Change anytime in Settings → Privacy."
+                : "This build has no analytics endpoint, so nothing can be sent from it."
+            }
+            checked={usageAnalyticsSupported && usageAnalyticsEnabled}
+            onChange={onAnalyticsEnabledChange}
+            dimmed={!usageAnalyticsSupported}
+            disabled={!usageAnalyticsSupported}
           />
         </Card>
         {finishError ? (
@@ -521,6 +576,9 @@ export function OnboardingFlow({
   onWindowDaysChange,
   launchAtLogin,
   onLaunchAtLoginChange,
+  usageAnalyticsEnabled,
+  onAnalyticsEnabledChange,
+  usageAnalyticsSupported,
   onFinish,
   finishing,
   finishError,
@@ -578,7 +636,7 @@ export function OnboardingFlow({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {step === "welcome" && <Welcome />}
+        {step === "welcome" && <Welcome usageAnalyticsSupported={usageAnalyticsSupported} />}
         {step === "sources" && (
           <Sources
             defaultRoots={defaultRoots}
@@ -612,6 +670,9 @@ export function OnboardingFlow({
             sessions={scanStatus?.sessions ?? 0}
             launchAtLogin={launchAtLogin}
             onLaunchAtLoginChange={onLaunchAtLoginChange}
+            usageAnalyticsEnabled={usageAnalyticsEnabled}
+            onAnalyticsEnabledChange={onAnalyticsEnabledChange}
+            usageAnalyticsSupported={usageAnalyticsSupported}
             finishError={finishError}
           />
         )}

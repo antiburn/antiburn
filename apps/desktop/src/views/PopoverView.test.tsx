@@ -275,6 +275,54 @@ describe("PopoverView", () => {
     expect(screen.queryByRole("heading", { name: "Session Analytics" })).not.toBeInTheDocument()
   })
 
+  it("notes an opened session as an agent and an environment, and nothing else", async () => {
+    render(<PopoverView />)
+
+    fireEvent.click(await screen.findByText("Wire the tray popover"))
+
+    const notes = invoke.mock.calls.filter(([name]) => name === "note_interaction")
+    // Exactly one. The card is the only thing instrumented: the newer/older
+    // traversal inside a session replaces the top of the stack and is
+    // deliberately silent, because counting it would drown out the question
+    // this event exists to answer — how often the list leads anywhere at all.
+    expect(notes).toHaveLength(1)
+    expect(invoke).toHaveBeenCalledWith("note_interaction", {
+      interaction: { kind: "sessionOpened", agent: "claude-code", environment: "native" },
+    })
+    // The shape is the guarantee. Nothing identifying the session itself may
+    // ride along, and the shell would refuse it if it did — this asserts the
+    // caller does not even try.
+    const [, payload] = invoke.mock.calls.find(([name]) => name === "note_interaction") ?? []
+    expect(Object.keys((payload as { interaction: object }).interaction).sort()).toEqual([
+      "agent",
+      "environment",
+      "kind",
+    ])
+  })
+
+  it("notes an opened usage view with a bucketable count and what it could show", async () => {
+    render(<PopoverView />)
+
+    // The chips moved into the usage-limits section in #64, and the name
+    // matches the provider rather than the whole label because that section
+    // composes it differently — as the chips' own tests do. The chip is the
+    // fixture's Codex, not its Anthropic: this row is drawn from providers
+    // reporting live windows, where the old footer drew from local estimates.
+    fireEvent.click(await screen.findByRole("button", { name: /codex/i }))
+    fireEvent.click(await screen.findByRole("button", { name: "All provider usage" }))
+
+    // `live`, and it cannot currently be anything else. The section returns
+    // null unless some provider reports live windows, and it holds the only
+    // route to the Usage view — so `usageEvidence`'s other two values are
+    // unreachable from the sole call site. The field is kept as it is rather
+    // than narrowed here, because which way to close that gap — re-siting the
+    // event, adding a second entry point, or dropping the distinction — is a
+    // product decision and not this merge's to make.
+    expect(invoke).toHaveBeenCalledWith("note_interaction", {
+      interaction: { kind: "usageViewed", providers: 1, evidence: "live" },
+    })
+  })
+
   it("warns before an export and only writes once a destination is chosen", async () => {
     confirmDialog.mockResolvedValue(true)
     saveDialog.mockResolvedValue("/home/avery/Desktop/antiburn-session.json")
@@ -504,7 +552,7 @@ describe("PopoverView", () => {
 
     await screen.findByText("Wire the tray popover")
     expect(
-      screen.queryByRole("heading", { name: "Everything stays on this machine" }),
+      screen.queryByRole("heading", { name: "Stop hitting your token limits." }),
     ).not.toBeInTheDocument()
   })
 })

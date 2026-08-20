@@ -23,7 +23,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025"]
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025", "D-027"]
 # D-025 (maintainer decision, 2026-08-18; definition of "local" in docs/deviations.md D-27):
 # fixes the boundary this manifest draws around what the installed app may DO.
 # antiburn is local in that it needs no service of antiburn's; as the reader's
@@ -39,6 +39,33 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # technique.) Every IP/licensing and synthetic-fixture rule here — which governs
 # what SOURCE may enter the repository, a separate question from what the app may
 # do — stands unchanged.
+# The gap at D-026 in the array above is deliberate, not a slip: that number
+# is allocated to a decision landing on its own branch. Two branches picked
+# the next free ID at the same time and this one yielded, being the later
+# claim; the register is append-only, so the number stays spent either way.
+# D-027 (maintainer decision, 2026-08-18; deviations register D-5 and D-28):
+# amends no-data-exfiltration below to permit exactly one first-party endpoint —
+# anonymised events about the application itself, carrying the app version,
+# operating system, architecture, a rotating installation identifier, and named
+# events, and never session content, transcripts, prompts, paths, repository or
+# branch names, credentials, or unbucketed counts. The endpoint and the
+# operator's display name are injected at build time and appear nowhere in this
+# tree, so a build from a clean public checkout transmits nothing at all. The
+# reader meets the control before the first event is sent, and antiburn stays
+# fully functional with it off — which is what preserves D-025's first clause,
+# that the app needs no service of antiburn's to work. Third-party telemetry,
+# analytics, and crash-reporting SDKs remain denied without exception, as does
+# disclosure of anything the reader's own work produced.
+# Provenance: the wire format is the private collector's documented
+# POST /v1/track contract, implemented in apps/desktop/src-tauri/src/
+# usage_analytics from that written contract. No source was copied, so this
+# needs no source-allowlist rule and carries ordinary Git/DCO provenance —
+# the same footing as the store-backed ConsentGrants implementation under
+# D-024. The contract's identify half, its userId/orgId fields, and its
+# stable cross-surface identifier are deliberately NOT implemented: antiburn
+# has no account to stitch to, and a stable identifier would defeat the
+# rotation D-28 relies on. The device-telemetry snapshot is a separate
+# private system and is not ported, permitted, or planned.
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # startup-registration, disk-space-monitor, tray-title-attributed-string,
 # notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine.
@@ -196,10 +223,11 @@ patterns = [
   "telemetry, analytics, crash-reporting, or product-metrics SDK",
   "reporting the reader's sessions, usage, prompts, or credentials to an antiburn-operated server",
   "sending session, transcript, usage, or credential data to any party that did not issue it",
-  "a first-party or third-party reporting, ingest, or beacon endpoint",
-  "phoning home on launch, on schedule, or on error with machine-identifying data",
+  "a third-party reporting, ingest, or beacon endpoint",
+  "a first-party endpoint carrying anything the reader's own work produced",
+  "phoning home with machine-identifying data, or with any field the D-027 event schema does not name",
 ]
-reason = "D-025 permits any local capability but draws one hard line: antiburn discloses the reader's data to no party that does not already hold it. Returning the reader's own credential to the provider that issued it, to read that provider's own figures, is not exfiltration and is allowed; disclosure to antiburn or to a stranger is the harm this rule names. Enforced mechanically by boundary.rs, check-boundary.mjs, and apps/desktop/tests/no-exfiltration.test.ts. The update check (a release feed carrying no reader data) is the one permitted first-party call and is exempt."
+reason = "D-025 permits any local capability but draws one hard line: antiburn discloses the reader's data to no party that does not already hold it. Returning the reader's own credential to the provider that issued it, to read that provider's own figures, is not exfiltration and is allowed; disclosure to antiburn or to a stranger is the harm this rule names. Enforced mechanically by boundary.rs, check-boundary.mjs, and apps/desktop/tests/no-exfiltration.test.ts. The update check (a release feed carrying no reader data) is one permitted first-party call and is exempt. D-027 adds the second and last: the anonymised application-event channel recorded as D-28, which carries no session content, no credential, and no machine-identifying data, is gated on a control the reader meets before anything is sent, and is inert in any build without a configured endpoint. Both exemptions are narrow, and neither licenses an SDK."
 
 [[rule]]
 id = "cue-and-realtime-integrations"

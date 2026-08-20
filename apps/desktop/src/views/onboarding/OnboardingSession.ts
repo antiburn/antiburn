@@ -5,8 +5,10 @@
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { applyTheme } from "../../lib/appearance"
+import { analyticsDefaultsOff } from "../../lib/euLocale"
 import {
   addScanRoot,
+  appInfo,
   cancelScan,
   defaultScanRoots,
   finishOnboarding,
@@ -48,6 +50,15 @@ export type OnboardingSnapshot = {
   loadError: string | null
   activityWindowDays: number
   launchAtLogin: boolean
+  /** The consent draft. Written only by `finish`, so a reader who abandons
+   *  the flow — or turns this off on the Ready screen — is never counted. */
+  usageAnalyticsEnabled: boolean
+  /** Whether this build can transmit at all. Read from the shell rather than
+   *  assumed: a clean checkout has no endpoint, and the Ready screen says so
+   *  instead of offering a switch over nothing. */
+  usageAnalyticsSupported: boolean
+  /** Who receives the events, named rather than implied. */
+  usageAnalyticsOperator: string | null
   scanRoots: string[]
   defaultRoots: string[]
   permissions: FolderPermissions
@@ -99,6 +110,12 @@ export class OnboardingSession {
       loadError: null,
       activityWindowDays: 7,
       launchAtLogin: true,
+      // On by default, except where it has to be opted into rather than out
+      // of — see `analyticsDefaultsOff`. The control sits in the same place
+      // either way; only its starting position moves.
+      usageAnalyticsEnabled: !analyticsDefaultsOff(),
+      usageAnalyticsSupported: false,
+      usageAnalyticsOperator: null,
       scanRoots: [],
       defaultRoots: [],
       permissions: EMPTY_PERMISSIONS,
@@ -134,6 +151,10 @@ export class OnboardingSession {
 
   setLaunchAtLogin = (enabled: boolean): void => {
     this.update({ launchAtLogin: enabled, finishError: null })
+  }
+
+  setAnalyticsEnabled = (enabled: boolean): void => {
+    this.update({ usageAnalyticsEnabled: enabled, finishError: null })
   }
 
   addScanRoot = async (): Promise<void> => {
@@ -180,7 +201,11 @@ export class OnboardingSession {
     if (this.snapshot.finishing) return
     this.update({ finishing: true, finishError: null })
     try {
-      await finishOnboarding(this.snapshot.activityWindowDays, this.snapshot.launchAtLogin)
+      await finishOnboarding(
+        this.snapshot.activityWindowDays,
+        this.snapshot.launchAtLogin,
+        this.snapshot.usageAnalyticsEnabled,
+      )
     } catch (error) {
       this.update({
         finishing: false,
@@ -209,9 +234,10 @@ export class OnboardingSession {
       }
 
       const scanVersion = this.scanEventVersion
-      const [settings, scanRoots, defaultRoots, scanStatus, permissions, repositories] =
+      const [settings, info, scanRoots, defaultRoots, scanStatus, permissions, repositories] =
         await Promise.all([
           getSettings(),
+          appInfo().catch(() => null),
           listScanRoots().catch(() => []),
           defaultScanRoots().catch(() => []),
           getScanStatus().catch(() => null),
@@ -228,6 +254,15 @@ export class OnboardingSession {
         loadError: null,
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
+        // A store that has never been written still reports the shell's
+        // default, which is unconditional `true` — so the jurisdiction-aware
+        // default is applied here, where the reader's locale is visible, and
+        // only while onboarding has not yet committed an answer.
+        usageAnalyticsEnabled: settings.onboardingCompleted
+          ? settings.usageAnalyticsEnabled
+          : settings.usageAnalyticsEnabled && !analyticsDefaultsOff(),
+        usageAnalyticsSupported: info?.usageAnalyticsSupported ?? false,
+        usageAnalyticsOperator: info?.usageAnalyticsOperator ?? null,
         scanRoots,
         defaultRoots,
         permissions,

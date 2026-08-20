@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -189,4 +189,42 @@ DELETE FROM setting WHERE key = 'liveUsageEnabled';
 const V4: &str = r#"
 ALTER TABLE session ADD COLUMN activity_source TEXT NOT NULL DEFAULT 'mtime';
 ALTER TABLE session ADD COLUMN activity_cursor TEXT NOT NULL DEFAULT '';
+"#;
+
+/// v5 — the anonymised application-event queue (D-027, deviations D-28).
+///
+/// Numbered 4 on its own branch until this merge, where the activity migration
+/// above had already taken that index on `main`. Renumbering is only safe
+/// because no release ever carried the old number; a database built from the
+/// branch beforehand is stamped 4 and will abort here rather than diverge,
+/// which is the intended outcome and is repaired by rewinding it to 3.
+///
+/// # Data policy (schema-level contract)
+///
+/// These two tables are the one exception to the rule that nothing derived
+/// from a reader's work leaves this machine. `payload` holds exactly what
+/// `usage_analytics::event::Event` serializes and nothing else; a migration
+/// that let a path, a repository name, a title, a credential, or an unbucketed
+/// count in here would break the governance record that permits the table to
+/// exist at all.
+///
+/// `attempts` bounds the queue by age of failure, as `store::mod` bounds it by
+/// row count. Opting out deletes every row in both tables.
+const V5: &str = r#"
+CREATE TABLE usage_analytics_event (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT NOT NULL,
+    payload   TEXT NOT NULL,
+    queued_at TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
+-- One row, ever. The identifier is random, is not derived from any machine
+-- fact, and is rotated on a schedule so events cannot be joined into a
+-- longitudinal profile.
+CREATE TABLE usage_analytics_identity (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    install_id TEXT NOT NULL,
+    minted_at  TEXT NOT NULL
+) STRICT;
 "#;

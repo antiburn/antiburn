@@ -449,6 +449,11 @@ pub struct AppSettings {
     /// [`AppSettings::live_usage_active`] for the second, unconditional gate
     /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
+    /// The consented analytics channel (D-027, deviations D-28). On by
+    /// default for a new install, which meets the control on the Ready
+    /// screen before anything is sent; off for a store that finished
+    /// onboarding under copy that promised no analytics at all.
+    pub usage_analytics_enabled: bool,
     /// Whether the popover's usage-limits section is expanded to its
     /// per-provider rows, rather than collapsed to the chip row. Purely a
     /// display preference — it never gates a fetch — so it defaults open and
@@ -487,6 +492,14 @@ impl Default for AppSettings {
             // not sit behind a first-run choice. The switch is the opt-out
             // for a reader who wants no background traffic at all.
             live_usage_enabled: true,
+            // On by default too, but for a different reason and with a
+            // different bar: this one reports on antiburn itself rather than
+            // asking a provider about the reader, so the reader is shown it on
+            // the Ready screen before a single event is sent — switching it
+            // off there means nothing ever leaves the machine.
+            // `settings_from` downgrades this to false for a database that
+            // predates the setting.
+            usage_analytics_enabled: true,
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,

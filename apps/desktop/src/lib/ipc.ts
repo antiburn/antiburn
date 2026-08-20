@@ -106,6 +106,16 @@ export interface AppSettings {
    */
   liveUsageEnabled: boolean
   /**
+   * The consented analytics channel (D-027, deviations register D-28).
+   *
+   * On by default for a new install, which meets the control on the first-run
+   * Ready screen before anything can be sent; off for a store that finished
+   * onboarding under copy promising no analytics at all. Nothing is
+   * transmitted until onboarding completes, and no build without an injected
+   * endpoint transmits at all — see `AppInfo.usageAnalyticsSupported`.
+   */
+  usageAnalyticsEnabled: boolean
+  /**
    * Whether the popover's usage-limits section is expanded to its
    * per-provider rows, rather than collapsed to the chip row. Purely a
    * display preference — it never gates a fetch — so it defaults open and
@@ -134,6 +144,19 @@ export interface AppInfo {
    * update never renders a control implying it can.
    */
   updatesSupported: boolean
+  /**
+   * Whether this build can send consented analytics at all.
+   *
+   * Same rule as `updatesSupported`, for the same reason: derived shell-side
+   * from the build that is actually running, never from a compile-time flag.
+   * False in every development build and every build from a clean checkout of
+   * this repository, because the endpoint is injected at build time and this
+   * tree carries none.
+   */
+  usageAnalyticsSupported: boolean
+  /** Who receives those events, in the reader's own words. Null when this
+   *  build has no endpoint. */
+  usageAnalyticsOperator: string | null
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
@@ -553,6 +576,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestones5h: { at50: true, at75: true, at90: true },
   milestonesWeekly: { at50: true, at75: true, at90: true },
   liveUsageEnabled: true,
+  usageAnalyticsEnabled: true,
   overviewLimitsExpanded: true,
 }
 
@@ -697,20 +721,60 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("set_settings", { settings })
 }
 
+/**
+ * One interaction worth counting, in the shell's own closed vocabulary.
+ *
+ * Deliberately not `{ name: string; properties: Record<string, string> }`.
+ * The shell deserialises this into a Rust enum and refuses anything outside
+ * it, so the set of things that can ever be reported is fixed there rather
+ * than here — no call site in this webview can widen it, and none can put a
+ * path, a title, or a repository name into a payload. See
+ * `src-tauri/src/usage_analytics/event.rs`.
+ */
+export type Interaction =
+  | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
+  | {
+      kind: "usageViewed"
+      providers: number
+      evidence: "live" | "estimated_only" | "none"
+    }
+
+/**
+ * Report one interaction. Fire-and-forget, and silent on failure.
+ *
+ * The shell decides whether anything is actually recorded: this is inert
+ * unless the build has an endpoint, the reader has finished onboarding, and
+ * the switch in Settings → Privacy is on. Callers do not check, so there is
+ * one gate rather than two that can drift apart.
+ */
+export function noteInteraction(interaction: Interaction): void {
+  if (!hasShell()) return
+  void invoke("note_interaction", { interaction }).catch(() => {
+    // Analytics must never surface an error into something the reader asked
+    // for. A dropped event is not worth a line of user-facing text.
+  })
+}
+
 /** Commit the first-run choices and finish onboarding in one shell transition. */
 export async function finishOnboarding(
   activityWindowDays: number,
   launchAtLogin: boolean,
+  usageAnalyticsEnabled: boolean,
 ): Promise<AppSettings> {
   if (!hasShell()) {
     return {
       ...DEFAULT_SETTINGS,
       activityWindowDays,
       launchAtLogin,
+      usageAnalyticsEnabled,
       onboardingCompleted: true,
     }
   }
-  return invoke<AppSettings>("finish_onboarding", { activityWindowDays, launchAtLogin })
+  return invoke<AppSettings>("finish_onboarding", {
+    activityWindowDays,
+    launchAtLogin,
+    usageAnalyticsEnabled,
+  })
 }
 
 /** The sessions to show in the popover, newest first. */

@@ -161,6 +161,11 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         // whose signing key was never configured has no working updater, and
         // every piece of copy downstream is derived from this one flag.
         updates_supported: crate::updates::supported(&app),
+        // Same rule, same reason: derived from the build that is actually
+        // running rather than from a `cfg!`, so no copy downstream can offer
+        // a control this binary cannot honour.
+        usage_analytics_supported: crate::usage_analytics::available(),
+        usage_analytics_operator: crate::usage_analytics::operator().map(str::to_string),
     })
 }
 
@@ -199,17 +204,45 @@ pub fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
+    usage_analytics_enabled: bool,
 ) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved) = store
         .update_settings(|settings| {
             settings.activity_window_days = activity_window_days;
             settings.launch_at_login = launch_at_login;
+            // Written here and nowhere earlier. The draft the Ready screen
+            // holds is the reader's answer *before* anything can be sent —
+            // `usage_analytics::allowed` also requires the flag set on the next
+            // line, so switching analytics off on that screen means no event
+            // is ever recorded, rather than recorded and then withdrawn.
+            settings.usage_analytics_enabled = usage_analytics_enabled;
             settings.onboarding_completed = true;
         })
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
+    // After the transition, so the gate this event reads sees the saved flags.
+    // A reader who declined on the Ready screen records nothing at all.
+    crate::usage_analytics::record(
+        &app,
+        crate::usage_analytics::event::EventName::OnboardingFinished,
+        crate::usage_analytics::event::Facts::default(),
+    );
     Ok(saved)
+}
+
+/// Report one interaction from the renderer.
+///
+/// Infallible and silent: analytics that could fail an action the reader
+/// actually asked for would have their priorities inverted. The parameter is a
+/// closed enum rather than a name and a property map — see
+/// [`usage_analytics::event::Interaction`](crate::usage_analytics::event::Interaction).
+#[tauri::command]
+pub fn note_interaction(
+    app: tauri::AppHandle,
+    interaction: crate::usage_analytics::event::Interaction,
+) {
+    crate::usage_analytics::record_interaction(&app, interaction);
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
@@ -260,6 +293,46 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         || saved.disk_space_threshold_gb != previous.disk_space_threshold_gb
     {
         crate::disk_monitor::refresh_title(app);
+    }
+
+    // Consent changing is the queue's business: turning it off withdraws
+    // whatever is already queued rather than merely pausing it, and destroys
+    // the installation identifier so a later opt-in cannot be joined to this
+    // one. Routed through the same hub as every other consequence so the two
+    // can never drift apart.
+    crate::usage_analytics::handle_settings_transition(app, previous, saved);
+
+    // Which switch moved, never what it moved to, and only from this closed
+    // list. A key alone answers "is this control being found at all"; the
+    // value would start describing the reader's setup.
+    for (changed, key) in [
+        (
+            previous.live_usage_enabled != saved.live_usage_enabled,
+            "live_usage",
+        ),
+        (
+            previous.notifications_enabled != saved.notifications_enabled,
+            "notifications",
+        ),
+        (
+            previous.launch_at_login != saved.launch_at_login,
+            "launch_at_login",
+        ),
+        (
+            previous.discovery_paused != saved.discovery_paused,
+            "discovery_paused",
+        ),
+    ] {
+        if changed {
+            crate::usage_analytics::record(
+                app,
+                crate::usage_analytics::event::EventName::SettingToggled,
+                crate::usage_analytics::event::Facts {
+                    label: Some(key),
+                    ..Default::default()
+                },
+            );
+        }
     }
 
     let _ = app.emit(SETTINGS_CHANGED_EVENT, &saved);

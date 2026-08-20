@@ -90,12 +90,17 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # RFC 3339 stamps for the store's own timestamps.
 time = { version = "0.3", features = ["formatting", "parsing"] }
-# The scan scheduler. Excludes `net` and `process`: this crate never opens a
-# socket or spawns a child directly. The direct-fetch usage sources reach the
-# network through `reqwest`'s own bundled runtime instead, and the Codex
-# app-server fallback spawns synchronously through `std::process` — so this
-# feature list still names only what this crate's own async code needs.
+# The scan scheduler, and the timer the consented-analytics flusher sleeps on.
+# Excludes `net` and `process`: this crate never opens a socket or spawns a
+# child directly. The direct-fetch usage sources and the analytics channel
+# (D-027) both reach the network through `reqwest`'s own bundled runtime
+# instead, and the Codex app-server fallback spawns synchronously through
+# `std::process` — so this feature list still names only what this crate's own
+# async code needs.
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+# Sixteen unpredictable bytes for the rotating installation identifier. Already
+# in the tree via the TLS stack; declared directly so the use is visible.
+getrandom = "0.2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds

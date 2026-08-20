@@ -165,7 +165,7 @@ export function SettingsView() {
             {pane === "sources" && (
               <SourcesPane discoveryPaused={controller.settings.discoveryPaused} />
             )}
-            {pane === "privacy" && <PrivacyPane />}
+            {pane === "privacy" && <PrivacyPane {...controller} info={info} />}
             {pane === "notifications" && <NotificationsPane {...controller} />}
             {pane === "usage" && <UsagePane {...controller} />}
             {pane === "about" && (

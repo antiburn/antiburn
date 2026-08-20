@@ -50,6 +50,12 @@ pub use model::{
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
 
+/// How many undelivered analytics events are kept before the oldest are
+/// dropped. At the flusher's 50-per-15-minutes this is several hours of
+/// backlog, which is more than an ordinary outage needs and far less than an
+/// unbounded table on a reader's disk.
+const USAGE_ANALYTICS_QUEUE_LIMIT: u32 = 500;
+
 /// File name of the database inside the app data directory.
 ///
 /// Debug builds use their own file so a half-finished migration cannot damage
@@ -130,8 +136,15 @@ impl Store {
                 continue;
             }
             let tx = guard.transaction()?;
+            // The SQLite error is in the source chain either way, but a caller
+            // that formats with `{}` rather than `{:#}` prints this line alone
+            // — and tauri's setup hook is such a caller. A bare "migration 4
+            // failed" is exactly what a developer saw when a database built
+            // from an earlier numbering of these migrations met a table that
+            // already existed; naming the conflict is what makes it
+            // actionable rather than a trip to this file to guess.
             tx.execute_batch(sql)
-                .with_context(|| format!("migration {version} failed"))?;
+                .map_err(|error| anyhow::anyhow!("migration {version} failed: {error}"))?;
             // `pragma_update` cannot be parameterized, and `version` is derived
             // from the compiled-in migration list, never from input.
             tx.pragma_update(None, "user_version", version)?;
@@ -315,6 +328,121 @@ impl Store {
             "DELETE FROM consent_grant WHERE dir_name = ?1",
             params![dir_name],
         )?;
+        Ok(())
+    }
+
+    /* -----------------------------------------------------------------
+     * Anonymised application events (D-027, deviations D-28)
+     * ----------------------------------------------------------------- */
+
+    /// Queue one event for delivery. Callers hold the consent check; this is
+    /// storage, and a queue that decided policy for itself would be a second
+    /// place for the gate to drift out of step with the reader's choice.
+    ///
+    /// Bounded, and the bound is load-bearing rather than defensive. Events
+    /// now include interactions, which a reader can generate as fast as they
+    /// can click; a machine offline for a week would otherwise accumulate
+    /// them without limit in the reader's own database. The oldest go first —
+    /// the newest events are the ones still worth having, and a queue that
+    /// dropped the newest would report a machine's distant past forever.
+    pub fn queue_usage_analytics_event(&self, name: &str, payload: &str) -> Result<()> {
+        let connection = self.lock();
+        connection.execute(
+            "INSERT INTO usage_analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
+            params![name, payload, now_rfc3339()],
+        )?;
+        connection.execute(
+            "DELETE FROM usage_analytics_event WHERE id NOT IN
+                 (SELECT id FROM usage_analytics_event ORDER BY id DESC LIMIT ?1)",
+            params![USAGE_ANALYTICS_QUEUE_LIMIT],
+        )?;
+        Ok(())
+    }
+
+    /// The next batch to attempt, oldest first, as `(id, payload)`.
+    pub fn pending_usage_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare("SELECT id, payload FROM usage_analytics_event ORDER BY id LIMIT ?1")?;
+        let rows = statement.query_map(params![limit], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Forget events that were delivered.
+    pub fn drop_usage_analytics_events(&self, ids: &[i64]) -> Result<()> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        for id in ids {
+            tx.execute(
+                "DELETE FROM usage_analytics_event WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Count a failed delivery, and drop whatever has now failed too often.
+    ///
+    /// Returns how many rows were given up on. The flusher ignores it — a
+    /// dropped event is not worth a line of user-facing text, and analytics
+    /// that reported their own failures would have their priorities inverted.
+    /// It is returned so the give-up threshold is assertable from a test,
+    /// which is the only way that arm is exercised at all.
+    pub fn fail_usage_analytics_events(&self, ids: &[i64], max_attempts: u32) -> Result<usize> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        for id in ids {
+            tx.execute(
+                "UPDATE usage_analytics_event SET attempts = attempts + 1 WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        let dropped = tx.execute(
+            "DELETE FROM usage_analytics_event WHERE attempts >= ?1",
+            params![max_attempts],
+        )?;
+        tx.commit()?;
+        Ok(dropped)
+    }
+
+    /// The current installation identifier and when it was minted, if one has
+    /// been created. Absent until the reader's first consented event.
+    pub fn usage_analytics_identity(&self) -> Result<Option<(String, String)>> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare("SELECT install_id, minted_at FROM usage_analytics_identity WHERE id = 1")?;
+        let mut rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Mint or rotate the installation identifier.
+    pub fn set_usage_analytics_identity(&self, install_id: &str) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO usage_analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET install_id = excluded.install_id,
+                                           minted_at  = excluded.minted_at",
+            params![install_id, now_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Opting out: the queue and the identity go together, in one transaction.
+    ///
+    /// Both halves matter. Leaving the queue would send, on a later opt-in,
+    /// events the reader withdrew consent for; leaving the identity would let
+    /// a later opt-in be joined to the earlier one, which is the whole thing
+    /// the rotation exists to prevent.
+    pub fn clear_usage_analytics(&self) -> Result<()> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        tx.execute("DELETE FROM usage_analytics_event", [])?;
+        tx.execute("DELETE FROM usage_analytics_identity", [])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -887,6 +1015,21 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
+        // No stored answer means this database predates the setting. A fresh
+        // install takes the default and meets the control on the Ready screen;
+        // one that already finished onboarding was told analytics did not
+        // exist, so it stays off until the reader says otherwise. Upgrading
+        // must never start sending on somebody's behalf.
+        usage_analytics_enabled: stored
+            .get("usageAnalyticsEnabled")
+            .map(|value| value == "true")
+            .unwrap_or_else(|| {
+                let finished = stored
+                    .get("onboardingCompleted")
+                    .map(|value| value == "true")
+                    .unwrap_or(false);
+                !finished && defaults.usage_analytics_enabled
+            }),
         overview_limits_expanded: stored
             .get("overviewLimitsExpanded")
             .map(|value| value == "true")
@@ -964,6 +1107,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "liveUsageEnabled",
         bool_text(settings.live_usage_enabled)
+    ])?;
+    put.execute(params![
+        "usageAnalyticsEnabled",
+        bool_text(settings.usage_analytics_enabled)
     ])?;
     put.execute(params![
         "overviewLimitsExpanded",
