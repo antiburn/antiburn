@@ -187,6 +187,22 @@ test('reports a line height that differs from the base element rule', () => {
   assertFails(checkDesignDrift(fixture({ css })), 'type `body` lineHeight 1.4 != the base 1.6');
 });
 
+test('reports a type class that sets its own line height', () => {
+  const css = CSS.replace(
+    '.type-body {\n  font-size: 13px;',
+    '.type-body {\n  line-height: 1.2;\n  font-size: 13px;',
+  );
+  assertFails(checkDesignDrift(fixture({ css })), '.type-body sets its own line-height');
+});
+
+test('reports a documented shadow that no selector covers', () => {
+  const contract = CONTRACT.replace(
+    '  raised: "0 1px 2px rgb(0 0 0 / 0.15)"',
+    '  raised: "0 1px 2px rgb(0 0 0 / 0.15)"\n  sunken: "inset 0 1px 2px rgb(0 0 0 / 0.2)"',
+  );
+  assertFails(checkDesignDrift(fixture({ contract })), 'shadow.sunken has no selector');
+});
+
 test('reports a typography step with no class in the CSS', () => {
   const css = CSS.replace('.type-body {', '.type-other {');
   assertFails(checkDesignDrift(fixture({ css })), '.type-body not found');

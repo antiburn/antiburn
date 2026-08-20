@@ -295,6 +295,13 @@ export function checkDesignDrift(io = fileSystemIo()) {
 
   // Typography: the `.type-*` classes set size, weight, and tracking. The
   // line-height comes from the base element rules, so compare it to those.
+  // A step that sets its own line-height breaks that one-value assumption, and
+  // the contract could no longer state the leading once. Report it instead.
+  for (const m of cssAll.matchAll(/\.type-([\w-]+)\s*\{([\s\S]*?)\}/g)) {
+    if (/line-height:/.test(m[2])) {
+      fail(`typography \`${m[1]}\`: .type-${m[1]} sets its own line-height`);
+    }
+  }
   const baseLeading = /line-height:\s*([\d.]+)\s*;/.exec(cssAll)?.[1];
   for (const [name, t] of Object.entries(docTypography(fm))) {
     if (t.missing.length) {
@@ -365,8 +372,12 @@ export function checkDesignDrift(io = fileSystemIo()) {
     }
   }
 
-  // Shadows against the selectors that carry them.
+  // Shadows against the selectors that carry them. Every documented shadow
+  // needs a selector, or it is a value nothing compares.
   const shadow = docPairs(fm, 'shadow');
+  for (const key of Object.keys(shadow)) {
+    if (!(key in SHADOW_SELECTORS)) fail(`shadow.${key} has no selector to check it against`);
+  }
   for (const [key, selector] of Object.entries(SHADOW_SELECTORS)) {
     const css = cssBoxShadow(cssAll, selector);
     if (css.error) {
