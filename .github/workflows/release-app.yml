@@ -59,6 +59,8 @@ jobs:
       # Third-party actions are pinned by immutable commit SHA.
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -70,6 +72,9 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: node scripts/verify-release-version.mjs app "$TAG"
+
+      - name: Verify the embedded engine is a released source tree
+        run: node scripts/verify-app-engine-release.mjs
 
       # The updater is the one network-capable surface in the application, and
       # an update it cannot verify is worse than no update at all. Both halves

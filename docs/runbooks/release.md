@@ -172,7 +172,15 @@ Check the whole set locally before pushing anything:
 
 ```bash
 node scripts/verify-release-version.mjs app antiburn-v<version>
+node scripts/verify-app-engine-release.mjs
 ```
+
+The second check proves that the complete in-tree `antiburn-local` crate is
+identical to the annotated `antiburn-local-v<version>` tag named by its own
+manifest, that the tag is an ancestor of the application commit, and that the
+desktop lockfile records the same engine version. If it fails, cut the engine
+release first. Application releases never ship an unreleased engine tree under
+an older component version.
 
 ### 2.3 Write the release notes
 
@@ -294,6 +302,12 @@ If anything here is wrong, **do not fix the assets**. Go to
 The engine is consumed as a Git dependency pinned to a tag; there is no
 crates.io publish. The release is a reviewable source snapshot with a checksum
 and a provenance record.
+
+The desktop path-depends on the in-tree engine while developing, but an
+application release is accepted only when that entire engine subtree exactly
+matches an annotated engine release tag. Any engine change since the last tag
+therefore makes an engine release the required first half of the next
+application release.
 
 1. Bump `version` in `crates/antiburn-local/Cargo.toml`, refresh its lockfile
    (`cargo update --manifest-path crates/antiburn-local/Cargo.toml --package antiburn-local`),

@@ -41,7 +41,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Test the CI control plane
-        run: node --test scripts/classify-ci-changes.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
 
       - name: Classify the diff
         id: changes
@@ -235,6 +235,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Install Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -252,6 +254,7 @@ jobs:
           set -euo pipefail
           version=$(node -p "require('./apps/desktop/package.json').version")
           node scripts/verify-release-version.mjs app "antiburn-v${version}"
+          node scripts/verify-app-engine-release.mjs
           grep -q "^## \[${version}\] - " CHANGELOG.md
           cargo metadata --locked --no-deps --format-version 1 \
             --manifest-path apps/desktop/src-tauri/Cargo.toml > /dev/null
