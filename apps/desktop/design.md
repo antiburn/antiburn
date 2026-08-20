@@ -10,11 +10,13 @@ sources:
   - src/styles/controls.css
   - src/styles/motion.css
   - src/styles/platform-controls.css
+  - src/styles/hud.css
   - src/styles/session-analytics-colors.css
+  - src/styles/session-rows.css
   - src/components/ui/text-roll.css
 colors:
   # name → Tailwind utility via bg-/text-/border-<name>
-  # light = the default :root palette · dark = the explicit [data-theme="dark"] palette
+  # Both values are the explicit [data-theme="light"|"dark"] palettes.
   # System-preference (@media) values are noted where they differ from the explicit ones.
   surface:
     light: "rgb(255 255 255 / 0.58)" # reduced-transparency: rgb(255 255 255)
@@ -100,6 +102,16 @@ colors:
   agent-mark: # vendor brand-mark ink; see the Vendor brand marks note below
     light: "rgb(38 37 30)"
     dark: "rgb(247 247 244)"
+  # Floating-HUD sub-palette only (src/styles/hud.css)
+  burn:
+    light: "rgb(255 77 0)"
+    dark: "rgb(255 106 0)"
+  burn-muted:
+    light: "rgb(240 88 22)"
+    dark: "rgb(242 113 34)"
+  bg-hud:
+    light: "rgb(246 246 246)"
+    dark: "rgb(32 32 32)" # @media dark: rgb(40 40 40)
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
   mode-implementing:
     light: "rgb(29 78 216)"
@@ -293,7 +305,10 @@ Notes for what isn't expressible as a token:
 - **Motion** — `prefers-reduced-motion: reduce` clamps every animation and transition globally
   (`src/styles/motion.css`). A surface that still needs a hint of movement re-states a short
   duration there, with the reason; today the only such exception is the segmented control's
-  reduced-motion fill, which crossfades over 60ms instead of swapping instantly.
+  reduced-motion fill, which crossfades over 60ms instead of swapping instantly. An ambient loop
+  stops instead of shortening: the activity-row pulse and title shimmer in
+  `src/styles/session-rows.css` set `animation: none` under reduced motion and keep their resting
+  state, because a loop clamped to ~0ms still repeats forever.
 - **State** — style the headless control primitives via `[data-state]` / `[data-highlighted]`, not
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to

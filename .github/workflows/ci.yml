@@ -41,7 +41,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Test the CI control plane
-        run: node --test scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
 
       - name: Classify the diff
         id: changes
@@ -123,6 +123,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      # The drift guard needs no dependencies, so it runs before the install
+      # and fails fast when the design contract and the stylesheets disagree.
+      - name: Check design-contract drift
+        if: runner.os == 'Linux'
+        run: node scripts/check-design-drift.mjs
 
       - name: Enable Corepack
         run: corepack enable

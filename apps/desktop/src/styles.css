@@ -18,8 +18,8 @@
  *   hud                         floating usage HUD presentation
  *   motion                      reduced-motion clamp, last so it wins
  *
- * Other component-scoped stylesheets (text-roll.css) are imported by the
- * component that owns them, not from here.
+ * Other component-scoped stylesheets (text-roll.css, session-rows.css) are
+ * imported by the component that owns them, not from here.
  */
 
 @import "tailwindcss";
