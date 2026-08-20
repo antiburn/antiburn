@@ -73,10 +73,6 @@ export function toActivityEntries(
   }))
 }
 
-/**
- * The position of a session within a page of entries, or -1 when it is not
- * there. Used by the analytics view's newer/older traversal.
- */
 export function indexOfSession(
   entries: readonly LocalActivityEntry[],
   agent: string,

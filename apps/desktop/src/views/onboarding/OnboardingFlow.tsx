@@ -18,9 +18,8 @@ import { ScrollPane } from "../../components/ui/ScrollPane"
 import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { getConsentDiagnostics, openFolderAccessSettings, type ScanStatus } from "../../lib/ipc"
-import type { FolderPermissions } from "../../lib/types/repository"
+import type { FolderPermissions, LocalRepositoryItem } from "../../lib/types/repository";
 import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
-import type { LocalRepositoryItem } from "../../lib/types/repository"
 
 /**
  * First run, in five screens: Welcome, Sources, Repositories, Historical scan,

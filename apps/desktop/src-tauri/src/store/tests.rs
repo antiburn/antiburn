@@ -667,7 +667,6 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
     assert!(store.session(&key).unwrap().is_none());
     assert!(store.analysis(&key).unwrap().is_none());
     assert!(store.relations(&key).unwrap().is_empty());
-    // Deleting again is a no-op rather than an error.
     assert!(!store.delete_session(&key).unwrap());
 }
 
@@ -681,7 +680,6 @@ fn scan_roots_dedup_and_ignore_a_trailing_separator() {
 
     store.remove_scan_root("/home/avery/work/").unwrap();
     assert!(store.scan_roots().unwrap().is_empty());
-    // Removing an absent root is a no-op.
     store.remove_scan_root("/home/avery/work").unwrap();
 }
 

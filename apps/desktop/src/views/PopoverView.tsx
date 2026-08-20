@@ -6,8 +6,7 @@ import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from "rea
 
 import { AlertTriangle, Settings } from "lucide-react"
 
-import { LocalActivityList } from "../components/activity/LocalActivityList"
-import type { LocalActivityEntry } from "../components/activity/LocalActivityList"
+import { LocalActivityList, type LocalActivityEntry } from "../components/activity/LocalActivityList";
 import { UsageLimitsSection } from "../components/providerUsage"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"

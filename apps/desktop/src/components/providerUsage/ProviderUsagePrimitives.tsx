@@ -119,7 +119,6 @@ export function ProviderGlyph({
   )
 }
 
-/** The brand mark for a provider, when one exists. Used by the ring. */
 export function providerMark(provider: string): BrandMark | undefined {
   return PROVIDER_MARKS[provider]
 }

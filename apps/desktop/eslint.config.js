@@ -9,7 +9,6 @@ import tseslint from "typescript-eslint"
 
 export default tseslint.config(
   {
-    // Build output and dependency trees are never linted.
     ignores: ["dist/**", "node_modules/**", "src-tauri/target/**"],
   },
   {

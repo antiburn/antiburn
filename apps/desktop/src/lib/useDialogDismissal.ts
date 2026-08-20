@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useCallback } from "react"
-import type { RefObject } from "react"
+import { useCallback, type RefObject } from "react";
 
 import { useExternalSubscription } from "./useExternalSubscription"
 import { useGlobalKeydown } from "./useGlobalKeydown"

@@ -104,8 +104,6 @@ fn note_layer(v: &Voice, f: f32, gain: f32) -> Wave {
     // Type-erased so the FM and non-FM branches share one chain.
     let osc = |fd: f32| -> Box<dyn AudioUnit> {
         if fm_a > 0.0 {
-            // The modulator sums into the carrier frequency before the sine
-            // carrier, matching the sound-lab patch used by the app.
             let m = sine_hz(fd * fm_r) * envelope(move |t: f32| fm_a * (-t * rel * 2.2).exp()) + fd;
             let e = envelope(move |t: f32| shape(t, att, rel));
             Box::new((m >> sine()) * e * gain)
