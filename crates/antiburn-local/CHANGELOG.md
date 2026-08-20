@@ -21,6 +21,8 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-20
+
 ### Added
 
 - `AgentExplorer::indexed_session_titles` and
@@ -28,6 +30,15 @@ version and refuses the release if there is none.
   vendor indexes without falling through to transcript content. Shared indexes
   are opened once per batch, so background discovery can reuse its bounded
   transcript metadata on misses.
+
+### Fixed
+
+- Claude and Codex discovery now derives session recency from meaningful
+  transcript events rather than filesystem modification times. Agent
+  housekeeping such as title, mode, permission, and token-count updates no
+  longer makes an idle session look active, while subagent transcript activity
+  still advances its parent session. Incremental aggregate cursors keep this
+  provider-aware scan bounded across unchanged parent and child transcripts.
 
 ## [0.1.2] - 2026-08-17
 
