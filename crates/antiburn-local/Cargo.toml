@@ -24,7 +24,7 @@ anyhow = "1"
 async-trait = "0.1"
 # Bounded-concurrency stream combinators for the discovery fan-out.
 futures-util = "0.3"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
