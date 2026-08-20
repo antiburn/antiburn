@@ -128,7 +128,7 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttr
 [target.'cfg(target_os = "windows")'.dependencies]
 # Per-user Run-key registration. Kept in Rust so executable paths are quoted
 # correctly and stale entries can be refreshed after an update.
-winreg = "0.55"
+winreg = "0.56"
 
 [dev-dependencies]
 # Synthetic agent stores for the scan-pipeline tests.
