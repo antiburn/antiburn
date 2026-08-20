@@ -26,6 +26,12 @@ version and refuses the release if there is none.
 - Analysis and discovery now emit structured local diagnostic events at silent
   recovery seams. This change does not alter analysis results or public APIs.
 
+## [0.1.4] - 2026-08-21
+
+### Changed
+
+- The bundled SQLite integration now uses `rusqlite` 0.40.2.
+
 ## [0.1.3] - 2026-08-20
 
 ### Added
