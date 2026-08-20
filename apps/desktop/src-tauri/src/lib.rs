@@ -103,6 +103,19 @@ impl Schedulers {
 /// created lazily and report their own failures at the interaction that asked
 /// for them.
 pub fn run() {
+    let log_directory_name = if cfg!(debug_assertions) {
+        "antiburn-debug"
+    } else {
+        "antiburn"
+    };
+    let trace_guard = antiburn_trace::init(&antiburn_trace::TraceConfig {
+        log_directory_name,
+        debug_build: cfg!(debug_assertions),
+    });
+    ::tracing::info!(event = "app_started", version = env!("CARGO_PKG_VERSION"));
+    let retention_log_dir = trace_guard.log_dir.clone();
+    let mut trace_guard = Some(trace_guard);
+
     // `register` installs the non-activating-panel support the notification
     // window needs on macOS; a no-op elsewhere.
     let builder = antiburn_nudge::register(tauri::Builder::default())
@@ -157,7 +170,20 @@ pub fn run() {
             antiburn_nudge::commands::nudge_set_hovered,
         ])
         .on_window_event(on_window_event)
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(log_dir) = retention_log_dir {
+                tauri::async_runtime::spawn_blocking(move || match antiburn_trace::clean_old_logs(
+                    &log_dir,
+                    antiburn_trace::DEFAULT_LOG_MAX_AGE,
+                ) {
+                    Ok(removed) => ::tracing::info!(event = "log_retention_cleaned", removed),
+                    Err(error) => ::tracing::warn!(
+                        event = "log_retention_failed",
+                        error = %error
+                    ),
+                });
+            }
+
             // A menu-bar app owns no Dock icon and no application menu. The
             // bundle declares LSUIElement, but development runs are unbundled,
             // so the policy is also applied here.
@@ -218,7 +244,11 @@ pub fn run() {
                 // a Dock icon while the store is being read.
                 onboarding::apply_activation_policy(app.handle(), true);
                 if let Err(error) = onboarding::open(app.handle()) {
-                    eprintln!("antiburn: could not open the first-run window ({error})");
+                    ::tracing::warn!(
+                        event = "onboarding_window_open_failed",
+                        trigger = "startup",
+                        error = %error
+                    );
                 }
             }
 
@@ -262,7 +292,7 @@ pub fn run() {
     builder
         .build(tauri::generate_context!())
         .expect("failed to build the antiburn application")
-        .run(|app, event| match event {
+        .run(move |app, event| match event {
             RunEvent::ExitRequested { api, code, .. }
                 if should_prevent_exit(onboarding::is_pending(app), code) =>
             {
@@ -270,7 +300,12 @@ pub fn run() {
             }
             // A deliberate quit: stop the background tasks before the store
             // they write to is dropped.
-            RunEvent::Exit => abort_schedulers(app),
+            RunEvent::Exit => {
+                abort_schedulers(app);
+                if let Some(mut guard) = trace_guard.take() {
+                    guard.flush();
+                }
+            }
             // Clicking the Dock icon. Only reachable while the first run is
             // pending, because that is the only time antiburn has a Dock icon
             // (see `onboarding::policy_for`) — and it is exactly then that
@@ -282,7 +317,11 @@ pub fn run() {
                 if onboarding::is_pending(app)
                     && let Err(error) = onboarding::open(app)
                 {
-                    eprintln!("antiburn: could not reopen the first-run window ({error})");
+                    ::tracing::warn!(
+                        event = "onboarding_window_open_failed",
+                        trigger = "dock",
+                        error = %error
+                    );
                 }
             }
             _ => {}
@@ -391,7 +430,7 @@ fn install_updater(app: &tauri::AppHandle) {
     #[cfg(not(debug_assertions))]
     {
         if !updates::signing_key_configured(app) {
-            eprintln!("antiburn: update checks are disabled (no updater public key is configured)");
+            ::tracing::warn!(event = "updater_disabled_no_public_key");
             return;
         }
         match app.plugin(tauri_plugin_updater::Builder::new().build()) {
@@ -400,7 +439,10 @@ fn install_updater(app: &tauri::AppHandle) {
                     state.note_registered();
                 }
             }
-            Err(error) => eprintln!("antiburn: update checks are disabled ({error})"),
+            Err(error) => ::tracing::warn!(
+                event = "updater_registration_failed",
+                error = %error
+            ),
         }
     }
     #[cfg(debug_assertions)]

@@ -21,6 +21,11 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Changed
+
+- Analysis and discovery now emit structured local diagnostic events at silent
+  recovery seams. This change does not alter analysis results or public APIs.
+
 ## [0.1.3] - 2026-08-20
 
 ### Added

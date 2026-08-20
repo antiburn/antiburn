@@ -828,7 +828,10 @@ pub fn aggregate(sessions: &[NormalizedSession]) -> ActiveSessionsSummary {
         .filter(|m| m.event_count > 0)
         .collect();
 
-    aggregate_metrics(metrics)
+    let session_count = metrics.len();
+    let summary = aggregate_metrics(metrics);
+    ::tracing::trace!(event = "analysis_aggregate_done", sessions = session_count);
+    summary
 }
 
 /// Aggregate already-analyzed sessions without retaining their raw transcripts.

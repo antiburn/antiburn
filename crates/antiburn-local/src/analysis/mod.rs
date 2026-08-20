@@ -78,12 +78,21 @@ pub fn analyze_sources_with(
                 adapter_for(&input.agent).normalize(input)
             })) {
                 Ok(Ok(session)) => Some(session),
-                // Unreadable source (missing file, unopenable DB): expected, skip quietly.
-                Ok(Err(_)) => None,
+                // An unreadable source affects one session only.
+                Ok(Err(error)) => {
+                    ::tracing::debug!(
+                        event = "analysis_source_unreadable",
+                        agent = %input.agent,
+                        session_id = %input.session_id,
+                        error = %error
+                    );
+                    None
+                }
                 Err(_) => {
-                    eprintln!(
-                        "antiburn-local/analysis: adapter for agent={} session_id={} panicked; skipping",
-                        input.agent, input.session_id
+                    ::tracing::error!(
+                        event = "analysis_adapter_panicked",
+                        agent = %input.agent,
+                        session_id = %input.session_id
                     );
                     None
                 }
@@ -102,8 +111,17 @@ pub fn analyze_sources_with(
     // it onto the matching session metrics. Sources we can't read as text here
     // (SQLite-backed agents) simply leave the field `None` ("unavailable").
     for input in &inputs {
-        let Ok(payload) = vendors::read_source(&input.source) else {
-            continue;
+        let payload = match vendors::read_source(&input.source) {
+            Ok(payload) => payload,
+            Err(error) => {
+                ::tracing::trace!(
+                    event = "initial_context_source_unreadable",
+                    agent = %input.agent,
+                    session_id = %input.session_id,
+                    error = %error
+                );
+                continue;
+            }
         };
 
         // Skill one-liners grafted onto each `SkillUse::description` by name. This
@@ -122,9 +140,10 @@ pub fn analyze_sources_with(
         })) {
             Ok(breakdown) => breakdown,
             Err(_) => {
-                eprintln!(
-                    "antiburn-local/analysis: initial-context parse for agent={} session_id={} panicked; skipping breakdown",
-                    input.agent, input.session_id
+                ::tracing::error!(
+                    event = "initial_context_parse_panicked",
+                    agent = %input.agent,
+                    session_id = %input.session_id
                 );
                 None
             }
