@@ -12,3 +12,8 @@ node_modules/
 # docs/runbooks/updater-key-recovery.md); this is the backstop.
 *.key
 *.key.pub
+
+# The scanner writes local data under .aislop.
+# The repository keeps only config.yml from this directory.
+/.aislop/*
+!/.aislop/config.yml
