@@ -7,7 +7,7 @@
  * `"3m ago"`, `"2h ago"`, `"4d ago"`.
  *
  * Pass `{ compact: true }` to drop the trailing `" ago"`, for a place that is
- * already labelled as a time (a list row's corner, say).
+ * already labelled as a time, such as a list row's activity time.
  *
  * A missing timestamp reads `"never"`; anything under five seconds, including
  * a clock skewed into the future, reads `"just now"` (`"now"` when compact).

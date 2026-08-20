@@ -171,11 +171,8 @@ export interface ActivityEntryPayload {
   title: string | null
   hasForkParent: boolean
   forkChildCount: number
-  subagentCount: number
   cost: SessionCostComponents | null
   models: string[]
-  activeSecs: number | null
-  durationSecs: number | null
 }
 
 /** Identity of one local session, as the analytics view carries it. */

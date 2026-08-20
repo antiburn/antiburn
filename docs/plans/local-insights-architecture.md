@@ -47,7 +47,7 @@ The first provider should be one JSONL provider, preferably Claude Code. This pr
 
 ### Canonical Hygiene and Efficiency categories
 
-The local report should preserve the complete set of finding categories represented by Cadence `main` under My Work → Insights → Hygiene and Efficiency.
+The local report should preserve the complete set of finding categories represented by the private reference implementation under My Work → Insights → Hygiene and Efficiency.
 
 | Category | What it finds | Current remediation concept |
 |---|---|---|
@@ -71,7 +71,7 @@ An empty findings list does not prove a detector ran cleanly.
 
 ### Additional local category: subscription/quota limit pressure
 
-Antiburn should also support an explicitly local extension for subscription or quota-limit pressure. This remains separate from the nine-category Cadence compatibility contract because provider limits may represent:
+Antiburn should also support an explicitly local extension for subscription or quota-limit pressure. This remains separate from the nine-category private compatibility contract because provider limits may represent:
 
 - rolling five-hour usage;
 - weekly usage;
@@ -181,7 +181,7 @@ Discovery currently materializes vectors of descriptors. That is acceptable init
 - context, timing, phase, compaction, skill, and cost calculations;
 - initial-context skill/MCP/instruction attribution.
 
-These semantics should be reused rather than importing Cadence's dependency graph or building a separate parsing engine.
+These semantics should be reused rather than importing the private implementation's dependency graph or building a separate parsing engine.
 
 ## Current limitations to replace
 
