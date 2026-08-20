@@ -146,7 +146,7 @@ fn reconcile_windows<R: Runtime>(app: &tauri::AppHandle<R>, desired: bool) -> an
                 "antiburn",
                 &winreg::RegValue {
                     vtype: winreg::enums::RegType::REG_BINARY,
-                    bytes: ENABLED.to_vec(),
+                    bytes: ENABLED.to_vec().into(),
                 },
             )?;
         }
