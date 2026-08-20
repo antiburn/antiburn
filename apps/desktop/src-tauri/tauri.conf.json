@@ -34,7 +34,13 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "dmg": {
+        "background": "dmg/background.tiff",
+        "windowSize": { "width": 660, "height": 440 },
+        "appPosition": { "x": 170, "y": 225 },
+        "applicationFolderPosition": { "x": 490, "y": 225 }
+      }
     },
     "linux": {
       "deb": {
