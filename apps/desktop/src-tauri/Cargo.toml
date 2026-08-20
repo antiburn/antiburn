@@ -61,7 +61,7 @@ async-trait = "0.1"
 # when `auth.json` did not state one plainly. Decoding only — nothing here
 # verifies a signature or should be trusted as anything more than a hint the
 # provider's own response can still reject.
-base64 = "0.22"
+base64 = "0.23"
 # Direct provider usage fetch (`provider_usage::live::sources`): a plain
 # HTTPS request to the provider's own endpoint, with the reader's own
 # credential — a `GET` for the usage reading itself, and, for Codex, the
