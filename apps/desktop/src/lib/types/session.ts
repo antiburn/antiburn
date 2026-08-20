@@ -238,12 +238,6 @@ export interface SkillDetail extends SkillUse {
  * discovery reports for one session.
  * ---------------------------------------------------------------------- */
 
-/**
- * Minimum sub-agents before a session reads as an orchestrator. One delegated
- * task is ordinary; two or more is genuine fan-out worth surfacing.
- */
-export const MIN_ORCHESTRATED_SUBAGENTS = 2
-
 /** One sub-agent launched by an orchestrator — one roster row. */
 export interface SubagentMember {
   /** Orchestrator app slug (for example `claude-code`). */
@@ -264,7 +258,7 @@ export interface SubagentMember {
 
 /** Sub-agent picture for one orchestrator session. */
 export interface LocalOrchestrationStatus {
-  /** At least {@link MIN_ORCHESTRATED_SUBAGENTS} sub-agents — genuine fan-out. */
+  /** True when the session launched two or more sub-agents. */
   orchestrating: boolean
   /** App slug of the orchestrator session. */
   orchestratorAgent: string

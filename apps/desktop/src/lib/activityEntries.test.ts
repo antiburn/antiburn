@@ -20,11 +20,8 @@ function payload(over: Partial<ActivityEntryPayload> = {}): ActivityEntryPayload
     title: "Wire the tray popover",
     hasForkParent: false,
     forkChildCount: 0,
-    subagentCount: 0,
     cost: null,
     models: [],
-    activeSecs: null,
-    durationSecs: null,
     ...over,
   }
 }
@@ -83,14 +80,6 @@ describe("toActivityEntries", () => {
   it("falls back to the agent registry when the shell could not classify a surface", () => {
     const [entry] = toActivityEntries([payload({ agent: "opencode", surface: "unknown" })])
     expect(entry?.surface).toBe("cli")
-  })
-
-  it("omits the time pill when the session has not been analyzed", () => {
-    const [none] = toActivityEntries([payload({ activeSecs: null })])
-    expect(none?.activeTime).toBeNull()
-
-    const [some] = toActivityEntries([payload({ activeSecs: 600, durationSecs: 1200 })])
-    expect(some?.activeTime).toEqual({ activeSecs: 600, durationSecs: 1200 })
   })
 })
 

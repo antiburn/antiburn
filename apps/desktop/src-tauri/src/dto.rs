@@ -19,8 +19,7 @@ use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
 ///
-/// Mirrors the fields `LocalActivityEntry` needs, minus the presentation the
-/// renderer derives itself (the cost pill's wording, the time label).
+/// Mirrors the fields `LocalActivityEntry` needs, minus the cost pill text.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityEntry {
@@ -42,16 +41,11 @@ pub struct ActivityEntry {
     pub has_fork_parent: bool,
     /// How many local sessions were branched from this one.
     pub fork_child_count: u32,
-    /// Sub-agents this session launched.
-    pub subagent_count: u32,
     /// On-device cost estimate, or absent when no model in the session could be
     /// priced. Never a partial total.
     pub cost: Option<SessionCost>,
     /// Every model that contributed billable tokens, for the cost tooltip.
     pub models: Vec<String>,
-    /// Idle-capped working time, when the session has been analyzed.
-    pub active_secs: Option<u64>,
-    pub duration_secs: Option<u64>,
 }
 
 /// Identity of one local session, as the views key on it.

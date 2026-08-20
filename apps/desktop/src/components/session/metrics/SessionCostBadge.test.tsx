@@ -5,7 +5,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { COST_PILL_CLASS, SessionCostBadge } from "./SessionCostBadge"
+import { SessionCostBadge } from "./SessionCostBadge"
 
 afterEach(cleanup)
 
@@ -53,29 +53,7 @@ describe("SessionCostBadge", () => {
     expect(screen.getAllByText(/over 3× your typical session/).length).toBeGreaterThan(0)
   })
 
-  it("hides behind the reveal wrapper only when it is not an outlier", () => {
-    const { container, unmount } = render(
-      <SessionCostBadge
-        totalUsd={0.4}
-        figureLabel="Estimated cost"
-        revealClassName="activity-row-secondary-detail"
-      />,
-    )
-    expect(container.querySelector(".activity-row-secondary-detail")).toBeTruthy()
-    unmount()
-
-    const outlier = render(
-      <SessionCostBadge
-        totalUsd={19.5}
-        figureLabel="Estimated cost"
-        isHighCost
-        revealClassName="activity-row-secondary-detail"
-      />,
-    )
-    expect(outlier.container.querySelector(".activity-row-secondary-detail")).toBeNull()
-  })
-
-  it("appends caller classes to the shared pill geometry", () => {
+  it("appends caller classes to the pill geometry", () => {
     render(
       <SessionCostBadge
         totalUsd={1}
@@ -84,7 +62,6 @@ describe("SessionCostBadge", () => {
       />,
     )
     const pill = screen.getByLabelText("Estimated cost $1.00")
-    expect(pill.className).toContain(COST_PILL_CLASS)
     expect(pill.className).toContain("relative top-px")
   })
 })
