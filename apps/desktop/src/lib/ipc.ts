@@ -872,6 +872,12 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   generatedAt: "",
 }
 
+/** Return the newest recent transcript write as epoch seconds. */
+export async function getLatestSessionActivity(): Promise<number | null> {
+  if (!hasShell()) return null
+  return invoke<number | null>("get_latest_session_activity")
+}
+
 /** Run a scan now, unless one is already in flight. */
 export async function scanNow(activityWindowDays?: number): Promise<ScanStatus | null> {
   if (!hasShell()) return null

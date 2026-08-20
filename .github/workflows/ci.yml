@@ -208,7 +208,9 @@ jobs:
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: apps/desktop/src-tauri -> target
+          workspaces: |
+            apps/desktop/src-tauri -> target
+            apps/desktop/src-tauri/crates/hud -> target
           shared-key: desktop-backend-ci
           key: ${{ matrix.name }}
           cache-bin: false
@@ -219,12 +221,25 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo fmt --check
 
+      - name: Check HUD crate formatting
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop/src-tauri/crates/hud
+        run: cargo fmt --check
+
       - name: Clippy
         working-directory: apps/desktop/src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      - name: Clippy HUD crate
+        working-directory: apps/desktop/src-tauri/crates/hud
+        run: cargo clippy --all-targets --locked -- -D warnings
+
       - name: Tests
         working-directory: apps/desktop/src-tauri
+        run: cargo test --locked
+
+      - name: Test HUD crate
+        working-directory: apps/desktop/src-tauri/crates/hud
         run: cargo test --locked
 
   release-metadata:

@@ -12,6 +12,24 @@ import { App } from "./App"
 const invoke = vi.hoisted(() => vi.fn())
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }))
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    outerPosition: async () => ({ x: 0, y: 0 }),
+    setPosition: async () => {},
+    hide: async () => {},
+  }),
+  currentMonitor: async () => null,
+}))
+vi.mock("@tauri-apps/api/dpi", () => ({
+  LogicalPosition: class {
+    x: number
+    y: number
+    constructor(x: number, y: number) {
+      this.x = x
+      this.y = y
+    }
+  },
+}))
 
 const settings = {
   theme: "system",
@@ -86,5 +104,12 @@ describe("App", () => {
       await screen.findByRole("tablist", { name: "Settings sections" }),
     ).toBeInTheDocument()
     expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument()
+  })
+
+  it("renders the floating HUD for the overlay fragment", async () => {
+    window.location.hash = "#/overlay"
+    render(<App />)
+    expect(await screen.findByRole("button", { name: "Close overlay" })).toBeInTheDocument()
+    expect(document.body.dataset.transparentWindow).toBe("true")
   })
 })

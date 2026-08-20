@@ -10,13 +10,16 @@ import { useSyncExternalStore } from "react"
  * window owns exactly one route for its whole lifetime, and the fragment is
  * the only thing that distinguishes them.
  */
-export type Route = "popover" | "settings" | "nudge" | "onboarding"
+export type Route = "popover" | "settings" | "nudge" | "onboarding" | "overlay"
 
 /** Fragment the Rust shell opens the settings window with. */
 export const SETTINGS_FRAGMENT = "#/settings"
 
 /** Fragment the nudge crate opens the notification window with. */
 export const NUDGE_FRAGMENT = "#/nudge"
+
+/** Fragment the HUD crate opens for the floating usage window. */
+export const OVERLAY_FRAGMENT = "#/overlay"
 
 /**
  * Every fragment that names a window other than the popover. The popover is the
@@ -30,6 +33,7 @@ const ROUTES = new Map<string, Route>([
   ["settings", "settings"],
   ["nudge", "nudge"],
   ["onboarding", "onboarding"],
+  ["overlay", "overlay"],
 ])
 
 export function routeFromHash(hash: string): Route {

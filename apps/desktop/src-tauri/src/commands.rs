@@ -145,6 +145,28 @@ pub fn end_popover_hold(app: tauri::AppHandle) {
     popover::end_focus_hold(&app);
 }
 
+/* -------------------------------------------------------------------------
+ * Overlay window
+ * ---------------------------------------------------------------------- */
+
+/// Open or re-show the always-on-top usage HUD.
+#[tauri::command]
+pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    antiburn_hud::open(&app).map_err(fail)
+}
+
+/// Record the drawn panel edges for the native hover watcher.
+#[tauri::command]
+pub fn set_overlay_hover_region(top: f64, bottom: f64) {
+    antiburn_hud::set_hover_region(top, bottom);
+}
+
+/// Return the newest recent transcript write as epoch seconds.
+#[tauri::command]
+pub async fn get_latest_session_activity() -> Option<i64> {
+    crate::hud::latest_session_activity().await
+}
+
 /// Where the app came from and what it is running against.
 #[tauri::command]
 pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {

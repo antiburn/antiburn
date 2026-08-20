@@ -43,6 +43,8 @@ import {
   type PopoverSurface,
 } from "../../lib/popoverHeight"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { isFloatingHudEnabled, openOverlayWindow } from "../../lib/overlayWindow"
+import { isMacOS } from "../../lib/platform"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
 import type { SessionSubject } from "./SessionPane"
 
@@ -256,6 +258,8 @@ export class PopoverSession {
   private start(): void {
     this.started = true
     const generation = ++this.generation
+
+    if (isMacOS() && isFloatingHudEnabled()) void openOverlayWindow().catch(() => {})
 
     void this.loadInitial(generation)
     void this.listenSettings(generation)

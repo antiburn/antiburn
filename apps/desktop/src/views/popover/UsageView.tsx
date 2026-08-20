@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronLeft } from "lucide-react"
+import { useState, useSyncExternalStore } from "react"
+
+import { ChevronLeft, PictureInPicture2 } from "lucide-react"
 
 import { ProviderGlyph } from "../../components/providerUsage"
 import { LiveUsageDetail } from "../../components/providerUsage/LiveUsageDetail"
@@ -17,6 +19,8 @@ import type {
   ProviderUsageSummaryPayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
+import { HudVisibilitySession } from "../../lib/overlayWindow"
+import { isMacOS } from "../../lib/platform"
 import { liveAuthNote, liveForProvider } from "../../lib/presentation/liveUsage"
 import {
   providerWindow,
@@ -101,6 +105,7 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
         <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
           Usage
         </h1>
+        {isMacOS() && <HudPopOutButton />}
       </header>
 
       <ScrollPane viewportClassName="px-3 pb-2">
@@ -140,6 +145,31 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
         </p>
       </footer>
     </div>
+  )
+}
+
+function HudPopOutButton() {
+  const [session] = useState(() => new HudVisibilitySession())
+  const shown = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+    session.getSnapshot,
+  )
+  const label = shown ? "Hide the floating usage HUD" : "Show the floating usage HUD"
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-pressed={shown}
+      onClick={session.toggle}
+      className={`ml-auto inline-flex h-6 shrink-0 items-center rounded-control px-1 hover:bg-surface-hover ${
+        shown ? "text-burn" : "text-label-secondary"
+      }`}
+    >
+      <PictureInPicture2 size={14} strokeWidth={2} aria-hidden="true" />
+    </button>
   )
 }
 

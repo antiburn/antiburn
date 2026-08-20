@@ -16,6 +16,13 @@ import {
   onLiveUsageChanged,
   refreshLiveUsage,
 } from "../../lib/ipc"
+import {
+  hideOverlayWindow,
+  isFloatingHudEnabled,
+  openOverlayWindow,
+  setFloatingHudEnabled,
+} from "../../lib/overlayWindow"
+import { isMacOS } from "../../lib/platform"
 import { liveSourceNote } from "../../lib/presentation/liveUsage"
 import type { AppSettingsController } from "./useAppSettings"
 
@@ -55,6 +62,7 @@ function errorNote(category: string): string {
 }
 
 export function UsagePane({ settings, update }: UsagePaneProps) {
+  const [hudShown, setHudShown] = useState(() => isFloatingHudEnabled())
   // Show the cached value on open. Then refresh through the shell and accept
   // updates from this window or the popover.
   const [store] = useState(() =>
@@ -71,6 +79,12 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   const live = useSyncExternalStore(store.subscribe, store.getSnapshot)
 
   const on = settings?.liveUsageEnabled ?? false
+
+  function handleHudChange(next: boolean) {
+    setHudShown(next)
+    setFloatingHudEnabled(next)
+    void (next ? openOverlayWindow() : hideOverlayWindow()).catch(() => {})
+  }
 
   return (
     <Pane title="Usage">
@@ -92,6 +106,19 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
           />
         </Card>
       </SectionGroup>
+
+      {isMacOS() && (
+        <SectionGroup title="Floating HUD">
+          <Card>
+            <ToggleRow
+              label="Show floating usage HUD"
+              description="A small always-on-top readout of your plan limits. It expands when you hover over it, and you can drag it anywhere on screen. It shows the same figures as this pane, so it is only as current as they are — the refresh switch above is what keeps them moving."
+              checked={hudShown}
+              onChange={handleHudChange}
+            />
+          </Card>
+        </SectionGroup>
+      )}
 
       <SectionGroup title="What antiburn can currently see">
         <Card>
