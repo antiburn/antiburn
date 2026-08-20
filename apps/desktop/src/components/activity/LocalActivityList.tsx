@@ -2,39 +2,27 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Bot, GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
+import { GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
 import type { ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
-import { MIN_ORCHESTRATED_SUBAGENTS } from "../../lib/types/session"
-import { SessionActiveTimeBadge } from "../session/metrics/SessionActiveTimeBadge"
 import {
   SessionCostBadge,
   type SessionCostBadgeProps,
 } from "../session/metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
-import { RowTimeCorner, TruncatedText } from "./ActivityRowPrimitives"
-import {
-  ROW_ACTIVE_CLASS,
-  ROW_CLASS,
-  ROW_CORNER_GUTTER_CLASS,
-  ROW_LAYOUT_CLASS,
-  ROW_TITLE_CLASS,
-  SECONDARY_DETAIL_REVEAL_CLASS,
-} from "./activityRow"
+import { TruncatedText } from "./TruncatedText"
 import { countGroupedItems, groupActivityByDay } from "./activityFeedGrouping"
 import { useActivityGroupPinning } from "./useActivityGroupPinning"
 
 import "../../styles/session-rows.css"
 
-/**
- * Renders the icon for an agent, optionally marked with the surface the
- * session came from. An injected slot, so this layer ships no artwork.
- */
+/** The renderer shows an agent icon and can mark its surface. The caller supplies the artwork. */
 type ActivityAgentIconRenderer = (
   slug: string,
   size: number,
@@ -53,7 +41,7 @@ export interface LocalActivityEntry {
   branch?: string | undefined
   /** ISO timestamp of the session's most recent activity. */
   timestamp: string
-  /** Whether the transcript is still being written. */
+  /** Whether the session has recent meaningful activity. */
   isActive: boolean
   /** Where the session was discovered from. */
   surface?: AgentSurface | undefined
@@ -64,31 +52,20 @@ export interface LocalActivityEntry {
   hasForkParent?: boolean | undefined
   /** How many sessions were forked from this one. */
   forkChildCount?: number | undefined
-  /** Sub-agents this session launched; 0 or absent when it launched none. */
-  subagentCount?: number | undefined
   /** Display values for the cost pill; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
-  /** Active/overall time for the time pill; omit when unmeasured. */
-  activeTime?: { activeSecs: number; durationSecs?: number | null } | null | undefined
-  /** What the corner timestamp means. Defaults to "Last activity". */
-  timeLabel?: string | undefined
 }
 
 export interface LocalActivityListProps {
   /** Sessions to show. Ordering and grouping are this component's job. */
   entries: LocalActivityEntry[]
-  /** Visible calendar-day window. Also drives the empty copy. */
+  /** Calendar-day window for finished sessions. Also drives the empty copy. */
   days: number
   /** Headline for the empty state; defaults to the range-aware wording. */
   emptyTitle?: string
   emptyDescription?: string
   /** Open a session's analytics. Omitted leaves rows inert. */
   onOpenSession?: (entry: LocalActivityEntry) => void
-  /**
-   * Open a session's sub-agent roster from the fan-out pill. Falls back to
-   * {@link onOpenSession}, which is where the roster lives.
-   */
-  onOpenOrchestration?: (entry: LocalActivityEntry) => void
   /** The scrolling viewport, for a host that needs to observe it. */
   viewportRef?: (node: HTMLDivElement | null) => void
   /** Frozen clock, for tests. */
@@ -98,7 +75,6 @@ export interface LocalActivityListProps {
   wslIcon?: ReactNode
 }
 
-/** Title for a row: the resolved title, then a short id, then the agent name. */
 function primaryLine(entry: LocalActivityEntry): string {
   const title = entry.title?.trim()
   if (title) return title
@@ -122,43 +98,34 @@ function EmptyActivity({ title, description }: { title: string; description: str
 
 interface SessionActivityRowProps {
   entry: LocalActivityEntry
-  /** Opens this session's analytics. Omitted leaves the row inert. */
   onOpen?: () => void
-  /** Opens the sub-agent roster from the fan-out pill. */
-  onOpenOrchestration?: () => void
   renderAgentIcon?: ActivityAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
 }
 
 /**
- * One local session in the list: its identity, repository, branch, fork
- * relationships, cost, active time, and sub-agent fan-out.
+ * One local session in the list: its identity, location, fork relationships,
+ * cost, and last activity time.
  *
- * The whole card opens the session's analytics, including for agents the
- * engine cannot analyze — those land on the analytics view's own empty state,
- * which explains why, rather than being silently unclickable here.
+ * The whole card opens the session analytics. Unsupported agents open an empty
+ * analytics state that explains why no data is available.
  */
 function SessionActivityRow({
   entry,
   onOpen,
-  onOpenOrchestration,
   renderAgentIcon,
   wslIcon,
 }: SessionActivityRowProps) {
   const clickable = !!entry.sessionId && !!onOpen
   const primary = primaryLine(entry)
   const hasRepo = entry.repo !== ""
-  const subagentCount = entry.subagentCount ?? 0
-  const isOrchestrator = subagentCount >= MIN_ORCHESTRATED_SUBAGENTS && !!onOpen
-  const openRoster = onOpenOrchestration ?? onOpen
 
   return (
     <div
       className={cn(
-        ROW_CLASS,
-        entry.isActive && `${ROW_ACTIVE_CLASS} isolate`,
-        ROW_LAYOUT_CLASS,
+        "relative flex items-start gap-3 py-3 px-2 w-full text-left rounded-md",
         "transition-colors duration-[120ms]",
+        entry.isActive && "activity-row-active isolate",
         clickable &&
           "cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover",
       )}
@@ -182,16 +149,15 @@ function SessionActivityRow({
         : {})}
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
+
       <div className="mt-0.5 shrink-0">{renderAgentIcon?.(entry.agent, 18, entry.surface)}</div>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className={cn(ROW_CORNER_GUTTER_CLASS, "flex min-w-0 items-center gap-1")}>
+
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex min-w-0 items-center gap-1">
           <TruncatedText
-            className={cn(
-              ROW_TITLE_CLASS,
-              "min-w-0 truncate type-callout",
-              !entry.isActive && "text-label",
-            )}
+            className={cn("min-w-0 type-callout", !entry.isActive && "text-label")}
             text={primary}
+            lines={2}
             shimmer={entry.isActive}
           />
           {entry.hasForkParent && (
@@ -219,7 +185,7 @@ function SessionActivityRow({
           )}
         </div>
 
-        {(entry.branch || hasRepo || entry.wslDistro) && (
+        <div className="flex w-full items-center justify-between gap-1.5">
           <div className="flex min-w-0 items-center gap-1.5">
             {hasRepo && (
               <Tooltip
@@ -229,81 +195,43 @@ function SessionActivityRow({
                     : entry.repo
                 }
               >
-                <span className="inline-flex h-[15px] max-w-[55%] shrink-0 items-center rounded bg-label/[0.06] px-1.5">
-                  <TruncatedText
-                    className="min-w-0 truncate type-footnote leading-[13px] font-medium tracking-wide text-label-secondary"
-                    text={`${entry.repo}${entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}`}
-                  />
+                <span className="min-w-0 truncate text-sm text-label-secondary">
+                  {entry.repo}
+                  {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
                 </span>
               </Tooltip>
             )}
+
             <WslOriginBadge distro={entry.wslDistro} {...(wslIcon ? { icon: wslIcon } : {})} />
+
             {entry.branch && (
               <TruncatedText
                 className="min-w-0 truncate type-footnote leading-[13px] tracking-wide text-label-secondary"
                 text={entry.branch}
               />
             )}
-          </div>
-        )}
 
-        {(isOrchestrator || entry.cost || entry.activeTime) && (
-          <div className="flex min-h-[15px] min-w-0 items-center gap-1.5">
             {entry.cost && <SessionCostBadge {...entry.cost} />}
-            {entry.activeTime && (
-              <span className={cn("flex", SECONDARY_DETAIL_REVEAL_CLASS, "shrink-0")}>
-                <SessionActiveTimeBadge
-                  activeSecs={entry.activeTime.activeSecs}
-                  {...(entry.activeTime.durationSecs != null
-                    ? { durationSecs: entry.activeTime.durationSecs }
-                    : {})}
-                />
-              </span>
-            )}
-            {isOrchestrator && openRoster && (
-              <span className={cn("flex", SECONDARY_DETAIL_REVEAL_CLASS, "shrink-0")}>
-                <Tooltip
-                  label={`Orchestrated ${subagentCount} sub-agents — view roster`}
-                  delayMs={700}
-                >
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      // The card behind this also opens something; without
-                      // this the click would fire both.
-                      event.stopPropagation()
-                      openRoster()
-                    }}
-                    className="flex shrink-0 items-center gap-0.5 rounded-full bg-system-indigo/15 px-1.5 py-px leading-[13px] text-system-indigo-text transition-colors hover:bg-system-indigo/25"
-                    aria-label={`Orchestrated ${subagentCount} sub-agents, view roster`}
-                  >
-                    <Bot size={11} aria-hidden="true" className="shrink-0" />
-                    <span className="type-caption font-medium tabular-nums">
-                      {subagentCount}
-                    </span>
-                  </button>
-                </Tooltip>
-              </span>
-            )}
           </div>
-        )}
-      </div>
 
-      <RowTimeCorner
-        timestamp={entry.timestamp}
-        label={entry.timeLabel ?? "Last activity"}
-        revealClassName={SECONDARY_DETAIL_REVEAL_CLASS}
-      />
+          <time
+            dateTime={entry.timestamp}
+            aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+            className="shrink-0 text-sm text-label-secondary"
+          >
+            {relativeTime(entry.timestamp, { compact: true })}
+          </time>
+        </div>
+      </div>
     </div>
   )
 }
 
 /**
- * A scrolling list of local coding sessions, bucketed by calendar day.
+ * A scrolling list of local coding sessions, grouped by activity state and day.
  *
- * Entirely prop-driven: entries, the visible range, and every action arrive
- * from the host. The list owns ordering, day grouping, the sticky day label,
- * and the row treatment — and nothing else.
+ * The host supplies entries, the visible range, and actions. The list controls
+ * ordering, grouping, the sticky group label, and row presentation.
  */
 export function LocalActivityList({
   entries,
@@ -311,7 +239,6 @@ export function LocalActivityList({
   emptyTitle,
   emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
   onOpenSession,
-  onOpenOrchestration,
   viewportRef,
   now,
   renderAgentIcon,
@@ -320,9 +247,7 @@ export function LocalActivityList({
   const items = entries.map((entry, index) => ({
     entry,
     at: entry.timestamp,
-    // Key by stable identity, never the timestamp: a live session's timestamp
-    // advances as it works, and embedding it would remount the row — dropping
-    // hover state and re-running mount effects — on every tick.
+    isActive: entry.isActive,
     key: entry.sessionId
       ? localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
       : `${entry.agent}|${index}`,
@@ -341,8 +266,6 @@ export function LocalActivityList({
 
   return (
     <section aria-label="Activity feed" className="flex h-full min-h-0 flex-col pt-2">
-      {/* One live-region announcement for the whole list, rather than a
-          placeholder per row. */}
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {visibleCount === 0 ? resolvedEmptyTitle : ""}
       </span>
@@ -373,9 +296,6 @@ export function LocalActivityList({
                   <h3
                     ref={registerHeading(group.label)}
                     id={headingId}
-                    // The first day's heading is duplicated by the sticky
-                    // label above the viewport, so it is announced but not
-                    // painted twice.
                     className={
                       groupIndex === 0
                         ? "sr-only"
@@ -384,15 +304,13 @@ export function LocalActivityList({
                   >
                     {group.label}
                   </h3>
+
                   <div className="space-y-1">
                     {group.items.map((item) => (
                       <SessionActivityRow
                         key={item.key}
                         entry={item.entry}
                         {...(onOpenSession ? { onOpen: () => onOpenSession(item.entry) } : {})}
-                        {...(onOpenOrchestration
-                          ? { onOpenOrchestration: () => onOpenOrchestration(item.entry) }
-                          : {})}
                         {...(renderAgentIcon ? { renderAgentIcon } : {})}
                         {...(wslIcon ? { wslIcon } : {})}
                       />

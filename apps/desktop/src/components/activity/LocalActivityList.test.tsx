@@ -57,6 +57,11 @@ describe("LocalActivityList — rows", () => {
     expect(screen.getByText("Amp")).toBeTruthy()
   })
 
+  it("shows up to two lines of the primary text", () => {
+    list({ entries: [entry({ title: "A long session title" })] })
+    expect(screen.getByText("A long session title").className).toContain("truncated-text-lines")
+  })
+
   it("shows the repository, extra repositories, and branch", () => {
     list({
       entries: [
@@ -97,27 +102,20 @@ describe("LocalActivityList — rows", () => {
     ).toBeTruthy()
   })
 
-  it("shows the local cost and active-time pills it is given", () => {
+  it("shows the local cost pill it is given", () => {
     list({
       entries: [
         entry({
           cost: { totalUsd: 2.4, figureLabel: "Estimated cost" },
-          activeTime: { activeSecs: 5400, durationSecs: 28_800 },
         }),
       ],
     })
     expect(screen.getByLabelText("Estimated cost $2.40")).toBeTruthy()
-    expect(screen.getAllByText("1h 30m").length).toBeGreaterThan(0)
   })
 
-  it("omits the badge line when a session has no measurements", () => {
-    const { container } = list({ entries: [entry()] })
-    expect(container.querySelector(".min-h-\\[15px\\]")).toBeNull()
-  })
-
-  it("states the last-activity time in the corner", () => {
+  it("states the last-activity time", () => {
     list({ entries: [entry({ timestamp: at(0, 9) })] })
-    expect(screen.getByText(/^Last activity /)).toBeTruthy()
+    expect(screen.getByLabelText(/^Last activity /)).toBeTruthy()
   })
 })
 
@@ -147,24 +145,6 @@ describe("LocalActivityList — navigation", () => {
       onOpenSession: vi.fn(),
     })
     expect(screen.queryByRole("button", { name: /Untracked/ })).toBeNull()
-  })
-
-  it("opens the roster from the fan-out pill without also opening the row", () => {
-    const onOpenSession = vi.fn()
-    const onOpenOrchestration = vi.fn()
-    list({
-      entries: [entry({ subagentCount: 4 })],
-      onOpenSession,
-      onOpenOrchestration,
-    })
-    fireEvent.click(screen.getByLabelText("Orchestrated 4 sub-agents, view roster"))
-    expect(onOpenOrchestration).toHaveBeenCalledOnce()
-    expect(onOpenSession).not.toHaveBeenCalled()
-  })
-
-  it("does not offer a fan-out pill below the orchestration threshold", () => {
-    list({ entries: [entry({ subagentCount: 1 })], onOpenSession: vi.fn() })
-    expect(screen.queryByLabelText(/view roster/)).toBeNull()
   })
 
   it("renders an agent icon only from the injected renderer", () => {

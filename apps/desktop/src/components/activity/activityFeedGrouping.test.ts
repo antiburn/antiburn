@@ -16,11 +16,11 @@ import { activityDayAge, isWithinActivityDays } from "./activityWindow"
 const NOW = new Date("2026-03-04T12:00:00.000Z")
 
 /** An item `days` calendar days back, at midday so the timezone cannot flip it. */
-function item(key: string, days: number, hour = 12): ActivityFeedItem {
+function item(key: string, days: number, hour = 12, isActive = false): ActivityFeedItem {
   const at = new Date(NOW)
   at.setDate(at.getDate() - days)
   at.setHours(hour, 0, 0, 0)
-  return { key, at: at.toISOString() }
+  return { key, at: at.toISOString(), isActive }
 }
 
 describe("isWithinActivityDays", () => {
@@ -52,7 +52,7 @@ describe("newestFirst", () => {
   })
 
   it("sorts unparseable timestamps to the bottom deterministically", () => {
-    const input = [{ key: "broken", at: "" }, item("real", 1)]
+    const input = [{ key: "broken", at: "", isActive: false }, item("real", 1)]
     expect(newestFirst(input).map((i) => i.key)).toEqual(["real", "broken"])
   })
 })
@@ -66,6 +66,16 @@ describe("activityDayLabel", () => {
 })
 
 describe("groupActivityByDay", () => {
+  it("puts active items before the calendar groups", () => {
+    const groups = groupActivityByDay(
+      [item("today", 0), item("active", 1, 12, true), item("yesterday", 1)],
+      { days: 7, now: NOW },
+    )
+
+    expect(groups.map((group) => group.label)).toEqual(["Active", "Today", "Yesterday"])
+    expect(groups[0]?.items.map((entry) => entry.key)).toEqual(["active"])
+  })
+
   it("buckets by calendar day, newest day and newest item first", () => {
     const groups = groupActivityByDay(
       [item("yesterday-early", 1, 9), item("today", 0), item("yesterday-late", 1, 18)],

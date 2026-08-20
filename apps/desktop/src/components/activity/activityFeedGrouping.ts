@@ -15,11 +15,13 @@ import { activityDayAge, isWithinActivityDays } from "./activityWindow"
 export interface ActivityFeedItem {
   /** ISO timestamp the item sorts and buckets by. */
   at: string
+  /** True when the item belongs in the active group. */
+  isActive: boolean
   /** Stable React identity — never the timestamp, which moves under live rows. */
   key: string
 }
 
-/** One calendar-day bucket, newest day first. */
+/** One display group. */
 export interface ActivityDayGroup<T> {
   label: string
   items: T[]
@@ -51,25 +53,34 @@ export function activityDayLabel(age: number): string {
 }
 
 /**
- * Bucket items into calendar days, newest day first and newest item first
- * within each day. Anything outside the visible window — and anything future
- * or malformed — is dropped, and an empty day produces no group at all.
+ * Put active items first. Then group the other items by calendar day.
  *
- * The caller filters by *kind* before calling; the two filters commute, so the
- * contract stays: visible calendar window, selected kind, calendar buckets,
- * newest first.
+ * The function keeps active items outside the calendar window. It drops other
+ * items when their timestamps are outside the window or are not valid.
  */
 export function groupActivityByDay<T extends ActivityFeedItem>(
   items: readonly T[],
   { days, now = new Date() }: { days: number; now?: Date },
 ): ActivityDayGroup<T>[] {
-  const inRange = items.filter((item) => isWithinActivityDays(item.at, days, now))
+  const inRange = items.filter(
+    (item) => item.isActive || isWithinActivityDays(item.at, days, now),
+  )
+
   const groups: ActivityDayGroup<T>[] = []
+
+  const activeItems = inRange.filter((item) => item.isActive)
+  if (activeItems.length > 0) {
+    groups.push({ label: "Active", items: newestFirst(activeItems) })
+  }
+
   for (let age = 0; age < days; age += 1) {
-    const dayItems = inRange.filter((item) => activityDayAge(item.at, now) === age)
+    const dayItems = inRange.filter(
+      (item) => !item.isActive && activityDayAge(item.at, now) === age,
+    )
     if (dayItems.length === 0) continue
     groups.push({ label: activityDayLabel(age), items: newestFirst(dayItems) })
   }
+
   return groups
 }
 

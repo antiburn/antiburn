@@ -1,10 +1,193 @@
-# Local Insights: architecture and sequential implementation guide
+---
+artifact: master_plan
+issue: GH-70
+title: "Local Insights first-provider implementation (Phases 0-11)"
+created_by: master_planner
+created_at: "2026-08-20"
+---
 
-**Status:** Reviewed implementation proposal
+# Local Insights: architecture and master plan
 
-**Goal:** Build a useful on-device Hygiene and Efficiency report from local coding-agent sessions while keeping raw transcript reading bounded, results truthful, processing restart-safe, and work minimally disruptive to the user's active work.
+- **Issue:** [#70](https://github.com/antiburn/antiburn/issues/70) — *Implement Local Insights from the reviewed architecture plan*
+- **Date:** 2026-08-20
+- **Verified against:** `feat/gh70` @ `c03ad1e` (merge base of PR #54, PR #60, PR #74) — line numbers may drift; **prefer symbol/function names** over line numbers.
+- **Immutable source revision:** this file replaces `docs/plans/local-insights-architecture.md` at commit `23979b103624cd8e6dafe9d148e652a64d8053d0` (blob `27ae19b3c389c7d8dbee5c09c59df12d437c449a`), merged in PR #54. That revision is the last one that touched the file before this rewrite, and it stays recoverable with `git show 23979b1:docs/plans/local-insights-architecture.md`. Its researched architecture is preserved below under **Architecture reference**; its sequential Phase 0-13 checklist is replaced by **Scope Areas**.
 
-## Executive decision
+## Overview / Problem
+
+antiburn discovers local coding-agent sessions and computes per-session metrics, but it cannot answer cross-session questions: which sessions ran too deep, which MCP servers and skills load into context and are never used, which subagents inherit a premium model, where cache tokens are resent, and where a provider quota blocked work. The private reference implementation answers those questions server-side. antiburn must answer them on the device, from the reader's own transcripts, without sending anything anywhere.
+
+Two obstacles block that today. First, analysis reads each transcript whole (`crates/antiburn-local/src/analysis/vendors/mod.rs:read_source` calls `std::fs::read_to_string`) and materializes a complete `Vec<NormalizedEvent>`, so memory grows with transcript size — unacceptable for an always-running background utility. Second, nothing durable exists between the transcript and a report: `session_analysis` stores display metrics, not the rule-neutral facts a detector needs, and it carries no source generation or parser revision, so no consumer can tell whether a cached row is current.
+
+The reviewed architecture in PR #54 solves both with two streaming pipelines separated by compact, versioned per-session evidence in antiburn's SQLite database. This issue executes that architecture for the first provider (Claude Code) through the source plan's Phase 11.
+
+## Goals
+
+- Process Claude JSONL one record at a time, with bounded retained record memory, and remove the whole-file `String` and the complete canonical-event vector from the shipped Claude metrics path.
+- Keep every currently displayed `SessionMetrics` value equivalent through that conversion.
+- Produce truthful, compact, rule-neutral `SessionEvidence` from the same source pass and persist it atomically with `session_analysis`.
+- Version every transcript-derived projection (source generation, parser, analyzer, metrics, evidence) so staleness is decidable without reparsing.
+- Move transcript processing out of the scan pass into a restart-safe durable worker that never holds the application database lock across I/O.
+- Compute a bounded thirty-day Hygiene and Efficiency report over nine categories plus a separate quota-pressure section, with one truthful status per category.
+- Expose the report, its coverage, and its processing backlog through desktop IPC and a Settings → Insights pane, with no transcript content in any payload.
+
+## Current State (evidence)
+
+Verified against `c03ad1e`. `crates/antiburn-local` is the only crate under `crates/`.
+
+**Discovery.** `crates/antiburn-local/src/discovery/mod.rs` provides `Explorers::discover_recent_sessions`, `Explorers::discover_recent_sessions_with_progress`, `Explorers::provider_db_fingerprint` (delegating to `AgentExplorer::provider_db_fingerprint`), `SessionSource::{File, Inline, ProviderDb}`, and `SessionLog`. `SessionLog` carries `agent_type`, `source`, `updated_at`, and `environment` — it has **no** `session_id` field. `SessionLog::dedupe_key`, `SessionLog::cursor_key`, and `SessionLog::source_label` identify the *discovered source* for dedupe and incremental cursors. They are not the persisted session identity, which comes from parsed metadata, `scan.rs:recovered_id`, and `SessionKey` (see correction 7). `ACTIVE_SESSION_WINDOW_SECS` is `180` and lives in the same module. **It is a UI liveness predicate today, not a processing gate, and this plan does not make it one** (see the scan paragraph below). `SOURCE_PREVIEW_BYTES` caps bounded metadata previews at 16 MiB. `discovery/mod.rs:session_source_preview` already reads the head of every file source: `file.take(SOURCE_PREVIEW_BYTES).read_to_end(...)`.
+
+**Analysis.** `crates/antiburn-local/src/analysis/interface.rs` defines `RawSource` as an **enum** (`Jsonl(String) | File(PathBuf) | Sqlite(PathBuf)`), `SessionInput`, and `VendorAdapter`. `VendorAdapter` has exactly two methods today: `agent()` and `normalize()`. `crates/antiburn-local/src/analysis/vendors/mod.rs:adapter_for` dispatches to six adapter statics: `claude`, `codex`, `cursor`, `opencode`, `antigravity`, and the `generic_jsonl` fallback (`jsonl.rs` and `sqlite.rs` are shared helpers, not adapters). `crates/antiburn-local/src/analysis/mod.rs` exposes `normalize_source` and `analyze_sources_with`; `crates/antiburn-local/src/analysis/engine.rs` defines `SessionMetrics` (including `first_ts_ms`) and `analyze_session`. `crates/antiburn-local/src/analysis/initial_context.rs` is a second independent pass over the same payload (`parse_initial_context`, `parse_skill_descriptions`), called from `analyze_sources_with`. `crates/antiburn-local/src/analysis/vendors/claude.rs` is the Claude adapter.
+
+**Whole-file reads.** `vendors/mod.rs:read_source` returns `Cow::Owned(std::fs::read_to_string(path)?)` for `RawSource::File`. `vendors/sqlite.rs` also builds a whole `String` before `parse_jsonl`. `vendors/jsonl.rs:parse_jsonl(&str) -> Vec<NormalizedEvent>` materializes every event.
+
+**No general size cap.** There is no 512 MiB transcript cap and no general analysis cap. Only provider-specific limits exist: `discovery/agents/opencode.rs::{CLI_METADATA_MAX_BYTES, CLI_EXPORT_MAX_BYTES, CLI_EXPORT_CACHE_MAX_BYTES}` (8/32/64 MiB), `discovery/agents/antigravity.rs::HISTORY_MAX_BYTES` (16 MiB), and `discovery/mod.rs::SOURCE_PREVIEW_BYTES` (16 MiB). None of these bound transcript analysis.
+
+**Desktop scan and analysis.** `apps/desktop/src-tauri/src/scan.rs:pass` discovers sessions, calls `Store::upsert_sessions`, records scan state, and then calls `top_up_analysis` in the same pass. `scan.rs:spawn_scheduler` decides when a pass runs, and it is **not** an unconditional timer. A pass runs at launch when onboarding is finished, on the `scan.rs:TICK` of `Duration::from_secs(60)` **only while the popover is visible** — the tick branch calls `continue` when `ScanController::popover_visible()` is false — when the popover opens, and on demand from the rescan control or a source-selection change. The module contract states the same thing: scanning is "paused entirely while the popover is hidden". `AppSettings::discovery_paused` additionally stops every scheduled pass. Each pass caps analysis at `MAX_ANALYSES_PER_PASS = 60` candidates, and `top_up_analysis` re-reads the whole transcript of every candidate whose fingerprint moved; its own comment states the cost: "Analysis is the long tail of a pass — one whole transcript read per session." **So the whole-transcript re-read is already paid by shipped code whenever a pass runs, and background work is already bounded by the visibility gate.** There is no unconditional once-per-minute re-read.
+
+`apps/desktop/src-tauri/src/analytics.rs` provides `fingerprint_of` (a second-resolution `mtime:size` string), `MISSING_FINGERPRINT = "-"`, `cache_is_fresh`, `analyze`, `analyze_subagent`, `analytics_supported`, and `is_active`. **`is_active` gates nothing.** Its only consumers are `commands.rs:398` and `commands.rs:632`, and both only fill a DTO field for the UI.
+
+**No post-read recheck exists today.** `analytics.rs` computes `fingerprint_of` and then calls `read_to_string`, and nothing rechecks the source after the read. A transcript that grows during that read can therefore be cached under a fingerprint that no longer describes what was parsed. The inconsistency is real, though benign at today's stakes. This work fixes it rather than preserving it. `SourceChanged` appears in **zero** `.rs` files in the tree: it is a new result variant this plan introduces (CH-004), not an existing one.
+
+**Store.** `apps/desktop/src-tauri/src/store/mod.rs` holds one `Mutex<Connection>`, sets `journal_mode = WAL` in `from_connection`, and serializes every access through `Store::lock`. Relevant methods: `upsert_sessions`, `session`, `recent_sessions`, `save_analysis`, `analysis`, `usage_evidence`, `delete_session`, `clear_local_session_data`.
+
+**Schema.** `apps/desktop/src-tauri/src/store/schema.rs` declares `MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5]` and states the append-only rule in its module comment. Tables: `setting`, `scan_root`, `session`, `session_analysis`, `session_relation`, `scan_state`, `repository`, `consent_grant`, `usage_analytics_event`, `usage_analytics_identity`. `session` has no `source_fingerprint`, no `source_generation`, and no `started_at_epoch`; V4 added `activity_source` and `activity_cursor`. `session_analysis` already has `source_fingerprint TEXT NOT NULL` (the `mtime:size` string) and `pricing_generation`, but no analyzed generation and no parser/analyzer/metrics revisions.
+
+**Desktop IPC and UI.** `apps/desktop/src-tauri/src/commands.rs` holds the `#[tauri::command]` surface, registered in `apps/desktop/src-tauri/src/lib.rs:invoke_handler` (for example `get_session_analytics`, `list_recent_sessions`, `clear_local_index`, `delete_session_data`). The frontend calls them through `apps/desktop/src/lib/ipc.ts`. `apps/desktop/src/lib/settingsPanes.ts:SETTINGS_PANE_IDS` is `general, appearance, sources, privacy, notifications, usage, about` — there is **no** `insights` pane. Panes live in `apps/desktop/src/views/settings/*Pane.tsx` under `apps/desktop/src/views/SettingsView.tsx`. Existing session UI is `apps/desktop/src/views/popover/SessionPane.tsx` and `apps/desktop/src/components/session/SessionAnalyticsPresentation.tsx`.
+
+**Provider usage — two existing contracts, neither one an evidence source here.** `apps/desktop/src-tauri/src/provider_usage/mod.rs` (`summarize`, `window_bounds`, `lookback_start`, `spend_between`) derives *spend* from `Store::usage_evidence(since_epoch)`; its module comment states that an allowance, a percentage, a remaining balance, and a reset time are not things a transcript states. Account limits live on the separate cached `dto::LiveUsageSummary` held by `apps/desktop/src-tauri/src/usage_alerts.rs:LiveUsage`, read through `LiveUsage::snapshot()`. Session evidence in this issue comes from session transcripts only, so neither contract feeds it (see **Out of Scope**).
+
+**Fixtures and tests.** The only committed transcript fixtures are `crates/antiburn-local/tests/fixtures/initial_context/{claude_realistic.jsonl, codex_realistic.jsonl, cursor_unsupported.jsonl}`. Parser and metric tests are inline in `crates/antiburn-local/src/analysis/tests.rs` and `crates/antiburn-local/src/analysis/vendors/jsonl.rs`. `crates/antiburn-local/tests/boundary.rs` mechanically enforces the engine's source boundary — no exfiltration endpoints or telemetry SDKs, no proprietary provenance — against the manifests in `docs/oss/`.
+
+### Corrections to the pinned revision's current-code claims
+
+The source plan was written against an earlier tree. These claims are now wrong or incomplete; the plan's **decisions** are unaffected.
+
+1. **`RawSource` is an enum**, not a struct, and it carries no source-version concept. The plan listed it as a reusable type without that shape.
+2. **`VendorAdapter` has only `agent()` and `normalize()`.** Adding `visit_source` needs either a default method or an update to all six adapter statics in `vendors/mod.rs:adapter_for`.
+3. **The migration head is V5, not the count the plan assumed.** PR #60 added V5 (`usage_analytics_event`, `usage_analytics_identity`). The source-generation migration is therefore V6 and `session_evidence` is V7 or later.
+4. **`session` gained `activity_source` and `activity_cursor` in V4.** Every `SessionRecord` mapping change must carry them.
+5. **Provider-DB and inline sources do not merely lack an "equivalent" fingerprint — they map to `MISSING_FINGERPRINT` (`"-"`), and `analytics.rs:cache_is_fresh` rejects that value outright.** Their analysis cache can therefore never be fresh today.
+6. **Two usage contracts already exist.** `Store::usage_evidence` with `provider_usage::{summarize, window_bounds, spend_between}` is transcript-derived local *spend*. The cached `dto::LiveUsageSummary`, read through `usage_alerts::LiveUsage::snapshot()`, is account-level limit state. Neither is an evidence source for this issue. This is a statement of fact and carries no obligation on any seam.
+7. **`SessionLog` has no `session_id`, and the persisted session id is not derived from the dedupe/source-label scheme.** `SessionLog::{dedupe_key, cursor_key, source_label}` identify a *discovered source* for dedupe and cursor purposes. The canonical persisted id comes from `apps/desktop/src-tauri/src/scan.rs:describe_one_with_activity`, which takes `SessionMetadata::session_id` from the parsed bounded metadata, falls back to `scan.rs:recovered_id` (provider path recovery via `Explorers::recover_session_id_from_path`, then the file stem, then `SessionSource::ProviderDb::session_id`, then the `SessionSource::Inline` label), rejects an empty id, and builds the `SessionKey`. A `SourceDescriptor` must preserve that exact resolution order, not invent a second identity scheme.
+8. **`crates/antiburn-local/tests/boundary.rs` enforces exfiltration and provenance boundaries, not a Tauri dependency ban.** The storage-neutrality rule for `antiburn-local` is a design boundary held by review and by the crate's dependency list, not by that test.
+
+Claims that were re-verified and hold: the whole-file `read_to_string`, the complete `Vec<NormalizedEvent>`, the second initial-context pass, second-resolution `mtime:size` file fingerprints, the absence of generation/revision columns on `session_analysis`, `top_up_analysis` running inside the scan pass, the single mutex-guarded store connection, and the absence of any 512 MiB analysis cap.
+
+## Desired End State
+
+For Claude Code sessions on this machine:
+
+- Discovery records a provider-aware `source_fingerprint` under the one fingerprint contract of Locked Decision 16, and a monotonic `source_generation` on `session`, plus a nullable `started_at_epoch`.
+- A durable worker claims one pending generation at a time, streams the transcript record by record with bounded retained memory, and updates a metrics accumulator and an evidence accumulator from the same pass.
+- Completion writes `session.started_at_epoch`, `session_analysis` (with analyzed generation and parser/analyzer/metrics revisions), and `session_evidence` (status, generation, revisions, versioned `evidence_json`) in one short transaction, guarded by the claimed generation and the claim fence, or writes nothing.
+- A read-only connection on a pinned snapshot streams the trailing thirty-day assessed cohort into a bounded report accumulator. The accumulator produces nine category statuses plus a separate quota-pressure section. The report also carries the coverage denominator defined by FR-12. The denominator contains the assessed cohort. Every non-ready or non-current denominator row stays visibly outside the assessed cohort.
+- The quota-pressure section reports transcript-attributable quota incidents only: limit kind, hit count, affected sessions and models, and observed times. It is not assessed when the transcript carries no quota evidence. There is one condition, not a matrix.
+- Settings → Insights renders the report, its coverage, and the evidence backlog. No transcript content leaves the engine and no Insights path calls a provider.
+- No `Unimplemented` evidence placeholder exists in any build, every cardinality-bearing evidence field has an enforced cap, and the Claude capability and coverage matrix is published at `crates/antiburn-local/tests/fixtures/claude_characterization/README.md`.
+
+Non-Claude providers keep their current behavior throughout.
+
+## Locked Decisions
+
+Rationale lives here once; scope areas reference these by number.
+
+1. **First provider is Claude Code JSONL.** It has a dedicated adapter (`vendors/claude.rs`) and the widest fixture surface, so it proves the JSONL streaming path before any provider-database row streaming.
+2. **Evidence is rule-neutral fact, persisted as a versioned JSON payload in a new `session_evidence` table.** Thresholds, pricing, and catalogs then change without reparsing transcripts, and the payload matches the existing `metrics_json` convention rather than adding a column per map-valued fact.
+3. **Evidence values are three-state — `Complete` / `Partial` / `Unsupported` — with a temporary debug-only `Unimplemented` variant.** Absence must never be inferred from incomplete coverage, and the debug-only variant makes an unfinished field a release-build failure.
+4. **SQLite is the durable queue; an in-process signal only wakes the worker.** A restart then cannot lose pending work, and no second store is needed.
+5. **Completion is guarded by both the claimed source generation and a `claim_fence` token.** Generation alone cannot fence two workers after a lease expires, because both hold the same generation.
+6. **The report cohort is sessions whose trustworthy `started_at_epoch` falls in the trailing thirty days.** A start-time cohort keeps each selected session's whole history inside the window; `first_seen_at` is discovery time and is never a start fallback.
+7. **The report reads through a dedicated read-only connection on a pinned read transaction inside `spawn_blocking`.** The store's single `Mutex<Connection>` would otherwise serialize a full report scan against the user's own writes.
+8. **A changed source is reprocessed from the beginning; append-tail resume checkpoints are out of scope. A still-growing source may additionally be read as a pinned prefix, but a prefix may publish only where the provider carries an evidence-backed append-only guarantee.** Full reprocess stays the rule. A prefix read is stamped with its boundary and superseded by the next full pass, so no resume state persists across generations. Where the guarantee is absent, no prefix publishes and the source takes the full-reprocess path with its `SourceChanged` behavior unchanged. **Architecture reference → Source-validity outcomes** is the one home of those rules. Correctness first — byte-offset resume checkpointing belongs to the source plan's Phase 13 and needs measurement to justify.
+9. **There is no total transcript size cap; retention is bounded per record instead.** Streaming removes the memory reason for a file cap, and no such general cap exists today.
+10. **New schema arrives as appended migrations after V5 (generations and revisions first, `session_evidence` second); every shipped migration constant stays immutable.** This is the stated rule in `store/schema.rs`.
+11. **`antiburn-local` stays storage-neutral: no Tauri dependency and no knowledge of the application schema.** Durable state, claiming, and IPC belong to the desktop application, per the ownership boundary below.
+12. **Every other provider stays on the existing `analyze_sources_with` path for the whole of this issue.** Provider-by-provider rollout avoids an endlessly retrying pending backlog for uncharacterized providers.
+13. **Existing `SessionMetrics` output stays equivalent field by field; any intended difference is stated and approved before a golden result changes.** The conversion is a rewrite of how metrics are produced, not of what they say.
+14. **Rich metrics state may still grow with metric-bearing events in this issue.** The bounded-memory guarantee covers raw framing, normalized-record lifetime, evidence, and report reduction; making exact metrics finalization bounded would change the metrics output contract and is deferred.
+15. **Evidence rides the metrics pass. There is no separate evidence schedule and no quiet-period debounce.** One pass, one mechanism — CH-006's composite sink already does this. Whenever a pass runs at its existing shipped triggers — launch, a `TICK` while the popover is visible, popover open, on demand — `top_up_analysis` has already paid the whole-transcript read and the JSON parse for every candidate whose fingerprint moved, so attaching evidence accumulators costs only counters over records that were already decoded (FR-5). A debounce would save the durable row write but not that read, and it would stack a second scheduling policy on a scheduler that already bounds background work: scheduled passes do not run while the popover is hidden, and `AppSettings::discovery_paused` stops them outright. Consequence: nothing defers an active session, `ACTIVE_SESSION_WINDOW_SECS` stays the UI liveness predicate it is today, and the Claude metrics path keeps refreshing on exactly the triggers it uses now. **This plan claims no global minute schedule anywhere.**
+16. **One fingerprint contract: stable file identity where available, byte size, high-resolution modification/change time, and a hash of a small fixed head region.** This decision is the single home of that contract; the Architecture reference's fingerprint policy and CH-002 reference it rather than restating it, and it supersedes the second-resolution `mtime:size` string `analytics.rs:fingerprint_of` computes today. The head hash costs a hash over bytes discovery already reads (`discovery/mod.rs:session_source_preview`), not a new read. **Detection envelope, stated exactly: the head hash detects changes within the hashed head region only.** It closes a same-size in-place rewrite *of that region*. It does **not** prove that any byte outside that region is unchanged, and it does not prove a prefix or a whole file is append-only. Hashing more would be the unbounded work this plan exists to avoid. Two constraints bind every seam: the hashed region is small and fixed and is explicitly **not** `SOURCE_PREVIEW_BYTES` (16 MiB); and the hash is fingerprint input only — never surfaced, logged, exported, or retained as evidence. Its size is set in CH-002.
+
+## Invariants & Constraints
+
+Every seam must respect these however it is sliced.
+
+**Repository rules.**
+
+- No React `useEffect` without explicit prior agreement from the dev (`AGENTS.md`, "React useEffect"). The Insights pane derives during render or acts in the event that caused the work.
+- No Rust lint suppressions for dead or deprecated code without explicit prior agreement (`AGENTS.md`, "Rust dead and deprecated code"). Evidence scaffolding must be reachable from real code or tests, not silenced.
+- All code comments in ASD-STE100 (`AGENTS.md`, "Comments"): active voice, present tense, short sentences, approved words, identifiers unchanged.
+- Every commit carries a DCO sign-off — `git commit -s` (`AGENTS.md`, "Commits"). One missing sign-off fails the whole PR.
+- Test fixtures must be synthetic: no real transcripts, usernames, home paths, repository names, or captured machine output; redaction is not sufficient (`CONTRIBUTING.md`, "Test fixtures must be synthetic").
+- Performance and memory are product constraints for an always-running background utility: bound reads, allocations, concurrency, and retained data (`CONTRIBUTING.md`, "Performance and memory use are product constraints").
+- A capability that could cost the reader something is named and bounded in the PR, and a decision of that shape is recorded in `docs/deviations.md` (`CONTRIBUTING.md`).
+- Migrations are append-only for any constant that has reached an installed database. Pre-release the ladder may still be edited; the constraint binds at first ship (`apps/desktop/src-tauri/src/store/schema.rs`, module comment: "Never edit an entry that **has shipped**"). V6 and V7 in this plan are appended, not squashed into an existing entry.
+- The engine's source boundary stays clean: no exfiltration endpoint, no telemetry SDK, no proprietary provenance (`crates/antiburn-local/tests/boundary.rs`, `docs/oss/`).
+
+**Correctness and privacy boundaries** (issue GH-70, "Required boundaries"; expanded in **Architecture reference → Non-negotiable correctness semantics** and **→ Privacy and local-data policy**).
+
+- Persist derived, rule-neutral facts only. Never persist raw transcripts, complete canonical sessions or events, or detector conclusions.
+- Distinguish `Complete`, `Partial`, and `Unsupported`. Incomplete evidence must never produce a false clean result.
+- Keep source/parser capabilities separate from per-session evidence coverage.
+- Reject stale projections when a source changes during processing; leave the newer generation pending and preserve the last completed payload.
+- Update `session_analysis` and `session_evidence` atomically for the claimed generation, or update neither.
+- Keep transcript processing bounded, restart-safe, and outside long-held application-database locks. Never hold the store guard across `await`, `spawn_blocking`, transcript I/O, parsing, analysis, or detector work.
+- Preserve existing session UI behavior until the Insights UI scope area (CH-012).
+- Implement provider by provider. Do not add provider-specific logic to the report reducer where a normalized evidence fact can express the difference.
+- No transcript content in logs, errors, Tauri events, or IPC DTOs. Never modify or delete a provider's source transcript.
+- Include `session_evidence` in `Store::clear_local_session_data` and `Store::delete_session`, and in the schema data-policy comments and local-data documentation.
+
+## Definition of Done (applies to every seam)
+
+- The scope area's acceptance criteria are met for the slice.
+- `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` are clean (`CONTRIBUTING.md`, "Development"). Frontend slices additionally run `pnpm --filter @antiburn/desktop lint`, `type-check`, and `test`.
+- `aislop ci --changes --base <seam base>` is clean. **The base is the parent seam's branch, not `main`**: these PRs stack, so gating against `main` makes each seam inherit its predecessors' findings. This gate depends on antiburn#89, which adopts aislop and must land before the first seam in this stack verifies; antiburn#90 ratchets thresholds separately and is not a dependency. `complexity/file-too-large` is enforced, so a new module must stay within the configured threshold.
+- New non-trivial branches have at least one test. Untested defensive branches are untested behavior.
+- Golden `SessionMetrics` comparisons still pass, or a stated and approved intentional difference is recorded (Locked Decision 13).
+- No new transcript content reaches any persisted row, log, error, or DTO.
+- Schema slices verify a fresh migration and a migration from every prior schema version.
+- Every commit is signed off (`git commit -s`).
+
+## Patterns & Utilities to Reuse
+
+- Discovery fan-out, WSL/native dedupe, and bounded previews: `crates/antiburn-local/src/discovery/mod.rs` (`Explorers`, `SessionLog`, `SessionSource`, `ACTIVE_SESSION_WINDOW_SECS`, `SOURCE_PREVIEW_BYTES`).
+- Provider-database fingerprints: `Explorers::provider_db_fingerprint` and `AgentExplorer::provider_db_fingerprint`.
+- Vendor dispatch and adapter registry: `crates/antiburn-local/src/analysis/vendors/mod.rs` (`adapter_for`, `has_dedicated_adapter`).
+- Token, model, and tool normalization plus metric semantics: `crates/antiburn-local/src/analysis/engine.rs`.
+- Initial-context attribution semantics, including tracked/partial/unavailable states: `crates/antiburn-local/src/analysis/initial_context.rs`.
+- Pricing: `crates/antiburn-local/src/pricing/` and `analysis/pricing.rs` — reused at report time, never baked into evidence.
+- Cache-freshness and fingerprint conventions: `apps/desktop/src-tauri/src/analytics.rs` (`fingerprint_of`, `cache_is_fresh`, `MISSING_FINGERPRINT`).
+- Migration and store conventions: `apps/desktop/src-tauri/src/store/schema.rs`, `store/model.rs`, `store/mod.rs` (`Store::lock`, `save_analysis`, `usage_evidence`).
+- Settings pane registration and UI shape: `apps/desktop/src/lib/settingsPanes.ts`, `apps/desktop/src/views/SettingsView.tsx`, existing `*Pane.tsx` components.
+- Imperative-boundary session classes read through `useSyncExternalStore`: `apps/desktop/src/views/settings/SourcesSession.ts` and `apps/desktop/src/views/settings/SettingsWindowSession.ts`. `SettingsWindowSession`'s doc comment states the principle and cites `OnboardingSession` as the precedent for the same shape in a different window. CH-012 follows it.
+
+## Functional Requirements
+
+- **FR-1:** Discovery must record a provider-aware source fingerprint and a monotonic `source_generation` per session; re-observing the same fingerprint must not increment the generation, and no complete transcript may be read to decide it.
+- **FR-2:** JSONL framing must bound retained bytes per record, drain an oversized record through its newline, resume at the next record, and process a file larger than the retained-memory budget.
+- **FR-3:** The shipped Claude metrics path must contain no whole-file `String` and no complete `Vec<NormalizedEvent>`.
+- **FR-4:** Every currently displayed `SessionMetrics` value must stay equivalent after the streaming conversion (Locked Decision 13).
+- **FR-5:** One source pass must feed both the metrics accumulator and the evidence accumulator; adding evidence must not add a second pass, and the source line and parsed value must be dropped before the next record is retained.
+- **FR-6:** Every detector-critical evidence group must report `Complete`, `Partial`, or `Unsupported`, and a complete empty collection must be distinguishable from an unsupported one.
+- **FR-7:** Completion must write `session.started_at_epoch`, `session_analysis`, and `session_evidence` in one short transaction, guarded by the claimed generation and claim fence; a failed guard must commit nothing.
+- **FR-8:** Marking a newer generation pending must preserve the previously completed generation's evidence payload.
+- **FR-9:** Transcript processing must run in a durable worker outside the scan pass, and a process restart must not lose pending work.
+- **FR-10:** Evidence must be produced on the metrics pass, with no separate evidence schedule and no quiet-period gate on claiming (Locked Decision 15). A `SourceChanged` result must use bounded backoff through `next_attempt_at` rather than a tight retry loop, and one repeatedly changing source must not prevent stable sessions from progressing. An actively updated session's metrics must keep refreshing on exactly the shipped trigger set — launch, a `TICK` while the popover is visible, popover open, and on demand — and this work must add no trigger and remove none.
+- **FR-11:** A projection-revision change (parser, analyzer, metrics, evidence) must requeue affected sessions lazily without incrementing `source_generation`; detector, remediation, pricing, and model-replacement catalog changes must not requeue anything.
+- **FR-12:** The report must define two nested populations over one thirty-day window and the current machine/environment scope. **The coverage denominator is the report population; the assessed cohort is its ready-and-current subset — denominator ⊇ cohort.** This is the one home of that rule; every other passage references FR-12 rather than restating it. (a) The **coverage denominator**: every session in scope whose trustworthy `started_at_epoch` is in `[window_start, window_end)`, **plus** every session whose `started_at_epoch` is unknown and whose `updated_at_epoch` is in the same window — **regardless of evidence lifecycle or currentness**, so a pending, processing, failed, unsupported, or stale row with a trustworthy in-window start belongs to it. (b) The **assessed cohort**: the denominator's subset with ready, generation- and revision-current evidence. A session with an unknown start and no activity in the window is outside the report entirely and is not counted. Every denominator row outside the cohort must be counted and reported by its own reason, must never be dated by discovery time, and must never enter any detector's eligible or assessed denominator.
+- **FR-13:** The report must read only compact database rows through a read-only connection on one pinned snapshot, must not read transcripts, and must not block the writer connection for the duration of the scan.
+- **FR-14:** Each of the nine categories must report exactly one status — findings, clean, or not assessed with a structured reason — and incomplete coverage must never produce clean.
+- **FR-15:** The quota-pressure section must stay separate from the nine categories and must be sourced only from transcript-attributable quota incidents (the `quota_incidents` evidence group). It must deduplicate incidents and must report limit kind, hit count, affected sessions and models, and observed times. It must be not assessed when the transcript carries no quota evidence — one condition, not a matrix. It must call no provider endpoint and must read no account-level limit state.
+- **FR-16:** Desktop IPC must expose the report, its coverage counts, and the evidence backlog without any transcript content, and closing the pane or shutting down must cancel report work without corrupting durable evidence state.
+- **FR-17:** No `Unimplemented` placeholder and no fake provider value may exist in a release build; a remaining use must fail release compilation.
+- **FR-18:** `session_evidence` must be removed by session deletion and by clear-local-session-data, and must be described in the schema data-policy comments and local-data documentation.
+
+## Architecture reference (preserved from the pinned revision)
+
+The sections below are the researched architecture from `23979b1`, demoted one heading level and otherwise preserved. They remain the design reference every seam works against. Where a passage described current code, this plan's **Current State (evidence)** section supersedes it.
+
+### Pipeline shape and delivery order
 
 Local Insights should be built as two streaming pipelines separated by compact, versioned per-session evidence in Antiburn's SQLite database.
 
@@ -43,11 +226,11 @@ The implementation should proceed provider by provider:
 
 The first provider should be one JSONL provider, preferably Claude Code. This proves the shared architecture before adding more provider formats or generality.
 
-## Product scope
+### Product scope
 
-### Canonical Hygiene and Efficiency categories
+#### Canonical Hygiene and Efficiency categories
 
-The local report should preserve the complete set of finding categories represented by Cadence `main` under My Work → Insights → Hygiene and Efficiency.
+The local report should preserve the complete set of finding categories represented by the private reference implementation under My Work → Insights → Hygiene and Efficiency.
 
 | Category | What it finds | Current remediation concept |
 |---|---|---|
@@ -69,9 +252,9 @@ Each category always has one detector status:
 
 An empty findings list does not prove a detector ran cleanly.
 
-### Additional local category: subscription/quota limit pressure
+#### Additional local category: subscription/quota limit pressure
 
-Antiburn should also support an explicitly local extension for subscription or quota-limit pressure. This remains separate from the nine-category Cadence compatibility contract because provider limits may represent:
+Antiburn should also support an explicitly local extension for subscription or quota-limit pressure. This remains separate from the nine-category private compatibility contract because provider limits may represent:
 
 - rolling five-hour usage;
 - weekly usage;
@@ -79,17 +262,13 @@ Antiburn should also support an explicitly local extension for subscription or q
 - weighted usage rather than raw tokens;
 - rate-limit errors without an exposed numeric quota.
 
-The report may combine:
+The section is sourced **only** from transcript-observed limit errors attributable to a session, including reset times and utilization where the transcript itself exposes them. It reports limit kind, hit count, affected sessions and models, and observed times. When the transcript carries no quota evidence the section is not assessed.
 
-- transcript-observed limit errors attributable to a session;
-- Antiburn's existing account/provider usage snapshots;
-- reset times and utilization where exposed.
+Account-level limit state is a different subject, from a different subsystem, on a different schedule. Looking it up is out of scope for this issue (see **Out of Scope**).
 
-The account-level evidence is a separate optional report input rather than being forced into `SessionEvidence` when it cannot be attributed to one session.
+### Non-negotiable correctness semantics
 
-## Non-negotiable correctness semantics
-
-### No false absence
+#### No false absence
 
 Detector-critical evidence must distinguish:
 
@@ -118,7 +297,7 @@ pub enum EvidenceValue<T> {
 
 `Unimplemented` is implementation scaffolding. It must be removed entirely before the first provider implementation is complete. Any remaining use should make a release build fail while the variant is debug-only; after removal, remaining debug references should also fail.
 
-### Capabilities and coverage are separate
+#### Capabilities and coverage are separate
 
 The system records two distinct concepts:
 
@@ -127,78 +306,15 @@ The system records two distinct concepts:
 
 Discovery carries cheap provider/source/version hints. The parser returns the definitive capabilities, provenance, coverage, and diagnostics after inspecting source records.
 
-### Findings are policy; evidence is fact
+#### Findings are policy; evidence is fact
 
 Persist facts such as token quantities, tool counts, model usage, context depths, and observed transitions. Do not persist conclusions such as `overthinking = true` or final savings.
 
 This allows thresholds, detector rules, remediation text, and pricing to change without reparsing transcripts.
 
-## Existing Antiburn capabilities to reuse
+### Ownership boundaries
 
-### Discovery
-
-`crates/antiburn-local/src/discovery/mod.rs` already provides:
-
-- `Explorers::discover_recent_sessions`;
-- `Explorers::discover_recent_sessions_with_progress`;
-- `SessionLog`;
-- `SessionSource::{File, Inline, ProviderDb}`;
-- parallel provider fan-out;
-- native/WSL discovery and deduplication;
-- bounded metadata previews;
-- `AgentExplorer::provider_db_fingerprint`;
-- point source location APIs.
-
-Discovery currently materializes vectors of descriptors. That is acceptable initially because descriptors are much smaller than transcript contents.
-
-### Desktop session index
-
-`apps/desktop/src-tauri/src/scan.rs::pass` already:
-
-- discovers sessions;
-- reads bounded metadata;
-- gates unsupported/subagent rows;
-- calls `Store::upsert_sessions`;
-- records scan state;
-- calls `top_up_analysis` for recent session metrics.
-
-`apps/desktop/src-tauri/src/store/schema.rs` already contains:
-
-- `session`;
-- `session_analysis`;
-- `session_relation`;
-- `scan_state`.
-
-### Parsing and analysis
-
-`crates/antiburn-local/src/analysis/` already provides:
-
-- `RawSource` and `SessionInput`;
-- `VendorAdapter` and provider adapters;
-- `NormalizedSession` and `NormalizedEvent`;
-- token/model/tool normalization;
-- `SessionMetrics`;
-- context, timing, phase, compaction, skill, and cost calculations;
-- initial-context skill/MCP/instruction attribution.
-
-These semantics should be reused rather than importing Cadence's dependency graph or building a separate parsing engine.
-
-## Current limitations to replace
-
-- File-backed analysis calls `std::fs::read_to_string` without a total session limit.
-- `NormalizedSession.events` materializes a complete `Vec<NormalizedEvent>`.
-- `analyze_sources_with` materializes all normalized sessions before aggregation.
-- Initial-context attribution reparses the raw transcript.
-- Desktop file fingerprints are currently second-resolution `mtime:size`.
-- Provider DB and inline sources do not currently receive equivalent desktop cache fingerprints.
-- `session_analysis` has no source generation, parser revision, analyzer revision, or metrics schema revision.
-- `top_up_analysis` processes sessions sequentially inside the scan pass.
-- The current `Store` has one persistent SQLite connection behind a mutex, serializing all app-database access.
-- There is no existing 512 MiB general analysis cap. Smaller provider-specific limits protect metadata, subprocess output, or discovery paths and should not be conflated with transcript analysis.
-
-## Ownership boundaries
-
-### `antiburn-local` owns
+#### `antiburn-local` owns
 
 - provider discovery;
 - source identity and provider-aware source version calculation;
@@ -212,7 +328,7 @@ These semantics should be reused rather than importing Cadence's dependency grap
 - pure detector logic;
 - pure cross-session report accumulation.
 
-### Desktop application owns
+#### Desktop application owns
 
 - Antiburn's application SQLite schema and migrations;
 - durable pending/processing/ready state;
@@ -225,9 +341,9 @@ These semantics should be reused rather than importing Cadence's dependency grap
 
 `antiburn-local` must remain storage-neutral and must not depend on Tauri or Antiburn's application database schema.
 
-## Target source and processing contracts
+### Target source and processing contracts
 
-### Source descriptor and version
+#### Source descriptor and version
 
 Candidate storage-neutral types in `antiburn-local`:
 
@@ -256,12 +372,12 @@ pub enum Streamability {
 
 Fingerprint policy:
 
-- file: stable identity where available, byte size, and high-resolution modification/change time;
+- file: the fingerprint contract of Locked Decision 16, which is its one home;
 - provider DB: reuse and strengthen provider-specific fingerprints;
 - inline: hash the already-materialized content or mark always-refresh where hashing is unavailable;
 - format is internal and versioned.
 
-### Bounded normalized-record visitor
+#### Bounded normalized-record visitor
 
 The existing compatibility API remains available:
 
@@ -289,13 +405,13 @@ pub trait VendorAdapter: Sync {
 
 `normalize_source` can later be implemented as a collector over this visitor for tests, tools, and views that truly need a complete normalized session.
 
-### Normalized record model
+#### Normalized record model
 
 A provider-neutral record enum may be more honest than forcing every detector fact into message-shaped `NormalizedEvent`:
 
 ```rust
 pub enum NormalizedRecord {
-    Event(NormalizedEvent),
+    MetricsEvent(NormalizedEvent),
     ModelTurn(NormalizedModelTurn),
     ContextSource(ContextSourceObservation),
     ToolDefinition(ToolDefinitionObservation),
@@ -305,9 +421,11 @@ pub enum NormalizedRecord {
 }
 ```
 
+The variant is named `MetricsEvent`, not `Event`, so the record that feeds the existing metrics path is named for what it is. **The rename is on the variant only.** The `NormalizedEvent` type at `analysis/model.rs:234` keeps its name: it is existing code with serde derives that appear in `NormalizedSession`, which the CH-001 characterization goldens serialize, and renaming it would churn fixtures inside the seam whose job is proving nothing changed. `Turn` was rejected because it collides with the existing `ModelTurn` variant.
+
 Only add variants or fields required by an implemented metric, detector, or established cross-session view.
 
-### Composite per-session processing
+#### Composite per-session processing
 
 One parsed record feeds multiple bounded accumulators:
 
@@ -333,7 +451,7 @@ pub struct ProcessedSession {
 
 The source line, parsed JSON value, and normalized record are discarded before the next source record is retained.
 
-### Rich metrics and retained state
+#### Rich metrics and retained state
 
 Some existing `SessionMetrics` fields require finalization after the complete event sequence:
 
@@ -347,13 +465,13 @@ Exact parity with the current metrics contract can require retained state propor
 
 A later measured improvement may move growing metric details into generation-scoped child/staging tables or another disk-backed spool and retain only bounded summaries in memory. That optimization may require changing the rich metrics output contract or finalization path and is not required for the first streaming provider.
 
-## JSONL source policy
+### JSONL source policy
 
-### Full forward processing
+#### Full forward processing
 
 Antiburn should process the complete JSONL stream by default, even when the file exceeds 512 MiB. Streaming removes the memory reason for a total-file cap, though CPU/I/O budgets and cancellation still matter.
 
-### Bounded newline framing
+#### Bounded newline framing
 
 Plain `BufRead::read_until` is insufficient by itself because its destination buffer can grow without bound. Implement a bounded newline-framed reader using `fill_buf` or equivalent chunk scanning:
 
@@ -366,9 +484,15 @@ Plain `BufRead::read_until` is insufficient by itself because its destination bu
 
 The provider controls row size; Antiburn controls how much it retains and parses.
 
-The maximum individual record size should be selected from real provider fixtures and benchmarks. It is a safety valve, not an assertion that providers cannot emit larger rows.
+**The maximum retained record size is 8 MiB.** It is a safety valve against one pathological record, not a transcript-size limit — there is no total file cap (Locked Decision 9). Required failure behavior: drain the oversized record through its newline, mark the affected coverage `Partial` with a reason, and resume at the next record. Never truncate a record into evidence and never abort the source. Evidence for the number: measured local Claude transcripts top out near 79 KB per record, and repository precedent for bounded reads sits at 8-64 MiB (`SOURCE_PREVIEW_BYTES` 16 MiB, `antigravity.rs:HISTORY_MAX_BYTES` 16 MiB, opencode's 8/32/64 MiB caps).
 
-### Malformed and trailing records
+#### Malformed and trailing records
+
+**The newline marks a record complete for the current pass.** A raw `\n` in JSONL can only mean end-of-record, because JSON escapes newlines inside strings. Two properties follow, both scoped to one read. A partially written record has no newline yet, so it is the incomplete tail and is never committed. A line that has its newline is complete for this pass, which is what lets the framing primitive commit that record and what makes prefix membership decidable.
+
+**The newline says nothing about whether those bytes persist across reads.** A later rewrite of an already-complete record is a source mutation, handled by the **Source-validity outcomes** table like any other mutation. Newline framing decides record boundaries within one read; the append-only guarantee decides whether a prefix may publish. They are separate properties, and framing does not supply the guarantee.
+
+**This is why there is no in-loop retry on a malformed line.** Within a pass, a newline-terminated record is already complete, so re-reading it in that same pass cannot yield more of it. Retry belongs at generation granularity instead: a changed source produces a new generation, and that generation is reprocessed whole.
 
 - Parse each complete line independently.
 - A malformed line does not discard valid surrounding records.
@@ -376,31 +500,53 @@ The maximum individual record size should be selected from real provider fixture
 - Skipped records update diagnostics and evidence coverage.
 - Cancellation is checked between records or bounded byte intervals.
 
-### Source mutation and actively growing transcripts
+#### Source mutation and actively growing transcripts
 
 - Capture source version before reading.
 - Recheck source identity/version after processing.
 - If the source changed, return `SourceChanged` and do not publish stale projections.
 - The next generation remains pending.
 
-A transcript that is still receiving appends must not enter an immediate discard/retry loop or monopolize worker capacity. The first implementation should:
+`SourceChanged` is a **new** result variant introduced by CH-004 on the visit entry point's result type in `analysis/interface.rs`. Today's path has no post-read recheck at all (see **Current State**).
 
-- reuse `ACTIVE_SESSION_WINDOW_SECS` as the quiet-period debounce and avoid claiming file sources still considered active;
+##### Source-validity outcomes
+
+This is the **one home** of what publishes and when. One source pass produces one source-validity result, and **both projections use that same result**: metrics and evidence publish together, or neither publishes. FR-5 requires one pass and FR-7 requires one atomic completion, so an outcome that publishes metrics while rejecting evidence is not available to any seam. CH-004, CH-005, CH-007, and CH-008 reference this table rather than restating it.
+
+| Outcome | Condition | What publishes |
+|---|---|---|
+| **Accepted full read** | The post-read recheck confirms the same source version over the whole source | Metrics and evidence, atomically, for the claimed generation |
+| **Accepted pinned prefix** | The provider carries an evidence-backed append-only guarantee **and** the prefix recheck passes | Metrics and evidence, atomically, for that generation, stamped with its boundary `L` |
+| **`SourceChanged`** | Any source mutation the recheck classifies as changed. For a **full read** that is the whole-source recheck failing. For a **pinned-prefix read** it is narrower: the pinned prefix could not be obtained intact — a truncation, or a head-region rewrite detected by re-hashing from the pinned handle. **Truncation has two timings and both count:** it surfaces inline as a short read before reaching `L`, or, when it happens after `[0, L)` was already read, only as a post-read pinned-handle size below `L`. Appends past `L` are invisible to a prefix read and **never** cause it; that acceptance is deliberate and is not a defect to fix. An in-place rewrite below `L` and outside the head region is undetectable here; the provider append-only guarantee covers that case, not the recheck | **Neither projection.** The newer generation stays pending and the last completed payload is preserved |
+| **Handle is not the claimed generation** | The pre-read validation from the opened handle fails: stable identity does not match the claimed generation, size is short of the claimed prefix boundary `L` where one applies, or the head-hash envelope the generation recorded does not match. This is a **replacement before pinning** — a rename between version capture and `open` — and it is checked from the opened handle before any record streams. It applies to a full read and a prefix read alike | **Neither projection**, reported as `SourceChanged`. The generation stays pending, the last completed payload is preserved, and the work retries under the bounded backoff below |
+| **No append-only guarantee** | The provider has no evidence-backed guarantee | **No prefix publication at all.** The source takes the normal full-reprocess path, with the `SourceChanged` row above applying unchanged |
+
+A transcript that is still receiving appends must not enter an immediate discard/retry loop or monopolize worker capacity. **Nothing defers an active session** (Locked Decision 15). Instead:
+
 - set `next_attempt_at` instead of immediately retrying `SourceChanged` work;
 - apply bounded backoff when a source repeatedly changes during processing;
 - claim eligible rows fairly so one hot session cannot prevent stable sessions from progressing;
 - retain the last completed `analyzed_generation` and evidence payload while a newer generation is pending;
 - exclude stale/pending evidence from a clean current report and count the active session as not assessed.
 
-Marking a new generation pending must not erase its last completed evidence. A session that remains active indefinitely may remain pending in the first version, but it must not starve the rest of the queue.
+Marking a new generation pending must not erase its last completed evidence.
 
-A later optimization may process a captured append-only prefix: record file identity and starting length, read only complete records in that prefix, publish that older completed generation, and leave appended work pending. Do not add this until provider append-only behavior and measured need justify it.
+**Pinned-prefix reads.** A still-growing source is read as a pinned prefix (Locked Decision 8). The boundary needs no new state: the fingerprint carries `size`, so a generation already encodes its own read length `L = size`. Stream records normally but **stop at byte `L`** rather than at EOF.
 
-### Selective deserialization
+- *Membership rule:* a record belongs to the prefix when its **terminating newline is at or before `L`**. That is the same rule as the incomplete tail, with no special case. It is chosen for reproducibility: **given the append-only guarantee below**, `(file identity, L)` determines the evidence exactly, so reprocessing a generation is byte-identical and testable. That reproducibility is a consequence of the guarantee. It is not a property the recheck can prove on its own.
+- *Nothing is lost:* a record straddling `L` is picked up by the next generation, whose `L'` includes it.
+- *Pre-read validation:* the lifecycle has three points — version capture at discovery, `open`, then the read and its recheck. Pinning the handle covers only what happens **after** `open`. A rename between capture and `open` silently substitutes a different file, so the worker validates the opened handle against the claimed generation **before it streams any record**: stable identity, size at least `L`, and the head-hash envelope the generation recorded, every input read from that handle. The outcome of a mismatch is stated once in the **Source-validity outcomes** table above. **Replacement before pinning and rename after pinning are opposite cases:** the first is rejected and retried, the second is accepted on the original inode.
+- *Pinned handle:* the read opens the source **once** and reads `[0, L)` from that one handle. Every recheck input comes from that handle, never from the path. **Replacement after the handle is pinned is not a failure.** If the path is replaced by a rename over it mid-read, POSIX keeps the descriptor on the original inode, so the read completes on exactly the bytes the claimed generation described. That result is correct, not an error, and the replacement arrives as a new generation at the next discovery through the normal path. **Implementation trap:** an implementer who re-stats *the path* after the read turns a harmless replacement into a spurious rejection. The recheck must use the pinned handle.
+- *Recheck:* taken from the pinned handle — size still `>= L`, and the head region unchanged when re-hashed (Locked Decision 16). An append passes and is invisible. What counts as a failed prefix recheck is stated once in the **Source-validity outcomes** table above; this bullet does not restate it.
+- **Detection envelope, stated plainly.** That recheck does **not** verify the append-only property of the whole prefix. The head hash covers the hashed head region only (Locked Decision 16). A writer can rewrite a complete record after the head region and before `L` while preserving file identity, a non-shrinking size, and the head bytes, and the recheck passes. Hashing the whole prefix would be exactly the unbounded work this plan exists to avoid, so this plan does not add it.
+- **Publication is therefore conditional on an evidence-backed provider append-only guarantee**, established per provider by test in the seam that builds the mechanism (CH-004). Where the guarantee holds, a pinned prefix may publish. Where it does not, no prefix publishes and the source takes the full-reprocess path — see the **Source-validity outcomes** table above, which is the one home of both rules.
+- *Header rewrites:* where a provider rewrites a header, the seam may define the prefix as `[header_end, L)` and re-read the header fresh each pass. Claude's header shape is not specified here; CH-004 carries the constraint and the per-provider note.
+
+#### Selective deserialization
 
 Provider-specific deserializers should avoid retaining huge prompt/tool-output fields when only metadata, usage, tool names, or mode fields are needed. Use ignored-field/visitor techniques where justified by fixtures. Temporary-file spooling remains a fallback only if a legitimate evidence-bearing record exceeds the chosen memory bound.
 
-## Provider SQLite source policy
+### Provider SQLite source policy
 
 For supported provider databases:
 
@@ -416,7 +562,7 @@ Do not render the complete provider session into a synthetic JSONL `String`.
 
 Provider database connections are distinct from the Antiburn application database connection. Provider journal mode is not controlled by Antiburn, so concurrent readers should be conservatively limited, initially to one unless provider-specific tests justify more. Do not use SQLite immutable mode for a database the provider may still be writing.
 
-## Source capabilities, coverage, and provenance
+### Source capabilities, coverage, and provenance
 
 The parser returns a `SessionProvenance` containing:
 
@@ -429,6 +575,8 @@ The parser returns a `SessionProvenance` containing:
 - malformed/skipped/oversized record counts;
 - unknown schema variants;
 - source mutation/truncation observations.
+
+An **unknown schema variant degrades the affected evidence group to `Partial` with a reason**, exactly as a malformed record does. A diagnostic count alone is not enough: an unmodelled record must never let a group report `Complete`. The diagnostic also records a **bounded, capped set of unrecognized `type` values** — discriminator strings only, never payloads. A `type` discriminator is schema vocabulary and is safe under the same rules as tool names, but it is capped like every other cardinality-bearing field (CH-009's cap audit).
 
 Capabilities should cover at least:
 
@@ -446,7 +594,7 @@ Capabilities should cover at least:
 
 Pricing is not a source capability. The source provides model identity and billable token quantities; a versioned report-time catalog determines whether those quantities are priceable.
 
-## `SessionEvidence` contract
+### `SessionEvidence` contract
 
 Candidate shape:
 
@@ -481,9 +629,9 @@ The exact grouping may evolve while implementing the first provider. The durable
 
 Persist model-attributed token quantities, not only current prices. Pricing changes should not require transcript reparsing.
 
-## Database changes
+### Database changes
 
-### Shared source version on `session`
+#### Shared source version on `session`
 
 Add source truth and a queryable analyzed start time to the existing `session` row:
 
@@ -497,7 +645,7 @@ When discovery first obtains a reusable fingerprint, generation becomes 1. When 
 
 Antiburn does not currently store a queryable session start on `session`; the earliest parsed timestamp exists only as `SessionMetrics.first_ts_ms` inside `metrics_json`. Streaming analysis should populate `started_at_epoch` from trustworthy provider start metadata or the earliest normalized timestamp. `first_seen_at` is discovery time and must not be used as a session-start fallback.
 
-### Version existing `session_analysis`
+#### Version existing `session_analysis`
 
 Add:
 
@@ -510,7 +658,7 @@ metrics_schema_revision  INTEGER NOT NULL DEFAULT 1
 
 Existing `source_fingerprint` remains useful diagnostic evidence. Freshness requires generation and revisions to match current values.
 
-### New `session_evidence` table
+#### New `session_evidence` table
 
 The table stores stable relational lifecycle/version columns plus a versioned JSON evidence payload. It does not create one SQL column for every map-valued fact.
 
@@ -558,7 +706,7 @@ Work lifecycle and evidence quality remain separate:
 - lifecycle: pending, processing, ready, unsupported, failed;
 - evidence quality: complete or detector-specific partial/unsupported fields inside `evidence_json`.
 
-### Dirty marking
+#### Dirty marking
 
 When discovery observes a new source generation:
 
@@ -572,7 +720,7 @@ session_evidence.evidence_json remains the last completed generation until repla
 
 The session upsert and evidence transition happen in one short transaction. Worker notification occurs only after commit.
 
-### Revision-driven requeue
+#### Revision-driven requeue
 
 A source can require reprocessing even when its fingerprint and generation did not change. On startup and before normal worker claiming, reconcile enabled-provider rows against current projection revisions. Mark or treat a row as pending when any transcript-derived projection is stale:
 
@@ -602,7 +750,7 @@ Invalidation policy:
 | Pricing catalog | No for evidence/report facts |
 | Deprecated-model replacement catalog | No |
 
-### Claim fencing and atomic completion
+#### Claim fencing and atomic completion
 
 Source generation is not a worker-claim token: two workers may process the same generation after a lease expires. Every initial claim or reclaim must atomically increment `claim_fence` and return the new value. The worker carries both its claimed source generation and fence token.
 
@@ -625,7 +773,7 @@ UPDATE session_evidence ... status = 'ready', analyzed_generation = ?claimed_gen
 
 If either guard fails, commit neither projection. A source change leaves the newer generation pending; a fence mismatch means another claim owns the work.
 
-### Persistence policy
+#### Persistence policy
 
 - Persist compact derived facts only.
 - Do not persist complete canonical events or raw transcript text.
@@ -634,11 +782,11 @@ If either guard fails, commit neither projection. A source change leaves the new
 - Use normalized child tables only if measured query/update requirements justify them later.
 - Include `session_evidence` in clear/delete and local-data documentation.
 
-## Durable worker model
+### Durable worker model
 
 SQLite is the durable queue. An in-process event only wakes the worker.
 
-### Worker lifecycle
+#### Worker lifecycle
 
 ```text
 scan transaction marks pending
@@ -654,7 +802,7 @@ scan transaction marks pending
 
 On startup, reconcile revision-stale projections and reclaim abandoned `processing` rows whose leases expired. Every reclaim increments the fence before work starts. Duplicate wake-ups are harmless.
 
-### Database connection rule
+#### Database connection rule
 
 For the Antiburn application database:
 
@@ -664,7 +812,7 @@ For the Antiburn application database:
 
 The current `Store` may retain its physical writer connection; releasing the guard/transaction is the relevant concurrency boundary.
 
-### Resource limits
+#### Resource limits
 
 Use separate controls rather than one dynamically resized thread pool:
 
@@ -678,11 +826,11 @@ Use separate controls rather than one dynamically resized thread pool:
 
 Acquire permits before scheduling a blocking job. Streaming JSONL receives a small fixed memory weight. Whole-document fallbacks receive weight based on estimated size and run alone when they consume the budget.
 
-Start conservatively with one or two processing jobs and one provider-database reader. Tune only from profiling.
+**Starting values: one CPU permit, one source permit, one provider-database permit, and a five-minute lease renewed on progress.** They are retunable in CH-013 from measurement. The bias is deliberate: a background utility competing with the reader's own agent sessions is a worse failure than a slow backlog.
 
-## Cross-session report reduction
+### Cross-session report reduction
 
-### Dedicated read-only Antiburn connection
+#### Dedicated read-only Antiburn connection
 
 The current `Store` serializes one persistent connection behind a mutex. Report generation should open a separate read-only connection to the same WAL database.
 
@@ -699,7 +847,7 @@ In `spawn_blocking`:
 
 WAL permits the normal writer connection to continue committing while the report sees its original snapshot. The report must remain bounded and must not await, read raw transcripts, or perform unrelated long-running work while the snapshot is open.
 
-### Report population
+#### Report population
 
 The first report is a **session-start cohort**, not an event-time slice. Select sessions whose trustworthy `started_at_epoch` falls within the trailing thirty days, then consume each selected session's complete evidence. Because every selected session began inside the window, its normal event history is also inside the cohort window.
 
@@ -713,11 +861,13 @@ Select:
 - `session_analysis`/`session_evidence` generations matching `session.source_generation` where needed;
 - current parser/analyzer/evidence revisions.
 
-A session without a trustworthy start time is not eligible for the cohort and is counted as not assessed rather than assigned discovery time. Account-level quota snapshots continue to use their own observation timestamps within the report window.
+A session without a trustworthy start time is not eligible for the cohort and is counted as not assessed rather than assigned discovery time. Quota incidents carry their own transcript-observed times inside the selected sessions, so they need no separate window rule.
 
-Count pending, actively growing/debounced, processing, failed, unsupported, stale, unknown-start, and ready rows separately.
+Count pending, actively growing, processing, failed, unsupported, stale, unknown-start, and ready rows separately.
 
-### Candidate query shape
+> **Plan amendment (GH-70).** The passage above says a session without a trustworthy start is "counted as not assessed" but never says *which* such sessions are counted, and a pending session usually cannot have `started_at_epoch` yet because that value is written at completion. **FR-12** defines the population and owns the rule. In short: the report runs two bounded queries over the same pinned snapshot, window, and environment scope — a coverage-denominator count over every in-window session regardless of evidence lifecycle, and the assessed-cohort query above over its ready-and-current subset. The `Select:` list above therefore describes the **cohort** query only, not the denominator.
+
+#### Candidate query shape
 
 ```sql
 SELECT
@@ -745,7 +895,7 @@ ORDER BY s.started_at_epoch, s.session_id;
 
 The final query may join compact `session_analysis` fields where a report requires them, but it must not load canonical transcripts.
 
-### Provider-neutral accumulator
+#### Provider-neutral accumulator
 
 Candidate module:
 
@@ -774,7 +924,7 @@ impl EfficiencyReportAccumulator {
 
 The report engine is implemented once. Each provider maps its source into the shared `SessionEvidence` contract rather than receiving provider-specific report code.
 
-### Report contract
+#### Report contract
 
 Include:
 
@@ -793,9 +943,9 @@ Include:
 
 Partial coverage may still support observed findings. A detector may report clean only when its required capabilities and coverage are sufficient.
 
-## Detector evidence requirements
+### Detector evidence requirements
 
-### Sessions Over Depth
+#### Sessions Over Depth
 
 - request/turn context depth;
 - model/harness context semantics;
@@ -803,56 +953,56 @@ Partial coverage may still support observed findings. A detector may report clea
 - canonical ordering;
 - compaction boundaries where relevant.
 
-### Model Overthinking
+#### Model Overthinking
 
 - explicit reasoning/effort tier;
 - provider and model;
 - turn/session counts;
 - confidence that the setting was directly observed.
 
-### Overpowered Subagents
+#### Overpowered Subagents
 
 - parent/main-loop model;
 - child identity/model;
 - relationship confidence;
 - observed override information where available.
 
-### Unused MCP Servers
+#### Unused MCP Servers
 
 - loaded server/tool definitions;
 - normalized direct invocation names;
 - source scope and eligible sessions;
 - attribution coverage.
 
-### Unused Built-In Tools
+#### Unused Built-In Tools
 
 - built-in definitions for the observed provider/version;
 - normalized invocations;
 - curated disable/remediation support;
 - fleet/local validation status.
 
-### Unused Skills
+#### Unused Skills
 
 - loaded names;
 - installed/project/plugin/bundled origin;
 - normalized invocations;
 - eligible-session and attribution coverage.
 
-### Old Model Usage
+#### Old Model Usage
 
 - model identity per turn/session;
 - timestamp;
 - token/turn quantities;
 - replacement catalog revision.
 
-### Overuse of Fast Mode
+#### Overuse of Fast Mode
 
 - explicit fast/service-tier signal;
 - main-loop versus delegated work;
 - persistent/default signal where available;
 - provider-specific impact semantics.
 
-### Cache Churn
+#### Cache Churn
 
 - canonical turn order;
 - thread/sidechain identity;
@@ -862,7 +1012,7 @@ Partial coverage may still support observed findings. A detector may report clea
 - compaction boundaries;
 - user-controlled versus provider-eviction confidence.
 
-### Subscription/quota limit pressure
+#### Subscription/quota limit pressure
 
 Session-attributable evidence:
 
@@ -874,14 +1024,9 @@ Session-attributable evidence:
 - model/session attribution;
 - confidence.
 
-Account-level evidence:
+Incidents are deduplicated. There is no account-level input: the section is sourced from session transcripts only.
 
-- provider usage snapshots;
-- limit/window type;
-- utilization/remaining/reset values;
-- incident deduplication.
-
-## Desktop IPC and UI
+### Desktop IPC and UI
 
 Candidate commands:
 
@@ -903,7 +1048,7 @@ Show:
 
 Do not emit raw prompts, tool inputs, transcript content, or unnecessary local paths through IPC or logs.
 
-## Privacy and local-data policy
+### Privacy and local-data policy
 
 - Persist derived facts, not complete prompts or canonical events.
 - Bound and sanitize examples, names, strings, and diagnostics.
@@ -913,751 +1058,11 @@ Do not emit raw prompts, tool inputs, transcript content, or unnecessary local p
 - Never modify or delete provider source transcripts.
 - Update the schema data-policy comment for new retained evidence.
 
-# Super-detailed sequential implementation checklist
+### Implementation map (from the pinned revision)
 
-The checklist is deliberately ordered. Do not begin a later provider before the first provider has completed its streaming metrics, evidence, persistence, and release-readiness gates.
+These are the file paths the pinned revision expected to touch. They are hints for seam carving, not a contract; verify against live code.
 
-## Phase 0 — freeze scope and capture the baseline
-
-### Provider and feature scope
-
-- [ ] Select Claude Code as the first JSONL provider unless fixture review identifies a concrete blocker.
-- [ ] Record the exact provider/source variants included in the first slice.
-- [ ] Keep all other providers on the existing analysis path during the first streaming slice.
-- [ ] Confirm that the first implementation rebuilds a changed session from the beginning.
-- [ ] Confirm that there is no total 512 MiB JSONL processing cap.
-- [ ] Confirm that append-tail checkpoints are out of scope.
-- [ ] Confirm that actively written file sources are debounced using `ACTIVE_SESSION_WINDOW_SECS` and cannot monopolize the queue.
-- [ ] Confirm that canonical sessions/events will not be persisted.
-- [ ] Confirm that the existing session UI must remain behaviorally unchanged.
-
-### Characterization fixtures
-
-- [ ] Inventory existing Claude JSONL fixtures under `crates/antiburn-local/src/analysis/` tests.
-- [ ] Add fixture coverage for user, assistant, usage, model, tool, skill, compaction, error, and thinking records.
-- [ ] Add repeated timestamps and out-of-order timestamp cases matching current supported behavior.
-- [ ] Add malformed JSON between valid lines.
-- [ ] Add an incomplete final JSONL record.
-- [ ] Add a generated many-record fixture without committing an enormous static file.
-- [ ] Add a generated single-oversized-line fixture.
-- [ ] Capture expected `NormalizedSession` output for compatibility tests.
-- [ ] Capture expected `SessionMetrics` output field by field.
-- [ ] Capture expected initial-context and skill-description behavior.
-- [ ] Capture expected parent/subagent metrics behavior for Claude where supported.
-- [ ] Run and record the existing Rust test commands before changes.
-
-### Completion gate
-
-- [ ] Existing tests pass before implementation.
-- [ ] Golden metrics cover every currently displayed `SessionMetrics` field.
-- [ ] The selected first-provider scope is written into the plan/implementation PR.
-
-## Phase 1 — add source generations and projection revisions
-
-### Schema migration
-
-- [ ] Append a new migration constant to `apps/desktop/src-tauri/src/store/schema.rs`.
-- [ ] Add `source_fingerprint` to `session` with migration-safe null/default behavior.
-- [ ] Add `source_generation` to `session` with an initial zero generation.
-- [ ] Add nullable `started_at_epoch` to `session`; do not backfill it from `first_seen_at`.
-- [ ] Add `analyzed_generation` to `session_analysis`.
-- [ ] Add `parser_revision` to `session_analysis`.
-- [ ] Add `analyzer_revision` to `session_analysis`.
-- [ ] Add `metrics_schema_revision` to `session_analysis`.
-- [ ] Do not add `session_evidence` yet in this phase.
-
-### Store model and query updates
-
-- [ ] Extend `SessionRecord` with source fingerprint, generation, and nullable analyzed start time where appropriate.
-- [ ] Extend `AnalysisRecord` with analyzed generation and revisions.
-- [ ] Update every `session` select/insert/upsert mapping.
-- [ ] Update every `session_analysis` select/insert/upsert mapping.
-- [ ] Preserve `first_seen_at` behavior.
-- [ ] Preserve current clear/delete behavior.
-- [ ] Keep existing rows readable after migration.
-
-### Provider-aware source versioning
-
-- [ ] Add storage-neutral `SourceDescriptor`/`SourceVersion` types in `antiburn-local`.
-- [ ] Move or supersede desktop-only file `mtime:size` fingerprinting.
-- [ ] Include high-resolution metadata and stable identity where available.
-- [ ] Reuse `Explorers::provider_db_fingerprint` for database-backed sources.
-- [ ] Define inline-source hashing/always-refresh behavior.
-- [ ] Ensure fingerprint strings are treated as opaque.
-
-### Discovery integration
-
-- [ ] Compute source version from each discovered `SessionLog` without reading the complete transcript.
-- [ ] In the session upsert transaction, compare the observed fingerprint with the stored fingerprint.
-- [ ] Increment source generation only when the fingerprint changes.
-- [ ] Keep generation unchanged when the same fingerprint is rediscovered.
-- [ ] Set first reusable fingerprint to generation 1.
-- [ ] Ensure WSL/native identities remain distinct.
-
-### Tests
-
-- [ ] Test fresh migration.
-- [ ] Test migration from every current schema version.
-- [ ] Test first fingerprint observation.
-- [ ] Test same-fingerprint idempotence.
-- [ ] Test changed-fingerprint generation increment.
-- [ ] Test nullable `started_at_epoch` migration and query mapping.
-- [ ] Test provider DB fingerprint mapping.
-- [ ] Test inline-source behavior.
-- [ ] Test serialization/query mappings for new fields.
-
-### Completion gate
-
-- [ ] Existing scan behavior remains functional.
-- [ ] Existing analysis cache records have explicit generation/revision semantics.
-- [ ] No complete transcript is read to decide whether a source changed.
-
-## Phase 2 — build the bounded JSONL framing primitive
-
-### Module and API
-
-- [ ] Add a focused bounded JSONL reader module in `antiburn-local`.
-- [ ] Keep it synchronous so it can run inside one blocking processing job.
-- [ ] Define a record result for complete, malformed, oversized, incomplete-tail, cancelled, and I/O-error cases.
-- [ ] Add processing control/cancellation hooks.
-- [ ] Add bounded diagnostics counters.
-
-### Bounded framing implementation
-
-- [ ] Use `BufRead::fill_buf` or equivalent chunk scanning.
-- [ ] Find newline boundaries without allocating the whole file.
-- [ ] Retain bytes only up to the configured maximum individual record size.
-- [ ] Drain an oversized record through its newline without retaining the remainder.
-- [ ] Resume correctly at the next record.
-- [ ] Do not treat an incomplete final record as committed.
-- [ ] Do not use unbounded `read_until` into a growing `Vec`.
-- [ ] Check cancellation between records or bounded byte intervals.
-- [ ] Preserve byte/record positions needed for diagnostics without retaining content.
-
-### Safety and behavior tests
-
-- [ ] Parse a normal multi-line fixture.
-- [ ] Recover after one malformed line.
-- [ ] Recover after one oversized line.
-- [ ] Ignore/diagnose an incomplete final line.
-- [ ] Process a generated source larger than the retained-memory budget.
-- [ ] Assert retained line buffer never exceeds its configured bound.
-- [ ] Assert diagnostics do not contain transcript content.
-- [ ] Assert cancellation stops before the next record.
-
-### Completion gate
-
-- [ ] The framing primitive can scan an arbitrarily large JSONL file with bounded retained record memory.
-- [ ] No provider semantics have changed yet.
-
-## Phase 3 — add the normalized-record visitor for Claude
-
-### Interface
-
-- [ ] Add `NormalizedRecordSink` or the smallest equivalent visitor interface.
-- [ ] Add `VendorAdapter::visit_source` for the first-provider path.
-- [ ] Keep `VendorAdapter::normalize` and `normalize_source` working.
-- [ ] Avoid a generic async stream unless a current requirement demands it.
-- [ ] Keep provider parsing inside provider modules.
-
-### Claude parser conversion
-
-- [ ] Route Claude file input through the bounded JSONL reader.
-- [ ] Parse one JSON object per retained line.
-- [ ] Extract current normalized event fields.
-- [ ] Emit normalized records immediately.
-- [ ] Drop the `serde_json::Value` before reading the next record.
-- [ ] Preserve malformed-record tolerance.
-- [ ] Preserve model and context-window semantics.
-- [ ] Preserve tool categorization and normalized naming.
-- [ ] Preserve compaction markers.
-- [ ] Preserve sidechain/subagent identity where supported.
-- [ ] Emit source/parser capability and coverage observations.
-
-### Compatibility collector
-
-- [ ] Implement a collector sink that builds `NormalizedSession` for compatibility tests/tools.
-- [ ] Compare collector output with the legacy Claude normalizer fixture by fixture.
-- [ ] Document any intentional difference before changing a golden result.
-
-### Source consistency
-
-- [ ] Capture the source version before opening.
-- [ ] Recheck source metadata/version after the final record.
-- [ ] Return `SourceChanged` when the source changed during processing.
-- [ ] Ensure partial final writes by the provider do not become committed evidence.
-
-### Completion gate
-
-- [ ] Claude normalization works record by record.
-- [ ] Compatibility collector matches the existing normalized model.
-- [ ] Legacy full-file normalization remains available only where still required.
-
-## Phase 4 — stream existing Claude `SessionMetrics`
-
-### Metrics accumulator
-
-- [ ] Add `SessionMetricsAccumulator` using shared normalization/classification helpers.
-- [ ] Update event count online.
-- [ ] Update token totals online.
-- [ ] Update billable token classes online.
-- [ ] Update model breakdown online.
-- [ ] Update peak context online.
-- [ ] Update tool counts/mix online.
-- [ ] Update error/disruption counts online.
-- [ ] Update skill uses online.
-- [ ] Update compaction observations online.
-- [ ] Retain compact timing/phase/skill points needed for exact finalization, accepting that these collections may grow with metric-bearing events in the first implementation.
-- [ ] Finalize duration and active time at end of stream.
-- [ ] Finalize buckets and phase segments at end of stream.
-- [ ] Finalize pattern score/signals at end of stream.
-- [ ] Apply existing pricing semantics without changing displayed results.
-
-### Initial-context integration
-
-- [ ] Identify every Claude raw record currently consumed by the separate initial-context pass.
-- [ ] Emit context-source observations during the same provider parse.
-- [ ] Accumulate skill/MCP/instruction attribution without rereading the transcript.
-- [ ] Accumulate skill descriptions without rereading the transcript.
-- [ ] Preserve tracked/partial/unavailable semantics.
-
-### Parent/subagent integration
-
-- [ ] Stream each parent/child source independently.
-- [ ] Preserve the existing roster and relationship outputs.
-- [ ] Retain only compact timing data needed to calculate spawn progress.
-- [ ] Avoid reparsing the parent solely to obtain spawn positions.
-
-### Desktop generation path
-
-- [ ] Route Claude `analytics::analyze` through the streaming processor.
-- [ ] Keep CPU work inside `spawn_blocking`.
-- [ ] Write `session_analysis.analyzed_generation` from the claimed/current source generation.
-- [ ] Derive `session.started_at_epoch` from trustworthy provider start metadata or `SessionMetrics.first_ts_ms`; leave it unknown when neither exists.
-- [ ] Write parser/analyzer/metrics revisions.
-- [ ] Keep other providers on the existing path.
-
-### Equivalence tests
-
-- [ ] Compare every `SessionMetrics` scalar.
-- [ ] Compare model breakdown and costs.
-- [ ] Compare tool mix and counts.
-- [ ] Compare skills and descriptions.
-- [ ] Compare context availability/fraction/window.
-- [ ] Compare buckets, phase distributions, and segments.
-- [ ] Compare pattern scores and signals.
-- [ ] Compare parent/subagent behavior.
-- [ ] Explain and approve any intentional output difference.
-
-### Performance tests
-
-- [ ] Demonstrate no whole-file `String` in the Claude metrics path.
-- [ ] Demonstrate no complete `Vec<NormalizedEvent>` in normal Claude metrics generation.
-- [ ] Measure retained accumulator state on a generated large session and document its proportional growth.
-- [ ] Confirm the improvement claim is limited to bounded raw-record retention and removal of whole-file/canonical-event materialization, not bounded rich metrics memory.
-- [ ] Measure processing time relative to the legacy path.
-- [ ] Confirm active UI behavior remains unchanged.
-
-### Completion gate
-
-- [ ] Existing Claude `session_analysis` records are generated from a one-record-at-a-time source pass.
-- [ ] Existing user-visible metrics remain equivalent.
-- [ ] The old Claude full-read metrics path is removed or restricted to explicit compatibility tests/tools.
-- [ ] The implementation and documentation explicitly accept that exact rich metrics accumulation remains unbounded in the first version.
-
-## Phase 5 — add one in-memory evidence data point
-
-### Evidence type shell
-
-- [ ] Add the complete anticipated `SessionEvidence` grouping/type shell.
-- [ ] Add source capabilities, coverage, provenance, and diagnostics fields.
-- [ ] Add the temporary debug-only `Unimplemented` variant.
-- [ ] Initialize not-yet-implemented groups as `Unimplemented` in debug development code.
-- [ ] Do not add persistence in this phase.
-- [ ] Do not expose evidence through production IPC in this phase.
-
-### First real evidence field
-
-- [ ] Choose `max_request_context_tokens` as the first rule-neutral evidence value.
-- [ ] Feed `SessionEvidenceAccumulator` from the same Claude normalized-record stream.
-- [ ] Update the maximum online.
-- [ ] Distinguish unsupported context evidence from complete zero and partial observation.
-- [ ] Attach parser/source coverage.
-- [ ] Finalize a complete in-memory `SessionEvidence` object at end of stream.
-
-### Composite sink
-
-- [ ] Ensure one normalized record updates both metrics and evidence accumulators.
-- [ ] Ensure the line and parsed value are still dropped before the next record.
-- [ ] Ensure adding evidence does not require a second source pass.
-- [ ] Ensure `SessionMetrics` output remains unchanged.
-
-### Tests
-
-- [ ] Assert one fixture's maximum request depth.
-- [ ] Assert malformed/oversized relevant records produce partial coverage.
-- [ ] Assert unsupported source semantics.
-- [ ] Assert a complete observed absence is distinguishable from unsupported.
-- [ ] Assert evidence object serde shape in debug tests.
-
-### Completion gate
-
-- [ ] One Claude source pass produces both existing metrics and one correct in-memory evidence value.
-- [ ] All other evidence groups remain visibly temporary and unshipped.
-
-## Phase 6 — add durable `session_evidence` storage
-
-### Migration
-
-- [ ] Append the `session_evidence` table migration.
-- [ ] Add `claim_fence`, `lease_expires_at`, and `next_attempt_at` work-state columns.
-- [ ] Add lifecycle/version indexes.
-- [ ] Add composite foreign key with delete cascade.
-- [ ] Preserve immutable prior migrations.
-
-### Store models and methods
-
-- [ ] Add `SessionEvidenceRecord` with identity, lifecycle, generation, revisions, JSON, and diagnostics.
-- [ ] Add a transactional method to create/mark pending evidence when source generation changes without deleting the last completed payload.
-- [ ] Add revision reconciliation that requeues stale metrics/evidence without changing source generation.
-- [ ] Add an atomic claim method that increments and returns `claim_fence`.
-- [ ] Add conditional completion guarded by source generation and claim fence.
-- [ ] Guard failure, retry, and lease-renewal transitions with the same fence.
-- [ ] Add failed/unsupported transitions.
-- [ ] Add abandoned-processing reclamation that increments the fence before reassignment.
-- [ ] Add bounded retry count and local error summary.
-- [ ] Update session deletion.
-- [ ] Update clear-local-session-data.
-
-### Development persistence
-
-- [ ] Serialize the current complete `SessionEvidence` shell into `evidence_json` in debug development builds.
-- [ ] Allow temporary debug-only `Unimplemented` values while this provider is actively being completed.
-- [ ] Remember that debug builds use the separate Antiburn debug database.
-- [ ] Do not claim production readiness while any provider field remains `Unimplemented`.
-
-### Atomic dual projection write
-
-- [ ] Finalize `SessionMetrics` and `SessionEvidence` from the same stream.
-- [ ] Recheck source version.
-- [ ] Begin one short Antiburn-store transaction.
-- [ ] Verify claimed generation equals current `session.source_generation`.
-- [ ] Verify status is processing and the worker's claim fence is still current.
-- [ ] Update `session.started_at_epoch` from finalized analysis when trustworthy.
-- [ ] Update `session_analysis`.
-- [ ] Update `session_evidence`.
-- [ ] Commit both or neither.
-- [ ] Drop stale output when the generation changed.
-
-### Tests
-
-- [ ] Fresh evidence row starts pending.
-- [ ] Same generation does not duplicate work.
-- [ ] Only one initial claim succeeds.
-- [ ] Reclaim increments the fence.
-- [ ] A late worker with an old fence cannot complete, fail, renew, or retry the work.
-- [ ] Completion writes both projections.
-- [ ] Stale generation writes neither projection.
-- [ ] Parser/analyzer/metrics/evidence revision changes requeue unchanged sources.
-- [ ] Detector, remediation, pricing, and model-replacement catalog changes do not reparse transcript evidence.
-- [ ] Evidence JSON round-trips.
-- [ ] Marking a newer generation pending preserves the prior analyzed generation and evidence payload.
-- [ ] Delete cascades.
-- [ ] Clear removes evidence/work state.
-- [ ] Abandoned processing is reclaimed.
-
-### Completion gate
-
-- [ ] Claude processing can persist metrics and the current evidence shell atomically.
-- [ ] No canonical records or raw transcript content are persisted.
-
-## Phase 7 — decouple processing from scan and add the durable worker
-
-### Worker module
-
-- [ ] Add `apps/desktop/src-tauri/src/insights_worker.rs` or the smallest matching module.
-- [ ] Make SQLite pending rows the durable queue.
-- [ ] Add a post-commit wake-up mechanism.
-- [ ] Start/recover the worker with the desktop application.
-- [ ] Reconcile projection revision mismatches before normal claiming.
-- [ ] Claim one generation at a time initially and carry its returned fence through every transition.
-- [ ] Release the Antiburn store guard before source processing.
-- [ ] Run parsing/analysis in `spawn_blocking`.
-- [ ] Reacquire the store only for short completion/failure transitions.
-
-### Scan integration
-
-- [ ] Make discovery upsert metadata and mark new generations pending for the currently enabled streaming-provider cohort.
-- [ ] Do not create an endlessly retrying pending backlog for providers that have not entered the streaming implementation loop.
-- [ ] Emit worker wake-up after commit.
-- [ ] Do not make scan completion wait for the evidence backlog.
-- [ ] Decide how the existing `top_up_analysis` entry point delegates to or coexists with the shared worker during transition.
-- [ ] Avoid processing the same generation through both paths.
-
-### Resource controls
-
-- [ ] Add a small CPU/job semaphore.
-- [ ] Add a source/file semaphore.
-- [ ] Add a provider-DB semaphore.
-- [ ] Exclude file sources updated within `ACTIVE_SESSION_WINDOW_SECS` from claiming and set their next eligible attempt time.
-- [ ] Order eligible claims fairly by `next_attempt_at` and stable tie-breakers rather than repeatedly selecting the hottest session.
-- [ ] Add memory weighting only for materialized fallbacks.
-- [ ] Acquire permits before scheduling blocking work.
-- [ ] Check cancellation between source records.
-- [ ] Stop/release cleanly on app shutdown.
-
-### Failure and recovery
-
-- [ ] Retry transient source-busy/read failures with bounded backoff and `next_attempt_at`.
-- [ ] Treat `SourceChanged` as deferred active work, not an immediate tight-loop retry.
-- [ ] Increase backoff when the same source repeatedly changes during processing.
-- [ ] Continue claiming other eligible sessions while an active source is deferred.
-- [ ] Do not retry unsupported provider/schema forever.
-- [ ] Reclaim stale processing leases on startup by issuing a new fence.
-- [ ] Reject every late transition carrying an older fence.
-- [ ] Ensure errors contain no transcript content.
-- [ ] Keep a newer generation pending when an older job finishes.
-- [ ] Test that a continuously growing transcript is deferred rather than immediately reclaimed.
-- [ ] Test that stable sessions continue processing while a growing transcript is deferred.
-- [ ] Test that a deferred session becomes claimable after the quiet period.
-- [ ] Test that deferral preserves its last completed evidence payload.
-
-### Completion gate
-
-- [ ] Discovery and processing are independent.
-- [ ] A process restart cannot lose pending work.
-- [ ] Normal user work is not blocked by the Antiburn database mutex during transcript processing.
-
-## Phase 8 — complete Claude evidence one field group at a time
-
-For every group below, perform the same sequence before moving on:
-
-- [ ] identify exact Claude source records/fields;
-- [ ] add or reuse normalized record fields;
-- [ ] implement bounded accumulator state;
-- [ ] define `Complete`/`Partial`/`Unsupported` semantics;
-- [ ] add capability declaration;
-- [ ] add malformed/schema-drift behavior;
-- [ ] add golden fixtures;
-- [ ] persist and reload the evidence;
-- [ ] verify existing `SessionMetrics` remain unchanged;
-- [ ] replace the group's temporary `Unimplemented` value.
-
-### Group 8.1 — context and eligibility
-
-- [ ] Implement request context depths, not only session peak.
-- [ ] Implement request/session counts needed for eligibility.
-- [ ] Retain bounded top-depth examples without prompt text.
-- [ ] Capture context-window provenance.
-- [ ] Capture thread/sidechain distinctions.
-- [ ] Capture ordering/compaction coverage.
-- [ ] Replace context/eligibility `Unimplemented` states.
-
-### Group 8.2 — named tool usage
-
-- [ ] Normalize tool names consistently with existing metrics.
-- [ ] Count invocations by normalized name.
-- [ ] Classify built-in, MCP, skill, and other tools where evidence supports it.
-- [ ] Bound unique-name cardinality.
-- [ ] Mark cap breach partial.
-- [ ] Preserve complete empty usage only when invocation coverage is complete.
-- [ ] Replace tool `Unimplemented` state.
-
-### Group 8.3 — loaded skills and MCP sources
-
-- [ ] Parse loaded skill names.
-- [ ] Parse skill origin where available.
-- [ ] Parse loaded MCP servers/tool definitions.
-- [ ] Match loaded sources with normalized invocations.
-- [ ] Move initial-context source extraction into the one-pass parser observations.
-- [ ] Preserve unattributed/partial semantics.
-- [ ] Bound source-name cardinality and descriptions.
-- [ ] Replace context-source `Unimplemented` state.
-
-### Group 8.4 — model usage and old-model facts
-
-- [ ] Record model identity by turn/session.
-- [ ] Record token quantities by normalized model.
-- [ ] Record timestamps needed for replacement availability rules.
-- [ ] Preserve unknown model identity as unsupported/partial, not an invented model.
-- [ ] Keep replacement policy out of persisted evidence.
-- [ ] Replace model-usage `Unimplemented` fields that are now complete.
-
-### Group 8.5 — reasoning effort
-
-- [ ] Identify explicit Claude reasoning/effort fields.
-- [ ] Do not infer settings from prompt keywords.
-- [ ] Count observed tiers.
-- [ ] Record capability by harness/schema version.
-- [ ] Mark sessions without an exposed tier correctly.
-- [ ] Replace reasoning `Unimplemented` state.
-
-### Group 8.6 — subagent relationships and models
-
-- [ ] Preserve parent/subagent identity from discovery/parser evidence.
-- [ ] Record main-loop model.
-- [ ] Record child model.
-- [ ] Record relationship confidence/provenance.
-- [ ] Avoid double-counting sidechain transcripts.
-- [ ] Bound child/example collections.
-- [ ] Replace subagent `Unimplemented` state.
-
-### Group 8.7 — fast/service tier
-
-- [ ] Identify explicit Claude fast-mode/service-tier evidence.
-- [ ] Distinguish main-loop and delegated work.
-- [ ] Record observations, not current policy conclusions.
-- [ ] Mark unavailable default-persistence evidence honestly.
-- [ ] Replace fast-mode `Unimplemented` state.
-
-### Group 8.8 — compaction and cache churn
-
-- [ ] Preserve canonical turn order.
-- [ ] Maintain previous turn per thread/sidechain.
-- [ ] Record cache read/write/fresh-input quantities.
-- [ ] Record model transitions.
-- [ ] Record timestamps/idle gaps.
-- [ ] Record compaction boundaries.
-- [ ] Bound thread cardinality and mark overflow partial.
-- [ ] Separate observed user-controlled churn from provider-eviction estimates.
-- [ ] Replace cache/compaction `Unimplemented` states.
-
-### Group 8.9 — built-in tool validation facts
-
-- [ ] Record built-in definitions exposed by the harness/version.
-- [ ] Join definitions to named invocation evidence.
-- [ ] Record provider/version capability.
-- [ ] Keep curated remediation/disable knowledge outside session evidence.
-- [ ] Mark fleet-validation limitations separately.
-- [ ] Replace built-in-tool `Unimplemented` state where Claude can support it.
-
-### Group 8.10 — transcript-attributable quota incidents
-
-- [ ] Identify explicit rate/quota error shapes.
-- [ ] Record provider, limit kind, observed time, model/session, and reset/utilization when exposed.
-- [ ] Distinguish warning and hard hit.
-- [ ] Deduplicate repeated messages within one incident.
-- [ ] Preserve confidence and unavailable fields.
-- [ ] Replace session-quota `Unimplemented` state.
-
-### Claude evidence completion gate
-
-- [ ] Review every `SessionEvidence` field.
-- [ ] Convert each field to truthful `Complete`, `Partial`, or `Unsupported` behavior.
-- [ ] Remove the debug-only `Unimplemented` variant entirely.
-- [ ] Remove all temporary/fake provider values.
-- [ ] Run debug tests after removing the variant.
-- [ ] Run `cargo check --release` and the release build/test commands.
-- [ ] Confirm release compilation finds no remaining placeholder use.
-- [ ] Confirm evidence persisted by the completed provider contains no implementation placeholders.
-- [ ] Publish the Claude capability/coverage matrix in the plan or fixtures.
-
-## Phase 9 — build the streaming report reducer
-
-### Read-only Antiburn connection
-
-- [ ] Add a dedicated read-only connection opener using the Antiburn database path.
-- [ ] Configure read-only/query-only behavior and a busy timeout.
-- [ ] Keep the normal writer connection in WAL mode.
-- [ ] Run report work in `spawn_blocking`.
-- [ ] Begin one read transaction for a consistent snapshot.
-- [ ] Do not use the writer connection's mutex for the report scan.
-
-### Row-streaming query
-
-- [ ] Select session identity/metadata and current ready evidence only for sessions whose trustworthy start falls inside the thirty-day cohort.
-- [ ] Exclude and count sessions with unknown start time rather than substituting discovery time.
-- [ ] Filter source/analyzed generations and revisions.
-- [ ] Order deterministically.
-- [ ] Deserialize one `SessionEvidence` row at a time.
-- [ ] Feed it into the report accumulator immediately.
-- [ ] Drop it before stepping to the next row.
-- [ ] Do not collect canonical sessions.
-- [ ] Do not read provider transcripts.
-- [ ] Drop statement/transaction/connection promptly after finalization.
-
-### Coverage counts
-
-- [ ] Count discovered sessions in the window.
-- [ ] Count ready/current sessions.
-- [ ] Count pending sessions.
-- [ ] Count actively growing/debounced sessions separately where the source state is known.
-- [ ] Count processing sessions.
-- [ ] Count failed sessions.
-- [ ] Count unsupported sessions.
-- [ ] Count stale generation/revision sessions.
-- [ ] Count unknown-start sessions excluded from the cohort.
-- [ ] Expose per-detector eligible/assessed counts.
-
-### Composite accumulator
-
-- [ ] Add provider-neutral shared aggregates.
-- [ ] Bound maps and supporting examples.
-- [ ] Avoid cloning one evidence vector per detector.
-- [ ] Allow finalization after denominators are known.
-- [ ] Keep detector logic pure and deterministic.
-- [ ] Apply pricing and remediation catalogs at report time.
-
-### Nine detectors
-
-- [ ] Implement Sessions Over Depth status/findings.
-- [ ] Implement Model Overthinking status/findings.
-- [ ] Implement Overpowered Subagents status/findings.
-- [ ] Implement Unused MCP Servers status/findings.
-- [ ] Implement Unused Built-In Tools status/findings.
-- [ ] Implement Unused Skills status/findings.
-- [ ] Implement Old Model Usage status/findings.
-- [ ] Implement Overuse of Fast Mode status/findings.
-- [ ] Implement Cache Churn status/findings.
-- [ ] Assert exactly one status per detector.
-- [ ] Assert incomplete absence never produces clean.
-
-### Subscription/quota pressure
-
-- [ ] Add account-level `UsageLimitEvidence` input from existing provider usage snapshots.
-- [ ] Combine account-level and session-attributable incidents.
-- [ ] Deduplicate incidents.
-- [ ] Report limit kind, hit count, time blocked where defensible, affected sessions/models, and reset behavior.
-- [ ] Mark provider coverage not assessed when neither evidence source exists.
-- [ ] Keep this section separate from the nine compatibility categories.
-
-### Concurrency integration test
-
-- [ ] Open the normal writer connection.
-- [ ] Continuously update evidence from a test writer.
-- [ ] Open a separate read-only report connection.
-- [ ] Pin a report snapshot.
-- [ ] Stream a deterministic report while writes continue.
-- [ ] Assert the report sees one consistent snapshot.
-- [ ] Assert the writer is not blocked for the duration of unrelated analysis work.
-- [ ] Assert the read transaction is dropped after finalization.
-
-### Completion gate
-
-- [ ] The thirty-day report is computed from compact database evidence only.
-- [ ] Peak report memory is bounded by accumulator state plus one evidence row.
-- [ ] Concurrent evidence updates continue through WAL.
-- [ ] Coverage counts and detector statuses are truthful.
-
-## Phase 10 — expose the report through desktop IPC and UI
-
-### Commands and DTOs
-
-- [ ] Add report request/response DTOs.
-- [ ] Add `get_local_insights_report`.
-- [ ] Add processing-status data required by the pane.
-- [ ] Deduplicate concurrent report requests if needed.
-- [ ] Ensure request IDs do not substitute for actual cancellation.
-- [ ] Keep transcript content out of DTOs.
-
-### Progress and cancellation
-
-- [ ] Expose report calculation state.
-- [ ] Expose evidence pending/processing counts.
-- [ ] Allow pane closure/app shutdown to cancel report work promptly.
-- [ ] Do not cancel durable evidence state incorrectly when the UI disappears.
-
-### Settings UI
-
-- [ ] Register the Insights settings pane.
-- [ ] Add loading state.
-- [ ] Add evidence-backlog/coverage state.
-- [ ] Add findings rendering.
-- [ ] Add clean/not-assessed rendering per category.
-- [ ] Add local quota-pressure section.
-- [ ] Add local/freshness explanation.
-- [ ] Avoid dismissals/history/notifications in the first version.
-- [ ] Keep session-level cards out of this implementation.
-
-### Completion gate
-
-- [ ] A user can open a thirty-day local report.
-- [ ] The report explains incomplete provider/session coverage.
-- [ ] No unsupported detector appears clean.
-- [ ] Findings include defensible evidence and remediation.
-
-## Phase 11 — finish first-provider operational hardening
-
-### Resource behavior
-
-- [ ] Measure discovery, queue wait, source reading, parsing, metrics accumulation, evidence accumulation, persistence, report query, reduction, and IPC separately.
-- [ ] Measure peak retained line buffer.
-- [ ] Measure compact metrics/evidence accumulator memory.
-- [ ] Measure peak report memory.
-- [ ] Measure impact while a representative Claude session is actively writing.
-- [ ] Tune worker concurrency from measurements.
-- [ ] Tune provider DB concurrency separately when applicable.
-
-### Privacy and lifecycle
-
-- [ ] Review every persisted evidence field for content sensitivity.
-- [ ] Cap/sanitize supporting examples.
-- [ ] Verify errors/logs contain no transcript content.
-- [ ] Verify clear/delete behavior.
-- [ ] Update schema data-policy comments.
-- [ ] Update any local-data UI/documentation.
-
-### Release gate
-
-- [ ] Run formatting and linting.
-- [ ] Run all Rust tests.
-- [ ] Run release compilation/tests.
-- [ ] Verify no `Unimplemented` placeholder remains.
-- [ ] Verify no fake evidence remains.
-- [ ] Verify first-provider capability matrix.
-- [ ] Verify migration and downgrade/recovery expectations.
-- [ ] Verify report output on synthetic and manually inspected real sessions.
-
-## Phase 12 — repeat the provider implementation loop
-
-For each additional JSONL provider:
-
-- [ ] inventory source shape and existing adapter behavior;
-- [ ] add provider characterization fixtures;
-- [ ] implement bounded record streaming;
-- [ ] prove normalized compatibility;
-- [ ] prove `SessionMetrics` parity;
-- [ ] feed the shared metrics/evidence composite sink;
-- [ ] implement each evidence group with truthful capability states;
-- [ ] persist both projections atomically;
-- [ ] add provider report fixtures;
-- [ ] add provider capability/coverage matrix;
-- [ ] pass debug and release completion gates;
-- [ ] enable the provider in durable processing.
-
-For each provider SQLite source:
-
-- [ ] inventory schema and consistency semantics;
-- [ ] implement a read-only ordered row iterator;
-- [ ] hold only the provider read transaction while consuming rows;
-- [ ] normalize one row at a time;
-- [ ] avoid synthetic full-session JSONL;
-- [ ] test concurrent provider writes where feasible;
-- [ ] prove metrics parity;
-- [ ] complete all supported evidence groups;
-- [ ] persist and report through the shared contracts;
-- [ ] pass the provider completion gate.
-
-Do not add provider-specific branches to the report reducer where a normalized evidence fact can express the difference. Provider-specific semantics belong in parsing, capability, provenance, and catalog layers.
-
-## Phase 13 — measured future optimizations only
-
-- [ ] Profile before adding append-tail processing.
-- [ ] Evaluate captured-prefix processing for proven append-only providers before implementing resumable checkpoints: process complete records up to the claimed starting length, publish that completed generation, and leave newer appended work pending.
-- [ ] Add byte-offset checkpoints only for providers with safe append semantics and measured need.
-- [ ] Include file identity, complete-line offset, boundary hash, parser/analyzer revisions, and accumulator continuation state in any checkpoint.
-- [ ] Rebuild on truncation, replacement, or mismatch.
-- [ ] Profile before adding report caching.
-- [ ] Include source generations and all relevant revisions in any report cache identity.
-- [ ] Profile exact rich-metrics retained collections before moving them to generation-scoped child/staging SQL tables or another disk-backed spool.
-- [ ] Offload growing metrics details only when measurements justify the extra write/finalization path; keep partial generations invisible until published.
-- [ ] Profile before normalizing evidence into child SQL tables.
-- [ ] Add additional read connections/pooling only if compact report reads contend measurably.
-- [ ] Keep background processing lazy/low-impact unless product evidence justifies stronger eagerness.
-
-## File-level implementation map
-
-### `crates/antiburn-local`
+#### `crates/antiburn-local`
 
 Likely additions:
 
@@ -1687,7 +1092,7 @@ src/analysis/mod.rs
 src/lib.rs
 ```
 
-### Desktop Rust application
+#### Desktop Rust application
 
 Likely additions:
 
@@ -1708,7 +1113,7 @@ Tauri application setup/state registration
 clear/delete/export/privacy paths
 ```
 
-### Desktop frontend
+#### Desktop frontend
 
 Likely modifications/additions:
 
@@ -1720,39 +1125,134 @@ Tauri command types/hooks
 coverage/finding/status views
 ```
 
-## Kent Beck delivery framing
+## Scope Areas (backlog — NOT seams)
 
-### Make It Work
+Dependency-ordered outcomes derived from the pinned revision's Phase 0-11 checklist. **The default carve is one seam per source phase**, with the phase's detailed checklist grouped into the fewest coherent commit slots the seam planner needs. Exactly one phase is split below, with its reason stated inline. A scope area is an outcome, not a seam: one area may still take more than one seam, and the seam planner decides the boundary against live code.
 
-- Complete Phases 0–10 for Claude.
-- Rebuild changed sessions from the beginning.
-- Keep concurrency conservative.
-- Persist compact evidence.
-- Render the full category contract with honest not-assessed states.
-- Test whether recommendations are useful.
+Tiers are **provisional** per **Approval Tiers**. The seam planner sets the real tier and the reviewer critiques it. Any area that changes persisted data, runtime coverage semantics, or a user-visible conclusion carries a Tier 3 floor; raise a tier rather than keeping the hint, never lower one.
 
-### Make It Good/Right
+- [ ] **CH-001 — Claude scope frozen and characterization baseline captured.** (Source Phase 0. Provisional Tier 1.) Acceptance: the exact Claude source variants in the first slice are written down; synthetic fixtures cover user, assistant, usage, model, tool, skill, compaction, error, and thinking records, repeated and out-of-order timestamps, malformed JSON between valid lines, an incomplete final record, **a well-formed record of an unrecognized `type`**, a generated many-record source, and a generated single-oversized-line source; the malformed-between-valid-lines fixture states what it proves — coverage degrades to `Partial` and neighbouring records are not discarded; the incomplete-final-record fixture states that the record is never committed and is picked up by the next generation; the unrecognized-`type` fixture states what it proves and asserts the current behavior for its exact record shape, because today's analysis API returns no coverage value to assert against; asserting `Partial` and **not** `Complete` against this same fixture is CH-004's acceptance; golden expectations exist for `NormalizedSession`, every currently displayed `SessionMetrics` field, initial-context and skill-description behavior, and Claude parent/subagent behavior; the pre-change `cargo fmt`/`clippy`/`test` results are recorded. Fixtures live in a new directory beside the existing ones — `crates/antiburn-local/tests/fixtures/claude_characterization/` — with a `README.md` created here, following the `tests/fixtures/initial_context/README.md` precedent. That README is the designated home of the Claude capability and coverage matrix, filled in by CH-009. **Fixtures are authored by hand from format knowledge, never captured** (`CONTRIBUTING.md`: fixtures must be synthetic and "redaction is not sufficient"). Format knowledge and Claude version history come from the private reference repository at `crates/harness-kb/facts/claude.json` — a versioned harness knowledge base with per-CLI-version entries and capture provenance, not a transcript. That repository's `crates/secret-redaction/tests/fixtures/session-logs/claude-code-session.jsonl` and its `.pii.redacted` goldens are **explicitly off limits**: no captured session file enters this repository. This scope area also creates `docs/plans/local-insights-followups.md` and seeds it (see **Deferred work and followups**). (Refs: FR-4; Locked Decisions 1, 13)
+- [ ] **CH-002 — Source generations and projection revisions exist end to end.** (Source Phase 1. Provisional Tier 3 — schema migration plus changed discovery and persistence behavior.) Acceptance: migration V6 adds `source_fingerprint`, `source_generation`, and nullable `started_at_epoch` to `session` and adds `analyzed_generation`, `parser_revision`, `analyzer_revision`, and `metrics_schema_revision` to `session_analysis`; storage-neutral `SourceDescriptor`/`SourceVersion` types exist in `antiburn-local`; **`SourceVersion`'s fingerprint implements the one fingerprint contract of Locked Decision 16** — stable file identity where available, byte size, high-resolution modification/change time, and a hash of a small fixed head region — with the region size chosen here, explicitly not `SOURCE_PREVIEW_BYTES`, and the hash used as fingerprint input only, never surfaced, logged, exported, or retained as evidence; **two pure fingerprint-input tests isolate the head-hash component**, both holding stable identity, size, and modification/change time constant — through a fingerprint-input fixture rather than a real filesystem rewrite — so each asserts only that component's behavior: one proves a same-size rewrite _within the hashed head region_ changes the head-hash component, and the other proves a same-size rewrite _below_ that region does **not** change it; the claim is about the component and not the whole fingerprint, because an ordinary filesystem rewrite changes modification/change time and therefore changes the full fingerprint, which is correct and desirable, and the tests isolate the inputs precisely because that real behavior would otherwise mask the envelope being demonstrated; discovery computes a source version without reading a complete transcript, reusing the head bytes `discovery/mod.rs:session_source_preview` already reads; **the descriptor resolves the session id through the existing canonical order and does not introduce a second identity scheme** — `SessionMetadata::session_id` from the bounded metadata first, then `scan.rs:recovered_id` (`Explorers::recover_session_id_from_path`, file stem, `ProviderDb` session id, `Inline` label), with the empty-id rejection preserved, and a test proves a session keeps its existing `SessionKey` across the migration; the upsert transaction increments the generation only on a fingerprint change and is idempotent otherwise; provider-DB sources reuse `provider_db_fingerprint` and inline sources have defined hashing or always-refresh behavior; `started_at_epoch` is never backfilled from `first_seen_at`; `activity_source` and `activity_cursor` mappings are preserved; fresh migration and migration from every prior schema version pass; existing scan behavior is unchanged. Likely touches: `store/schema.rs`, `store/model.rs`, `store/mod.rs`, `scan.rs`, `analytics.rs`, `crates/antiburn-local/src/discovery/`. (Refs: FR-1, FR-11; Locked Decisions 10, 11)
+- [ ] **CH-003 — Bounded JSONL framing primitive.** (Source Phase 2. Provisional Tier 2 — new module, no shipped behavior change and nothing persisted.) Acceptance: a synchronous bounded newline-framed reader exists in `antiburn-local` with results for complete, malformed, oversized, incomplete-tail, cancelled, and I/O-error records; **the retained record bound is 8 MiB**, and an oversized record is drained through its newline, marks coverage `Partial` with a reason, and never truncates into evidence or aborts the source; it uses chunk scanning rather than unbounded `read_until`; it drains an oversized record and resumes at the next one; it checks cancellation between records or bounded byte intervals; tests assert the retained buffer never exceeds its bound on a source larger than that bound, that diagnostics contain no transcript content, and that an incomplete final record is not committed. Likely touches: `crates/antiburn-local/src/analysis/` (new reader module). (Refs: FR-2; Locked Decision 9)
+- [ ] **CH-004 — Claude normalization runs record by record.** (Source Phase 3. Provisional Tier 2 — the shipped `normalize`/`analyze` output must not change and the new path is not yet wired to the desktop; raise to Tier 3 if the seam wires it in.) Acceptance: a record sink interface and a `VendorAdapter` visit entry point exist without breaking the six existing adapters; Claude file input flows through the bounded reader, parsing one JSON object per retained line and dropping the `serde_json::Value` before the next record; malformed-record tolerance, model and context-window semantics, tool categorization and naming, compaction markers, and sidechain identity are preserved; the record enum names the metrics-bearing variant `NormalizedRecord::MetricsEvent`, leaving the `NormalizedEvent` type name unchanged; a collector sink rebuilds `NormalizedSession` and matches the legacy normalizer fixture by fixture; **an unrecognized record `type` degrades the affected evidence group to `Partial` with a reason and never leaves it `Complete`**, proven against CH-001's unrecognized-`type` fixture; source version is captured before opening and rechecked after the final record, returning **`SourceChanged` — a new result variant introduced here on the visit entry point's result type in `analysis/interface.rs`** — instead of publishing; the seam implements the **Architecture reference → Source-validity outcomes** table exactly and does not restate or vary it; a still-growing source may be read as a **pinned prefix** bounded by the generation's own `L = size`, admitting a record only when its terminating newline is at or before `L`, with the source opened once and every recheck input taken from that pinned handle — size still `>= L` and the head region unchanged; **the opened handle is validated against the claimed generation before any record streams**, so a replacement *before* pinning is rejected and retried while a rename *after* pinning completes on the original inode and is **not** `SourceChanged` (**Architecture reference → Source-validity outcomes**, which is the one home of both conditions and of what a failed prefix recheck means); **tests distinguish those two timings** — one replaces the path between version capture and `open` and asserts neither projection publishes and the generation retries, the other renames over the path after the handle is pinned and asserts the read is accepted on the original inode; **truncation is tested at both its timings** — an inline short read before reaching `L`, and a truncation after `[0, L)` was read that only the post-read pinned-handle size below `L` catches — while an append past `L` stays accepted; and a test proving two reads of the same `(identity, L)` produce byte-identical evidence **when the append-only guarantee holds**; **the seam states the head hash's detection envelope in code comments and tests rather than implying whole-prefix integrity** — a rewritten complete record after the head region and before `L` passes that recheck; **this seam determines the provider's append-only guarantee by test, cites the evidence its tests rest on, and records the guarantee as absent when it cannot be evidenced** — the guarantee is a property of how the provider writes, so proving it is a test rather than a reading exercise, and the test belongs in the same seam as the mechanism it protects; **a pinned prefix publishes only where the guarantee is evidenced (Locked Decision 8), and absent it the source takes the full-reprocess path with `SourceChanged` behavior unchanged**, with a test for the no-guarantee path; if a header is rewritten the prefix is defined as `[header_end, L)` with the header re-read fresh each pass. Likely touches: `analysis/interface.rs`, `analysis/vendors/mod.rs`, `analysis/vendors/claude.rs`, `analysis/mod.rs`, `analysis/model.rs`. (Refs: FR-2, FR-3; Locked Decisions 1, 8, 13, 16)
+- [ ] **CH-005 — Claude `SessionMetrics` are produced by the streaming pass.** (Source Phase 4. Provisional Tier 3 — the desktop's metrics generation path changes and new persisted columns are written.) Acceptance: a `SessionMetricsAccumulator` updates counts, tokens, billable classes, model breakdown, peak context, tool mix, errors, skills, and compactions online and finalizes duration, active time, buckets, phase segments, and pattern signals at end of stream; initial-context and skill-description attribution come from the same pass with no transcript reread; parent and subagent sources stream independently while preserving roster and relationship output; the desktop Claude path routes through the streaming processor inside `spawn_blocking`, writes `analyzed_generation` and the parser/analyzer/metrics revisions, and derives `started_at_epoch` from trustworthy start metadata or `first_ts_ms`, leaving it unknown otherwise; equivalence tests compare every metric, cost, tool, skill, context, bucket, phase, pattern, and subagent output; **metrics and evidence use the same source-validity result — this is locked, not a seam decision** (**Architecture reference → Source-validity outcomes**; FR-5 and FR-7 leave no room for metrics to publish while evidence is rejected); **acceptance: an accepted read refreshes metrics, including an accepted append-prefix where CH-004 evidenced the append-only guarantee, while any source mutation classified as `SourceChanged` publishes neither projection**, with a test for each of those two outcomes; **a further test asserts metrics keep refreshing on the shipped trigger set — launch, a `TICK` while the popover is visible, popover open, and on demand — with no quiet-period gate anywhere and no new or removed trigger** (FR-10, Locked Decision 15); measurements show no whole-file `String` and no complete `Vec<NormalizedEvent>` in this path, and document the remaining proportional growth of retained metrics state; other providers keep the existing path. Likely touches: `analysis/engine.rs`, `analysis/initial_context.rs`, `analysis/mod.rs`, `apps/desktop/src-tauri/src/analytics.rs`. (Refs: FR-3, FR-4, FR-5, FR-10; Locked Decisions 12, 13, 14, 15)
+- [ ] **CH-006 — One truthful in-memory evidence value from the same pass.** (Source Phase 5. Provisional Tier 2 — no persistence and no IPC.) Acceptance: the anticipated `SessionEvidence` grouping, capabilities, coverage, provenance, and diagnostics types exist with the debug-only `Unimplemented` variant for unfinished groups; `max_request_context_tokens` is accumulated online as a real `Complete`/`Partial`/`Unsupported` value with parser and source coverage attached; a composite sink updates metrics and evidence from one record without a second pass; `SessionMetrics` output is unchanged; tests assert the fixture's maximum depth, partial coverage after a malformed or oversized relevant record, unsupported source semantics, complete-zero versus unsupported, and the serde shape. Likely touches: `crates/antiburn-local/src/analysis/` (evidence module, composite sink). (Refs: FR-5, FR-6; Locked Decision 3)
+- [ ] **CH-007 — Durable `session_evidence` storage with atomic dual projection writes.** (Source Phase 6. Provisional Tier 3 — new table and new persisted data.) Acceptance: an appended migration creates `session_evidence` with lifecycle, generation, revision, payload, retry, fence, lease, and next-attempt columns, its status check, its lifecycle index, and a cascading composite foreign key; store methods cover pending marking that preserves the last completed payload, revision reconciliation that does not touch `source_generation`, an atomic claim that increments and returns `claim_fence`, and fence-guarded completion, failure, retry, lease renewal, and reclaim; session deletion and clear-local-session-data remove evidence; completion writes `session.started_at_epoch`, `session_analysis`, and `session_evidence` in one short transaction or nothing, which is the persistence half of the **Architecture reference → Source-validity outcomes** rule that both projections publish together or neither does; debug builds serialize the current evidence shell; tests cover first-claim exclusivity, reclaim fencing, late-fence rejection, stale-generation rejection, revision-driven requeue, catalog changes causing no requeue, payload round-trip, cascade, clear, and reclaim of abandoned processing. Likely touches: `store/schema.rs`, `store/model.rs`, `store/mod.rs`, `apps/desktop/src-tauri/src/analytics.rs`. (Refs: FR-6, FR-7, FR-8, FR-11, FR-18; Locked Decisions 2, 4, 5, 10)
+- [ ] **CH-008 — Processing decoupled from scan by a restart-safe durable worker.** (Source Phase 7. Provisional Tier 3 — runtime lifecycle, concurrency, and failure behavior change.) Acceptance: a worker module claims one generation at a time from the SQLite queue, carries its fence through every transition, releases the store guard before source processing, runs parsing in `spawn_blocking`, and reacquires the store only for short transitions; the scan marks new generations pending for the enabled streaming cohort only, wakes the worker after commit, and does not wait for the backlog; the existing `top_up_analysis` entry point has a stated relationship to the worker and no generation is processed twice; one CPU permit, one source permit, and one provider-DB permit are acquired before scheduling, under a five-minute lease renewed on progress; **no quiet-period gate excludes an active session from claiming** (Locked Decision 15); claims are ordered fairly, `SourceChanged` publishes neither projection and uses bounded backoff through `next_attempt_at` rather than a tight loop, per **Architecture reference → Source-validity outcomes**, unsupported schemas are not retried forever, errors carry no transcript content, and shutdown releases cleanly; **the missing-source case is decided explicitly rather than falling out of `MISSING_FINGERPRINT`: a source that cannot be stat-ed is marked missing and stops being claimed instead of retrying forever**; tests prove a repeatedly changing transcript backs off without a tight loop, stable sessions keep processing while one source keeps changing, a newer pending generation preserves the last completed payload, an un-stat-able source stops being claimed, and a restart loses no pending work. Likely touches: new `apps/desktop/src-tauri/src/insights_worker.rs`, `scan.rs`, `analytics.rs`, `store/mod.rs`, `lib.rs`. (Refs: FR-8, FR-9, FR-10; Locked Decisions 4, 5, 12, 15)
+- [ ] **CH-009 — Claude evidence complete, persisted, and placeholder-free.** (Source Phase 8, all ten evidence groups plus the completion gate. Provisional Tier 3 — every group changes the contents of persisted `session_evidence`.) Acceptance, in three parts.
+  1. *Every group is truthful.* Context depths and eligibility counts with bounded top-depth examples carrying no prompt text; normalized named tool usage with built-in, MCP, and skill classification where evidence supports it; loaded skills with origin and loaded MCP servers and tool definitions, matched against invocations, taken from the one-pass observations; model identity and token quantities per normalized model, with the timestamps a replacement rule needs, unknown identity left unsupported or partial rather than invented, and replacement policy kept out of evidence; explicit reasoning and effort tiers counted with capability recorded by harness version and no inference from prompt keywords; parent and child models with relationship confidence and provenance and no sidechain double counting; explicit fast and service tier observations distinguishing main-loop from delegated work; canonical turn order, per-thread previous turn, cache read/write/fresh-input quantities, model transitions, idle gaps, and compaction boundaries, separating observed user-controlled churn from provider-eviction estimates; harness built-in definitions joined to invocation evidence; explicit rate and quota error shapes yielding provider, limit kind, observed time, model and session attribution, warning versus hard hit, and preserved confidence.
+  2. *Every cardinality-bearing field is bounded.* Each group declares an explicit cap and overflows to `Partial` with a reason rather than growing: unique tool names, loaded skill and MCP source names and their descriptions, **the model-identity and per-model token map**, subagent child and example collections, thread and sidechain cardinality, **the quota-incident collection** (deduplication is not a bound), **the set of unrecognized record `type` discriminators** (discriminator strings only, never payloads), and every retained string, example, and diagnostic. A seam-level audit lists every field that can grow with transcript cardinality and names its cap. Tests drive each cap past its limit and assert the overflow-to-`Partial` result and the absence of unbounded growth. This satisfies **Architecture reference → `SessionEvidence` contract** ("maps and examples are bounded; strings and diagnostics are capped") and `CONTRIBUTING.md`'s memory constraint at implementation time, not at CH-013 measurement time.
+  3. *No placeholder survives.* Every field behaves as `Complete`, `Partial`, or `Unsupported`; the debug-only `Unimplemented` variant and every temporary provider value are removed; debug tests, `cargo check --release`, and the release build and tests pass with no remaining placeholder reference; persisted evidence contains no placeholder; `SessionMetrics` output is unchanged throughout; the Claude capability and coverage matrix is written into `crates/antiburn-local/tests/fixtures/claude_characterization/README.md` (created in CH-001).
 
-- Complete first-provider hardening and capability matrices.
-- Remove repeated raw passes.
-- Stabilize source/parser/evidence revisions.
-- Prove restart, race, deletion, and privacy behavior.
-- Add providers one at a time through the same completion gate.
+  Likely touches: `analysis/vendors/claude.rs`, the evidence accumulator and evidence types, `analysis/initial_context.rs`, evidence fixtures and their README. (Refs: FR-5, FR-6, FR-17; Locked Decisions 2, 3)
 
-### Make It Fast
+  > **Commit-slot guidance for the seam planner** (not seam boundaries): the source plan's ten groups batch naturally into four ordered slices — (a) 8.1-8.3 context and eligibility, named tool usage, loaded skills and MCP sources; (b) 8.4-8.7 model usage, reasoning effort, subagent relationships, fast and service tier; (c) 8.8-8.10 compaction and cache churn, built-in tool validation, transcript-attributable quota incidents; (d) the completion gate — remove `Unimplemented`, audit the caps, publish the matrix. Use them as commit slots inside one seam. They are not four scope areas: all four mutate the same Claude parser and evidence contract, the first three deliberately leave other groups `Unimplemented`, and the gate is a completion step rather than an independently shippable outcome.
+- [ ] **CH-010 — Bounded thirty-day report reduction over database evidence.** (Source Phase 9, everything except detector rules. Provisional Tier 3 — it defines the report's cohort and coverage runtime semantics, which decide what a reader is later told was assessed.) Acceptance: a dedicated read-only, query-only connection with a busy timeout opens the antiburn database inside `spawn_blocking` and pins one read transaction; the **assessed-cohort** query selects only sessions with trustworthy `started_at_epoch` in the window, in the current environment scope, with ready evidence and matching generations and revisions, ordered deterministically; a **separate coverage-denominator** count over the same snapshot, window, and scope covers every in-window session regardless of evidence lifecycle or currentness, adds unknown-start sessions whose `updated_at_epoch` falls in the window, and excludes unknown-start sessions with no activity in the window, per FR-12 (denominator ⊇ cohort); rows are deserialized and folded one at a time and dropped before the next step, with no canonical session collection and no transcript read; coverage counts separate discovered, ready, pending, actively growing, processing, failed, unsupported, stale, and unknown-start sessions, and expose per-detector eligible and assessed counts; **acceptance tests cover a known-start pending row, a known-start processing row, a stale-generation row, and an unknown-start row with and without in-window activity**, asserting that each in-window row lands in the coverage denominator with its own reason, never in the assessed cohort, and never in any detector's eligible or assessed denominator, and that the unknown-start row with no in-window activity is absent from both; a provider-neutral accumulator holds bounded maps and examples, avoids cloning per detector, and finalizes after denominators are known; a concurrency test proves the report sees one consistent snapshot while a writer commits, that the writer is not blocked for the duration, and that the read transaction is dropped after finalization. Likely touches: new `crates/antiburn-local/src/insights/`, `store/mod.rs` (read-only opener). (Refs: FR-12, FR-13; Locked Decisions 6, 7)
+- [ ] **CH-011 — Nine detector statuses plus the separate quota-pressure section.** (Source Phase 9, detector rules. Provisional Tier 3 — these are the conclusions the product asserts about the reader's own work, and the failure mode is a false clean.) Acceptance: Sessions Over Depth, Model Overthinking, Overpowered Subagents, Unused MCP Servers, Unused Built-In Tools, Unused Skills, Old Model Usage, Overuse of Fast Mode, and Cache Churn each produce exactly one status, with clean allowed only when required capabilities and coverage suffice; per-detector rules state which partial evidence permits a finding and which prevents clean; tests assert that incomplete absence never yields clean and that unknown-start and pending rows never enter a detector denominator; the quota-pressure section is sourced only from transcript-attributable incidents (the `quota_incidents` evidence group from CH-009), deduplicates them, and reports limit kind, hit count, affected sessions and models, and observed times; it is not assessed when the transcript carries no quota evidence — one condition, not a matrix — with a test for that case and a test for the findings case; it calls no provider endpoint, reads no account-level limit state, and stays outside the nine-category contract; pricing and remediation catalogs are applied at report time only. Likely touches: `crates/antiburn-local/src/insights/detectors/`, `insights/quota.rs`. (Refs: FR-14, FR-15; Locked Decision 2)
+  > CH-010 and CH-011 split source Phase 9 because the read path with its concurrency and population proofs and the nine detector rule sets are independently reviewable and carry unrelated risk: one is a database, population, and memory-behavior change; the other is policy logic whose failure mode is a false clean.
+- [ ] **CH-012 — Insights report exposed through desktop IPC and UI.** (Source Phase 10. Provisional Tier 3 — new IPC surface carrying derived personal data.) Acceptance: report and processing-status commands with DTOs that carry no transcript content are registered in the invoke handler; concurrent report requests are deduplicated where needed and request identity does not stand in for cancellation; report calculation state and evidence pending and processing counts are exposed; closing the pane or shutting down cancels report work without corrupting durable evidence state; a Settings → Insights pane is registered in `settingsPanes.ts` and renders loading, backlog and coverage, findings, per-category clean and not-assessed states, the quota-pressure section, and local-only freshness wording; **the pane presents the coverage denominator separately from the assessed cohort per FR-12, so no denominator row outside the cohort — pending, processing, failed, unsupported, stale, or unknown-start — can read as assessed or as clean**; **an `InsightsSession` class lives in `apps/desktop/src/views/settings/`, following `SourcesSession.ts` and `SettingsWindowSession.ts`, and owns the report IPC call, the in-flight state, the error state, and an immutable snapshot read through `useSyncExternalStore`**; **the pane itself is presentational** — it renders a snapshot and calls session methods, holds no fetch logic, and has **no dependency on being inside the settings window**; **portability is proven, not asserted: a test mounts the pane from a second entry point with no change to the pane itself**, while building the actual second window is out of scope; the pane derives during render or acts in the causing event, with no `useEffect` — the portability requirement and `AGENTS.md`'s no-`useEffect` rule select the same design, and `SettingsWindowSession`'s doc comment already states the principle and cites `OnboardingSession` as the precedent for a different window; **the first-open experience shows coverage and pending progress prominently, and an incomplete report never renders as an empty or clean state**; **the "nothing has been processed yet" case is named explicitly and carries its own wording in the pane**, rather than being left to fall out of that general rule — it is what a reader hits who rarely opens the popover and opens Insights cold; **opening the Insights pane fires the existing `ScanController::request()`** (`scan.rs`), the same kick `popover.rs:note_shown` already fires on popover show and the six `commands.rs` sites fire on demand, so a cold open asks for a scan pass instead of waiting out a `TICK`. That is a further call site of the shipped on-demand trigger, not a new trigger class and **not queue reprioritisation**: no new mechanism and no priority ordering, and the closed question about the pane accelerating pending work stays answered no (**Risks & Open Questions → Closed**). Dismissals, history, notifications, and session-level cards are excluded; existing session UI behavior is unchanged. Likely touches: `commands.rs`, `dto.rs`, `lib.rs`, `apps/desktop/src/lib/ipc.ts`, `apps/desktop/src/lib/settingsPanes.ts`, `apps/desktop/src/views/SettingsView.tsx`, new `apps/desktop/src/views/settings/InsightsSession.ts` and Insights pane components. (Refs: FR-12, FR-14, FR-16; Invariants: no `useEffect`, no transcript content)
+- [ ] **CH-013 — First-provider operational, privacy, and release hardening.** (Source Phase 11. Provisional Tier 3 — privacy review and release gate.) Acceptance: discovery, queue wait, source reading, parsing, metrics accumulation, evidence accumulation, persistence, report query, reduction, and IPC are measured separately, together with peak retained line buffer, accumulator memory, peak report memory, and impact while a representative Claude session is actively writing, and worker and provider-DB concurrency are tuned from those measurements; every persisted evidence field is re-reviewed for content sensitivity against the caps CH-009 already enforces, errors and logs are verified free of transcript content, and clear and delete behavior is verified; **the reader-facing local-data contract is updated in `docs/support.md` under "What antiburn stores"** to name derived session evidence and to state the retention reality — evidence is removed by session deletion and by clear-local-session-data, and is **not** removed automatically when a transcript is deleted from disk, **`apps/desktop/src/views/settings/PrivacyPane.tsx:PrivacyPane` is reviewed and updated** so the clear-index wording covers evidence, and the `store/schema.rs` data-policy comments describe the new table (`docs/privacy-policy.md` and `docs/usage-analytics.md` are not substitutes for the local-store contract and are touched only if a claim in them becomes wrong); the `docs/deviations.md` rule is applied with **no deviation as the default**, and the seam asserts explicitly that none was required, or records the one that was; **every entry in `docs/plans/local-insights-followups.md` carries a disposition, and every `file-issue` entry carries a real issue number**; worker concurrency and lease values are retuned from the measurements above; formatting, linting, all Rust tests, and release compilation and tests pass; no placeholder or fake evidence remains; the capability matrix, migration behavior, and downgrade or recovery expectations are verified; report output is checked on synthetic sources and on manually inspected real sessions. Likely touches: worker constants, `store/schema.rs` comments, `docs/support.md`, `apps/desktop/src/views/settings/PrivacyPane.tsx`, `docs/plans/local-insights-followups.md`, `docs/deviations.md` if applicable. (Refs: FR-17, FR-18; Invariants: performance and memory are product constraints)
 
-- Tune measured resource budgets.
-- Add safe append-tail processing only when justified.
-- Add report caching or relational evidence projections only when compact row streaming misses the agreed budget.
+> Ordering is a dependency hint that follows the source plan's phase order, not a seam sequence.
 
-## Decisions still required before implementation
+## Deferred work and followups
 
-1. Exact first-provider fixture cohort and supported Claude schema versions.
-2. Maximum retained JSONL record bytes based on observed legitimate records.
-3. Initial worker CPU/source concurrency and processing lease duration.
-4. Whether opening Insights accelerates pending thirty-day work.
-5. Exact evidence fields retained as bounded supporting examples.
-6. Parser, analyzer, metrics, evidence, detector, pricing, and remediation revision constants.
-7. Which partial evidence permits a finding and which prevents a clean status for each detector.
-8. The second provider selected after Claude; choosing a provider SQLite source early would validate the row-streaming path.
-9. Acceptable first-open evidence backlog and report-readiness experience.
+CH-001 creates `docs/plans/local-insights-followups.md`. It is a normal repository document, deliberately **not** under `.seams/` so `seams cleanup` cannot remove it, and it is never digest-bound, so any seam may append to it without reopening a review.
+
+It is separate from this plan for one reason: an approved master plan is immutable, so a future-work section inside it could only be written before approval and would freeze at exactly the moment it needs to accrete.
+
+Entry shape: what was found, which seam found it, why it was deferred, **kind** (`enhancement` or `deferred`), and **disposition** (`file-issue` | `fold-into-later-seam` | `drop-with-reason`). CH-013 requires every entry to carry a disposition and every `file-issue` entry to carry a real issue number.
+
+CH-001 seeds it with these entries.
+
+1. *Enhancement.* Join the cached account limits onto the quota-pressure section as a report-time join, with its own consent review.
+2. *Enhancement.* Session-level hygiene badges from existing evidence — "reasoning overkill", "excessive cache rehydration", "bloated initial context" — through a second reducer at session granularity. This needs no new parsing, evidence, or schema: rule-neutral evidence plus report-time rules is exactly Locked Decision 2's shape.
+3. *Enhancement.* Model additional Claude JSONL row types, argued from the collected unknown-`type` diagnostic after a release. Do not parse or retain unused records speculatively; reparse under a new parser revision instead.
+4. *Enhancement.* Squash the migration ladder before v1. This is deliberately not done during this stack: an appended migration bumps `user_version` so a checkout self-upgrades on a branch switch, while a migration edited in place bumps nothing and silently leaves a developer database on the old shape. Check RC distribution first — tags exist through `antiburn-v0.1.0-rc.6`. Pairs with antiburn#76.
+5. **Slow background discovery tick while the popover is hidden.** *Kind: enhancement.* Today scheduled scanning pauses entirely while the popover is hidden, so nothing notices a changed transcript until a pass is triggered. A slow background discovery tick (order of 15-30 minutes) would keep evidence current without user action. The gap is **discovery only**: CH-008's worker is not it, because that worker already drains a discovered backlog from the durable queue after the popover closes. **Three costs, priced at the GH-70 gate and deliberately not paid here:** it refreshes metrics nobody is looking at, because passes produce both projections; it reverses the deliberate existing decision to pause scanning while hidden, which `CONTRIBUTING.md`'s performance constraint supports; and it would require **Locked Decision 15 to be restated**, because a tick existing only to keep evidence current *is* an evidence schedule, which that decision currently denies. *Disposition: revisit with CH-013 measurement. Natural prerequisite if session-level badges (entry 2) proceed.*
+6. *Deferred real work.* The second provider after Claude (source Phase 12).
+7. *Deferred real work.* Reconcile the session index when a transcript is deleted from disk. This is privacy-relevant: `session_evidence` cascades on session delete, but the session row is never deleted when a file vanishes, so the cascade never fires. `Store::upsert_sessions` only inserts and updates; deletion happens only for gate-rejected transcripts (`scan.rs:311`), ignored paths (`repositories.rs:295`), and explicit user deletion (`commands.rs:1004`).
+8. *Enhancement.* Phase 13 optimizations — report caching, relational evidence projections, additional read pooling — already out of scope here.
+
+## Out of Scope (Non-Goals)
+
+- **Source Phase 12 — the additional-provider loop.** No second provider is characterized, streamed, or enabled in the durable worker by this issue. Every non-Claude provider stays on the existing `analyze_sources_with` path (Locked Decision 12). Create a provider-specific follow-up issue after selecting and characterizing the next provider.
+- **Source Phase 13 — measured optimizations.** No append-tail or byte-offset resume checkpoints, no report caching, no relational evidence child tables, no additional read connections or pooling, and no offloading of growing metrics collections to staging tables or a disk spool. Each needs a measurement first and then its own scoped change (Locked Decisions 8, 14). The pinned-prefix read of a still-growing source **is** in scope where the provider's append-only guarantee is evidenced (Locked Decision 8); it carries no state across generations, so it is not a checkpoint.
+- Bounded exact rich-metrics memory. Retained metrics state may still grow with metric-bearing events (Locked Decision 14).
+- **Looking up account-level limits.** Session evidence comes from session transcripts. Account state is a different subject, from a different subsystem, on a different schedule. Looking up limits is separate from session processing and out of scope for this issue. No Insights path calls a provider endpoint, and none reads the cached `LiveUsageSummary`. Joining the cached account snapshot onto the quota-pressure section is followup entry 1, with its own consent review.
+- Building a second window for the Insights pane. CH-012 proves the pane is portable by mounting it from a second entry point in a test; shipping that window is not part of this issue.
+- Contributor tooling. There is no contributor-tooling scope area here. Adopting the `aislop` gate is antiburn#89, and ratcheting its thresholds is antiburn#90.
+- Session-level Insights cards, finding dismissals, finding history, and notifications. The first UI is one Settings pane (CH-012).
+- Any change to the existing session UI behavior before CH-012.
+- Changes to the pricing model, the remediation catalog content, or the deprecated-model replacement catalog beyond applying them at report time.
+- Provider-specific branches inside the report reducer.
+- Any telemetry or export of insights data.
+
+## Risks & Open Questions
+
+**Risks.**
+
+| Risk | Impact | Handling |
+|---|---|---|
+| Streaming Claude normalization silently changes a displayed metric | User-visible regression in the existing session UI | Golden fixtures captured first in CH-001; field-by-field equivalence in CH-005; any difference stated and approved (Locked Decision 13) |
+| A `SourceDescriptor` resolves a different session id than `scan.rs` does | Duplicate or orphaned rows against existing `SessionKey` values | CH-002 preserves the canonical resolution order and tests id stability across the migration (Current State correction 7) |
+| Adding `visit_source` to `VendorAdapter` churns all six adapters | Broad diff, unrelated provider risk | Prefer a default method so non-Claude adapters are untouched (Current State correction 2) |
+| Fence and generation guards look correct but race under a lease expiry | Two workers publish conflicting projections | Explicit tests in CH-007 for first-claim exclusivity, reclaim fencing, and late-fence rejection |
+| A source that changes during every read never publishes a generation | That session contributes no evidence and its work repeats | Bounded backoff through `next_attempt_at` and fair claim ordering (CH-008), plus the pinned-prefix read where the provider's append-only guarantee is evidenced, which publishes a bounded generation instead of discarding the pass (Locked Decision 8, CH-004) |
+| A rename between version capture and `open` substitutes a different file | The pass streams bytes from the wrong source and publishes them as the claimed generation | The opened handle is validated against the claimed generation before any record streams, that mismatch has its own row in **Architecture reference → Source-validity outcomes**, and CH-004 tests replacement-before-pinning against rename-after-pinning |
+| A pinned prefix publishes evidence from a rewritten record | Stale or wrong evidence passes the recheck, because the head hash covers the head region only | Publication is conditional on an evidence-backed provider append-only guarantee, the detection envelope is stated rather than overclaimed, and the no-guarantee path is tested (Locked Decisions 8, 16; CH-002, CH-004) |
+| Evidence grows with adversarial transcript cardinality | Database growth on an always-running utility | Explicit per-field caps with overflow to `Partial`, and cap tests, inside CH-009 rather than at measurement time |
+| A detector reports clean from partial coverage | False reassurance — the worst possible failure for this feature | Three-state evidence (Locked Decision 3) plus the no-clean-from-incomplete tests in CH-011 |
+| Non-ready or non-current in-window sessions read as assessed | The report implies a clean result it never proved | Two explicit populations (FR-12), population tests in CH-010, and separate presentation in CH-012 |
+| An evidence schema revision forces a full reprocess of every session on update | Processing spike after an app update | Lazy revision-driven requeue through the bounded worker (FR-11) |
+
+**Still open** — each is deferred to the scope area that first holds the evidence to settle it, and to no earlier point.
+
+1. Exact first-provider fixture cohort and supported Claude schema versions — CH-001, sourced per that area's fixture-authoring rule.
+2. The size of the hashed head region in the fingerprint — CH-002. That the region is small, fixed, and not `SOURCE_PREVIEW_BYTES` is settled (Locked Decision 16); only the number is open.
+3. The numeric value of each per-field evidence cardinality cap and each retained-example bound — CH-009. That caps exist and overflow to `Partial` is settled; only the numbers are open.
+4. Which partial evidence permits a finding and which prevents a clean status, per detector — CH-011.
+
+**Closed, and written into this plan rather than left open.**
+
+- *Maximum retained record bytes:* **8 MiB**, with the drain-mark-`Partial`-resume failure behavior (**Architecture reference → Bounded newline framing**).
+- *Concurrency and lease:* one CPU permit, one source permit, one provider-DB permit, and a five-minute lease renewed on progress, retunable in CH-013 (**Architecture reference → Resource limits**).
+- *Revision constants:* parser, analyzer, metrics, and evidence revisions all start at **1**. Bump one when the *meaning* of a stored value changes. Never bump for a refactor. Never bump for a catalog or pricing change — those are applied at report time precisely so they do not requeue (FR-11).
+- *`docs/deviations.md`:* the rule applies, the default is no deviation, and CH-013 asserts explicitly that none was required.
+- *Insights pane and scheduling:* opening the pane does **not** reprioritise worker scheduling. It does fire the existing on-demand `ScanController::request()` kick from a second call site (CH-012), which asks for a scan pass. That adds no mechanism and no priority ordering, and it does not change the trigger set FR-10 pins.
+- *First-open experience:* a requirement, not an open number — coverage and pending progress are shown prominently, and an incomplete report never renders as an empty or clean state (CH-012). Only the numeric backlog threshold stays with CH-012.
+- *Account-level quota input:* out of scope entirely (**Out of Scope**), with the report-time join recorded as followup entry 1.
+- *Second provider after Claude:* out of scope, recorded as followup entry 6.
+
+## Verification Strategy & Success Metrics
+
+**Per seam** (see **Definition of Done**): `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `crates/antiburn-local` and for the desktop crate; `aislop ci --changes --base <seam base>`, where the base is the parent seam's branch and not `main`; frontend slices add `pnpm --filter @antiburn/desktop lint`, `type-check`, and `test`.
+
+**End-to-end bar for the issue.**
+
+- Golden equivalence: every currently displayed `SessionMetrics` field matches its pre-change value on every characterization fixture (FR-4).
+- Memory: a generated transcript larger than the retained-record budget processes to completion, with an asserted upper bound on the retained line buffer, an asserted cap on every cardinality-bearing evidence field, and a measured, documented figure for accumulator and peak report memory (FR-2, FR-3, FR-6).
+- Concurrency: an integration test proves the report reads one pinned snapshot while a writer commits and does not block that writer for the scan's duration (FR-13).
+- Durability: kill and restart during processing loses no pending work, publishes no stale projection, and preserves the last completed evidence payload (FR-7, FR-8, FR-9).
+- Truthfulness: no detector reports clean without sufficient capability and coverage; the coverage denominator contains the assessed cohort, and every denominator row outside that cohort — known-start pending or processing, failed, unsupported, stale, or unknown-start — is counted with its reason and never assessed (FR-12, FR-14).
+- Locality: no Insights code path calls a provider endpoint and none reads account-level limit state; the quota-pressure section reports transcript-attributable incidents and is not assessed when the transcript carries no quota evidence (FR-15).
+- Responsiveness: an actively updated session's metrics refresh on exactly the shipped trigger set — launch, a `TICK` while the popover is visible, popover open, and on demand — with no quiet-period gate anywhere in the processing path and no trigger added or removed (FR-10, Locked Decision 15).
+- Publication atomicity: an accepted read, including an accepted append-prefix, refreshes metrics and evidence together, and any source mutation classified as `SourceChanged` publishes neither (FR-5, FR-7, **Architecture reference → Source-validity outcomes**).
+- Privacy: an inspection of every persisted evidence field, log line, error, and DTO finds no transcript content; clear and delete remove evidence; `docs/support.md` and `PrivacyPane` describe what is now stored (FR-18).
+- Release: `cargo check --release` plus release build and tests are clean with no placeholder variant anywhere (FR-17).
+- Product: the report renders on manually inspected real Claude sessions with defensible findings and honest not-assessed states (CH-013).
+
+## Rollback / Safety
+
+- **Schema.** Two appended migrations (generations and revisions, then `session_evidence`). Both are additive: new nullable or defaulted columns and one new table. No existing column is dropped or rewritten, and no shipped migration constant is edited (Locked Decision 10). A build without the new code still reads every existing row.
+- **Downgrade.** An older application build ignores the new columns and the new table; it recomputes `session_analysis` through the legacy path. Rows written by the newer build stay readable. CH-013 verifies this expectation explicitly.
+- **Data.** `session_evidence` is derived and disposable: deleting every row costs only reprocessing. Clear-local-session-data and session deletion remove it (FR-18).
+- **Behavior.** Every scope area up to CH-011 is invisible to the reader; the only user-visible surfaces are CH-005 (existing metrics, which must not change) and CH-012 (the new pane). Backing out CH-012 removes the pane and leaves the durable evidence in place.
+- **Deploy ordering.** The migration in CH-002 must ship before any writer of the new columns, and CH-007's table must ship before any evidence write. Both are enforced by the scope-area order.
+- **Provider transcripts are never modified or deleted**, so no rollback can damage the reader's own data.
+
+## Progress Log
+
+Append-only as seams land (seam ID → what shipped → commit). Derived status lives in the records ledger; read it with `seams progress`.
+
+_No seams landed yet._

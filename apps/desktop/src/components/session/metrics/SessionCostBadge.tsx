@@ -13,12 +13,7 @@ import {
 import { Tooltip } from "../../presentation/Tooltip"
 import { TextRoll } from "../../ui/TextRoll"
 
-/**
- * Geometry and typography of the cost pill, without its color scheme. Exported
- * so every surface that paints one stays in step through this constant rather
- * than by copying the string.
- */
-export const COST_PILL_CLASS =
+const COST_PILL_CLASS =
   "flex items-center gap-0.5 shrink-0 px-1.5 py-px rounded-full type-caption tabular-nums font-medium leading-[13px]"
 
 export interface SessionCostBadgeProps {
@@ -32,10 +27,7 @@ export interface SessionCostBadgeProps {
   figureLabel: string
   /** Every model that contributed billable tokens, as a muted subtitle. */
   models?: string[]
-  /**
-   * Unusually expensive against comparable sessions. Paints the pill red with
-   * a flame, and is never hidden behind {@link revealClassName}.
-   */
+  /** Unusually expensive against comparable sessions. Paints the pill red with a flame. */
   isHighCost?: boolean
   /** Billable component rows (input / output / cache read / cache write). */
   breakdownRows?: CostRow[]
@@ -44,12 +36,6 @@ export interface SessionCostBadgeProps {
    * with adjacent baseline text in a row, say. Omit on a centered flex line.
    */
   className?: string
-  /**
-   * Hover-reveal classes applied by a list row that keeps secondary detail
-   * hidden until hover or focus. A **high-cost** badge ignores this and stays
-   * visible: an outlier must be surfaced even at rest.
-   */
-  revealClassName?: string
 }
 
 /**
@@ -66,9 +52,8 @@ export function SessionCostBadge({
   isHighCost = false,
   breakdownRows = [],
   className = "",
-  revealClassName = "",
 }: SessionCostBadgeProps) {
-  const badge = (
+  return (
     <Tooltip
       // Wide card: drop it below the pill rather than to the side, where it
       // can run off the window. Radix collision handling then shifts it
@@ -130,15 +115,4 @@ export function SessionCostBadge({
       </span>
     </Tooltip>
   )
-
-  // In a list row the badge hides until hover, to keep the resting list
-  // uncluttered — but a high-cost outlier must always be surfaced, so it skips
-  // the reveal wrapper. The wrapper (not the bare pill) carries the classes
-  // because `:has([data-state*=open])` in them keeps the badge up while its own
-  // tooltip is open, and the trigger sets that attribute on the pill, which has
-  // to be a *descendant* for `:has` to match.
-  if (revealClassName && !isHighCost) {
-    return <span className={cn("flex shrink-0", revealClassName)}>{badge}</span>
-  }
-  return badge
 }
