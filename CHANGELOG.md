@@ -24,11 +24,29 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.1.0-rc.7] - 2026-08-21
+
+A release-candidate rehearsal build, not a supported release. The macOS and
+Windows binaries are **unsigned** — your operating system will warn you, and it
+is right to. Install it only if you are testing the release pipeline itself.
+
+On macOS, open the app for the first time with right-click → Open rather than a
+double-click. The build is sealed but has no Developer ID signature, so macOS
+shows its unidentified-developer warning.
+
 ### Changed
 
 - **The main popover stays ready after its first use.** Opening antiburn again
   reuses the existing hidden popover instead of rebuilding its webview, so the
   main surface returns immediately.
+
+- **Recent Activity is simpler to scan.** Session rows now focus on the agent,
+  repository, recency, and estimated cost, with less visual separation and no
+  duplicate duration measure.
+
+- **The macOS installer now has a branded, readable layout.** The disk image
+  shows the antiburn app and Applications folder on a light background with
+  clear labels.
 
 ### Fixed
 
@@ -36,6 +54,10 @@ CI changes, and documentation that no user acts on stay out — see
   shows its last successful provider reading while it refreshes that reading in
   the background. The activity list and saved limits now appear together,
   without a blank route or a second layout change before the limits arrive.
+
+- **Linux tray interactions now open in the right place.** The tray menu opens
+  the popover at the panel instead of the pointer, and notification cards size
+  themselves to their content.
 
 ## [0.1.0-rc.6] - 2026-08-20
 
