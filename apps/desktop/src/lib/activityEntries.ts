@@ -5,7 +5,7 @@
 /**
  * Shaping the shell's activity payloads for the activity list.
  *
- * The shell sends values — a cost estimate, active seconds, a model list. The
+ * The shell sends values such as a cost estimate and a model list. The
  * *wording* around them ("Projected cost", the breakdown row labels) and the
  * cohort judgement ("this one is unusually expensive") are presentation, and
  * they already exist in `lib/presentation/sessionAnalytics`. This module is the
@@ -56,7 +56,6 @@ export function toActivityEntries(
     ...(payload.title ? { title: payload.title } : {}),
     hasForkParent: payload.hasForkParent,
     forkChildCount: payload.forkChildCount,
-    subagentCount: payload.subagentCount,
     cost: payload.cost
       ? {
           totalUsd: payload.cost.totalUsd,
@@ -66,10 +65,6 @@ export function toActivityEntries(
           breakdownRows: costBreakdownRows(payload.cost),
         }
       : null,
-    activeTime:
-      payload.activeSecs != null
-        ? { activeSecs: payload.activeSecs, durationSecs: payload.durationSecs }
-        : null,
   }))
 }
 

@@ -81,7 +81,6 @@ function activityEntry(overrides: Record<string, unknown> = {}) {
     title: "Wire the tray popover",
     hasForkParent: false,
     forkChildCount: 0,
-    subagentCount: 0,
     cost: {
       totalUsd: 1.25,
       inputUsd: 0.5,
@@ -90,8 +89,6 @@ function activityEntry(overrides: Record<string, unknown> = {}) {
       cacheWriteUsd: 0.1,
     },
     models: ["claude-opus-4-6"],
-    activeSecs: 900,
-    durationSecs: 1800,
     ...overrides,
   }
 }

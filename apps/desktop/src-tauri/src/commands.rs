@@ -401,11 +401,8 @@ fn activity_entry(
         title: session.title.clone(),
         has_fork_parent: session.fork_parent_session_id.is_some(),
         fork_child_count: store.fork_children(&session.key)?.len() as u32,
-        subagent_count: session.subagent_count,
         cost,
         models,
-        active_secs: analysis.as_ref().map(|record| record.active_secs as u64),
-        duration_secs: analysis.as_ref().map(|record| record.duration_secs as u64),
     })
 }
 

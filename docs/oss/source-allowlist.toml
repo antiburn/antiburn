@@ -624,8 +624,6 @@ notes = [
 [[rule]]
 id = "local-session-cost-badges"
 source_paths = [
-  "desktop/src/components/tray/SessionActiveTimeBadge.test.tsx",
-  "desktop/src/components/tray/SessionActiveTimeBadge.tsx",
   "desktop/src/components/tray/SessionCostBadge.test.tsx",
   "desktop/src/components/tray/SessionCostBadge.tsx",
 ]
@@ -636,7 +634,7 @@ provenance = "Cadence company-authored mixed view/store components; D-021 approv
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
-  "Extract value-driven cost and active-time badge components that receive loading, value, model, state, and tooltip data through props.",
+  "Extract a value-driven cost badge that receives value, model, state, and tooltip data through props.",
   "Keep useAppStore, targetOrgId, private cache selection, command calls, and provider-usage attribution in private wrappers.",
   "Rewrite tests around public props and synthetic local cost results rather than the private store or Tauri mocks.",
 ]
