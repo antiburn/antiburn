@@ -18,7 +18,7 @@ import { ScrollPane } from "../../components/ui/ScrollPane"
 import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { getConsentDiagnostics, openFolderAccessSettings, type ScanStatus } from "../../lib/ipc"
-import type { FolderPermissions, LocalRepositoryItem } from "../../lib/types/repository";
+import type { FolderPermissions, LocalRepositoryItem } from "../../lib/types/repository"
 import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
 
 /**

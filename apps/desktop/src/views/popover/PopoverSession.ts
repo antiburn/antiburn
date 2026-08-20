@@ -21,11 +21,13 @@ import {
   listRecentSessions,
   listRepositories,
   onPopoverShown,
+  onLiveUsageChanged,
   onScanEvent,
   onSessionsInvalidated,
   onSettingsChanged,
   onStorageHealth,
   openSettingsWindow,
+  refreshLiveUsage,
   scanNow,
   setPopoverHeight,
   setSettings,
@@ -150,12 +152,14 @@ export class PopoverSession {
    * still running. The snapshot's `usageRefreshing` is `count > 0`.
    */
   private usageRefreshCount = 0
+  private liveUsageRevision = 0
 
   private stopSettingsListening: (() => void) | null = null
   private stopSessionsInvalidatedListening: (() => void) | null = null
   private stopStorageHealthListening: (() => void) | null = null
   private stopScanListening: (() => void) | null = null
   private stopPopoverShownListening: (() => void) | null = null
+  private stopLiveUsageListening: (() => void) | null = null
 
   private snapshot: PopoverSnapshot = {
     settings: null,
@@ -259,6 +263,7 @@ export class PopoverSession {
     void this.listenStorageHealth(generation)
     void this.listenScanEvent(generation)
     void this.listenPopoverShown(generation)
+    void this.listenLiveUsage(generation)
 
     // ⌘, opens Settings — the platform's standard preferences shortcut, which
     // an accessory app with no application menu has to own itself. Bound
@@ -281,19 +286,22 @@ export class PopoverSession {
     this.stopScanListening = null
     this.stopPopoverShownListening?.()
     this.stopPopoverShownListening = null
+    this.stopLiveUsageListening?.()
+    this.stopLiveUsageListening = null
     window.removeEventListener("keydown", this.onWindowKeyDown)
   }
 
-  // First load: preferences decide the theme and the visible window, so
-  // everything else waits on them.
+  // First load: read independent shell state together, then list sessions for
+  // the stored time window. The cached limits do not wait for either read.
   private loadInitial = async (generation: number): Promise<void> => {
-    const stored = await getSettings().catch(() => DEFAULT_SETTINGS)
+    const usage = this.loadCachedUsage()
+    const [stored, health] = await Promise.all([
+      getSettings().catch(() => DEFAULT_SETTINGS),
+      getStorageHealth().catch(() => HEALTHY_STORAGE),
+    ])
     if (generation !== this.generation) return
     applyTheme(stored.theme)
-    this.update({ settings: stored })
-    const health = await getStorageHealth().catch(() => HEALTHY_STORAGE)
-    if (generation !== this.generation) return
-    this.update({ storage: health })
+    this.update({ settings: stored, storage: health })
     // The repository list is read on first paint rather than waiting for a
     // scan to finish, because the source-access banner needs it — a blocked
     // repository is exactly the case where no scan will ever complete to
@@ -303,8 +311,10 @@ export class PopoverSession {
     void this.refreshRepositoryList()
     await Promise.all([
       this.refreshEntries(stored.activityWindowDays).catch(() => this.update({ entries: [] })),
-      this.refreshUsage(),
+      usage,
     ])
+    if (generation !== this.generation) return
+    void this.refreshUsage()
   }
 
   // Settings are written in the settings window but rendered here: the theme,
@@ -404,6 +414,21 @@ export class PopoverSession {
     this.stopPopoverShownListening = unlisten
   }
 
+  // A refresh from any window replaces the cached value in this one. This
+  // also lets the shell publish this window's own refresh before IPC returns.
+  private listenLiveUsage = async (generation: number): Promise<void> => {
+    const unlisten = await onLiveUsageChanged((liveUsage) => {
+      if (generation !== this.generation) return
+      this.liveUsageRevision += 1
+      this.update({ liveUsage })
+    })
+    if (generation !== this.generation) {
+      unlisten()
+      return
+    }
+    this.stopLiveUsageListening = unlisten
+  }
+
   private onWindowKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape") {
       // A surface with something nearer to close — an open provider panel —
@@ -429,6 +454,18 @@ export class PopoverSession {
     this.update({ entries: toActivityEntries(payloads) })
   }
 
+  private loadCachedUsage = async (): Promise<void> => {
+    const liveUsageRevision = this.liveUsageRevision
+    const [usage, liveUsage] = await Promise.all([
+      getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
+      getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+    ])
+    this.update({ usage })
+    if (liveUsageRevision === this.liveUsageRevision) {
+      this.update({ liveUsage })
+    }
+  }
+
   private refreshUsage = async (): Promise<void> => {
     // Counted rather than flagged directly, and flushed to the snapshot as
     // `count > 0`: the popover-shown signal and a scan-finished event can
@@ -437,14 +474,19 @@ export class PopoverSession {
     this.usageRefreshCount += 1
     this.update({ usageRefreshing: true })
     try {
-      // Two commands, refreshed together and settled independently: the limit
-      // half is allowed to be missing without the spend half waiting on it,
-      // and a source that throws leaves the estimate surface untouched.
-      const [spend, limits] = await Promise.all([
-        getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
-        getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+      // Publish each half when it settles. Local spend does not wait for the
+      // provider refresh, and the cached limit remains visible meanwhile.
+      await Promise.all([
+        getProviderUsage()
+          .then((usage) => this.update({ usage }))
+          .catch(() => undefined),
+        refreshLiveUsage()
+          .then((liveUsage) => {
+            this.liveUsageRevision += 1
+            this.update({ liveUsage })
+          })
+          .catch(() => undefined),
       ])
-      this.update({ usage: spend, liveUsage: limits })
       // Usage arriving can flip the derived surface to 'usage' on its own —
       // the reader may have already asked to see it before there was
       // anything to show — so the height request has to follow this update

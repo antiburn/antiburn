@@ -36,7 +36,7 @@ const MAX_RESPONSE_BYTES: u64 = 512 * 1024;
 /// Blocking, and only ever to be called where blocking is allowed. A caller
 /// holding a runtime has to hand the work to a blocking thread first, and
 /// both callers do: `crate::usage_alerts::blocking::run` for the background
-/// monitor, `crate::commands::get_live_usage` for the popover.
+/// monitor, `crate::commands::refresh_live_usage` for the popover.
 ///
 /// The cost of getting that wrong differs by profile, and both are worth
 /// knowing. In release, a blocking call parks the calling thread until the

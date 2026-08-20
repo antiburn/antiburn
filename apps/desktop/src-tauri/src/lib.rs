@@ -120,6 +120,7 @@ pub fn run() {
             commands::export_session,
             commands::get_provider_usage,
             commands::get_live_usage,
+            commands::refresh_live_usage,
             commands::get_scan_status,
             commands::get_folder_permissions,
             commands::request_folder_access,
@@ -230,7 +231,11 @@ pub fn run() {
             // provider's own limit figures, and the milestone ledger they
             // feed. Registered before the schedulers so the first pass sees
             // a populated registry rather than an empty one.
-            app.manage(usage_alerts::LiveUsage::new());
+            let live_usage = {
+                let store = app.state::<store::Store>();
+                usage_alerts::LiveUsage::from_store(&store)
+            };
+            app.manage(live_usage);
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));

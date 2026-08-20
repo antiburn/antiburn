@@ -2,7 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ArrowRight, Coins, Gauge, TrendingDown, TrendingUp, type LucideIcon } from "lucide-react";
+import {
+  ArrowRight,
+  Coins,
+  Gauge,
+  TrendingDown,
+  TrendingUp,
+  type LucideIcon,
+} from "lucide-react"
 
 import type { ProviderUsagePayload } from "../../lib/ipc"
 import { paceTrend, usageMetricRows } from "../../lib/presentation/providerUsage"

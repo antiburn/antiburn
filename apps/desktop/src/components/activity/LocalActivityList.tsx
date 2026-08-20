@@ -6,7 +6,7 @@ import { Bot, GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
 import type { ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
-import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents";
+import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { Tooltip } from "../presentation/Tooltip"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"

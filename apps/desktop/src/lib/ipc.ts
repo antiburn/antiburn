@@ -776,11 +776,7 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
 }
 
 /**
- * The provider's own limit figures, when a registered source can prove them.
- *
- * The offset travels for one thing only: "used today" is a claim about the
- * reader's calendar day. The windows themselves are the provider's own
- * boundaries, stated as absolute instants, and owe nothing to it.
+ * The last provider limit snapshot. This command does not contact a provider.
  */
 export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
   if (!hasShell()) return EMPTY_LIVE_USAGE
@@ -789,6 +785,20 @@ export async function getLiveUsage(): Promise<LiveUsageSummaryPayload> {
   // carry a null branch for a state that has a perfectly good empty value.
   return (
     (await invoke<LiveUsageSummaryPayload | null>("get_live_usage", {
+      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+    })) ?? EMPTY_LIVE_USAGE
+  )
+}
+
+/**
+ * Ask each provider for current limits and replace the cached snapshot.
+ *
+ * The offset makes "used today" use the reader's calendar day.
+ */
+export async function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
+  if (!hasShell()) return EMPTY_LIVE_USAGE
+  return (
+    (await invoke<LiveUsageSummaryPayload | null>("refresh_live_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })) ?? EMPTY_LIVE_USAGE
   )
@@ -1097,6 +1107,19 @@ export const POPOVER_SHOWN_EVENT = "popover:shown"
 export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
   if (!hasShell()) return () => {}
   return listen(POPOVER_SHOWN_EVENT, () => handler())
+}
+
+/** Event the shell emits after it refreshes the cached live-usage snapshot. */
+export const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
+
+/** Subscribe to refreshed provider limit snapshots. The result unsubscribes. */
+export async function onLiveUsageChanged(
+  handler: (usage: LiveUsageSummaryPayload) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return () => {}
+  return listen<LiveUsageSummaryPayload>(LIVE_USAGE_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
 }
 
 /** Event the shell emits when storage health changes. Mirrors `src-tauri/src/storage_health.rs`. */

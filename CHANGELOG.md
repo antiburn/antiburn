@@ -24,6 +24,19 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- **The main popover stays ready after its first use.** Opening antiburn again
+  reuses the existing hidden popover instead of rebuilding its webview, so the
+  main surface returns immediately.
+
+### Fixed
+
+- **Plan limits no longer hold up the useful part of the popover.** antiburn
+  shows its last successful provider reading while it refreshes that reading in
+  the background. The activity list and saved limits now appear together,
+  without a blank route or a second layout change before the limits arrive.
+
 ## [0.1.0-rc.6] - 2026-08-20
 
 This release candidate supersedes rc.5, which was not published after its

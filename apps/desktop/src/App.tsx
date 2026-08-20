@@ -6,16 +6,12 @@ import { lazy, Suspense } from "react"
 
 import { useRoute } from "./lib/route"
 import { NudgeView } from "./views/NudgeView"
+import { PopoverView } from "./views/PopoverView"
 
-// Keep the nudge view in the entry chunk. The shell prewarms this webview and
-// can deliver a pending nudge immediately after startup; making the listener
-// wait for a route chunk would add an avoidable readiness race. The larger,
-// user-facing windows are loaded only by the webview that owns their route.
+// Keep the nudge and popover views in the entry chunk. Both must respond when
+// their shell window appears. The larger standalone windows load by route.
 const OnboardingView = lazy(() =>
   import("./views/OnboardingView").then(({ OnboardingView: view }) => ({ default: view })),
-)
-const PopoverView = lazy(() =>
-  import("./views/PopoverView").then(({ PopoverView: view }) => ({ default: view })),
 )
 const SettingsView = lazy(() =>
   import("./views/SettingsView").then(({ SettingsView: view }) => ({ default: view })),
@@ -28,17 +24,9 @@ function RouteLoading() {
 export function App() {
   const route = useRoute()
   if (route === "nudge") return <NudgeView />
+  if (route !== "settings" && route !== "onboarding") return <PopoverView />
 
-  const view = (() => {
-    switch (route) {
-      case "settings":
-        return <SettingsView />
-      case "onboarding":
-        return <OnboardingView />
-      default:
-        return <PopoverView />
-    }
-  })()
+  const view = route === "settings" ? <SettingsView /> : <OnboardingView />
 
   return <Suspense fallback={<RouteLoading />}>{view}</Suspense>
 }

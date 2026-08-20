@@ -10,7 +10,12 @@ import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { createExternalStore } from "../../lib/externalStore"
-import { getLiveUsage, EMPTY_LIVE_USAGE } from "../../lib/ipc"
+import {
+  EMPTY_LIVE_USAGE,
+  getLiveUsage,
+  onLiveUsageChanged,
+  refreshLiveUsage,
+} from "../../lib/ipc"
 import { liveSourceNote } from "../../lib/presentation/liveUsage"
 import type { AppSettingsController } from "./useAppSettings"
 
@@ -50,16 +55,17 @@ function errorNote(category: string): string {
 }
 
 export function UsagePane({ settings, update }: UsagePaneProps) {
-  // One read on open, and one after the switch moves (from the ToggleRow's
-  // onChange below). Not a subscription: this pane is a place a reader visits
-  // deliberately, and a limit figure that ticked over while they were looking
-  // at a preference would be noise. Per-instance rather than a module
-  // singleton: each mount gets its own read, matching the effect this
-  // replaced.
+  // Show the cached value on open. Then refresh through the shell and accept
+  // updates from this window or the popover.
   const [store] = useState(() =>
     createExternalStore({
       initial: EMPTY_LIVE_USAGE,
       load: () => getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
+      subscribe: async (set) => {
+        const unlisten = await onLiveUsageChanged(set)
+        void refreshLiveUsage().catch(() => undefined)
+        return unlisten
+      },
     }),
   )
   const live = useSyncExternalStore(store.subscribe, store.getSnapshot)
@@ -75,9 +81,9 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
             description="Asks each provider directly for your current usage, about every ten minutes, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this off also stops usage milestone notifications, since they need readings that keep moving."
             checked={on}
             onChange={(next) =>
-              void Promise.resolve(update({ liveUsageEnabled: next })).then(() =>
-                store.refresh(),
-              )
+              void Promise.resolve(update({ liveUsageEnabled: next })).then(() => {
+                void refreshLiveUsage().catch(() => undefined)
+              })
             }
           />
           <Row

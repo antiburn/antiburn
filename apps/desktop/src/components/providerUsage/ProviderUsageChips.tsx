@@ -6,7 +6,11 @@ import { useCallback, useId, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 
 import { cn } from "../../lib/cn"
-import { EMPTY_LIVE_USAGE, type LiveUsageSummaryPayload, type ProviderUsagePayload } from "../../lib/ipc";
+import {
+  EMPTY_LIVE_USAGE,
+  type LiveUsageSummaryPayload,
+  type ProviderUsagePayload,
+} from "../../lib/ipc"
 import {
   liveWindowLabel,
   liveWindows,

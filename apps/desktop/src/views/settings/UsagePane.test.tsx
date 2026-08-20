@@ -10,10 +10,12 @@ import type { AppSettings, LiveUsageSummaryPayload } from "../../lib/ipc"
 import { UsagePane } from "./UsagePane"
 
 const getLiveUsage = vi.hoisted(() => vi.fn())
+const refreshLiveUsage = vi.hoisted(() => vi.fn())
+const onLiveUsageChanged = vi.hoisted(() => vi.fn(async () => () => {}))
 
 vi.mock("../../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../../lib/ipc")
-  return { ...actual, getLiveUsage }
+  return { ...actual, getLiveUsage, refreshLiveUsage, onLiveUsageChanged }
 })
 
 const SETTINGS = { liveUsageEnabled: false } as unknown as AppSettings
@@ -33,6 +35,9 @@ describe("UsagePane", () => {
   beforeEach(() => {
     getLiveUsage.mockReset()
     getLiveUsage.mockResolvedValue(summary())
+    refreshLiveUsage.mockReset()
+    refreshLiveUsage.mockResolvedValue(summary())
+    onLiveUsageChanged.mockClear()
   })
 
   it("names both consequences of the one switch", async () => {
@@ -57,6 +62,7 @@ describe("UsagePane", () => {
     const update = pane()
     fireEvent.click(screen.getByRole("switch", { name: /keep my plan limits current/i }))
     expect(update).toHaveBeenCalledWith({ liveUsageEnabled: true })
+    await waitFor(() => expect(refreshLiveUsage).toHaveBeenCalled())
   })
 
   it("distinguishes nothing found from nothing working", async () => {
