@@ -24,9 +24,9 @@
 //! (Windows, most Linux panels) has to move as well as grow.
 //!
 //! On Linux the tray backend reports no item rectangle. The tray menu's "Open
-//! antiburn" item makes an anchor from the cursor position, or from the
-//! top-right corner of the work area. That placement needs the X11 backend
-//! `main.rs` selects.
+//! antiburn" item makes an anchor from the panel instead: the work area shows
+//! where the panel is, and the popover opens against the end of it that holds
+//! the tray. That placement needs the X11 backend `main.rs` selects.
 //!
 //! # Dismissal
 //!
@@ -126,55 +126,68 @@ struct AnchorRect {
     height: f64,
 }
 
-/// A display's usable region in physical pixels — the part panels and docks do
-/// not cover. Only the top edge and the right edge are of interest here, so the
-/// height is not carried.
+/// A rectangle on a display, in physical pixels. Used for both a monitor and
+/// the usable region inside it.
 #[cfg(any(target_os = "linux", test))]
-struct WorkArea {
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScreenRect {
     x: f64,
     y: f64,
     width: f64,
+    height: f64,
 }
 
 /// Makes an anchor for a popover that has no menu-bar rectangle to hang off.
 ///
 /// The tray backend on Linux reports no item rectangle, so the popover needs
-/// another point to open against. The cursor is that point: when this runs the
-/// reader has just chosen an item in the tray menu, so the pointer is on the
-/// panel, next to the tray item.
+/// another point to open against. That point is the outer corner of the panel
+/// that holds the tray, which the work area describes: the space a panel takes
+/// is exactly the space the work area gives up.
+///
+/// The panel with the larger inset is the one the tray sits in. Its far edge
+/// gives the anchor, because every mainstream desktop keeps the tray at the end
+/// of the panel: the right end of a horizontal bar.
+///
+/// The cursor is deliberately **not** used, although it names the very item the
+/// reader just chose. The tray menu belongs to the desktop shell, not to this
+/// application, so on a Wayland session the pointer is over a surface the X
+/// server cannot see, and the reading is a stale position somewhere else
+/// entirely. A wrong point is worse than no point, and the panel geometry
+/// answers the same question without asking the pointer.
 ///
 /// The rectangle has no width and no height. [`compute_position`] then centers
 /// the popover on the point and drops it [`ANCHOR_GAP`] below. A bottom panel
 /// flips it above and the display edges clamp it, through the same code every
 /// platform already uses.
 ///
-/// A cursor reading that is not a number is not a point, so it falls through to
-/// the work area. Its top-right corner is the last resort, because most Linux
-/// panels keep the tray at that end.
-///
 /// The placement needs the X11 backend `main.rs` selects. A session with no X
 /// server leaves the position to the compositor.
 #[cfg(any(target_os = "linux", test))]
 fn synthesized_anchor(
-    cursor: Option<(f64, f64)>,
-    work_area: Option<WorkArea>,
+    work_area: Option<ScreenRect>,
+    monitor: Option<ScreenRect>,
 ) -> Option<AnchorRect> {
-    if let Some((x, y)) = cursor
-        && x.is_finite()
-        && y.is_finite()
-    {
-        return Some(AnchorRect {
-            x,
-            y,
-            width: 0.0,
-            height: 0.0,
-        });
-    }
-
     let area = work_area?;
+    let monitor = monitor?;
+
+    let top_inset = area.y - monitor.y;
+    let bottom_inset = (monitor.y + monitor.height) - (area.y + area.height);
+
+    // The tray hangs at the right end of the panel, so the anchor takes the
+    // work area's right edge either way. Only the vertical edge changes.
+    let x = area.x + area.width;
+    let y = if bottom_inset > top_inset {
+        // A bottom panel. The anchor is its top edge, so the flip in
+        // `compute_position` lifts the popover clear of it.
+        area.y + area.height
+    } else {
+        // A top panel, or no panel at all. The anchor is its bottom edge.
+        area.y
+    };
+
     Some(AnchorRect {
-        x: area.x + area.width,
-        y: area.y,
+        x,
+        y,
         width: 0.0,
         height: 0.0,
     })
@@ -182,36 +195,36 @@ fn synthesized_anchor(
 
 /// The anchor the Linux popover opens against.
 ///
-/// Both readings stay in **physical** pixels, which is what [`compute_position`]
-/// expects: it divides by the containing monitor's own scale, so logical values
-/// here would be scaled a second time.
+/// Every reading stays in **physical** pixels, which is what
+/// [`compute_position`] expects: it divides by the containing monitor's own
+/// scale, so logical values here would be scaled a second time.
 ///
-/// The monitor lookup follows the hit-test pattern already in
-/// [`crate::window_placement`] rather than new maths. It carries the mixed-DPI
-/// hazard the nudge crate records in `crates/nudge/src/window.rs`: tao builds
-/// each Linux monitor rect by scaling that monitor's logical geometry by its own
-/// factor, so a fractional-scaling multi-monitor session can resolve the wrong
-/// monitor.
-///
-/// The work area is read whether or not the cursor answered, because a cursor
-/// reading that is not a number has to have somewhere to fall back to.
+/// The **primary** monitor answers first, and that is the point of the order.
+/// A desktop puts its panel on the primary display, so the tray is there, and
+/// the popover belongs beside the tray rather than beside whatever display the
+/// window was last on.
 #[cfg(target_os = "linux")]
-fn linux_anchor(app: &AppHandle, window: &WebviewWindow) -> Option<AnchorRect> {
-    let cursor = app.cursor_position().ok().map(|point| (point.x, point.y));
-    let area = window
-        .current_monitor()
+fn linux_anchor(window: &WebviewWindow) -> Option<AnchorRect> {
+    let monitor = window
+        .primary_monitor()
         .ok()
         .flatten()
-        .or_else(|| window.primary_monitor().ok().flatten())
-        .map(|monitor| {
-            let area = monitor.work_area();
-            WorkArea {
-                x: f64::from(area.position.x),
-                y: f64::from(area.position.y),
-                width: f64::from(area.size.width),
-            }
-        });
-    synthesized_anchor(cursor, area)
+        .or_else(|| window.current_monitor().ok().flatten())?;
+
+    let area = monitor.work_area();
+    let work = ScreenRect {
+        x: f64::from(area.position.x),
+        y: f64::from(area.position.y),
+        width: f64::from(area.size.width),
+        height: f64::from(area.size.height),
+    };
+    let bounds = ScreenRect {
+        x: f64::from(monitor.position().x),
+        y: f64::from(monitor.position().y),
+        width: f64::from(monitor.size().width),
+        height: f64::from(monitor.size().height),
+    };
+    synthesized_anchor(Some(work), Some(bounds))
 }
 
 /// Opens the popover from the tray menu's Open item.
@@ -259,7 +272,7 @@ pub fn open_from_tray_menu(app: &AppHandle) {
     //
     // With no anchor, skip placement. The window manager decides, which is what
     // it does today; invented coordinates would be worse.
-    if let Some(anchor) = linux_anchor(app, &window) {
+    if let Some(anchor) = linux_anchor(&window) {
         state.record_anchor(anchor);
         if let Err(error) = place(&window, anchor, WIDTH, state.height()) {
             // Positioning is best-effort here as everywhere else.
@@ -938,7 +951,7 @@ fn anchor_to(window: &WebviewWindow, anchor: Rect) -> tauri::Result<()> {
 /// window against the same point.
 #[cfg(target_os = "linux")]
 fn fallback_place(window: &WebviewWindow, state: &PopoverState) -> tauri::Result<()> {
-    let Some(anchor) = linux_anchor(window.app_handle(), window) else {
+    let Some(anchor) = linux_anchor(window) else {
         return Ok(());
     };
     state.record_anchor(anchor);
@@ -1278,67 +1291,74 @@ mod tests {
         assert!(ease_out(0.25) < ease_out(0.75));
     }
 
-    /// The pointer is on the panel next to the tray item when the reader
-    /// chooses the menu's Open item, so the anchor is the pointer itself.
+    /// The GNOME shape, measured from a running session: a 32px top bar and a
+    /// 67px dock on the left. The tray is at the right end of the top bar, so
+    /// the anchor is the work area's top-right corner.
     #[test]
-    fn a_cursor_reading_becomes_a_zero_size_anchor_at_the_pointer() {
-        let anchor = synthesized_anchor(
-            Some((1712.0, 18.0)),
-            Some(WorkArea {
-                x: 0.0,
-                y: 0.0,
-                width: 1920.0,
-            }),
-        );
+    fn a_top_panel_anchors_at_the_right_end_of_that_panel() {
+        let work = ScreenRect {
+            x: 67.0,
+            y: 32.0,
+            width: 2493.0,
+            height: 1338.0,
+        };
+        let monitor = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            width: 2560.0,
+            height: 1370.0,
+        };
         assert_eq!(
-            anchor,
+            synthesized_anchor(Some(work), Some(monitor)),
             Some(AnchorRect {
-                x: 1712.0,
-                y: 18.0,
+                x: 2560.0,
+                y: 32.0,
                 width: 0.0,
                 height: 0.0,
             })
         );
     }
 
-    /// Most Linux panels keep the tray at the top right, so that corner is the
-    /// best guess left when the cursor cannot be read.
+    /// The KDE and Windows-like shape: one panel along the bottom. The anchor
+    /// is that panel's *top* edge, so the popover has something to sit above.
     #[test]
-    fn a_missing_cursor_anchors_at_the_top_right_of_the_work_area() {
-        let anchor = synthesized_anchor(
-            None,
-            Some(WorkArea {
-                x: 100.0,
-                y: 40.0,
-                width: 1820.0,
-            }),
-        );
+    fn a_bottom_panel_anchors_at_the_top_edge_of_that_panel() {
+        let work = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1036.0,
+        };
+        let monitor = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
         assert_eq!(
-            anchor,
+            synthesized_anchor(Some(work), Some(monitor)),
             Some(AnchorRect {
                 x: 1920.0,
-                y: 40.0,
+                y: 1036.0,
                 width: 0.0,
                 height: 0.0,
             })
         );
     }
 
-    /// tao hands back a fixed cursor position on a session it cannot read. A
-    /// reading that is not a number must not become an anchor that is not a
-    /// number, or every later placement carries it.
+    /// A display whose work area fills it has no panel to read. The top edge is
+    /// the right answer, because a tray that is not in a reserved strip is in a
+    /// bar the desktop draws over its own windows.
     #[test]
-    fn a_cursor_reading_that_is_not_a_number_falls_back_to_the_work_area() {
-        let anchor = synthesized_anchor(
-            Some((f64::NAN, 18.0)),
-            Some(WorkArea {
-                x: 0.0,
-                y: 0.0,
-                width: 1920.0,
-            }),
-        );
+    fn a_display_with_no_reserved_panel_anchors_at_its_top_right() {
+        let full = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
         assert_eq!(
-            anchor,
+            synthesized_anchor(Some(full), Some(full)),
             Some(AnchorRect {
                 x: 1920.0,
                 y: 0.0,
@@ -1351,50 +1371,51 @@ mod tests {
     /// Nothing to place against is not an excuse to invent coordinates: the
     /// window manager keeps the decision.
     #[test]
-    fn no_cursor_and_no_monitor_leaves_the_placement_to_the_window_manager() {
+    fn no_monitor_at_all_leaves_the_placement_to_the_window_manager() {
         assert_eq!(synthesized_anchor(None, None), None);
     }
 
-    /// A point anchor under a top panel: the popover centers on the pointer and
-    /// hangs one gap below it.
+    /// The whole Linux path, end to end, on the session this was measured from:
+    /// the popover opens under the top bar and tucks against the right edge,
+    /// which is where the tray item it belongs to sits.
     #[test]
-    fn a_point_anchor_under_a_top_panel_opens_below_the_cursor() {
+    fn the_gnome_anchor_places_the_popover_beside_the_tray() {
+        let work = ScreenRect {
+            x: 67.0,
+            y: 32.0,
+            width: 2493.0,
+            height: 1338.0,
+        };
+        let monitor = ScreenRect {
+            x: 0.0,
+            y: 0.0,
+            width: 2560.0,
+            height: 1370.0,
+        };
         let frame = MonitorFrame {
             left: 0.0,
             top: 0.0,
-            right: 1920.0,
-            bottom: 1080.0,
+            right: 2560.0,
+            bottom: 1370.0,
             scale: 1.0,
         };
-        let anchor = synthesized_anchor(Some((960.0, 30.0)), None).expect("the cursor answered");
+        let anchor = synthesized_anchor(Some(work), Some(monitor)).expect("the monitor answered");
         let (x, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
-        assert!((x - (960.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
-        assert!((y - (30.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
-    }
 
-    /// The same point anchor over a bottom panel. There is no room below, so
-    /// the popover flips above the pointer.
-    #[test]
-    fn a_point_anchor_over_a_bottom_panel_flips_the_popover_above_the_cursor() {
-        let frame = MonitorFrame {
-            left: 0.0,
-            top: 0.0,
-            right: 1920.0,
-            bottom: 1080.0,
-            scale: 1.0,
-        };
-        let anchor = synthesized_anchor(Some((960.0, 1050.0)), None).expect("the cursor answered");
-        let (_, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
+        // Clamped to the display's right margin rather than centered on the
+        // corner, which is what keeps it under the tray instead of half off
+        // the screen.
         assert!(
-            (y - (1050.0 - DEFAULT_HEIGHT - ANCHOR_GAP)).abs() < 0.5,
-            "y was {y}"
+            (x - (2560.0 - WIDTH - SCREEN_MARGIN)).abs() < 0.5,
+            "x was {x}"
         );
+        assert!((y - (32.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
     }
 
-    /// The contract the Linux glue depends on: the cursor goes in physical, the
+    /// The contract the Linux glue depends on: the anchor goes in physical, the
     /// window position comes out logical. A 2x display halves both numbers.
     #[test]
-    fn a_high_dpi_point_anchor_is_placed_in_its_displays_logical_space() {
+    fn a_high_dpi_anchor_is_placed_in_its_displays_logical_space() {
         let frame = MonitorFrame {
             left: 0.0,
             top: 0.0,
@@ -1402,9 +1423,14 @@ mod tests {
             bottom: 720.0, // 1440 physical / 2.0
             scale: 2.0,
         };
-        let anchor = synthesized_anchor(Some((2000.0, 60.0)), None).expect("the cursor answered");
+        let anchor = AnchorRect {
+            x: 2000.0,
+            y: 60.0,
+            width: 0.0,
+            height: 0.0,
+        };
         let (x, y) = compute_position(anchor, Some(&frame), WIDTH, MIN_HEIGHT);
-        // Logical pointer is (1000, 30).
+        // Logical anchor is (1000, 30).
         assert!((x - (1000.0 - WIDTH / 2.0)).abs() < 0.5, "x was {x}");
         assert!((y - (30.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
     }
