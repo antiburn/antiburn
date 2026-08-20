@@ -21,7 +21,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023", "D-024"]
+governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023", "D-024", "D-026"]
 default_action = "deny"
 publication_authorization = "authorized MPL-2.0 repository commit or merge; unresolved rights remain denied"
 third_party_resolution = "deferred until the public local-crate manifest and lockfile exist"
@@ -898,4 +898,34 @@ notes = [
   "Do not port the source's aggregate recorded-denial condition, which hides recovery until every directory is denied; the public flow is per-directory and records that divergence in docs/deviations.md.",
   "Restyle onto the public primitives; do not copy private design-system imports, analytics, or organization-scoped filtering of the deferred list.",
   "Strip Cadence names; add MPL-2.0 headers.",
+]
+
+[[rule]]
+id = "hud-window-mechanics"
+source_paths = [
+  "desktop/src-tauri/src/overlay_window.rs",
+  "desktop/src-tauri/src/commands.rs",
+  "desktop/src/components/overlay/OverlayWindow.tsx",
+  "desktop/src/lib/overlayWindow.ts",
+  "desktop/src/lib/usageBars.ts",
+  "desktop/src/components/ui/LedBar.tsx",
+  "desktop/src/main.css",
+  "docs/plans/antiburn-hud-states.md",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/crates/hud/src/lib.rs, apps/desktop/src-tauri/src/hud.rs, apps/desktop/src-tauri/src/commands.rs, apps/desktop/src/views/OverlayWindow.tsx, apps/desktop/src/views/overlay/OverlaySession.ts, apps/desktop/src/lib/overlayWindow.ts, apps/desktop/src/lib/usageBars.ts, apps/desktop/src/components/ui/LedBar.tsx, apps/desktop/src/styles/hud.css, apps/desktop/src/views/popover/PopoverSession.ts, apps/desktop/src/views/popover/UsageView.tsx, apps/desktop/src/views/settings/UsagePane.tsx, docs/hud-states.md"
+provenance = "Cadence company-authored floating HUD; D-026 authorizes the parity port; reviewed at private branch claude/vigorous-margulis-ee04d5 commit 787ba77a49cc32e9f8707bebecf1ff22dd8a31a0"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Port the window mechanics without behavioral changes: the transparent always-on-top frame, create-or-show open, native cursor watcher, reported hover region, hover-intent expansion, manual drag, flip reserve, live-session blink, and localStorage preference.",
+  "Extract the native mechanism into the standalone antiburn-hud crate. Keep session discovery and IPC policy in the desktop shell.",
+  "Preserve the commands open_overlay_window, set_overlay_hover_region, and get_latest_session_activity.",
+  "Bind bar derivation to the public live-usage payloads. Do not port the private probe types or stores.",
+  "Use an imperative external-system session with useSyncExternalStore. Do not add React effects.",
+  "Do not copy rename scaffolding, login bypass, seeded data, share controls, analytics calls, settings rework, or unrelated fonts.",
+  "Register the HUD on macOS only for v1. Keep the native platform gate in the antiburn-hud crate.",
+  "Write tests in the public repository under Git and DCO provenance.",
+  "Remove Cadence names from product source. Add MPL-2.0 headers.",
 ]

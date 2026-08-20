@@ -10,11 +10,11 @@
 # neither member nor excluded aborts resolution outright ("multiple workspace
 # roots found in the same workspace").
 [workspace]
-exclude = ["crates/nudge", "crates/sound", "crates/trace"]
+exclude = ["crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
 
 [package]
 name = "antiburn"
-version = "0.1.0-rc.6"
+version = "0.1.0-rc.7"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
@@ -46,6 +46,9 @@ antiburn-local = { path = "../../../crates/antiburn-local" }
 # The notification window: mechanism only — every gating decision stays in
 # src/notifications.rs. Ported under D-023 (docs/oss/source-allowlist.toml).
 antiburn-nudge = { path = "crates/nudge" }
+# The floating usage HUD window: mechanism only. The shell owns its session
+# activity policy and IPC commands. Ported under D-026.
+antiburn-hud = { path = "crates/hud" }
 # The notification chime: samples synthesized in-process, no audio assets, no
 # decoders. Ported under D-023 (docs/oss/source-allowlist.toml).
 antiburn-sound = { path = "crates/sound" }
@@ -88,7 +91,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `tray-icon` gives the menu-bar item; `image-png` lets the tray glyph be
 # decoded from the generated PNG.
-tauri = { version = "2", features = ["image-png", "tray-icon"] }
+# The HUD crate builds a transparent macOS window. Tauri's configuration check
+# requires the shell manifest to declare the matching private API feature.
+tauri = { version = "2", features = ["image-png", "tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # Emits structured shell events through the process subscriber.
