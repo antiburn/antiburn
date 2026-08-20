@@ -23,7 +23,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025", "D-026", "D-027"]
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025", "D-026", "D-027", "D-028"]
 # D-025 (maintainer decision, 2026-08-18; definition of "local" in docs/deviations.md D-27):
 # fixes the boundary this manifest draws around what the installed app may DO.
 # antiburn is local in that it needs no service of antiburn's; as the reader's
@@ -66,6 +66,26 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # has no account to stitch to, and a stable identifier would defeat the
 # rotation D-28 relies on. The device-telemetry snapshot is a separate
 # private system and is not ported, permitted, or planned.
+# D-028 (maintainer decision, 2026-08-21): authorizes the adapt ports named by
+# allowlist rules design-drift-check and design-review-skill — the CI guard that
+# keeps apps/desktop/design.md equal to the stylesheets it names, and the
+# design-review rulebook that carries the interface guidance the token contract
+# deliberately leaves out.
+# The design contract itself came across earlier under desktop-design-contract,
+# but its enforcement did not, so the contract was prose that could rot in
+# silence — and had already started to: its source list had lost a stylesheet.
+# That is the gap this decision closes.
+# Neither port adds a runtime surface. The guard reads files already published
+# in this tree, runs in CI, and writes nothing; the rulebook is documentation
+# that reviews the app a reader already builds. No new source leaves the private
+# repository beyond the checking method itself, and both ports are rewritten
+# against the public token names.
+# The private script name and repository appear only in these manifests, which
+# the concept scan exempts, so the public tree names neither.
+# The rulebook's information-architecture, state, and copy sections are authored
+# for the public surfaces rather than extracted; they carry ordinary Git/DCO
+# provenance, the same footing as the store-backed ConsentGrants implementation
+# under D-024.
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # startup-registration, disk-space-monitor, tray-title-attributed-string,
 # notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine.
