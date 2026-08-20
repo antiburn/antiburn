@@ -170,20 +170,7 @@ pub fn run() {
             antiburn_nudge::commands::nudge_set_hovered,
         ])
         .on_window_event(on_window_event)
-        .setup(move |app| {
-            if let Some(log_dir) = retention_log_dir {
-                tauri::async_runtime::spawn_blocking(move || match antiburn_trace::clean_old_logs(
-                    &log_dir,
-                    antiburn_trace::DEFAULT_LOG_MAX_AGE,
-                ) {
-                    Ok(removed) => ::tracing::info!(event = "log_retention_cleaned", removed),
-                    Err(error) => ::tracing::warn!(
-                        event = "log_retention_failed",
-                        error = %error
-                    ),
-                });
-            }
-
+        .setup(|app| {
             // A menu-bar app owns no Dock icon and no application menu. The
             // bundle declares LSUIElement, but development runs are unbundled,
             // so the policy is also applied here.
@@ -289,43 +276,52 @@ pub fn run() {
             Ok(())
         });
 
-    builder
+    let app = builder
         .build(tauri::generate_context!())
-        .expect("failed to build the antiburn application")
-        .run(move |app, event| match event {
-            RunEvent::ExitRequested { api, code, .. }
-                if should_prevent_exit(onboarding::is_pending(app), code) =>
+        .expect("failed to build the antiburn application");
+    let mut retention_cleanup = retention_log_dir.map(|log_dir| {
+        tauri::async_runtime::spawn_blocking(move || {
+            match antiburn_trace::clean_old_logs(&log_dir, antiburn_trace::DEFAULT_LOG_MAX_AGE) {
+                Ok(removed) => ::tracing::info!(event = "log_retention_cleaned", removed),
+                Err(error) => ::tracing::warn!(event = "log_retention_failed", error = %error),
+            }
+        })
+    });
+    app.run(move |app, event| match event {
+        RunEvent::ExitRequested { api, code, .. }
+            if should_prevent_exit(onboarding::is_pending(app), code) =>
+        {
+            api.prevent_exit();
+        }
+        // A deliberate quit: stop the background tasks before the store
+        // they write to is dropped.
+        RunEvent::Exit => {
+            abort_schedulers(app);
+            finish_retention_cleanup(&mut retention_cleanup);
+            if let Some(mut guard) = trace_guard.take() {
+                guard.flush();
+            }
+        }
+        // Clicking the Dock icon. Only reachable while the first run is
+        // pending, because that is the only time antiburn has a Dock icon
+        // (see `onboarding::policy_for`) — and it is exactly then that
+        // somebody who closed the window early has no other way back to it.
+        // A visible affordance that did nothing would be a worse failure
+        // than the one the Dock icon is here to fix.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            if onboarding::is_pending(app)
+                && let Err(error) = onboarding::open(app)
             {
-                api.prevent_exit();
+                ::tracing::warn!(
+                    event = "onboarding_window_open_failed",
+                    trigger = "dock",
+                    error = %error
+                );
             }
-            // A deliberate quit: stop the background tasks before the store
-            // they write to is dropped.
-            RunEvent::Exit => {
-                abort_schedulers(app);
-                if let Some(mut guard) = trace_guard.take() {
-                    guard.flush();
-                }
-            }
-            // Clicking the Dock icon. Only reachable while the first run is
-            // pending, because that is the only time antiburn has a Dock icon
-            // (see `onboarding::policy_for`) — and it is exactly then that
-            // somebody who closed the window early has no other way back to it.
-            // A visible affordance that did nothing would be a worse failure
-            // than the one the Dock icon is here to fix.
-            #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => {
-                if onboarding::is_pending(app)
-                    && let Err(error) = onboarding::open(app)
-                {
-                    ::tracing::warn!(
-                        event = "onboarding_window_open_failed",
-                        trigger = "dock",
-                        error = %error
-                    );
-                }
-            }
-            _ => {}
-        });
+        }
+        _ => {}
+    });
 }
 
 /// Whether an exit request should be swallowed.
@@ -356,6 +352,15 @@ fn abort_schedulers(app: &tauri::AppHandle) {
     };
     for handle in handles.drain(..) {
         handle.abort();
+    }
+}
+
+/// Wait for the bounded retention sweep before tracing stops.
+fn finish_retention_cleanup(handle: &mut Option<tauri::async_runtime::JoinHandle<()>>) {
+    if let Some(handle) = handle.take()
+        && let Err(error) = tauri::async_runtime::block_on(handle)
+    {
+        ::tracing::warn!(event = "log_retention_join_failed", error = %error);
     }
 }
 
@@ -455,7 +460,9 @@ fn install_updater(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClosePolicy, close_policy, should_prevent_exit};
+    use super::{ClosePolicy, close_policy, finish_retention_cleanup, should_prevent_exit};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn a_window_close_never_quits_the_finished_menu_bar_app() {
@@ -473,6 +480,20 @@ mod tests {
         // context menu both offer Quit and both arrive with no code; swallowing
         // them would ship a Quit item that does nothing.
         assert!(!should_prevent_exit(true, None));
+    }
+
+    #[test]
+    fn retention_cleanup_finishes_before_shutdown_continues() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let worker_completed = Arc::clone(&completed);
+        let mut handle = Some(tauri::async_runtime::spawn_blocking(move || {
+            worker_completed.store(true, Ordering::Release);
+        }));
+
+        finish_retention_cleanup(&mut handle);
+
+        assert!(completed.load(Ordering::Acquire));
+        assert!(handle.is_none());
     }
 
     #[test]

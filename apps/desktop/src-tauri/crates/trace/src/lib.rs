@@ -41,7 +41,9 @@ pub struct TraceConfig<'a> {
 #[must_use = "retain the guard while file tracing must remain active"]
 pub struct TraceGuard {
     writer: Option<HourlyFileWriter>,
-    /// The resolved log directory when file output is active.
+    /// The log directory selected when file output starts.
+    ///
+    /// This value stays set after [`Self::flush`].
     pub log_dir: Option<PathBuf>,
 }
 

@@ -86,6 +86,7 @@ fn assert_init_and_recovered_panic() {
     assert!(std::panic::catch_unwind(|| panic!("recovered test panic")).is_err());
     ::tracing::error!(event = "after_recovered_panic");
     guard.flush();
+    assert_eq!(guard.log_dir.as_deref(), Some(expected_dir.as_path()));
 
     let contents = matching_log_contents(&expected_dir);
     assert!(contents.contains("integration_test_event"));
