@@ -85,6 +85,11 @@
   --radius-control: 5px;
   --radius-popover: 10px;
   --radius-small: 4px;
+
+  /* A strong ease-out for a control that must feel like it settles rather than
+     stops. Tailwind registers `--ease-*`, so this becomes `ease-out-quart`.
+     Plain `ease-out` stays the default for everything else. */
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* --- Light (default) --- */
@@ -152,6 +157,15 @@
   /* Control geometry */
   --control-height-regular: 22px;
   --control-height-small: 17px;
+
+  /* Transition durations. Tailwind has no `--duration-*` theme namespace, so
+     these are plain vars and a call site consumes one as
+     duration-[var(--duration-fast)] — the same shape as the geometry vars.
+     Keeping them here is what stops 120ms from being retyped at each site.
+     Animation timings stay with the keyframes that own them in motion.css. */
+  --duration-quick: 100ms;
+  --duration-fast: 120ms;
+  --duration-slow: 300ms;
 
   /* Source-list / sidebar width for multi-pane windows. Geometry vars are not
      @theme-registered; consume as w-[var(--sidebar-width)]. Sized for the 36px

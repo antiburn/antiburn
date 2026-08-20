@@ -85,7 +85,7 @@ export function SegmentedControl<T extends string>({
       {showAnimatedIndicator ? (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 left-0 rounded-[4px] bg-accent-fill transition-transform duration-[120ms] ease-out motion-reduce:hidden"
+          className="pointer-events-none absolute inset-y-0 left-0 rounded-[4px] bg-accent-fill transition-transform duration-[var(--duration-fast)] ease-out motion-reduce:hidden"
           style={{
             width: `${100 / options.length}%`,
             transform: `translateX(${selectedIndex * 100}%)`,
@@ -127,7 +127,7 @@ export function SegmentedControl<T extends string>({
             className={
               textTabs
                 ? cn(
-                    "type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                    "type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart",
                     selected
                       ? "font-medium text-label"
                       : "text-label-tertiary hover:text-label-secondary",
@@ -150,7 +150,7 @@ export function SegmentedControl<T extends string>({
               <span
                 aria-hidden="true"
                 className={cn(
-                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label-secondary transition-opacity duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label-secondary transition-opacity duration-[var(--duration-quick)] ease-out-quart",
                   selected ? "opacity-100" : "opacity-0",
                 )}
               />

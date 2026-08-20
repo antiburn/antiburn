@@ -194,6 +194,16 @@ shadow:
   tooltip: "0 2px 8px rgb(0 0 0 / 0.12), 0 0.5px 2px rgb(0 0 0 / 0.06)"
   raised: "0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)"
 motion:
+  # Transition tokens. Durations are plain :root vars in src/styles/tokens.css,
+  # because Tailwind has no --duration-* theme namespace; consume one as
+  # duration-[var(--duration-fast)]. The easing is @theme-registered, so it is
+  # the `ease-out-quart` utility. Plain `ease-out` is the default elsewhere.
+  --duration-quick: 100ms # a crossfade that leads the movement it accompanies
+  --duration-fast: 120ms # the default control, hover, and disclosure transition
+  --duration-slow: 300ms # a meter or bar that fills
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
+  # Recipes, for the timings the tokens above do not carry. Animation timings
+  # stay with the keyframes that own them.
   button: "transform 80ms / opacity 120ms ease-out; :active scale(0.98) opacity 0.85"
   menu-in: "120ms ease-out from trigger origin"
   tooltip-in: "100ms"
@@ -306,9 +316,9 @@ Notes for what isn't expressible as a token:
   (`src/styles/motion.css`). A surface that still needs a hint of movement re-states a short
   duration there, with the reason; today the only such exception is the segmented control's
   reduced-motion fill, which crossfades over 60ms instead of swapping instantly. An ambient loop
-  stops instead of shortening: the activity-row pulse and title shimmer in
-  `src/styles/session-rows.css` set `animation: none` under reduced motion and keep their resting
-  state, because a loop clamped to ~0ms still repeats forever.
+  stops instead of shortening: no duration makes a loop acceptable, so the activity-row pulse and
+  title shimmer in `src/styles/session-rows.css` set `animation: none` and each keeps its resting
+  meaning — the pulse settles at a fixed tint, and the title paints as plain primary text.
 - **State** — style the headless control primitives via `[data-state]` / `[data-highlighted]`, not
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to

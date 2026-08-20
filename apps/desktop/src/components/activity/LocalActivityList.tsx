@@ -138,7 +138,7 @@ function SessionActivityRow({
     <div
       className={cn(
         "relative flex items-start gap-3 py-3 px-2 w-full text-left rounded-md",
-        "transition-colors duration-[120ms]",
+        "transition-colors duration-[var(--duration-fast)]",
         entry.isActive && "activity-row-active isolate",
         clickable &&
           "cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover",

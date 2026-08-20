@@ -57,7 +57,7 @@ export function OverlayWindow() {
             type="button"
             aria-label="Open antiburn settings"
             onClick={() => session.openSettings()}
-            className="font-bitcount text-[11px] text-label-tertiary lowercase hover:text-label-secondary transition-colors"
+            className="font-bitcount text-[11px] text-label-tertiary lowercase hover:text-label-secondary transition-colors duration-[var(--duration-fast)] ease-out"
           >
             antiburn
           </button>
@@ -65,7 +65,7 @@ export function OverlayWindow() {
             type="button"
             aria-label="Close overlay"
             onClick={() => session.close()}
-            className="p-1 -m-1 rounded-md text-label-tertiary hover:text-label-secondary hover:bg-surface-tertiary transition-colors"
+            className="p-1 -m-1 rounded-md text-label-tertiary hover:text-label-secondary hover:bg-surface-tertiary transition-colors duration-[var(--duration-fast)] ease-out"
           >
             <X size={13} />
           </button>

@@ -351,15 +351,18 @@ export function checkDesignDrift(io = fileSystemIo()) {
     }
   }
 
-  // Geometry vars listed under `sizes`.
-  for (const [key, value] of Object.entries(docPairs(fm, 'sizes'))) {
-    if (!key.startsWith('--')) continue;
-    const css = new RegExp(`${key}:\\s*([^;]+);`).exec(cssAll)?.[1];
-    if (css === undefined) {
-      fail(`sizes ${key}: not found in the CSS`);
-      continue;
+  // Custom properties documented under `sizes` and `motion`. A group may also
+  // hold prose recipes, which carry no var name and so have nothing to compare.
+  for (const group of ['sizes', 'motion']) {
+    for (const [key, value] of Object.entries(docPairs(fm, group))) {
+      if (!key.startsWith('--')) continue;
+      const css = new RegExp(`${key}:\\s*([^;]+);`).exec(cssAll)?.[1];
+      if (css === undefined) {
+        fail(`${group} ${key}: not found in the CSS`);
+        continue;
+      }
+      if (norm(value) !== norm(css)) fail(`${group} ${key} = ${value}, expected ${norm(css)}`);
     }
-    if (norm(value) !== norm(css)) fail(`sizes ${key} = ${value}, expected ${norm(css)}`);
   }
 
   // Shadows against the selectors that carry them.

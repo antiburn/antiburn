@@ -87,7 +87,7 @@ export function AboutDocumentView({ id, onBack }: { id: AboutDocumentId; onBack:
             type="button"
             onClick={onBack}
             aria-label="Back to About"
-            className="-ml-1 inline-flex h-7 shrink-0 items-center rounded-control px-1 text-label-secondary transition-colors duration-[120ms] ease-out hover:bg-surface-hover hover:text-label"
+            className="-ml-1 inline-flex h-7 shrink-0 items-center rounded-control px-1 text-label-secondary transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover hover:text-label"
           >
             <ChevronLeft size={18} strokeWidth={2} aria-hidden="true" className="shrink-0" />
           </button>

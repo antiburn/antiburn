@@ -36,6 +36,10 @@ shadow:
   popover: "0 4px 12px rgb(0 0 0 / 0.15)"
   tooltip: "0 2px 8px rgb(0 0 0 / 0.12)"
   raised: "0 1px 2px rgb(0 0 0 / 0.15)"
+motion:
+  --duration-fast: 120ms
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
+  button: "transform 80ms ease-out"
 components:
   button:
     className: ui-push-button
@@ -58,6 +62,8 @@ const CSS = `@theme {
   --space-xs: 4px;
   --space-sm: 8px;
   --sidebar-width: 220px;
+  --duration-fast: 120ms;
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 :root[data-theme="light"] {
@@ -199,6 +205,24 @@ test('reports a radius that differs', () => {
 test('reports a geometry var that differs', () => {
   const css = CSS.replace('--sidebar-width: 220px;', '--sidebar-width: 240px;');
   assertFails(checkDesignDrift(fixture({ css })), 'sizes --sidebar-width = 220px, expected 240px');
+});
+
+test('reports a motion duration that differs', () => {
+  const css = CSS.replace('--duration-fast: 120ms;', '--duration-fast: 150ms;');
+  assertFails(checkDesignDrift(fixture({ css })), 'motion --duration-fast = 120ms, expected 150ms');
+});
+
+test('reports a motion easing that differs', () => {
+  const css = CSS.replace(
+    '--ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1);',
+    '--ease-out-quart: cubic-bezier(0.4, 0, 0.2, 1);',
+  );
+  assertFails(checkDesignDrift(fixture({ css })), 'motion --ease-out-quart');
+});
+
+test('ignores a motion recipe that names no custom property', () => {
+  assert.ok(CONTRACT.includes('button: "transform 80ms ease-out"'), 'fixture must hold a recipe');
+  assert.deepEqual(checkDesignDrift(fixture()), []);
 });
 
 test('reports a shadow that differs from the selector that carries it', () => {

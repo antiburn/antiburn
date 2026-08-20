@@ -132,7 +132,7 @@ function StepDots({ step }: { step: Step }) {
         <span
           key={name}
           className={cn(
-            "h-1.5 w-1.5 rounded-full transition-colors",
+            "h-1.5 w-1.5 rounded-full transition-colors duration-[var(--duration-fast)] ease-out",
             position === index ? "bg-label-secondary" : "bg-label/20",
           )}
         />

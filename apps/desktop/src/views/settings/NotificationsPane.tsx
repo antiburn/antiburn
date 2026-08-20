@@ -93,7 +93,7 @@ function MilestonePills({
           disabled={disabled}
           onClick={() => onChange({ ...value, [key]: !value[key] })}
           className={cn(
-            "type-footnote h-6 rounded-control px-2 tabular-nums transition-colors duration-[120ms] ease-out",
+            "type-footnote h-6 rounded-control px-2 tabular-nums transition-colors duration-[var(--duration-fast)] ease-out",
             value[key]
               ? "bg-accent-fill text-white"
               : "text-label-secondary hover:bg-surface-hover",

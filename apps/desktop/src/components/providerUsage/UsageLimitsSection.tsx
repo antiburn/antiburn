@@ -93,7 +93,7 @@ export function UsageLimitsSection({
         strokeWidth={2}
         aria-hidden="true"
         className={cn(
-          "transition-transform duration-[120ms] ease-out",
+          "transition-transform duration-[var(--duration-fast)] ease-out",
           expanded && "rotate-270",
         )}
       />

@@ -51,7 +51,7 @@ export function SubagentRosterRow({
       type="button"
       onClick={onClick}
       className={cn(
-        "group/srow flex w-full items-center gap-2 rounded-md text-left transition-colors hover:bg-system-indigo/10",
+        "group/srow flex w-full items-center gap-2 rounded-md text-left transition-colors duration-[var(--duration-fast)] ease-out hover:bg-system-indigo/10",
         dense ? "px-1 py-1" : "px-2 py-1.5",
       )}
     >
