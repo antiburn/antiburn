@@ -100,7 +100,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
-getrandom = "0.2"
+getrandom = "0.4"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds
