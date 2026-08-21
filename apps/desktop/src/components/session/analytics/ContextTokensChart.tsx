@@ -131,12 +131,10 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
   // its full range of variation. Its low alpha keeps it secondary.
   const tokenCeiling = Math.max(1, tokenPeak)
   const contextAxis = hasContext ? axisScale(peak, contextWindow, 5) : null
-  // Every `ReferenceLine`, including the vertical compaction markers, needs a
-  // `yAxisId` that names an axis the chart actually renders — recharts falls
-  // back to an axis id of "0", which does not exist here. The chart always
-  // renders the "tokens" axis, so that is the fallback when there is no
-  // "context" axis to use instead.
-  const compactionAxisId = hasContext ? "context" : "tokens"
+  // Every vertical `ReferenceLine` needs a `yAxisId` that names an axis the
+  // chart renders — recharts falls back to an axis id of "0", which does not
+  // exist here. The "tokens" axis always renders, so it is the fallback.
+  const markerAxisId = hasContext ? "context" : "tokens"
 
   // The fill gradient is an SVG `objectBoundingBox` gradient, so its [0,1]
   // offsets map over the *area path's* bounding box, which spans 0..peak
@@ -180,8 +178,8 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
           </defs>
         )}
         {/* A numeric axis on the bucket index. A category axis on the rounded
-            `progress` value placed each compaction mark by its index instead of
-            by its value, so marks drifted left of the drops they belong to. */}
+            `progress` value placed each vertical mark by its index instead of
+            by its value, so marks drifted left of the points they belong to. */}
         <XAxis dataKey="index" type="number" domain={[0, Math.max(1, data.length - 1)]} hide />
         {contextAxis && <YAxis yAxisId="context" hide domain={[0, contextAxis.ceiling]} />}
         <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
@@ -195,28 +193,16 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
             label={{ ...AXIS_LABEL, value: formatTokenBand(value), position: "insideTopLeft" }}
           />
         ))}
-        {data
-          .filter((point) => point.isCompactionBoundary)
-          .map((point) => (
-            <ReferenceLine
-              key={`compaction-${point.index}`}
-              yAxisId={compactionAxisId}
-              x={point.index}
-              stroke="var(--color-label-tertiary)"
-              strokeDasharray="2 2"
-              strokeOpacity={0.8}
-            />
-          ))}
-        {/* A cache rehydration is a distinct, solid, warning-colored mark so it
-            reads apart from the dashed compaction lines: a TTL lapse, not a
-            reset. Its "cache" label uses the same style as the axis-band
-            labels, so it stays a small, secondary callout on the chart. */}
+        {/* A compaction draws no mark: the drop in the context area shows it,
+            and the tooltip names it. A cache rehydration is a solid,
+            warning-colored mark, because the area shows no change for it. Its
+            "cache" label uses the axis-band label style, so it stays small. */}
         {data
           .filter((point) => point.isCacheRehydration)
           .map((point) => (
             <ReferenceLine
               key={`cache-rehydration-${point.index}`}
-              yAxisId={compactionAxisId}
+              yAxisId={markerAxisId}
               x={point.index}
               stroke="var(--color-context-warning)"
               strokeOpacity={0.8}
@@ -230,7 +216,7 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
         {modeChangeMarkers(data).map((marker) => (
           <ReferenceLine
             key={`mode-${marker.index}`}
-            yAxisId={compactionAxisId}
+            yAxisId={markerAxisId}
             x={marker.index}
             stroke="none"
             label={{ ...AXIS_LABEL, value: marker.label, position: "insideTop" }}

@@ -83,7 +83,7 @@ describe("ContextTokensChart", () => {
     expect(rehydrationLines.length).toBe(0)
   })
 
-  it("keeps the compaction marker dashed and the rehydration marker solid", () => {
+  it("draws no compaction line and keeps the rehydration marker solid", () => {
     const buckets = [
       bucket({ contextTokens: 100_000, isCompactionBoundary: true }),
       bucket({ contextTokens: 100_000, cacheWriteTokens: 90_000, isCacheRehydration: true }),
@@ -96,7 +96,7 @@ describe("ContextTokensChart", () => {
     const rehydrationLine = container.querySelector(
       'line[stroke="var(--color-context-warning)"]',
     )
-    expect(compactionLine?.getAttribute("stroke-dasharray")).toBeTruthy()
+    expect(compactionLine).toBeNull()
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
   })
 
