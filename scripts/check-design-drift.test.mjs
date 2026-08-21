@@ -373,3 +373,11 @@ test('does not read a selector named inside a comment as a rule', () => {
   );
   assert.deepEqual(checkDesignDrift(fixture({ css })), []);
 });
+
+test('keeps the reduced-transparency dark block out of the system palette', () => {
+  // tokens.css makes the window solid under `prefers-reduced-transparency`.
+  // That answers a different setting, so it must not stand in for the dark
+  // system value — which would hide a real difference from the contract.
+  const css = `${CSS}\n@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {\n  :root {\n    --color-bg-primary: rgb(255 255 255);\n  }\n}\n`;
+  assert.deepEqual(checkDesignDrift(fixture({ css })), []);
+});
