@@ -250,6 +250,8 @@ export interface SessionAnalyticsPayload {
    * sub-agent. The value is `null` when the session has no sub-agent. */
   subagentsTokens: BillableTokens | null
   models: string[]
+  /** Parent model runs followed by runs used only by sub-agents. */
+  modelRuns: ModelRunPayload[]
   skills: SkillDetail[]
   orchestration: OrchestrationPayload | null
   relations: SessionRelationsPayload | null

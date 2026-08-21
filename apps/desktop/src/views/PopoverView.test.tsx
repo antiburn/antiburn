@@ -115,6 +115,7 @@ const ANALYTICS = {
   isActive: false,
   cost: null,
   models: [],
+  modelRuns: [],
   skills: [],
   orchestration: null,
   relations: null,
