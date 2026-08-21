@@ -69,14 +69,17 @@ body {
 }
 
 /*
- * The macOS popover window is the exception: it carries the Popover material
- * (src-tauri/src/popover.rs), and the material *is* its surface. It already
- * gives the translucency this palette asks for, and macOS makes it solid on
- * its own when the reader turns Reduce transparency on.
+ * The macOS popover window is the exception. It carries the Popover material
+ * (src-tauri/src/popover.rs), and the material shows the desktop through it.
+ * A window surface does not belong on top of that: `bg-window` is a flat grey,
+ * and over the material it reads as a slab with a hard edge.
  *
- * So that window paints no surface of its own. A surface on top of the
- * material is not opaque, so the window shadow shows through it at the edges
- * and reads as a heavy border, which no system window has.
+ * `bg-primary` is the surface the palette gives a translucent window. It is
+ * white at 0.58 in light and near-black in dark, so it lifts the material
+ * toward the theme instead of covering it, and the desktop behind the window
+ * can no longer drag the contrast down. It is also the one surface token with
+ * a `prefers-reduced-transparency` value, which is what makes it solid for a
+ * reader who asks for that.
  *
  * The corner belongs here too. The material draws the window corner at
  * `CORNER_RADIUS` in popover.rs — keep the two radii equal — and
@@ -89,7 +92,7 @@ body {
  * that still needs its surface painted and must not be rounded.
  */
 :root[data-platform="macos"][data-route="popover"] #root {
-  background-color: transparent;
+  background-color: var(--color-bg-primary);
   border-radius: var(--radius-popover);
   overflow: hidden;
 }

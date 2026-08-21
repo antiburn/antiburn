@@ -97,7 +97,7 @@
   color-scheme: light dark;
 
   /* Backgrounds */
-  --color-bg-primary: rgb(255 255 255 / 0.58);
+  --color-bg-primary: rgb(255 255 255 / 0.85);
   --color-bg-secondary: rgb(0 0 0 / 0.08);
   --color-bg-tertiary: rgb(0 0 0 / 0.12);
   --color-bg-row-hover: rgb(0 0 0 / 0.04);
@@ -248,7 +248,7 @@
 
 /* --- Explicit theme override, for platforms with no live system tokens --- */
 :root[data-theme="light"] {
-  --color-bg-primary: rgb(255 255 255 / 0.58);
+  --color-bg-primary: rgb(255 255 255 / 0.85);
   --color-bg-secondary: rgb(0 0 0 / 0.08);
   --color-bg-tertiary: rgb(0 0 0 / 0.12);
   /* Matches the system branch. At 0.08 a hovered row sat one percent below

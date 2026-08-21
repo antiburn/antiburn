@@ -20,8 +20,8 @@ colors:
   # A `# @media <theme>: <value>` note states the system-preference value where it
   # differs. The drift check reads those notes: a difference it cannot find a note
   # for is a failure, and so is a note that no longer differs.
-  surface:
-    light: "rgb(255 255 255 / 0.58)" # reduced-transparency: rgb(255 255 255)
+  surface: # the menu-bar popover, which sits on the window material
+    light: "rgb(255 255 255 / 0.85)" # reduced-transparency: rgb(255 255 255)
     dark: "rgb(30 30 30 / 0.92)" # @media dark: rgb(30 30 30 / 0.40)
   surface-secondary:
     light: "rgb(0 0 0 / 0.08)"
