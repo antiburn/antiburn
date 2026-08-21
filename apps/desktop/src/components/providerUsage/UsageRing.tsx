@@ -87,16 +87,22 @@ export function UsageRing({
       aria-hidden="true"
       focusable="false"
     >
-      <circle
-        cx="16"
-        cy="16"
-        r={radius}
-        fill="none"
-        strokeWidth="2.5"
-        stroke="currentColor"
-        className={clamped == null ? "text-label-tertiary" : "text-separator"}
-        strokeDasharray={clamped == null ? "2 2" : undefined}
-      />
+      {clamped == null && (
+        // The indeterminate state keeps its dashed track. Without it the ring
+        // would vanish. A stated percentage draws the arc alone: the caption
+        // beside the ring already gives the number, so a grey remainder adds
+        // nothing.
+        <circle
+          cx="16"
+          cy="16"
+          r={radius}
+          fill="none"
+          strokeWidth="2.5"
+          stroke="currentColor"
+          className="text-label-tertiary"
+          strokeDasharray="2 2"
+        />
+      )}
       {clamped != null && (
         <circle
           cx="16"
@@ -105,7 +111,7 @@ export function UsageRing({
           fill="none"
           strokeWidth="2.5"
           strokeLinecap="round"
-          stroke="var(--color-accent-fill, var(--color-accent-fill-val))"
+          stroke="var(--color-brand-tint)"
           strokeDasharray={circumference}
           strokeDashoffset={circumference * (1 - clamped / 100)}
           // Twelve o'clock, clockwise. A ring that starts at three o'clock

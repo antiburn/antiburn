@@ -62,7 +62,13 @@
 }
 
 .type-caption {
-  font-size: 10px;
+  /* Raised from 10px. At 10px the popover captions read as unusably small,
+     and the review outcome was "we should never be using tiny text like
+     this". The size now equals type-footnote, and only the letter-spacing
+     separates the two. That makes them one step, not two: the scale should
+     lose a level, which is a change for every surface and not for this one
+     file. */
+  font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.06px;
 }

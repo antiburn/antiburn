@@ -10,7 +10,7 @@ import {
   LocalActivityList,
   type LocalActivityEntry,
 } from "../components/activity/LocalActivityList"
-import { UsageLimitsSection } from "../components/providerUsage"
+import { UsageLimitsBar } from "../components/providerUsage"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
@@ -285,17 +285,15 @@ export function PopoverView() {
           </div>
         )}
 
-        <UsageLimitsSection
-          providers={state.usage?.providers ?? []}
+        <UsageLimitsBar
           live={state.liveUsage}
           expanded={limitsExpanded}
           onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
           refreshing={state.usageRefreshing}
           onViewAll={() => {
-            // The chips moved out of the footer and into this section, and the
-            // event moved with them: this is still the one place the reader
-            // asks for the full Usage view from the activity surface. Counts
-            // and a three-value evidence label, never a per-provider list.
+            // A provider pill is the one place the reader asks for the full
+            // Usage view from the activity surface. Counts and a three-value
+            // evidence label, never a per-provider list.
             noteInteraction({
               kind: "usageViewed",
               providers: state.usage?.providers.length ?? 0,

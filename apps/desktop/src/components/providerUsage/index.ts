@@ -3,4 +3,4 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 export { ProviderGlyph } from "./ProviderUsagePrimitives"
-export { UsageLimitsSection } from "./UsageLimitsSection"
+export { UsageLimitsBar } from "./UsageLimitsBar"
