@@ -6,6 +6,7 @@ import { confirm, save } from "@tauri-apps/plugin-dialog"
 import { useCallback } from "react"
 
 import { SessionAnalyticsPresentation } from "../../components/session/SessionAnalyticsPresentation"
+import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import {
   deleteSessionData,
@@ -16,8 +17,14 @@ import {
 } from "../../lib/ipc"
 import { agentSupportsAnalytics } from "../../lib/presentation/agents"
 import { costBreakdownRows, costFigureLabel } from "../../lib/presentation/sessionAnalytics"
-import { topLevelCostSubject, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
+import {
+  inclusiveCostSubject,
+  subagentsCostSubject,
+  topLevelCostSubject,
+  type LocalSessionCost,
+} from "../../lib/presentation/sessionCosts"
 import type {
+  BillableTokens,
   LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
@@ -75,37 +82,114 @@ function exportFileName(subject: SessionSubject): string {
   return `antiburn-${subject.agent}-${subject.sessionId.slice(0, 8)}.json`
 }
 
+/** All-zero token counts. Use this value when a subject has no billable-token summary. */
+const ZERO_TOKENS: BillableTokens = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+}
+
+/** One priced result for a cost subject. The function returns null when nothing priced the subject. */
+function localCost(
+  subject: LocalSessionCost["subject"],
+  cost: SessionAnalyticsPayload["cost"],
+  tokens: BillableTokens,
+  model: string | null,
+  isActive: boolean,
+): LocalSessionCost | null {
+  if (!cost) return null
+  return {
+    subject,
+    ...tokens,
+    totalTokens:
+      tokens.inputTokens +
+      tokens.outputTokens +
+      tokens.cacheReadTokens +
+      tokens.cacheCreationTokens,
+    inputCostUsd: cost.inputUsd,
+    outputCostUsd: cost.outputUsd,
+    cacheReadCostUsd: cost.cacheReadUsd,
+    cacheWriteCostUsd: cost.cacheWriteUsd,
+    totalCostUsd: cost.totalUsd,
+    model,
+    isActive,
+  }
+}
+
 /**
- * The cost result the breakdown card describes.
+ * The cost result the breakdown card describes. The function also returns
+ * the parent/sub-agent split alongside it.
  *
- * Token counts come from the metrics rather than the cost estimate, because the
- * estimate is dollars — the two are different views of the same subject and the
- * card shows both.
+ * A sub-agent launches no sub-agent of its own. Its own transcript is the
+ * whole story. The headline shows its own (`topLevel`) cost. The headline
+ * pairs that cost with its own tokens.
+ *
+ * An orchestrator's headline is `inclusive`. It covers every sub-agent the
+ * session launched. The headline pairs the inclusive dollar total with the
+ * inclusive token total.
+ *
+ * The split below the headline shows two rows. The parent row pairs the
+ * parent's own tokens with the parent's own dollars. The sub-agents row
+ * pairs the sub-agents' tokens with the sub-agents' dollars.
  */
 function toLocalCost(
   subject: SessionSubject,
   payload: SessionAnalyticsPayload,
-): LocalSessionCost | null {
-  if (!payload.cost) return null
+): { cost: LocalSessionCost | null; costSplit: TokensCostSplit | null } {
   const metrics = payload.summary?.sessions[0]
-  const inputTokens = metrics?.billableInputTokens ?? 0
-  const outputTokens = metrics?.billableOutputTokens ?? 0
-  const cacheReadTokens = metrics?.billableCacheReadTokens ?? 0
-  const cacheCreationTokens = metrics?.billableCacheCreationTokens ?? 0
+  const parentTokens: BillableTokens = {
+    inputTokens: metrics?.billableInputTokens ?? 0,
+    outputTokens: metrics?.billableOutputTokens ?? 0,
+    cacheReadTokens: metrics?.billableCacheReadTokens ?? 0,
+    cacheCreationTokens: metrics?.billableCacheCreationTokens ?? 0,
+  }
+  const model = metrics?.model ?? null
+
+  if (subject.subagent) {
+    const cost = localCost(
+      topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+      payload.cost,
+      parentTokens,
+      model,
+      payload.isActive,
+    )
+    return { cost, costSplit: null }
+  }
+
+  const cost = localCost(
+    inclusiveCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+    payload.cost,
+    payload.inclusiveTokens ?? ZERO_TOKENS,
+    model,
+    payload.isActive,
+  )
+
+  const subagentCount = payload.orchestration?.subagentCount ?? 0
+  const parent =
+    subagentCount > 0
+      ? localCost(
+          topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+          payload.topLevelCost,
+          parentTokens,
+          model,
+          payload.isActive,
+        )
+      : null
+  const subagents =
+    subagentCount > 0
+      ? localCost(
+          subagentsCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+          payload.subagentsCost,
+          payload.subagentsTokens ?? ZERO_TOKENS,
+          null,
+          payload.isActive,
+        )
+      : null
+
   return {
-    subject: topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheCreationTokens,
-    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
-    inputCostUsd: payload.cost.inputUsd,
-    outputCostUsd: payload.cost.outputUsd,
-    cacheReadCostUsd: payload.cost.cacheReadUsd,
-    cacheWriteCostUsd: payload.cost.cacheWriteUsd,
-    totalCostUsd: payload.cost.totalUsd,
-    model: metrics?.model ?? null,
-    isActive: payload.isActive,
+    cost,
+    costSplit: parent && subagents ? { parent, subagents, subagentCount } : null,
   }
 }
 
@@ -173,7 +257,9 @@ export function SessionPane({
     void revealSource(sourcePath)
   }, [sourcePath])
 
-  const cost = payload ? toLocalCost(subject, payload) : null
+  const { cost, costSplit } = payload
+    ? toLocalCost(subject, payload)
+    : { cost: null, costSplit: null }
   const costBadge = payload?.cost
     ? {
         totalUsd: payload.cost.totalUsd,
@@ -233,6 +319,7 @@ export function SessionPane({
       }}
       supportsAnalytics={payload?.supportsAnalytics ?? agentSupportsAnalytics(subject.agent)}
       cost={cost}
+      costSplit={costSplit}
       costBadge={costBadge}
       orchestration={orchestration}
       skills={payload?.skills ?? []}

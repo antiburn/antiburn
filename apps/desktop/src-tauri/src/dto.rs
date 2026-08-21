@@ -41,10 +41,12 @@ pub struct ActivityEntry {
     pub has_fork_parent: bool,
     /// How many local sessions were branched from this one.
     pub fork_child_count: u32,
-    /// On-device cost estimate, or absent when no model in the session could be
-    /// priced. Never a partial total.
+    /// On-device cost estimate. The estimate covers every sub-agent this
+    /// session launched. The value is absent when no model in the combined
+    /// breakdown has a price. This field never holds a partial total.
     pub cost: Option<SessionCost>,
-    /// Every model that contributed billable tokens, for the cost tooltip.
+    /// Every model that contributed billable tokens. The list covers the
+    /// parent and every sub-agent. The cost tooltip shows this list.
     pub models: Vec<String>,
 }
 
@@ -109,6 +111,22 @@ pub struct OrchestrationStatus {
     pub members: Vec<SubagentMember>,
 }
 
+/// Billable token counts, summed across one or more models.
+///
+/// This struct mirrors the `billable_*` fields on `SessionMetrics`. A single
+/// session already carries those fields. This struct exists for a subject
+/// that spans more than one transcript, such as every sub-agent combined, or
+/// a parent plus every sub-agent. That subject has no single `SessionMetrics`
+/// of its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BillableTokens {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
+
 /// Everything the session-analytics surface needs for one session.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,7 +140,30 @@ pub struct SessionAnalytics {
     pub title: Option<String>,
     pub wsl_distro: Option<String>,
     pub is_active: bool,
+    /// Cost of the parent transcript plus every sub-agent it launched.
+    ///
+    /// This is the session's total cost. The activity list and the export
+    /// document show this figure.
+    ///
+    /// The value is `None` when a model in the combined breakdown has no
+    /// price. A partial total hides real cost.
     pub cost: Option<SessionCost>,
+    /// Cost of the parent transcript, without any sub-agent.
+    pub top_level_cost: Option<SessionCost>,
+    /// Cost of every sub-agent this session launched, combined.
+    ///
+    /// The value is `None` when the session has no sub-agent, or when no
+    /// sub-agent could be priced.
+    pub subagents_cost: Option<SessionCost>,
+    /// Billable token counts that back [`Self::cost`]. The count sums the
+    /// parent transcript and every sub-agent.
+    pub inclusive_tokens: Option<BillableTokens>,
+    /// Billable token counts that back [`Self::subagents_cost`]. The count
+    /// sums every sub-agent. The value is `None` when the session has no
+    /// sub-agent.
+    pub subagents_tokens: Option<BillableTokens>,
+    /// Every model that contributed billable tokens. The list covers the
+    /// parent transcript and every sub-agent. It matches [`Self::cost`].
     pub models: Vec<String>,
     pub skills: Vec<SkillUse>,
     pub orchestration: Option<OrchestrationStatus>,

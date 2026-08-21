@@ -28,7 +28,7 @@ use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
 
 use crate::agents::{supports_analytics, vendor_label};
-use crate::dto::{OrchestrationStatus, SubagentMember};
+use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
 use crate::store::{AnalysisRecord, SessionKey};
 
 /// Minimum sub-agents before a session reads as an orchestrator. One delegated
@@ -83,8 +83,35 @@ pub struct SessionAnalysis {
     pub metrics: Option<SessionMetrics>,
     /// The same metrics shaped as the one-session summary the views render.
     pub summary: Option<ActiveSessionsSummary>,
+    /// Cost of the parent transcript plus every sub-agent it launched.
+    ///
+    /// This is the session's total cost. The activity list and the export
+    /// document show this figure.
+    ///
+    /// The value is `None` when a model in the combined breakdown has no
+    /// price. A partial total hides real cost.
     pub cost: Option<SessionCost>,
+    /// Cost of the parent transcript, without any sub-agent.
+    pub top_level_cost: Option<SessionCost>,
+    /// Cost of every sub-agent this session launched, combined.
+    ///
+    /// The value is `None` when the session has no sub-agent, or when no
+    /// sub-agent could be priced.
+    pub subagents_cost: Option<SessionCost>,
+    /// Billable token counts that back [`Self::cost`]. The count sums the
+    /// parent transcript and every sub-agent.
+    pub inclusive_tokens: Option<BillableTokens>,
+    /// Billable token counts that back [`Self::subagents_cost`]. The count
+    /// sums every sub-agent. The value is `None` when the session has no
+    /// sub-agent.
+    pub subagents_tokens: Option<BillableTokens>,
+    /// Every model that contributed billable tokens. The list covers the
+    /// parent transcript and every sub-agent. It matches [`Self::cost`].
     pub models: Vec<String>,
+    /// Billable tokens per model. The map merges the parent transcript and
+    /// every sub-agent. The cache stores this map, so a later pass can
+    /// re-price the session without reading any transcript again.
+    pub inclusive_model_breakdown: HashMap<String, ModelTokens>,
     pub skills: Vec<SkillUse>,
     pub orchestration: Option<OrchestrationStatus>,
     /// The transcript this analysis was read from, when it is a file.
@@ -102,7 +129,12 @@ impl SessionAnalysis {
             metrics: None,
             summary: None,
             cost: None,
+            top_level_cost: None,
+            subagents_cost: None,
+            inclusive_tokens: None,
+            subagents_tokens: None,
             models: Vec::new(),
+            inclusive_model_breakdown: HashMap::new(),
             skills: Vec::new(),
             orchestration: None,
             source_path: None,
@@ -120,7 +152,7 @@ impl SessionAnalysis {
                 .cost
                 .as_ref()
                 .and_then(|cost| serde_json::to_string(cost).ok()),
-            model_breakdown_json: serde_json::to_string(&metrics.model_breakdown)
+            model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
                 .unwrap_or_else(|_| "{}".to_string()),
             active_secs: metrics.active_secs as i64,
             duration_secs: metrics.duration_secs as i64,
@@ -129,6 +161,43 @@ impl SessionAnalysis {
             pricing_generation: pricing_generation() as i64,
         })
     }
+}
+
+/// Merge per-model token breakdowns. Sum each model's counts across every
+/// breakdown. A model that both the parent and a sub-agent use adds its
+/// counts. No sub-agent spend is lost.
+fn merge_model_breakdowns<'a>(
+    breakdowns: impl IntoIterator<Item = &'a HashMap<String, ModelTokens>>,
+) -> HashMap<String, ModelTokens> {
+    let mut merged: HashMap<String, ModelTokens> = HashMap::new();
+    for breakdown in breakdowns {
+        for (model, tokens) in breakdown {
+            let entry = merged.entry(model.clone()).or_default();
+            entry.input_tokens += tokens.input_tokens;
+            entry.output_tokens += tokens.output_tokens;
+            entry.cache_read_tokens += tokens.cache_read_tokens;
+            entry.cache_creation_tokens += tokens.cache_creation_tokens;
+            entry.cache_creation_1h_tokens += tokens.cache_creation_1h_tokens;
+        }
+    }
+    merged
+}
+
+/// Sum billable tokens across every model in one breakdown.
+///
+/// The sum matches the `billable_*` fields the engine computes on
+/// `SessionMetrics` for a single transcript. Use this function for a
+/// breakdown that spans more than one transcript, such as a merged
+/// sub-agent breakdown.
+fn sum_billable_tokens(breakdown: &HashMap<String, ModelTokens>) -> BillableTokens {
+    let mut sum = BillableTokens::default();
+    for tokens in breakdown.values() {
+        sum.input_tokens += tokens.input_tokens;
+        sum.output_tokens += tokens.output_tokens;
+        sum.cache_read_tokens += tokens.cache_read_tokens;
+        sum.cache_creation_tokens += tokens.cache_creation_tokens;
+    }
+    sum
 }
 
 /// Fingerprint stood in for a source with no file behind it (a vendor database,
@@ -321,8 +390,23 @@ pub async fn analyze(
         members,
     });
 
-    let cost = price_breakdown(&metrics.model_breakdown);
-    let models = sorted_models(&metrics.model_breakdown);
+    // Merge every sub-agent's breakdown into one map. Merge that map with
+    // the parent's breakdown too. `cost` then prices the whole session, not
+    // only the transcript a reader opened.
+    let subagent_breakdowns: Vec<&HashMap<String, ModelTokens>> =
+        by_id.values().map(|child| &child.model_breakdown).collect();
+    let has_subagents = !subagent_breakdowns.is_empty();
+    let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
+    let inclusive_model_breakdown = merge_model_breakdowns(
+        std::iter::once(&metrics.model_breakdown).chain(subagent_breakdowns.iter().copied()),
+    );
+
+    let top_level_cost = price_breakdown(&metrics.model_breakdown);
+    let subagents_cost = price_breakdown(&subagents_model_breakdown);
+    let cost = price_breakdown(&inclusive_model_breakdown);
+    let models = sorted_models(&inclusive_model_breakdown);
+    let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
+    let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
     let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
@@ -330,7 +414,12 @@ pub async fn analyze(
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
+        top_level_cost,
+        subagents_cost,
+        inclusive_tokens,
+        subagents_tokens,
         models,
+        inclusive_model_breakdown,
         skills,
         orchestration,
         source_path,
@@ -385,8 +474,13 @@ pub async fn analyze_subagent(
     metrics.agent = agent_slug;
     cap_skill_descriptions(&mut metrics.skill_uses);
 
+    // A sub-agent launches no sub-agent of its own. Its own transcript is
+    // the whole story. `cost` and `top_level_cost` name the same figure
+    // here.
     let cost = price_breakdown(&metrics.model_breakdown);
     let models = sorted_models(&metrics.model_breakdown);
+    let inclusive_model_breakdown = metrics.model_breakdown.clone();
+    let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
@@ -394,7 +488,12 @@ pub async fn analyze_subagent(
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
+        top_level_cost: cost,
+        subagents_cost: None,
+        inclusive_tokens,
+        subagents_tokens: None,
         models,
+        inclusive_model_breakdown,
         skills,
         orchestration: None,
         source_path,
@@ -579,6 +678,103 @@ mod tests {
 
         // Garbage in the cache degrades to "unknown", never to a panic.
         assert_eq!(price_cached_breakdown("not json").0, None);
+    }
+
+    fn tokens(input: u64) -> ModelTokens {
+        ModelTokens {
+            input_tokens: input,
+            ..ModelTokens::default()
+        }
+    }
+
+    #[test]
+    fn merging_breakdowns_sums_a_model_used_by_the_parent_and_a_sub_agent() {
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), tokens(100))]);
+        let child = HashMap::from([("claude-opus-4-6".to_string(), tokens(50))]);
+
+        let merged = merge_model_breakdowns([&parent, &child]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged["claude-opus-4-6"].input_tokens, 150);
+    }
+
+    #[test]
+    fn merging_breakdowns_keeps_a_model_only_one_side_used() {
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), tokens(100))]);
+        let child_a = HashMap::from([
+            ("claude-opus-4-6".to_string(), tokens(50)),
+            ("claude-sonnet-4-5".to_string(), tokens(20)),
+        ]);
+        let child_b = HashMap::from([("gpt-5.6".to_string(), tokens(10))]);
+
+        let merged = merge_model_breakdowns([&parent, &child_a, &child_b]);
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged["claude-opus-4-6"].input_tokens, 150);
+        assert_eq!(merged["claude-sonnet-4-5"].input_tokens, 20);
+        assert_eq!(merged["gpt-5.6"].input_tokens, 10);
+    }
+
+    #[test]
+    fn merging_no_breakdowns_yields_an_empty_map() {
+        assert!(merge_model_breakdowns(std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn an_inclusive_breakdown_prices_the_parent_and_every_sub_agent_together() {
+        // This test mirrors the bug this rollup fixes. A parent spends
+        // little. Its sub-agents together spend much more. The session's
+        // cost must not show only the parent's price.
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), tokens(1_000_000))]);
+        let subagent_a = HashMap::from([("claude-opus-4-6".to_string(), tokens(2_000_000))]);
+        let subagent_b = HashMap::from([("claude-opus-4-6".to_string(), tokens(3_000_000))]);
+
+        let top_level_cost = price_breakdown(&parent).expect("the parent alone prices");
+        let inclusive = merge_model_breakdowns([&parent, &subagent_a, &subagent_b]);
+        let inclusive_cost = price_breakdown(&inclusive).expect("the merged breakdown prices");
+
+        // 1M + 2M + 3M input tokens of the same model total 6x the parent alone.
+        assert!((inclusive_cost.total_usd - top_level_cost.total_usd * 6.0).abs() < 1e-6);
+        assert!(inclusive_cost.total_usd > top_level_cost.total_usd);
+    }
+
+    /// A full `ModelTokens`, so the token-sum test below exercises every
+    /// billable component, not only input tokens.
+    fn full_tokens(input: u64, output: u64, cache_read: u64, cache_creation: u64) -> ModelTokens {
+        ModelTokens {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
+            cache_creation_1h_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn the_inclusive_token_sum_equals_the_parent_sum_plus_the_sub_agents_sum() {
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), full_tokens(100, 20, 5, 3))]);
+        let subagent_a =
+            HashMap::from([("claude-opus-4-6".to_string(), full_tokens(50, 10, 2, 1))]);
+        let subagent_b =
+            HashMap::from([("claude-sonnet-4-5".to_string(), full_tokens(30, 6, 1, 0))]);
+
+        let subagents_merged = merge_model_breakdowns([&subagent_a, &subagent_b]);
+        let inclusive_merged = merge_model_breakdowns([&parent, &subagent_a, &subagent_b]);
+
+        let parent_sum = sum_billable_tokens(&parent);
+        let subagents_sum = sum_billable_tokens(&subagents_merged);
+        let inclusive_sum = sum_billable_tokens(&inclusive_merged);
+
+        assert_eq!(
+            inclusive_sum,
+            BillableTokens {
+                input_tokens: parent_sum.input_tokens + subagents_sum.input_tokens,
+                output_tokens: parent_sum.output_tokens + subagents_sum.output_tokens,
+                cache_read_tokens: parent_sum.cache_read_tokens + subagents_sum.cache_read_tokens,
+                cache_creation_tokens: parent_sum.cache_creation_tokens
+                    + subagents_sum.cache_creation_tokens,
+            }
+        );
     }
 
     #[test]
