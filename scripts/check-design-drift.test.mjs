@@ -59,11 +59,18 @@ const CSS = `@theme {
 }
 
 :root {
+  --color-bg-primary: rgb(255 255 255);
   --space-xs: 4px;
   --space-sm: 8px;
   --sidebar-width: 220px;
   --duration-fast: 120ms;
   --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg-primary: rgb(30 30 30);
+  }
 }
 
 :root[data-theme="light"] {
@@ -148,10 +155,18 @@ test('reports a documented color that no @theme block registers', () => {
 });
 
 test('compares each theme against its own palette', () => {
-  const css = CSS.replace('--color-bg-primary: rgb(30 30 30);', '--color-bg-primary: rgb(9 9 9);');
+  // Name the selector too: the dark value appears in the system branch as
+  // well, and only the explicit one is under test here.
+  const css = CSS.replace(
+    ':root[data-theme="dark"] {\n  --color-bg-primary: rgb(30 30 30);',
+    ':root[data-theme="dark"] {\n  --color-bg-primary: rgb(9 9 9);',
+  );
   const failures = checkDesignDrift(fixture({ css }));
   assertFails(failures, 'color `surface` dark = rgb(30 30 30), expected rgb(9 9 9)');
-  assert.equal(failures.length, 1, 'the light theme must stay green');
+  assert.ok(
+    !failures.some((f) => f.includes('light')),
+    'the light theme must stay green',
+  );
 });
 
 test('reads a palette that shares its selector list with a plain :root', () => {
@@ -290,4 +305,71 @@ test('reports a source that does not exist', () => {
 test('does not expect the entry stylesheet in the source list', () => {
   const extra = { 'src/styles.css': '@import "./styles/tokens.css";\n' };
   assert.deepEqual(checkDesignDrift(fixture({ extra })), []);
+});
+
+// --- the system-preference palette ------------------------------------------
+
+/** Bare `:root` light value, and the note that would document it. */
+const SYSTEM_LIGHT = '--color-bg-primary: rgb(255 255 255);';
+const NOTE_LIGHT = '    light: "rgb(255 255 255)" # @media light: rgb(250 250 250)';
+
+test('accepts a system value the contract states in an @media note', () => {
+  const css = CSS.replace(SYSTEM_LIGHT, '--color-bg-primary: rgb(250 250 250);');
+  const contract = CONTRACT.replace('    light: "rgb(255 255 255)"', NOTE_LIGHT);
+  assert.deepEqual(checkDesignDrift(fixture({ contract, css })), []);
+});
+
+test('reports a system value that no @media note states', () => {
+  const css = CSS.replace(SYSTEM_LIGHT, '--color-bg-primary: rgb(250 250 250);');
+  assertFails(checkDesignDrift(fixture({ css })), 'the system palette sets rgb(250 250 250)');
+});
+
+test('reports an @media note whose value is wrong', () => {
+  const css = CSS.replace(SYSTEM_LIGHT, '--color-bg-primary: rgb(250 250 250);');
+  const contract = CONTRACT.replace(
+    '    light: "rgb(255 255 255)"',
+    '    light: "rgb(255 255 255)" # @media light: rgb(200 200 200)',
+  );
+  assertFails(checkDesignDrift(fixture({ contract, css })), '@media light note = rgb(200 200 200)');
+});
+
+test('reports an @media note that only repeats the value', () => {
+  const contract = CONTRACT.replace(
+    '    light: "rgb(255 255 255)"',
+    '    light: "rgb(255 255 255)" # @media light: rgb(255 255 255)',
+  );
+  assertFails(checkDesignDrift(fixture({ contract })), 'the @media note repeats the value');
+});
+
+test('reports an @media note that names the other theme', () => {
+  const css = CSS.replace(SYSTEM_LIGHT, '--color-bg-primary: rgb(250 250 250);');
+  const contract = CONTRACT.replace(
+    '    light: "rgb(255 255 255)"',
+    '    light: "rgb(255 255 255)" # @media dark: rgb(250 250 250)',
+  );
+  assertFails(checkDesignDrift(fixture({ contract, css })), 'the note names @media dark');
+});
+
+test('compares an alpha by number, not by the digits written', () => {
+  const css = CSS.replace(SYSTEM_LIGHT, '--color-bg-primary: rgb(255 255 255 / 0.5);');
+  const contract = CONTRACT.replace(
+    '    light: "rgb(255 255 255)"',
+    '    light: "rgb(255 255 255)" # @media light: rgb(255 255 255 / 0.50)',
+  );
+  assert.deepEqual(checkDesignDrift(fixture({ contract, css })), []);
+});
+
+test('reports a token the system palette never sets', () => {
+  const css = CSS.replace(`:root {\n  ${SYSTEM_LIGHT}`, ':root {');
+  assertFails(checkDesignDrift(fixture({ css })), 'unset in the light system palette');
+});
+
+test('does not read a selector named inside a comment as a rule', () => {
+  // The real tokens.css explains one rule in a comment above another. A
+  // comment that names `:root` must not be scanned as a `:root` block.
+  const css = CSS.replace(
+    ':root {',
+    '/* :root and :root[data-theme="dark"] both set the surface. */\n:root {',
+  );
+  assert.deepEqual(checkDesignDrift(fixture({ css })), []);
 });

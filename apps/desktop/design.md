@@ -17,7 +17,9 @@ sources:
 colors:
   # name → Tailwind utility via bg-/text-/border-<name>
   # Both values are the explicit [data-theme="light"|"dark"] palettes.
-  # System-preference (@media) values are noted where they differ from the explicit ones.
+  # A `# @media <theme>: <value>` note states the system-preference value where it
+  # differs. The drift check reads those notes: a difference it cannot find a note
+  # for is a failure, and so is a note that no longer differs.
   surface:
     light: "rgb(255 255 255 / 0.58)" # reduced-transparency: rgb(255 255 255)
     dark: "rgb(30 30 30 / 0.92)" # @media dark: rgb(30 30 30 / 0.40)

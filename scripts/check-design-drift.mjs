@@ -52,6 +52,15 @@ const GENERIC_FONT_FAMILIES = new Set([
 
 const norm = (s) => s.replace(/\s+/g, ' ').trim();
 
+// Compare colors by number, not by text: the contract writes an alpha as
+// `0.40` where the CSS writes `0.4`, and both mean the same channel.
+const normColor = (s) => norm(s).replace(/\d*\.?\d+/g, (n) => String(parseFloat(n)));
+
+// A comment can hold a selector this file scans for. `tokens.css` names
+// `:root[data-theme="dark"]` in prose, next to the rule it explains. Strip
+// comments so a sentence about a rule is never read as the rule.
+const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, ' ');
+
 // --- file access ------------------------------------------------------------
 
 /** Read the desktop app from disk. Tests pass an in-memory object instead. */
@@ -117,6 +126,33 @@ function docColors(fm) {
   return out;
 }
 
+/**
+ * The `# @media <theme>: <value>` note a color may carry.
+ *
+ * A reader who leaves the app on "System" gets the system-preference branch,
+ * not the `[data-theme]` one. Where the two differ, the contract states the
+ * system value in this note. Anything the note does not name must agree.
+ */
+function docColorMedia(fm) {
+  const out = {};
+  let current = null;
+  for (const line of section(fm, 'colors').split('\n')) {
+    const name = /^ {2}([a-z0-9-]+):/.exec(line);
+    if (name) {
+      current = name[1];
+      out[current] = {};
+      continue;
+    }
+    const note = /^ {4}(light|dark):.*#\s*@media\s+(light|dark):\s*(.+?)\s*$/.exec(line);
+    if (note && current) {
+      // The note sits on the value it qualifies; a note for the other theme is
+      // a copy-paste slip, so keep both keys and let the check compare them.
+      out[current][note[1]] = { theme: note[2], value: note[3] };
+    }
+  }
+  return out;
+}
+
 function docTypography(fm) {
   const out = {};
   for (const m of section(fm, 'typography').matchAll(/^\s+([a-z0-9-]+):\s*\{(.+)\}/gm)) {
@@ -176,6 +212,73 @@ function themeVars(css, theme) {
     }
   }
   return out;
+}
+
+/**
+ * The palette a reader gets while the app follows the system.
+ *
+ * Light is the bare `:root`. Dark is the bare `:root` with the
+ * `prefers-color-scheme: dark` block on top, which states only what it
+ * changes. The reduced-transparency blocks are a separate axis and stay out.
+ *
+ * A live system token has no static value, so it is skipped here exactly as
+ * it is in [`themeVars`]. That is what keeps the four `-apple-system-*` tokens
+ * out of the comparison: they are the point of following the system.
+ */
+function systemVars(css, theme) {
+  const out = {};
+  const add = (blocks) => {
+    for (const block of blocks) {
+      for (const v of block.matchAll(/--color-([\w-]+):\s*([^;]+);/g)) {
+        if (v[2].trim().startsWith('-apple-system')) continue;
+        out[v[1]] = v[2].trim();
+      }
+    }
+  };
+  add(bareRootBodies(css));
+  if (theme === 'dark') {
+    for (const body of preferenceBlocks(css, 'dark')) add(bareRootBodies(body));
+  }
+  return out;
+}
+
+/**
+ * Bodies of every top-level rule whose selector list holds a bare `:root`.
+ *
+ * `:root, :root[data-theme="light"]` counts: the bare half applies while the
+ * app follows the system. `:root[data-theme="light"]` alone does not, so the
+ * character after the selector has to be one that ends it.
+ */
+function bareRootBodies(css) {
+  const bodies = [];
+  let depth = 0;
+  for (let index = 0; index < css.length; index += 1) {
+    if (depth === 0 && css.startsWith(':root', index) && /^[\s,{]$/.test(css[index + 5] ?? '')) {
+      const open = css.indexOf('{', index + 5);
+      if (open === -1) break;
+      const close = matchingBrace(css, open);
+      bodies.push(css.slice(open + 1, close));
+      index = close;
+      continue;
+    }
+    const ch = css[index];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') depth = Math.max(0, depth - 1);
+  }
+  return bodies;
+}
+
+/** Bodies of the top-level `prefers-color-scheme` blocks for one theme. */
+function preferenceBlocks(css, theme) {
+  const bodies = [];
+  const pattern = new RegExp(`@media[^{]*prefers-color-scheme:\\s*${theme}[^{]*\\{`, 'g');
+  for (const m of css.matchAll(pattern)) {
+    // The reduced-transparency overrides answer a different setting.
+    if (m[0].includes('reduced-transparency')) continue;
+    const open = m.index + m[0].length - 1;
+    bodies.push(css.slice(open + 1, matchingBrace(css, open)));
+  }
+  return bodies;
 }
 
 /** Bodies of every rule that names the selector at the top level of the file. */
@@ -258,10 +361,12 @@ export function checkDesignDrift(io = fileSystemIo()) {
     if (!io.exists(file)) fail(`sources names \`${file}\`, which does not exist`);
   }
 
-  const cssAll = sources
-    .filter((file) => io.exists(file))
-    .map((file) => io.read(file))
-    .join('\n');
+  const cssAll = stripComments(
+    sources
+      .filter((file) => io.exists(file))
+      .map((file) => io.read(file))
+      .join('\n'),
+  );
 
   // Colors: coverage first, then the value in each theme.
   const map = themeMap(cssAll);
@@ -289,6 +394,50 @@ export function checkDesignDrift(io = fileSystemIo()) {
       }
       if (norm(documented) !== norm(actual)) {
         fail(`color \`${name}\` ${theme} = ${documented}, expected ${actual} (--color-${ref})`);
+      }
+    }
+  }
+
+  // The system-preference palette against the explicit one.
+  //
+  // The contract states the `[data-theme]` values, which a reader gets only
+  // after forcing a theme. On "System" the bare `:root` and the
+  // `prefers-color-scheme` block apply instead. The two are one palette
+  // written twice, so every token must agree unless the contract states the
+  // system value in a `# @media <theme>: <value>` note.
+  const media = docColorMedia(fm);
+  for (const theme of ['light', 'dark']) {
+    const explicit = themeVars(cssAll, theme);
+    const system = systemVars(cssAll, theme);
+    for (const [name, values] of Object.entries(colors)) {
+      const ref = map[name];
+      if (!ref || values[theme] === undefined) continue;
+      const note = media[name]?.[theme];
+      const forced = explicit[ref];
+      const followed = system[ref];
+      // A missing explicit value is already reported by the check above.
+      if (forced === undefined) continue;
+      if (followed === undefined) {
+        fail(`color \`${name}\`: --color-${ref} is unset in the ${theme} system palette`);
+        continue;
+      }
+      if (normColor(forced) === normColor(followed)) {
+        if (note) fail(`color \`${name}\` ${theme}: the @media note repeats the value; drop it`);
+        continue;
+      }
+      if (!note) {
+        fail(
+          `color \`${name}\` ${theme} = ${forced}, but the system palette sets ` +
+            `${followed}; state it as a \`# @media ${theme}: ${followed}\` note`,
+        );
+        continue;
+      }
+      if (note.theme !== theme) {
+        fail(`color \`${name}\` ${theme}: the note names @media ${note.theme}`);
+        continue;
+      }
+      if (normColor(note.value) !== normColor(followed)) {
+        fail(`color \`${name}\` @media ${theme} note = ${note.value}, expected ${followed}`);
       }
     }
   }
