@@ -148,6 +148,9 @@ colors:
   context-warning:
     light: "rgb(217 119 6)"
     dark: "rgb(255 159 10)"
+  context-critical:
+    light: "rgb(220 38 38)"
+    dark: "rgb(248 113 113)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`

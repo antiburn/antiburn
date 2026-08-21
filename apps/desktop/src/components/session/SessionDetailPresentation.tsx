@@ -31,7 +31,6 @@ import {
   costFigureLabel,
   formatCompact,
   formatDuration,
-  formatPct,
   isEmptySummary,
 } from "../../lib/presentation/sessionAnalytics"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
@@ -46,10 +45,9 @@ import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { Skeleton } from "../ui/Skeleton"
-import { ContextChart } from "./analytics/ContextChart"
 import { CostBreakdown } from "./analytics/CostBreakdown"
+import { ContextTokensChart } from "./analytics/ContextTokensChart"
 import { InitialContextChart } from "./analytics/InitialContextChart"
-import { TokenAreaChart } from "./analytics/TokenAreaChart"
 import { ToolMixChart } from "./analytics/ToolMixChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import { OrchestratedBadge } from "./orchestration/OrchestratedBadge"
@@ -65,6 +63,10 @@ import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
  */
 const SKELETON_DELAY_MS = 200
 const SKELETON_MIN_VISIBLE_MS = 400
+
+/** Info-tooltip copy for the merged context/tokens chart. */
+const CONTEXT_TOKENS_CHART_INFO =
+  "The filled area is the model's context window, in tokens. The dashed horizontal bands mark token depth. Above 400k tokens the fill turns warm, because each turn gets more expensive there. Dashed vertical lines mark compactions. The faint blue and violet spikes behind the fill are input and output tokens for each slice of the session."
 
 /** The session this view shows. */
 interface SessionDetailSubject {
@@ -746,31 +748,29 @@ export function SessionDetailPresentation({
             )}
 
             {tokensCard && (
-              <Card title="Tokens" info={tokensCard.info} hint={tokensCard.hint}>
-                <TokenAreaChart buckets={summary.buckets} />
-                {cost && <CostBreakdown cost={cost} split={tokensCard.split} />}
+              <Card
+                title="Context"
+                info={`${CONTEXT_TOKENS_CHART_INFO} ${tokensCard.info}`}
+                hint={tokensCard.hint}
+              >
+                {summary.contextAvailable ? (
+                  <ContextTokensChart
+                    buckets={summary.buckets}
+                    contextWindow={summary.contextWindow}
+                  />
+                ) : (
+                  <p className="py-6 text-center type-callout text-label-tertiary">
+                    Context occupancy is unavailable for this model.
+                  </p>
+                )}
               </Card>
             )}
 
-            <Card
-              title="Context"
-              info="Share of the model's context window in use. The marker is at 90% occupancy."
-              hint={
-                summary.contextAvailable
-                  ? `peak ${formatPct(
-                      Math.min(1, summary.peakContextTokens / summary.contextWindow),
-                    )}`
-                  : "unavailable"
-              }
-            >
-              {summary.contextAvailable ? (
-                <ContextChart buckets={summary.buckets} contextWindow={summary.contextWindow} />
-              ) : (
-                <p className="py-6 text-center type-callout text-label-tertiary">
-                  Context occupancy is unavailable for this model.
-                </p>
-              )}
-            </Card>
+            {cost && tokensCard && (
+              <Card title="Cost">
+                <CostBreakdown cost={cost} split={tokensCard.split} />
+              </Card>
+            )}
 
             {/* Show where the context window went before the first response. */}
             {firstSession?.initialContext && (

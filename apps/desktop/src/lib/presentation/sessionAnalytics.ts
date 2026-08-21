@@ -21,47 +21,40 @@ import type {
  * Buckets and chart series
  * ---------------------------------------------------------------------- */
 
-export interface TokenPoint {
+export interface ContextTokenPoint {
   progress: number
+  contextTokens: number
   tokensIn: number
   tokensOut: number
-}
-
-/** Input/output token throughput over session progress. */
-export function tokenSeries(buckets: SessionBucket[]): TokenPoint[] {
-  return buckets.flatMap((bucket, index) =>
-    bucket.tokensIn > 0 || bucket.tokensOut > 0
-      ? [
-          {
-            progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
-            tokensIn: bucket.tokensIn,
-            tokensOut: bucket.tokensOut,
-          },
-        ]
-      : [],
-  )
-}
-
-export interface ContextPoint {
-  progress: number
-  contextPct: number
   isCompactionBoundary: boolean
 }
 
-/** Context-window occupancy (0..100%) over progress. */
-export function contextSeries(buckets: SessionBucket[], contextWindow: number): ContextPoint[] {
-  const window = contextWindow || 1
-  return buckets.flatMap((bucket, index) =>
-    bucket.contextTokens > 0 || bucket.isCompactionBoundary
-      ? [
-          {
-            progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
-            contextPct: Math.min(100, Math.round((bucket.contextTokens / window) * 100)),
-            isCompactionBoundary: bucket.isCompactionBoundary,
-          },
-        ]
-      : [],
-  )
+/**
+ * Merged context-and-token series over session progress, one point per
+ * bucket. Unlike the old per-series helpers, this keeps every bucket —
+ * including zero ones — so the context area and the token areas share one
+ * x-axis grid and cannot drift apart.
+ */
+export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[] {
+  return buckets.map((bucket, index) => ({
+    progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
+    contextTokens: bucket.contextTokens,
+    tokensIn: bucket.tokensIn,
+    tokensOut: bucket.tokensOut,
+    isCompactionBoundary: bucket.isCompactionBoundary,
+  }))
+}
+
+/**
+ * Dashed reference-line values for the context chart, strictly below
+ * `contextWindow`. The step is coarser for a large window, so a 1M window
+ * gets 200k bands and a 200k window gets 50k bands.
+ */
+export function contextBandValues(contextWindow: number): number[] {
+  const step = contextWindow >= 1_000_000 ? 200_000 : 50_000
+  const values: number[] = []
+  for (let v = step; v < contextWindow; v += step) values.push(v)
+  return values
 }
 
 export interface ToolSlice {

@@ -121,11 +121,17 @@ function view(over: Partial<SessionDetailPresentationProps> = {}) {
 
 describe("SessionDetailPresentation — chrome", () => {
   it("renders the useful card hierarchy for a settled session", () => {
-    view()
+    view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
-    expect(screen.getByText("Tokens")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.getByText("Cost")).toBeTruthy()
     expect(screen.getByText("Tools")).toBeTruthy()
+  })
+
+  it("omits the Cost card when nothing priced the session", () => {
+    view({ cost: null })
+    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.queryByText("Cost")).toBeNull()
   })
 
   it("shows the session title on no more than three lines", () => {

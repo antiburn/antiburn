@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest"
 
 import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
-  contextSeries,
+  contextBandValues,
+  contextTokenSeries,
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
@@ -18,7 +19,6 @@ import {
   initialContextNamedRows,
   initialContextTotal,
   median,
-  tokenSeries,
 } from "./sessionAnalytics"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
@@ -31,78 +31,41 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   }
 }
 
-describe("tokenSeries", () => {
-  it("keeps each observed token bucket at its measured progress", () => {
+describe("contextTokenSeries", () => {
+  it("keeps every bucket, including zero ones, at its measured progress", () => {
     const buckets = [
       bucket(),
-      bucket({ tokensIn: 100, tokensOut: 10 }),
+      bucket({ tokensIn: 100, tokensOut: 10, contextTokens: 50_000 }),
       bucket(),
-      bucket({ tokensIn: 300, tokensOut: 30 }),
-      bucket({ tokensIn: 500, tokensOut: 50 }),
+      bucket({ tokensIn: 300, tokensOut: 30, contextTokens: 150_000 }),
+      bucket({ tokensIn: 500, tokensOut: 50, contextTokens: 200_000 }),
       bucket(),
     ]
-    const series = tokenSeries(buckets)
-    expect(series).toHaveLength(3)
-    expect(series.map((p) => p.tokensIn)).toEqual([100, 300, 500])
-    expect(series.map((p) => p.progress)).toEqual([20, 60, 80])
-  })
-
-  it("returns an empty series when no bucket has activity", () => {
-    expect(tokenSeries([bucket(), bucket()])).toEqual([])
-  })
-
-  it("drops a compaction-only bucket instead of rendering a spurious zero dip", () => {
-    const buckets = [
-      bucket({ tokensIn: 100, tokensOut: 10 }),
-      bucket({ isCompactionBoundary: true }),
-      bucket({ tokensIn: 300, tokensOut: 30 }),
-    ]
-    const series = tokenSeries(buckets)
-    expect(series).toHaveLength(2)
-    expect(series.map((p) => p.tokensIn)).toEqual([100, 300])
-  })
-})
-
-describe("contextSeries", () => {
-  it("keeps each observed context bucket at its measured progress", () => {
-    const series = contextSeries(
-      [
-        bucket(),
-        bucket({ contextTokens: 50_000 }),
-        bucket(),
-        bucket({ contextTokens: 150_000 }),
-      ],
-      200_000,
-    )
-    expect(series).toHaveLength(2)
-    expect(series.map((p) => p.contextPct)).toEqual([25, 75])
-    expect(series.map((p) => p.progress)).toEqual([33, 100])
+    const series = contextTokenSeries(buckets)
+    expect(series).toHaveLength(6)
+    expect(series.map((p) => p.progress)).toEqual([0, 20, 40, 60, 80, 100])
+    expect(series.map((p) => p.tokensIn)).toEqual([0, 100, 0, 300, 500, 0])
+    expect(series.map((p) => p.contextTokens)).toEqual([0, 50_000, 0, 150_000, 200_000, 0])
   })
 
   it("carries the compaction-boundary flag onto the matching point", () => {
-    const series = contextSeries(
-      [
-        bucket({ contextTokens: 180_000 }),
-        bucket({ contextTokens: 20_000, isCompactionBoundary: true }),
-        bucket({ contextTokens: 40_000 }),
-      ],
-      200_000,
-    )
+    const buckets = [
+      bucket({ contextTokens: 180_000 }),
+      bucket({ contextTokens: 0, isCompactionBoundary: true }),
+      bucket({ contextTokens: 20_000 }),
+    ]
+    const series = contextTokenSeries(buckets)
     expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
   })
+})
 
-  it("keeps a compaction-only bucket", () => {
-    const series = contextSeries(
-      [
-        bucket({ contextTokens: 180_000 }),
-        bucket({ contextTokens: 0, isCompactionBoundary: true }),
-        bucket({ contextTokens: 20_000 }),
-      ],
-      200_000,
-    )
-    expect(series).toHaveLength(3)
-    expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
-    expect(series.map((p) => p.contextPct)).toEqual([90, 0, 10])
+describe("contextBandValues", () => {
+  it("uses 200k steps for a 1M window", () => {
+    expect(contextBandValues(1_000_000)).toEqual([200_000, 400_000, 600_000, 800_000])
+  })
+
+  it("uses 50k steps for a 200k window", () => {
+    expect(contextBandValues(200_000)).toEqual([50_000, 100_000, 150_000])
   })
 })
 
