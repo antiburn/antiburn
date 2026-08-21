@@ -38,6 +38,9 @@ const WARM_FLOOR_TOKENS = 400_000
 const CRITICAL_TOKENS = 1_000_000
 /** Band label text, drawn inside the plot. */
 const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
+// A rehydration bar is a few pixels wide on each side of its bucket so it
+// reads as a block of cost, not a hairline.
+const REHYDRATION_BAR_WIDTH = 6
 
 export interface ContextTokensTooltipProps {
   active?: boolean
@@ -116,7 +119,7 @@ export function ContextTokensTooltip({
         <span>Cache read · {formatCompact(point.cacheReadTokens)}</span>
         <span>Cache write · {formatCompact(point.cacheWriteTokens)}</span>
         {point.isCacheRehydration && (
-          <span style={{ color: "var(--color-context-warning)" }}>
+          <span style={{ color: "var(--color-context-critical)" }}>
             Cache rehydrated · {formatCompact(point.cacheWriteTokens)} written
           </span>
         )}
@@ -212,21 +215,38 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
           />
         ))}
         {/* A compaction draws no mark: the drop in the context area shows it,
-            and the tooltip names it. A cache rehydration is a solid,
-            warning-colored mark, because the area shows no change for it. Its
-            "cache" label uses the axis-band label style, so it stays small. */}
+            and the tooltip names it. A cache rehydration draws a wide red bar
+            from the baseline up to the context level at that time, because
+            the area shows no change for it. The bar height scales its weight:
+            a rehydration of a small context costs little and shows little. */}
         {data
           .filter((point) => point.isCacheRehydration)
-          .map((point) => (
-            <ReferenceLine
-              key={`cache-rehydration-${point.index}`}
-              yAxisId={markerAxisId}
-              x={point.index}
-              stroke="var(--color-context-warning)"
-              strokeOpacity={0.8}
-              label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
-            />
-          ))}
+          .map((point) =>
+            contextAxis ? (
+              <ReferenceLine
+                key={`cache-rehydration-${point.index}`}
+                yAxisId="context"
+                segment={[
+                  { x: point.index, y: 0 },
+                  { x: point.index, y: point.contextTokens },
+                ]}
+                stroke="var(--color-context-critical)"
+                strokeWidth={REHYDRATION_BAR_WIDTH}
+                strokeOpacity={0.6}
+                label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
+              />
+            ) : (
+              <ReferenceLine
+                key={`cache-rehydration-${point.index}`}
+                yAxisId="tokens"
+                x={point.index}
+                stroke="var(--color-context-critical)"
+                strokeWidth={REHYDRATION_BAR_WIDTH}
+                strokeOpacity={0.6}
+                label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
+              />
+            ),
+          )}
         {/* A mode change (model, thinking effort, or speed) draws no line at
             all — only its label, at the top of the plot — so it stays a
             calm annotation rather than another vertical mark competing with

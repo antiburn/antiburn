@@ -58,20 +58,26 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
 }
 
 describe("ContextTokensChart", () => {
-  it("draws a solid warning-colored marker for a cache-rehydration bucket", () => {
+  it("draws a wide red bar up to the context level for a cache-rehydration bucket", () => {
     const buckets = [
-      bucket({ contextTokens: 100_000 }),
-      bucket({ contextTokens: 100_000, cacheWriteTokens: 90_000, isCacheRehydration: true }),
-      bucket({ contextTokens: 100_000 }),
+      bucket({ contextTokens: 200_000 }),
+      bucket({ contextTokens: 50_000, cacheWriteTokens: 40_000, isCacheRehydration: true }),
+      bucket({ contextTokens: 200_000 }),
     ]
     const { container } = render(
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
-    const rehydrationLines = container.querySelectorAll(
-      'line[stroke="var(--color-context-warning)"]',
-    )
-    expect(rehydrationLines.length).toBeGreaterThan(0)
+    const bar = container.querySelector('line[stroke="var(--color-context-critical)"]')
+    expect(bar).not.toBeNull()
+    expect(Number(bar?.getAttribute("stroke-width"))).toBeGreaterThanOrEqual(4)
+    // The bar spans the bottom quarter of the plot only: 50k of a 200k peak.
+    const y1 = Number(bar?.getAttribute("y1"))
+    const y2 = Number(bar?.getAttribute("y2"))
+    const top = Math.min(y1, y2)
+    const bottom = Math.max(y1, y2)
+    expect(bottom - top).toBeGreaterThan(0)
+    expect(bottom - top).toBeLessThan(160 / 2)
   })
 
   it("draws no cache-rehydration marker when no bucket is flagged", () => {
@@ -81,7 +87,7 @@ describe("ContextTokensChart", () => {
     )
 
     const rehydrationLines = container.querySelectorAll(
-      'line[stroke="var(--color-context-warning)"]',
+      'line[stroke="var(--color-context-critical)"]',
     )
     expect(rehydrationLines.length).toBe(0)
   })
@@ -97,7 +103,7 @@ describe("ContextTokensChart", () => {
 
     const compactionLine = container.querySelector('line[stroke="var(--color-label-tertiary)"]')
     const rehydrationLine = container.querySelector(
-      'line[stroke="var(--color-context-warning)"]',
+      'line[stroke="var(--color-context-critical)"]',
     )
     expect(compactionLine).toBeNull()
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
