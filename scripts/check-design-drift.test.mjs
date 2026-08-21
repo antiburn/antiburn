@@ -109,6 +109,11 @@ body {
 }
 `;
 
+/** The popover window copies `rounded.popover` into a Rust constant. */
+const RUST = `#[cfg(target_os = "macos")]
+const CORNER_RADIUS: f64 = 10.0;
+`;
+
 /** An in-memory desktop app. Keys are paths relative to apps/desktop. */
 function io(files) {
   return {
@@ -122,8 +127,13 @@ function io(files) {
 }
 
 /** The green fixture, with optional edits to either side of the contract. */
-function fixture({ contract = CONTRACT, css = CSS, extra = {} } = {}) {
-  return io({ 'design.md': contract, 'src/styles/tokens.css': css, ...extra });
+function fixture({ contract = CONTRACT, css = CSS, rust = RUST, extra = {} } = {}) {
+  return io({
+    'design.md': contract,
+    'src/styles/tokens.css': css,
+    'src-tauri/src/popover.rs': rust,
+    ...extra,
+  });
 }
 
 function assertFails(failures, fragment) {
@@ -380,4 +390,29 @@ test('keeps the reduced-transparency dark block out of the system palette', () =
   // system value — which would hide a real difference from the contract.
   const css = `${CSS}\n@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {\n  :root {\n    --color-bg-primary: rgb(255 255 255);\n  }\n}\n`;
   assert.deepEqual(checkDesignDrift(fixture({ css })), []);
+});
+
+// --- the popover window corner ----------------------------------------------
+
+test('reports a window corner constant that differs from the token', () => {
+  const rust = RUST.replace('10.0', '12.0');
+  assertFails(checkDesignDrift(fixture({ rust })), 'rounded.popover 10px != CORNER_RADIUS 12.0');
+});
+
+test('reports a token change the window corner constant did not follow', () => {
+  const contract = CONTRACT.replace('  popover: 10px', '  popover: 12px');
+  const css = CSS.replace('--radius-popover: 10px;', '--radius-popover: 12px;');
+  assertFails(
+    checkDesignDrift(fixture({ contract, css })),
+    'rounded.popover 12px != CORNER_RADIUS 10.0',
+  );
+});
+
+test('reports a window source that declares no corner constant', () => {
+  assertFails(checkDesignDrift(fixture({ rust: '// nothing here\n' })), 'declares no CORNER_RADIUS');
+});
+
+test('reports a window source that is missing', () => {
+  const files = io({ 'design.md': CONTRACT, 'src/styles/tokens.css': CSS });
+  assertFails(checkDesignDrift(files), 'src-tauri/src/popover.rs not found');
 });

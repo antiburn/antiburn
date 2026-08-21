@@ -34,6 +34,11 @@ const CONTRACT = 'design.md';
 // It declares no tokens, so the contract does not list it as a source.
 const ENTRY_STYLESHEET = 'src/styles.css';
 
+// The window that draws its own corner from `rounded.popover`. The value is a
+// Rust constant there, because the corner comes from the window material and
+// not from a stylesheet.
+const WINDOW_CORNER_SOURCE = 'src-tauri/src/popover.rs';
+
 // Each shadow token names one selector that must carry that exact box-shadow.
 const SHADOW_SELECTORS = {
   popover: 'ui-menu',
@@ -503,6 +508,25 @@ export function checkDesignDrift(io = fileSystemIo()) {
     }
     if (parseInt(rounded[key], 10) !== parseInt(css, 10)) {
       fail(`rounded.${key} ${rounded[key]} != --radius-${key} ${css}px`);
+    }
+  }
+
+  // The macOS popover corner. The window material draws it, so the radius is
+  // a Rust constant as well as a token, and the two must agree — a window
+  // corner that differs from the surface corner inside it is visible. Rust is
+  // the one place a token value is copied rather than referenced, so it is the
+  // one place this check has to leave the stylesheets.
+  if (!io.exists(WINDOW_CORNER_SOURCE)) {
+    fail(`rounded.popover: ${WINDOW_CORNER_SOURCE} not found`);
+  } else {
+    const rust = /const\s+CORNER_RADIUS:\s*f64\s*=\s*([\d.]+)\s*;/.exec(io.read(WINDOW_CORNER_SOURCE));
+    if (!rust) {
+      fail(`rounded.popover: ${WINDOW_CORNER_SOURCE} declares no CORNER_RADIUS`);
+    } else if (parseFloat(rust[1]) !== parseFloat(rounded.popover)) {
+      fail(
+        `rounded.popover ${rounded.popover} != CORNER_RADIUS ${rust[1]} ` +
+          `in ${WINDOW_CORNER_SOURCE}`,
+      );
     }
   }
 
