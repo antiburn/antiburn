@@ -46,8 +46,10 @@ body,
 
 /*
  * The foundation leaves the document transparent so a window can opt into
- * translucent material. Neither of this app's windows does yet, so the shell
- * paints the standard window surface itself.
+ * translucent material. The popover window does: it carries the Popover
+ * material, which also draws its corner. The nudge window does not and stays
+ * opaque. Either way the shell paints the window surface here, over whatever
+ * the window itself gives it.
  *
  * These read the raw palette variables rather than the `@theme` aliases:
  * Tailwind only emits an alias that a generated utility uses, and no utility
