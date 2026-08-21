@@ -154,7 +154,10 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
             </linearGradient>
           </defs>
         )}
-        <XAxis dataKey="progress" hide />
+        {/* A numeric axis on the bucket index. A category axis on the rounded
+            `progress` value placed each compaction mark by its index instead of
+            by its value, so marks drifted left of the drops they belong to. */}
+        <XAxis dataKey="index" type="number" domain={[0, Math.max(1, data.length - 1)]} hide />
         {contextAxis && <YAxis yAxisId="context" hide domain={[0, contextAxis.ceiling]} />}
         <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
         {contextAxis?.ticks.map((value) => (
@@ -169,14 +172,11 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
         ))}
         {data
           .filter((point) => point.isCompactionBoundary)
-          .map((point, i) => (
+          .map((point) => (
             <ReferenceLine
-              // `progress` is a rounded percentage, so two compactions can
-              // land on the same value in a long session; the index keeps
-              // sibling keys unique regardless.
-              key={`compaction-${i}-${point.progress}`}
+              key={`compaction-${point.index}`}
               yAxisId={compactionAxisId}
-              x={point.progress}
+              x={point.index}
               stroke="var(--color-label-tertiary)"
               strokeDasharray="2 2"
               strokeOpacity={0.8}

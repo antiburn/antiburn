@@ -22,6 +22,9 @@ import type {
  * ---------------------------------------------------------------------- */
 
 export interface ContextTokenPoint {
+  /** Bucket position; the chart's x value, so marks and areas share one scale. */
+  index: number
+  /** Rounded percentage through the session, for labels. */
   progress: number
   contextTokens: number
   tokensIn: number
@@ -44,6 +47,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
   return buckets.map((bucket, index) => {
     if (bucket.contextTokens > 0 || bucket.isCompactionBoundary) held = bucket.contextTokens
     return {
+      index,
       progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
       contextTokens: held,
       tokensIn: bucket.tokensIn,
