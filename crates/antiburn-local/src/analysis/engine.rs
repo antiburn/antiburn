@@ -52,8 +52,11 @@ pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
 /// cheap and not worth flagging as a rehydration event.
 const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
 /// A turn's cache write must reach this share of its context to count as a
-/// full rewrite rather than an incremental cache write.
-const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.8;
+/// full rewrite rather than an incremental cache write. The share is not
+/// near 1.0: the system prompt and tool definitions stay cached across
+/// sessions, so a rehydration re-writes only the conversation. In real
+/// sessions that is 60% to 80% of the context; normal turns write under 10%.
+const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.5;
 /// The previous turn's cache read must reach this share of its context so the
 /// rehydration is a real TTL lapse, not the first turn after a fresh session.
 const CACHE_REHYDRATION_PRIOR_READ_RATIO: f64 = 0.5;

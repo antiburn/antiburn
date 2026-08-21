@@ -713,6 +713,28 @@ fn cache_rehydration_is_detected_after_a_ttl_lapse() {
     assert_eq!(rehydrated.len(), 1, "got {rehydrated:?}");
 }
 
+/// Real numbers from a Claude session after a 155-minute idle gap. The
+/// system prompt and tools (24,682 tokens) stay cached; only the conversation
+/// re-writes, so the write share is 76%, not close to 100%.
+const CLAUDE_CACHE_REHYDRATION_WITH_CACHED_PREFIX_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":101,"output_tokens":50,"cache_read_input_tokens":99584,"cache_creation_input_tokens":1879},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T14:35:00Z","message":{"role":"assistant","usage":{"input_tokens":2,"output_tokens":50,"cache_read_input_tokens":24682,"cache_creation_input_tokens":77040},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
+    let session = normalize_source(&jsonl_input(
+        "claude",
+        CLAUDE_CACHE_REHYDRATION_WITH_CACHED_PREFIX_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    let count = m.buckets.iter().filter(|b| b.is_cache_rehydration).count();
+    assert_eq!(count, 1, "a 76% rewrite after a long gap is a rehydration");
+}
+
 #[test]
 fn first_turn_after_compaction_is_not_flagged_as_rehydration() {
     // Same shape as the rehydration fixture, but a compaction boundary sits
