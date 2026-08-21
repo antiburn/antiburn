@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { Fragment, useId, type ReactElement } from "react"
+import { useId, type ReactElement } from "react"
 import {
   Area,
   AreaChart,
@@ -34,12 +34,8 @@ export interface ContextTokensChartProps {
 const WARM_FLOOR_TOKENS = 400_000
 /** Token level the warm ramp reaches full red at. */
 const CRITICAL_TOKENS = 1_000_000
-/** Label text for both axes, drawn inside the plot. */
+/** Band label text, drawn inside the plot. */
 const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
-/** The token axis tick marks span this many progress points at the right edge. */
-const TOKEN_TICK_SPAN = 2
-/** Pixels between the right edge and the end of a token tick label. */
-const TOKEN_TICK_LABEL_OFFSET = 16
 
 interface ContextTokensTooltipProps {
   active?: boolean
@@ -106,10 +102,9 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
 
   const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
   const tokenPeak = data.reduce((m, d) => Math.max(m, d.tokensIn + d.tokensOut), 0)
-  // The token axis ceiling is about three times the largest spike, so the
-  // spikes use the lower third of the chart and stay secondary.
-  const tokenAxis = axisScale(tokenPeak, Number.MAX_SAFE_INTEGER, 2)
-  const tokenCeiling = Math.max(1, tokenAxis.ceiling * 3)
+  // The largest spike reaches the top of the plot, so the token layer keeps
+  // its full range of variation. Its low alpha keeps it secondary.
+  const tokenCeiling = Math.max(1, tokenPeak)
   const contextAxis = hasContext ? axisScale(peak, contextWindow, 5) : null
   // Every `ReferenceLine`, including the vertical compaction markers, needs a
   // `yAxisId` that names an axis the chart actually renders — recharts falls
@@ -171,33 +166,6 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
             strokeDasharray="2 4"
             label={{ ...AXIS_LABEL, value: formatTokenBand(value), position: "insideTopLeft" }}
           />
-        ))}
-        {tokenAxis.ticks.map((value) => (
-          // A short tick at the right edge marks the token scale. The label
-          // rides on a second, invisible full-width line, because recharts
-          // positions a segment label against the whole plot, not the segment.
-          <Fragment key={`token-tick-${value}`}>
-            <ReferenceLine
-              yAxisId="tokens"
-              segment={[
-                { x: 100 - TOKEN_TICK_SPAN, y: value },
-                { x: 100, y: value },
-              ]}
-              stroke="var(--color-label-tertiary)"
-              strokeOpacity={0.8}
-            />
-            <ReferenceLine
-              yAxisId="tokens"
-              y={value}
-              stroke="none"
-              label={{
-                ...AXIS_LABEL,
-                value: formatTokenBand(value),
-                position: "insideRight",
-                offset: TOKEN_TICK_LABEL_OFFSET,
-              }}
-            />
-          </Fragment>
         ))}
         {data
           .filter((point) => point.isCompactionBoundary)

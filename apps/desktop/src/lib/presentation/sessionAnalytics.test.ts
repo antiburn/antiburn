@@ -101,13 +101,6 @@ describe("axisScale", () => {
       ticks: [5_000, 10_000, 15_000],
     })
   })
-
-  it("limits the token axis to two clean marks", () => {
-    expect(axisScale(77_300, Number.MAX_SAFE_INTEGER, 2)).toEqual({
-      ceiling: 100_000,
-      ticks: [50_000],
-    })
-  })
 })
 
 describe("formatTokenBand", () => {
