@@ -37,7 +37,7 @@ const CRITICAL_TOKENS = 1_000_000
 /** Band label text, drawn inside the plot. */
 const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
 
-interface ContextTokensTooltipProps {
+export interface ContextTokensTooltipProps {
   active?: boolean
   contextWindow: number | null
   payload?: Array<{ payload?: ContextTokenPoint }>
@@ -49,8 +49,17 @@ const TOKEN_ROWS: Array<{ key: "tokensIn" | "tokensOut"; label: string; colorVar
   { key: "tokensOut", label: "Out", colorVar: "var(--color-token-out)" },
 ]
 
-/** Custom tooltip: progress, context depth, token in/out, and compaction. */
-function ContextTokensTooltip({ active, payload, contextWindow }: ContextTokensTooltipProps) {
+/**
+ * Custom tooltip: progress, context depth, token in/out, compaction, and a
+ * sub-agent launch count. Exported so a test can render it directly with a
+ * fixed payload — recharts only shows a tooltip after a synthetic hover, and
+ * this content is what that hover would reveal.
+ */
+export function ContextTokensTooltip({
+  active,
+  payload,
+  contextWindow,
+}: ContextTokensTooltipProps) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
   const pct =
@@ -92,6 +101,9 @@ function ContextTokensTooltip({ active, payload, contextWindow }: ContextTokensT
           </span>
         )}
         {point.isCompactionBoundary && <span>Compaction</span>}
+        {point.subagentLaunches > 0 && (
+          <span>Subagents launched · {point.subagentLaunches}</span>
+        )}
       </div>
     </div>
   )

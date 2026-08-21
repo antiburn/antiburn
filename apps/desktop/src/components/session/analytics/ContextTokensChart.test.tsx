@@ -2,13 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { cleanup, render } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import { cloneElement, isValidElement, type ReactElement, type ReactNode } from "react"
 import type * as Recharts from "recharts"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import type { ContextTokenPoint } from "../../../lib/presentation/sessionAnalytics"
 import type { SessionBucket } from "../../../lib/types/session"
-import { ContextTokensChart } from "./ContextTokensChart"
+import { ContextTokensChart, ContextTokensTooltip } from "./ContextTokensChart"
 
 afterEach(cleanup)
 
@@ -44,6 +45,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    subagentLaunches: 0,
     ...over,
   }
 }
@@ -92,5 +94,47 @@ describe("ContextTokensChart", () => {
     )
     expect(compactionLine?.getAttribute("stroke-dasharray")).toBeTruthy()
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
+  })
+})
+
+function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
+  return {
+    index: 0,
+    progress: 50,
+    contextTokens: 100_000,
+    tokensIn: 1_000,
+    tokensOut: 200,
+    isCompactionBoundary: false,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    isCacheRehydration: false,
+    subagentLaunches: 0,
+    ...over,
+  }
+}
+
+describe("ContextTokensTooltip", () => {
+  it("shows the sub-agent launch count when the bucket launched one", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[{ payload: point({ subagentLaunches: 2 }) }]}
+      />,
+    )
+
+    expect(screen.getByText("Subagents launched · 2")).toBeInTheDocument()
+  })
+
+  it("says nothing about sub-agents when the bucket launched none", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[{ payload: point({ subagentLaunches: 0 }) }]}
+      />,
+    )
+
+    expect(screen.queryByText(/Subagents launched/)).not.toBeInTheDocument()
   })
 })

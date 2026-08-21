@@ -33,6 +33,7 @@ export interface ContextTokenPoint {
   cacheReadTokens: number
   cacheWriteTokens: number
   isCacheRehydration: boolean
+  subagentLaunches: number
 }
 
 /**
@@ -77,6 +78,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     cacheReadTokens: bucket.cacheReadTokens,
     cacheWriteTokens: bucket.cacheWriteTokens,
     isCacheRehydration: bucket.isCacheRehydration,
+    subagentLaunches: bucket.subagentLaunches,
   }))
 }
 

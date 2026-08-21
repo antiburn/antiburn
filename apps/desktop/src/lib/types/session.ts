@@ -45,6 +45,8 @@ export interface SessionBucket {
   cacheWriteTokens: number
   /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
   isCacheRehydration: boolean
+  /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
+  subagentLaunches: number
 }
 
 /* -------------------------------------------------------------------------
