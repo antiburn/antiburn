@@ -68,8 +68,8 @@
   --color-analytics-green-val: rgb(5 150 105); /* emerald-600 */
   --color-analytics-blue-val: rgb(59 130 246); /* blue-500 */
   --color-analytics-cyan-val: rgb(6 182 212); /* cyan-500 */
-  --color-context-fill-top-val: rgb(59 130 246 / 0.55); /* blue-500 */
-  --color-context-fill-base-val: rgb(59 130 246 / 0.08);
+  --color-context-fill-top-val: rgb(59 130 246 / 0.6); /* blue-500 */
+  --color-context-fill-base-val: rgb(59 130 246 / 0.2);
   --color-context-fixed-val: rgb(100 116 139); /* slate-500 */
   --color-context-system-val: rgb(124 58 237); /* violet-600 */
   --color-token-in-val: rgb(59 130 246); /* blue-500 */
@@ -88,8 +88,8 @@
     --color-analytics-green-val: rgb(52 211 153); /* emerald-400 */
     --color-analytics-blue-val: rgb(96 165 250); /* blue-400 */
     --color-analytics-cyan-val: rgb(34 211 238); /* cyan-400 */
-    --color-context-fill-top-val: rgb(96 165 250 / 0.6); /* blue-400 */
-    --color-context-fill-base-val: rgb(96 165 250 / 0.1);
+    --color-context-fill-top-val: rgb(96 165 250 / 0.75); /* blue-400 */
+    --color-context-fill-base-val: rgb(96 165 250 / 0.25);
     --color-context-fixed-val: rgb(148 163 184); /* slate-400 */
     --color-context-system-val: rgb(167 139 250); /* violet-400 */
     --color-token-in-val: rgb(96 165 250); /* blue-400 */
@@ -104,8 +104,8 @@
   --color-analytics-green-val: rgb(52 211 153);
   --color-analytics-blue-val: rgb(96 165 250);
   --color-analytics-cyan-val: rgb(34 211 238);
-  --color-context-fill-top-val: rgb(96 165 250 / 0.6);
-  --color-context-fill-base-val: rgb(96 165 250 / 0.1);
+  --color-context-fill-top-val: rgb(96 165 250 / 0.75);
+  --color-context-fill-base-val: rgb(96 165 250 / 0.25);
   --color-context-fixed-val: rgb(148 163 184);
   --color-context-system-val: rgb(167 139 250);
   --color-token-in-val: rgb(96 165 250);

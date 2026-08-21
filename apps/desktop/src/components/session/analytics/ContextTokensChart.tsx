@@ -99,7 +99,7 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
   const hasContext = contextWindow != null
 
   const tokenSum = data.reduce((m, d) => Math.max(m, d.tokensIn + d.tokensOut), 0)
-  const tokenCeiling = Math.max(1, tokenSum * 2.5)
+  const tokenCeiling = Math.max(1, tokenSum * 3)
   const bands = hasContext ? contextBandValues(contextWindow) : []
   // Every `ReferenceLine`, including the vertical compaction markers, needs a
   // `yAxisId` that names an axis the chart actually renders — recharts falls
@@ -193,10 +193,9 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
           type="monotone"
           dataKey="tokensIn"
           stackId="t"
-          stroke="var(--color-token-in)"
+          stroke="none"
           fill="var(--color-token-in)"
-          strokeWidth={1}
-          fillOpacity={0.25}
+          fillOpacity={0.22}
           isAnimationActive={false}
         />
         <Area
@@ -204,10 +203,9 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
           type="monotone"
           dataKey="tokensOut"
           stackId="t"
-          stroke="var(--color-token-out)"
+          stroke="none"
           fill="var(--color-token-out)"
-          strokeWidth={1}
-          fillOpacity={0.25}
+          fillOpacity={0.22}
           isAnimationActive={false}
         />
         {hasContext && (
@@ -215,7 +213,7 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
             yAxisId="context"
             type="monotone"
             dataKey="contextTokens"
-            stroke="var(--color-accent)"
+            stroke="var(--color-token-in)"
             strokeWidth={1.5}
             fill={`url(#${fillId})`}
             isAnimationActive={false}
