@@ -85,6 +85,86 @@ cargo test
 All three must be clean before review. Behavior suites live in `tests/`;
 keep inline `#[cfg(test)]` modules small and tightly scoped.
 
+## Slop gate
+
+The `slop gate` check runs on pull requests only. A failure also fails
+`ci-required`. The gate judges the files that the pull request changes, and it
+judges each touched file as a whole. It is not a repository score.
+
+Run the local check before you push:
+
+```bash
+pnpm run slop
+```
+
+This command expands to `aislop ci --changes --base origin/main` and uses the
+pinned `aislop 0.14.0`. CI runs the same script against the pull request base
+SHA. Run `git fetch origin main` first to make the local result close to the CI
+result. The results are not identical because the bases differ.
+
+Nine promoted rules have `error` severity and fail the build. Seven rules are
+threshold-independent, so any new instance fails:
+
+- `ai-slop/empty-function`
+- `ai-slop/narrative-comment`
+- `ai-slop/meta-comment`
+- `ai-slop/hardcoded-id`
+- `ai-slop/hardcoded-url`
+- `ai-slop/rust-non-test-unwrap`
+- `ai-slop/todo-stub`
+
+Two rules are threshold-bounded and fail after a size limit is crossed:
+
+- `complexity/file-too-large`
+- `complexity/function-too-long`
+
+The size limits have three layers:
+
+1. **Configured value:** `maxFileLoc: 1500` and `maxFunctionLoc: 1000`.
+2. **Language-adjusted budget:** aislop multiplies each configured value by a
+   per-extension multiplier. Rust files use ×2.5 for a 3750-line budget. Rust
+   functions use ×1.5 for a 1500-line budget. `.tsx` and `.jsx` files use ×1.5.
+   The finding message reports this budget.
+3. **10% grace trigger:** the check fires only above a further 10% grace on the
+   language-adjusted budget. A Rust file first fails at 4126 lines. A Rust
+   function first fails at 1652 lines because `Math.ceil(1500 * 1.1)` is 1651
+   in IEEE-754 and the test uses strict `>`.
+
+Other languages use different multipliers. Issue #90 tightens the configured
+values.
+
+At this commit, these 11 files contain 21 promoted findings. Touching any file
+makes the pull request red until all of its promoted findings are fixed or
+suppressed:
+
+- `apps/desktop/src-tauri/crates/sound/src/synth.rs`
+- `apps/desktop/src-tauri/src/provider_usage/live/sources/codex_fetch.rs`
+- `apps/desktop/src-tauri/src/provider_usage/live/sources/cooldown.rs`
+- `apps/desktop/src/components/activity/TruncatedText.tsx`
+- `apps/desktop/src/components/activity/useActivityGroupPinning.ts`
+- `apps/desktop/src/lib/ipc.ts`
+- `apps/desktop/src/lib/useDialogDismissal.ts`
+- `apps/desktop/src/lib/useElementWidth.ts`
+- `apps/desktop/src/lib/useGlobalKeydown.ts`
+- `apps/desktop/src/views/overlay/OverlaySession.ts`
+- `apps/desktop/src/views/popover/PopoverSession.ts`
+
+Issue #90 clears these standing findings. Refresh the list with this command,
+which selects every diagnostic where `severity === 'error'`:
+
+```bash
+pnpm exec aislop scan --format json 2>/dev/null | sed -n '/^{/,/^}/p' | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);const m={};for(const x of j.diagnostics||[]){if(x.severity!=='error')continue;const k=x.filePath+' '+x.rule;m[k]=(m[k]||0)+1}for(const k of Object.keys(m).sort())console.log(m[k],k)})"
+```
+
+There are two ways out of a finding: fix it, or suppress it with an aislop
+directive. Use this shape: `<comment marker> aislop-ignore-next-line <rule id…> -- <justification naming #90>`.
+The `--` separator keeps the justification from being parsed as rule IDs.
+`aislop-ignore-next-line` covers the line below the directive.
+`aislop-ignore-line` covers the line that contains the directive.
+`aislop-ignore-file` covers the whole file from any line in it. Rule IDs are
+optional. Omitting them silences every rule on the target. Write the
+justification in ASD-STE100 and name #90.
+
 ## Pull request boundaries
 
 Prefer one pull request per independently reviewable and reversible change.
