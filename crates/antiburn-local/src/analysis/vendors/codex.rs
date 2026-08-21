@@ -129,6 +129,8 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
                 {
                     current_thinking_mode = Some(next_mode.to_string());
                 }
+                // Codex rollouts carry no speed/fast-mode signal like Claude's
+                // `usage.speed`, so `NormalizedEvent.speed` stays `None` here.
             }
             let inherited_token_count = !usage_is_owned
                 && value.get("type").and_then(Value::as_str) == Some("event_msg")
@@ -267,6 +269,9 @@ fn message_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<Normal
 fn reasoning_event(_payload: &Map<String, Value>, ts: Option<i64>) -> NormalizedEvent {
     let mut ev = NormalizedEvent::new(Role::Assistant);
     ev.ts_ms = ts;
+    // A `reasoning` response_item is Codex's chain-of-thought turn, the
+    // vendor equivalent of a Claude `thinking` content block.
+    ev.has_thinking = true;
     ev
 }
 

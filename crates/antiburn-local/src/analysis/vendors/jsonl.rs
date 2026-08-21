@@ -186,10 +186,21 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
         .and_then(parse_ts);
 
     // Usage may live under message.usage (Anthropic) or top-level usage (OpenAI).
-    ev.usage = parse_usage(
-        msg.and_then(|m| m.get("usage"))
-            .or_else(|| obj.get("usage")),
-    );
+    let usage_value = msg
+        .and_then(|m| m.get("usage"))
+        .or_else(|| obj.get("usage"));
+    ev.usage = parse_usage(usage_value);
+
+    // The response speed (Claude's "standard"/"fast" fast-mode signal), when
+    // the transcript records it: message.usage.speed, top-level usage.speed,
+    // or a bare top-level speed field.
+    ev.speed = usage_value
+        .and_then(|u| u.get("speed"))
+        .or_else(|| obj.get("speed"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|speed| !speed.is_empty())
+        .map(str::to_string);
 
     // Model that produced this turn, when recorded: message.model (Anthropic) or
     // top-level model (OpenAI shape). `<synthetic>` is Claude's sentinel for
@@ -310,6 +321,7 @@ fn process_content(content: Option<&Value>, ev: &mut NormalizedEvent) {
                     item.get("arguments").or_else(|| item.get("input")),
                     ev,
                 ),
+                "thinking" => ev.has_thinking = true,
                 _ => {}
             }
         }
@@ -492,6 +504,66 @@ mod tests {
     use super::*;
     use crate::analysis::model::{Role, ToolCategory};
     use serde_json::json;
+
+    #[test]
+    fn message_usage_speed_is_parsed() {
+        let record = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "usage": {"input_tokens": 10, "output_tokens": 5, "speed": "fast"}
+            }
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert_eq!(ev.speed.as_deref(), Some("fast"));
+    }
+
+    #[test]
+    fn top_level_speed_is_parsed_when_usage_carries_none() {
+        let record = json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "usage": {"input_tokens": 10}},
+            "speed": "standard"
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert_eq!(ev.speed.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn missing_speed_leaves_it_none() {
+        let record = json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "usage": {"input_tokens": 10}}
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert_eq!(ev.speed, None);
+    }
+
+    #[test]
+    fn thinking_content_block_sets_has_thinking() {
+        let record = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "let me see"}]
+            }
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert!(ev.has_thinking);
+    }
+
+    #[test]
+    fn no_thinking_block_leaves_has_thinking_false() {
+        let record = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}]
+            }
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert!(!ev.has_thinking);
+    }
 
     #[test]
     fn openai_cached_tokens_are_split_from_prompt_tokens() {

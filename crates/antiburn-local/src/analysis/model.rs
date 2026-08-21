@@ -274,6 +274,15 @@ pub struct NormalizedEvent {
     /// The model's thinking mode for this turn, when the transcript records it.
     #[serde(default)]
     pub thinking_mode: Option<String>,
+    /// The response speed for this turn (e.g. Claude's "standard"/"fast"),
+    /// when the transcript records it. `None` when the vendor carries no
+    /// speed signal.
+    #[serde(default)]
+    pub speed: Option<String>,
+    /// True when this turn's content includes a `thinking` block (Claude) or
+    /// its vendor equivalent (Codex's `reasoning` response item).
+    #[serde(default)]
+    pub has_thinking: bool,
     /// The provider's message id (Anthropic `message.id`), when present. Claude
     /// transcripts re-log the same assistant message more than once, each copy
     /// carrying the full `usage`; this id lets the Claude adapter de-duplicate
@@ -299,6 +308,8 @@ impl NormalizedEvent {
             tools: Vec::new(),
             model: None,
             thinking_mode: None,
+            speed: None,
+            has_thinking: false,
             message_id: None,
             is_compaction_boundary: false,
         }

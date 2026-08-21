@@ -137,6 +137,19 @@ pub struct Bucket {
     /// parent session launched at this point. Parent turns only — a
     /// sub-agent does not itself launch sub-agents in this count.
     pub subagent_launches: u32,
+    /// The model that produced the last parent event in this bucket. Parent
+    /// turns only — a sub-agent runs its own model, which says nothing about
+    /// the parent session's mode at this point.
+    pub model: Option<String>,
+    /// The thinking mode of the last parent event in this bucket. Parent
+    /// turns only, for the same reason as `model`.
+    pub thinking_mode: Option<String>,
+    /// The response speed of the last parent event in this bucket. Parent
+    /// turns only, for the same reason as `model`.
+    pub speed: Option<String>,
+    /// True when any parent event in this bucket carries a `thinking` block
+    /// (or its vendor equivalent). Parent turns only.
+    pub has_thinking: bool,
 }
 
 /// Estimated USD cost of a session, split by billable component. An on-device
@@ -391,6 +404,21 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
                 .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
                 .count() as u32;
             bucket.subagent_launches = bucket.subagent_launches.saturating_add(launches);
+
+            // Mode signals: the last parent event seen in this bucket wins.
+            // Sub-agents run their own model/effort/speed, which says nothing
+            // about the parent session's mode at this point, so they never
+            // reach here.
+            if let Some(model) = ev.model.as_deref().filter(|m| !m.is_empty()) {
+                bucket.model = Some(model.to_string());
+            }
+            if let Some(mode) = ev.thinking_mode.as_deref().filter(|m| !m.is_empty()) {
+                bucket.thinking_mode = Some(mode.to_string());
+            }
+            if let Some(speed) = ev.speed.as_deref().filter(|s| !s.is_empty()) {
+                bucket.speed = Some(speed.to_string());
+            }
+            bucket.has_thinking |= ev.has_thinking;
         }
 
         // Collect skill invocations for exports.
@@ -680,6 +708,11 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.is_compaction_boundary = is_compaction_boundary;
         bucket.is_cache_rehydration = is_cache_rehydration;
         bucket.subagent_launches = subagent_launches;
+        // `model`, `thinking_mode`, `speed`, and `has_thinking` stay at their
+        // default (`None`/`false`) here. Each contributing session can be a
+        // different agent with its own model and mode, so one bucket cannot
+        // carry a single true value across a multi-session summary — the
+        // mode-change chart annotation is a single-session feature only.
     }
 
     ActiveSessionsSummary {

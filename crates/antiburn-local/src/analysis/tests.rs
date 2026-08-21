@@ -1608,3 +1608,101 @@ fn rehydration_detection_ignores_subagent_turns() {
         "the parent's own rehydration must still be detected, got {rehydrated:?}"
     );
 }
+
+/* -------------------------------------------------------------------------
+ * Mode signals — Bucket.model / thinking_mode / speed / has_thinking.
+ * ---------------------------------------------------------------------- */
+
+#[test]
+fn mode_signals_land_in_the_bucket_of_the_event_that_carried_them() {
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5,"speed":"standard"},"content":[{"type":"text","text":"a"}]},"effort":"high"}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:10:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":10,"output_tokens":5,"speed":"fast"},"content":[{"type":"thinking","thinking":"hmm"}]},"effort":"low"}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    let first = &m.buckets[0];
+    assert_eq!(first.model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(first.thinking_mode.as_deref(), Some("high"));
+    assert_eq!(first.speed.as_deref(), Some("standard"));
+    assert!(!first.has_thinking);
+
+    let second = &m.buckets[179];
+    assert_eq!(second.model.as_deref(), Some("claude-fable-5"));
+    assert_eq!(second.thinking_mode.as_deref(), Some("low"));
+    assert_eq!(second.speed.as_deref(), Some("fast"));
+    assert!(second.has_thinking);
+}
+
+#[test]
+fn mode_signal_bucket_keeps_the_last_value_seen_in_it() {
+    // The first two events share a timestamp, so both land in bucket 0; the
+    // third gives the session a real active-time span. The bucket must keep
+    // the second event's mode, not the first.
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"standard"},"content":[{"type":"text","text":"a"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"text","text":"b"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:10:00Z","message":{"role":"assistant","usage":{"input_tokens":10},"content":[{"type":"text","text":"c"}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    let bucket = &m.buckets[0];
+    assert_eq!(bucket.model.as_deref(), Some("claude-fable-5"));
+    assert_eq!(bucket.speed.as_deref(), Some("fast"));
+}
+
+#[test]
+fn subagent_mode_signals_never_override_the_parent_buckets() {
+    // The sub-agent runs a different model/effort/speed than the parent; none
+    // of it should leak into the parent's own bucket mode signals.
+    let parent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"standard"},"content":[{"type":"text","text":"a"}]},"effort":"high"}"#;
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","model":"claude-haiku","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"delegated"}]},"effort":"low"}"#;
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    for bucket in &m.buckets {
+        assert_ne!(bucket.model.as_deref(), Some("claude-haiku"));
+        assert_ne!(bucket.thinking_mode.as_deref(), Some("low"));
+        assert_ne!(bucket.speed.as_deref(), Some("fast"));
+        assert!(
+            !bucket.has_thinking,
+            "the sub-agent's thinking must not set the parent bucket"
+        );
+    }
+    assert_eq!(m.buckets[0].model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(m.buckets[0].thinking_mode.as_deref(), Some("high"));
+    assert_eq!(m.buckets[0].speed.as_deref(), Some("standard"));
+}
+
+#[test]
+fn buckets_with_no_mode_signal_stay_none() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"no model or usage here"}]}}"#;
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert!(m.buckets.iter().all(|b| b.model.is_none()));
+    assert!(m.buckets.iter().all(|b| b.thinking_mode.is_none()));
+    assert!(m.buckets.iter().all(|b| b.speed.is_none()));
+    assert!(m.buckets.iter().all(|b| !b.has_thinking));
+}
+
+#[test]
+fn aggregate_metrics_leaves_mode_signals_at_default() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"x"}]},"effort":"high"}"#;
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+
+    // A multi-session summary cannot carry one session's mode signals, since
+    // each contributing session can run a different agent/model.
+    assert!(summary.buckets.iter().all(|b| b.model.is_none()));
+    assert!(summary.buckets.iter().all(|b| b.thinking_mode.is_none()));
+    assert!(summary.buckets.iter().all(|b| b.speed.is_none()));
+    assert!(summary.buckets.iter().all(|b| !b.has_thinking));
+}
