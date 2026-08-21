@@ -33,6 +33,51 @@ const CONTEXT_WINDOW_TIERS: [u64; 2] = [200_000, 1_000_000];
 /// Inter-event gaps at or above this are treated as "away" time and excluded
 /// from active time; shorter gaps count as active work. Tunable.
 pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
+
+/// A prompt-cache entry expires after its provider's TTL. When a turn arrives
+/// after the cache has lapsed, the whole context re-writes to the cache in one
+/// turn instead of only the new suffix. This "cache rehydration" turn costs
+/// far more than a normal cache hit, so the engine flags it separately from
+/// ordinary cache writes. A turn counts as a rehydration only when all of
+/// these hold, each guarded by a named threshold below:
+/// - the turn's context is large enough that a full rewrite is not noise;
+/// - most of the turn's context is a fresh cache write, not a cache hit;
+/// - the turn right before it was mostly served from cache, so the drop to a
+///   full rewrite is a real TTL lapse and not just the session's first turn;
+/// - the turn is not the first turn after a compaction boundary, since a
+///   compaction always rewrites the (now smaller) context and that is not a
+///   TTL lapse.
+///
+/// Ignore contexts under this size; a full rewrite of a small context is
+/// cheap and not worth flagging as a rehydration event.
+const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
+/// A turn's cache write must reach this share of its context to count as a
+/// full rewrite rather than an incremental cache write.
+const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.8;
+/// The previous turn's cache read must reach this share of its context so the
+/// rehydration is a real TTL lapse, not the first turn after a fresh session.
+const CACHE_REHYDRATION_PRIOR_READ_RATIO: f64 = 0.5;
+
+/// Pure decision function for [`CACHE_REHYDRATION_*`] rehydration detection,
+/// factored out so the rule is unit-testable without a full event fixture.
+fn is_cache_rehydration_turn(
+    context_tokens: u64,
+    cache_write_tokens: u64,
+    prev_context_tokens: u64,
+    prev_cache_read_tokens: u64,
+    first_turn_after_compaction: bool,
+) -> bool {
+    if first_turn_after_compaction
+        || context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+        || prev_context_tokens == 0
+    {
+        return false;
+    }
+    let write_ratio = cache_write_tokens as f64 / context_tokens as f64;
+    let prev_read_ratio = prev_cache_read_tokens as f64 / prev_context_tokens as f64;
+    write_ratio >= CACHE_REHYDRATION_WRITE_RATIO
+        && prev_read_ratio >= CACHE_REHYDRATION_PRIOR_READ_RATIO
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolMix {
@@ -78,6 +123,16 @@ pub struct Bucket {
     pub context_tokens: u64,
     /// True when a real compaction boundary lands in this bucket.
     pub is_compaction_boundary: bool,
+    /// Cache-read tokens summed over this bucket's turns. Cost-only; already
+    /// folded into `context_tokens` occupancy, never into `tokens_in`.
+    pub cache_read_tokens: u64,
+    /// Cache-write (cache-creation) tokens summed over this bucket's turns.
+    /// This is a breakdown of `tokens_in`, not an addition to it — `tokens_in`
+    /// already includes cache writes as effective input.
+    pub cache_write_tokens: u64,
+    /// True when a turn landing in this bucket is a detected cache
+    /// rehydration (see `CACHE_REHYDRATION_WRITE_RATIO`).
+    pub is_cache_rehydration: bool,
 }
 
 /// Estimated USD cost of a session, split by billable component. An on-device
@@ -255,6 +310,12 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     let n = session.events.len();
     // Timestamp-less events use the position of the preceding timestamped event.
     let mut last_progress = 0.0f32;
+    // Cache-rehydration detection state, carried turn to turn (a "turn" is an
+    // event with non-zero context occupancy; events with no usage, like tool
+    // results, don't move this state).
+    let mut prev_turn_context = 0u64;
+    let mut prev_turn_cache_read = 0u64;
+    let mut awaiting_first_turn_after_compaction = false;
     for (idx, ev) in session.events.iter().enumerate() {
         if active_ms > 0
             && let Some(ts) = ev.ts_ms
@@ -278,6 +339,30 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         bucket.tokens_out = bucket.tokens_out.saturating_add(ev.usage.output_tokens);
         bucket.context_tokens = bucket.context_tokens.max(ev.usage.context_tokens());
         bucket.is_compaction_boundary |= ev.is_compaction_boundary;
+        bucket.cache_read_tokens = bucket
+            .cache_read_tokens
+            .saturating_add(ev.usage.cache_read_tokens);
+        bucket.cache_write_tokens = bucket
+            .cache_write_tokens
+            .saturating_add(ev.usage.cache_creation_tokens);
+        if ev.is_compaction_boundary {
+            awaiting_first_turn_after_compaction = true;
+        }
+        let context_tokens = ev.usage.context_tokens();
+        if context_tokens > 0 {
+            if is_cache_rehydration_turn(
+                context_tokens,
+                ev.usage.cache_creation_tokens,
+                prev_turn_context,
+                prev_turn_cache_read,
+                awaiting_first_turn_after_compaction,
+            ) {
+                bucket.is_cache_rehydration = true;
+            }
+            prev_turn_context = context_tokens;
+            prev_turn_cache_read = ev.usage.cache_read_tokens;
+            awaiting_first_turn_after_compaction = false;
+        }
 
         // Collect skill invocations for exports.
         for tool in &ev.tools {
@@ -517,17 +602,24 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     for (bi, bucket) in buckets.iter_mut().enumerate() {
         let mut tin = 0u64;
         let mut tout = 0u64;
+        let mut cache_read = 0u64;
+        let mut cache_write = 0u64;
         // Average only sessions that report values in this bucket.
         let mut tok_contributors = 0u64;
         let mut ctx_sum = 0u64;
         let mut ctx_contributors = 0u64;
-        // A compaction in any contributing session marks the summary bucket.
+        // A compaction (or a rehydration) in any contributing session marks
+        // the summary bucket.
         let mut is_compaction_boundary = false;
+        let mut is_cache_rehydration = false;
         for m in &metrics {
             let b = &m.buckets[bi];
             is_compaction_boundary |= b.is_compaction_boundary;
+            is_cache_rehydration |= b.is_cache_rehydration;
             tin = tin.saturating_add(b.tokens_in);
             tout = tout.saturating_add(b.tokens_out);
+            cache_read = cache_read.saturating_add(b.cache_read_tokens);
+            cache_write = cache_write.saturating_add(b.cache_write_tokens);
             if b.tokens_in > 0 || b.tokens_out > 0 {
                 tok_contributors += 1;
             }
@@ -545,8 +637,11 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         }
         bucket.tokens_in = tin.checked_div(tok_contributors).unwrap_or(0);
         bucket.tokens_out = tout.checked_div(tok_contributors).unwrap_or(0);
+        bucket.cache_read_tokens = cache_read.checked_div(tok_contributors).unwrap_or(0);
+        bucket.cache_write_tokens = cache_write.checked_div(tok_contributors).unwrap_or(0);
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
+        bucket.is_cache_rehydration = is_cache_rehydration;
     }
 
     ActiveSessionsSummary {

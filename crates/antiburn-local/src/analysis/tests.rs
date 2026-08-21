@@ -687,6 +687,128 @@ fn claude_compaction_sharing_bucket_with_pre_compaction_turn_still_resets() {
     assert_eq!(after.context_tokens, 10_000);
 }
 
+/// A Claude session where a cached turn (large cache-read ratio) is followed
+/// by a turn that rewrites almost the whole context back to the cache — the
+/// TTL-lapse pattern a cache rehydration should catch.
+const CLAUDE_CACHE_REHYDRATION_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn cache_rehydration_is_detected_after_a_ttl_lapse() {
+    let session =
+        normalize_source(&jsonl_input("claude", CLAUDE_CACHE_REHYDRATION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let rehydrated: Vec<usize> = m
+        .buckets
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_cache_rehydration)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(rehydrated.len(), 1, "got {rehydrated:?}");
+}
+
+#[test]
+fn first_turn_after_compaction_is_not_flagged_as_rehydration() {
+    // Same shape as the rehydration fixture, but a compaction boundary sits
+    // between the cached turn and the full-rewrite turn — the rewrite is
+    // explained by the compaction, not a cache TTL lapse.
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+        "\n",
+        r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:30Z","content":"Compacted conversation"}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert!(
+        m.buckets.iter().all(|b| !b.is_cache_rehydration),
+        "the first turn after a compaction must not be flagged as a rehydration"
+    );
+}
+
+#[test]
+fn small_contexts_are_not_flagged_as_rehydration() {
+    // Same write/read ratios as the rehydration fixture, but scaled down so
+    // both turns sit well under the 20k-token rehydration floor.
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":5000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":8000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert!(
+        m.buckets.iter().all(|b| !b.is_cache_rehydration),
+        "a small context rewrite must not be flagged as a rehydration"
+    );
+}
+
+#[test]
+fn cache_read_and_write_tokens_are_summed_per_bucket() {
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":200,"cache_read_input_tokens":5000,"cache_creation_input_tokens":500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":200,"output_tokens":50,"cache_read_input_tokens":1000,"cache_creation_input_tokens":300},"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"foo"}}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_read_tokens)
+            .sum::<u64>(),
+        6000
+    );
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_write_tokens)
+            .sum::<u64>(),
+        800
+    );
+}
+
+/// A Codex session carries `cached_input_tokens` (cache reads) but has no
+/// separate cache-write signal in its `token_count` usage payload — Codex
+/// folds any cache write into `input_tokens` with no distinct field. The
+/// bucket's `cache_read_tokens` must still carry the observed reads through;
+/// `cache_write_tokens` stays zero since the format has nothing to report.
+const CODEX_CACHE_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2024-06-01T12:00:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c1"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":80},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_read_tokens_are_carried_into_buckets() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_CACHE_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_read_tokens)
+            .sum::<u64>(),
+        25_000
+    );
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_write_tokens)
+            .sum::<u64>(),
+        0
+    );
+}
+
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +
 /// `payload.tokens`) and `part` rows (text / tool / patch) tagged by `messageID`.
 /// Messages come first, then parts — the adapter joins parts onto their message.
