@@ -135,7 +135,7 @@ function presentationProps(
     costSplit: null,
     orchestration: null,
     skills: [],
-    models: [],
+    modelRuns: [],
     relations: null,
     onOpenSubagent: () => {},
     onOpenOrchestrator: () => {},
@@ -191,7 +191,7 @@ describe("SessionDetailPresentation — chrome", () => {
         title: "Simplify the session detail",
         wslDistro: null,
       },
-      models: ["claude-opus-4-6"],
+      modelRuns: [{ model: "gpt-5.6-sol", thinkingMode: "high" }],
       cost: cost(),
     })
 
@@ -201,8 +201,9 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(summaryRow).toHaveTextContent("11m ago")
 
     const detailRow = screen.getByLabelText("Session timing and models")
-    expect(detailRow).toHaveTextContent("30m active · 1h overall")
-    expect(detailRow).toHaveTextContent("opus-4-6")
+    expect(detailRow).toHaveTextContent("30m active")
+    expect(detailRow).toHaveTextContent("last 11m ago")
+    expect(detailRow).toHaveTextContent("5.6-sol/high")
     expect(screen.getByLabelText("Session hygiene checks").children).toHaveLength(6)
   })
 

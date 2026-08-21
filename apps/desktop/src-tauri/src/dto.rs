@@ -166,6 +166,8 @@ pub struct SessionAnalytics {
     /// Every model that contributed billable tokens. The list covers the
     /// parent transcript and every sub-agent. It matches [`Self::cost`].
     pub models: Vec<String>,
+    /// Parent model runs come before runs used only by sub-agents.
+    pub model_runs: Vec<ModelRun>,
     pub skills: Vec<SkillUse>,
     pub orchestration: Option<OrchestrationStatus>,
     pub relations: Option<SessionRelations>,
