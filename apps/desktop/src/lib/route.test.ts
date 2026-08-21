@@ -4,7 +4,13 @@
 
 import { describe, expect, it } from "vitest"
 
-import { NUDGE_FRAGMENT, OVERLAY_FRAGMENT, routeFromHash, SETTINGS_FRAGMENT } from "./route"
+import {
+  applyRouteAttribute,
+  NUDGE_FRAGMENT,
+  OVERLAY_FRAGMENT,
+  routeFromHash,
+  SETTINGS_FRAGMENT,
+} from "./route"
 
 /**
  * The fragment is the only thing that distinguishes one window from another,
@@ -40,5 +46,24 @@ describe("routeFromHash", () => {
     // it is an inherited object property rather than a known route.
     expect(routeFromHash("#/constructor")).toBe("popover")
     expect(routeFromHash("#/toString")).toBe("popover")
+  })
+})
+
+describe("applyRouteAttribute", () => {
+  it("publishes the route so CSS can branch on the window", () => {
+    const root = document.createElement("html")
+
+    applyRouteAttribute(root, "popover")
+
+    expect(root.getAttribute("data-route")).toBe("popover")
+  })
+
+  it("overwrites a stale value instead of appending", () => {
+    const root = document.createElement("html")
+
+    applyRouteAttribute(root, "popover")
+    applyRouteAttribute(root, "settings")
+
+    expect(root.getAttribute("data-route")).toBe("settings")
   })
 })

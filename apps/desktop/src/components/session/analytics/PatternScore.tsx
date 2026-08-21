@@ -37,7 +37,7 @@ export function PatternScore({ score, signals }: PatternScoreProps) {
 
       <div className="ui-progress mt-2 h-1.5">
         <div
-          className="h-full rounded-full transition-[width] duration-300 ease-out"
+          className="h-full rounded-full transition-[width] duration-[var(--duration-slow)] ease-out"
           style={{ width: `${score}%`, backgroundColor: color }}
         />
       </div>

@@ -45,6 +45,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Window,
@@ -61,6 +63,15 @@ pub const EVENT_SHOWN: &str = "popover:shown";
 
 /// Popover width in logical pixels. Fixed: the views size themselves to it.
 const WIDTH: f64 = 380.0;
+
+/// Corner radius of the popover window, in logical pixels.
+///
+/// This is `rounded.popover` from `apps/desktop/design.md`. The window corner
+/// and the card corners inside it must agree, so change both together.
+/// `scripts/check-design-drift.mjs` reads this constant and fails if the two
+/// numbers differ.
+#[cfg(target_os = "macos")]
+const CORNER_RADIUS: f64 = 10.0;
 
 /// Tallest the popover may ever get, in logical pixels.
 ///
@@ -453,8 +464,20 @@ fn get_or_create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
 
     // Let the first click both focus the popover and act on the control under
     // the cursor; a menu-bar surface that eats the first click feels broken.
+    //
+    // The popover material also gives the window its rounded corner. Without it
+    // the window is an opaque square, which is wrong for a menu-bar surface, and
+    // the translucent palette in the stylesheets has nothing to sit on. The
+    // stylesheets already paint html, body, and #root transparent, so the
+    // material is what the reader sees behind the content.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true);
+    let builder = builder.accept_first_mouse(true).transparent(true).effects(
+        EffectsBuilder::new()
+            .effect(Effect::Popover)
+            .state(EffectState::Active)
+            .radius(CORNER_RADIUS)
+            .build(),
+    );
 
     match builder.build() {
         Ok(window) => Ok(window),

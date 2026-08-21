@@ -261,7 +261,7 @@ function Card({
               <button
                 type="button"
                 aria-label={`About ${title}`}
-                className="leading-none text-label-tertiary transition-colors hover:text-label-secondary"
+                className="leading-none text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out hover:text-label-secondary"
               >
                 <Info size={13} aria-hidden="true" />
               </button>
@@ -308,7 +308,7 @@ function PhaseBreakdownRows({
         <div
           key={row.key}
           className={cn(
-            "-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1 transition-colors",
+            "-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1 transition-colors duration-[var(--duration-fast)] ease-out",
             activePhase === row.key && "bg-surface-secondary",
           )}
           onMouseEnter={() => onHoverPhase?.(row.key)}
@@ -325,7 +325,7 @@ function PhaseBreakdownRows({
                 <button
                   type="button"
                   aria-label={`About ${row.label}`}
-                  className="leading-none text-label-tertiary transition-colors hover:text-label-secondary"
+                  className="leading-none text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out hover:text-label-secondary"
                 >
                   <Info size={11} aria-hidden="true" />
                 </button>
@@ -808,7 +808,7 @@ export function SessionDetailPresentation({
                         disabled={!onPrev}
                         aria-label="Newer session"
                         className={cn(
-                          "shrink-0 rounded-md p-1 transition-colors",
+                          "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
                           onPrev
                             ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
                             : "cursor-default text-label-tertiary opacity-40",
@@ -833,7 +833,7 @@ export function SessionDetailPresentation({
                         disabled={!onNext}
                         aria-label="Older session"
                         className={cn(
-                          "shrink-0 rounded-md p-1 transition-colors",
+                          "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
                           onNext
                             ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
                             : "cursor-default text-label-tertiary opacity-40",

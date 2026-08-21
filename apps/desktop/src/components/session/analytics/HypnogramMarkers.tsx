@@ -147,7 +147,7 @@ export function HypnogramMarkers<T>({
           translate-based centering instead of overriding it. */}
       <style>{`
         @media (prefers-reduced-motion: no-preference) {
-          .ui-marker-dot { transition: scale 0.15s ease; }
+          .ui-marker-dot { transition: scale var(--duration-fast) ease-out; }
           .ui-marker-dot:hover { scale: 1.15; }
         }
       `}</style>

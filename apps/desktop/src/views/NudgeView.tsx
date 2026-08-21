@@ -167,7 +167,7 @@ export function NudgeView() {
                 key={action.id}
                 onClick={() => session.handleAction(action)}
                 className={cn(
-                  "type-body flex-1 py-2.5 text-center transition-colors outline-none hover:bg-surface-hover focus-visible:outline-none",
+                  "type-body flex-1 py-2.5 text-center transition-colors duration-[var(--duration-fast)] ease-out outline-none hover:bg-surface-hover focus-visible:outline-none",
                   i > 0 && "border-l border-separator",
                   action.primary ? "font-medium text-accent" : "text-label",
                 )}

@@ -110,7 +110,7 @@ export function SidebarNav({
                 tabIndex={selected ? 0 : -1}
                 onClick={() => onChange(item.id)}
                 className={cn(
-                  "type-body flex h-9 items-center gap-3 rounded-control px-3 transition-colors duration-[120ms] ease-out",
+                  "type-body flex h-9 items-center gap-3 rounded-control px-3 transition-colors duration-[var(--duration-fast)] ease-out",
                   selected
                     ? "bg-surface-selected text-label"
                     : "text-label hover:bg-surface-hover",

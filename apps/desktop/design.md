@@ -10,15 +10,19 @@ sources:
   - src/styles/controls.css
   - src/styles/motion.css
   - src/styles/platform-controls.css
+  - src/styles/hud.css
   - src/styles/session-analytics-colors.css
+  - src/styles/session-rows.css
   - src/components/ui/text-roll.css
 colors:
   # name → Tailwind utility via bg-/text-/border-<name>
-  # light = the default :root palette · dark = the explicit [data-theme="dark"] palette
-  # System-preference (@media) values are noted where they differ from the explicit ones.
-  surface:
-    light: "rgb(255 255 255 / 0.58)" # reduced-transparency: rgb(255 255 255)
-    dark: "rgb(30 30 30 / 0.92)" # @media dark: rgb(30 30 30 / 0.40)
+  # Both values are the explicit [data-theme="light"|"dark"] palettes.
+  # A `# @media <theme>: <value>` note states the system-preference value where it
+  # differs. The drift check reads those notes: a difference it cannot find a note
+  # for is a failure, and so is a note that no longer differs.
+  surface: # the menu-bar popover, which sits on the window material
+    light: "rgb(255 255 255 / 0.85)" # reduced-transparency: rgb(255 255 255)
+    dark: "rgb(30 30 30 / 0.92)"
   surface-secondary:
     light: "rgb(0 0 0 / 0.08)"
     dark: "rgb(255 255 255 / 0.12)"
@@ -28,8 +32,8 @@ colors:
   surface-card:
     light: "rgb(0 0 0 / 0.04)"
     dark: "rgb(255 255 255 / 0.08)"
-  surface-hover:
-    light: "rgb(0 0 0 / 0.08)" # @media light: rgb(0 0 0 / 0.04)
+  surface-hover: # stays clear of surface-selected, so a hover never reads as a selection
+    light: "rgb(0 0 0 / 0.04)"
     dark: "rgb(255 255 255 / 0.04)" # @media dark: rgb(255 255 255 / 0.07)
   surface-window: # standard decorated window
     light: "rgb(246 246 246)" # @media light: rgb(246 246 246 / 0.80)
@@ -49,21 +53,21 @@ colors:
   label-secondary:
     light: "rgb(60 60 67 / 0.85)"
     dark: "rgb(235 235 245 / 0.72)"
-  label-tertiary:
-    light: "rgb(60 60 67 / 0.5)"
-    dark: "rgb(235 235 245 / 0.45)" # @media dark: rgb(235 235 245 / 0.35)
+  label-tertiary: # 4.5:1 on a card on the popover, over any desktop behind it
+    light: "rgb(60 60 67 / 0.79)"
+    dark: "rgb(235 235 245 / 0.62)"
   separator: # live system separator token where available
     light: "rgb(0 0 0 / 0.15)"
     dark: "rgb(255 255 255 / 0.18)"
   accent: # live system accent token where available
     light: "rgb(0 122 255)"
     dark: "rgb(10 132 255)"
-  accent-hover:
-    light: "rgb(0 122 255 / 0.85)"
-    dark: "rgb(10 132 255 / 0.85)"
+  accent-hover: # darker than accent-fill, because white text sits on it
+    light: "rgb(0 98 199)"
+    dark: "rgb(10 96 205)"
   accent-fill: # concrete fill; use bg-accent-fill for backgrounds
-    light: "rgb(0 122 255)"
-    dark: "rgb(10 132 255)"
+    light: "rgb(0 113 227)"
+    dark: "rgb(10 110 235)"
   system-green:
     light: "rgb(36 138 61)"
     dark: "rgb(48 219 91)"
@@ -100,6 +104,16 @@ colors:
   agent-mark: # vendor brand-mark ink; see the Vendor brand marks note below
     light: "rgb(38 37 30)"
     dark: "rgb(247 247 244)"
+  # Floating-HUD sub-palette only (src/styles/hud.css)
+  burn:
+    light: "rgb(255 77 0)"
+    dark: "rgb(255 106 0)"
+  burn-muted:
+    light: "rgb(240 88 22)"
+    dark: "rgb(242 113 34)"
+  bg-hud:
+    light: "rgb(246 246 246)"
+    dark: "rgb(32 32 32)"
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
   mode-implementing:
     light: "rgb(29 78 216)"
@@ -182,6 +196,16 @@ shadow:
   tooltip: "0 2px 8px rgb(0 0 0 / 0.12), 0 0.5px 2px rgb(0 0 0 / 0.06)"
   raised: "0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)"
 motion:
+  # Transition tokens. Durations are plain :root vars in src/styles/tokens.css,
+  # because Tailwind has no --duration-* theme namespace; consume one as
+  # duration-[var(--duration-fast)]. The easing is @theme-registered, so it is
+  # the `ease-out-quart` utility. Plain `ease-out` is the default elsewhere.
+  --duration-quick: 100ms # a crossfade that leads the movement it accompanies
+  --duration-fast: 120ms # the default control, hover, and disclosure transition
+  --duration-slow: 300ms # a meter or bar that fills
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
+  # Recipes, for the timings the tokens above do not carry. Animation timings
+  # stay with the keyframes that own them.
   button: "transform 80ms / opacity 120ms ease-out; :active scale(0.98) opacity 0.85"
   menu-in: "120ms ease-out from trigger origin"
   tooltip-in: "100ms"
@@ -293,7 +317,10 @@ Notes for what isn't expressible as a token:
 - **Motion** — `prefers-reduced-motion: reduce` clamps every animation and transition globally
   (`src/styles/motion.css`). A surface that still needs a hint of movement re-states a short
   duration there, with the reason; today the only such exception is the segmented control's
-  reduced-motion fill, which crossfades over 60ms instead of swapping instantly.
+  reduced-motion fill, which crossfades over 60ms instead of swapping instantly. An ambient loop
+  stops instead of shortening: no duration makes a loop acceptable, so the activity-row pulse and
+  title shimmer in `src/styles/session-rows.css` set `animation: none` and each keeps its resting
+  meaning — the pulse settles at a fixed tint, and the title paints as plain primary text.
 - **State** — style the headless control primitives via `[data-state]` / `[data-highlighted]`, not
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to

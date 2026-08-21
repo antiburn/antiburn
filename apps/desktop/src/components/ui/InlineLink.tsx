@@ -33,7 +33,7 @@ export function InlineLink({
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-control text-label underline decoration-label-tertiary underline-offset-2 transition-colors duration-[120ms] ease-out hover:decoration-label",
+        "rounded-control text-label underline decoration-label-tertiary underline-offset-2 transition-colors duration-[var(--duration-fast)] ease-out hover:decoration-label",
         className,
       )}
     >

@@ -148,6 +148,13 @@ pub async fn save_spawn_edges(path: &Path, edges: &SpawnEdges) -> anyhow::Result
         match opts.open(&tmp).await {
             Ok(mut file) => {
                 tokio::io::AsyncWriteExt::write_all(&mut file, &data).await?;
+                // A tokio File buffers the write and finishes it on the
+                // blocking pool. A drop does not wait for that work, so the
+                // rename below can move an empty file into place. Flush the
+                // buffer, then sync, so the data is on disk before the file
+                // becomes visible under its real name.
+                tokio::io::AsyncWriteExt::flush(&mut file).await?;
+                file.sync_all().await?;
                 drop(file);
                 tokio::fs::rename(&tmp, &path).await?;
                 return Ok(());

@@ -127,7 +127,7 @@ export function SettingsView() {
           <button
             type="button"
             onClick={() => void quitApp()}
-            className="type-body flex h-9 w-full items-center gap-3 rounded-control px-3 text-label transition-colors duration-[120ms] ease-out hover:bg-surface-hover"
+            className="type-body flex h-9 w-full items-center gap-3 rounded-control px-3 text-label transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
           >
             <LogOut size={16} strokeWidth={2} className="shrink-0" aria-hidden="true" />
             <span className="truncate">Quit antiburn</span>

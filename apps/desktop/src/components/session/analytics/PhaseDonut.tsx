@@ -41,7 +41,7 @@ export function PhaseDonut({ summary, activePhase, onHoverPhase }: PhaseDonutPro
                 key={row.key}
                 fill={row.colorVar}
                 opacity={activePhase && activePhase !== row.key ? 0.75 : 1}
-                style={{ transition: "opacity 120ms" }}
+                style={{ transition: "opacity var(--duration-fast)" }}
               />
             ))}
           </Pie>
