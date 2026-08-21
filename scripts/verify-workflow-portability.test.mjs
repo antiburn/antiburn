@@ -244,19 +244,69 @@ fi`;
   assert.ok(script.indexOf(aislopBranch) < script.indexOf('exit "$failed"'));
 });
 
-test("the standalone HUD crate has dedicated backend checks", () => {
-  assert.match(workflow, /apps\/desktop\/src-tauri\/crates\/hud -> target/);
+test("desktop backend checks use parallel jobs with one aggregate result", () => {
+  const format = jobBlock("desktop-backend-format");
+  const checks = jobBlock("desktop-backend-checks");
+  const aggregate = jobBlock("desktop-backend");
 
-  for (const [name, command] of [
-    ["Check HUD crate formatting", "cargo fmt --check"],
-    ["Clippy HUD crate", "cargo clippy --all-targets --locked -- -D warnings"],
-    ["Test HUD crate", "cargo test --locked"],
+  assert.match(format, /^ {4}runs-on: ubuntu-latest$/m);
+  assert.equal(count(format, /run: cargo fmt --check/g), 3);
+  assert.doesNotMatch(format, /runner\.os/);
+
+  assert.equal(
+    count(checks, /^ {10}- name: (linux|windows|macos)$/gm),
+    3,
+  );
+  assert.match(
+    checks,
+    /^ {4}if: needs\.classify\.outputs\.desktop_backend == 'true'$/m,
+  );
+  assert.match(
+    checks,
+    /^ {12}command: clippy --all-targets --locked -- -D warnings$/m,
+  );
+  assert.match(checks, /^ {12}command: test --locked$/m);
+  assert.equal(count(checks, /^ {10}- name: (shell|diagnostic|HUD)$/gm), 3);
+  assert.match(
+    checks,
+    /^ {8}working-directory: \$\{\{ matrix\.workspace\.directory \}\}$/m,
+  );
+  assert.match(
+    checks,
+    /^ {8}run: cargo \$\{\{ matrix\.check\.command \}\}$/m,
+  );
+  assert.match(
+    checks,
+    /^ {10}save-if: \$\{\{ matrix\.check\.save_cache && github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}$/m,
+  );
+
+  for (const dependency of [
+    "classify",
+    "desktop-backend-format",
+    "desktop-backend-checks",
   ]) {
-    const step = namedStep(name);
-    assert.match(
-      step,
-      /working-directory: apps\/desktop\/src-tauri\/crates\/hud/,
-    );
-    assert.ok(step.includes(`run: ${command}`));
+    assert.equal(count(aggregate, new RegExp(`^ {6}- ${dependency}$`, "gm")), 1);
   }
+  assert.match(aggregate, /^ {4}if: always\(\)$/m);
+  assert.match(
+    aggregate,
+    /^ {6}BACKEND_SELECTED: \$\{\{ needs\.classify\.outputs\.desktop_backend \}\}$/m,
+  );
+});
+
+test("the standalone HUD crate has dedicated backend checks", () => {
+  const checks = jobBlock("desktop-backend-checks");
+  assert.match(
+    checks,
+    /^ {10}- name: HUD\n {12}directory: apps\/desktop\/src-tauri\/crates\/hud$/m,
+  );
+  assert.match(
+    checks,
+    /^ {12}command: clippy --all-targets --locked -- -D warnings$/m,
+  );
+  assert.match(checks, /^ {12}command: test --locked$/m);
+
+  const format = namedStep("Check HUD crate formatting");
+  assert.match(format, /working-directory: apps\/desktop\/src-tauri\/crates\/hud/);
+  assert.ok(format.includes("run: cargo fmt --check"));
 });
