@@ -300,22 +300,19 @@ fn resolve_role(
 }
 
 fn process_content(content: Option<&Value>, ev: &mut NormalizedEvent) {
-    match content {
-        Some(Value::Array(items)) => {
-            for item in items {
-                let kind = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                match kind {
-                    "tool_use" => push_named_tool(item.get("name"), item.get("input"), ev),
-                    "toolCall" => push_named_tool(
-                        item.get("name"),
-                        item.get("arguments").or_else(|| item.get("input")),
-                        ev,
-                    ),
-                    _ => {}
-                }
+    if let Some(Value::Array(items)) = content {
+        for item in items {
+            let kind = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match kind {
+                "tool_use" => push_named_tool(item.get("name"), item.get("input"), ev),
+                "toolCall" => push_named_tool(
+                    item.get("name"),
+                    item.get("arguments").or_else(|| item.get("input")),
+                    ev,
+                ),
+                _ => {}
             }
         }
-        _ => {}
     }
 }
 
