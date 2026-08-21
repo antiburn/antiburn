@@ -51,21 +51,21 @@ colors:
   label-secondary:
     light: "rgb(60 60 67 / 0.85)"
     dark: "rgb(235 235 245 / 0.72)"
-  label-tertiary:
-    light: "rgb(60 60 67 / 0.5)"
-    dark: "rgb(235 235 245 / 0.45)" # @media dark: rgb(235 235 245 / 0.35)
+  label-tertiary: # 4.5:1 on a card, the lightest surface it sits on
+    light: "rgb(60 60 67 / 0.75)"
+    dark: "rgb(235 235 245 / 0.55)"
   separator: # live system separator token where available
     light: "rgb(0 0 0 / 0.15)"
     dark: "rgb(255 255 255 / 0.18)"
   accent: # live system accent token where available
     light: "rgb(0 122 255)"
     dark: "rgb(10 132 255)"
-  accent-hover:
-    light: "rgb(0 122 255 / 0.85)"
-    dark: "rgb(10 132 255 / 0.85)"
+  accent-hover: # darker than accent-fill, because white text sits on it
+    light: "rgb(0 98 199)"
+    dark: "rgb(10 96 205)"
   accent-fill: # concrete fill; use bg-accent-fill for backgrounds
-    light: "rgb(0 122 255)"
-    dark: "rgb(10 132 255)"
+    light: "rgb(0 113 227)"
+    dark: "rgb(10 110 235)"
   system-green:
     light: "rgb(36 138 61)"
     dark: "rgb(48 219 91)"

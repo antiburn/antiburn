@@ -117,15 +117,17 @@
   /* Text — explicit fallbacks, replaced by live system tokens when available */
   --color-text-primary: rgb(0 0 0 / 0.85);
   --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.55);
+  --color-text-tertiary: rgb(60 60 67 / 0.75);
 
   /* Borders */
   --color-border: rgb(0 0 0 / 0.15);
 
-  /* Accent */
+  /* Accent. accent-val keeps the system blue, because it carries text and
+     icons on a surface. accent-fill and accent-hover are darker: they sit
+     behind white text, and the system blue gives it only 4.02:1. */
   --color-accent-val: rgb(0 122 255);
-  --color-accent-fill-val: rgb(0 122 255);
-  --color-accent-hover-val: rgb(0 122 255 / 0.85);
+  --color-accent-fill-val: rgb(0 113 227);
+  --color-accent-hover-val: rgb(0 98 199);
 
   /* Status — accessible variants, tuned for contrast on a light surface */
   --color-system-green-val: rgb(36 138 61);
@@ -186,13 +188,13 @@
   }
 }
 
-/* The system tertiary label is ~30% opacity in light mode, which reads as too
-   faint on a translucent surface. Bump it to ~50% so the hierarchy stays
-   (still below secondary's ~60%) but tertiary actually registers. Dark mode
-   keeps the system token, which already has appropriate contrast. */
+/* The system tertiary label is ~30% opacity in light mode, which gives small
+   text about 2.6:1. Bump it to 75%, the point where 11px text reaches the
+   WCAG AA ratio of 4.5:1 on a card, which is the lightest surface it sits on.
+   Secondary stays above it at 85%, so the hierarchy holds. */
 @media (prefers-color-scheme: light) {
   :root {
-    --color-text-tertiary: rgb(60 60 67 / 0.5);
+    --color-text-tertiary: rgb(60 60 67 / 0.75);
   }
 }
 
@@ -212,8 +214,8 @@
     --color-text-secondary: rgb(235 235 245 / 0.72);
     --color-border: rgb(255 255 255 / 0.18);
     --color-accent-val: rgb(10 132 255);
-    --color-accent-fill-val: rgb(10 132 255);
-    --color-accent-hover-val: rgb(10 132 255 / 0.85);
+    --color-accent-fill-val: rgb(10 110 235);
+    --color-accent-hover-val: rgb(10 96 205);
     --color-system-green-val: rgb(48 219 91);
     --color-system-orange-val: rgb(255 179 64);
     --color-system-orange-tint-val: rgb(255 159 10);
@@ -226,9 +228,10 @@
     --color-system-gold-val: rgb(255 204 0);
     --color-system-gold-text-val: rgb(245 203 92);
     --color-agent-mark-val: rgb(247 247 244);
-    /* The system tertiary label is ~25% opacity in dark mode; bump to ~35% so
-       it reads on a translucent surface (same rationale as light mode). */
-    --color-text-tertiary: rgb(235 235 245 / 0.35);
+    /* The system tertiary label is ~25% opacity in dark mode; bump to 55%,
+       where small text reaches 4.5:1 on a card (same rationale as light
+       mode). 50% is enough on the window, but not on the lighter card. */
+    --color-text-tertiary: rgb(235 235 245 / 0.55);
     /* The live label, separator, and accent tokens auto-adapt in dark mode —
        no overrides needed for those three. */
   }
@@ -256,11 +259,11 @@
   --color-bg-selected: rgb(0 0 0 / 0.09);
   --color-text-primary: rgb(0 0 0 / 0.85);
   --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.5);
+  --color-text-tertiary: rgb(60 60 67 / 0.75);
   --color-border: rgb(0 0 0 / 0.15);
   --color-accent-val: rgb(0 122 255);
-  --color-accent-fill-val: rgb(0 122 255);
-  --color-accent-hover-val: rgb(0 122 255 / 0.85);
+  --color-accent-fill-val: rgb(0 113 227);
+  --color-accent-hover-val: rgb(0 98 199);
   --color-system-green-val: rgb(36 138 61);
   --color-system-orange-val: rgb(179 81 0);
   --color-system-orange-tint-val: rgb(255 149 0);
@@ -307,11 +310,11 @@
   --color-bg-selected: rgb(255 255 255 / 0.14);
   --color-text-primary: rgb(255 255 255 / 0.92);
   --color-text-secondary: rgb(235 235 245 / 0.72);
-  --color-text-tertiary: rgb(235 235 245 / 0.45);
+  --color-text-tertiary: rgb(235 235 245 / 0.55);
   --color-border: rgb(255 255 255 / 0.18);
   --color-accent-val: rgb(10 132 255);
-  --color-accent-fill-val: rgb(10 132 255);
-  --color-accent-hover-val: rgb(10 132 255 / 0.85);
+  --color-accent-fill-val: rgb(10 110 235);
+  --color-accent-hover-val: rgb(10 96 205);
   --color-system-green-val: rgb(48 219 91);
   --color-system-orange-val: rgb(255 179 64);
   --color-system-orange-tint-val: rgb(255 159 10);
