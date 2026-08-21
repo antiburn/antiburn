@@ -76,7 +76,7 @@ export function InitialContextChart({ breakdown }: InitialContextChartProps) {
                 <button
                   type="button"
                   aria-label={`About ${slice.label}`}
-                  className="shrink-0 leading-none text-label-tertiary transition-colors hover:text-label-secondary"
+                  className="shrink-0 leading-none text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out hover:text-label-secondary"
                 >
                   <Info size={11} aria-hidden="true" />
                 </button>

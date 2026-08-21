@@ -133,11 +133,8 @@ mod blocking {
     /// inline did, and folding the join error away means a pass that panics
     /// anyway costs one pass rather than every pass after it.
     pub async fn run<F: FnOnce(Thread) + Send + 'static>(pass: F) {
-        if tauri::async_runtime::spawn_blocking(move || pass(Thread(())))
-            .await
-            .is_err()
-        {
-            eprintln!("antiburn: a usage-alert pass failed; the monitor continues");
+        if let Err(error) = tauri::async_runtime::spawn_blocking(move || pass(Thread(()))).await {
+            ::tracing::error!(event = "usage_alert_pass_failed", error = %error);
         }
     }
 }

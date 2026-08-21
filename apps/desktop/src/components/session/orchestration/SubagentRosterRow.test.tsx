@@ -11,18 +11,10 @@ import { SubagentRosterRow } from "./SubagentRosterRow"
 afterEach(cleanup)
 
 describe("SubagentRosterRow", () => {
-  it("renders the label and trailing value as one activatable row", () => {
+  it("renders the label as one activatable row", () => {
     const onClick = vi.fn()
-    render(
-      <SubagentRosterRow
-        agent="codex"
-        label="Refactor auth"
-        trailing={<span>80%</span>}
-        onClick={onClick}
-      />,
-    )
+    render(<SubagentRosterRow agent="codex" label="Refactor auth" onClick={onClick} />)
     const row = screen.getByRole("button", { name: /Refactor auth/ })
-    expect(row.textContent).toContain("80%")
     fireEvent.click(row)
     expect(onClick).toHaveBeenCalledOnce()
   })
@@ -44,11 +36,6 @@ describe("SubagentRosterRow", () => {
     )
     expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14)
     expect(screen.getByTestId("slot")).toBeTruthy()
-  })
-
-  it("tightens its padding in the dense variant", () => {
-    const { container } = render(<SubagentRosterRow agent="codex" label="Dense" dense />)
-    expect(container.querySelector("button")?.className).toContain("px-1 py-1")
   })
 })
 

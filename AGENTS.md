@@ -14,6 +14,16 @@ There should be no Rust lint suppressions for dead or deprecated code.
 
 Only add a suppression when it is _strictly_ necessary. Before adding it, explain why and get explicit agreement from the dev.
 
+## Desktop design system
+
+Read `apps/desktop/design.md` before you do styling work in `apps/desktop`. Its YAML front matter is the token reference, and the stylesheets it names are the source of truth.
+
+Use the semantic utilities the contract documents (`bg-/text-/border-<token>`, the `type-*` scale, `rounded-control`, `duration-*`). Do not hard-code a color, a type size, a radius, or a duration.
+
+CI runs `scripts/check-design-drift.mjs`. When you change a token or a stylesheet, update `design.md` in the same change, and add a new stylesheet to its `sources:` list.
+
+For a review of a surface against the wider interface rules, use the `design-review` skill.
+
 ## Comments
 
 Write all code comments in ASD-STE100 (Simplified Technical English). The rules that matter most for comments:

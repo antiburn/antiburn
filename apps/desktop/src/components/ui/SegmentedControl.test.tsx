@@ -90,7 +90,7 @@ describe("SegmentedControl", () => {
     expect(screen.getByRole("tab", { name: "C" }).getAttribute("aria-controls")).toBe(
       "sessions-panel",
     )
-    expect(document.querySelector(".duration-\\[120ms\\]")).toBeTruthy()
+    expect(document.querySelector(".duration-\\[var\\(--duration-fast\\)\\]")).toBeTruthy()
     // The reduced-motion fallback fill is always in the DOM; CSS decides which
     // of the two indicators paints.
     expect(document.querySelector(".ui-segmented-reduced-fill")).toBeTruthy()
@@ -119,7 +119,7 @@ describe("SegmentedControl", () => {
     }
     expect(tablist.getAttribute("style")).toBeNull()
     expect(document.querySelector(".bg-accent-fill")).toBeNull()
-    expect(document.querySelector(".duration-\\[120ms\\]")).toBeNull()
+    expect(document.querySelector(".duration-\\[var\\(--duration-fast\\)\\]")).toBeNull()
 
     const selected = screen.getByRole("tab", { name: "B" })
     expect(selected.className).toContain("font-medium")

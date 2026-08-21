@@ -45,6 +45,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Window,
@@ -61,6 +63,15 @@ pub const EVENT_SHOWN: &str = "popover:shown";
 
 /// Popover width in logical pixels. Fixed: the views size themselves to it.
 const WIDTH: f64 = 380.0;
+
+/// Corner radius of the popover window, in logical pixels.
+///
+/// This is `rounded.popover` from `apps/desktop/design.md`. The window corner
+/// and the card corners inside it must agree, so change both together.
+/// `scripts/check-design-drift.mjs` reads this constant and fails if the two
+/// numbers differ.
+#[cfg(target_os = "macos")]
+const CORNER_RADIUS: f64 = 10.0;
 
 /// Tallest the popover may ever get, in logical pixels.
 ///
@@ -236,7 +247,11 @@ pub fn open_from_tray_menu(app: &AppHandle) {
     // popover has nothing to show, so send the reader to the flow they are owed.
     if crate::onboarding::is_pending(app) {
         if let Err(error) = crate::onboarding::open(app) {
-            eprintln!("antiburn: could not open the first-run window ({error})");
+            ::tracing::warn!(
+                event = "onboarding_window_open_failed",
+                trigger = "tray",
+                error = %error
+            );
         }
         return;
     }
@@ -255,7 +270,7 @@ pub fn open_from_tray_menu(app: &AppHandle) {
     let window = match get_or_create(app) {
         Ok(window) => window,
         Err(error) => {
-            eprintln!("antiburn: could not create the popover ({error})");
+            ::tracing::error!(event = "popover_create_failed", error = %error);
             return;
         }
     };
@@ -269,7 +284,7 @@ pub fn open_from_tray_menu(app: &AppHandle) {
         state.record_anchor(anchor);
         if let Err(error) = place(&window, anchor, WIDTH, state.height()) {
             // Positioning is best-effort here as everywhere else.
-            eprintln!("antiburn: could not anchor the popover ({error})");
+            ::tracing::warn!(event = "popover_anchor_failed", error = %error);
         }
     }
 
@@ -453,8 +468,20 @@ fn get_or_create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
 
     // Let the first click both focus the popover and act on the control under
     // the cursor; a menu-bar surface that eats the first click feels broken.
+    //
+    // The popover material also gives the window its rounded corner. Without it
+    // the window is an opaque square, which is wrong for a menu-bar surface, and
+    // the translucent palette in the stylesheets has nothing to sit on. The
+    // stylesheets already paint html, body, and #root transparent, so the
+    // material is what the reader sees behind the content.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true);
+    let builder = builder.accept_first_mouse(true).transparent(true).effects(
+        EffectsBuilder::new()
+            .effect(Effect::Popover)
+            .state(EffectState::Active)
+            .radius(CORNER_RADIUS)
+            .build(),
+    );
 
     match builder.build() {
         Ok(window) => Ok(window),
@@ -475,7 +502,11 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     // anyone who closed it partway through.
     if crate::onboarding::is_pending(app) {
         if let Err(error) = crate::onboarding::open(app) {
-            eprintln!("antiburn: could not open the first-run window ({error})");
+            ::tracing::warn!(
+                event = "onboarding_window_open_failed",
+                trigger = "tray",
+                error = %error
+            );
         }
         return;
     }
@@ -488,7 +519,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
         // and re-anchoring picks up a menu bar that has since moved display.
         if is_pinned(app) {
             if let Err(error) = anchor_to(&window, anchor) {
-                eprintln!("antiburn: could not anchor the popover ({error})");
+                ::tracing::warn!(event = "popover_anchor_failed", error = %error);
             }
             let _ = window.set_focus();
             return;
@@ -507,7 +538,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     let window = match get_or_create(app) {
         Ok(window) => window,
         Err(error) => {
-            eprintln!("antiburn: could not create the popover ({error})");
+            ::tracing::error!(event = "popover_create_failed", error = %error);
             return;
         }
     };
@@ -515,7 +546,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     if let Err(error) = anchor_to(&window, anchor) {
         // Positioning is best-effort: a popover in the wrong place still beats
         // no popover at all.
-        eprintln!("antiburn: could not anchor the popover ({error})");
+        ::tracing::warn!(event = "popover_anchor_failed", error = %error);
     }
 
     let _ = window.show();
@@ -742,7 +773,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
     let window = match get_or_create(app) {
         Ok(window) => window,
         Err(error) => {
-            eprintln!("antiburn: could not create the pinned popover ({error})");
+            ::tracing::error!(event = "popover_create_failed", error = %error);
             return;
         }
     };
@@ -771,7 +802,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
         if let Err(error) = placed {
             // Best-effort, as everywhere else: a popover in the wrong place
             // still beats a pin that appears to do nothing.
-            eprintln!("antiburn: could not anchor the popover ({error})");
+            ::tracing::warn!(event = "popover_anchor_failed", error = %error);
         }
 
         let _ = window.show();

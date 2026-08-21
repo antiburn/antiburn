@@ -72,3 +72,13 @@
   font-weight: 400;
   letter-spacing: 0.06px;
 }
+
+/* Limit the text to the selected number of lines. */
+.truncated-text-lines {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--truncated-text-lines);
+}

@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -252,4 +252,29 @@ DELETE FROM session_analysis;
 const V7: &str = r#"
 ALTER TABLE session_analysis ADD COLUMN inclusive_models_json TEXT NOT NULL DEFAULT '[]';
 DELETE FROM session_analysis;
+"#;
+
+/// v8 — retain only analysis cache values that the app reads.
+const V8: &str = r#"
+CREATE TABLE session_analysis_v8 (
+    environment_key      TEXT NOT NULL,
+    agent                TEXT NOT NULL,
+    session_id           TEXT NOT NULL,
+    model_breakdown_json TEXT NOT NULL,
+    inclusive_models_json TEXT NOT NULL,
+    source_fingerprint   TEXT NOT NULL,
+    pricing_generation   INTEGER NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id)
+) STRICT;
+
+INSERT INTO session_analysis_v8 (
+    environment_key, agent, session_id, model_breakdown_json,
+    inclusive_models_json, source_fingerprint, pricing_generation
+)
+SELECT environment_key, agent, session_id, model_breakdown_json,
+       inclusive_models_json, source_fingerprint, pricing_generation
+FROM session_analysis;
+
+DROP TABLE session_analysis;
+ALTER TABLE session_analysis_v8 RENAME TO session_analysis;
 "#;

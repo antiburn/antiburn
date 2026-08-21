@@ -11,7 +11,7 @@ afterEach(cleanup)
 
 describe("SubagentBadge", () => {
   it("marks the view as an autonomous sub-agent", () => {
-    render(<SubagentBadge parentAgent="claude-code" />)
+    render(<SubagentBadge parentAgent="claude-code" onOpenOrchestrator={() => {}} />)
     expect(screen.getByText("Autonomous sub-agent")).toBeTruthy()
   })
 
@@ -28,13 +28,6 @@ describe("SubagentBadge", () => {
     fireEvent.click(screen.getByText("Autonomous sub-agent"))
     expect(screen.getByText("Launched by")).toBeTruthy()
     expect(screen.getByText("add-ci-workflow")).toBeTruthy()
-  })
-
-  it("falls back to an unsupervised note when there is no orchestrator link", () => {
-    render(<SubagentBadge parentAgent="claude-code" parentTitle="add-ci-workflow" />)
-    fireEvent.click(screen.getByText("Autonomous sub-agent"))
-    expect(screen.getByText(/not a session you drove/)).toBeTruthy()
-    expect(screen.queryByText("add-ci-workflow")).toBeNull()
   })
 
   it("opens the orchestrator's analytics when its row is clicked", () => {

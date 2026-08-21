@@ -236,45 +236,12 @@ fn message_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<Normal
     };
     let mut ev = NormalizedEvent::new(role);
     ev.ts_ms = ts;
-    ev.text_len = content_text_len(payload.get("content"));
     Some(ev)
 }
 
-/// Sum the text length across a message's content blocks (`input_text` /
-/// `output_text` / `text`, all of which expose a `text` field).
-fn content_text_len(content: Option<&Value>) -> usize {
-    content
-        .and_then(|c| c.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|it| it.get("text").and_then(|t| t.as_str()))
-                .map(str::len)
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
-fn reasoning_event(payload: &Map<String, Value>, ts: Option<i64>) -> NormalizedEvent {
+fn reasoning_event(_payload: &Map<String, Value>, ts: Option<i64>) -> NormalizedEvent {
     let mut ev = NormalizedEvent::new(Role::Assistant);
     ev.ts_ms = ts;
-    ev.thinking = true;
-    // The reasoning body is usually encrypted; count any clear-text summary.
-    ev.text_len = payload
-        .get("summary")
-        .and_then(|s| s.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|it| {
-                    it.get("text")
-                        .and_then(|t| t.as_str())
-                        .or_else(|| it.as_str())
-                })
-                .map(str::len)
-                .sum()
-        })
-        .unwrap_or(0);
     ev
 }
 
@@ -297,7 +264,7 @@ fn function_call_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<
 ///
 /// Current Codex Desktop wraps one or more actual tool calls in an outer `exec`
 /// script. When that bounded shape is recognized, expose the nested tools and
-/// omit the wrapper so phase and tool-mix accounting reflect the work itself.
+/// omit the wrapper so tool-mix accounting reflects the work itself.
 /// Unknown/malformed scripts retain the outer `exec` Bash fallback.
 fn custom_tool_call_event(
     payload: &Map<String, Value>,
@@ -544,108 +511,10 @@ fn balanced_object_end(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-fn tool_output_event(payload: &Map<String, Value>, ts: Option<i64>) -> NormalizedEvent {
+fn tool_output_event(_payload: &Map<String, Value>, ts: Option<i64>) -> NormalizedEvent {
     let mut ev = NormalizedEvent::new(Role::Tool);
     ev.ts_ms = ts;
-    ev.is_error = output_is_error(payload);
     ev
-}
-
-fn output_is_error(payload: &Map<String, Value>) -> bool {
-    if payload.get("is_error").and_then(Value::as_bool) == Some(true) {
-        return true;
-    }
-    if matches!(
-        payload.get("status").and_then(|s| s.as_str()),
-        Some("error") | Some("failed")
-    ) {
-        return true;
-    }
-    payload
-        .get("output")
-        .is_some_and(codex_tool_output_is_error)
-}
-
-fn codex_tool_output_text(output: &Value) -> Option<String> {
-    if let Some(text) = output.as_str() {
-        return Some(text.to_string());
-    }
-    let mut combined = String::new();
-    for block in output.as_array()? {
-        if let Some(text) = block.get("text").and_then(Value::as_str) {
-            combined.push_str(text);
-        }
-    }
-    (!combined.is_empty()).then_some(combined)
-}
-
-fn codex_tool_output_is_error(output: &Value) -> bool {
-    let combined = codex_tool_output_text(output);
-
-    let structured_exit_code = combined
-        .as_deref()
-        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .and_then(|value| value.pointer("/metadata/exit_code").and_then(Value::as_i64));
-    if let Some(code) = structured_exit_code {
-        return code != 0;
-    }
-
-    if let Some(code) = output.as_array().and_then(|blocks| {
-        blocks.iter().find_map(|block| {
-            serde_json::from_str::<Value>(block.get("text")?.as_str()?)
-                .ok()?
-                .get("exit_code")?
-                .as_i64()
-        })
-    }) {
-        return code != 0;
-    }
-
-    combined
-        .as_deref()
-        .and_then(|text| {
-            script_error_status(text)
-                .or_else(|| parse_exit_code(text).map(|code| code != 0))
-                .or_else(|| {
-                    text.trim_start()
-                        .lines()
-                        .next()
-                        .is_some_and(|line| line.trim().starts_with("write_stdin failed:"))
-                        .then_some(true)
-                })
-        })
-        .unwrap_or(false)
-}
-
-fn script_error_status(output: &str) -> Option<bool> {
-    match output.trim_start().lines().next()?.trim() {
-        "Script completed" => Some(false),
-        "Script failed" | "Script terminated" => Some(true),
-        _ => None,
-    }
-}
-
-fn parse_exit_code(output: &str) -> Option<i64> {
-    for marker in ["Exit code:", "Process exited with code"] {
-        let Some(index) = output.find(marker) else {
-            continue;
-        };
-        let rest = output.get(index + marker.len()..)?.trim_start();
-        let mut end = 0;
-        for ch in rest.chars() {
-            if ch.is_ascii_digit() || (end == 0 && matches!(ch, '-' | '+')) {
-                end += ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if end > 0
-            && let Ok(code) = rest[..end].parse()
-        {
-            return Some(code);
-        }
-    }
-    None
 }
 
 fn token_count_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<NormalizedEvent> {
@@ -653,8 +522,8 @@ fn token_count_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<No
     // `last_token_usage` is the latest turn's usage; its `input_tokens` is the
     // full prompt that turn — i.e. the live context-window occupancy (it climbs
     // as history accumulates and drops on compaction). `total_token_usage` is the
-    // lifetime cumulative and must NOT be used for occupancy: it grows unbounded
-    // (far past the window) and would peg the context-drift chart at 100%.
+    // lifetime cumulative and must not be used for occupancy. It grows beyond
+    // the context window and would peg the chart at 100%.
     let usage_obj = info
         .get("last_token_usage")
         .or_else(|| info.get("total_token_usage"))

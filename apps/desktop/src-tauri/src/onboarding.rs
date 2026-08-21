@@ -197,7 +197,7 @@ pub fn apply_activation_policy(app: &AppHandle, pending: bool) {
         if let Err(error) = app.set_activation_policy(policy_for(pending)) {
             // Best-effort: the wrong Dock presence is a worse first run, not a
             // broken one, and there is nothing useful to do about it here.
-            eprintln!("antiburn: could not set the activation policy ({error})");
+            ::tracing::warn!(event = "activation_policy_set_failed", error = %error);
         }
     }
     #[cfg(not(target_os = "macos"))]

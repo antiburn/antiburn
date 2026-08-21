@@ -40,6 +40,18 @@ export function routeFromHash(hash: string): Route {
   return ROUTES.get(hash.replace(/^#\/?/, "")) ?? "popover"
 }
 
+/**
+ * Publishes the route to `<html data-route>` so CSS can branch on the window.
+ * Call once, before the first render: a window keeps its route for its whole
+ * lifetime, so this attribute never has to change.
+ */
+export function applyRouteAttribute(
+  root: HTMLElement = document.documentElement,
+  route: Route = routeFromHash(window.location.hash),
+): void {
+  root.setAttribute("data-route", route)
+}
+
 function subscribe(onChange: () => void): () => void {
   window.addEventListener("hashchange", onChange)
   return () => window.removeEventListener("hashchange", onChange)

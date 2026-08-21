@@ -105,7 +105,7 @@ export function UsageLimitsBar({
           // The same height as the provider pills on the row. The open state
           // is the orange glyph alone, with no filled pill behind it.
           className={cn(
-            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors duration-[120ms] hover:bg-brand-tint/[0.08]",
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]",
             expanded ? "text-brand" : "text-label-tertiary",
           )}
         >
@@ -147,7 +147,7 @@ function ProviderGroup({ provider, now }: { provider: LiveProviderUsagePayload; 
     <div
       role="group"
       aria-label={provider.displayName}
-      className="rounded-md px-2 py-2 transition-colors duration-[120ms] hover:bg-brand-tint/[0.08]"
+      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
     >
       {/* The same type size and color as the window labels and figures
           below; the uppercase alone marks the grouping. */}
@@ -186,7 +186,7 @@ function ProviderRadial({
     <button
       type="button"
       onClick={onOpen}
-      className="flex shrink-0 items-center gap-1.5 rounded-full border border-separator px-2.5 py-1 transition-colors duration-[120ms] hover:bg-brand-tint/[0.08]"
+      className="flex shrink-0 items-center gap-1.5 rounded-full border border-separator px-2.5 py-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
       aria-label={`${provider.displayName}${
         percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
       }`}
@@ -259,7 +259,7 @@ function UnavailableGroup({ entry }: { entry: UnavailableLiveProvider }) {
  * One limit window: label, segmented orange meter with the linear-use notch,
  * figure.
  */
-export function WindowMeterRow({
+function WindowMeterRow({
   window,
   now,
   resetOnHover = false,
@@ -291,7 +291,7 @@ export function WindowMeterRow({
           {window.resetsAt && (
             <span
               className={cn(
-                "type-footnote text-label-tertiary transition-opacity duration-[120ms]",
+                "type-footnote text-label-tertiary transition-opacity duration-[var(--duration-fast)]",
                 resetOnHover && "opacity-0 group-hover/meter:opacity-100",
               )}
             >

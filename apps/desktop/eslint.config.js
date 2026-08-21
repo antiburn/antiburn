@@ -22,7 +22,7 @@ export default tseslint.config(
       "react-hooks": reactHooks,
     },
     rules: {
-      ...reactHooks.configs.recommended.rules,
+      ...reactHooks.configs["recommended-latest"].rules,
       "@typescript-eslint/consistent-type-imports": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",

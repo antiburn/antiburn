@@ -44,7 +44,7 @@ export function CollapsibleOrchestrationCard({
         type="button"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
-        className="group flex w-full items-center gap-1.5 px-3 py-2 text-left transition-colors hover:bg-system-indigo/15"
+        className="group flex w-full items-center gap-1.5 px-3 py-2 text-left transition-colors duration-[var(--duration-fast)] ease-out hover:bg-system-indigo/15"
       >
         {icon}
         <span className="type-callout text-system-indigo-text">{title}</span>

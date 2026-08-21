@@ -5,7 +5,7 @@
 import { confirm, save } from "@tauri-apps/plugin-dialog"
 import { useCallback } from "react"
 
-import { SessionAnalyticsPresentation } from "../../components/session/SessionAnalyticsPresentation"
+import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
 import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import {
@@ -16,7 +16,6 @@ import {
   type SessionAnalyticsPayload,
 } from "../../lib/ipc"
 import { agentSupportsAnalytics } from "../../lib/presentation/agents"
-import { costBreakdownRows, costFigureLabel } from "../../lib/presentation/sessionAnalytics"
 import {
   inclusiveCostSubject,
   subagentsCostSubject,
@@ -43,9 +42,10 @@ import type {
 export interface SessionSubject {
   agent: string
   sessionId: string
+  repo?: string | undefined
+  timestamp?: string | undefined
   wslDistro?: string | null | undefined
   title?: string | undefined
-  isActive?: boolean | undefined
   /** Present when the subject is a sub-agent rather than a session a reader drove. */
   subagent?: {
     parentSessionId: string
@@ -260,15 +260,6 @@ export function SessionPane({
   const { cost, costSplit } = payload
     ? toLocalCost(subject, payload)
     : { cost: null, costSplit: null }
-  const costBadge = payload?.cost
-    ? {
-        totalUsd: payload.cost.totalUsd,
-        figureLabel: costFigureLabel(payload.isActive),
-        models: payload.models,
-        breakdownRows: costBreakdownRows(payload.cost),
-      }
-    : null
-
   const orchestration: LocalOrchestrationStatus | null = payload?.orchestration ?? null
   const relations: LocalSessionRelations | null = payload?.relations ?? null
   // The stored title is the authority once it arrives; the one the list handed
@@ -276,71 +267,87 @@ export function SessionPane({
   const title = payload?.title ?? subject.title ?? undefined
 
   const openRelated = useCallback(
-    (target: LocalSessionRelation, title?: string) => {
+    (target: LocalSessionRelation, title: string) => {
       onOpenSession({
         agent: target.identity.agent,
         sessionId: target.identity.sessionId,
         wslDistro: target.identity.wslDistro ?? null,
-        ...(title ? { title } : {}),
+        title,
       })
     },
     [onOpenSession],
   )
 
   const openSubagent = useCallback(
-    (parentAgent: string, parentSessionId: string, subagentId: string, label: string) => {
+    (subagentId: string, label: string) => {
       onOpenSession({
-        agent: parentAgent,
+        agent: subject.agent,
         sessionId: subagentId,
+        ...(subject.repo ? { repo: subject.repo } : {}),
+        ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
         wslDistro: subject.wslDistro ?? null,
         title: label,
         subagent: {
-          parentSessionId,
+          parentSessionId: subject.sessionId,
           subagentId,
           ...(subject.title ? { parentTitle: subject.title } : {}),
         },
       })
     },
-    [onOpenSession, subject.wslDistro, subject.title],
+    [
+      onOpenSession,
+      subject.agent,
+      subject.repo,
+      subject.sessionId,
+      subject.timestamp,
+      subject.title,
+      subject.wslDistro,
+    ],
   )
 
+  const openOrchestrator = useCallback(() => {
+    if (!subject.subagent) return
+    onOpenSession({
+      agent: subject.agent,
+      sessionId: subject.subagent.parentSessionId,
+      ...(subject.repo ? { repo: subject.repo } : {}),
+      ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
+      wslDistro: subject.wslDistro ?? null,
+      ...(subject.subagent.parentTitle ? { title: subject.subagent.parentTitle } : {}),
+    })
+  }, [onOpenSession, subject])
+
   return (
-    <SessionAnalyticsPresentation
+    <SessionDetailPresentation
       summary={payload?.summary ?? null}
       loading={loading}
       error={error}
       session={{
         agent: subject.agent,
         sessionId: subject.sessionId,
+        ...(subject.repo ? { repo: subject.repo } : {}),
+        ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
         ...(title ? { title } : {}),
         wslDistro: subject.wslDistro ?? null,
-        isActive: payload?.isActive ?? subject.isActive ?? false,
-        ...(subject.subagent ? { subagent: subject.subagent } : {}),
+        ...(subject.subagent
+          ? {
+              subagent: subject.subagent.parentTitle
+                ? { parentTitle: subject.subagent.parentTitle }
+                : {},
+            }
+          : {}),
       }}
       supportsAnalytics={payload?.supportsAnalytics ?? agentSupportsAnalytics(subject.agent)}
       cost={cost}
       costSplit={costSplit}
-      costBadge={costBadge}
       orchestration={orchestration}
-      skills={payload?.skills ?? []}
+      modelRuns={payload?.modelRuns ?? []}
       relations={relations}
       onBack={onBack}
       {...(onPrev ? { onPrev } : {})}
       {...(onNext ? { onNext } : {})}
       onOpenSubagent={openSubagent}
-      {...(subject.subagent
-        ? {
-            onOpenOrchestrator: () =>
-              onOpenSession({
-                agent: subject.agent,
-                sessionId: subject.subagent?.parentSessionId ?? subject.sessionId,
-                wslDistro: subject.wslDistro ?? null,
-                ...(subject.subagent?.parentTitle
-                  ? { title: subject.subagent.parentTitle }
-                  : {}),
-              }),
-          }
-        : {})}
+      onOpenOrchestrator={openOrchestrator}
       onOpenRelatedSession={openRelated}
       onExportSession={() => void handleExport()}
       onDeleteSession={() => void handleDelete()}
