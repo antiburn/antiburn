@@ -115,21 +115,18 @@ colors:
     light: "rgb(246 246 246)"
     dark: "rgb(32 32 32)"
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
-  mode-implementing:
+  analytics-blue-strong:
     light: "rgb(29 78 216)"
     dark: "rgb(37 99 235)"
-  mode-testing:
+  analytics-green:
     light: "rgb(5 150 105)"
     dark: "rgb(52 211 153)"
-  mode-exploring:
+  analytics-blue:
     light: "rgb(59 130 246)"
     dark: "rgb(96 165 250)"
-  mode-thinking:
+  analytics-cyan:
     light: "rgb(6 182 212)"
     dark: "rgb(34 211 238)"
-  mode-disruption:
-    light: "rgb(234 88 12)"
-    dark: "rgb(255 149 10)"
   context-fill-top:
     light: "rgb(59 130 246 / 0.55)"
     dark: "rgb(96 165 250 / 0.6)"
@@ -148,7 +145,7 @@ colors:
   token-out:
     light: "rgb(167 139 250)"
     dark: "rgb(196 181 253)"
-  pattern-drifting:
+  context-warning:
     light: "rgb(217 119 6)"
     dark: "rgb(255 159 10)"
 fonts:

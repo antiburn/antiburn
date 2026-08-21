@@ -227,7 +227,6 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         .sum();
     let active_secs = (active_ms / 1000) as u64;
 
-    // Build the active-time position for each observed timestamp.
     let mut cum_active: Vec<(i64, i64)> = Vec::with_capacity(timestamps.len());
     let mut acc = 0i64;
     for (k, &t) in timestamps.iter().enumerate() {
