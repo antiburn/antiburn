@@ -15,142 +15,146 @@ sources:
   - src/styles/session-rows.css
   - src/components/ui/text-roll.css
 colors:
+  # Concrete token colors use modern HSL function syntax.
+  # Use the shortest value that keeps the same 8-bit RGB channels.
+  # Hue uses at most one decimal. Saturation and lightness use at most two decimals.
+  # Alpha uses at most three decimals. Remove trailing zeros. Achromatic colors use hue 0.
   # name → Tailwind utility via bg-/text-/border-<name>
   # Both values are the explicit [data-theme="light"|"dark"] palettes.
   # A `# @media <theme>: <value>` note states the system-preference value where it
   # differs. The drift check reads those notes: a difference it cannot find a note
   # for is a failure, and so is a note that no longer differs.
   surface: # the menu-bar popover, which sits on the window material
-    light: "rgb(255 255 255 / 0.85)" # reduced-transparency: rgb(255 255 255)
-    dark: "rgb(30 30 30 / 0.92)"
+    light: "hsl(0 0% 100% / 0.85)" # reduced-transparency: hsl(0 0% 100%)
+    dark: "hsl(0 0% 11.7% / 0.92)"
   surface-secondary:
-    light: "rgb(0 0 0 / 0.08)"
-    dark: "rgb(255 255 255 / 0.12)"
+    light: "hsl(0 0% 0% / 0.08)"
+    dark: "hsl(0 0% 100% / 0.12)"
   surface-tertiary:
-    light: "rgb(0 0 0 / 0.12)"
-    dark: "rgb(255 255 255 / 0.18)"
+    light: "hsl(0 0% 0% / 0.12)"
+    dark: "hsl(0 0% 100% / 0.18)"
   surface-card:
-    light: "rgb(0 0 0 / 0.04)"
-    dark: "rgb(255 255 255 / 0.08)"
+    light: "hsl(0 0% 0% / 0.04)"
+    dark: "hsl(0 0% 100% / 0.08)"
   surface-hover: # stays clear of surface-selected, so a hover never reads as a selection
-    light: "rgb(0 0 0 / 0.04)"
-    dark: "rgb(255 255 255 / 0.04)" # @media dark: rgb(255 255 255 / 0.07)
+    light: "hsl(0 0% 0% / 0.04)"
+    dark: "hsl(0 0% 100% / 0.04)" # @media dark: hsl(0 0% 100% / 0.07)
   surface-window: # standard decorated window
-    light: "rgb(246 246 246)" # @media light: rgb(246 246 246 / 0.80)
-    dark: "rgb(32 32 32)" # @media dark: rgb(40 40 40 / 0.80)
+    light: "hsl(0 0% 96.4%)" # @media light: hsl(0 0% 96.4% / 0.8)
+    dark: "hsl(0 0% 12.5%)" # @media dark: hsl(0 0% 15.6% / 0.8)
   surface-sidebar: # source-list / sidebar material
-    light: "rgb(0 0 0 / 0.03)"
-    dark: "rgb(255 255 255 / 0.04)"
+    light: "hsl(0 0% 0% / 0.03)"
+    dark: "hsl(0 0% 100% / 0.04)"
   surface-selected: # selected row in a list or source list (accent-fill stays for controls)
-    light: "rgb(0 0 0 / 0.09)"
-    dark: "rgb(255 255 255 / 0.14)"
+    light: "hsl(0 0% 0% / 0.09)"
+    dark: "hsl(0 0% 100% / 0.14)"
   input-fill:
-    light: "rgb(255 255 255)" # @media light: rgb(255 255 255 / 0.50)
-    dark: "rgb(58 58 60)" # @media dark: rgb(255 255 255 / 0.08)
+    light: "hsl(0 0% 100%)" # @media light: hsl(0 0% 100% / 0.5)
+    dark: "hsl(240 1.6% 23%)" # @media dark: hsl(0 0% 100% / 0.08)
   label: # live system label token where available
-    light: "rgb(0 0 0 / 0.85)"
-    dark: "rgb(255 255 255 / 0.92)"
+    light: "hsl(0 0% 0% / 0.85)"
+    dark: "hsl(0 0% 100% / 0.92)"
   label-secondary:
-    light: "rgb(60 60 67 / 0.85)"
-    dark: "rgb(235 235 245 / 0.72)"
+    light: "hsl(240 5.5% 25% / 0.85)"
+    dark: "hsl(240 33% 94% / 0.72)"
   label-tertiary: # 4.5:1 on a card on the popover, over any desktop behind it
-    light: "rgb(60 60 67 / 0.79)"
-    dark: "rgb(235 235 245 / 0.62)"
+    light: "hsl(240 5.5% 25% / 0.79)"
+    dark: "hsl(240 33% 94% / 0.62)"
   separator: # live system separator token where available
-    light: "rgb(0 0 0 / 0.15)"
-    dark: "rgb(255 255 255 / 0.18)"
+    light: "hsl(0 0% 0% / 0.15)"
+    dark: "hsl(0 0% 100% / 0.18)"
   accent: # live system accent token where available
-    light: "rgb(0 122 255)"
-    dark: "rgb(10 132 255)"
+    light: "hsl(211.2 100% 50%)"
+    dark: "hsl(210 100% 51.9%)"
   accent-hover: # darker than accent-fill, because white text sits on it
-    light: "rgb(0 98 199)"
-    dark: "rgb(10 96 205)"
+    light: "hsl(210.4 100% 39%)"
+    dark: "hsl(213.5 91% 42%)"
   accent-fill: # concrete fill; use bg-accent-fill for backgrounds
-    light: "rgb(0 113 227)"
-    dark: "rgb(10 110 235)"
+    light: "hsl(210 100% 44.5%)"
+    dark: "hsl(213.3 92% 48%)"
   system-green:
-    light: "rgb(36 138 61)"
-    dark: "rgb(48 219 91)"
+    light: "hsl(135 59% 34%)"
+    dark: "hsl(135 70% 52.3%)"
   system-orange:
-    light: "rgb(179 81 0)"
-    dark: "rgb(255 179 64)"
+    light: "hsl(27 100% 35.1%)"
+    dark: "hsl(36 100% 62.5%)"
   system-orange-tint:
-    light: "rgb(255 149 0)"
-    dark: "rgb(255 159 10)"
+    light: "hsl(35 100% 50%)"
+    dark: "hsl(36.4 100% 52%)"
   system-yellow:
-    light: "rgb(160 90 0)"
-    dark: "rgb(255 212 38)"
+    light: "hsl(34 100% 31.3%)"
+    dark: "hsl(48 100% 57.4%)"
   system-red:
-    light: "rgb(215 0 21)"
-    dark: "rgb(255 105 97)"
+    light: "hsl(354 100% 42.1%)"
+    dark: "hsl(3 100% 69%)"
   system-red-text:
-    light: "rgb(190 0 20)"
-    dark: "rgb(255 138 128)"
+    light: "hsl(353.6 100% 37.2%)"
+    dark: "hsl(5 100% 75%)"
   system-blue:
-    light: "rgb(0 122 255)"
-    dark: "rgb(10 132 255)"
+    light: "hsl(211.2 100% 50%)"
+    dark: "hsl(210 100% 51.9%)"
   system-indigo:
-    light: "rgb(88 86 214)"
-    dark: "rgb(94 92 230)"
+    light: "hsl(241 61% 58.8%)"
+    dark: "hsl(241 73% 63%)"
   system-indigo-text:
-    light: "rgb(88 86 214)"
-    dark: "rgb(150 148 255)"
+    light: "hsl(241 61% 58.8%)"
+    dark: "hsl(241 100% 79%)"
   system-gold:
-    light: "rgb(202 138 4)"
-    dark: "rgb(255 204 0)"
+    light: "hsl(40.6 96% 40.4%)"
+    dark: "hsl(48 100% 50%)"
   system-gold-text:
-    light: "rgb(146 100 0)"
-    dark: "rgb(245 203 92)"
+    light: "hsl(41 100% 28.6%)"
+    dark: "hsl(43.5 88% 66%)"
   agent-mark: # vendor brand-mark ink; see the Vendor brand marks note below
-    light: "rgb(38 37 30)"
-    dark: "rgb(247 247 244)"
+    light: "hsl(52 11% 13.3%)"
+    dark: "hsl(60 15% 96.2%)"
   # Floating-HUD sub-palette only (src/styles/hud.css)
   burn:
-    light: "rgb(255 77 0)"
-    dark: "rgb(255 106 0)"
+    light: "hsl(18 100% 50%)"
+    dark: "hsl(25 100% 50%)"
   burn-muted:
-    light: "rgb(240 88 22)"
-    dark: "rgb(242 113 34)"
+    light: "hsl(18.1 88% 51.4%)"
+    dark: "hsl(23 88.8% 54%)"
   bg-hud:
-    light: "rgb(246 246 246)"
-    dark: "rgb(32 32 32)"
+    light: "hsl(0 0% 96.4%)"
+    dark: "hsl(0 0% 12.5%)"
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
   mode-implementing:
-    light: "rgb(29 78 216)"
-    dark: "rgb(37 99 235)"
+    light: "hsl(224.2 76.3% 48%)"
+    dark: "hsl(221.2 83% 53.3%)"
   mode-testing:
-    light: "rgb(5 150 105)"
-    dark: "rgb(52 211 153)"
+    light: "hsl(161.3 93% 30.4%)"
+    dark: "hsl(158 64% 51.56%)"
   mode-exploring:
-    light: "rgb(59 130 246)"
-    dark: "rgb(96 165 250)"
+    light: "hsl(217.2 91% 59.8%)"
+    dark: "hsl(213 94% 67.8%)"
   mode-thinking:
-    light: "rgb(6 182 212)"
-    dark: "rgb(34 211 238)"
+    light: "hsl(188.7 94.4% 42.7%)"
+    dark: "hsl(188 86% 53.3%)"
   mode-disruption:
-    light: "rgb(234 88 12)"
-    dark: "rgb(255 149 10)"
+    light: "hsl(20.5 90% 48.2%)"
+    dark: "hsl(34 100% 52%)"
   context-fill-top:
-    light: "rgb(59 130 246 / 0.55)"
-    dark: "rgb(96 165 250 / 0.6)"
+    light: "hsl(217.2 91% 59.8% / 0.55)"
+    dark: "hsl(213 94% 67.8% / 0.6)"
   context-fill-base:
-    light: "rgb(59 130 246 / 0.08)"
-    dark: "rgb(96 165 250 / 0.1)"
+    light: "hsl(217.2 91% 59.8% / 0.08)"
+    dark: "hsl(213 94% 67.8% / 0.1)"
   context-fixed:
-    light: "rgb(100 116 139)"
-    dark: "rgb(148 163 184)"
+    light: "hsl(215 16% 46.9%)"
+    dark: "hsl(215 20% 65%)"
   context-system:
-    light: "rgb(124 58 237)"
-    dark: "rgb(167 139 250)"
+    light: "hsl(262 83% 57.8%)"
+    dark: "hsl(255 91% 76.2%)"
   token-in:
-    light: "rgb(59 130 246)"
-    dark: "rgb(96 165 250)"
+    light: "hsl(217.2 91% 59.8%)"
+    dark: "hsl(213 94% 67.8%)"
   token-out:
-    light: "rgb(167 139 250)"
-    dark: "rgb(196 181 253)"
+    light: "hsl(255 91% 76.2%)"
+    dark: "hsl(253 94% 85%)"
   pattern-drifting:
-    light: "rgb(217 119 6)"
-    dark: "rgb(255 159 10)"
+    light: "hsl(32 95% 43.72%)"
+    dark: "hsl(36.4 100% 52%)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`

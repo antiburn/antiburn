@@ -49,7 +49,7 @@
   --color-separator: var(--color-border);
   --color-accent: var(--color-accent-val);
   --color-accent-hover: var(--color-accent-hover-val);
-  /* accent-fill is the concrete hex; the live system accent token breaks when
+  /* accent-fill is the concrete value; the live system accent token breaks when
      used as a background-color, so backgrounds must use this one. */
   --color-accent-fill: var(--color-accent-fill-val);
   --color-system-green: var(--color-system-green-val);
@@ -97,54 +97,54 @@
   color-scheme: light dark;
 
   /* Backgrounds */
-  --color-bg-primary: rgb(255 255 255 / 0.85);
-  --color-bg-secondary: rgb(0 0 0 / 0.08);
-  --color-bg-tertiary: rgb(0 0 0 / 0.12);
-  --color-bg-row-hover: rgb(0 0 0 / 0.04);
+  --color-bg-primary: hsl(0 0% 100% / 0.85);
+  --color-bg-secondary: hsl(0 0% 0% / 0.08);
+  --color-bg-tertiary: hsl(0 0% 0% / 0.12);
+  --color-bg-row-hover: hsl(0 0% 0% / 0.04);
 
-  --color-bg-card: rgb(0 0 0 / 0.04);
+  --color-bg-card: hsl(0 0% 0% / 0.04);
   /* Raised fill for text inputs/textareas. Light mode = whiter than surface;
      dark mode = lighter gray than surface. The explicit [data-theme] values
      are solid, so material behind the window cannot bleed through; the
      default :root and prefers-color-scheme branches stay translucent to match
      the rest of those palettes. */
-  --color-bg-input: rgb(255 255 255 / 0.5);
+  --color-bg-input: hsl(0 0% 100% / 0.5);
 
-  --color-bg-window: rgb(246 246 246 / 0.8);
-  --color-bg-sidebar: rgb(0 0 0 / 0.03);
-  --color-bg-selected: rgb(0 0 0 / 0.09);
+  --color-bg-window: hsl(0 0% 96.4% / 0.8);
+  --color-bg-sidebar: hsl(0 0% 0% / 0.03);
+  --color-bg-selected: hsl(0 0% 0% / 0.09);
 
   /* Text — explicit fallbacks, replaced by live system tokens when available */
-  --color-text-primary: rgb(0 0 0 / 0.85);
-  --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.79);
+  --color-text-primary: hsl(0 0% 0% / 0.85);
+  --color-text-secondary: hsl(240 5.5% 25% / 0.85);
+  --color-text-tertiary: hsl(240 5.5% 25% / 0.79);
 
   /* Borders */
-  --color-border: rgb(0 0 0 / 0.15);
+  --color-border: hsl(0 0% 0% / 0.15);
 
   /* Accent. accent-val keeps the system blue, because it carries text and
      icons on a surface. accent-fill and accent-hover are darker: they sit
      behind white text, and the system blue gives it only 4.02:1. */
-  --color-accent-val: rgb(0 122 255);
-  --color-accent-fill-val: rgb(0 113 227);
-  --color-accent-hover-val: rgb(0 98 199);
+  --color-accent-val: hsl(211.2 100% 50%);
+  --color-accent-fill-val: hsl(210 100% 44.5%);
+  --color-accent-hover-val: hsl(210.4 100% 39%);
 
   /* Status — accessible variants, tuned for contrast on a light surface */
-  --color-system-green-val: rgb(36 138 61);
-  --color-system-orange-val: rgb(179 81 0);
+  --color-system-green-val: hsl(135 59% 34%);
+  --color-system-orange-val: hsl(27 100% 35.1%);
   /* standard orange, for fills/backgrounds */
-  --color-system-orange-tint-val: rgb(255 149 0);
-  --color-system-yellow-val: rgb(160 90 0);
-  --color-system-red-val: rgb(215 0 21);
-  --color-system-red-text-val: rgb(190 0 20);
-  --color-system-blue-val: rgb(0 122 255);
-  --color-system-indigo-val: rgb(88 86 214);
-  --color-system-indigo-text-val: rgb(88 86 214);
-  --color-system-gold-val: rgb(202 138 4);
-  --color-system-gold-text-val: rgb(146 100 0);
+  --color-system-orange-tint-val: hsl(35 100% 50%);
+  --color-system-yellow-val: hsl(34 100% 31.3%);
+  --color-system-red-val: hsl(354 100% 42.1%);
+  --color-system-red-text-val: hsl(353.6 100% 37.2%);
+  --color-system-blue-val: hsl(211.2 100% 50%);
+  --color-system-indigo-val: hsl(241 61% 58.8%);
+  --color-system-indigo-text-val: hsl(241 61% 58.8%);
+  --color-system-gold-val: hsl(40.6 96% 40.4%);
+  --color-system-gold-text-val: hsl(41 100% 28.6%);
 
   /* Brand-mark ink */
-  --color-agent-mark-val: rgb(38 37 30);
+  --color-agent-mark-val: hsl(52 11% 13.3%);
 
   /* Spacing rhythm (multiples of 4) */
   --space-xs: 4px;
@@ -196,7 +196,7 @@
    hierarchy holds. */
 @media (prefers-color-scheme: light) {
   :root {
-    --color-text-tertiary: rgb(60 60 67 / 0.79);
+    --color-text-tertiary: hsl(240 5.5% 25% / 0.79);
   }
 }
 
@@ -206,38 +206,38 @@
     /* Matches the explicit dark theme. At 0.40 the popover surface let a light
        desktop behind the window through, and the secondary label fell to
        1.93:1 on it. The surface has to set the tone, not the desktop. */
-    --color-bg-primary: rgb(30 30 30 / 0.92);
-    --color-bg-secondary: rgb(255 255 255 / 0.12);
-    --color-bg-tertiary: rgb(255 255 255 / 0.18);
-    --color-bg-row-hover: rgb(255 255 255 / 0.07);
-    --color-bg-card: rgb(255 255 255 / 0.08);
-    --color-bg-input: rgb(255 255 255 / 0.08);
-    --color-bg-window: rgb(40 40 40 / 0.8);
-    --color-bg-sidebar: rgb(255 255 255 / 0.04);
-    --color-bg-selected: rgb(255 255 255 / 0.14);
-    --color-text-primary: rgb(255 255 255 / 0.92);
-    --color-text-secondary: rgb(235 235 245 / 0.72);
-    --color-border: rgb(255 255 255 / 0.18);
-    --color-accent-val: rgb(10 132 255);
-    --color-accent-fill-val: rgb(10 110 235);
-    --color-accent-hover-val: rgb(10 96 205);
-    --color-system-green-val: rgb(48 219 91);
-    --color-system-orange-val: rgb(255 179 64);
-    --color-system-orange-tint-val: rgb(255 159 10);
-    --color-system-yellow-val: rgb(255 212 38);
-    --color-system-red-val: rgb(255 105 97);
-    --color-system-red-text-val: rgb(255 138 128);
-    --color-system-blue-val: rgb(10 132 255);
-    --color-system-indigo-val: rgb(94 92 230);
-    --color-system-indigo-text-val: rgb(150 148 255);
-    --color-system-gold-val: rgb(255 204 0);
-    --color-system-gold-text-val: rgb(245 203 92);
-    --color-agent-mark-val: rgb(247 247 244);
+    --color-bg-primary: hsl(0 0% 11.7% / 0.92);
+    --color-bg-secondary: hsl(0 0% 100% / 0.12);
+    --color-bg-tertiary: hsl(0 0% 100% / 0.18);
+    --color-bg-row-hover: hsl(0 0% 100% / 0.07);
+    --color-bg-card: hsl(0 0% 100% / 0.08);
+    --color-bg-input: hsl(0 0% 100% / 0.08);
+    --color-bg-window: hsl(0 0% 15.6% / 0.8);
+    --color-bg-sidebar: hsl(0 0% 100% / 0.04);
+    --color-bg-selected: hsl(0 0% 100% / 0.14);
+    --color-text-primary: hsl(0 0% 100% / 0.92);
+    --color-text-secondary: hsl(240 33% 94% / 0.72);
+    --color-border: hsl(0 0% 100% / 0.18);
+    --color-accent-val: hsl(210 100% 51.9%);
+    --color-accent-fill-val: hsl(213.3 92% 48%);
+    --color-accent-hover-val: hsl(213.5 91% 42%);
+    --color-system-green-val: hsl(135 70% 52.3%);
+    --color-system-orange-val: hsl(36 100% 62.5%);
+    --color-system-orange-tint-val: hsl(36.4 100% 52%);
+    --color-system-yellow-val: hsl(48 100% 57.4%);
+    --color-system-red-val: hsl(3 100% 69%);
+    --color-system-red-text-val: hsl(5 100% 75%);
+    --color-system-blue-val: hsl(210 100% 51.9%);
+    --color-system-indigo-val: hsl(241 73% 63%);
+    --color-system-indigo-text-val: hsl(241 100% 79%);
+    --color-system-gold-val: hsl(48 100% 50%);
+    --color-system-gold-text-val: hsl(43.5 88% 66%);
+    --color-agent-mark-val: hsl(60 15% 96.2%);
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
        where small text reaches 4.5:1 on a card (same rationale as light
        mode). The hard case is again the popover: the surface is translucent,
        so a light desktop behind the window lifts the card the text sits on. */
-    --color-text-tertiary: rgb(235 235 245 / 0.62);
+    --color-text-tertiary: hsl(240 33% 94% / 0.62);
     /* The live label, separator, and accent tokens auto-adapt in dark mode —
        no overrides needed for those three. */
   }
@@ -254,87 +254,87 @@
 
 /* --- Explicit theme override, for platforms with no live system tokens --- */
 :root[data-theme="light"] {
-  --color-bg-primary: rgb(255 255 255 / 0.85);
-  --color-bg-secondary: rgb(0 0 0 / 0.08);
-  --color-bg-tertiary: rgb(0 0 0 / 0.12);
+  --color-bg-primary: hsl(0 0% 100% / 0.85);
+  --color-bg-secondary: hsl(0 0% 0% / 0.08);
+  --color-bg-tertiary: hsl(0 0% 0% / 0.12);
   /* Matches the system branch. At 0.08 a hovered row sat one percent below
      bg-selected at 0.09, so the two states looked the same. */
-  --color-bg-row-hover: rgb(0 0 0 / 0.04);
-  --color-bg-card: rgb(0 0 0 / 0.04);
-  --color-bg-input: rgb(255 255 255);
-  --color-bg-window: rgb(246 246 246);
-  --color-bg-sidebar: rgb(0 0 0 / 0.03);
-  --color-bg-selected: rgb(0 0 0 / 0.09);
-  --color-text-primary: rgb(0 0 0 / 0.85);
-  --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.79);
-  --color-border: rgb(0 0 0 / 0.15);
-  --color-accent-val: rgb(0 122 255);
-  --color-accent-fill-val: rgb(0 113 227);
-  --color-accent-hover-val: rgb(0 98 199);
-  --color-system-green-val: rgb(36 138 61);
-  --color-system-orange-val: rgb(179 81 0);
-  --color-system-orange-tint-val: rgb(255 149 0);
-  --color-system-yellow-val: rgb(160 90 0);
-  --color-system-red-val: rgb(215 0 21);
-  --color-system-red-text-val: rgb(190 0 20);
-  --color-system-blue-val: rgb(0 122 255);
-  --color-system-indigo-val: rgb(88 86 214);
-  --color-system-indigo-text-val: rgb(88 86 214);
-  --color-system-gold-val: rgb(202 138 4);
-  --color-system-gold-text-val: rgb(146 100 0);
-  --color-agent-mark-val: rgb(38 37 30);
+  --color-bg-row-hover: hsl(0 0% 0% / 0.04);
+  --color-bg-card: hsl(0 0% 0% / 0.04);
+  --color-bg-input: hsl(0 0% 100%);
+  --color-bg-window: hsl(0 0% 96.4%);
+  --color-bg-sidebar: hsl(0 0% 0% / 0.03);
+  --color-bg-selected: hsl(0 0% 0% / 0.09);
+  --color-text-primary: hsl(0 0% 0% / 0.85);
+  --color-text-secondary: hsl(240 5.5% 25% / 0.85);
+  --color-text-tertiary: hsl(240 5.5% 25% / 0.79);
+  --color-border: hsl(0 0% 0% / 0.15);
+  --color-accent-val: hsl(211.2 100% 50%);
+  --color-accent-fill-val: hsl(210 100% 44.5%);
+  --color-accent-hover-val: hsl(210.4 100% 39%);
+  --color-system-green-val: hsl(135 59% 34%);
+  --color-system-orange-val: hsl(27 100% 35.1%);
+  --color-system-orange-tint-val: hsl(35 100% 50%);
+  --color-system-yellow-val: hsl(34 100% 31.3%);
+  --color-system-red-val: hsl(354 100% 42.1%);
+  --color-system-red-text-val: hsl(353.6 100% 37.2%);
+  --color-system-blue-val: hsl(211.2 100% 50%);
+  --color-system-indigo-val: hsl(241 61% 58.8%);
+  --color-system-indigo-text-val: hsl(241 61% 58.8%);
+  --color-system-gold-val: hsl(40.6 96% 40.4%);
+  --color-system-gold-text-val: hsl(41 100% 28.6%);
+  --color-agent-mark-val: hsl(52 11% 13.3%);
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: light) {
   :root {
-    --color-bg-primary: rgb(255 255 255);
-    --color-bg-window: rgb(246 246 246);
+    --color-bg-primary: hsl(0 0% 100%);
+    --color-bg-window: hsl(0 0% 96.4%);
   }
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
   :root {
-    --color-bg-window: rgb(32 32 32);
+    --color-bg-window: hsl(0 0% 12.5%);
   }
 }
 
 @media (prefers-reduced-transparency: reduce) {
   :root[data-theme="light"] {
-    --color-bg-primary: rgb(255 255 255);
-    --color-bg-window: rgb(246 246 246);
+    --color-bg-primary: hsl(0 0% 100%);
+    --color-bg-window: hsl(0 0% 96.4%);
   }
 }
 
 :root[data-theme="dark"] {
-  --color-bg-primary: rgb(30 30 30 / 0.92);
-  --color-bg-secondary: rgb(255 255 255 / 0.12);
-  --color-bg-tertiary: rgb(255 255 255 / 0.18);
-  --color-bg-row-hover: rgb(255 255 255 / 0.04);
-  --color-bg-card: rgb(255 255 255 / 0.08);
-  --color-bg-input: rgb(58 58 60);
-  --color-bg-window: rgb(32 32 32);
-  --color-bg-sidebar: rgb(255 255 255 / 0.04);
-  --color-bg-selected: rgb(255 255 255 / 0.14);
-  --color-text-primary: rgb(255 255 255 / 0.92);
-  --color-text-secondary: rgb(235 235 245 / 0.72);
-  --color-text-tertiary: rgb(235 235 245 / 0.62);
-  --color-border: rgb(255 255 255 / 0.18);
-  --color-accent-val: rgb(10 132 255);
-  --color-accent-fill-val: rgb(10 110 235);
-  --color-accent-hover-val: rgb(10 96 205);
-  --color-system-green-val: rgb(48 219 91);
-  --color-system-orange-val: rgb(255 179 64);
-  --color-system-orange-tint-val: rgb(255 159 10);
-  --color-system-yellow-val: rgb(255 212 38);
-  --color-system-red-val: rgb(255 105 97);
-  --color-system-red-text-val: rgb(255 138 128);
-  --color-system-blue-val: rgb(10 132 255);
-  --color-system-indigo-val: rgb(94 92 230);
-  --color-system-indigo-text-val: rgb(150 148 255);
-  --color-system-gold-val: rgb(255 204 0);
-  --color-system-gold-text-val: rgb(245 203 92);
-  --color-agent-mark-val: rgb(247 247 244);
+  --color-bg-primary: hsl(0 0% 11.7% / 0.92);
+  --color-bg-secondary: hsl(0 0% 100% / 0.12);
+  --color-bg-tertiary: hsl(0 0% 100% / 0.18);
+  --color-bg-row-hover: hsl(0 0% 100% / 0.04);
+  --color-bg-card: hsl(0 0% 100% / 0.08);
+  --color-bg-input: hsl(240 1.6% 23%);
+  --color-bg-window: hsl(0 0% 12.5%);
+  --color-bg-sidebar: hsl(0 0% 100% / 0.04);
+  --color-bg-selected: hsl(0 0% 100% / 0.14);
+  --color-text-primary: hsl(0 0% 100% / 0.92);
+  --color-text-secondary: hsl(240 33% 94% / 0.72);
+  --color-text-tertiary: hsl(240 33% 94% / 0.62);
+  --color-border: hsl(0 0% 100% / 0.18);
+  --color-accent-val: hsl(210 100% 51.9%);
+  --color-accent-fill-val: hsl(213.3 92% 48%);
+  --color-accent-hover-val: hsl(213.5 91% 42%);
+  --color-system-green-val: hsl(135 70% 52.3%);
+  --color-system-orange-val: hsl(36 100% 62.5%);
+  --color-system-orange-tint-val: hsl(36.4 100% 52%);
+  --color-system-yellow-val: hsl(48 100% 57.4%);
+  --color-system-red-val: hsl(3 100% 69%);
+  --color-system-red-text-val: hsl(5 100% 75%);
+  --color-system-blue-val: hsl(210 100% 51.9%);
+  --color-system-indigo-val: hsl(241 73% 63%);
+  --color-system-indigo-text-val: hsl(241 100% 79%);
+  --color-system-gold-val: hsl(48 100% 50%);
+  --color-system-gold-text-val: hsl(43.5 88% 66%);
+  --color-agent-mark-val: hsl(60 15% 96.2%);
 }
 
 /* Must follow the :root[data-theme="dark"] block above — media queries add no
@@ -347,7 +347,7 @@
    hard-code a color that already falls out of the stack. */
 @media (prefers-reduced-transparency: reduce) {
   :root[data-theme="dark"] {
-    --color-bg-window: rgb(32 32 32);
+    --color-bg-window: hsl(0 0% 12.5%);
   }
 }
 
