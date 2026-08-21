@@ -10,6 +10,9 @@ const workflow = readFileSync(
   new URL("../.github/workflows/ci.yml", import.meta.url),
   "utf8",
 );
+const packageJson = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+);
 
 function namedStep(name) {
   const marker = `      - name: ${name}`;
@@ -19,6 +22,45 @@ function namedStep(name) {
   return workflow.slice(start, next === -1 ? undefined : next);
 }
 
+function jobBlock(id) {
+  const marker = `\n  ${id}:\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `${id} job must exist`);
+  const next = workflow.slice(start + marker.length).search(/\n  \S+:\n/);
+  const end = next === -1 ? undefined : start + marker.length + next;
+  return workflow.slice(start + 1, end);
+}
+
+function stepsIn(job) {
+  const marker = "\n    steps:\n";
+  const start = job.indexOf(marker);
+  assert.notEqual(start, -1, "the job must declare steps");
+  const steps = job.slice(start + marker.length);
+  assert.match(steps, /^ {6}- \S+?:/, "the first step must be a block mapping");
+  return steps
+    .split(/\n(?= {6}- )/)
+    .map((step) => step.replace(/^ {6}- /, "        "));
+}
+
+function keysAt(block, indent) {
+  const pattern = new RegExp(`^ {${indent}}(?!#)(\\S+?):`, "gm");
+  return [...block.matchAll(pattern)].map((match) => match[1]).sort();
+}
+
+function count(block, pattern) {
+  return [...block.matchAll(pattern)].length;
+}
+
+function runBody(step) {
+  const marker = "        run: |\n";
+  const start = step.indexOf(marker);
+  assert.notEqual(start, -1, "the step must declare a run block");
+  return step
+    .slice(start + marker.length)
+    .replace(/^ {10}/gm, "")
+    .trimEnd();
+}
+
 test("the cross-platform release cache target is shell-neutral", () => {
   const step = namedStep(
     "Compile the release target without bundling or signing",
@@ -26,4 +68,178 @@ test("the cross-platform release cache target is shell-neutral", () => {
 
   assert.match(step, /--target "\$\{\{ matrix\.target \}\}" --no-bundle/);
   assert.doesNotMatch(step, /\$TARGET/);
+});
+
+test("the workflow declares no defaults that rebind a shell", () => {
+  assert.deepEqual(keysAt(workflow, 0), [
+    "concurrency",
+    "env",
+    "jobs",
+    "name",
+    "on",
+    "permissions",
+  ]);
+});
+
+test("the aislop job runs the pinned gate on the pull request base", () => {
+  const job = jobBlock("aislop");
+  assert.deepEqual(keysAt(job, 4), ["if", "name", "runs-on", "steps"]);
+  assert.match(job, /^ {4}name: slop gate$/m);
+  assert.match(job, /^ {4}if: github\.event_name == 'pull_request'$/m);
+  assert.match(job, /^ {4}runs-on: ubuntu-24\.04$/m);
+
+  const steps = stepsIn(job);
+  assert.equal(steps.length, 5);
+
+  assert.deepEqual(keysAt(steps[0], 8), ["name", "uses", "with"]);
+  assert.deepEqual(keysAt(steps[0], 10), ["fetch-depth"]);
+  assert.match(steps[0], /^ {8}name: Checkout with history$/m);
+  assert.match(
+    steps[0],
+    /^ {8}uses: actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4$/m,
+  );
+  assert.match(steps[0], /^ {10}fetch-depth: 0$/m);
+
+  assert.deepEqual(keysAt(steps[1], 8), ["name", "uses", "with"]);
+  assert.deepEqual(keysAt(steps[1], 10), ["node-version"]);
+  assert.match(steps[1], /^ {8}name: Install Node$/m);
+  assert.match(
+    steps[1],
+    /^ {8}uses: actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4$/m,
+  );
+  assert.match(
+    steps[1],
+    /^ {10}node-version: \$\{\{ env\.NODE_VERSION \}\}$/m,
+  );
+
+  assert.deepEqual(keysAt(steps[2], 8), ["name", "run"]);
+  assert.deepEqual(keysAt(steps[2], 10), []);
+  assert.match(steps[2], /^ {8}name: Enable Corepack$/m);
+  assert.match(steps[2], /^ {8}run: corepack enable$/m);
+
+  assert.deepEqual(keysAt(steps[3], 8), ["name", "run"]);
+  assert.deepEqual(keysAt(steps[3], 10), []);
+  assert.match(steps[3], /^ {8}name: Install dependencies$/m);
+  assert.match(steps[3], /^ {8}run: pnpm install --frozen-lockfile$/m);
+
+  assert.deepEqual(keysAt(steps[4], 8), ["env", "name", "run", "shell"]);
+  assert.deepEqual(keysAt(steps[4], 10), ["BASE_SHA"]);
+  assert.match(steps[4], /^ {8}name: Judge the changed files$/m);
+  assert.match(steps[4], /^ {8}shell: bash$/m);
+  assert.match(
+    steps[4],
+    /^ {10}BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}$/m,
+  );
+  assert.match(
+    steps[4],
+    /^ {8}run: pnpm run slop --base "\$BASE_SHA"$/m,
+  );
+});
+
+test("the slop script keeps the diff-scoped aislop command", () => {
+  assert.equal(
+    packageJson.scripts.slop,
+    "aislop ci --changes --base origin/main",
+  );
+  assert.equal(packageJson.scripts.preslop, undefined);
+  assert.equal(packageJson.scripts.postslop, undefined);
+});
+
+test("ci-required fails closed on the aislop job", () => {
+  const job = jobBlock("ci-required");
+  assert.deepEqual(keysAt(job, 4), [
+    "env",
+    "if",
+    "name",
+    "needs",
+    "runs-on",
+    "steps",
+  ]);
+  assert.match(job, /^ {4}name: ci-required$/m);
+  assert.match(job, /^ {4}if: always\(\)$/m);
+  assert.match(job, /^ {4}runs-on: ubuntu-24\.04$/m);
+  assert.equal(count(job, /^ {6}- aislop$/gm), 1);
+  assert.equal(
+    count(job, /^ {6}AISLOP_RESULT: \$\{\{ needs\.aislop\.result \}\}$/gm),
+    1,
+  );
+  assert.equal(count(job, /^ {6}AISLOP_RESULT:/gm), 1);
+  assert.equal(
+    count(job, /^ {6}EVENT_NAME: \$\{\{ github\.event_name \}\}$/gm),
+    1,
+  );
+  assert.equal(count(job, /^ {6}EVENT_NAME:/gm), 1);
+
+  const steps = stepsIn(job);
+  assert.equal(steps.length, 1);
+  assert.deepEqual(keysAt(steps[0], 8), ["name", "run", "shell"]);
+  assert.match(steps[0], /^ {8}name: Require every selected gate$/m);
+  assert.match(steps[0], /^ {8}shell: bash$/m);
+
+  const script = runBody(steps[0]);
+  const expectedScript = `set -euo pipefail
+failed=0
+require_success() {
+  local name="$1" result="$2"
+  if [[ "$result" != "success" ]]; then
+    echo "::error::\${name} finished with \${result}, expected success."
+    failed=1
+  fi
+}
+allow_skip() {
+  local name="$1" result="$2"
+  if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+    echo "::error::\${name} finished with \${result}."
+    failed=1
+  fi
+}
+require_if_selected() {
+  local name="$1" selected="$2" result="$3"
+  if [[ "$selected" == "true" ]]; then
+    require_success "$name" "$result"
+  else
+    allow_skip "$name" "$result"
+  fi
+}
+
+require_success classify "$CLASSIFY_RESULT"
+require_success boundary "$BOUNDARY_RESULT"
+require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
+require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
+require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
+if [[ "$RELEASE_APP_SELECTED" == "true" || "$RELEASE_ENGINE_SELECTED" == "true" ]]; then
+  require_success release-metadata "$RELEASE_METADATA_RESULT"
+else
+  allow_skip release-metadata "$RELEASE_METADATA_RESULT"
+fi
+if [[ "$EVENT_NAME" == "push" && "$RELEASE_APP_SELECTED" == "true" ]]; then
+  require_success warm-release-cache "$WARM_RELEASE_RESULT"
+else
+  allow_skip warm-release-cache "$WARM_RELEASE_RESULT"
+fi
+if [[ "$ENGINE_SELECTED" == "true" || "$BACKEND_SELECTED" == "true" ]]; then
+  require_success licenses "$LICENSES_RESULT"
+else
+  allow_skip licenses "$LICENSES_RESULT"
+fi
+if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  require_success aislop "$AISLOP_RESULT"
+else
+  allow_skip aislop "$AISLOP_RESULT"
+fi
+if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  require_success dco "$DCO_RESULT"
+else
+  allow_skip dco "$DCO_RESULT"
+fi
+exit "$failed"`;
+  assert.equal(script, expectedScript);
+
+  const aislopBranch = `if [[ "$EVENT_NAME" == "pull_request" ]]; then
+  require_success aislop "$AISLOP_RESULT"
+else
+  allow_skip aislop "$AISLOP_RESULT"
+fi`;
+  assert.match(script, new RegExp(aislopBranch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.ok(script.indexOf(aislopBranch) < script.indexOf('exit "$failed"'));
 });
