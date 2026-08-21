@@ -19,21 +19,8 @@
  */
 
 /* -------------------------------------------------------------------------
- * Phase / hypnogram — mirrors `analysis::engine::{Phase, PhaseDistribution,
- * ToolMix, Bucket, PhaseSegment}`.
+ * Timeline metrics — mirrors `analysis::engine::{ToolMix, Bucket}`.
  * ---------------------------------------------------------------------- */
-
-/** The hypnogram bands, deepest → shallowest. Mirrors engine `Phase`. */
-export type SessionPhase = "implementing" | "testing" | "exploring" | "thinking" | "disruption"
-
-/** Per-phase share of a bucket or session. Mirrors engine `PhaseDistribution`. */
-export interface PhaseDistribution {
-  implementing: number
-  testing: number
-  exploring: number
-  thinking: number
-  disruption: number
-}
 
 /** Tool-call counts by category. Mirrors engine `ToolMix`. */
 interface ToolMix {
@@ -47,26 +34,11 @@ interface ToolMix {
 
 /** One point on the shared 0→100% session-progress grid. Mirrors engine `Bucket`. */
 export interface SessionBucket {
-  dominantPhase: SessionPhase | null
-  distribution: PhaseDistribution
   tokensIn: number
   tokensOut: number
   contextTokens: number
   /** True when a real compaction boundary landed in this bucket. */
   isCompactionBoundary: boolean
-}
-
-/**
- * One contiguous run of a single mode on the active-time axis (the per-turn
- * hypnogram). Mirrors engine `PhaseSegment`.
- */
-export interface PhaseSegment {
-  phase: SessionPhase
-  /** Active time this run occupied (idle gaps capped), in milliseconds. */
-  activeMs: number
-  tokensIn: number
-  tokensOut: number
-  contextTokens: number
 }
 
 /* -------------------------------------------------------------------------
@@ -144,8 +116,6 @@ interface ModelTokens {
 export interface SessionMetrics {
   agent: string
   sessionId: string
-  /** Earliest event timestamp (epoch ms), or null when the session is untimed. */
-  firstTsMs?: number | null
   durationSecs: number
   /** Wall-clock span minus idle gaps; time the session was genuinely active. */
   activeSecs: number
@@ -153,19 +123,12 @@ export interface SessionMetrics {
   tokensIn: number
   tokensOut: number
   peakContextTokens: number
-  contextFraction: number
   /** False when the model's context window is unknown. */
   contextAvailable?: boolean
   contextWindow: number
   toolMix: ToolMix
   grepCount: number
-  disruptionCount: number
-  phaseDistribution: PhaseDistribution
-  patternScore: number
-  signals: string[]
   buckets: SessionBucket[]
-  /** Per-turn mode runs on the active-time axis (single-session hypnogram). */
-  segments: PhaseSegment[]
   initialContext?: InitialContextBreakdown | null
   model?: string | null
   billableInputTokens?: number
@@ -174,20 +137,17 @@ export interface SessionMetrics {
   billableCacheCreationTokens?: number
   modelBreakdown?: Record<string, ModelTokens>
   cost?: SessionCostComponents | null
-  skillUses?: SkillUse[]
 }
 
 /**
- * Averaged view across the analyzed sessions — what the hypnogram and cards
- * render. A single-session view is the same shape with `sessionCount: 1`.
+ * Averaged view across the analyzed sessions. A single-session view uses
+ * `sessionCount: 1`.
  * Mirrors engine `ActiveSessionsSummary`.
  */
 export interface ActiveSessionsSummary {
   sessionCount: number
   avgDurationSecs: number
   avgActiveSecs: number
-  avgPatternScore: number
-  phaseDistribution: PhaseDistribution
   toolMix: ToolMix
   grepTotal: number
   tokensInTotal: number
@@ -198,53 +158,7 @@ export interface ActiveSessionsSummary {
   contextWindow: number
   costTotalUsd?: number | null
   buckets: SessionBucket[]
-  signals: string[]
   sessions: SessionMetrics[]
-}
-
-/* -------------------------------------------------------------------------
- * Skills — mirrors `model::skill::{SkillUse, SkillScope, LocalSkillDetails,
- * SkillDetail}`.
- * ---------------------------------------------------------------------- */
-
-/** Where an invoked skill's `SKILL.md` was resolved from. */
-export type SkillScope = "global" | "project" | "plugin" | "unknown"
-
-/** One skill invocation extracted from a transcript. Mirrors engine `SkillUse`. */
-interface SkillUse {
-  name: string
-  /** 0..1 position on the session's active-time axis (the hypnogram x-axis). */
-  progress: number
-  description?: string
-  /** Idle-capped gap to the next event (ms). */
-  durationMs?: number
-  tokensOut: number
-  contextTokens: number
-}
-
-/** Locally-read `SKILL.md` enrichment. Mirrors engine `LocalSkillDetails`. */
-export interface LocalSkillDetails {
-  version?: string
-  /** Authoritative description, from the `SKILL.md` frontmatter. */
-  description?: string
-  /** Declared tools (frontmatter `allowed-tools`/`tools`); omitted when none. */
-  allowedTools?: string[]
-  license?: string
-  scope: SkillScope
-  /** Absolute path to the resolved `SKILL.md`. */
-  path?: string
-  modifiedAtMs?: number
-  sizeBytes?: number
-  available: boolean
-}
-
-/**
- * A skill invocation enriched with its local `SKILL.md` details. The usage
- * fields sit at the top level because the engine flattens `SkillUse` into it.
- * Mirrors engine `SkillDetail`.
- */
-export interface SkillDetail extends SkillUse {
-  local?: LocalSkillDetails
 }
 
 /* -------------------------------------------------------------------------
@@ -260,14 +174,6 @@ export interface SubagentMember {
   subagentId: string
   /** First task prompt (truncated), or a persona/slug fallback. */
   label: string
-  /** Health score (0–100); the roster colors each row by it. */
-  patternScore: number
-  /**
-   * Where this sub-agent was spawned along the orchestrator's hypnogram: a
-   * 0..1 position on the orchestrator's active-time axis. Absent when it
-   * cannot be mapped.
-   */
-  spawnProgress?: number | null
 }
 
 /** Sub-agent picture for one orchestrator session. */

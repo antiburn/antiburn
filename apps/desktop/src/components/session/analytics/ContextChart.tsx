@@ -17,7 +17,7 @@ import { contextSeries } from "../../../lib/presentation/sessionAnalytics"
 import type { SessionBucket } from "../../../lib/types/session"
 import { GLASS_TOOLTIP_STYLE } from "./tooltip"
 
-export interface ContextDriftChartProps {
+export interface ContextChartProps {
   buckets: SessionBucket[]
   contextWindow: number
 }
@@ -26,7 +26,7 @@ export interface ContextDriftChartProps {
 const CONTEXT_THRESHOLD = 90
 
 /** Context-window occupancy over progress, marked at the warning threshold. */
-export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartProps) {
+export function ContextChart({ buckets, contextWindow }: ContextChartProps) {
   const data = contextSeries(buckets, contextWindow)
   const compactionPoints = data.filter((d) => d.isCompactionBoundary)
   const fillId = `context-fill-${useId().replace(/:/g, "")}`
@@ -46,15 +46,15 @@ export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartP
   if (thresholdSplit != null) {
     stops.push(
       <stop
-        key="drift-top"
+        key="warning-top"
         offset={0}
-        stopColor="var(--color-pattern-drifting)"
+        stopColor="var(--color-context-warning)"
         stopOpacity={0.55}
       />,
       <stop
-        key="drift-edge"
+        key="warning-edge"
         offset={thresholdSplit}
-        stopColor="var(--color-pattern-drifting)"
+        stopColor="var(--color-context-warning)"
         stopOpacity={0.3}
       />,
     )
@@ -80,7 +80,7 @@ export function ContextDriftChart({ buckets, contextWindow }: ContextDriftChartP
         <YAxis hide domain={[0, 100]} />
         <ReferenceLine
           y={CONTEXT_THRESHOLD}
-          stroke="var(--color-pattern-drifting)"
+          stroke="var(--color-context-warning)"
           strokeDasharray="3 3"
           strokeOpacity={0.7}
         />

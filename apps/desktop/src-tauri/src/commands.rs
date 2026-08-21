@@ -663,7 +663,7 @@ pub async fn get_session_analytics(
         inclusive_tokens: analysis.inclusive_tokens,
         subagents_tokens: analysis.subagents_tokens,
         models: analysis.models.clone(),
-        skills: analysis.skills.clone(),
+        model_runs: analysis.model_runs.clone(),
         orchestration,
         relations: (!relations.is_empty()).then_some(relations),
         source_path: analysis.source_path.clone(),
@@ -702,7 +702,7 @@ pub async fn get_subagent_analytics(
         inclusive_tokens: analysis.inclusive_tokens,
         subagents_tokens: analysis.subagents_tokens,
         models: analysis.models.clone(),
-        skills: analysis.skills.clone(),
+        model_runs: analysis.model_runs.clone(),
         orchestration: None,
         relations: None,
         source_path: analysis.source_path.clone(),
@@ -725,8 +725,6 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
                 .clone()
                 .unwrap_or_else(|| "Sub-agent".to_string()),
             subagent_id: relation.related_id,
-            pattern_score: 0,
-            spawn_progress: None,
         })
         .collect();
     if members.is_empty() {

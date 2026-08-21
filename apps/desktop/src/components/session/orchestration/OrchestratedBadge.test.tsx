@@ -11,7 +11,7 @@ import { OrchestratedBadge } from "./OrchestratedBadge"
 afterEach(cleanup)
 
 function member(id: string, label: string, agent = "claude-code"): SubagentMember {
-  return { agent, subagentId: id, label, patternScore: 80 }
+  return { agent, subagentId: id, label }
 }
 
 function status(members: SubagentMember[], agent = "claude-code"): LocalOrchestrationStatus {
@@ -60,21 +60,6 @@ describe("OrchestratedBadge", () => {
     fireEvent.click(screen.getByText("Orchestrated 1 agents"))
     fireEvent.click(screen.getByText("Refactor auth"))
     expect(onOpenSubagent).toHaveBeenCalledWith("agent-xyz", "Refactor auth")
-  })
-
-  it("colors each roster row by its health score", () => {
-    render(
-      <OrchestratedBadge
-        status={status([
-          { ...member("a", "Healthy"), patternScore: 90 },
-          { ...member("b", "Thrashing"), patternScore: 20 },
-        ])}
-        onOpenSubagent={() => {}}
-      />,
-    )
-    fireEvent.click(screen.getByText("Orchestrated 2 agents"))
-    expect(screen.getByText("90%").getAttribute("style")).toContain("--color-system-green")
-    expect(screen.getByText("20%").getAttribute("style")).toContain("--color-mode-disruption")
   })
 
   it("fills the leading icon slot from the injected renderer only", () => {

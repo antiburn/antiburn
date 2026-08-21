@@ -20,7 +20,11 @@ import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
 import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
 import { mockSessionHygiene } from "../../lib/presentation/mockSessionHygiene"
-import { modelRunNames, modelRunShortNames } from "../../lib/presentation/models"
+import {
+  modelRunNames,
+  modelRunShortNames,
+  type PresentableModelRun,
+} from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import {
   costBreakdownRows,
@@ -29,8 +33,6 @@ import {
   formatDuration,
   formatPct,
   isEmptySummary,
-  PHASES,
-  phaseBreakdown,
 } from "../../lib/presentation/sessionAnalytics"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import type {
@@ -38,24 +40,15 @@ import type {
   LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
-  SessionPhase,
-  SkillDetail,
 } from "../../lib/types/session"
 import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { Skeleton } from "../ui/Skeleton"
-import { ContextDriftChart } from "./analytics/ContextDriftChart"
+import { ContextChart } from "./analytics/ContextChart"
 import { CostBreakdown } from "./analytics/CostBreakdown"
-import { Hypnogram } from "./analytics/Hypnogram"
-import { HypnogramSegments, type MarkerLayer } from "./analytics/HypnogramSegments"
 import { InitialContextChart } from "./analytics/InitialContextChart"
-import type { TimelineMarker } from "./analytics/markerCluster"
-import { PatternScore } from "./analytics/PatternScore"
-import { PhaseDonut } from "./analytics/PhaseDonut"
-import { skillMarkerKind } from "./analytics/skillMarkerKind"
-import { createSpawnMarkerKind, type SpawnPayload } from "./analytics/spawnMarkerKind"
 import { TokenAreaChart } from "./analytics/TokenAreaChart"
 import { ToolMixChart } from "./analytics/ToolMixChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
@@ -112,10 +105,8 @@ export interface SessionDetailPresentationProps {
   costSplit: TokensCostSplit | null
   /** Sub-agents this session launched. */
   orchestration: LocalOrchestrationStatus | null
-  /** Skill invocations to overlay on the per-turn ribbon. */
-  skills: SkillDetail[]
-  /** Models that contributed to this session. */
-  models: string[]
+  /** Parent model runs followed by runs used only by sub-agents. */
+  modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
   relations: LocalSessionRelations | null
   onBack: () => void
@@ -123,7 +114,7 @@ export interface SessionDetailPresentationProps {
   onPrev?: () => void
   /** Navigate to the older adjacent session; omit when none exists. */
   onNext?: () => void
-  /** Open one sub-agent's analytics from the roster or a spawn marker. */
+  /** Open one sub-agent's analytics from the roster. */
   onOpenSubagent: (subagentId: string, label: string) => void
   /** From a sub-agent view, open the launching orchestrator's analytics. */
   onOpenOrchestrator: () => void
@@ -275,88 +266,6 @@ function Card({
   )
 }
 
-function Legend() {
-  // Reversed so the swatches read left → right in the same order the hypnogram
-  // stacks its lanes top → bottom. `PHASES` is shared, so copy before reversing.
-  return (
-    <div className="mb-2 flex flex-nowrap gap-x-2">
-      {[...PHASES].reverse().map((phase) => (
-        <span
-          key={phase.key}
-          className="flex items-center gap-1 whitespace-nowrap type-caption text-label-secondary"
-        >
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: phase.colorVar }} />
-          {phase.label}
-        </span>
-      ))}
-    </div>
-  )
-}
-
-function PhaseBreakdownRows({
-  summary,
-  activePhase,
-  onHoverPhase,
-}: {
-  summary: ActiveSessionsSummary
-  activePhase?: SessionPhase | null
-  onHoverPhase?: (phase: SessionPhase | null) => void
-}) {
-  return (
-    <div className="mt-1 space-y-1.5">
-      {phaseBreakdown(summary).map((row) => (
-        <div
-          key={row.key}
-          className={cn(
-            "-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1 transition-colors duration-[var(--duration-fast)] ease-out",
-            activePhase === row.key && "bg-surface-secondary",
-          )}
-          onMouseEnter={() => onHoverPhase?.(row.key)}
-          onMouseLeave={() => onHoverPhase?.(null)}
-        >
-          <span
-            className="h-7 w-1 shrink-0 rounded-full"
-            style={{ backgroundColor: row.colorVar }}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <span className="type-callout text-label">{row.label}</span>
-              <Tooltip label={row.tip} side="top" interactive delayMs={150}>
-                <button
-                  type="button"
-                  aria-label={`About ${row.label}`}
-                  className="leading-none text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out hover:text-label-secondary"
-                >
-                  <Info size={11} aria-hidden="true" />
-                </button>
-              </Tooltip>
-              {row.flag === "high" && (
-                <span className="rounded bg-system-orange-tint/15 px-1 type-caption font-medium text-system-orange">
-                  High
-                </span>
-              )}
-              {row.flag === "low" && (
-                <span className="rounded bg-surface-secondary px-1 type-caption font-medium text-label-tertiary">
-                  Low
-                </span>
-              )}
-            </div>
-            <span className="type-caption text-label-tertiary">
-              Reference: {formatPct(row.reference.lo)}–{formatPct(row.reference.hi)}
-            </span>
-          </div>
-          <div className="shrink-0 text-right">
-            <div className="type-headline text-label tabular-nums">
-              {formatPct(row.fraction)}
-            </div>
-            <div className="type-caption text-label-tertiary">{row.minutes} min</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /** Card shell matching {@link Card}, with a placeholder in place of the heading. */
 function SkeletonCardShell({ children }: { children: ReactNode }) {
   return (
@@ -383,41 +292,6 @@ function SessionDetailSkeleton() {
           <Skeleton className="h-3 w-28" />
         </div>
       </div>
-
-      <SkeletonCardShell>
-        <Skeleton className="h-[120px] w-full rounded-lg" />
-        <div className="mt-2 flex justify-between">
-          <Skeleton className="h-2.5 w-8" />
-          <Skeleton className="h-2.5 w-8" />
-        </div>
-      </SkeletonCardShell>
-
-      <SkeletonCardShell>
-        <div className="mb-3 flex justify-center">
-          <span className="block h-[120px] w-[120px] animate-pulse rounded-full bg-surface-tertiary" />
-        </div>
-        <div className="space-y-2.5">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="flex items-center gap-2.5">
-              <span className="h-7 w-1 shrink-0 animate-pulse rounded-full bg-surface-tertiary" />
-              <div className="min-w-0 flex-1 space-y-1.5">
-                <Skeleton className="h-3 w-24" />
-                <Skeleton className="h-2.5 w-32" />
-              </div>
-              <div className="flex flex-col items-end space-y-1.5">
-                <Skeleton className="h-3.5 w-10" />
-                <Skeleton className="h-2.5 w-12" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </SkeletonCardShell>
-
-      <SkeletonCardShell>
-        <Skeleton className="mb-2 h-7 w-16" />
-        <Skeleton className="mb-2 h-2 w-full rounded-full" />
-        <Skeleton className="h-3 w-3/4" />
-      </SkeletonCardShell>
 
       <SkeletonCardShell>
         <Skeleton className="h-28 w-full rounded-lg" />
@@ -524,8 +398,7 @@ function useSkeletonVisible(loading: boolean): boolean {
  * ---------------------------------------------------------------------- */
 
 /**
- * The Session Detail surface shows one session's rhythm, modes, health, tokens,
- * context, and tools.
+ * The Session Detail surface shows one session's tokens, context, and tools.
  *
  * Entirely prop-driven. Every value arrives as data and every action as a
  * callback, so this file has no notion of where an analysis comes from, when
@@ -541,8 +414,7 @@ export function SessionDetailPresentation({
   cost,
   costSplit,
   orchestration,
-  skills,
-  models,
+  modelRuns,
   relations,
   onBack,
   onPrev,
@@ -555,10 +427,7 @@ export function SessionDetailPresentation({
   onRevealSource,
   renderAgentIcon,
 }: SessionDetailPresentationProps) {
-  const [modesPhase, setModesPhase] = useState<SessionPhase | null>(null)
-
   const subagent = session.subagent
-  const modelRuns = models.map((model) => ({ model }))
   const modelNames = modelRunShortNames(modelRuns)
   const hygieneChecks = mockSessionHygiene(sessionIdentityKey(session))
 
@@ -616,50 +485,6 @@ export function SessionDetailPresentation({
         tokensOutTotal: summary.tokensOutTotal,
       })
     : null
-
-  // Spawn dots on the parent ribbon: where each discovered sub-agent launched
-  // on this session's active-time axis. Unlike the roster, markers do not
-  // require fan-out — one child is still useful timeline context and a route
-  // into that child's analytics.
-  const spawnMarkers: TimelineMarker<SpawnPayload>[] =
-    !subagent && orchestration
-      ? orchestration.members
-          .filter((member) => member.spawnProgress != null)
-          .map((member) => ({
-            progress: member.spawnProgress as number,
-            data: {
-              patternScore: member.patternScore,
-              agent: member.agent,
-              label: member.label,
-              open: () => onOpenSubagent(member.subagentId, member.label),
-            },
-          }))
-      : []
-
-  // Skill dots show where each skill invocation landed.
-  const skillMarkers: TimelineMarker<SkillDetail>[] = skills.map((detail) => ({
-    progress: detail.progress,
-    data: detail,
-  }))
-
-  const markerLayers: MarkerLayer[] = [
-    ...(spawnMarkers.length > 0
-      ? [
-          {
-            markers: spawnMarkers,
-            kind: createSpawnMarkerKind({ renderAgentIcon }),
-          } as MarkerLayer,
-        ]
-      : []),
-    ...(skillMarkers.length > 0
-      ? [
-          {
-            markers: skillMarkers,
-            kind: skillMarkerKind,
-          } as MarkerLayer,
-        ]
-      : []),
-  ]
 
   const firstSession = summary?.sessions[0]
   const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
@@ -744,12 +569,12 @@ export function SessionDetailPresentation({
             <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
             {!supportsAnalytics ? (
               <p className="type-body text-label">
-                Session health for {agentDisplayName(session.agent)} sessions isn&apos;t
+                Session analysis for {agentDisplayName(session.agent)} sessions isn&apos;t
                 available yet
               </p>
             ) : (
               <>
-                <p className="type-body text-label">No session health available</p>
+                <p className="type-body text-label">No session analysis available</p>
                 <p className="mt-1 type-callout text-label-tertiary">
                   {relations?.parent
                     ? "This fork has no analyzable child activity yet."
@@ -915,58 +740,6 @@ export function SessionDetailPresentation({
               />
             )}
 
-            <Card
-              title="Session rhythm"
-              info="The leading activity at each moment of the session. Thick bands mean one mode clearly dominated; thin, shifting bands mean it kept switching."
-              {...(isOrchestrator ? { hint: "parent agent" } : {})}
-            >
-              <Legend />
-              {firstSession?.segments?.length ? (
-                // Per-turn segments show the session without resampling.
-                <HypnogramSegments
-                  segments={firstSession.segments}
-                  activeSecs={summary.avgActiveSecs}
-                  contextWindow={summary.contextAvailable ? summary.contextWindow : 0}
-                  layers={markerLayers}
-                />
-              ) : (
-                // Use the resampled buckets when per-turn segments are absent.
-                <Hypnogram
-                  buckets={summary.buckets}
-                  durationSecs={summary.avgActiveSecs}
-                  contextWindow={summary.contextAvailable ? summary.contextWindow : 0}
-                />
-              )}
-              <div className="mt-1 flex justify-between type-caption text-label-tertiary">
-                <span>0:00</span>
-                <span>{formatDuration(summary.avgActiveSecs)}</span>
-              </div>
-            </Card>
-
-            <Card
-              title="Modes"
-              info="Each mode's share of active time. High and Low flag it against the healthy reference band shown under each mode."
-              {...(isOrchestrator ? { hint: "parent agent" } : {})}
-            >
-              <PhaseDonut
-                summary={summary}
-                activePhase={modesPhase}
-                onHoverPhase={setModesPhase}
-              />
-              <PhaseBreakdownRows
-                summary={summary}
-                activePhase={modesPhase}
-                onHoverPhase={setModesPhase}
-              />
-            </Card>
-
-            <Card
-              title="Pattern health"
-              info="Rates session steadiness from pattern signals like rework loops and lost context. 75+ is healthy, 50–74 drifting, under 50 thrashing."
-            >
-              <PatternScore score={summary.avgPatternScore} signals={summary.signals} />
-            </Card>
-
             {tokensCard && (
               <Card title="Tokens" info={tokensCard.info} hint={tokensCard.hint}>
                 <TokenAreaChart buckets={summary.buckets} />
@@ -986,10 +759,7 @@ export function SessionDetailPresentation({
               }
             >
               {summary.contextAvailable ? (
-                <ContextDriftChart
-                  buckets={summary.buckets}
-                  contextWindow={summary.contextWindow}
-                />
+                <ContextChart buckets={summary.buckets} contextWindow={summary.contextWindow} />
               ) : (
                 <p className="py-6 text-center type-callout text-label-tertiary">
                   Context occupancy is unavailable for this model.

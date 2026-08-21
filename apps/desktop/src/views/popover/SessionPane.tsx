@@ -341,8 +341,7 @@ export function SessionPane({
       cost={cost}
       costSplit={costSplit}
       orchestration={orchestration}
-      skills={payload?.skills ?? []}
-      models={payload?.models ?? []}
+      modelRuns={payload?.modelRuns ?? []}
       relations={relations}
       onBack={onBack}
       {...(onPrev ? { onPrev } : {})}
