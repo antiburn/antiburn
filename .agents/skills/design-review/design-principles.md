@@ -289,15 +289,7 @@ without a comment that says what it means. **[Medium]**
 colour from a CSS variable, so both themes work with no branch in the chart
 code. **[High]**
 
-**RULE 8.3 — a figure is honest about its basis.** A reader must never take an
-estimate for a provider's own figure. Provenance has to be *reachable* — a
-tooltip, a disclosure, a detail row, or one statement covering a whole section
-— but it does not have to be a visible label on every number. On a dense
-surface, per-figure labels usually clutter more than they inform. The finding
-is a figure that reads as authoritative with no way to find out otherwise, not
-a figure without a label. **[High]**
-
-**RULE 8.4 — no chart junk.** One accent, quiet gridlines, a label on the chart
+**RULE 8.3 — no chart junk.** One accent, quiet gridlines, a label on the chart
 in place of a busy legend. Thin strokes at chart scale
 (`strokeWidth` 1.5 for large marks). **[Medium]**
 
@@ -441,9 +433,13 @@ the dismiss control is named "Dismiss" and not the sentence again. A
 screen-reader user should not sit through it twice. **[Medium]**
 
 **RULE 12.7 — say what the app cannot see.** A gap, a blocked folder, and a
-paused scan are stated plainly. Never imply completeness the app does not have.
-Estimated figures follow Rule 8.3: the basis has to be reachable, not labelled
-on every number. **[High]**
+paused scan are stated plainly; never imply completeness the app does not have.
+The same holds for a figure the app worked out itself: where an estimate stands
+in for a provider's own number, the reader needs *some* way to tell. A tooltip
+is usually the right amount — `SessionCostBadge` leads with the number and
+explains it on hover. Raise this only when there is no way to find out at all;
+a figure without a visible label is not a finding, and labelling every one of
+them clutters a dense surface. **[High]**
 
 ## 13. Icons, marks, and emoji
 
