@@ -14,7 +14,7 @@ import {
 } from "recharts"
 
 import {
-  contextBandValues,
+  contextAxis,
   contextTokenSeries,
   formatCompact,
   formatPct,
@@ -34,6 +34,10 @@ export interface ContextTokensChartProps {
 const WARM_FLOOR_TOKENS = 400_000
 /** Token level the warm ramp reaches full red at. */
 const CRITICAL_TOKENS = 1_000_000
+/** Tick text for both axes. */
+const AXIS_TICK = { fontSize: 9, fill: "var(--color-label-tertiary)" }
+/** Width reserved for each axis label column. */
+const AXIS_WIDTH = 34
 
 interface ContextTokensTooltipProps {
   active?: boolean
@@ -100,7 +104,8 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
 
   const tokenSum = data.reduce((m, d) => Math.max(m, d.tokensIn + d.tokensOut), 0)
   const tokenCeiling = Math.max(1, tokenSum * 3)
-  const bands = hasContext ? contextBandValues(contextWindow) : []
+  const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
+  const axis = hasContext ? contextAxis(peak, contextWindow) : null
   // Every `ReferenceLine`, including the vertical compaction markers, needs a
   // `yAxisId` that names an axis the chart actually renders — recharts falls
   // back to an axis id of "0", which does not exist here. The chart always
@@ -116,7 +121,6 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
   // both turn warm at the same 400k mark. Below 400k the fill stays the calm
   // blue; from 400k up it ramps from amber to red, reaching red at 1M tokens
   // regardless of the window size.
-  const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
   const stops: ReactElement[] = []
   if (peak > WARM_FLOOR_TOKENS) {
     const kinkOffset = (peak - WARM_FLOOR_TOKENS) / peak
@@ -142,7 +146,7 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
 
   return (
     <ResponsiveContainer width="100%" height={160}>
-      <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+      <AreaChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
         {hasContext && (
           <defs>
             <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
@@ -151,24 +155,38 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
           </defs>
         )}
         <XAxis dataKey="progress" hide />
-        {hasContext && <YAxis yAxisId="context" hide domain={[0, contextWindow]} />}
-        <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
-        {hasContext &&
-          bands.map((value) => (
-            <ReferenceLine
-              key={`band-${value}`}
-              yAxisId="context"
-              y={value}
-              stroke="var(--color-separator)"
-              strokeDasharray="2 4"
-              label={{
-                value: formatTokenBand(value),
-                position: "insideTopRight",
-                fill: "var(--color-label-tertiary)",
-                fontSize: 9,
-              }}
-            />
-          ))}
+        {axis && (
+          <YAxis
+            yAxisId="context"
+            domain={[0, axis.ceiling]}
+            ticks={axis.bands}
+            tickFormatter={formatTokenBand}
+            tick={AXIS_TICK}
+            axisLine={false}
+            tickLine={false}
+            width={AXIS_WIDTH}
+          />
+        )}
+        <YAxis
+          yAxisId="tokens"
+          orientation="right"
+          domain={[0, tokenCeiling]}
+          ticks={[tokenSum]}
+          tickFormatter={formatTokenBand}
+          tick={AXIS_TICK}
+          axisLine={false}
+          tickLine={false}
+          width={AXIS_WIDTH}
+        />
+        {axis?.bands.map((value) => (
+          <ReferenceLine
+            key={`band-${value}`}
+            yAxisId="context"
+            y={value}
+            stroke="var(--color-separator)"
+            strokeDasharray="2 4"
+          />
+        ))}
         {data
           .filter((point) => point.isCompactionBoundary)
           .map((point, i) => (

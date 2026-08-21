@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest"
 
 import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
-  contextBandValues,
+  contextAxis,
   contextTokenSeries,
   costBreakdownRows,
   costFigureLabel,
@@ -73,13 +73,30 @@ describe("contextTokenSeries", () => {
   })
 })
 
-describe("contextBandValues", () => {
-  it("uses 200k steps for a 1M window", () => {
-    expect(contextBandValues(1_000_000)).toEqual([200_000, 400_000, 600_000, 800_000])
+describe("contextAxis", () => {
+  it("scales the ceiling to the peak with headroom, not to the window", () => {
+    expect(contextAxis(130_000, 1_000_000)).toEqual({
+      ceiling: 150_000,
+      bands: [50_000, 100_000],
+    })
   })
 
-  it("uses 50k steps for a 200k window", () => {
-    expect(contextBandValues(200_000)).toEqual([50_000, 100_000, 150_000])
+  it("never exceeds the window", () => {
+    expect(contextAxis(195_000, 200_000)).toEqual({
+      ceiling: 200_000,
+      bands: [50_000, 100_000, 150_000],
+    })
+  })
+
+  it("uses coarse steps for a deep session", () => {
+    expect(contextAxis(900_000, 1_000_000)).toEqual({
+      ceiling: 1_000_000,
+      bands: [200_000, 400_000, 600_000, 800_000],
+    })
+  })
+
+  it("uses fine steps for a shallow session", () => {
+    expect(contextAxis(18_000, 1_000_000)).toEqual({ ceiling: 20_000, bands: [10_000] })
   })
 })
 

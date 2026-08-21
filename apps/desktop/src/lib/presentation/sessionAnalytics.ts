@@ -53,16 +53,34 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
   })
 }
 
+/** Candidate band steps, from fine to coarse. */
+const CONTEXT_BAND_STEPS = [
+  10_000, 20_000, 25_000, 50_000, 100_000, 200_000, 250_000, 500_000, 1_000_000,
+]
+
+/** The context axis of the chart: its top value and its band values. */
+export interface ContextAxis {
+  /** Top of the axis, in tokens. */
+  ceiling: number
+  /** Band values strictly between zero and the ceiling. */
+  bands: number[]
+}
+
 /**
- * Dashed reference-line values for the context chart, strictly below
- * `contextWindow`. The step is coarser for a large window, so a 1M window
- * gets 200k bands and a 200k window gets 50k bands.
+ * Scale the context axis to the session, not to the whole window. The ceiling
+ * is the peak plus headroom, rounded up to a clean step that yields at most
+ * five bands, and never above `contextWindow`. A session that used 130k of a
+ * 1M window then fills the chart instead of a thin strip at the bottom.
  */
-export function contextBandValues(contextWindow: number): number[] {
-  const step = contextWindow >= 1_000_000 ? 200_000 : 50_000
-  const values: number[] = []
-  for (let v = step; v < contextWindow; v += step) values.push(v)
-  return values
+export function contextAxis(peak: number, contextWindow: number): ContextAxis {
+  const target = Math.min(contextWindow, Math.max(1, peak) * 1.1)
+  const step =
+    CONTEXT_BAND_STEPS.find((s) => target / s <= 5) ??
+    CONTEXT_BAND_STEPS[CONTEXT_BAND_STEPS.length - 1]!
+  const ceiling = Math.min(contextWindow, Math.ceil(target / step) * step)
+  const bands: number[] = []
+  for (let v = step; v < ceiling; v += step) bands.push(v)
+  return { ceiling, bands }
 }
 
 export interface ToolSlice {
