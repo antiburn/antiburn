@@ -19,7 +19,12 @@ import { useCallback, useState, useSyncExternalStore, type ReactNode } from "rea
 import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
 import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
+import { mockSessionHygiene } from "../../lib/presentation/mockSessionHygiene"
+import { modelRunNames, modelRunShortNames } from "../../lib/presentation/models"
+import { relativeTime } from "../../lib/presentation/relativeTime"
 import {
+  costBreakdownRows,
+  costFigureLabel,
   formatCompact,
   formatDuration,
   formatPct,
@@ -27,7 +32,7 @@ import {
   PHASES,
   phaseBreakdown,
 } from "../../lib/presentation/sessionAnalytics"
-import type { LocalSessionCost } from "../../lib/presentation/sessionCosts"
+import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import type {
   ActiveSessionsSummary,
   LocalOrchestrationStatus,
@@ -38,6 +43,7 @@ import type {
 } from "../../lib/types/session"
 import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
 import { Tooltip } from "../presentation/Tooltip"
+import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { Skeleton } from "../ui/Skeleton"
 import { ContextDriftChart } from "./analytics/ContextDriftChart"
@@ -48,11 +54,11 @@ import { InitialContextChart } from "./analytics/InitialContextChart"
 import type { TimelineMarker } from "./analytics/markerCluster"
 import { PatternScore } from "./analytics/PatternScore"
 import { PhaseDonut } from "./analytics/PhaseDonut"
-import { createSkillMarkerKind } from "./analytics/skillMarkerKind"
+import { skillMarkerKind } from "./analytics/skillMarkerKind"
 import { createSpawnMarkerKind, type SpawnPayload } from "./analytics/spawnMarkerKind"
 import { TokenAreaChart } from "./analytics/TokenAreaChart"
 import { ToolMixChart } from "./analytics/ToolMixChart"
-import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
+import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import { OrchestratedBadge } from "./orchestration/OrchestratedBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
@@ -67,85 +73,70 @@ import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
 const SKELETON_DELAY_MS = 200
 const SKELETON_MIN_VISIBLE_MS = 400
 
-/** Which session this view is scoped to. Absent means the live aggregate. */
-interface SessionAnalyticsSubject {
+/** The session this view shows. */
+interface SessionDetailSubject {
   agent: string
   sessionId: string
+  repo?: string
+  timestamp?: string
   title?: string
-  wslDistro?: string | null
-  /** Whether the transcript is still being written. */
-  isActive?: boolean
+  wslDistro: string | null
   /**
    * Present when the view is showing a sub-agent rather than a session the
    * user drove themselves.
    */
   subagent?: {
-    parentSessionId: string
-    subagentId: string
     /** Title of the orchestrator that launched it, for the provenance badge. */
     parentTitle?: string
   }
 }
 
-export interface SessionAnalyticsPresentationProps {
+export interface SessionDetailPresentationProps {
   /** The analysis to render; null while loading or after a failure. */
   summary: ActiveSessionsSummary | null
   /** Whether the analysis is still being produced. */
-  loading?: boolean
+  loading: boolean
   /** Whether producing it failed. */
-  error?: boolean
-  /** The session this view describes; omit for the live aggregate. */
-  session?: SessionAnalyticsSubject | undefined
+  error: boolean
+  /** The session this view describes. */
+  session: SessionDetailSubject
   /**
    * False when the engine has no adapter for this agent, which changes the
    * empty state from "nothing happened" to "we cannot read this yet".
    */
-  supportsAnalytics?: boolean
+  supportsAnalytics: boolean
 
   /** The cost result the breakdown describes, when one was priced. */
-  cost?: LocalSessionCost | null
+  cost: LocalSessionCost | null
   /** Parent/sub-agents split for an orchestration total. */
-  costSplit?: TokensCostSplit | null
-  /** Display values for the header cost pill. */
-  costBadge?: SessionCostBadgeProps | null
+  costSplit: TokensCostSplit | null
   /** Sub-agents this session launched. */
-  orchestration?: LocalOrchestrationStatus | null
+  orchestration: LocalOrchestrationStatus | null
   /** Skill invocations to overlay on the per-turn ribbon. */
-  skills?: SkillDetail[]
+  skills: SkillDetail[]
+  /** Models that contributed to this session. */
+  models: string[]
   /** Direct fork relations resolved from local transcripts. */
-  relations?: LocalSessionRelations | null
-  /** Titles for related sessions, keyed by `sessionIdentityKey`. */
-  relationTitles?: Record<string, string>
-
+  relations: LocalSessionRelations | null
   onBack: () => void
   /** Navigate to the newer adjacent session; omit when none exists. */
   onPrev?: () => void
   /** Navigate to the older adjacent session; omit when none exists. */
   onNext?: () => void
   /** Open one sub-agent's analytics from the roster or a spawn marker. */
-  onOpenSubagent?: (
-    parentAgent: string,
-    parentSessionId: string,
-    subagentId: string,
-    label: string,
-  ) => void
+  onOpenSubagent: (subagentId: string, label: string) => void
   /** From a sub-agent view, open the launching orchestrator's analytics. */
-  onOpenOrchestrator?: () => void
+  onOpenOrchestrator: () => void
   /** Open a fork parent or child. */
-  onOpenRelatedSession?: (target: LocalSessionRelation, title?: string) => void
+  onOpenRelatedSession: (target: LocalSessionRelation, title: string) => void
 
-  /** Export this session's analysis. Omitted hides the control. */
-  onExportSession?: () => void
-  /** Delete this session's local record. Omitted hides the control. */
-  onDeleteSession?: () => void
+  /** Export this session's analysis. */
+  onExportSession: () => void
+  /** Delete this session's local record. */
+  onDeleteSession: () => void
   /** Reveal the session's transcript on disk. Omitted hides the control. */
   onRevealSource?: () => void
-  /** Reveal a skill's `SKILL.md`. Omitted hides that affordance. */
-  onRevealSkillPath?: (path: string) => void
-  /** Wording for the reveal controls, which is host-specific. */
-  revealLabel?: string
-
-  renderAgentIcon?: AgentIconRenderer
+  renderAgentIcon: AgentIconRenderer
 }
 
 /* -------------------------------------------------------------------------
@@ -154,19 +145,14 @@ export interface SessionAnalyticsPresentationProps {
 
 function RelationControl({
   relations,
-  titles,
   onOpen,
 }: {
   relations: LocalSessionRelations
-  titles: Record<string, string>
-  onOpen?: (target: LocalSessionRelation, title?: string) => void
+  onOpen: (target: LocalSessionRelation, title: string) => void
 }) {
   const titleFor = (target: LocalSessionRelation) => {
     if (target.title) return target.title
-    return (
-      titles[sessionIdentityKey(target.identity)] ??
-      `Session ${target.identity.sessionId.slice(0, 7)}`
-    )
+    return `Session ${target.identity.sessionId.slice(0, 7)}`
   }
   const { parent, children } = relations
   const soleChild = children.length === 1 ? children[0] : undefined
@@ -177,7 +163,7 @@ function RelationControl({
         <Tooltip label={`Open parent: ${titleFor(parent)}`}>
           <button
             type="button"
-            onClick={() => onOpen?.(parent, titleFor(parent))}
+            onClick={() => onOpen(parent, titleFor(parent))}
             className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
             aria-label="Open fork parent"
           >
@@ -200,7 +186,7 @@ function RelationControl({
         <Tooltip label={`Open fork: ${titleFor(soleChild)}`}>
           <button
             type="button"
-            onClick={() => onOpen?.(soleChild, titleFor(soleChild))}
+            onClick={() => onOpen(soleChild, titleFor(soleChild))}
             className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
             aria-label="Open forked child"
           >
@@ -237,7 +223,7 @@ function RelationControl({
                     key={sessionIdentityKey(child.identity)}
                     className="ui-menu-item truncate"
                     disabled={!child.available}
-                    onSelect={() => child.available && onOpen?.(child, title)}
+                    onSelect={() => child.available && onOpen(child, title)}
                   >
                     {title}
                     {!child.available && (
@@ -387,7 +373,7 @@ function SkeletonCardShell({ children }: { children: ReactNode }) {
  * are plain spans rather than `Skeleton` so their round radius is not subject
  * to the primitive's own.
  */
-function SessionAnalyticsSkeleton() {
+function SessionDetailSkeleton() {
   return (
     <div aria-hidden data-testid="session-analytics-skeleton">
       <div className="flex items-start gap-3 px-4 pb-3">
@@ -538,27 +524,26 @@ function useSkeletonVisible(loading: boolean): boolean {
  * ---------------------------------------------------------------------- */
 
 /**
- * The Session Analytics surface: one session's rhythm, modes, health, tokens,
- * context, and tools, or the same picture averaged across the live ones.
+ * The Session Detail surface shows one session's rhythm, modes, health, tokens,
+ * context, and tools.
  *
  * Entirely prop-driven. Every value arrives as data and every action as a
  * callback, so this file has no notion of where an analysis comes from, when
  * it refreshes, or what a host can do with a session. That is what makes the
  * whole surface renderable — and testable — from a literal.
  */
-export function SessionAnalyticsPresentation({
+export function SessionDetailPresentation({
   summary,
-  loading = false,
-  error = false,
+  loading,
+  error,
   session,
-  supportsAnalytics = true,
-  cost = null,
-  costSplit = null,
-  costBadge = null,
-  orchestration = null,
-  skills = [],
-  relations = null,
-  relationTitles = {},
+  supportsAnalytics,
+  cost,
+  costSplit,
+  orchestration,
+  skills,
+  models,
+  relations,
   onBack,
   onPrev,
   onNext,
@@ -568,18 +553,18 @@ export function SessionAnalyticsPresentation({
   onExportSession,
   onDeleteSession,
   onRevealSource,
-  onRevealSkillPath,
-  revealLabel = "Reveal in file manager",
   renderAgentIcon,
-}: SessionAnalyticsPresentationProps) {
+}: SessionDetailPresentationProps) {
   const [modesPhase, setModesPhase] = useState<SessionPhase | null>(null)
 
-  const single = !!session
-  const subagent = session?.subagent
+  const subagent = session.subagent
+  const modelRuns = models.map((model) => ({ model }))
+  const modelNames = modelRunShortNames(modelRuns)
+  const hygieneChecks = mockSessionHygiene(sessionIdentityKey(session))
 
   // Left and right arrows traverse adjacent sessions, mirroring the header
   // chevrons. A missing handler is a no-op, matching the chevrons' own state.
-  useGlobalKeydown(single, (event) => {
+  useGlobalKeydown(true, (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return
     const target = event.target as HTMLElement | null
     if (
@@ -606,9 +591,17 @@ export function SessionAnalyticsPresentation({
   const empty = !summary || isEmptySummary(summary)
   const showEmptyState = ready && !error && empty
 
-  const isOrchestrator = single && !subagent && !!orchestration?.orchestrating
+  const isOrchestrator = !subagent && !!orchestration?.orchestrating
   const costSubagentCount = orchestration?.subagentCount ?? costSplit?.subagentCount ?? 0
   const hasCostSubagents = !subagent && costSubagentCount > 0
+  const costBadge = cost
+    ? {
+        totalUsd: cost.totalCostUsd,
+        figureLabel: costFigureLabel(cost.isActive),
+        models: modelRunNames(modelRuns),
+        breakdownRows: costBreakdownRows(resultComponentCost(cost)),
+      }
+    : null
 
   const tokensCard = summary
     ? tokensCardModel({
@@ -629,7 +622,7 @@ export function SessionAnalyticsPresentation({
   // require fan-out — one child is still useful timeline context and a route
   // into that child's analytics.
   const spawnMarkers: TimelineMarker<SpawnPayload>[] =
-    single && !subagent && onOpenSubagent && session && orchestration
+    !subagent && orchestration
       ? orchestration.members
           .filter((member) => member.spawnProgress != null)
           .map((member) => ({
@@ -638,29 +631,23 @@ export function SessionAnalyticsPresentation({
               patternScore: member.patternScore,
               agent: member.agent,
               label: member.label,
-              open: () =>
-                onOpenSubagent(
-                  session.agent,
-                  session.sessionId,
-                  member.subagentId,
-                  member.label,
-                ),
+              open: () => onOpenSubagent(member.subagentId, member.label),
             },
           }))
       : []
 
-  // Skill dots: where each skill invocation landed. Unlike spawns, these apply
-  // to any single session.
-  const skillMarkers: TimelineMarker<SkillDetail>[] = single
-    ? skills.map((detail) => ({ progress: detail.progress, data: detail }))
-    : []
+  // Skill dots show where each skill invocation landed.
+  const skillMarkers: TimelineMarker<SkillDetail>[] = skills.map((detail) => ({
+    progress: detail.progress,
+    data: detail,
+  }))
 
   const markerLayers: MarkerLayer[] = [
     ...(spawnMarkers.length > 0
       ? [
           {
             markers: spawnMarkers,
-            kind: createSpawnMarkerKind(renderAgentIcon ? { renderAgentIcon } : {}),
+            kind: createSpawnMarkerKind({ renderAgentIcon }),
           } as MarkerLayer,
         ]
       : []),
@@ -668,10 +655,7 @@ export function SessionAnalyticsPresentation({
       ? [
           {
             markers: skillMarkers,
-            kind: createSkillMarkerKind({
-              ...(onRevealSkillPath ? { onRevealPath: onRevealSkillPath } : {}),
-              revealLabel,
-            }),
+            kind: skillMarkerKind,
           } as MarkerLayer,
         ]
       : []),
@@ -685,7 +669,7 @@ export function SessionAnalyticsPresentation({
       <div className="flex items-center justify-between gap-2 border-b border-separator px-4 py-3">
         {/* The control and the title are two things, not one. Wrapping the
             heading text inside the back button made a screen reader announce
-            "Session Analytics, button" for the control that leaves this view,
+            "Session Detail, button" for the control that leaves this view,
             and left the view itself with no heading at all. */}
         <div className="flex min-w-0 items-center gap-1.5">
           <button
@@ -701,7 +685,7 @@ export function SessionAnalyticsPresentation({
             tabIndex={-1}
             className="truncate type-headline text-label outline-none"
           >
-            Session Analytics
+            Session Detail
           </h2>
           {subagent && (
             <span className="shrink-0 rounded bg-system-indigo/15 px-1.5 py-px type-caption font-medium text-system-indigo-text">
@@ -711,96 +695,72 @@ export function SessionAnalyticsPresentation({
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {hasRelations && relations && (
-            <RelationControl
-              relations={relations}
-              titles={relationTitles}
-              {...(onOpenRelatedSession ? { onOpen: onOpenRelatedSession } : {})}
-            />
+            <RelationControl relations={relations} onOpen={onOpenRelatedSession} />
           )}
           {onRevealSource && (
-            <Tooltip label={revealLabel}>
+            <Tooltip label="Reveal in file manager">
               <button
                 type="button"
                 onClick={onRevealSource}
-                aria-label={revealLabel}
+                aria-label="Reveal in file manager"
                 className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
               >
                 <FolderOpen size={14} aria-hidden="true" />
               </button>
             </Tooltip>
           )}
-          {onExportSession && (
-            <Tooltip label="Export this session">
-              <button
-                type="button"
-                onClick={onExportSession}
-                aria-label="Export this session"
-                className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-              >
-                <Share size={14} aria-hidden="true" />
-              </button>
-            </Tooltip>
-          )}
-          {onDeleteSession && (
-            <Tooltip label="Delete this session">
-              <button
-                type="button"
-                onClick={onDeleteSession}
-                aria-label="Delete this session"
-                className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
-              >
-                <Trash2 size={14} aria-hidden="true" />
-              </button>
-            </Tooltip>
-          )}
+          <Tooltip label="Export this session">
+            <button
+              type="button"
+              onClick={onExportSession}
+              aria-label="Export this session"
+              className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+            >
+              <Share size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip label="Delete this session">
+            <button
+              type="button"
+              onClick={onDeleteSession}
+              aria-label="Delete this session"
+              className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
       </div>
 
-      <div
-        key={session ? sessionIdentityKey(session) : "live"}
-        className="min-h-0 flex-1 overflow-y-auto py-3"
-      >
-        {showSkeleton && <SessionAnalyticsSkeleton />}
+      <div key={sessionIdentityKey(session)} className="min-h-0 flex-1 overflow-y-auto py-3">
+        {showSkeleton && <SessionDetailSkeleton />}
 
         {ready && error && (
-          <p className="px-4 type-callout text-system-orange">
-            {single ? "Couldn't read this session." : "Couldn't read live sessions."}
-          </p>
+          <p className="px-4 type-callout text-system-orange">Couldn't read this session.</p>
         )}
 
         {showEmptyState && (
           <div className="flex flex-col items-center justify-center px-8 py-12 text-center">
             <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
-            {single ? (
-              <>
-                {session && !supportsAnalytics ? (
-                  <p className="type-body text-label">
-                    Session health for {agentDisplayName(session.agent)} sessions isn&apos;t
-                    available yet
-                  </p>
-                ) : (
-                  <>
-                    <p className="type-body text-label">No session health available</p>
-                    <p className="mt-1 type-callout text-label-tertiary">
-                      {relations?.parent
-                        ? "This fork has no analyzable child activity yet."
-                        : "This session has no analyzable messages in its local transcript."}
-                    </p>
-                  </>
-                )}
-                {costBadge && (
-                  <div className="mt-3">
-                    <SessionCostBadge {...costBadge} />
-                  </div>
-                )}
-              </>
+            {!supportsAnalytics ? (
+              <p className="type-body text-label">
+                Session health for {agentDisplayName(session.agent)} sessions isn&apos;t
+                available yet
+              </p>
             ) : (
               <>
-                <p className="type-body text-label">No sessions running right now</p>
+                <p className="type-body text-label">No session health available</p>
                 <p className="mt-1 type-callout text-label-tertiary">
-                  Start a coding session and your live patterns will appear here.
+                  {relations?.parent
+                    ? "This fork has no analyzable child activity yet."
+                    : "This session has no analyzable messages in its local transcript."}
                 </p>
               </>
+            )}
+            {costBadge && (
+              <div className="mt-3">
+                <SessionCostBadge {...costBadge} />
+              </div>
             )}
           </div>
         )}
@@ -809,134 +769,160 @@ export function SessionAnalyticsPresentation({
           <>
             {/* Header */}
             <div className="flex items-start gap-3 px-4 pb-3">
-              <span className="mt-0.5 shrink-0">
-                {renderAgentIcon?.(session?.agent ?? "generic-agent", 20)}
-              </span>
-              <div className="min-w-0 flex-1">
-                {single ? (
-                  <>
-                    <div className="flex items-center gap-1">
-                      <div className="min-w-0 flex-1 truncate type-headline text-label">
-                        {relations?.title?.trim() || session?.title?.trim() || "Session"}
-                      </div>
-                      <WslOriginBadge distro={session?.wslDistro} />
-                      {/* Traversal lives beside the title; the arrow keys
-                          mirror these. Disabled when there is no neighbour. */}
-                      <div className="-my-0.5 -mr-1 flex shrink-0 items-center">
-                        <Tooltip
-                          label={
-                            <span className="inline-flex items-center gap-1.5">
-                              Newer session
-                              <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                                ←
-                              </kbd>
-                            </span>
-                          }
-                        >
-                          <button
-                            type="button"
-                            onClick={onPrev}
-                            disabled={!onPrev}
-                            aria-label="Newer session"
-                            className={cn(
-                              "shrink-0 rounded-md p-1 transition-colors",
-                              onPrev
-                                ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                                : "cursor-default text-label-tertiary opacity-40",
-                            )}
-                          >
-                            <ChevronLeft size={16} aria-hidden="true" />
-                          </button>
-                        </Tooltip>
-                        <Tooltip
-                          label={
-                            <span className="inline-flex items-center gap-1.5">
-                              Older session
-                              <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                                →
-                              </kbd>
-                            </span>
-                          }
-                        >
-                          <button
-                            type="button"
-                            onClick={onNext}
-                            disabled={!onNext}
-                            aria-label="Older session"
-                            className={cn(
-                              "shrink-0 rounded-md p-1 transition-colors",
-                              onNext
-                                ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                                : "cursor-default text-label-tertiary opacity-40",
-                            )}
-                          >
-                            <ChevronRight size={16} aria-hidden="true" />
-                          </button>
-                        </Tooltip>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 type-callout text-label-secondary">
-                      <span>
-                        {formatDuration(summary.avgActiveSecs)} active
-                        <span className="text-label-tertiary">
-                          {" · "}
-                          {formatDuration(summary.avgDurationSecs)} overall
+              <div className="min-w-0 flex-1 flex flex-col gap-y-2">
+                <div className="flex items-center gap-x-2" aria-label="Session summary">
+                  <span className="shrink-0">{renderAgentIcon(session.agent, 20)}</span>
+
+                  {session.repo && (
+                    <Tooltip label={session.repo}>
+                      <span className="truncate text-label-secondary">{session.repo}</span>
+                    </Tooltip>
+                  )}
+
+                  {costBadge && <SessionCostBadge {...costBadge} />}
+
+                  {session.timestamp && (
+                    <time
+                      dateTime={session.timestamp}
+                      aria-label={`Last activity ${relativeTime(session.timestamp)}`}
+                      className="shrink-0 type-footnote text-label-tertiary"
+                    >
+                      {relativeTime(session.timestamp)}
+                    </time>
+                  )}
+
+                  <div className="ml-auto flex shrink-0 items-center">
+                    <Tooltip
+                      label={
+                        <span className="inline-flex items-center gap-1.5">
+                          Newer session
+                          <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
+                            ←
+                          </kbd>
                         </span>
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={onPrev}
+                        disabled={!onPrev}
+                        aria-label="Newer session"
+                        className={cn(
+                          "shrink-0 rounded-md p-1 transition-colors",
+                          onPrev
+                            ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                            : "cursor-default text-label-tertiary opacity-40",
+                        )}
+                      >
+                        <ChevronLeft size={16} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                    <Tooltip
+                      label={
+                        <span className="inline-flex items-center gap-1.5">
+                          Older session
+                          <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
+                            →
+                          </kbd>
+                        </span>
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={onNext}
+                        disabled={!onNext}
+                        aria-label="Older session"
+                        className={cn(
+                          "shrink-0 rounded-md p-1 transition-colors",
+                          onNext
+                            ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                            : "cursor-default text-label-tertiary opacity-40",
+                        )}
+                      >
+                        <ChevronRight size={16} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1 bg-(--color-bg-secondary) border-dashed border-1 border-(--color-border) px-3 py-2 rounded-md">
+                  <TruncatedText
+                    className="min-w-0 flex-1 text-sm break-all"
+                    text={relations?.title?.trim() || session.title?.trim() || "Session"}
+                    lines={3}
+                  />
+                </div>
+
+                <div
+                  className="flex min-w-0 items-center gap-1.5 type-footnote text-label-tertiary"
+                  aria-label="Session timing and models"
+                >
+                  <span className="shrink-0">
+                    {formatDuration(summary.avgActiveSecs)} active ·{" "}
+                    {formatDuration(summary.avgDurationSecs)} overall
+                  </span>
+                  <WslOriginBadge distro={session.wslDistro} />
+                  {modelNames.length > 0 && (
+                    <div className="min-w-0" title={modelRunNames(modelRuns).join("\n")}>
+                      <TruncatedText text={modelNames.join(" · ")} />
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-x-2">
+                  <span className="type-footnote text-label-tertiary">Hygiene Checks:</span>
+                  <div
+                    className="flex items-center gap-x-2"
+                    aria-label="Session hygiene checks"
+                  >
+                    {hygieneChecks.map((check) => (
+                      <span
+                        key={check.id}
+                        className={cn(
+                          "inline-flex h-5 w-5 items-center justify-center rounded-full text-[0.75rem] leading-none text-white",
+                          check.passed
+                            ? "bg-(--color-system-green) opacity-30 hover:opacity-80"
+                            : "bg-(--color-system-red) opacity-50 hover:opacity-80",
+                        )}
+                        title={check.title}
+                        aria-label={check.title}
+                      >
+                        {check.passed ? "✓" : "×"}
                       </span>
-                      {costBadge && <SessionCostBadge {...costBadge} />}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="type-title-2 text-label">
-                      {summary.sessionCount} live session{summary.sessionCount === 1 ? "" : "s"}
-                    </div>
-                    <div className="type-callout text-label-secondary">
-                      {summary.sessionCount > 1 ? "Averaged · " : ""}
-                      {formatDuration(summary.avgActiveSecs)} active
-                      <span className="text-label-tertiary">
-                        {" · "}
-                        {formatDuration(summary.avgDurationSecs)} overall
-                      </span>
-                    </div>
-                  </>
-                )}
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* Provenance: mark a sub-agent view as an autonomous worker and
                 link up to the orchestrator that launched it. */}
-            {single && subagent && (
+            {subagent && (
               <SubagentBadge
-                parentAgent={session?.agent ?? "generic-agent"}
+                parentAgent={session.agent}
                 {...(subagent.parentTitle ? { parentTitle: subagent.parentTitle } : {})}
-                {...(onOpenOrchestrator ? { onOpenOrchestrator } : {})}
-                {...(renderAgentIcon ? { renderAgentIcon } : {})}
+                onOpenOrchestrator={onOpenOrchestrator}
+                renderAgentIcon={renderAgentIcon}
               />
             )}
 
             {/* The orchestrator's roster, expanding inline. */}
-            {isOrchestrator && orchestration && onOpenSubagent && (
+            {isOrchestrator && orchestration && (
               <OrchestratedBadge
                 status={orchestration}
                 onOpenSubagent={onOpenSubagent}
-                {...(renderAgentIcon ? { renderAgentIcon } : {})}
+                renderAgentIcon={renderAgentIcon}
               />
             )}
 
             <Card
               title="Session rhythm"
               info="The leading activity at each moment of the session. Thick bands mean one mode clearly dominated; thin, shifting bands mean it kept switching."
-              {...(isOrchestrator
-                ? { hint: "parent agent" }
-                : !single && summary.sessionCount > 1
-                  ? { hint: "averaged" }
-                  : {})}
+              {...(isOrchestrator ? { hint: "parent agent" } : {})}
             >
               <Legend />
-              {summary.sessionCount === 1 && firstSession?.segments?.length ? (
-                // A single session: per-turn segments are mutually exclusive
-                // and sized by active time — a lossless hypnogram.
+              {firstSession?.segments?.length ? (
+                // Per-turn segments show the session without resampling.
                 <HypnogramSegments
                   segments={firstSession.segments}
                   activeSecs={summary.avgActiveSecs}
@@ -944,8 +930,7 @@ export function SessionAnalyticsPresentation({
                   layers={markerLayers}
                 />
               ) : (
-                // Averaged across sessions: fall back to the resampled bucket
-                // ribbon, since per-turn segments cannot be averaged.
+                // Use the resampled buckets when per-turn segments are absent.
                 <Hypnogram
                   buckets={summary.buckets}
                   durationSecs={summary.avgActiveSecs}
@@ -1012,10 +997,8 @@ export function SessionAnalyticsPresentation({
               )}
             </Card>
 
-            {/* Where the window went before the first response. Single-session
-                only: it is a per-session startup cost, not something to
-                average. */}
-            {single && firstSession?.initialContext && (
+            {/* Show where the context window went before the first response. */}
+            {firstSession?.initialContext && (
               <Card
                 title="Initial context"
                 info="Tokens loaded before the first response, by source. 'Fixed overhead' is the platform's baseline context that's always loaded and can't be edited — the system prompt and built-in tool definitions; exact makeup varies by agent."

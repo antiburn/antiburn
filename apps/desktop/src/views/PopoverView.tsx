@@ -88,13 +88,13 @@ function ActivitySkeleton() {
   )
 }
 
-/** Placeholder while the session analytics chunk is fetched on first open. */
+/** Placeholder while the session detail chunk loads on the first open. */
 function SessionPaneLoading() {
   return (
     <div className="flex h-full flex-col" aria-busy="true" data-testid="session-pane-loading">
       <header className="flex h-11 shrink-0 items-center px-4">
         <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-          Session Analytics
+          Session Detail
         </h1>
       </header>
       <div className="min-h-0 flex-1 px-4 pt-4">
@@ -201,9 +201,10 @@ export function PopoverView() {
     return {
       agent: entry.agent,
       sessionId: entry.sessionId ?? "",
+      ...(entry.repo ? { repo: entry.repo } : {}),
+      timestamp: entry.timestamp,
       wslDistro: entry.wslDistro ?? null,
       ...(entry.title ? { title: entry.title } : {}),
-      isActive: entry.isActive,
     }
   }
 
@@ -235,6 +236,14 @@ export function PopoverView() {
             current.sessionId,
             current.wslDistro,
           )
+      const listedEntry = position >= 0 ? state.entries?.[position] : undefined
+      const displaySubject = listedEntry
+        ? {
+            ...current,
+            ...(listedEntry.repo ? { repo: listedEntry.repo } : {}),
+            timestamp: listedEntry.timestamp,
+          }
+        : current
       const neighbour = (offset: number) => {
         const entry = position >= 0 ? state.entries?.[position + offset] : undefined
         if (!entry?.sessionId) return undefined
@@ -244,7 +253,7 @@ export function PopoverView() {
       return (
         <Suspense fallback={<SessionPaneLoading />}>
           <SessionPane
-            subject={current}
+            subject={displaySubject}
             payload={sessionPayload}
             loading={sessionLoading}
             error={sessionError}

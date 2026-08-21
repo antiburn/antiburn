@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 
 import type { SkillDetail } from "../../../lib/types/session"
 import type { TimelineMarker } from "./markerCluster"
@@ -112,25 +112,11 @@ describe("SkillMarkerTooltip", () => {
     expect(screen.getByText("2 skills used")).toBeTruthy()
   })
 
-  it("shows a reveal control only when the host supplies the capability", () => {
+  it("shows the local path as provenance without an action", () => {
     const local = { scope: "global" as const, available: true, path: "/Users/dev/s/SKILL.md" }
-    const { unmount } = render(<SkillMarkerTooltip members={[marker({ local })]} />)
+    render(<SkillMarkerTooltip members={[marker({ local })]} />)
     fireEvent.click(screen.getByText("More details"))
-    // The path is still shown, home-collapsed; only the affordance is absent.
     expect(screen.getByText(/~\/s\/SKILL\.md/)).toBeTruthy()
     expect(screen.queryByRole("button", { name: /Reveal/ })).toBeNull()
-    unmount()
-
-    const onRevealPath = vi.fn()
-    render(
-      <SkillMarkerTooltip
-        members={[marker({ local })]}
-        onRevealPath={onRevealPath}
-        revealLabel="Reveal in Finder"
-      />,
-    )
-    fireEvent.click(screen.getByText("More details"))
-    fireEvent.click(screen.getByRole("button", { name: "Reveal in Finder" }))
-    expect(onRevealPath).toHaveBeenCalledWith("/Users/dev/s/SKILL.md")
   })
 })

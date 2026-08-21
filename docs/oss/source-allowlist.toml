@@ -381,7 +381,7 @@ provenance = "Cadence company-authored local-domain presentation tokens; publish
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
-  "Preserve the theme-aware session-analysis palette required by the approved local Session Analytics surface.",
+  "Preserve the theme-aware session-analysis palette required by the approved local Session Detail surface.",
   "Keep the tokens presentation-only and independent of private DTOs, stores, commands, telemetry, and enrichment.",
   "Rewrite the explanatory comments during adaptation; the current prose describes internal scoring bands and chart semantics rather than the tokens themselves.",
 ]
@@ -647,7 +647,7 @@ source_paths = [
 ]
 path_kind = "file-sections"
 disposition = "adapt"
-destination = "apps/desktop/src/components/session/SessionAnalyticsPresentation.tsx"
+destination = "apps/desktop/src/components/session/SessionDetailPresentation.tsx"
 provenance = "Cadence company-authored mixed presentation/container; D-021 approves only local callback-driven presentation"
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
@@ -673,7 +673,7 @@ provenance = "Cadence company-authored mixed activity feed; D-021 approves only 
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
-  "Extract local session-row layout, active-session treatment, time and truncation presentation, empty/loading behavior, scrolling, local cost, active time, WSL identity, and callback-driven Session Analytics navigation.",
+  "Extract local session-row layout, active-session treatment, time and truncation presentation, empty/loading behavior, scrolling, local cost, active time, WSL identity, and callback-driven Session Detail navigation.",
   "Receive entries, titles, range labels, settings intent, and supported local filters through props; do not add extension points solely for private features.",
   "Do not copy RadarPinnedCard, RadarActivityRow, Radar skill/share/feedback behavior, ambience rows, team-update filters, upload status/errors, telemetry, Tauri listeners, targetOrgId, private-store reads, or Cloud organization identity.",
   "Expect prerequisite private-side refactors before extraction: the row primitives, time corner, and list merge/grouping/scroll machinery are shared with Radar and ambience rows, and upload status is currently fused into the time-corner component.",
