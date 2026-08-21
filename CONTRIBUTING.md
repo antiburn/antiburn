@@ -90,6 +90,7 @@ keep inline `#[cfg(test)]` modules small and tightly scoped.
 The `slop gate` check runs on pull requests only. A failure also fails
 `ci-required`. The gate judges the files that the pull request changes, and it
 judges each touched file as a whole. It is not a repository score.
+`ci-required` is a required check on `main`, so a red slop gate blocks the merge.
 
 Run the local check before you push:
 
