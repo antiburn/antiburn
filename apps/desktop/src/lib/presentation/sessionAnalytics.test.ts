@@ -13,6 +13,7 @@ import {
   costOutlierThreshold,
   formatCost,
   formatDuration,
+  formatTokenBand,
   HIGH_COST_FLOOR_USD,
   HIGH_COST_MEDIAN_MULTIPLE,
   HIGH_COST_MIN_SAMPLE,
@@ -66,6 +67,18 @@ describe("contextBandValues", () => {
 
   it("uses 50k steps for a 200k window", () => {
     expect(contextBandValues(200_000)).toEqual([50_000, 100_000, 150_000])
+  })
+})
+
+describe("formatTokenBand", () => {
+  it("drops a trailing .0 that formatCompact would show", () => {
+    expect(formatTokenBand(200_000)).toBe("200k")
+    expect(formatTokenBand(50_000)).toBe("50k")
+    expect(formatTokenBand(1_000_000)).toBe("1M")
+  })
+
+  it("keeps a real decimal", () => {
+    expect(formatTokenBand(1_500_000)).toBe("1.5M")
   })
 })
 

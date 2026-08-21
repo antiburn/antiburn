@@ -247,6 +247,15 @@ export function formatCompact(n: number): string {
 }
 
 /**
+ * Compact integer for a context-band value, with a trailing ".0" dropped —
+ * `"200k"`, `"1.5M"`, `"50k"`. Only for band labels; other callers keep
+ * {@link formatCompact}'s fixed one decimal place.
+ */
+export function formatTokenBand(n: number): string {
+  return formatCompact(n).replace(/\.0(?=[kM])/, "")
+}
+
+/**
  * USD cost, always to two decimals (`$XX.XX`) so a trailing zero never drops
  * (`$20.70`, not `$20.7`). Every figure is an on-device estimate; surrounding
  * labels say so. A real `$0` — and any non-finite or negative input, which

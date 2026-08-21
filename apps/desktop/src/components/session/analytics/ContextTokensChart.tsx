@@ -18,6 +18,7 @@ import {
   contextTokenSeries,
   formatCompact,
   formatPct,
+  formatTokenBand,
   type ContextTokenPoint,
 } from "../../../lib/presentation/sessionAnalytics"
 import type { SessionBucket } from "../../../lib/types/session"
@@ -25,7 +26,8 @@ import { GLASS_TOOLTIP_STYLE } from "./tooltip"
 
 export interface ContextTokensChartProps {
   buckets: SessionBucket[]
-  contextWindow: number
+  /** Null when context occupancy is unavailable for this model. */
+  contextWindow: number | null
 }
 
 /** Absolute token level where the context fill turns from calm to warm. */
@@ -35,7 +37,7 @@ const CRITICAL_TOKENS = 1_000_000
 
 interface ContextTokensTooltipProps {
   active?: boolean
-  contextWindow: number
+  contextWindow: number | null
   payload?: Array<{ payload?: ContextTokenPoint }>
 }
 
@@ -49,7 +51,10 @@ const TOKEN_ROWS: Array<{ key: "tokensIn" | "tokensOut"; label: string; colorVar
 function ContextTokensTooltip({ active, payload, contextWindow }: ContextTokensTooltipProps) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
-  const pct = contextWindow > 0 ? Math.min(1, point.contextTokens / contextWindow) : 0
+  const pct =
+    contextWindow != null && contextWindow > 0
+      ? Math.min(1, point.contextTokens / contextWindow)
+      : null
 
   return (
     <div
@@ -63,9 +68,11 @@ function ContextTokensTooltip({ active, payload, contextWindow }: ContextTokensT
     >
       <div className="mb-1">{point.progress}% through</div>
       <div className="flex flex-col gap-1 text-label-secondary">
-        <span>
-          Context · {formatCompact(point.contextTokens)} ({formatPct(pct)})
-        </span>
+        {pct != null && (
+          <span>
+            Context · {formatCompact(point.contextTokens)} ({formatPct(pct)})
+          </span>
+        )}
         {TOKEN_ROWS.map((row) => (
           <span key={row.key} className="flex items-center gap-1.5">
             <span
@@ -89,11 +96,17 @@ function ContextTokensTooltip({ active, payload, contextWindow }: ContextTokensT
 export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChartProps) {
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
+  const hasContext = contextWindow != null
 
-  const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
   const tokenSum = data.reduce((m, d) => Math.max(m, d.tokensIn + d.tokensOut), 0)
   const tokenCeiling = Math.max(1, tokenSum * 2.5)
-  const bands = contextBandValues(contextWindow)
+  const bands = hasContext ? contextBandValues(contextWindow) : []
+  // Every `ReferenceLine`, including the vertical compaction markers, needs a
+  // `yAxisId` that names an axis the chart actually renders — recharts falls
+  // back to an axis id of "0", which does not exist here. The chart always
+  // renders the "tokens" axis, so that is the fallback when there is no
+  // "context" axis to use instead.
+  const compactionAxisId = hasContext ? "context" : "tokens"
 
   // The fill gradient is an SVG `objectBoundingBox` gradient, so its [0,1]
   // offsets map over the *area path's* bounding box, which spans 0..peak
@@ -101,8 +114,9 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
   // token value peak·(1−f). The warm ramp is in absolute tokens, not a
   // fraction of the window, so a 1M-window session and a 200k-window session
   // both turn warm at the same 400k mark. Below 400k the fill stays the calm
-  // blue used today; from 400k up it ramps from amber to red, reaching red at
-  // 1M tokens regardless of the window size.
+  // blue; from 400k up it ramps from amber to red, reaching red at 1M tokens
+  // regardless of the window size.
+  const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
   const stops: ReactElement[] = []
   if (peak > WARM_FLOOR_TOKENS) {
     const kinkOffset = (peak - WARM_FLOOR_TOKENS) / peak
@@ -129,29 +143,32 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
   return (
     <ResponsiveContainer width="100%" height={160}>
       <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-        <defs>
-          <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
-            {stops}
-          </linearGradient>
-        </defs>
+        {hasContext && (
+          <defs>
+            <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
+              {stops}
+            </linearGradient>
+          </defs>
+        )}
         <XAxis dataKey="progress" hide />
-        <YAxis yAxisId="context" hide domain={[0, contextWindow]} />
+        {hasContext && <YAxis yAxisId="context" hide domain={[0, contextWindow]} />}
         <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
-        {bands.map((value) => (
-          <ReferenceLine
-            key={`band-${value}`}
-            yAxisId="context"
-            y={value}
-            stroke="var(--color-separator)"
-            strokeDasharray="2 4"
-            label={{
-              value: formatCompact(value),
-              position: "insideTopRight",
-              fill: "var(--color-label-tertiary)",
-              fontSize: 9,
-            }}
-          />
-        ))}
+        {hasContext &&
+          bands.map((value) => (
+            <ReferenceLine
+              key={`band-${value}`}
+              yAxisId="context"
+              y={value}
+              stroke="var(--color-separator)"
+              strokeDasharray="2 4"
+              label={{
+                value: formatTokenBand(value),
+                position: "insideTopRight",
+                fill: "var(--color-label-tertiary)",
+                fontSize: 9,
+              }}
+            />
+          ))}
         {data
           .filter((point) => point.isCompactionBoundary)
           .map((point, i) => (
@@ -160,6 +177,7 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
               // land on the same value in a long session; the index keeps
               // sibling keys unique regardless.
               key={`compaction-${i}-${point.progress}`}
+              yAxisId={compactionAxisId}
               x={point.progress}
               stroke="var(--color-label-tertiary)"
               strokeDasharray="2 2"
@@ -192,15 +210,17 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
           fillOpacity={0.25}
           isAnimationActive={false}
         />
-        <Area
-          yAxisId="context"
-          type="monotone"
-          dataKey="contextTokens"
-          stroke="var(--color-accent)"
-          strokeWidth={1.5}
-          fill={`url(#${fillId})`}
-          isAnimationActive={false}
-        />
+        {hasContext && (
+          <Area
+            yAxisId="context"
+            type="monotone"
+            dataKey="contextTokens"
+            stroke="var(--color-accent)"
+            strokeWidth={1.5}
+            fill={`url(#${fillId})`}
+            isAnimationActive={false}
+          />
+        )}
       </AreaChart>
     </ResponsiveContainer>
   )

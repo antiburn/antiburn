@@ -753,16 +753,10 @@ export function SessionDetailPresentation({
                 info={`${CONTEXT_TOKENS_CHART_INFO} ${tokensCard.info}`}
                 hint={tokensCard.hint}
               >
-                {summary.contextAvailable ? (
-                  <ContextTokensChart
-                    buckets={summary.buckets}
-                    contextWindow={summary.contextWindow}
-                  />
-                ) : (
-                  <p className="py-6 text-center type-callout text-label-tertiary">
-                    Context occupancy is unavailable for this model.
-                  </p>
-                )}
+                <ContextTokensChart
+                  buckets={summary.buckets}
+                  contextWindow={summary.contextAvailable ? summary.contextWindow : null}
+                />
               </Card>
             )}
 

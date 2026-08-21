@@ -399,9 +399,9 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(onOpenRelatedSession).toHaveBeenCalledWith(expect.anything(), "Session abcdef1")
   })
 
-  it("states that context occupancy is unavailable rather than charting zero", () => {
-    view({ summary: summary({ contextAvailable: false }) })
-    expect(screen.getByText("Context occupancy is unavailable for this model.")).toBeTruthy()
+  it("still renders the Context card, with just the token layer, when context occupancy is unavailable", () => {
+    expect(() => view({ summary: summary({ contextAvailable: false }) })).not.toThrow()
+    expect(screen.getByText("Context")).toBeTruthy()
   })
 
   it("adds the initial-context card when the session has initial context", () => {
