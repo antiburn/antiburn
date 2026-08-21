@@ -251,7 +251,9 @@
   --color-bg-primary: rgb(255 255 255 / 0.58);
   --color-bg-secondary: rgb(0 0 0 / 0.08);
   --color-bg-tertiary: rgb(0 0 0 / 0.12);
-  --color-bg-row-hover: rgb(0 0 0 / 0.08);
+  /* Matches the system branch. At 0.08 a hovered row sat one percent below
+     bg-selected at 0.09, so the two states looked the same. */
+  --color-bg-row-hover: rgb(0 0 0 / 0.04);
   --color-bg-card: rgb(0 0 0 / 0.04);
   --color-bg-input: rgb(255 255 255);
   --color-bg-window: rgb(246 246 246);

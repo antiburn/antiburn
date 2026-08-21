@@ -32,8 +32,8 @@ colors:
   surface-card:
     light: "rgb(0 0 0 / 0.04)"
     dark: "rgb(255 255 255 / 0.08)"
-  surface-hover:
-    light: "rgb(0 0 0 / 0.08)" # @media light: rgb(0 0 0 / 0.04)
+  surface-hover: # stays clear of surface-selected, so a hover never reads as a selection
+    light: "rgb(0 0 0 / 0.04)"
     dark: "rgb(255 255 255 / 0.04)" # @media dark: rgb(255 255 255 / 0.07)
   surface-window: # standard decorated window
     light: "rgb(246 246 246)" # @media light: rgb(246 246 246 / 0.80)
