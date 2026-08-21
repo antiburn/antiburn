@@ -24,6 +24,12 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex sessions show their short task names again.** Recent Activity now
+  prefers Codex's generated title instead of displaying the full opening
+  request when both are present.
+
 ## [0.1.0-rc.7] - 2026-08-21
 
 A release-candidate rehearsal build, not a supported release. The macOS and
