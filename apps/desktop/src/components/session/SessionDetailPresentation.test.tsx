@@ -166,7 +166,8 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(summaryRow).toHaveTextContent("11m ago")
 
     const detailRow = screen.getByLabelText("Session timing and models")
-    expect(detailRow).toHaveTextContent("30m active · 1h overall")
+    expect(detailRow).toHaveTextContent("30m active")
+    expect(detailRow).toHaveTextContent("last 11m ago")
     expect(detailRow).toHaveTextContent("5.6-sol/high")
     expect(screen.getByLabelText("Session hygiene checks").children).toHaveLength(6)
   })

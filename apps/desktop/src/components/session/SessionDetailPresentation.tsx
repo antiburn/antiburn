@@ -593,129 +593,134 @@ export function SessionDetailPresentation({
         {ready && !error && !empty && summary && (
           <>
             {/* Header */}
-            <div className="flex items-start gap-3 px-4 pb-3">
-              <div className="min-w-0 flex-1 flex flex-col gap-y-2">
-                <div className="flex items-center gap-x-2" aria-label="Session summary">
-                  <span className="shrink-0">{renderAgentIcon(session.agent, 20)}</span>
+            <div className="w-full flex flex-col gap-y-2 px-4 pb-3">
+              <div className="flex items-center gap-x-2" aria-label="Session summary">
+                <span className="shrink-0">{renderAgentIcon(session.agent, 20)}</span>
 
-                  {session.repo && (
-                    <Tooltip label={session.repo}>
-                      <span className="truncate text-label-secondary">{session.repo}</span>
-                    </Tooltip>
-                  )}
+                <div className="w-full flex flex-col gap-y-0.5">
+                  <div className="flex items-center gap-x-2">
+                    {session.repo && (
+                      <Tooltip label={session.repo}>
+                        <span className="truncate text-label-secondary">{session.repo}</span>
+                      </Tooltip>
+                    )}
 
-                  {costBadge && <SessionCostBadge {...costBadge} />}
+                    {costBadge && <SessionCostBadge {...costBadge} />}
 
-                  {session.timestamp && (
-                    <time
-                      dateTime={session.timestamp}
-                      aria-label={`Last activity ${relativeTime(session.timestamp)}`}
-                      className="shrink-0 type-footnote text-label-tertiary"
-                    >
-                      {relativeTime(session.timestamp)}
-                    </time>
-                  )}
-
-                  <div className="ml-auto flex shrink-0 items-center">
-                    <Tooltip
-                      label={
-                        <span className="inline-flex items-center gap-1.5">
-                          Newer session
-                          <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                            ←
-                          </kbd>
-                        </span>
-                      }
-                    >
-                      <button
-                        type="button"
-                        onClick={onPrev}
-                        disabled={!onPrev}
-                        aria-label="Newer session"
-                        className={cn(
-                          "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
-                          onPrev
-                            ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                            : "cursor-default text-label-tertiary opacity-40",
-                        )}
+                    <div className="ml-auto flex shrink-0 items-center">
+                      <Tooltip
+                        label={
+                          <span className="inline-flex items-center gap-1.5">
+                            Newer session
+                            <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
+                              ←
+                            </kbd>
+                          </span>
+                        }
                       >
-                        <ChevronLeft size={16} aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                    <Tooltip
-                      label={
-                        <span className="inline-flex items-center gap-1.5">
-                          Older session
-                          <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                            →
-                          </kbd>
-                        </span>
-                      }
-                    >
-                      <button
-                        type="button"
-                        onClick={onNext}
-                        disabled={!onNext}
-                        aria-label="Older session"
-                        className={cn(
-                          "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
-                          onNext
-                            ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                            : "cursor-default text-label-tertiary opacity-40",
-                        )}
+                        <button
+                          type="button"
+                          onClick={onPrev}
+                          disabled={!onPrev}
+                          aria-label="Newer session"
+                          className={cn(
+                            "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
+                            onPrev
+                              ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                              : "cursor-default text-label-tertiary opacity-40",
+                          )}
+                        >
+                          <ChevronLeft size={16} aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip
+                        label={
+                          <span className="inline-flex items-center gap-1.5">
+                            Older session
+                            <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
+                              →
+                            </kbd>
+                          </span>
+                        }
                       >
-                        <ChevronRight size={16} aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1 bg-(--color-bg-secondary) border-dashed border-1 border-(--color-border) px-3 py-2 rounded-md">
-                  <TruncatedText
-                    className="min-w-0 flex-1 text-sm break-all"
-                    text={relations?.title?.trim() || session.title?.trim() || "Session"}
-                    lines={3}
-                  />
-                </div>
-
-                <div
-                  className="flex min-w-0 items-center gap-1.5 type-footnote text-label-tertiary"
-                  aria-label="Session timing and models"
-                >
-                  <span className="shrink-0">
-                    {formatDuration(summary.avgActiveSecs)} active ·{" "}
-                    {formatDuration(summary.avgDurationSecs)} overall
-                  </span>
-                  <WslOriginBadge distro={session.wslDistro} />
-                  {modelNames.length > 0 && (
-                    <div className="min-w-0" title={modelRunNames(modelRuns).join("\n")}>
-                      <TruncatedText text={modelNames.join(" · ")} />
+                        <button
+                          type="button"
+                          onClick={onNext}
+                          disabled={!onNext}
+                          aria-label="Older session"
+                          className={cn(
+                            "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
+                            onNext
+                              ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                              : "cursor-default text-label-tertiary opacity-40",
+                          )}
+                        >
+                          <ChevronRight size={16} aria-hidden="true" />
+                        </button>
+                      </Tooltip>
                     </div>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-x-2">
-                  <span className="type-footnote text-label-tertiary">Hygiene Checks:</span>
-                  <div
-                    className="flex items-center gap-x-2"
-                    aria-label="Session hygiene checks"
-                  >
-                    {hygieneChecks.map((check) => (
-                      <span
-                        key={check.id}
-                        className={cn(
-                          "inline-flex h-5 w-5 items-center justify-center rounded-full text-[0.75rem] leading-none text-white",
-                          check.passed
-                            ? "bg-(--color-system-green) opacity-30 hover:opacity-80"
-                            : "bg-(--color-system-red) opacity-50 hover:opacity-80",
-                        )}
-                        title={check.title}
-                        aria-label={check.title}
-                      >
-                        {check.passed ? "✓" : "×"}
-                      </span>
-                    ))}
                   </div>
+
+                  <div
+                    className="flex items-center justify-between gap-1 type-footnote text-label-tertiary"
+                    aria-label="Session timing and models"
+                  >
+                    {modelNames.length > 0 && (
+                      <div className="min-w-0" title={modelRunNames(modelRuns).join("\n")}>
+                        <TruncatedText text={modelNames.join(" · ")} />
+                      </div>
+                    )}
+
+                    <span
+                      className="shrink-0"
+                      title={`${formatDuration(summary.avgDurationSecs)} overall`}
+                    >
+                      {formatDuration(summary.avgActiveSecs)} active
+                      {session.timestamp && (
+                        <>
+                          {" · "}
+                          <time
+                            dateTime={session.timestamp}
+                            aria-label={`Last activity ${relativeTime(session.timestamp)}`}
+                            className="shrink-0 type-footnote text-label-tertiary"
+                          >
+                            last {relativeTime(session.timestamp)}
+                          </time>
+                        </>
+                      )}
+                    </span>
+
+                    <WslOriginBadge distro={session.wslDistro} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 bg-(--color-bg-secondary) border-dashed border-1 border-(--color-border) px-3 py-2 rounded-md">
+                <TruncatedText
+                  className="min-w-0 flex-1 text-sm break-all"
+                  text={relations?.title?.trim() || session.title?.trim() || "Session"}
+                  lines={3}
+                />
+              </div>
+
+              <div className="flex items-center gap-x-2">
+                <span className="type-footnote text-label-tertiary">Hygiene Checks:</span>
+                <div className="flex items-center gap-x-2" aria-label="Session hygiene checks">
+                  {hygieneChecks.map((check) => (
+                    <span
+                      key={check.id}
+                      className={cn(
+                        "inline-flex h-5 w-5 items-center justify-center rounded-full text-[0.75rem] leading-none text-white",
+                        check.passed
+                          ? "bg-(--color-system-green) opacity-30 hover:opacity-80"
+                          : "bg-(--color-system-red) opacity-50 hover:opacity-80",
+                      )}
+                      title={check.title}
+                      aria-label={check.title}
+                    >
+                      {check.passed ? "✓" : "×"}
+                    </span>
+                  ))}
                 </div>
               </div>
             </div>

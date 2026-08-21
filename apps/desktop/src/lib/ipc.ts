@@ -1136,7 +1136,7 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
  * Events
  * ---------------------------------------------------------------------- */
 
-const NOOP_UNLISTEN: UnlistenFn = () => undefined
+const noShellUnlisten: UnlistenFn = () => undefined
 
 /** Event names the scan emits. Mirrors `src-tauri/src/scan.rs`. */
 export const SCAN_EVENTS = {
@@ -1155,7 +1155,7 @@ export const SCAN_EVENTS = {
 export async function onScanEvent(
   handler: (status: ScanStatus, phase: keyof typeof SCAN_EVENTS) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   const unlisteners = await Promise.all(
     (Object.keys(SCAN_EVENTS) as (keyof typeof SCAN_EVENTS)[]).map((phase) =>
       listen<ScanStatus>(SCAN_EVENTS[phase], (event) => handler(event.payload, phase)),
@@ -1177,7 +1177,7 @@ export const SETTINGS_CHANGED_EVENT = "settings:changed"
 export async function onSettingsChanged(
   handler: (settings: AppSettings) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen<AppSettings>(SETTINGS_CHANGED_EVENT, (event) => handler(event.payload))
 }
 
@@ -1190,7 +1190,7 @@ export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
 
 /** Subscribe to out-of-band session-index changes. The result unsubscribes. */
 export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
 }
 
@@ -1208,7 +1208,7 @@ export const POPOVER_SHOWN_EVENT = "popover:shown"
 
 /** Subscribe to the popover reaching the screen. The result unsubscribes. */
 export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen(POPOVER_SHOWN_EVENT, () => handler())
 }
 
@@ -1219,7 +1219,7 @@ export const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
 export async function onLiveUsageChanged(
   handler: (usage: LiveUsageSummaryPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen<LiveUsageSummaryPayload>(LIVE_USAGE_CHANGED_EVENT, (event) =>
     handler(event.payload),
   )
@@ -1237,7 +1237,7 @@ export const STORAGE_HEALTH_EVENT = "storage:health"
 export async function onStorageHealth(
   handler: (status: StorageHealthPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen<StorageHealthPayload>(STORAGE_HEALTH_EVENT, (event) => handler(event.payload))
 }
 
@@ -1251,7 +1251,7 @@ export const SETTINGS_PANE_EVENT = "settings:pane"
 export async function onSettingsPaneRequest(
   handler: (pane: string) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen<string>(SETTINGS_PANE_EVENT, (event) => handler(event.payload))
 }
 
@@ -1269,7 +1269,7 @@ export const UPDATE_EVENT = "update:status"
 export async function onUpdateStatus(
   handler: (status: UpdateStatusPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen<UpdateStatusPayload>(UPDATE_EVENT, (event) => handler(event.payload))
 }
 
@@ -1282,7 +1282,7 @@ export const NUDGE_SHOW_EVENT = "nudge:show"
 
 /** Subscribe to incoming nudges. The returned function unsubscribes. */
 export async function onNudgeShow(handler: (nudge: Nudge) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen<Nudge>(NUDGE_SHOW_EVENT, (event) => handler(event.payload))
 }
 
@@ -1299,7 +1299,7 @@ export const NUDGE_HOVER_EVENT = "nudge:hover"
 
 /** Subscribe to the native hover signal. The returned function unsubscribes. */
 export async function onNudgeHover(handler: (hovered: boolean) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return NOOP_UNLISTEN
+  if (!hasShell()) return noShellUnlisten
   return listen<boolean>(NUDGE_HOVER_EVENT, (event) => handler(event.payload === true))
 }
 

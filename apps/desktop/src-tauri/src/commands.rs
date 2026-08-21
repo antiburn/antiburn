@@ -670,7 +670,7 @@ pub async fn get_session_analytics(
     })
 }
 
-/// One sub-agent's own analysis, for the roster and the spawn markers.
+/// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
 pub async fn get_subagent_analytics(
     app: tauri::AppHandle,
@@ -709,9 +709,7 @@ pub async fn get_subagent_analytics(
     })
 }
 
-/// The sub-agent roster the store already recorded, rebuilt as an orchestration
-/// status. Health scores and spawn positions are absent — those come from
-/// analyzing the children, which is exactly what did not happen this time.
+/// The sub-agent roster the store already recorded, rebuilt as an orchestration status.
 fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<OrchestrationStatus> {
     let members: Vec<SubagentMember> = store
         .relations(key)
