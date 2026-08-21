@@ -7,9 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { TruncatedText } from "./TruncatedText"
 
-afterEach(() => {
-  cleanup()
-})
+afterEach(cleanup)
 
 describe("TruncatedText", () => {
   it("renders its text without a redundant tooltip when it fits", () => {

@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ChevronDown, ChevronUp, FolderOpen, Zap } from "lucide-react"
+import { ChevronDown, ChevronUp, Zap } from "lucide-react"
 import { Fragment, useCallback, useState } from "react"
 
 import {
@@ -173,15 +173,7 @@ function ClampedDescription({
   )
 }
 
-function SkillDetails({
-  local,
-  onRevealPath,
-  revealLabel,
-}: {
-  local: LocalSkillDetails
-  onRevealPath?: (path: string) => void
-  revealLabel: string
-}) {
+function SkillDetails({ local }: { local: LocalSkillDetails }) {
   const removed = local.available === false
   const tools = local.allowedTools ?? []
   const meta = fileMetaLine(local)
@@ -195,36 +187,17 @@ function SkillDetails({
       {!removed && tools.length > 0 && <div>Tools · {toolsLine(tools)}</div>}
       {!removed && meta && <div>{meta}</div>}
       {!removed && path && (
-        <div className="flex items-center gap-1">
+        <div>
           <span className="truncate font-mono" title={path}>
             {displayPath(path)}
           </span>
-          {onRevealPath && (
-            <button
-              type="button"
-              onClick={() => onRevealPath(path)}
-              title={revealLabel}
-              aria-label={revealLabel}
-              className="ml-auto shrink-0 cursor-pointer rounded p-0.5 text-label-tertiary transition-colors hover:bg-surface-secondary hover:text-system-gold-text"
-            >
-              <FolderOpen size={11} aria-hidden="true" />
-            </button>
-          )}
         </div>
       )}
     </div>
   )
 }
 
-function SkillCard({
-  group,
-  onRevealPath,
-  revealLabel,
-}: {
-  group: SkillGroup
-  onRevealPath?: (path: string) => void
-  revealLabel: string
-}) {
+function SkillCard({ group }: { group: SkillGroup }) {
   const local = group.local
   const [expanded, setExpanded] = useState(false)
   const [descOverflows, setDescOverflows] = useState(false)
@@ -248,13 +221,7 @@ function SkillCard({
           />
         </div>
       )}
-      {expanded && local && (
-        <SkillDetails
-          local={local}
-          {...(onRevealPath ? { onRevealPath } : {})}
-          revealLabel={revealLabel}
-        />
-      )}
+      {expanded && local && <SkillDetails local={local} />}
       {canExpand && (
         <button
           type="button"
@@ -276,22 +243,10 @@ function SkillCard({
 
 export interface SkillMarkerTooltipProps {
   members: TimelineMarker<SkillDetail>[]
-  /**
-   * Reveal a skill's `SKILL.md` wherever the host can. Omitted (the default)
-   * hides the affordance entirely — the presentation layer knows nothing about
-   * the filesystem, so the capability has to be handed to it.
-   */
-  onRevealPath?: (path: string) => void
-  /** Accessible name for the reveal control, since the wording is host-specific. */
-  revealLabel?: string
 }
 
 /** The hover card for one skill-marker cluster: one section per named skill. */
-export function SkillMarkerTooltip({
-  members,
-  onRevealPath,
-  revealLabel = "Reveal in file manager",
-}: SkillMarkerTooltipProps) {
+export function SkillMarkerTooltip({ members }: SkillMarkerTooltipProps) {
   const groups = groupByName(members)
   return (
     <div className="flex flex-col gap-1.5">
@@ -311,11 +266,7 @@ export function SkillMarkerTooltip({
         {groups.map((group, i) => (
           <Fragment key={`skill-${i}`}>
             {i > 0 && <div style={{ borderTop: FOOTER_BORDER }} />}
-            <SkillCard
-              group={group}
-              {...(onRevealPath ? { onRevealPath } : {})}
-              revealLabel={revealLabel}
-            />
+            <SkillCard group={group} />
           </Fragment>
         ))}
       </div>

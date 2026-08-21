@@ -265,9 +265,7 @@ describe("PopoverView", () => {
 
     fireEvent.click(await screen.findByText("Wire the tray popover"))
 
-    expect(
-      await screen.findByRole("heading", { name: "Session Analytics" }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole("heading", { name: "Session Detail" })).toBeInTheDocument()
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("get_session_analytics", {
         agent: "claude-code",
@@ -276,13 +274,13 @@ describe("PopoverView", () => {
       }),
     )
 
-    // The session pane is a lazy-loaded chunk: its own "Session Analytics"
+    // The session pane is a lazy-loaded chunk. Its own "Session Detail"
     // heading briefly shares text with the Suspense fallback's, so wait for a
     // control unique to the loaded pane before treating it as ready.
     fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
 
     expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
-    expect(screen.queryByRole("heading", { name: "Session Analytics" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Session Detail" })).not.toBeInTheDocument()
   })
 
   it("notes an opened session as an agent and an environment, and nothing else", async () => {

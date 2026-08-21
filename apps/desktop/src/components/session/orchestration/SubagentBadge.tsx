@@ -12,11 +12,8 @@ export interface SubagentBadgeProps {
   parentAgent: string
   /** Title of the orchestrator session that launched this sub-agent, if known. */
   parentTitle?: string
-  /**
-   * Open the launching orchestrator's own analytics, where its roster lives.
-   * Omitted leaves the badge informational.
-   */
-  onOpenOrchestrator?: () => void
+  /** Open the launching orchestrator's analytics. */
+  onOpenOrchestrator: () => void
   renderAgentIcon?: AgentIconRenderer | undefined
 }
 
@@ -37,21 +34,13 @@ export function SubagentBadge({
       icon={<Bot size={13} aria-hidden="true" className="shrink-0 text-system-indigo-text" />}
       title="Autonomous sub-agent"
     >
-      {onOpenOrchestrator ? (
-        <>
-          <div className="px-2 pb-0.5 type-caption text-label-tertiary">Launched by</div>
-          <SubagentRosterRow
-            agent={parentAgent}
-            label={parentTitle?.trim() || "Orchestrator session"}
-            onClick={onOpenOrchestrator}
-            renderAgentIcon={renderAgentIcon}
-          />
-        </>
-      ) : (
-        <div className="px-2 py-1.5 type-caption text-label-secondary">
-          Ran unsupervised — not a session you drove
-        </div>
-      )}
+      <div className="px-2 pb-0.5 type-caption text-label-tertiary">Launched by</div>
+      <SubagentRosterRow
+        agent={parentAgent}
+        label={parentTitle?.trim() || "Orchestrator session"}
+        onClick={onOpenOrchestrator}
+        renderAgentIcon={renderAgentIcon}
+      />
     </CollapsibleOrchestrationCard>
   )
 }

@@ -59,29 +59,8 @@ describe("OrchestratedBadge", () => {
     )
     fireEvent.click(screen.getByText("Orchestrated 1 agents"))
     fireEvent.click(screen.getByText("Refactor auth"))
-    expect(onOpenSubagent).toHaveBeenCalledWith(
-      "claude-code",
-      "parent-1",
-      "agent-xyz",
-      "Refactor auth",
-    )
+    expect(onOpenSubagent).toHaveBeenCalledWith("agent-xyz", "Refactor auth")
   })
-
-  it.each(["claude-code", "codex", "antigravity"])(
-    "preserves exact %s orchestration navigation identity",
-    (agent) => {
-      const onOpenSubagent = vi.fn()
-      render(
-        <OrchestratedBadge
-          status={status([member("worker-1", "Investigate", agent)], agent)}
-          onOpenSubagent={onOpenSubagent}
-        />,
-      )
-      fireEvent.click(screen.getByText("Orchestrated 1 agents"))
-      fireEvent.click(screen.getByText("Investigate"))
-      expect(onOpenSubagent).toHaveBeenCalledWith(agent, "parent-1", "worker-1", "Investigate")
-    },
-  )
 
   it("colors each roster row by its health score", () => {
     render(
