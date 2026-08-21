@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::analysis::engine::{Phase, analyze_session};
-use crate::analysis::model::{NormalizedSession, Role, ToolCategory};
+use crate::analysis::model::{ModelRun, NormalizedSession, Role, ToolCategory};
 use crate::analysis::{RawSource, SessionInput, analyze_sources, normalize_source};
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
@@ -1043,6 +1043,50 @@ fn mixed_model_session_prices_each_model_at_its_own_rate() {
     // Pricing both buckets at Opus (the old behavior) would have been 2M @ $25/1M
     // = $50; per-model must be strictly cheaper.
     assert!(cost.total_usd < 50.0);
+}
+
+#[test]
+fn claude_records_distinct_model_thinking_modes() {
+    let fixture = concat!(
+        r#"{"type":"assistant","effort":"high","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"text","text":"one"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","effort":"low","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":20,"output_tokens":3},"content":[{"type":"text","text":"two"}]}}"#,
+    );
+    let metrics = analyze_session(&normalize_source(&jsonl_input("claude", fixture)).unwrap());
+
+    assert_eq!(
+        metrics.model_runs,
+        vec![
+            ModelRun {
+                model: "claude-fable-5".to_string(),
+                thinking_mode: Some("high".to_string()),
+            },
+            ModelRun {
+                model: "claude-fable-5".to_string(),
+                thinking_mode: Some("low".to_string()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn codex_applies_turn_effort_to_the_following_usage() {
+    let fixture = concat!(
+        r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"xhigh"}}"#,
+        "\n",
+        r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    assert_eq!(session.events[0].thinking_mode.as_deref(), Some("xhigh"));
+
+    let metrics = analyze_session(&session);
+    assert_eq!(
+        metrics.model_runs,
+        vec![ModelRun {
+            model: "gpt-5.6-sol".to_string(),
+            thinking_mode: Some("xhigh".to_string()),
+        }]
+    );
 }
 
 /// A model id carrying a context-window tag (`claude-opus-4-7[1m]`) still prices —

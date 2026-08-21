@@ -457,6 +457,33 @@ jobs:
           done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
           exit "$missing"
 
+  aislop:
+    name: slop gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout with history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Judge the changed files
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: pnpm run slop --base "$BASE_SHA"
+
   ci-required:
     name: ci-required
     if: always()
@@ -470,6 +497,7 @@ jobs:
       - boundary
       - licenses
       - dco
+      - aislop
     runs-on: ubuntu-24.04
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
@@ -481,6 +509,7 @@ jobs:
       BOUNDARY_RESULT: ${{ needs.boundary.result }}
       LICENSES_RESULT: ${{ needs.licenses.result }}
       DCO_RESULT: ${{ needs.dco.result }}
+      AISLOP_RESULT: ${{ needs.aislop.result }}
       EVENT_NAME: ${{ github.event_name }}
       ENGINE_SELECTED: ${{ needs.classify.outputs.engine }}
       FRONTEND_SELECTED: ${{ needs.classify.outputs.frontend }}
@@ -535,6 +564,11 @@ jobs:
             require_success licenses "$LICENSES_RESULT"
           else
             allow_skip licenses "$LICENSES_RESULT"
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            require_success aislop "$AISLOP_RESULT"
+          else
+            allow_skip aislop "$AISLOP_RESULT"
           fi
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             require_success dco "$DCO_RESULT"

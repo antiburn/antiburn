@@ -44,7 +44,9 @@ pub use engine::{
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
 pub use interface::{RawSource, SessionInput, VendorAdapter};
-pub use model::{NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage};
+pub use model::{
+    ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
+};
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
 pub use vendors::{adapter_for, has_dedicated_adapter};
 

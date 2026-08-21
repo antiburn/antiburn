@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -88,8 +88,10 @@ CREATE TABLE session_analysis (
     metrics_json       TEXT NOT NULL,
     -- `analysis::SessionCost` components, or NULL when nothing priced.
     cost_json          TEXT,
-    -- Billable tokens per normalized model key, so cost can be re-priced from
-    -- the cache after a catalog update without re-reading the transcript.
+    -- Billable tokens per normalized model key. The map merges the parent
+    -- session and every sub-agent it launched. A later pass can re-price
+    -- the session from this cache after a catalog update, with no need to
+    -- read any transcript again.
     model_breakdown_json TEXT NOT NULL,
     active_secs        INTEGER NOT NULL,
     duration_secs      INTEGER NOT NULL,
@@ -227,4 +229,27 @@ CREATE TABLE usage_analytics_identity (
     install_id TEXT NOT NULL,
     minted_at  TEXT NOT NULL
 ) STRICT;
+"#;
+
+/// v6: drop every cached session analysis.
+///
+/// The old `session_analysis.model_breakdown_json` held only the parent
+/// session's own billable tokens. The engine analyzed each sub-agent too.
+/// The cached cost never included the sub-agent tokens. The activity list,
+/// the provider-usage totals, and an export all showed the wrong number.
+///
+/// The fingerprint check alone marks an old row fresh. It cannot detect
+/// this kind of change. Dropping every row forces the next scan to
+/// recompute each one under the new merge rule.
+const V6: &str = r#"
+DELETE FROM session_analysis;
+"#;
+
+/// v7 — ordered model runs used by a session and its sub-agents.
+///
+/// The cost breakdown has no thinking modes or display order. The new list
+/// puts parent runs before runs used only by sub-agents.
+const V7: &str = r#"
+ALTER TABLE session_analysis ADD COLUMN inclusive_models_json TEXT NOT NULL DEFAULT '[]';
+DELETE FROM session_analysis;
 "#;

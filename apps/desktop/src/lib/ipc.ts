@@ -25,7 +25,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
-import type { ActiveSessionsSummary, SessionCostComponents, SkillDetail } from "./types/session"
+import type {
+  ActiveSessionsSummary,
+  BillableTokens,
+  SessionCostComponents,
+  SkillDetail,
+} from "./types/session"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
@@ -160,6 +165,11 @@ export interface AppInfo {
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
+export interface ModelRunPayload {
+  model: string
+  thinkingMode?: string
+}
+
 export interface ActivityEntryPayload {
   agent: string
   sessionId: string
@@ -171,8 +181,12 @@ export interface ActivityEntryPayload {
   title: string | null
   hasForkParent: boolean
   forkChildCount: number
+  /** Cost of the parent transcript plus every sub-agent the session launched. */
   cost: SessionCostComponents | null
+  /** Every model that contributed billable tokens. */
   models: string[]
+  /** Parent model runs followed by runs used only by sub-agents. */
+  modelRuns: ModelRunPayload[]
 }
 
 /** Identity of one local session, as the analytics view carries it. */
@@ -221,7 +235,20 @@ export interface SessionAnalyticsPayload {
   title: string | null
   wslDistro: string | null
   isActive: boolean
+  /** Cost of the parent transcript plus every sub-agent it launched. */
   cost: SessionCostComponents | null
+  /** Cost of the parent transcript, without any sub-agent. */
+  topLevelCost: SessionCostComponents | null
+  /** Cost of every sub-agent this session launched, combined. The value is
+   * `null` when the session has no sub-agent, or when no sub-agent could
+   * be priced. */
+  subagentsCost: SessionCostComponents | null
+  /** Billable tokens that back `cost`. The count sums the parent transcript
+   * and every sub-agent. */
+  inclusiveTokens: BillableTokens | null
+  /** Billable tokens that back `subagentsCost`. The count sums every
+   * sub-agent. The value is `null` when the session has no sub-agent. */
+  subagentsTokens: BillableTokens | null
   models: string[]
   skills: SkillDetail[]
   orchestration: OrchestrationPayload | null
@@ -399,6 +426,15 @@ export interface LiveProviderUsagePayload {
 /** A source that failed, in terms a reader can act on. */
 export interface LiveUsageSourceErrorPayload {
   source: string
+  /**
+   * The canonical id of the provider the source answers for. A failed source
+   * contributes no entry to `providers`, so this is how the views keep a
+   * section for the provider the failure left without a reading. Empty on a
+   * snapshot cached before the field existed.
+   */
+  provider: string
+  /** The provider's display name, for example "Claude". Empty like `provider`. */
+  displayName: string
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
 }

@@ -389,6 +389,8 @@ mod tests {
             }],
             errors: vec![LiveUsageSourceError {
                 source: "fixture".into(),
+                provider: "openai".into(),
+                display_name: "Codex".into(),
                 category: "unavailable".into(),
             }],
             generated_at: "2026-08-20T00:00:00Z".into(),

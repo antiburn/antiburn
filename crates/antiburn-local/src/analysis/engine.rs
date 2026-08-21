@@ -10,7 +10,7 @@
 //! averaged, and derives the token / tool / context / pattern-score metrics the
 //! sleep-style UI renders.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::pricing::ModelTokens;
 // Re-exported through `engine` (and in turn the `analysis` module) so consumers
@@ -21,7 +21,7 @@ pub use crate::model::skill::SkillUse;
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::initial_context::InitialContextBreakdown;
-use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCategory};
+use crate::analysis::model::{ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCategory};
 
 /// Number of progress buckets each session is resampled onto (0% → 100%).
 /// Higher = finer time resolution, so fewer turns land in the same bucket and
@@ -247,6 +247,9 @@ pub struct SessionMetrics {
     /// mixed). `None` when no adapter could extract it.
     #[serde(default)]
     pub model: Option<String>,
+    /// Distinct model and thinking-mode pairs that produced billable tokens.
+    #[serde(default)]
+    pub model_runs: Vec<ModelRun>,
     /// Billable token components used for the cost estimate: fresh input, generated
     /// output, cache reads, and cache writes — each prices at a different rate.
     /// `tokens_out` mirrors generated output; `tokens_in` is displayed effective input
@@ -508,6 +511,8 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     // Opus + Haiku is no longer billed entirely at Opus). The aggregate `bill_*`
     // totals above are unchanged and the breakdown sums to them.
     let mut cost_breakdown: HashMap<String, ModelTokens> = HashMap::new();
+    let mut model_runs = Vec::new();
+    let mut seen_model_runs = HashSet::new();
     for ev in &session.events {
         tokens_in = tokens_in.saturating_add(ev.usage.effective_input_tokens());
         tokens_out = tokens_out.saturating_add(ev.usage.output_tokens);
@@ -524,15 +529,31 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         // Resolve the owning model: the event's own model, else the session
         // headline. Tokens with no resolvable model are unpriceable, so skip them.
         if has_tokens && let Some(model) = ev.model.as_deref().or(session.model.as_deref()) {
-            let entry = cost_breakdown
-                .entry(crate::analysis::pricing::strip_window_tag(model).to_string())
-                .or_default();
-            entry.input_tokens = entry.input_tokens.saturating_add(u.input_tokens);
-            entry.output_tokens = entry.output_tokens.saturating_add(u.output_tokens);
-            entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(u.cache_read_tokens);
-            entry.cache_creation_tokens = entry
-                .cache_creation_tokens
-                .saturating_add(u.cache_creation_tokens);
+            let model = crate::analysis::pricing::strip_window_tag(model)
+                .trim()
+                .to_string();
+            if !model.is_empty() {
+                let run = ModelRun {
+                    model: model.clone(),
+                    thinking_mode: ev
+                        .thinking_mode
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|mode| !mode.is_empty())
+                        .map(str::to_string),
+                };
+                if seen_model_runs.insert(run.clone()) {
+                    model_runs.push(run);
+                }
+                let entry = cost_breakdown.entry(model).or_default();
+                entry.input_tokens = entry.input_tokens.saturating_add(u.input_tokens);
+                entry.output_tokens = entry.output_tokens.saturating_add(u.output_tokens);
+                entry.cache_read_tokens =
+                    entry.cache_read_tokens.saturating_add(u.cache_read_tokens);
+                entry.cache_creation_tokens = entry
+                    .cache_creation_tokens
+                    .saturating_add(u.cache_creation_tokens);
+            }
         }
         for tool in &ev.tools {
             tool_mix.add(tool.category);
@@ -707,6 +728,7 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         segments,
         initial_context: None,
         model: session.model.clone(),
+        model_runs,
         billable_input_tokens: bill_in,
         billable_output_tokens: bill_out,
         billable_cache_read_tokens: bill_cr,
