@@ -21,7 +21,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023", "D-024", "D-026", "D-028"]
+governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023", "D-024", "D-026", "D-028", "D-029"]
 default_action = "deny"
 publication_authorization = "authorized MPL-2.0 repository commit or merge; unresolved rights remain denied"
 third_party_resolution = "deferred until the public local-crate manifest and lockfile exist"
@@ -963,4 +963,20 @@ notes = [
   "Add the information-architecture, state-taxonomy, and copy guidance the token contract deliberately omits; these are authored for the public surfaces, not extracted.",
   "Remove Cadence, Radar, Tune-up, account, publication, telemetry, private routes, private fonts, and private component names.",
   "Do not port the private web component inventory, chart wrappers, or the design-system gallery route.",
+]
+
+[[rule]]
+id = "popover-window-corner"
+source_paths = ["desktop/src-tauri/src/platform_window.rs"]
+path_kind = "file"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/src/popover.rs"
+provenance = "Cadence company-authored macOS popover window setup; D-029 maintainer decision authorizes the adapted port"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract the window treatment only: on macOS build the popover with a rounded popover material, and keep an opaque borderless window on every other platform.",
+  "Take the corner radius from the public contract's rounded.popover token, not from the private source; the two agree at 10px today.",
+  "Do not port the private window's position, size, state, or close behaviour; the public popover already owns those.",
+  "Declare the macos-private-api feature in the public manifest. The build already resolves it through tauri-nspanel, but the popover must not depend on another crate's feature by accident.",
 ]
