@@ -550,6 +550,104 @@ fn codex_marked_compaction_resets_context_occupancy() {
     assert_eq!(last_context.context_tokens, 30_000);
 }
 
+/// Newer Codex rollouts mark a finished compaction with a top-level
+/// `{"type":"compacted", ...}` record instead of the `context_compacted`
+/// event_msg. Two real compactions, well separated in time with ordinary
+/// turns between them, must each produce their own boundary event — not
+/// zero (the historical bug) and not one merged marker.
+const CODEX_COMPACTED_RECORD_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2024-06-01T12:00:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c1"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:30Z","type":"compacted","payload":{"message":"","window_number":1,"replacement_history":[]}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c2"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"output_tokens":80},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:05:00Z","type":"compacted","payload":{"message":"","window_number":2,"replacement_history":[]}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:05:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50000,"output_tokens":60},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_top_level_compacted_records_mark_boundaries() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_COMPACTED_RECORD_FIXTURE)).unwrap();
+
+    // Both `compacted` records survive parsing as their own boundary event, at
+    // their own timestamp.
+    let boundaries: Vec<Option<i64>> = session
+        .events
+        .iter()
+        .filter(|ev| ev.is_compaction_boundary)
+        .map(|ev| ev.ts_ms)
+        .collect();
+    assert_eq!(
+        boundaries,
+        vec![Some(1_717_243_230_000), Some(1_717_243_500_000)],
+        "expected one boundary event per compacted record, at its own timestamp"
+    );
+
+    let m = analyze_session(&session);
+    assert_eq!(m.peak_context_tokens, 200_000);
+    let boundary_buckets = m
+        .buckets
+        .iter()
+        .filter(|b| b.is_compaction_boundary)
+        .count();
+    assert_eq!(
+        boundary_buckets, 2,
+        "expected two distinct compaction-boundary buckets"
+    );
+}
+
+/// Some Codex rollouts write both sibling records for the same compaction:
+/// the top-level `compacted` record and the `context_compacted` event_msg,
+/// back-to-back with no turn between them. That must still produce exactly
+/// one boundary, not two.
+const CODEX_COMPACTED_AND_EVENT_MSG_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2024-06-01T12:00:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c1"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:30Z","type":"compacted","payload":{"message":"","window_number":1,"replacement_history":[]}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:30Z","type":"event_msg","payload":{"type":"context_compacted"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c2"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"output_tokens":80},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_compacted_record_and_event_msg_sibling_dedupe_to_one_boundary() {
+    let session =
+        normalize_source(&jsonl_input("codex", CODEX_COMPACTED_AND_EVENT_MSG_FIXTURE)).unwrap();
+
+    let boundaries: Vec<Option<i64>> = session
+        .events
+        .iter()
+        .filter(|ev| ev.is_compaction_boundary)
+        .map(|ev| ev.ts_ms)
+        .collect();
+    assert_eq!(
+        boundaries,
+        vec![Some(1_717_243_230_000)],
+        "the second sibling record must be deduped, not counted as a new compaction"
+    );
+
+    let m = analyze_session(&session);
+    assert_eq!(m.peak_context_tokens, 200_000);
+    let last_context = m
+        .buckets
+        .iter()
+        .rev()
+        .find(|b| b.context_tokens > 0)
+        .expect("a context reading");
+    assert_eq!(last_context.context_tokens, 30_000);
+}
+
 /// The pre-compaction turn and boundary share one progress bucket.
 const CLAUDE_COMPACTION_SHARES_BUCKET_FIXTURE: &str = concat!(
     r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
