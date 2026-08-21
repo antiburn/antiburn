@@ -13,27 +13,22 @@
    contrast on a light surface and kept vivid in dark mode, where saturated
    hues read well on a dark card.
 
-   Two families:
-
-     --color-mode-*      five distinguishable hues for categorical bands
-     --color-context-*   role colors for a composition breakdown, plus the
-     --color-token-*     two-part area fill, plus the one alert hue
-     --color-pattern-drifting
+   The palette supplies categorical hues, context colors, token colors, and
+   one context warning hue.
 
    Every token is presentation only: nothing here knows what a value means,
    only what it looks like. Tailwind v4 processes `@theme` in any file the
-   build imports, so `text-mode-*` / `bg-mode-*` utilities register from here.
+   build imports.
    ========================================================================== */
 
 @theme {
   /* Categorical band hues, ordered so adjacent bands stay distinguishable:
      deep blue, emerald, mid blue, cyan, orange. The orange is the only warm
      hue in the set, which is what sets it apart from the other four. */
-  --color-mode-implementing: var(--color-mode-implementing-val);
-  --color-mode-testing: var(--color-mode-testing-val);
-  --color-mode-exploring: var(--color-mode-exploring-val);
-  --color-mode-thinking: var(--color-mode-thinking-val);
-  --color-mode-disruption: var(--color-mode-disruption-val);
+  --color-analytics-blue-strong: var(--color-analytics-blue-strong-val);
+  --color-analytics-green: var(--color-analytics-green-val);
+  --color-analytics-blue: var(--color-analytics-blue-val);
+  --color-analytics-cyan: var(--color-analytics-cyan-val);
 
   /* Vertical area fill: the same blue as --color-token-in, with the alpha
      baked in per theme so each sets its own contrast, fading out toward the
@@ -54,28 +49,27 @@
   --color-token-out: var(--color-token-out-val);
 
   /* The one alert hue in this palette, shared by every surface that needs an
-     attention step between healthy green and --color-mode-disruption. Its own
+     attention step between neutral and critical states. Its own
      token rather than --color-system-orange-tint so light mode can calm the
      vivid system orange down to a legible amber while dark mode keeps the
      saturated value. */
-  --color-pattern-drifting: var(--color-pattern-drifting-val);
+  --color-context-warning: var(--color-context-warning-val);
 }
 
 /* --- Light (default and explicit) --- */
 :root,
 :root[data-theme="light"] {
-  --color-mode-implementing-val: rgb(29 78 216); /* blue-700 */
-  --color-mode-testing-val: rgb(5 150 105); /* emerald-600 */
-  --color-mode-exploring-val: rgb(59 130 246); /* blue-500 */
-  --color-mode-thinking-val: rgb(6 182 212); /* cyan-500 */
-  --color-mode-disruption-val: rgb(234 88 12); /* orange-600 */
+  --color-analytics-blue-strong-val: rgb(29 78 216); /* blue-700 */
+  --color-analytics-green-val: rgb(5 150 105); /* emerald-600 */
+  --color-analytics-blue-val: rgb(59 130 246); /* blue-500 */
+  --color-analytics-cyan-val: rgb(6 182 212); /* cyan-500 */
   --color-context-fill-top-val: rgb(59 130 246 / 0.55); /* blue-500 */
   --color-context-fill-base-val: rgb(59 130 246 / 0.08);
   --color-context-fixed-val: rgb(100 116 139); /* slate-500 */
   --color-context-system-val: rgb(124 58 237); /* violet-600 */
   --color-token-in-val: rgb(59 130 246); /* blue-500 */
   --color-token-out-val: rgb(167 139 250); /* violet-400 */
-  --color-pattern-drifting-val: rgb(217 119 6); /* amber-600 */
+  --color-context-warning-val: rgb(217 119 6); /* amber-600 */
 }
 
 /* --- Dark ---
@@ -84,32 +78,30 @@
    written separately, mirroring how tokens.css duplicates its dark palette. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-mode-implementing-val: rgb(37 99 235); /* blue-600 */
-    --color-mode-testing-val: rgb(52 211 153); /* emerald-400 */
-    --color-mode-exploring-val: rgb(96 165 250); /* blue-400 */
-    --color-mode-thinking-val: rgb(34 211 238); /* cyan-400 */
-    --color-mode-disruption-val: rgb(255 149 10); /* orange */
+    --color-analytics-blue-strong-val: rgb(37 99 235); /* blue-600 */
+    --color-analytics-green-val: rgb(52 211 153); /* emerald-400 */
+    --color-analytics-blue-val: rgb(96 165 250); /* blue-400 */
+    --color-analytics-cyan-val: rgb(34 211 238); /* cyan-400 */
     --color-context-fill-top-val: rgb(96 165 250 / 0.6); /* blue-400 */
     --color-context-fill-base-val: rgb(96 165 250 / 0.1);
     --color-context-fixed-val: rgb(148 163 184); /* slate-400 */
     --color-context-system-val: rgb(167 139 250); /* violet-400 */
     --color-token-in-val: rgb(96 165 250); /* blue-400 */
     --color-token-out-val: rgb(196 181 253); /* violet-300 */
-    --color-pattern-drifting-val: rgb(255 159 10); /* vivid amber */
+    --color-context-warning-val: rgb(255 159 10); /* vivid amber */
   }
 }
 
 :root[data-theme="dark"] {
-  --color-mode-implementing-val: rgb(37 99 235);
-  --color-mode-testing-val: rgb(52 211 153);
-  --color-mode-exploring-val: rgb(96 165 250);
-  --color-mode-thinking-val: rgb(34 211 238);
-  --color-mode-disruption-val: rgb(255 149 10);
+  --color-analytics-blue-strong-val: rgb(37 99 235);
+  --color-analytics-green-val: rgb(52 211 153);
+  --color-analytics-blue-val: rgb(96 165 250);
+  --color-analytics-cyan-val: rgb(34 211 238);
   --color-context-fill-top-val: rgb(96 165 250 / 0.6);
   --color-context-fill-base-val: rgb(96 165 250 / 0.1);
   --color-context-fixed-val: rgb(148 163 184);
   --color-context-system-val: rgb(167 139 250);
   --color-token-in-val: rgb(96 165 250);
   --color-token-out-val: rgb(196 181 253);
-  --color-pattern-drifting-val: rgb(255 159 10);
+  --color-context-warning-val: rgb(255 159 10);
 }

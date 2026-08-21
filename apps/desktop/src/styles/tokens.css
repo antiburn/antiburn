@@ -85,6 +85,11 @@
   --radius-control: 5px;
   --radius-popover: 10px;
   --radius-small: 4px;
+
+  /* A strong ease-out for a control that must feel like it settles rather than
+     stops. Tailwind registers `--ease-*`, so this becomes `ease-out-quart`.
+     Plain `ease-out` stays the default for everything else. */
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* --- Light (default) --- */
@@ -92,7 +97,7 @@
   color-scheme: light dark;
 
   /* Backgrounds */
-  --color-bg-primary: rgb(255 255 255 / 0.58);
+  --color-bg-primary: rgb(255 255 255 / 0.85);
   --color-bg-secondary: rgb(0 0 0 / 0.08);
   --color-bg-tertiary: rgb(0 0 0 / 0.12);
   --color-bg-row-hover: rgb(0 0 0 / 0.04);
@@ -112,15 +117,17 @@
   /* Text — explicit fallbacks, replaced by live system tokens when available */
   --color-text-primary: rgb(0 0 0 / 0.85);
   --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.55);
+  --color-text-tertiary: rgb(60 60 67 / 0.79);
 
   /* Borders */
   --color-border: rgb(0 0 0 / 0.15);
 
-  /* Accent */
+  /* Accent. accent-val keeps the system blue, because it carries text and
+     icons on a surface. accent-fill and accent-hover are darker: they sit
+     behind white text, and the system blue gives it only 4.02:1. */
   --color-accent-val: rgb(0 122 255);
-  --color-accent-fill-val: rgb(0 122 255);
-  --color-accent-hover-val: rgb(0 122 255 / 0.85);
+  --color-accent-fill-val: rgb(0 113 227);
+  --color-accent-hover-val: rgb(0 98 199);
 
   /* Status — accessible variants, tuned for contrast on a light surface */
   --color-system-green-val: rgb(36 138 61);
@@ -153,6 +160,15 @@
   --control-height-regular: 22px;
   --control-height-small: 17px;
 
+  /* Transition durations. Tailwind has no `--duration-*` theme namespace, so
+     these are plain vars and a call site consumes one as
+     duration-[var(--duration-fast)] — the same shape as the geometry vars.
+     Keeping them here is what stops 120ms from being retyped at each site.
+     Animation timings stay with the keyframes that own them in motion.css. */
+  --duration-quick: 100ms;
+  --duration-fast: 120ms;
+  --duration-slow: 300ms;
+
   /* Source-list / sidebar width for multi-pane windows. Geometry vars are not
      @theme-registered; consume as w-[var(--sidebar-width)]. Sized for the 36px
      rows in ui/SidebarNav: 68px of chrome (container + row padding, a 16px
@@ -172,20 +188,25 @@
   }
 }
 
-/* The system tertiary label is ~30% opacity in light mode, which reads as too
-   faint on a translucent surface. Bump it to ~50% so the hierarchy stays
-   (still below secondary's ~60%) but tertiary actually registers. Dark mode
-   keeps the system token, which already has appropriate contrast. */
+/* The system tertiary label is ~30% opacity in light mode, which gives small
+   text about 2.6:1. Bump it to 79%, the point where 11px text reaches the
+   WCAG AA ratio of 4.5:1 on a card on the popover. That is the hardest case:
+   the popover surface is translucent, so a dark desktop behind the window
+   darkens the card the text sits on. Secondary stays above it at 85%, so the
+   hierarchy holds. */
 @media (prefers-color-scheme: light) {
   :root {
-    --color-text-tertiary: rgb(60 60 67 / 0.5);
+    --color-text-tertiary: rgb(60 60 67 / 0.79);
   }
 }
 
 /* --- Dark --- */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg-primary: rgb(30 30 30 / 0.4);
+    /* Matches the explicit dark theme. At 0.40 the popover surface let a light
+       desktop behind the window through, and the secondary label fell to
+       1.93:1 on it. The surface has to set the tone, not the desktop. */
+    --color-bg-primary: rgb(30 30 30 / 0.92);
     --color-bg-secondary: rgb(255 255 255 / 0.12);
     --color-bg-tertiary: rgb(255 255 255 / 0.18);
     --color-bg-row-hover: rgb(255 255 255 / 0.07);
@@ -198,8 +219,8 @@
     --color-text-secondary: rgb(235 235 245 / 0.72);
     --color-border: rgb(255 255 255 / 0.18);
     --color-accent-val: rgb(10 132 255);
-    --color-accent-fill-val: rgb(10 132 255);
-    --color-accent-hover-val: rgb(10 132 255 / 0.85);
+    --color-accent-fill-val: rgb(10 110 235);
+    --color-accent-hover-val: rgb(10 96 205);
     --color-system-green-val: rgb(48 219 91);
     --color-system-orange-val: rgb(255 179 64);
     --color-system-orange-tint-val: rgb(255 159 10);
@@ -212,9 +233,11 @@
     --color-system-gold-val: rgb(255 204 0);
     --color-system-gold-text-val: rgb(245 203 92);
     --color-agent-mark-val: rgb(247 247 244);
-    /* The system tertiary label is ~25% opacity in dark mode; bump to ~35% so
-       it reads on a translucent surface (same rationale as light mode). */
-    --color-text-tertiary: rgb(235 235 245 / 0.35);
+    /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
+       where small text reaches 4.5:1 on a card (same rationale as light
+       mode). The hard case is again the popover: the surface is translucent,
+       so a light desktop behind the window lifts the card the text sits on. */
+    --color-text-tertiary: rgb(235 235 245 / 0.62);
     /* The live label, separator, and accent tokens auto-adapt in dark mode —
        no overrides needed for those three. */
   }
@@ -231,10 +254,12 @@
 
 /* --- Explicit theme override, for platforms with no live system tokens --- */
 :root[data-theme="light"] {
-  --color-bg-primary: rgb(255 255 255 / 0.58);
+  --color-bg-primary: rgb(255 255 255 / 0.85);
   --color-bg-secondary: rgb(0 0 0 / 0.08);
   --color-bg-tertiary: rgb(0 0 0 / 0.12);
-  --color-bg-row-hover: rgb(0 0 0 / 0.08);
+  /* Matches the system branch. At 0.08 a hovered row sat one percent below
+     bg-selected at 0.09, so the two states looked the same. */
+  --color-bg-row-hover: rgb(0 0 0 / 0.04);
   --color-bg-card: rgb(0 0 0 / 0.04);
   --color-bg-input: rgb(255 255 255);
   --color-bg-window: rgb(246 246 246);
@@ -242,11 +267,11 @@
   --color-bg-selected: rgb(0 0 0 / 0.09);
   --color-text-primary: rgb(0 0 0 / 0.85);
   --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.5);
+  --color-text-tertiary: rgb(60 60 67 / 0.79);
   --color-border: rgb(0 0 0 / 0.15);
   --color-accent-val: rgb(0 122 255);
-  --color-accent-fill-val: rgb(0 122 255);
-  --color-accent-hover-val: rgb(0 122 255 / 0.85);
+  --color-accent-fill-val: rgb(0 113 227);
+  --color-accent-hover-val: rgb(0 98 199);
   --color-system-green-val: rgb(36 138 61);
   --color-system-orange-val: rgb(179 81 0);
   --color-system-orange-tint-val: rgb(255 149 0);
@@ -293,11 +318,11 @@
   --color-bg-selected: rgb(255 255 255 / 0.14);
   --color-text-primary: rgb(255 255 255 / 0.92);
   --color-text-secondary: rgb(235 235 245 / 0.72);
-  --color-text-tertiary: rgb(235 235 245 / 0.45);
+  --color-text-tertiary: rgb(235 235 245 / 0.62);
   --color-border: rgb(255 255 255 / 0.18);
   --color-accent-val: rgb(10 132 255);
-  --color-accent-fill-val: rgb(10 132 255);
-  --color-accent-hover-val: rgb(10 132 255 / 0.85);
+  --color-accent-fill-val: rgb(10 110 235);
+  --color-accent-hover-val: rgb(10 96 205);
   --color-system-green-val: rgb(48 219 91);
   --color-system-orange-val: rgb(255 179 64);
   --color-system-orange-tint-val: rgb(255 159 10);

@@ -48,7 +48,7 @@ pub struct SessionMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleSource {
     /// User explicitly renamed the session (Claude Tier-5 `custom-title`
-    /// record, Codex SQLite `threads.title` after rename).
+    /// record, Codex SQLite `threads.name`).
     UserRename,
     /// AI/agent generated the title (Claude Tier-4 `ai-title` record,
     /// Tier-3 `summary` event, Codex `session_index.jsonl` `thread_name`).
@@ -139,7 +139,14 @@ pub async fn parse_session_metadata(file: &Path) -> SessionMetadata {
 pub async fn parse_session_metadata_with(explorers: Explorers, file: &Path) -> SessionMetadata {
     let content = match tokio::fs::read_to_string(file).await {
         Ok(c) => c,
-        Err(_) => return SessionMetadata::default(),
+        Err(error) => {
+            ::tracing::debug!(
+                event = "session_metadata_unreadable",
+                path = %file.display(),
+                error = %error
+            );
+            return SessionMetadata::default();
+        }
     };
     parse_session_metadata_with_content_for(explorers, file, &content).await
 }

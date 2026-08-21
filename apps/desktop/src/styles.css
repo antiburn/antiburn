@@ -18,8 +18,8 @@
  *   hud                         floating usage HUD presentation
  *   motion                      reduced-motion clamp, last so it wins
  *
- * Other component-scoped stylesheets (text-roll.css) are imported by the
- * component that owns them, not from here.
+ * Other component-scoped stylesheets (text-roll.css, session-rows.css) are
+ * imported by the component that owns them, not from here.
  */
 
 @import "tailwindcss";
@@ -46,14 +46,53 @@ body,
 
 /*
  * The foundation leaves the document transparent so a window can opt into
- * translucent material. Neither of this app's windows does yet, so the shell
- * paints the standard window surface itself.
+ * translucent material. The popover window does: it carries the Popover
+ * material, which also draws its corner. The nudge window does not and stays
+ * opaque. Either way the shell paints the window surface here, over whatever
+ * the window itself gives it.
+ *
+ * The surface goes on `#root`, not on `body`. A background on `body` is
+ * propagated to the canvas while `html` is transparent, and the canvas fills
+ * the whole window and takes no corner. `#root` is an ordinary element, so it
+ * keeps its own geometry and the rule below can round it.
  *
  * These read the raw palette variables rather than the `@theme` aliases:
  * Tailwind only emits an alias that a generated utility uses, and no utility
  * references these two.
  */
 body {
-  background-color: var(--color-bg-window);
   color: var(--color-text-primary);
+}
+
+#root {
+  background-color: var(--color-bg-window);
+}
+
+/*
+ * The macOS popover window is the exception. It carries the Popover material
+ * (src-tauri/src/popover.rs), and the material shows the desktop through it.
+ * A window surface does not belong on top of that: `bg-window` is a flat grey,
+ * and over the material it reads as a slab with a hard edge.
+ *
+ * `bg-primary` is the surface the palette gives a translucent window. It is
+ * mostly white in light and near-black in dark, so it lifts the material
+ * toward the theme instead of covering it, and the desktop behind the window
+ * can no longer drag the contrast down. It is also the one surface token with
+ * a `prefers-reduced-transparency` value, which is what makes it solid for a
+ * reader who asks for that.
+ *
+ * The corner belongs here too. The material draws the window corner at
+ * `CORNER_RADIUS` in popover.rs — keep the two radii equal — and
+ * `overflow: hidden` stops a child painting square over it. Nothing scrolls
+ * at this level, and floating layers portal to `body`, outside `#root`, so
+ * they stay unclipped.
+ *
+ * `data-platform` guards both. popover.rs applies the material on macOS only,
+ * so on every other platform the popover is an ordinary opaque square window
+ * that still needs its surface painted and must not be rounded.
+ */
+:root[data-platform="macos"][data-route="popover"] #root {
+  background-color: var(--color-bg-primary);
+  border-radius: var(--radius-popover);
+  overflow: hidden;
 }

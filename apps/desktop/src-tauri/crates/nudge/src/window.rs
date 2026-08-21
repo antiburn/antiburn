@@ -86,10 +86,9 @@ fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWind
     {
         // Undecorated with a real window shadow, and first-click-through so a CTA
         // responds to the click that would otherwise only have activated the
-        // window. The app's own popover chrome — the card paints its surface and
-        // its 16pt corner itself, so the window needs no vibrancy material (and
-        // this build does not enable tauri's `macos-private-api`, which is what
-        // the transparent/effects builder methods require).
+        // window. The card paints its surface and its 16pt corner itself, so
+        // this window needs no vibrancy material. The popover takes the other
+        // route and lets a material draw its corner; see `popover.rs`.
         builder = builder
             .decorations(false)
             .shadow(true)

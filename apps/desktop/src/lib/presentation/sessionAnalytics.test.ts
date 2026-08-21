@@ -6,12 +6,10 @@ import { describe, expect, it } from "vitest"
 
 import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
-  bucketDetail,
   contextSeries,
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
-  formatBytes,
   formatCost,
   formatDuration,
   HIGH_COST_FLOOR_USD,
@@ -20,17 +18,11 @@ import {
   initialContextNamedRows,
   initialContextTotal,
   median,
-  phaseColor,
-  phaseLabel,
-  scoreColor,
-  scoreLabel,
   tokenSeries,
 } from "./sessionAnalytics"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
-    dominantPhase: null,
-    distribution: { implementing: 0, testing: 0, exploring: 0, thinking: 0, disruption: 0 },
     tokensIn: 0,
     tokensOut: 0,
     contextTokens: 0,
@@ -39,69 +31,20 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   }
 }
 
-const active = (over: Partial<SessionBucket> = {}) =>
-  bucket({
-    dominantPhase: "implementing",
-    distribution: { implementing: 1, testing: 0, exploring: 0, thinking: 0, disruption: 0 },
-    ...over,
-  })
-
-describe("bucketDetail", () => {
-  it("derives elapsed time, progress, modes, and context occupancy", () => {
-    const b = bucket({
-      dominantPhase: "implementing",
-      distribution: {
-        implementing: 0.6,
-        testing: 0,
-        exploring: 0.3,
-        thinking: 0.1,
-        disruption: 0,
-      },
-      tokensIn: 8000,
-      tokensOut: 2000,
-      contextTokens: 90_000,
-    })
-    // Index 30 of 60 buckets → halfway; a 600s session → ~300s elapsed.
-    const d = bucketDetail(b, 30, 60, 600, 200_000)
-
-    expect(d.empty).toBe(false)
-    expect(d.progressPct).toBe(51) // 30 / 59
-    expect(d.elapsedSecs).toBe(305)
-    expect(d.tokensIn).toBe(8000)
-    expect(d.tokensOut).toBe(2000)
-    expect(d.contextPct).toBe(45) // 90k / 200k
-    // Only non-zero modes, deepest → shallowest.
-    expect(d.modes.map((m) => m.label)).toEqual(["Implement", "Explore", "Plan"])
-    expect(d.modes[0]?.pct).toBe(60)
-  })
-
-  it("flags an inactive bucket as empty with no mode rows", () => {
-    const d = bucketDetail(bucket(), 0, 60, 600, 200_000)
-    expect(d.empty).toBe(true)
-    expect(d.modes).toEqual([])
-    expect(d.elapsedSecs).toBe(0)
-    expect(d.progressPct).toBe(0)
-  })
-
-  it("reports an unknown context window as null rather than zero percent", () => {
-    expect(bucketDetail(active({ contextTokens: 1000 }), 0, 1, 60, 0).contextPct).toBeNull()
-  })
-})
-
 describe("tokenSeries", () => {
-  it("drops idle buckets so progress spans active time, not wall-clock", () => {
+  it("keeps each observed token bucket at its measured progress", () => {
     const buckets = [
       bucket(),
-      active({ tokensIn: 100, tokensOut: 10 }),
+      bucket({ tokensIn: 100, tokensOut: 10 }),
       bucket(),
-      active({ tokensIn: 300, tokensOut: 30 }),
-      active({ tokensIn: 500, tokensOut: 50 }),
+      bucket({ tokensIn: 300, tokensOut: 30 }),
+      bucket({ tokensIn: 500, tokensOut: 50 }),
       bucket(),
     ]
     const series = tokenSeries(buckets)
     expect(series).toHaveLength(3)
     expect(series.map((p) => p.tokensIn)).toEqual([100, 300, 500])
-    expect(series.map((p) => p.progress)).toEqual([0, 50, 100])
+    expect(series.map((p) => p.progress)).toEqual([20, 60, 80])
   })
 
   it("returns an empty series when no bucket has activity", () => {
@@ -110,9 +53,9 @@ describe("tokenSeries", () => {
 
   it("drops a compaction-only bucket instead of rendering a spurious zero dip", () => {
     const buckets = [
-      active({ tokensIn: 100, tokensOut: 10 }),
+      bucket({ tokensIn: 100, tokensOut: 10 }),
       bucket({ isCompactionBoundary: true }),
-      active({ tokensIn: 300, tokensOut: 30 }),
+      bucket({ tokensIn: 300, tokensOut: 30 }),
     ]
     const series = tokenSeries(buckets)
     expect(series).toHaveLength(2)
@@ -121,41 +64,39 @@ describe("tokenSeries", () => {
 })
 
 describe("contextSeries", () => {
-  it("drops idle buckets so progress spans active time, not wall-clock", () => {
+  it("keeps each observed context bucket at its measured progress", () => {
     const series = contextSeries(
       [
         bucket(),
-        active({ contextTokens: 50_000 }),
+        bucket({ contextTokens: 50_000 }),
         bucket(),
-        active({ contextTokens: 150_000 }),
+        bucket({ contextTokens: 150_000 }),
       ],
       200_000,
     )
     expect(series).toHaveLength(2)
     expect(series.map((p) => p.contextPct)).toEqual([25, 75])
-    expect(series.map((p) => p.progress)).toEqual([0, 100])
+    expect(series.map((p) => p.progress)).toEqual([33, 100])
   })
 
   it("carries the compaction-boundary flag onto the matching point", () => {
     const series = contextSeries(
       [
-        active({ contextTokens: 180_000 }),
-        active({ contextTokens: 20_000, isCompactionBoundary: true }),
-        active({ contextTokens: 40_000 }),
+        bucket({ contextTokens: 180_000 }),
+        bucket({ contextTokens: 20_000, isCompactionBoundary: true }),
+        bucket({ contextTokens: 40_000 }),
       ],
       200_000,
     )
     expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
   })
 
-  it("keeps a compaction-only bucket even with no classified phase", () => {
-    // A compaction marker is never classified into a phase, so its bucket
-    // otherwise reads as idle and the compaction line never reaches the chart.
+  it("keeps a compaction-only bucket", () => {
     const series = contextSeries(
       [
-        active({ contextTokens: 180_000 }),
+        bucket({ contextTokens: 180_000 }),
         bucket({ contextTokens: 0, isCompactionBoundary: true }),
-        active({ contextTokens: 20_000 }),
+        bucket({ contextTokens: 20_000 }),
       ],
       200_000,
     )
@@ -182,20 +123,6 @@ describe("formatDuration", () => {
     expect(formatDuration(3600)).toBe("1h")
     expect(formatDuration(3660)).toBe("1h 1m")
     expect(formatDuration(8220)).toBe("2h 17m")
-  })
-})
-
-describe("formatBytes", () => {
-  it("keeps whole bytes and steps through binary units", () => {
-    expect(formatBytes(512)).toBe("512 B")
-    expect(formatBytes(1536)).toBe("1.5 KiB")
-    expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MiB")
-    expect(formatBytes(1024 * 1024 * 1024)).toBe("1.0 GiB")
-  })
-
-  it("clamps malformed input to zero", () => {
-    expect(formatBytes(Number.NaN)).toBe("0 B")
-    expect(formatBytes(-1)).toBe("0 B")
   })
 })
 
@@ -285,26 +212,6 @@ describe("initialContextTotal / initialContextNamedRows", () => {
       { source: "unattributed", sourceName: "baseline", tokenCount: 900 },
     ])
     expect(initialContextNamedRows(ic)).toEqual([])
-  })
-})
-
-describe("phase presentation", () => {
-  it("gives each band its own color and label", () => {
-    expect(phaseLabel("implementing")).toBe("Implement")
-    expect(phaseLabel("disruption")).toBe("Errors")
-    expect(phaseColor("testing")).toBe("var(--color-mode-testing)")
-  })
-})
-
-describe("scoreColor / scoreLabel", () => {
-  it("bands the score at 75 and 50", () => {
-    expect(scoreLabel(75)).toBe("Healthy")
-    expect(scoreLabel(74)).toBe("Drifting")
-    expect(scoreLabel(50)).toBe("Drifting")
-    expect(scoreLabel(49)).toBe("Thrashing")
-    expect(scoreColor(90)).toBe("var(--color-system-green)")
-    expect(scoreColor(60)).toBe("var(--color-pattern-drifting)")
-    expect(scoreColor(10)).toBe("var(--color-mode-disruption)")
   })
 })
 

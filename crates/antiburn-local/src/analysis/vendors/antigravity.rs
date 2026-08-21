@@ -21,10 +21,8 @@
 //!    steps live at the nested pointer `/steps/steps`, each shaped like
 //!    `{"type":"CORTEX_STEP_TYPE_USER_INPUT","status":"ok","userInput":{…}}`.
 //!
-//! Token-usage and tool-name field locations aren't documented in the
-//! transcripts we have, so mapping is best-effort: role / timestamp / text_len
-//! / thinking / is_error are populated reliably; tool names and usage are
-//! pulled from likely locations when present and left empty otherwise.
+//! Token-usage and tool-name field locations are not documented. The adapter
+//! reads likely locations and leaves missing values empty.
 
 use anyhow::Context;
 use serde_json::Value;
@@ -113,14 +111,13 @@ fn step_to_event(step: &Value) -> Option<NormalizedEvent> {
     let kind = normalize_type(raw_type);
 
     let has_content = obj.contains_key("content") || obj.contains_key("userInput");
-    let (role, thinking) = match role_for(&kind) {
-        Some(rt) => rt,
-        None if has_content => (Role::Assistant, false),
+    let role = match role_for(&kind) {
+        Some(role) => role,
+        None if has_content => Role::Assistant,
         None => return None,
     };
 
     let mut ev = NormalizedEvent::new(role);
-    ev.thinking = thinking;
 
     ev.ts_ms = obj
         .get("created_at")
@@ -132,9 +129,6 @@ fn step_to_event(step: &Value) -> Option<NormalizedEvent> {
         .or_else(|| obj.get("metadata").and_then(|m| m.get("createdAt")))
         .or_else(|| obj.get("metadata").and_then(|m| m.get("startedAt")))
         .and_then(parse_ts);
-
-    ev.text_len = step_text_len(obj);
-    ev.is_error = is_error_step(obj) || kind.contains("ERROR");
 
     // Antigravity attaches tool invocations as a `tool_calls[]` array on the
     // PLANNER_RESPONSE step (each `{name, args}`), with separate action-named
@@ -170,21 +164,19 @@ fn normalize_type(raw: &str) -> String {
         .to_ascii_uppercase()
 }
 
-/// Resolve a normalized type key to `(role, thinking)`, or `None` for unknown
-/// types (the caller decides whether to keep them).
-fn role_for(kind: &str) -> Option<(Role, bool)> {
+/// Resolve a normalized type key to its role.
+fn role_for(kind: &str) -> Option<Role> {
     if kind == "USER_INPUT" {
-        return Some((Role::User, false));
+        return Some(Role::User);
     }
     if kind.contains("PLAN") || kind.contains("THINK") || kind.contains("REASON") {
-        return Some((Role::Assistant, true));
+        return Some(Role::Assistant);
     }
     // Action / tool-result step types: the generic `TOOL`, plus the concrete
     // action names Antigravity uses for tool *results* (VIEW_FILE,
     // LIST_DIRECTORY, GREP_SEARCH, RUN_COMMAND, CODE_ACTION, …). Errors are
     // tool-shaped too. The tool *names* come from `tool_calls[]` on the
-    // preceding planner step, so these are classified as Tool turns only to
-    // shape phases — they don't double-count tools.
+    // preceding planner step, so these result steps do not count tools again.
     const TOOL_MARKERS: &[&str] = &[
         "TOOL",
         "ACTION",
@@ -204,10 +196,10 @@ fn role_for(kind: &str) -> Option<(Role, bool)> {
         "ERROR",
     ];
     if TOOL_MARKERS.iter().any(|m| kind.contains(m)) {
-        return Some((Role::Tool, false));
+        return Some(Role::Tool);
     }
     if kind.contains("RESPONSE") {
-        return Some((Role::Assistant, false));
+        return Some(Role::Assistant);
     }
     // Framing / bookkeeping steps (CONVERSATION_HISTORY, KNOWLEDGE_ARTIFACTS,
     // EPHEMERAL_MESSAGE, GENERIC, settings, …): keep as System so they're not
@@ -222,7 +214,7 @@ fn role_for(kind: &str) -> Option<(Role, bool)> {
         || kind.contains("MESSAGE")
         || kind == "GENERIC"
     {
-        return Some((Role::System, false));
+        return Some(Role::System);
     }
     None
 }
@@ -247,44 +239,6 @@ fn push_tool_calls(obj: &serde_json::Map<String, Value>, ev: &mut NormalizedEven
             ev.tools.push(tool_call_from_input(name, input));
         }
     }
-}
-
-/// Length of the step's text payload, across the brain (`content` string) and
-/// cascade (`userInput.userResponse` / `userInput.items[*].text`) shapes.
-fn step_text_len(obj: &serde_json::Map<String, Value>) -> usize {
-    if let Some(s) = obj.get("content").and_then(|v| v.as_str()) {
-        return s.len();
-    }
-    let Some(input) = obj.get("userInput") else {
-        return 0;
-    };
-    if let Some(s) = input.get("userResponse").and_then(|v| v.as_str()) {
-        return s.len();
-    }
-    input
-        .get("items")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|it| it.get("text").and_then(|t| t.as_str()))
-                .map(str::len)
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
-fn is_error_step(obj: &serde_json::Map<String, Value>) -> bool {
-    if obj.get("is_error").and_then(Value::as_bool) == Some(true) {
-        return true;
-    }
-    matches!(
-        obj.get("status")
-            .and_then(|s| s.as_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("error") | Some("failed")
-    )
 }
 
 /// Pull a tool name from the first present of the likely field locations.
@@ -317,31 +271,28 @@ mod tests {
     #[test]
     fn role_for_classifies_known_step_types() {
         // Direct user input.
-        assert_eq!(role_for("USER_INPUT"), Some((Role::User, false)));
+        assert_eq!(role_for("USER_INPUT"), Some(Role::User));
 
-        // Planning / reasoning steps are assistant "thinking".
-        assert_eq!(role_for("PLAN"), Some((Role::Assistant, true)));
-        assert_eq!(role_for("CHAIN_OF_THINKING"), Some((Role::Assistant, true)));
-        assert_eq!(role_for("REASONING"), Some((Role::Assistant, true)));
+        // Planning and reasoning steps use the assistant role.
+        assert_eq!(role_for("PLAN"), Some(Role::Assistant));
+        assert_eq!(role_for("CHAIN_OF_THINKING"), Some(Role::Assistant));
+        assert_eq!(role_for("REASONING"), Some(Role::Assistant));
 
         // Tool / action / result step types map to Tool.
-        assert_eq!(role_for("TOOL"), Some((Role::Tool, false)));
-        assert_eq!(role_for("VIEW_FILE"), Some((Role::Tool, false)));
-        assert_eq!(role_for("RUN_COMMAND"), Some((Role::Tool, false)));
-        assert_eq!(role_for("GREP_SEARCH"), Some((Role::Tool, false)));
-        assert_eq!(role_for("ERROR"), Some((Role::Tool, false)));
+        assert_eq!(role_for("TOOL"), Some(Role::Tool));
+        assert_eq!(role_for("VIEW_FILE"), Some(Role::Tool));
+        assert_eq!(role_for("RUN_COMMAND"), Some(Role::Tool));
+        assert_eq!(role_for("GREP_SEARCH"), Some(Role::Tool));
+        assert_eq!(role_for("ERROR"), Some(Role::Tool));
 
         // Plain assistant prose (not a tool or a plan).
-        assert_eq!(role_for("MODEL_RESPONSE"), Some((Role::Assistant, false)));
+        assert_eq!(role_for("MODEL_RESPONSE"), Some(Role::Assistant));
 
         // Framing / bookkeeping steps stay System.
-        assert_eq!(role_for("GENERIC"), Some((Role::System, false)));
-        assert_eq!(
-            role_for("CONVERSATION_HISTORY"),
-            Some((Role::System, false))
-        );
-        assert_eq!(role_for("EPHEMERAL_MESSAGE"), Some((Role::System, false)));
-        assert_eq!(role_for("KNOWLEDGE_ARTIFACTS"), Some((Role::System, false)));
+        assert_eq!(role_for("GENERIC"), Some(Role::System));
+        assert_eq!(role_for("CONVERSATION_HISTORY"), Some(Role::System));
+        assert_eq!(role_for("EPHEMERAL_MESSAGE"), Some(Role::System));
+        assert_eq!(role_for("KNOWLEDGE_ARTIFACTS"), Some(Role::System));
 
         // Unknown step types are left for the caller to decide.
         assert_eq!(role_for("FLOOP"), None);

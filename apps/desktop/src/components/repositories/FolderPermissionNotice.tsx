@@ -56,14 +56,11 @@ export function FolderPermissionNotice({
   const busy = phase === "asking" || phase === "settling"
 
   return (
-    <div
-      role="status"
-      className="rounded-lg border border-separator bg-fill-quaternary px-4 py-3"
-    >
+    <div role="status" className="rounded-lg border border-separator bg-surface-card px-4 py-3">
       <div className="flex items-start gap-3">
         <FolderLock aria-hidden className="mt-0.5 size-4 shrink-0 text-label-secondary" />
         <div className="min-w-0 flex-1 space-y-2">
-          <p className="type-footnote text-label-primary">
+          <p className="type-footnote text-label">
             {allStuck ? headlineForStuck(deferred) : headlineForPending(deferred)}
           </p>
           <p className="type-caption text-label-secondary">

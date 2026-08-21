@@ -77,7 +77,10 @@ fn reconcile_platform<R: Runtime>(app: &tauri::AppHandle<R>, desired: bool) {
     // thread. Settings writes can arrive on a command worker, so construct and
     // use the service inside the main-thread closure.
     if let Err(error) = app.run_on_main_thread(move || reconcile_macos(desired)) {
-        eprintln!("antiburn: could not schedule launch-at-login reconciliation ({error})");
+        ::tracing::error!(
+            event = "launch_at_login_schedule_failed",
+            error = %error
+        );
     }
 }
 
@@ -95,20 +98,18 @@ fn reconcile_macos(desired: bool) {
     match action_for(desired, state) {
         RegistrationAction::None => {}
         RegistrationAction::AwaitApproval => {
-            eprintln!(
-                "antiburn: launch at login needs approval in System Settings > General > Login Items"
-            );
+            ::tracing::warn!(event = "launch_at_login_requires_approval");
         }
         RegistrationAction::Enable => match service.register() {
             Ok(()) | Err(ServiceManagementError::AlreadyRegistered) => {}
             Err(error) => {
-                eprintln!("antiburn: could not enable launch at login ({error})");
+                ::tracing::warn!(event = "launch_at_login_enable_failed", error = %error);
             }
         },
         RegistrationAction::Disable => match service.unregister() {
             Ok(()) | Err(ServiceManagementError::JobNotFound) => {}
             Err(error) => {
-                eprintln!("antiburn: could not disable launch at login ({error})");
+                ::tracing::warn!(event = "launch_at_login_disable_failed", error = %error);
             }
         },
     }
@@ -117,7 +118,7 @@ fn reconcile_macos(desired: bool) {
 #[cfg(target_os = "windows")]
 fn reconcile_platform<R: Runtime>(app: &tauri::AppHandle<R>, desired: bool) {
     if let Err(error) = reconcile_windows(app, desired) {
-        eprintln!("antiburn: could not update launch-at-login registration ({error})");
+        ::tracing::warn!(event = "launch_at_login_reconcile_failed", error = %error);
     }
 }
 
@@ -169,7 +170,7 @@ fn windows_run_command(executable: &str) -> String {
 #[cfg(target_os = "linux")]
 fn reconcile_platform<R: Runtime>(app: &tauri::AppHandle<R>, desired: bool) {
     if let Err(error) = reconcile_linux(app, desired) {
-        eprintln!("antiburn: could not update launch-at-login registration ({error})");
+        ::tracing::warn!(event = "launch_at_login_reconcile_failed", error = %error);
     }
 }
 

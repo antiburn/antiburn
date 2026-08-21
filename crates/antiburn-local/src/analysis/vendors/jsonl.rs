@@ -9,9 +9,8 @@
 //! `thinking` / `tool_use` parts, `message.usage`), the OpenAI shape (`role` +
 //! string `content`, `tool_calls[].function.name`, `usage.prompt_tokens` /
 //! `completion_tokens`), and Pi's generic JSONL shape (`toolCall` content blocks
-//! with `arguments`, `toolResult` messages, `isError`, and `input` / `output` /
-//! `cacheRead` / `cacheWrite` usage keys). Records it can't make sense of are skipped
-//! rather than failing the whole session.
+//! with `arguments`, `toolResult` messages, and `input` / `output` /
+//! `cacheRead` / `cacheWrite` usage keys). Unrecognized records are skipped.
 
 use std::collections::HashSet;
 
@@ -220,9 +219,7 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
         .filter(|id| !id.is_empty())
         .map(str::to_string);
 
-    // Claude marks a compaction boundary with a top-level system record. Flag it
-    // so the engine can reset the context-drift high-water mark here instead of
-    // carrying the pre-compaction peak across the real drop.
+    // Claude marks a compaction boundary with a top-level system record.
     if top_type == "system"
         && obj.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
     {
@@ -241,15 +238,8 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
             obj.get("input").or_else(|| obj.get("arguments")),
             &mut ev,
         ),
-        "tool_result" | "toolResult" | "function_call_output" => {
-            ev.is_error |= is_error_flag(obj);
-        }
+        "tool_result" | "toolResult" | "function_call_output" => {}
         _ => {}
-    }
-    if role == Role::Tool
-        && let Some(msg) = msg
-    {
-        ev.is_error |= is_error_flag(msg);
     }
 
     // Content block: Anthropic array, OpenAI string, or nested under message.
@@ -310,41 +300,19 @@ fn resolve_role(
 }
 
 fn process_content(content: Option<&Value>, ev: &mut NormalizedEvent) {
-    match content {
-        Some(Value::String(s)) => ev.text_len += s.len(),
-        Some(Value::Array(items)) => {
-            for item in items {
-                let kind = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                match kind {
-                    "text" => {
-                        ev.text_len += item
-                            .get("text")
-                            .and_then(|t| t.as_str())
-                            .map_or(0, str::len)
-                    }
-                    "thinking" | "reasoning" | "redacted_thinking" => {
-                        ev.thinking = true;
-                        ev.text_len += item
-                            .get("thinking")
-                            .or_else(|| item.get("text"))
-                            .and_then(|t| t.as_str())
-                            .map_or(0, str::len);
-                    }
-                    "tool_use" => push_named_tool(item.get("name"), item.get("input"), ev),
-                    "toolCall" => push_named_tool(
-                        item.get("name"),
-                        item.get("arguments").or_else(|| item.get("input")),
-                        ev,
-                    ),
-                    "tool_result" => {
-                        ev.is_error |= item.get("is_error").and_then(Value::as_bool) == Some(true)
-                            || item.get("isError").and_then(Value::as_bool) == Some(true)
-                    }
-                    _ => {}
-                }
+    if let Some(Value::Array(items)) = content {
+        for item in items {
+            let kind = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match kind {
+                "tool_use" => push_named_tool(item.get("name"), item.get("input"), ev),
+                "toolCall" => push_named_tool(
+                    item.get("name"),
+                    item.get("arguments").or_else(|| item.get("input")),
+                    ev,
+                ),
+                _ => {}
             }
         }
-        _ => {}
     }
 }
 
@@ -378,7 +346,7 @@ pub(crate) fn tool_call_from_input(name: &str, input: Option<&Value>) -> ToolCal
 }
 
 /// Pull the shell command text out of a tool's input, so a Bash call that runs
-/// tests can be classified as a Test phase. Accepts either the input object
+/// tests uses the Test category. Accepts either the input object
 /// (Anthropic `input.command`) or a JSON-encoded arguments string (OpenAI
 /// `function.arguments`).
 pub(crate) fn extract_command(input: Option<&Value>) -> Option<String> {
@@ -453,18 +421,6 @@ fn extract_skill_name_from_path(path: &str) -> Option<String> {
 fn extract_skill_name_from_command(command: &str) -> Option<String> {
     let command_name = command.split_whitespace().next()?.trim_start_matches('/');
     (!command_name.is_empty()).then(|| command_name.to_string())
-}
-
-fn is_error_flag(obj: &serde_json::Map<String, Value>) -> bool {
-    if obj.get("is_error").and_then(Value::as_bool) == Some(true)
-        || obj.get("isError").and_then(Value::as_bool) == Some(true)
-    {
-        return true;
-    }
-    matches!(
-        obj.get("status").and_then(|s| s.as_str()),
-        Some("error") | Some("failed")
-    )
 }
 
 /// Parse usage while keeping vendor token buckets disjoint: OpenAI `prompt_tokens`
@@ -685,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_tool_result_message_role_and_is_error_are_parsed() {
+    fn pi_tool_result_message_role_is_parsed() {
         let errored = json!({
             "type": "message",
             "message": {
@@ -708,11 +664,9 @@ mod tests {
 
         let errored = parse_record(&errored).expect("tool result should parse");
         assert_eq!(errored.role, Role::Tool);
-        assert!(errored.is_error);
 
         let ok = parse_record(&ok).expect("tool result should parse");
         assert_eq!(ok.role, Role::Tool);
-        assert!(!ok.is_error);
     }
 
     #[test]
@@ -786,7 +740,7 @@ mod tests {
     fn tool_call_from_input_captures_skill_detail_case_insensitively() {
         let call = tool_call_from_input("Skill", Some(&json!({"skill": "deep-research"})));
         assert_eq!(call.name, "Skill");
-        // Skills stay in `Other` — no phase churn.
+        // Skills stay in the `Other` tool category.
         assert_eq!(call.category, ToolCategory::Other);
         assert_eq!(call.detail.as_deref(), Some("deep-research"));
 

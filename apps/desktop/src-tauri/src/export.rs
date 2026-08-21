@@ -31,7 +31,7 @@ use crate::dto::OrchestrationStatus;
 pub const FORMAT: &str = "antiburn.session-export";
 
 /// Bumped whenever the document's shape changes incompatibly.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Stated in the document itself, so the contract travels with the file.
 ///

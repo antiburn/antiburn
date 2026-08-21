@@ -13,17 +13,10 @@ import {
 import { cn } from "../../lib/cn"
 
 /**
- * Track whether `ref`'s element is overflowing its own box, re-rendering as
- * that changes. Modeled on `useElementWidth`: `subscribe` attaches a
- * `ResizeObserver` at subscribe time, which is enough to cover the initial
- * measurement too — `useSyncExternalStore` re-reads `getSnapshot` right after
- * `subscribe` runs on mount, after refs have attached, correcting the first
- * render's stale value before it is ever seen (this holds even in jsdom,
- * which has no `ResizeObserver` and so a `subscribe` that no-ops).
- *
- * `subscribe` is also keyed on `text` and `lines`. The element's box can stay
- * the same size while its content size changes. A `ResizeObserver` only reports
- * box changes. Resubscribing after these values change checks the new content.
+ * Track whether the element overflows its box.
+ * The hook reads the value again after `subscribe` attaches the ref.
+ * `ResizeObserver` reports later box size changes.
+ * A text or line change starts a new subscription and checks the content again.
  */
 function useTruncated(
   ref: RefObject<HTMLElement | null>,
@@ -33,12 +26,12 @@ function useTruncated(
   const subscribe = useCallback(
     (onChange: () => void) => {
       const element = ref.current
-      if (!element || typeof ResizeObserver === "undefined") return () => {}
+      if (!element || typeof ResizeObserver === "undefined") return () => undefined
       const observer = new ResizeObserver(onChange)
       observer.observe(element)
       return () => observer.disconnect()
     },
-    // `text` and `lines` force a resubscribe after content or layout changes.
+    // `text` and `lines` start a new subscription after content changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ref, text, lines],
   )
@@ -62,18 +55,18 @@ function getServerSnapshot(): boolean {
 export interface TruncatedTextProps {
   className?: string
   text: string
-  /** Maximum lines to show before the component cuts off the text. */
+  /** The maximum number of lines to show before the component cuts off the text. */
   lines?: number
   /**
-   * Sweep a highlight across the text, marking its subject as still running.
+   * Sweep a highlight across the text to mark its subject as running.
    * The text is duplicated into `data-text` for the CSS overlay to paint.
    */
   shimmer?: boolean
 }
 
 /**
- * Text that reveals its full value in a native `title` tooltip when it is cut
- * off. The optional line limit shows more text before it cuts the value.
+ * Show the full text in a native `title` tooltip when the visible text is cut off.
+ * The optional line limit shows more text before the component cuts it off.
  */
 export function TruncatedText({
   className,

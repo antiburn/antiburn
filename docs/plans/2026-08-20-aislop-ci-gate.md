@@ -46,7 +46,7 @@ Two facts shape the design and were measured, not assumed:
    | File | Promoted findings |
    | --- | --- |
    | `apps/desktop/src/lib/ipc.ts` | 10 × `ai-slop/empty-function` |
-   | `apps/desktop/src/components/activity/TruncatedText.tsx` | 1 × `ai-slop/empty-function` |
+   | `apps/desktop/src/components/presentation/TruncatedText.tsx` | 1 × `ai-slop/empty-function` |
    | `apps/desktop/src/components/activity/useActivityGroupPinning.ts` | 1 × `ai-slop/empty-function` |
    | `apps/desktop/src/lib/useDialogDismissal.ts` | 1 × `ai-slop/empty-function` |
    | `apps/desktop/src/lib/useElementWidth.ts` | 1 × `ai-slop/empty-function` |
@@ -187,7 +187,7 @@ Clearing the standing findings is issue #90, not this work.
 - **Promoted-set footprint today: 20 error findings in 10 files.** Whole-tree
   `aislop scan --json` at `609d293` with all Decision 7 rules promoted:
   `ai-slop/empty-function` 15 — 10 in `apps/desktop/src/lib/ipc.ts`, and one each
-  in `apps/desktop/src/components/activity/TruncatedText.tsx`,
+  in `apps/desktop/src/components/presentation/TruncatedText.tsx`,
   `apps/desktop/src/components/activity/useActivityGroupPinning.ts`,
   `apps/desktop/src/lib/useDialogDismissal.ts`,
   `apps/desktop/src/lib/useElementWidth.ts` and
