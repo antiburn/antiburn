@@ -145,6 +145,10 @@ export interface SessionMetrics {
   tokensIn: number
   tokensOut: number
   peakContextTokens: number
+  /** Compaction boundaries in the parent transcript. */
+  compactionCount?: number
+  /** Turns the engine flagged as a cache rehydration. */
+  cacheRehydrationCount?: number
   /** False when the model's context window is unknown. */
   contextAvailable?: boolean
   contextWindow: number
@@ -175,6 +179,10 @@ export interface ActiveSessionsSummary {
   tokensInTotal: number
   tokensOutTotal: number
   peakContextTokens: number
+  /** Compactions summed over the included sessions. */
+  compactionCount?: number
+  /** Cache rehydrations summed over the included sessions. */
+  cacheRehydrationCount?: number
   /** Whether at least one included session has a known context window. */
   contextAvailable?: boolean
   contextWindow: number

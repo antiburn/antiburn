@@ -134,14 +134,14 @@ describe("SessionDetailPresentation — chrome", () => {
   it("renders the useful card hierarchy for a settled session", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
-    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.getByText("Context and Tokens")).toBeTruthy()
     expect(screen.getByText("Cost")).toBeTruthy()
     expect(screen.getByText("Tools")).toBeTruthy()
   })
 
   it("omits the Cost card when nothing priced the session", () => {
     view({ cost: null })
-    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.getByText("Context and Tokens")).toBeTruthy()
     expect(screen.queryByText("Cost")).toBeNull()
   })
 
@@ -412,7 +412,7 @@ describe("SessionDetailPresentation — session facts", () => {
 
   it("still renders the Context card, with just the token layer, when context occupancy is unavailable", () => {
     expect(() => view({ summary: summary({ contextAvailable: false }) })).not.toThrow()
-    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.getByText("Context and Tokens")).toBeTruthy()
   })
 
   it("adds the initial-context card when the session has initial context", () => {

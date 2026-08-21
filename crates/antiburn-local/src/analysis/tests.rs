@@ -498,6 +498,7 @@ fn claude_marked_compaction_resets_context_occupancy() {
         .map(|(i, _)| i)
         .collect();
     assert_eq!(boundary_indices.len(), 1, "got {boundary_indices:?}");
+    assert_eq!(m.compaction_count, 1);
     let boundary = boundary_indices[0];
 
     let before = m.buckets[..boundary]
@@ -848,6 +849,8 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
 
     let count = m.buckets.iter().filter(|b| b.is_cache_rehydration).count();
     assert_eq!(count, 1, "a 76% rewrite after a long gap is a rehydration");
+    assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(m.compaction_count, 0);
 }
 
 #[test]

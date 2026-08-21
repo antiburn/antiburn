@@ -198,6 +198,12 @@ pub struct SessionMetrics {
     /// Generated output tokens ("out").
     pub tokens_out: u64,
     pub peak_context_tokens: u64,
+    /// Compaction boundaries in the parent transcript.
+    #[serde(default)]
+    pub compaction_count: u64,
+    /// Turns the engine flags as a cache rehydration (see `is_cache_rehydration_turn`).
+    #[serde(default)]
+    pub cache_rehydration_count: u64,
     /// Whether the model context window is known well enough to present
     /// occupancy. Unknown Claude model ids deliberately leave this unavailable.
     pub context_available: bool,
@@ -263,6 +269,12 @@ pub struct ActiveSessionsSummary {
     pub tokens_in_total: u64,
     pub tokens_out_total: u64,
     pub peak_context_tokens: u64,
+    /// Compactions summed over the included sessions.
+    #[serde(default)]
+    pub compaction_count: u64,
+    /// Cache rehydrations summed over the included sessions.
+    #[serde(default)]
+    pub cache_rehydration_count: u64,
     pub context_available: bool,
     pub context_window: u64,
     /// Summed on-device cost estimate (`~$`) across priceable sessions, or `None`
@@ -284,6 +296,8 @@ impl ActiveSessionsSummary {
             tokens_in_total: 0,
             tokens_out_total: 0,
             peak_context_tokens: 0,
+            compaction_count: 0,
+            cache_rehydration_count: 0,
             context_available: false,
             context_window: CONTEXT_WINDOW,
             cost_total_usd: None,
@@ -356,6 +370,8 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     let mut prev_turn_context = 0u64;
     let mut prev_turn_cache_read = 0u64;
     let mut awaiting_first_turn_after_compaction = false;
+    let mut compaction_count = 0u64;
+    let mut cache_rehydration_count = 0u64;
     for (idx, ev) in session.events.iter().enumerate() {
         if active_ms > 0
             && let Some(ts) = ev.ts_ms
@@ -394,6 +410,7 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
             bucket.context_tokens = bucket.context_tokens.max(ev.usage.context_tokens());
             bucket.is_compaction_boundary |= ev.is_compaction_boundary;
             if ev.is_compaction_boundary {
+                compaction_count += 1;
                 awaiting_first_turn_after_compaction = true;
                 // Keep the last compaction's trigger/sizes when two land in
                 // one bucket.
@@ -411,6 +428,7 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
                     awaiting_first_turn_after_compaction,
                 ) {
                     bucket.is_cache_rehydration = true;
+                    cache_rehydration_count += 1;
                 }
                 prev_turn_context = context_tokens;
                 prev_turn_cache_read = ev.usage.cache_read_tokens;
@@ -571,6 +589,8 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         tokens_in,
         tokens_out,
         peak_context_tokens: peak_context,
+        compaction_count,
+        cache_rehydration_count,
         context_available,
         context_window,
         tool_mix,
@@ -658,6 +678,8 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     let mut peak_context = 0u64;
     let mut duration_sum = 0u64;
     let mut active_sum = 0u64;
+    let mut compaction_count = 0u64;
+    let mut cache_rehydration_count = 0u64;
     // Sum cost only over priceable sessions; stays `None` if none had a known model.
     let mut cost_total_usd: Option<f64> = None;
     let reference = reference_window(&metrics);
@@ -666,6 +688,8 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         grep_total += m.grep_count;
         tokens_in_total += m.tokens_in;
         tokens_out_total += m.tokens_out;
+        compaction_count += m.compaction_count;
+        cache_rehydration_count += m.cache_rehydration_count;
         if m.context_available {
             peak_context = peak_context.max(to_reference_window(
                 m.peak_context_tokens,
@@ -749,6 +773,8 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         tokens_in_total,
         tokens_out_total,
         peak_context_tokens: peak_context,
+        compaction_count,
+        cache_rehydration_count,
         context_available: metrics.iter().any(|m| m.context_available),
         context_window: reference,
         cost_total_usd,

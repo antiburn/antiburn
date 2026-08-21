@@ -46,17 +46,25 @@ const base = {
 }
 
 describe("tokensCardModel", () => {
-  it("states the tokens and the cost in the hint", () => {
+  it("states the tokens in the hint and leaves the cost to the Cost card", () => {
     const model = tokensCardModel({ ...base, hasCostSubagents: false, costScope: "topLevel" })
-    expect(model.hint).toBe("1.2M in · 34.0k out · $41.45")
+    expect(model.hint).toBe("1.2M in · 34.0k out")
+    expect(model.costTotal).toBe(41.45)
   })
 
-  it("marks an orchestrator total as inclusive", () => {
-    expect(tokensCardModel(base).hint).toBe("1.2M in · 34.0k out · incl. $41.45")
-    expect(tokensCardModel(base).info).toContain("inclusive of the parent and its sub-agents")
+  it("adds compaction and rehydration counts to the hint", () => {
+    expect(
+      tokensCardModel({ ...base, compactionCount: 3, cacheRehydrationCount: 1 }).hint,
+    ).toBe("1.2M in · 34.0k out · 3 compactions · 1 rehydration")
+    expect(tokensCardModel({ ...base, compactionCount: 1 }).hint).toBe(
+      "1.2M in · 34.0k out · 1 compaction",
+    )
+    expect(tokensCardModel({ ...base, cacheRehydrationCount: 2 }).hint).toBe(
+      "1.2M in · 34.0k out · 2 rehydrations",
+    )
   })
 
-  it("drops the cost from the hint when nothing was priced", () => {
+  it("keeps a null cost total when nothing was priced", () => {
     const model = tokensCardModel({
       ...base,
       selectedCost: null,
@@ -75,7 +83,6 @@ describe("tokensCardModel", () => {
       hasCostSubagents: false,
     })
     expect(model.costTotal).toBe(3.5)
-    expect(model.hint).toContain("$3.50")
   })
 
   it("splits only an inclusive subject that actually has sub-agents", () => {
@@ -88,11 +95,5 @@ describe("tokensCardModel", () => {
     expect(tokensCardModel({ ...base, hasCostSubagents: false }).split).toBeNull()
     expect(tokensCardModel({ ...base, selectedParentCost: null }).split).toBeNull()
     expect(tokensCardModel({ ...base, selectedSubagentsCost: null }).split).toBeNull()
-  })
-
-  it("describes a plain session without orchestration language", () => {
-    const model = tokensCardModel({ ...base, hasCostSubagents: false, costScope: "topLevel" })
-    expect(model.info).not.toContain("sub-agent")
-    expect(model.info).toContain("cache reads are excluded")
   })
 })

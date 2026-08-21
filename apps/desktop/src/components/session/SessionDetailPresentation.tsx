@@ -64,10 +64,6 @@ import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
 const SKELETON_DELAY_MS = 200
 const SKELETON_MIN_VISIBLE_MS = 400
 
-/** Info-tooltip copy for the merged context/tokens chart. */
-const CONTEXT_TOKENS_CHART_INFO =
-  "The filled area is the model's context window, in tokens. The dashed horizontal bands mark token depth. Above 400k tokens the fill turns warm, because each turn gets more expensive there. Dashed vertical lines mark compactions. The faint blue and violet spikes behind the fill are input and output tokens for each slice of the session."
-
 /** The session this view shows. */
 interface SessionDetailSubject {
   agent: string
@@ -485,6 +481,8 @@ export function SessionDetailPresentation({
         summaryCostTotalUsd: summary.costTotalUsd ?? null,
         tokensInTotal: summary.tokensInTotal,
         tokensOutTotal: summary.tokensOutTotal,
+        compactionCount: summary.compactionCount ?? 0,
+        cacheRehydrationCount: summary.cacheRehydrationCount ?? 0,
       })
     : null
 
@@ -748,11 +746,7 @@ export function SessionDetailPresentation({
             )}
 
             {tokensCard && (
-              <Card
-                title="Context"
-                info={`${CONTEXT_TOKENS_CHART_INFO} ${tokensCard.info}`}
-                hint={tokensCard.hint}
-              >
+              <Card title="Context and Tokens" hint={tokensCard.hint}>
                 <ContextTokensChart
                   buckets={summary.buckets}
                   contextWindow={summary.contextAvailable ? summary.contextWindow : null}
