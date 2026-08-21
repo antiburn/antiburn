@@ -55,6 +55,12 @@ export interface SessionBucket {
   speed: string | null
   /** True when any parent event in this bucket carries a thinking block. */
   hasThinking: boolean
+  /** Whether the compaction in this bucket was manual or automatic, when known. */
+  compactionTrigger: "manual" | "auto" | null
+  /** The context token count right before the compaction in this bucket, when known. */
+  compactionPreTokens: number | null
+  /** The context token count right after the compaction in this bucket, when known. */
+  compactionPostTokens: number | null
 }
 
 /* -------------------------------------------------------------------------

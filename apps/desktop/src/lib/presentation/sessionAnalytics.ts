@@ -43,6 +43,12 @@ export interface ContextTokenPoint {
   speed: string | null
   /** True when this bucket itself carries a thinking block (not forward-filled). */
   hasThinking: boolean
+  /** Whether the compaction in this bucket was manual or automatic, when known. */
+  compactionTrigger: "manual" | "auto" | null
+  /** The context token count right before the compaction in this bucket, when known. */
+  compactionPreTokens: number | null
+  /** The context token count right after the compaction in this bucket, when known. */
+  compactionPostTokens: number | null
 }
 
 /**
@@ -95,6 +101,9 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     thinkingMode: thinkingModes[index]!,
     speed: speeds[index]!,
     hasThinking: bucket.hasThinking,
+    compactionTrigger: bucket.compactionTrigger,
+    compactionPreTokens: bucket.compactionPreTokens,
+    compactionPostTokens: bucket.compactionPostTokens,
   }))
 }
 

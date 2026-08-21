@@ -35,6 +35,9 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     thinkingMode: null,
     speed: null,
     hasThinking: false,
+    compactionTrigger: null,
+    compactionPreTokens: null,
+    compactionPostTokens: null,
     ...over,
   }
 }

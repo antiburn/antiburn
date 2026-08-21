@@ -50,6 +50,9 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     thinkingMode: null,
     speed: null,
     hasThinking: false,
+    compactionTrigger: null,
+    compactionPreTokens: null,
+    compactionPostTokens: null,
     ...over,
   }
 }
@@ -137,6 +140,9 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     thinkingMode: null,
     speed: null,
     hasThinking: false,
+    compactionTrigger: null,
+    compactionPreTokens: null,
+    compactionPostTokens: null,
     ...over,
   }
 }
@@ -199,5 +205,79 @@ describe("ContextTokensTooltip", () => {
     expect(screen.queryByText(/^Effort/)).not.toBeInTheDocument()
     expect(screen.queryByText(/^Speed/)).not.toBeInTheDocument()
     expect(screen.queryByText("Thinking")).not.toBeInTheDocument()
+  })
+
+  it("labels a manual compaction with its before/after size", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              isCompactionBoundary: true,
+              compactionTrigger: "manual",
+              compactionPreTokens: 196_000,
+              compactionPostTokens: 11_000,
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Compaction (manual) · 196.0k → 11.0k")).toBeInTheDocument()
+  })
+
+  it("labels an auto compaction with its before/after size", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              isCompactionBoundary: true,
+              compactionTrigger: "auto",
+              compactionPreTokens: 198_000,
+              compactionPostTokens: 12_000,
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Compaction (auto) · 198.0k → 12.0k")).toBeInTheDocument()
+  })
+
+  it("labels a compaction with an unknown trigger plainly", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[{ payload: point({ isCompactionBoundary: true }) }]}
+      />,
+    )
+
+    expect(screen.getByText("Compaction")).toBeInTheDocument()
+  })
+
+  it("shows only the before size when postTokens is missing", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              isCompactionBoundary: true,
+              compactionTrigger: "auto",
+              compactionPreTokens: 196_000,
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Compaction (auto) · 196.0k before")).toBeInTheDocument()
   })
 })

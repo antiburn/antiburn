@@ -37,6 +37,9 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     thinkingMode: null,
     speed: null,
     hasThinking: false,
+    compactionTrigger: null,
+    compactionPreTokens: null,
+    compactionPostTokens: null,
     ...over,
   }
 }
@@ -138,6 +141,25 @@ describe("contextTokenSeries", () => {
     const buckets = [bucket({ hasThinking: true }), bucket()]
     const series = contextTokenSeries(buckets)
     expect(series.map((p) => p.hasThinking)).toEqual([true, false])
+  })
+
+  it("carries the compaction trigger and sizes through per-bucket, unfilled", () => {
+    const buckets = [
+      bucket({
+        isCompactionBoundary: true,
+        compactionTrigger: "manual",
+        compactionPreTokens: 196_000,
+        compactionPostTokens: 11_000,
+      }),
+      bucket(),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(series[0]!.compactionTrigger).toBe("manual")
+    expect(series[0]!.compactionPreTokens).toBe(196_000)
+    expect(series[0]!.compactionPostTokens).toBe(11_000)
+    expect(series[1]!.compactionTrigger).toBeNull()
+    expect(series[1]!.compactionPreTokens).toBeNull()
+    expect(series[1]!.compactionPostTokens).toBeNull()
   })
 })
 

@@ -52,6 +52,24 @@ const TOKEN_ROWS: Array<{ key: "tokensIn" | "tokensOut"; label: string; colorVar
 ]
 
 /**
+ * The compaction tooltip line: names the trigger when known, and the
+ * before/after size when the transcript records it. `postTokens` is absent
+ * on some older Claude records, so that half falls back to "before" only.
+ */
+function compactionLabel(point: ContextTokenPoint): string {
+  const trigger =
+    point.compactionTrigger === "manual"
+      ? "Compaction (manual)"
+      : point.compactionTrigger === "auto"
+        ? "Compaction (auto)"
+        : "Compaction"
+  if (point.compactionPreTokens == null) return trigger
+  const pre = formatCompact(point.compactionPreTokens)
+  if (point.compactionPostTokens == null) return `${trigger} · ${pre} before`
+  return `${trigger} · ${pre} → ${formatCompact(point.compactionPostTokens)}`
+}
+
+/**
  * Custom tooltip: progress, context depth, token in/out, compaction, and a
  * sub-agent launch count. Exported so a test can render it directly with a
  * fixed payload — recharts only shows a tooltip after a synthetic hover, and
@@ -102,7 +120,7 @@ export function ContextTokensTooltip({
             Cache rehydrated · {formatCompact(point.cacheWriteTokens)} written
           </span>
         )}
-        {point.isCompactionBoundary && <span>Compaction</span>}
+        {point.isCompactionBoundary && <span>{compactionLabel(point)}</span>}
         {point.subagentLaunches > 0 && (
           <span>Subagents launched · {point.subagentLaunches}</span>
         )}
