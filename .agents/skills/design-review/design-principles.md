@@ -289,10 +289,13 @@ without a comment that says what it means. **[Medium]**
 colour from a CSS variable, so both themes work with no branch in the chart
 code. **[High]**
 
-**RULE 8.3 — a figure is honest about its basis.** Estimated and measured
-figures must be distinguishable, and the label must say which one it is. A
-number the reader can mistake for a provider's own figure is a finding.
-**[High]**
+**RULE 8.3 — a figure is honest about its basis.** A reader must never take an
+estimate for a provider's own figure. Provenance has to be *reachable* — a
+tooltip, a disclosure, a detail row, or one statement covering a whole section
+— but it does not have to be a visible label on every number. On a dense
+surface, per-figure labels usually clutter more than they inform. The finding
+is a figure that reads as authoritative with no way to find out otherwise, not
+a figure without a label. **[High]**
 
 **RULE 8.4 — no chart junk.** One accent, quiet gridlines, a label on the chart
 in place of a busy legend. Thin strokes at chart scale
@@ -437,9 +440,10 @@ pressing it produces. **[Medium]**
 the dismiss control is named "Dismiss" and not the sentence again. A
 screen-reader user should not sit through it twice. **[Medium]**
 
-**RULE 12.7 — say what the app cannot see.** A gap, a blocked folder, a paused
-scan, and an estimated figure are all stated plainly. Never imply completeness
-the app does not have. **[High]**
+**RULE 12.7 — say what the app cannot see.** A gap, a blocked folder, and a
+paused scan are stated plainly. Never imply completeness the app does not have.
+Estimated figures follow Rule 8.3: the basis has to be reachable, not labelled
+on every number. **[High]**
 
 ## 13. Icons, marks, and emoji
 
