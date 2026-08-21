@@ -19,7 +19,7 @@ pub use crate::model::skill::SkillUse;
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::initial_context::InitialContextBreakdown;
-use crate::analysis::model::{ModelRun, NormalizedSession, ToolCategory};
+use crate::analysis::model::{EventSource, ModelRun, NormalizedSession, ToolCategory};
 
 /// Number of progress buckets each session is resampled onto (0% → 100%).
 pub const BUCKETS: usize = 180;
@@ -133,6 +133,10 @@ pub struct Bucket {
     /// True when a turn landing in this bucket is a detected cache
     /// rehydration (see `CACHE_REHYDRATION_WRITE_RATIO`).
     pub is_cache_rehydration: bool,
+    /// Count of `Task` tool calls in this bucket: how many sub-agents the
+    /// parent session launched at this point. Parent turns only — a
+    /// sub-agent does not itself launch sub-agents in this count.
+    pub subagent_launches: u32,
 }
 
 /// Estimated USD cost of a session, split by billable component. An on-device
@@ -262,6 +266,14 @@ impl ActiveSessionsSummary {
 }
 
 /// Compute metrics for one normalized session.
+///
+/// `session` may be a plain transcript, or the result of
+/// [`crate::analysis::merge_subagent_events`] merging a parent with its
+/// sub-agents into one event stream. In the merged case, token, tool, and
+/// cost tallies sum over every event regardless of [`crate::analysis::model::EventSource`]
+/// (a sub-agent is an implementation detail of its parent), while context
+/// occupancy, compaction, and cache-rehydration detection read parent-tagged
+/// events only (a sub-agent has its own context window).
 pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     // Time span (prefer real timestamps; fall back to event ordering).
     let mut timestamps: Vec<i64> = session.events.iter().filter_map(|e| e.ts_ms).collect();
@@ -333,35 +345,52 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         .clamp(0.0, 1.0);
         let bi = ((progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
         let bucket = &mut buckets[bi];
+        // Tokens sum across every stream: a sub-agent's spend counts toward
+        // this session's total, per the product rule that a sub-agent is an
+        // implementation detail of its parent.
         bucket.tokens_in = bucket
             .tokens_in
             .saturating_add(ev.usage.effective_input_tokens());
         bucket.tokens_out = bucket.tokens_out.saturating_add(ev.usage.output_tokens);
-        bucket.context_tokens = bucket.context_tokens.max(ev.usage.context_tokens());
-        bucket.is_compaction_boundary |= ev.is_compaction_boundary;
         bucket.cache_read_tokens = bucket
             .cache_read_tokens
             .saturating_add(ev.usage.cache_read_tokens);
         bucket.cache_write_tokens = bucket
             .cache_write_tokens
             .saturating_add(ev.usage.cache_creation_tokens);
-        if ev.is_compaction_boundary {
-            awaiting_first_turn_after_compaction = true;
-        }
-        let context_tokens = ev.usage.context_tokens();
-        if context_tokens > 0 {
-            if is_cache_rehydration_turn(
-                context_tokens,
-                ev.usage.cache_creation_tokens,
-                prev_turn_context,
-                prev_turn_cache_read,
-                awaiting_first_turn_after_compaction,
-            ) {
-                bucket.is_cache_rehydration = true;
+
+        // Context occupancy, compaction, and cache-rehydration read the
+        // parent's own turns only. A sub-agent has its own context window,
+        // so folding its occupancy into the parent's would not mean anything.
+        if ev.source == EventSource::Parent {
+            bucket.context_tokens = bucket.context_tokens.max(ev.usage.context_tokens());
+            bucket.is_compaction_boundary |= ev.is_compaction_boundary;
+            if ev.is_compaction_boundary {
+                awaiting_first_turn_after_compaction = true;
             }
-            prev_turn_context = context_tokens;
-            prev_turn_cache_read = ev.usage.cache_read_tokens;
-            awaiting_first_turn_after_compaction = false;
+            let context_tokens = ev.usage.context_tokens();
+            if context_tokens > 0 {
+                if is_cache_rehydration_turn(
+                    context_tokens,
+                    ev.usage.cache_creation_tokens,
+                    prev_turn_context,
+                    prev_turn_cache_read,
+                    awaiting_first_turn_after_compaction,
+                ) {
+                    bucket.is_cache_rehydration = true;
+                }
+                prev_turn_context = context_tokens;
+                prev_turn_cache_read = ev.usage.cache_read_tokens;
+                awaiting_first_turn_after_compaction = false;
+            }
+            // A `Task` tool call launches a sub-agent. Mark the bucket so a
+            // reader can see it in the tooltip; this never draws a chart line.
+            let launches = ev
+                .tools
+                .iter()
+                .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+                .count() as u32;
+            bucket.subagent_launches = bucket.subagent_launches.saturating_add(launches);
         }
 
         // Collect skill invocations for exports.
@@ -402,7 +431,9 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     // effective input (fresh + cache writes, matching the web app) / generated
     // output. Cache reads are excluded and surface as occupancy via `peak_context` /
     // `context_tokens`. The `bill_*` accumulators carry the four per-rate components
-    // for the cost estimate.
+    // for the cost estimate. These tallies (and `tool_mix`/`grep_count` below) sum
+    // over every event, including any sub-agent merged in by
+    // `merge_subagent_events` — only `peak_context` stays parent-only, guarded below.
     let mut tokens_in = 0u64;
     let mut tokens_out = 0u64;
     let mut bill_in = 0u64;
@@ -426,7 +457,11 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         bill_out = bill_out.saturating_add(ev.usage.output_tokens);
         bill_cr = bill_cr.saturating_add(ev.usage.cache_read_tokens);
         bill_cw = bill_cw.saturating_add(ev.usage.cache_creation_tokens);
-        peak_context = peak_context.max(ev.usage.context_tokens());
+        // Peak occupancy is a parent-only figure: a sub-agent's own context
+        // window does not describe the parent's, so it never raises this.
+        if ev.source == EventSource::Parent {
+            peak_context = peak_context.max(ev.usage.context_tokens());
+        }
         let u = ev.usage;
         let has_tokens = u.input_tokens != 0
             || u.output_tokens != 0
@@ -612,10 +647,12 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         // the summary bucket.
         let mut is_compaction_boundary = false;
         let mut is_cache_rehydration = false;
+        let mut subagent_launches = 0u32;
         for m in &metrics {
             let b = &m.buckets[bi];
             is_compaction_boundary |= b.is_compaction_boundary;
             is_cache_rehydration |= b.is_cache_rehydration;
+            subagent_launches = subagent_launches.saturating_add(b.subagent_launches);
             tin = tin.saturating_add(b.tokens_in);
             tout = tout.saturating_add(b.tokens_out);
             cache_read = cache_read.saturating_add(b.cache_read_tokens);
@@ -642,6 +679,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
         bucket.is_cache_rehydration = is_cache_rehydration;
+        bucket.subagent_launches = subagent_launches;
     }
 
     ActiveSessionsSummary {

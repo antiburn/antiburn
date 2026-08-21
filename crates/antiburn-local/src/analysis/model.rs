@@ -228,6 +228,26 @@ pub enum Role {
     Tool,
 }
 
+/// Which transcript an event comes from, after [`crate::analysis::merge_subagent_events`]
+/// concatenates a parent session with its sub-agents into one stream.
+///
+/// The engine uses this to keep a few computations parent-only even after the
+/// merge: context occupancy, compaction boundaries, and cache-rehydration
+/// detection. A sub-agent has its own context window, so mixing its turns
+/// into those parent-window computations would not mean anything. Token
+/// sums, tool mix, and cost stay unconditional over every event, so a
+/// sub-agent's spend still counts toward the session's total — the product
+/// rule is that a sub-agent is an implementation detail of its parent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventSource {
+    /// The event comes from the session's own transcript.
+    #[default]
+    Parent,
+    /// The event comes from a sub-agent transcript, merged into the parent.
+    Subagent,
+}
+
 /// One normalized turn/record from a transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +255,11 @@ pub struct NormalizedEvent {
     /// Unix epoch milliseconds, when the transcript carries a timestamp.
     pub ts_ms: Option<i64>,
     pub role: Role,
+    /// Which transcript this event comes from. `Parent` for every event
+    /// before a merge; [`crate::analysis::merge_subagent_events`] tags
+    /// sub-agent events `Subagent`.
+    #[serde(default)]
+    pub source: EventSource,
     #[serde(default)]
     pub usage: Usage,
     #[serde(default)]
@@ -269,6 +294,7 @@ impl NormalizedEvent {
         NormalizedEvent {
             ts_ms: None,
             role,
+            source: EventSource::default(),
             usage: Usage::default(),
             tools: Vec::new(),
             model: None,

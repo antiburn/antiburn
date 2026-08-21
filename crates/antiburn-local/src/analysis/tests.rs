@@ -3,7 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::analysis::engine::analyze_session;
-use crate::analysis::model::{ModelRun, Role, ToolCategory};
+use crate::analysis::merge::merge_subagent_events;
+use crate::analysis::model::{EventSource, ModelRun, Role, ToolCategory};
 use crate::analysis::{RawSource, SessionInput, analyze_sources, normalize_source};
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
@@ -1453,4 +1454,157 @@ fn mixed_summary_scales_to_the_largest_window() {
     assert_eq!(summary.context_window, 1_000_000);
     // 100k of a 200k window is 50%, which is 500k of the 1M reference.
     assert_eq!(summary.peak_context_tokens, 500_000);
+}
+
+/* -------------------------------------------------------------------------
+ * Sub-agent merge — `merge_subagent_events` + `analyze_session` together.
+ * Ordering itself is covered by the unit tests in `analysis::merge`; these
+ * exercise the product rule end to end: a sub-agent's tokens are an
+ * implementation detail that sums into the parent, while context occupancy
+ * and idle-gap timing stay governed by the parent's own turns (plus every
+ * stream, for the idle rule).
+ * ---------------------------------------------------------------------- */
+
+/// Two parent turns ten minutes apart, with one sub-agent turn at the
+/// halfway point.
+const MERGE_PARENT_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100},"content":[{"type":"text","text":"start"}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:10:00Z","message":{"role":"assistant","usage":{"input_tokens":2000,"output_tokens":200},"content":[{"type":"text","text":"end"}]}}"#,
+);
+const MERGE_SUBAGENT_FIXTURE: &str = r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":50},"content":[{"type":"text","text":"delegated"}]}}"#;
+
+#[test]
+fn subagent_tokens_sum_into_parent_buckets_time_aligned() {
+    let parent = normalize_source(&jsonl_input("claude", MERGE_PARENT_FIXTURE)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", MERGE_SUBAGENT_FIXTURE)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+
+    // Every event is tagged with the stream it came from.
+    let sources: Vec<EventSource> = merged.events.iter().map(|e| e.source).collect();
+    assert_eq!(
+        sources,
+        vec![
+            EventSource::Parent,
+            EventSource::Subagent,
+            EventSource::Parent
+        ]
+    );
+
+    let m = analyze_session(&merged);
+    // The session total sums every stream: subagents are an implementation
+    // detail of the same session.
+    assert_eq!(m.tokens_in, 1000 + 500 + 2000);
+    assert_eq!(m.tokens_out, 100 + 50 + 200);
+
+    // Both parent turns are 5 minutes apart from the sub-agent turn, well
+    // under the idle threshold, so active time == wall-clock time and the
+    // sub-agent turn lands exactly halfway through the progress grid.
+    assert_eq!(m.buckets[0].tokens_in, 1000, "parent's first turn");
+    assert_eq!(
+        m.buckets[90].tokens_in, 500,
+        "sub-agent's turn, time-aligned to the midpoint"
+    );
+    assert_eq!(m.buckets[179].tokens_in, 2000, "parent's last turn");
+    assert_eq!(m.buckets.iter().map(|b| b.tokens_in).sum::<u64>(), 3500);
+}
+
+#[test]
+fn peak_context_and_context_window_stay_parent_only_after_merge() {
+    // The sub-agent's own context is far larger than anything the parent
+    // ever sees. If it leaked into the parent's occupancy, the merged
+    // session's peak and window would both jump.
+    let parent_fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50},"content":[{"type":"text","text":"a"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1500,"output_tokens":50},"content":[{"type":"text","text":"b"}]}}"#,
+    );
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:02:30Z","message":{"role":"assistant","usage":{"input_tokens":900000,"output_tokens":50},"content":[{"type":"text","text":"delegated"}]}}"#;
+
+    let parent_only = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let parent_only_metrics = analyze_session(&parent_only);
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    assert_eq!(
+        m.peak_context_tokens,
+        parent_only_metrics.peak_context_tokens
+    );
+    assert_eq!(m.peak_context_tokens, 1500);
+    assert_eq!(m.context_window, parent_only_metrics.context_window);
+    // No bucket's `context_tokens` (the parent-only occupancy reading) ever
+    // reflects the sub-agent's 900k-token turn.
+    assert!(m.buckets.iter().all(|b| b.context_tokens <= 1500));
+    // The sub-agent's own huge input still lands in `tokens_in`, though —
+    // that side of the merge is inclusive.
+    assert_eq!(m.tokens_in, 1000 + 900_000 + 1500);
+}
+
+#[test]
+fn idle_gap_counts_only_when_every_stream_is_idle() {
+    // Same 8h parent gap as `active_time_excludes_idle_gaps`, but a
+    // sub-agent turn lands in the middle of it. The gap is idle only when
+    // the parent *and* every sub-agent are idle, so one event splits the
+    // single 8h gap into two, each capped independently.
+    let parent = normalize_source(&jsonl_input("claude", IDLE_GAP_FIXTURE)).unwrap();
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T16:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"sub.rs"}}]}}"#;
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    // Wall-clock span is unchanged: 12:00:00 → 20:00:30 = 28830s.
+    assert_eq!(m.duration_secs, 28830);
+    // Active: 30s + capped(≈4h → 300s) + capped(≈4h → 300s) + 30s = 660s,
+    // more than the 360s a lone parent gap gives — the sub-agent turn kept
+    // both halves of the gap "awake" up to the cap on each side.
+    assert_eq!(m.active_secs, 660);
+}
+
+#[test]
+fn subagent_launch_marker_counts_only_parent_task_calls() {
+    // The parent launches one sub-agent (a `Task` tool call) alongside an
+    // ordinary edit; a same-named tool from a sub-agent's own transcript
+    // must not count as a further launch.
+    let parent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Task","input":{"prompt":"go look"}},{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#;
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Task","input":{"prompt":"nested"}}]}}"#;
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    let total_launches: u32 = m.buckets.iter().map(|b| b.subagent_launches).sum();
+    assert_eq!(total_launches, 1, "only the parent's own Task call counts");
+}
+
+#[test]
+fn rehydration_detection_ignores_subagent_turns() {
+    // Same two parent turns as `cache_rehydration_is_detected_after_a_ttl_lapse`,
+    // with a sub-agent turn carrying its own large cache-write in between. If
+    // that turn fed the parent-only rehydration state machine, it would
+    // either wrongly flag itself or reset the state so the real parent
+    // rehydration is missed.
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:02:30Z","message":{"role":"assistant","usage":{"input_tokens":10000,"output_tokens":50,"cache_creation_input_tokens":40000},"content":[{"type":"text","text":"delegated"}]}}"#;
+
+    let parent =
+        normalize_source(&jsonl_input("claude", CLAUDE_CACHE_REHYDRATION_FIXTURE)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    let rehydrated: Vec<usize> = m
+        .buckets
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_cache_rehydration)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        rehydrated.len(),
+        1,
+        "the parent's own rehydration must still be detected, got {rehydrated:?}"
+    );
 }
