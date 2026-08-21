@@ -51,15 +51,27 @@ describe("contextTokenSeries", () => {
     ])
   })
 
-  it("keeps the zero of a compaction bucket and holds it until the next observation", () => {
+  it("fills a compaction bucket and the empty buckets after it with the next level", () => {
     const buckets = [
       bucket({ contextTokens: 180_000 }),
       bucket({ contextTokens: 0, isCompactionBoundary: true }),
       bucket(),
       bucket({ contextTokens: 20_000 }),
+      bucket(),
     ]
     const series = contextTokenSeries(buckets)
-    expect(series.map((p) => p.contextTokens)).toEqual([180_000, 0, 0, 20_000])
+    expect(series.map((p) => p.contextTokens)).toEqual([
+      180_000, 20_000, 20_000, 20_000, 20_000,
+    ])
+  })
+
+  it("leaves a trailing compaction at zero when nothing follows it", () => {
+    const buckets = [
+      bucket({ contextTokens: 180_000 }),
+      bucket({ contextTokens: 0, isCompactionBoundary: true }),
+      bucket(),
+    ]
+    expect(contextTokenSeries(buckets).map((p) => p.contextTokens)).toEqual([180_000, 0, 0])
   })
 
   it("carries the compaction-boundary flag onto the matching point", () => {

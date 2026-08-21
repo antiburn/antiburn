@@ -40,21 +40,38 @@ export interface ContextTokenPoint {
  * Context is a level, not a rate. The engine records the largest usage it
  * observes in a bucket, so a bucket with only tool events holds zero. The
  * series carries the last observed level across such buckets. A compaction
- * bucket is an explicit reset, so it keeps its zero.
+ * bucket is a reset, but the new level is unknown until the next model call,
+ * so the series fills the compaction bucket and the empty buckets after it
+ * with the next observed level. The line then falls at the mark, not to zero.
  */
 export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[] {
+  const levels: number[] = []
   let held = 0
-  return buckets.map((bucket, index) => {
-    if (bucket.contextTokens > 0 || bucket.isCompactionBoundary) held = bucket.contextTokens
-    return {
-      index,
-      progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
-      contextTokens: held,
-      tokensIn: bucket.tokensIn,
-      tokensOut: bucket.tokensOut,
-      isCompactionBoundary: bucket.isCompactionBoundary,
+  let afterCompaction = false
+  for (const bucket of buckets) {
+    if (bucket.isCompactionBoundary) {
+      afterCompaction = true
+      held = 0
+    } else if (bucket.contextTokens > 0) {
+      afterCompaction = false
+      held = bucket.contextTokens
     }
-  })
+    // NaN marks a bucket that waits for the next observation.
+    levels.push(afterCompaction ? Number.NaN : held)
+  }
+  let next = 0
+  for (let i = levels.length - 1; i >= 0; i--) {
+    if (Number.isNaN(levels[i])) levels[i] = next
+    else next = levels[i]!
+  }
+  return buckets.map((bucket, index) => ({
+    index,
+    progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
+    contextTokens: levels[index]!,
+    tokensIn: bucket.tokensIn,
+    tokensOut: bucket.tokensOut,
+    isCompactionBoundary: bucket.isCompactionBoundary,
+  }))
 }
 
 /** Candidate axis steps, from fine to coarse. */
