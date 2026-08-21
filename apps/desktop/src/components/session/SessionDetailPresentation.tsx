@@ -746,10 +746,11 @@ export function SessionDetailPresentation({
             )}
 
             {tokensCard && (
-              <Card title="Context and Tokens" hint={tokensCard.hint}>
+              <Card title="Context" hint={tokensCard.hint}>
                 <ContextTokensChart
                   buckets={summary.buckets}
                   contextWindow={summary.contextAvailable ? summary.contextWindow : null}
+                  activeSecs={summary.avgActiveSecs}
                 />
               </Card>
             )}

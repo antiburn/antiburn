@@ -214,6 +214,38 @@ export function axisScale(peak: number, cap: number, maxTicks: number): AxisScal
   return { ceiling, ticks }
 }
 
+/** Candidate spacings for the time axis, in seconds. */
+const TIME_AXIS_STEPS_SECS = [
+  60, 120, 300, 600, 900, 1800, 3600, 7200, 10_800, 14_400, 21_600, 28_800, 43_200, 86_400,
+]
+
+export interface TimeAxisTick {
+  /** Bucket index, possibly fractional, on the numeric x axis. */
+  index: number
+  label: string
+}
+
+/**
+ * Elapsed active-time marks for the x axis. Buckets span active time evenly,
+ * so a mark at `t` seconds sits at `t / activeSecs` of the way across. Marks
+ * use the coarsest step that still gives at most `maxTicks` marks.
+ */
+export function timeAxisTicks(
+  activeSecs: number,
+  bucketCount: number,
+  maxTicks: number,
+): TimeAxisTick[] {
+  if (activeSecs <= 0 || bucketCount < 2) return []
+  const step =
+    TIME_AXIS_STEPS_SECS.find((s) => activeSecs / s <= maxTicks) ??
+    TIME_AXIS_STEPS_SECS[TIME_AXIS_STEPS_SECS.length - 1]!
+  const ticks: TimeAxisTick[] = []
+  for (let t = step; t < activeSecs; t += step) {
+    ticks.push({ index: (t / activeSecs) * (bucketCount - 1), label: formatDuration(t) })
+  }
+  return ticks
+}
+
 export interface ToolSlice {
   key: string
   label: string

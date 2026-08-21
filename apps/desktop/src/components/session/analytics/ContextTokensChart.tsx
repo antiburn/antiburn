@@ -20,6 +20,7 @@ import {
   formatCompact,
   formatPct,
   formatTokenBand,
+  timeAxisTicks,
   modeChangeMarkers,
   type ContextTokenPoint,
 } from "../../../lib/presentation/sessionAnalytics"
@@ -30,6 +31,8 @@ export interface ContextTokensChartProps {
   buckets: SessionBucket[]
   /** Null when context occupancy is unavailable for this model. */
   contextWindow: number | null
+  /** Active seconds the buckets span; null hides the time marks. */
+  activeSecs?: number | null
 }
 
 /** Absolute token level where the context fill turns from calm to warm. */
@@ -141,7 +144,11 @@ export function ContextTokensTooltip({
  * area, input/output tokens per slice sit behind it as a faint secondary
  * layer, on one shared progress axis.
  */
-export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChartProps) {
+export function ContextTokensChart({
+  buckets,
+  contextWindow,
+  activeSecs = null,
+}: ContextTokensChartProps) {
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
   const hasContext = contextWindow != null
@@ -204,6 +211,18 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
         <XAxis dataKey="index" type="number" domain={[0, Math.max(1, data.length - 1)]} hide />
         {contextAxis && <YAxis yAxisId="context" hide domain={[0, contextAxis.ceiling]} />}
         <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
+        {/* Elapsed active time along the bottom, as labels only. The token
+            spikes sit behind them, so no line is drawn. */}
+        {activeSecs != null &&
+          timeAxisTicks(activeSecs, data.length, 6).map((tick) => (
+            <ReferenceLine
+              key={`time-${tick.label}`}
+              yAxisId={markerAxisId}
+              x={tick.index}
+              stroke="none"
+              label={{ ...AXIS_LABEL, value: tick.label, position: "insideBottom" }}
+            />
+          ))}
         {contextAxis?.ticks.map((value) => (
           <ReferenceLine
             key={`band-${value}`}

@@ -8,6 +8,7 @@ import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
   axisScale,
   contextTokenSeries,
+  timeAxisTicks,
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
@@ -393,5 +394,24 @@ describe("median / costOutlierThreshold", () => {
     expect(costOutlierThreshold(Array(HIGH_COST_MIN_SAMPLE).fill(0.1))).toBe(
       HIGH_COST_FLOOR_USD,
     )
+  })
+})
+
+describe("timeAxisTicks", () => {
+  it("uses the coarsest step that keeps the mark count under the limit", () => {
+    // 2h 10m of active time over 181 buckets: 30m steps give four marks.
+    const ticks = timeAxisTicks(7800, 181, 6)
+    expect(ticks.map((t) => t.label)).toEqual(["30m", "1h", "1h 30m", "2h"])
+    expect(ticks[1]!.index).toBeCloseTo((3600 / 7800) * 180, 5)
+  })
+
+  it("returns nothing for an empty or instant session", () => {
+    expect(timeAxisTicks(0, 181, 6)).toEqual([])
+    expect(timeAxisTicks(600, 1, 6)).toEqual([])
+  })
+
+  it("never places a mark at or past the end", () => {
+    const ticks = timeAxisTicks(3600, 181, 6)
+    expect(ticks.map((t) => t.label)).toEqual(["10m", "20m", "30m", "40m", "50m"])
   })
 })
