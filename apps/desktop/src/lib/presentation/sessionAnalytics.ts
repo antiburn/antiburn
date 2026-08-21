@@ -31,18 +31,26 @@ export interface ContextTokenPoint {
 
 /**
  * Merged context-and-token series over session progress, one point per
- * bucket. Unlike the old per-series helpers, this keeps every bucket —
- * including zero ones — so the context area and the token areas share one
- * x-axis grid and cannot drift apart.
+ * bucket. This keeps every bucket, including empty ones, so the context area
+ * and the token areas share one x-axis grid and cannot drift apart.
+ *
+ * Context is a level, not a rate. The engine records the largest usage it
+ * observes in a bucket, so a bucket with only tool events holds zero. The
+ * series carries the last observed level across such buckets. A compaction
+ * bucket is an explicit reset, so it keeps its zero.
  */
 export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[] {
-  return buckets.map((bucket, index) => ({
-    progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
-    contextTokens: bucket.contextTokens,
-    tokensIn: bucket.tokensIn,
-    tokensOut: bucket.tokensOut,
-    isCompactionBoundary: bucket.isCompactionBoundary,
-  }))
+  let held = 0
+  return buckets.map((bucket, index) => {
+    if (bucket.contextTokens > 0 || bucket.isCompactionBoundary) held = bucket.contextTokens
+    return {
+      progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
+      contextTokens: held,
+      tokensIn: bucket.tokensIn,
+      tokensOut: bucket.tokensOut,
+      isCompactionBoundary: bucket.isCompactionBoundary,
+    }
+  })
 }
 
 /**

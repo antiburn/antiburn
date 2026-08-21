@@ -33,7 +33,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
 }
 
 describe("contextTokenSeries", () => {
-  it("keeps every bucket, including zero ones, at its measured progress", () => {
+  it("keeps every bucket at its measured progress and holds the context level across empty ones", () => {
     const buckets = [
       bucket(),
       bucket({ tokensIn: 100, tokensOut: 10, contextTokens: 50_000 }),
@@ -46,7 +46,20 @@ describe("contextTokenSeries", () => {
     expect(series).toHaveLength(6)
     expect(series.map((p) => p.progress)).toEqual([0, 20, 40, 60, 80, 100])
     expect(series.map((p) => p.tokensIn)).toEqual([0, 100, 0, 300, 500, 0])
-    expect(series.map((p) => p.contextTokens)).toEqual([0, 50_000, 0, 150_000, 200_000, 0])
+    expect(series.map((p) => p.contextTokens)).toEqual([
+      0, 50_000, 50_000, 150_000, 200_000, 200_000,
+    ])
+  })
+
+  it("keeps the zero of a compaction bucket and holds it until the next observation", () => {
+    const buckets = [
+      bucket({ contextTokens: 180_000 }),
+      bucket({ contextTokens: 0, isCompactionBoundary: true }),
+      bucket(),
+      bucket({ contextTokens: 20_000 }),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(series.map((p) => p.contextTokens)).toEqual([180_000, 0, 0, 20_000])
   })
 
   it("carries the compaction-boundary flag onto the matching point", () => {
