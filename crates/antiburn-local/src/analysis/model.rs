@@ -255,6 +255,9 @@ pub struct NormalizedEvent {
     /// falls back to the session's headline model.
     #[serde(default)]
     pub model: Option<String>,
+    /// The model's thinking mode for this turn, when the transcript records it.
+    #[serde(default)]
+    pub thinking_mode: Option<String>,
     /// The provider's message id (Anthropic `message.id`), when present. Claude
     /// transcripts re-log the same assistant message more than once, each copy
     /// carrying the full `usage`; this id lets the Claude adapter de-duplicate
@@ -282,10 +285,20 @@ impl NormalizedEvent {
             thinking: false,
             text_len: 0,
             model: None,
+            thinking_mode: None,
             message_id: None,
             is_compaction_boundary: false,
         }
     }
+}
+
+/// One model and thinking-mode pair that produced billable tokens.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRun {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
 }
 
 /// A full session after normalization, ready for the engine.
