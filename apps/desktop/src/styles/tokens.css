@@ -203,7 +203,10 @@
 /* --- Dark --- */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg-primary: rgb(30 30 30 / 0.4);
+    /* Matches the explicit dark theme. At 0.40 the popover surface let a light
+       desktop behind the window through, and the secondary label fell to
+       1.93:1 on it. The surface has to set the tone, not the desktop. */
+    --color-bg-primary: rgb(30 30 30 / 0.92);
     --color-bg-secondary: rgb(255 255 255 / 0.12);
     --color-bg-tertiary: rgb(255 255 255 / 0.18);
     --color-bg-row-hover: rgb(255 255 255 / 0.07);
@@ -230,10 +233,11 @@
     --color-system-gold-val: rgb(255 204 0);
     --color-system-gold-text-val: rgb(245 203 92);
     --color-agent-mark-val: rgb(247 247 244);
-    /* The system tertiary label is ~25% opacity in dark mode; bump to 55%,
+    /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
        where small text reaches 4.5:1 on a card (same rationale as light
-       mode). 50% is enough on the window, but not on the lighter card. */
-    --color-text-tertiary: rgb(235 235 245 / 0.55);
+       mode). The hard case is again the popover: the surface is translucent,
+       so a light desktop behind the window lifts the card the text sits on. */
+    --color-text-tertiary: rgb(235 235 245 / 0.62);
     /* The live label, separator, and accent tokens auto-adapt in dark mode —
        no overrides needed for those three. */
   }
@@ -314,7 +318,7 @@
   --color-bg-selected: rgb(255 255 255 / 0.14);
   --color-text-primary: rgb(255 255 255 / 0.92);
   --color-text-secondary: rgb(235 235 245 / 0.72);
-  --color-text-tertiary: rgb(235 235 245 / 0.55);
+  --color-text-tertiary: rgb(235 235 245 / 0.62);
   --color-border: rgb(255 255 255 / 0.18);
   --color-accent-val: rgb(10 132 255);
   --color-accent-fill-val: rgb(10 110 235);

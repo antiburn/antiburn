@@ -22,7 +22,7 @@ colors:
   # for is a failure, and so is a note that no longer differs.
   surface: # the menu-bar popover, which sits on the window material
     light: "rgb(255 255 255 / 0.85)" # reduced-transparency: rgb(255 255 255)
-    dark: "rgb(30 30 30 / 0.92)" # @media dark: rgb(30 30 30 / 0.40)
+    dark: "rgb(30 30 30 / 0.92)"
   surface-secondary:
     light: "rgb(0 0 0 / 0.08)"
     dark: "rgb(255 255 255 / 0.12)"
@@ -55,7 +55,7 @@ colors:
     dark: "rgb(235 235 245 / 0.72)"
   label-tertiary: # 4.5:1 on a card on the popover, over any desktop behind it
     light: "rgb(60 60 67 / 0.79)"
-    dark: "rgb(235 235 245 / 0.55)"
+    dark: "rgb(235 235 245 / 0.62)"
   separator: # live system separator token where available
     light: "rgb(0 0 0 / 0.15)"
     dark: "rgb(255 255 255 / 0.18)"
