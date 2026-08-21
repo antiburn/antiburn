@@ -104,6 +104,12 @@ colors:
   system-gold:
     light: "rgb(202 138 4)"
     dark: "rgb(255 204 0)"
+  shimmer: # the running-session title sweep. One value for both themes, sitting
+    # between the two text colors: it lights the near-black glyphs in light mode
+    # and dims the near-white ones in dark mode. Below 4.5:1 on a light row on
+    # purpose; the band is transient and the text under it is legible at rest.
+    light: "rgb(218 90 38)"
+    dark: "rgb(218 90 38)"
   system-gold-text:
     light: "rgb(146 100 0)"
     dark: "rgb(245 203 92)"
