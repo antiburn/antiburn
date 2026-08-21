@@ -48,7 +48,7 @@ pub struct SessionMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleSource {
     /// User explicitly renamed the session (Claude Tier-5 `custom-title`
-    /// record, Codex SQLite `threads.title` after rename).
+    /// record, Codex SQLite `threads.name`).
     UserRename,
     /// AI/agent generated the title (Claude Tier-4 `ai-title` record,
     /// Tier-3 `summary` event, Codex `session_index.jsonl` `thread_name`).

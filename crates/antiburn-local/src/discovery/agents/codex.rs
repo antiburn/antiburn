@@ -98,16 +98,11 @@ impl AgentExplorer for CodexExplorer {
         super::codex_subagents::thread_id_from_rollout_path(file)
     }
 
-    /// Resolve from Codex's indexed stores without opening a rollout:
-    /// `state_5.sqlite#threads.title`, then `session_index.jsonl#thread_name`.
+    /// Resolve from Codex's indexed stores without opening a rollout.
     async fn indexed_session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        if let Some(text) = session_title_from_sqlite(agent_session_id).await {
-            return Some(ResolvedTitle::new(text, TitleSource::UserRename));
-        }
-        if let Some(text) = session_title_from_index(agent_session_id).await {
-            return Some(ResolvedTitle::new(text, TitleSource::AiGenerated));
-        }
-        None
+        let home = home_dir()?;
+        let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
+        indexed_session_title_in(&home, codex_home.as_deref(), agent_session_id).await
     }
 
     async fn indexed_session_titles(
@@ -124,13 +119,9 @@ impl AgentExplorer for CodexExplorer {
     /// Resolve a Codex session title from Codex's own stores, in order of
     /// authority:
     ///
-    /// 1. `~/.codex/state_5.sqlite` `threads.title` — Codex Desktop's source
-    ///    of truth (the same field rendered in its own sidebar; user renames
-    ///    land here). Tagged [`TitleSource::UserRename`].
-    /// 2. `~/.codex/session_index.jsonl` `thread_name` — flat-file projection
-    ///    that may carry the AI-rendered name. Tagged [`TitleSource::AiGenerated`].
-    /// 3. Rollout JSONL scan — last-resort fallback for CLI-only users with
-    ///    neither store. Source provenance flows through from the scanner.
+    /// 1. `~/.codex/state_5.sqlite` `threads.name` — the user-set name.
+    /// 2. A generated `threads.title`, then `session_index.jsonl#thread_name`.
+    /// 3. A first-message `threads.title`, then the rollout transcript.
     async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
         if let Some(title) = self.indexed_session_title(agent_session_id).await {
             return Some(title);
@@ -652,23 +643,14 @@ async fn collect_dirs_with_jsonl(root: &Path, results: &mut Vec<PathBuf>) {
     results.extend(found);
 }
 
-async fn session_title_from_sqlite(session_id: &str) -> Option<String> {
-    let home = home_dir()?;
-    let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
-    session_title_from_sqlite_in(&home, codex_home.as_deref(), session_id).await
-}
-
-async fn session_title_from_sqlite_in(
+async fn indexed_session_title_in(
     home: &Path,
     codex_home: Option<&Path>,
     session_id: &str,
-) -> Option<String> {
-    for path in state_db_paths(home, codex_home) {
-        if let Some(title) = read_session_title_from_sqlite(&path, session_id).await {
-            return Some(title);
-        }
-    }
-    None
+) -> Option<ResolvedTitle> {
+    indexed_session_titles_in(home, codex_home, &[session_id.to_string()])
+        .await
+        .remove(session_id)
 }
 
 /// Filename is pinned to the schema version Codex Desktop ships today
@@ -697,97 +679,157 @@ pub(super) fn state_db_paths_resolved() -> Vec<PathBuf> {
     state_db_paths(&home, codex_home.as_deref())
 }
 
-/// A Codex session's display title text (no provenance), resolved with the same
-/// store precedence as [`CodexExplorer::session_title`]: state DB → index →
-/// rollout scan. Exposed for sub-agent label resolution.
+/// A Codex session's display title text without provenance.
 pub(super) async fn session_title_text(session_id: &str) -> Option<String> {
-    if let Some(text) = session_title_from_sqlite(session_id).await {
-        return Some(text);
-    }
-    if let Some(text) = session_title_from_index(session_id).await {
-        return Some(text);
+    let home = home_dir()?;
+    let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
+    if let Some(title) = indexed_session_title_in(&home, codex_home.as_deref(), session_id).await {
+        return Some(title.text);
     }
     let dirs = all_log_dirs().await;
     let path = find_session_file_by_id(&dirs, session_id).await?;
     scanner::parse_session_metadata(&path).await.title
 }
 
-async fn read_session_title_from_sqlite(path: &Path, session_id: &str) -> Option<String> {
-    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
-        return None;
-    }
-    let path = path.to_path_buf();
-    let session_id = session_id.to_string();
-    tokio::task::spawn_blocking(move || query_thread_title(&path, &session_id))
-        .await
-        .ok()
-        .flatten()
+#[derive(Default)]
+struct StateDbTitles {
+    preferred: HashMap<String, ResolvedTitle>,
+    fallback: HashMap<String, ResolvedTitle>,
 }
 
-fn query_thread_title(path: &Path, session_id: &str) -> Option<String> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    let _ = conn.busy_timeout(Duration::from_millis(200));
-    let title: String = conn
-        .query_row(
-            "SELECT title FROM threads WHERE id = ?1 LIMIT 1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .ok()?;
-    let trimmed = title.trim();
-    if trimmed.is_empty() {
-        None
+enum StateDbTitle {
+    Preferred(ResolvedTitle),
+    Fallback(ResolvedTitle),
+}
+
+fn classify_current_state_title(
+    name: Option<String>,
+    title: Option<String>,
+    first_user_message: Option<String>,
+) -> Option<StateDbTitle> {
+    if let Some(name) = trimmed_nonempty(name) {
+        return Some(StateDbTitle::Preferred(ResolvedTitle::new(
+            name,
+            TitleSource::UserRename,
+        )));
+    }
+
+    let title = trimmed_nonempty(title)?;
+    let first_user_message = trimmed_nonempty(first_user_message);
+    if first_user_message.as_deref() == Some(title.as_str()) {
+        Some(StateDbTitle::Fallback(ResolvedTitle::new(
+            title,
+            TitleSource::FirstMessage,
+        )))
     } else {
-        Some(trimmed.to_string())
+        Some(StateDbTitle::Preferred(ResolvedTitle::new(
+            title,
+            TitleSource::AiGenerated,
+        )))
     }
 }
 
-fn query_thread_titles(path: &Path, session_ids: &[String]) -> HashMap<String, String> {
+fn trimmed_nonempty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+enum ThreadTitleSchema {
+    Current,
+    Legacy,
+    Unsupported,
+}
+
+fn thread_title_schema(conn: &Connection) -> ThreadTitleSchema {
+    let Ok(mut statement) = conn.prepare("PRAGMA table_info(threads)") else {
+        return ThreadTitleSchema::Unsupported;
+    };
+    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(1)) else {
+        return ThreadTitleSchema::Unsupported;
+    };
+    let columns: HashSet<String> = rows.filter_map(Result::ok).collect();
+    let has = |column| columns.contains(column);
+
+    if ["id", "name", "title", "first_user_message"]
+        .into_iter()
+        .all(has)
+    {
+        ThreadTitleSchema::Current
+    } else if columns.len() == 2 && has("id") && has("title") {
+        ThreadTitleSchema::Legacy
+    } else {
+        ThreadTitleSchema::Unsupported
+    }
+}
+
+fn query_thread_titles(path: &Path, session_ids: &[String]) -> StateDbTitles {
     let Ok(conn) = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) else {
-        return HashMap::new();
+        return StateDbTitles::default();
     };
     let _ = conn.busy_timeout(Duration::from_millis(200));
-    let Ok(mut statement) = conn.prepare("SELECT title FROM threads WHERE id = ?1 LIMIT 1") else {
-        return HashMap::new();
+
+    match thread_title_schema(&conn) {
+        ThreadTitleSchema::Current => query_current_thread_titles(&conn, session_ids),
+        ThreadTitleSchema::Legacy => query_legacy_thread_titles(&conn, session_ids),
+        ThreadTitleSchema::Unsupported => StateDbTitles::default(),
+    }
+}
+
+fn query_current_thread_titles(conn: &Connection, session_ids: &[String]) -> StateDbTitles {
+    let Ok(mut statement) =
+        conn.prepare("SELECT name, title, first_user_message FROM threads WHERE id = ?1 LIMIT 1")
+    else {
+        return StateDbTitles::default();
     };
-    let mut titles = HashMap::new();
+    let mut titles = StateDbTitles::default();
     for session_id in session_ids {
-        let Ok(title) = statement.query_row(params![session_id], |row| row.get::<_, String>(0))
+        let Ok((name, title, first_user_message)) =
+            statement.query_row(params![session_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
         else {
             continue;
         };
-        let trimmed = title.trim();
-        if !trimmed.is_empty() {
-            titles.insert(session_id.clone(), trimmed.to_string());
+        match classify_current_state_title(name, title, first_user_message) {
+            Some(StateDbTitle::Preferred(title)) => {
+                titles.preferred.insert(session_id.clone(), title);
+            }
+            Some(StateDbTitle::Fallback(title)) => {
+                titles.fallback.insert(session_id.clone(), title);
+            }
+            None => {}
         }
     }
     titles
 }
 
-async fn session_title_from_index(session_id: &str) -> Option<String> {
-    let home = home_dir()?;
-    let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
-    session_title_from_index_in(&home, codex_home.as_deref(), session_id).await
-}
-
-async fn session_title_from_index_in(
-    home: &Path,
-    codex_home: Option<&Path>,
-    session_id: &str,
-) -> Option<String> {
-    for path in session_index_paths(home, codex_home) {
-        if let Some(title) = read_session_title_from_index(&path, session_id).await {
-            return Some(title);
+fn query_legacy_thread_titles(conn: &Connection, session_ids: &[String]) -> StateDbTitles {
+    let Ok(mut statement) = conn.prepare("SELECT title FROM threads WHERE id = ?1 LIMIT 1") else {
+        return StateDbTitles::default();
+    };
+    let mut titles = StateDbTitles::default();
+    for session_id in session_ids {
+        let Ok(title) =
+            statement.query_row(params![session_id], |row| row.get::<_, Option<String>>(0))
+        else {
+            continue;
+        };
+        if let Some(title) = trimmed_nonempty(title) {
+            titles.preferred.insert(
+                session_id.clone(),
+                ResolvedTitle::new(title, TitleSource::UserRename),
+            );
         }
     }
-    None
+    titles
 }
 
 fn session_index_paths(home: &Path, codex_home: Option<&Path>) -> Vec<PathBuf> {
@@ -834,6 +876,7 @@ async fn indexed_session_titles_in(
     session_ids: &[String],
 ) -> HashMap<String, ResolvedTitle> {
     let mut resolved = HashMap::new();
+    let mut state_fallbacks = HashMap::new();
     for path in state_db_paths(home, codex_home) {
         if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
             continue;
@@ -842,24 +885,37 @@ async fn indexed_session_titles_in(
         let titles = tokio::task::spawn_blocking(move || query_thread_titles(&path, &ids))
             .await
             .unwrap_or_default();
-        for (session_id, text) in titles {
-            resolved
-                .entry(session_id)
-                .or_insert_with(|| ResolvedTitle::new(text, TitleSource::UserRename));
+        for (session_id, title) in titles.preferred {
+            resolved.entry(session_id).or_insert(title);
+        }
+        for (session_id, title) in titles.fallback {
+            state_fallbacks.entry(session_id).or_insert(title);
         }
     }
 
-    let wanted: HashSet<String> = session_ids.iter().cloned().collect();
+    let mut wanted: HashSet<String> = session_ids
+        .iter()
+        .filter(|session_id| !resolved.contains_key(*session_id))
+        .cloned()
+        .collect();
     for path in session_index_paths(home, codex_home) {
-        let wanted = wanted.clone();
-        let latest = tokio::task::spawn_blocking(move || query_index_titles(&path, &wanted))
+        if wanted.is_empty() {
+            break;
+        }
+        let query_wanted = wanted.clone();
+        let latest = tokio::task::spawn_blocking(move || query_index_titles(&path, &query_wanted))
             .await
             .unwrap_or_default();
         for (session_id, text) in latest {
-            resolved
-                .entry(session_id)
-                .or_insert_with(|| ResolvedTitle::new(text, TitleSource::AiGenerated));
+            wanted.remove(&session_id);
+            resolved.insert(
+                session_id,
+                ResolvedTitle::new(text, TitleSource::AiGenerated),
+            );
         }
+    }
+    for (session_id, title) in state_fallbacks {
+        resolved.entry(session_id).or_insert(title);
     }
     resolved
 }
@@ -1292,7 +1348,7 @@ mod tests {
         assert!(candidates.is_empty());
     }
 
-    fn seed_state_db(path: &Path, rows: &[(&str, &str)]) {
+    fn seed_legacy_state_db(path: &Path, rows: &[(&str, &str)]) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL);")
             .unwrap();
@@ -1305,33 +1361,83 @@ mod tests {
         }
     }
 
+    fn seed_current_state_db(path: &Path, rows: &[(&str, Option<&str>, &str, &str)]) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (\
+                 id TEXT PRIMARY KEY,\
+                 name TEXT,\
+                 title TEXT NOT NULL,\
+                 first_user_message TEXT NOT NULL\
+             );",
+        )
+        .unwrap();
+        for (id, name, title, first_user_message) in rows {
+            conn.execute(
+                "INSERT INTO threads (id, name, title, first_user_message) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, name, title, first_user_message],
+            )
+            .unwrap();
+        }
+    }
+
     #[tokio::test]
-    async fn test_session_title_from_sqlite_resolves_user_rename() {
+    async fn legacy_state_title_remains_a_user_rename() {
         let home = TempDir::new().unwrap();
         let codex_dir = home.path().join(".codex");
         tokio::fs::create_dir_all(&codex_dir).await.unwrap();
-        seed_state_db(
+        seed_legacy_state_db(
             &codex_dir.join("state_5.sqlite"),
             &[("11111111-aaaa-bbbb-cccc-222222222222", "renamed by user")],
         );
         let title =
-            session_title_from_sqlite_in(home.path(), None, "11111111-aaaa-bbbb-cccc-222222222222")
+            indexed_session_title_in(home.path(), None, "11111111-aaaa-bbbb-cccc-222222222222")
                 .await;
-        assert_eq!(title.as_deref(), Some("renamed by user"));
+        assert_eq!(
+            title,
+            Some(ResolvedTitle::new(
+                "renamed by user",
+                TitleSource::UserRename
+            ))
+        );
     }
 
     #[tokio::test]
-    async fn test_session_title_from_sqlite_skips_blank_titles() {
+    async fn legacy_state_title_skips_blank_titles() {
         let home = TempDir::new().unwrap();
         let codex_dir = home.path().join(".codex");
         tokio::fs::create_dir_all(&codex_dir).await.unwrap();
-        seed_state_db(
+        seed_legacy_state_db(
             &codex_dir.join("state_5.sqlite"),
             &[("33333333-aaaa-bbbb-cccc-444444444444", "   ")],
         );
         let title =
-            session_title_from_sqlite_in(home.path(), None, "33333333-aaaa-bbbb-cccc-444444444444")
+            indexed_session_title_in(home.path(), None, "33333333-aaaa-bbbb-cccc-444444444444")
                 .await;
+        assert!(title.is_none());
+    }
+
+    #[tokio::test]
+    async fn partial_state_schema_does_not_claim_a_user_rename() {
+        let home = TempDir::new().unwrap();
+        let codex_dir = home.path().join(".codex");
+        tokio::fs::create_dir_all(&codex_dir).await.unwrap();
+        let conn = Connection::open(codex_dir.join("state_5.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (\
+                 id TEXT PRIMARY KEY,\
+                 title TEXT NOT NULL,\
+                 future_title_kind TEXT NOT NULL\
+             );\
+             INSERT INTO threads (id, title, future_title_kind)\
+             VALUES ('partial', 'Generated title', 'generated');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let title = indexed_session_title_in(home.path(), None, "partial").await;
+
         assert!(title.is_none());
     }
 
@@ -1353,14 +1459,41 @@ mod tests {
         let home = TempDir::new().unwrap();
         let codex_dir = home.path().join(".codex");
         tokio::fs::create_dir_all(&codex_dir).await.unwrap();
-        seed_state_db(
+        seed_current_state_db(
             &codex_dir.join("state_5.sqlite"),
-            &[("renamed", "Reader rename")],
+            &[
+                (
+                    "renamed",
+                    Some("Reader rename"),
+                    "Original request",
+                    "Original request",
+                ),
+                (
+                    "generated",
+                    None,
+                    "State generated name",
+                    "Original generated request",
+                ),
+                (
+                    "indexed",
+                    None,
+                    "Raw indexed request",
+                    "Raw indexed request",
+                ),
+                (
+                    "fallback",
+                    None,
+                    "Raw fallback request",
+                    "Raw fallback request",
+                ),
+            ],
         );
         tokio::fs::write(
             codex_dir.join("session_index.jsonl"),
             concat!(
                 r#"{"id":"renamed","thread_name":"Generated name"}"#,
+                "\n",
+                r#"{"id":"generated","thread_name":"Stale generated name"}"#,
                 "\n",
                 r#"{"id":"indexed","thread_name":"Old generated name"}"#,
                 "\n",
@@ -1382,7 +1515,9 @@ mod tests {
             None,
             &[
                 "renamed".into(),
+                "generated".into(),
                 "indexed".into(),
+                "fallback".into(),
                 "cleared".into(),
                 "missing".into(),
             ],
@@ -1396,10 +1531,24 @@ mod tests {
             ))
         );
         assert_eq!(
+            titles.get("generated"),
+            Some(&ResolvedTitle::new(
+                "State generated name",
+                TitleSource::AiGenerated
+            ))
+        );
+        assert_eq!(
             titles.get("indexed"),
             Some(&ResolvedTitle::new(
                 "Latest generated name",
                 TitleSource::AiGenerated
+            ))
+        );
+        assert_eq!(
+            titles.get("fallback"),
+            Some(&ResolvedTitle::new(
+                "Raw fallback request",
+                TitleSource::FirstMessage
             ))
         );
         assert!(!titles.contains_key("ignored"));
