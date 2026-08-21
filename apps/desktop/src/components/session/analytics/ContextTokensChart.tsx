@@ -13,12 +13,14 @@ import {
   YAxis,
 } from "recharts"
 
+import { modelShortName } from "../../../lib/presentation/models"
 import {
   axisScale,
   contextTokenSeries,
   formatCompact,
   formatPct,
   formatTokenBand,
+  modeChangeMarkers,
   type ContextTokenPoint,
 } from "../../../lib/presentation/sessionAnalytics"
 import type { SessionBucket } from "../../../lib/types/session"
@@ -104,6 +106,10 @@ export function ContextTokensTooltip({
         {point.subagentLaunches > 0 && (
           <span>Subagents launched · {point.subagentLaunches}</span>
         )}
+        {point.model != null && <span>Model · {modelShortName(point.model)}</span>}
+        {point.thinkingMode != null && <span>Effort · {point.thinkingMode}</span>}
+        {point.speed != null && <span>Speed · {point.speed}</span>}
+        {point.hasThinking && <span>Thinking</span>}
       </div>
     </div>
   )
@@ -217,6 +223,19 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
               label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
             />
           ))}
+        {/* A mode change (model, thinking effort, or speed) draws no line at
+            all — only its label, at the top of the plot — so it stays a
+            calm annotation rather than another vertical mark competing with
+            compaction and cache-rehydration. */}
+        {modeChangeMarkers(data).map((marker) => (
+          <ReferenceLine
+            key={`mode-${marker.index}`}
+            yAxisId={compactionAxisId}
+            x={marker.index}
+            stroke="none"
+            label={{ ...AXIS_LABEL, value: marker.label, position: "insideTop" }}
+          />
+        ))}
         <Tooltip
           cursor={{ stroke: "var(--color-separator)" }}
           content={<ContextTokensTooltip contextWindow={contextWindow} />}

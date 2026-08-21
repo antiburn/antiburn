@@ -20,6 +20,7 @@ import {
   initialContextNamedRows,
   initialContextTotal,
   median,
+  modeChangeMarkers,
 } from "./sessionAnalytics"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
@@ -32,6 +33,10 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheWriteTokens: 0,
     isCacheRehydration: false,
     subagentLaunches: 0,
+    model: null,
+    thinkingMode: null,
+    speed: null,
+    hasThinking: false,
     ...over,
   }
 }
@@ -100,6 +105,91 @@ describe("contextTokenSeries", () => {
       [5_000, 200, false],
       [0, 25_000, true],
     ])
+  })
+
+  it("forward-fills model, thinking mode, and speed across buckets with no value", () => {
+    const buckets = [
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket(),
+      bucket({ model: "claude-fable-5" }),
+      bucket({ speed: "fast" }),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(series.map((p) => p.model)).toEqual([
+      "claude-opus-4-6",
+      "claude-opus-4-6",
+      "claude-fable-5",
+      "claude-fable-5",
+    ])
+    expect(series.map((p) => p.thinkingMode)).toEqual(["high", "high", "high", "high"])
+    expect(series.map((p) => p.speed)).toEqual(["standard", "standard", "standard", "fast"])
+  })
+
+  it("leaves model, thinking mode, and speed null before the first observed value", () => {
+    const buckets = [bucket(), bucket({ model: "claude-opus-4-6" })]
+    const series = contextTokenSeries(buckets)
+    expect(series[0]!.model).toBeNull()
+    expect(series[0]!.thinkingMode).toBeNull()
+    expect(series[0]!.speed).toBeNull()
+    expect(series[1]!.model).toBe("claude-opus-4-6")
+  })
+
+  it("carries hasThinking per-bucket, unfilled", () => {
+    const buckets = [bucket({ hasThinking: true }), bucket()]
+    const series = contextTokenSeries(buckets)
+    expect(series.map((p) => p.hasThinking)).toEqual([true, false])
+  })
+})
+
+describe("modeChangeMarkers", () => {
+  it("emits no marker for the starting mode, only for later changes", () => {
+    const buckets = [
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket({ model: "claude-fable-5", thinkingMode: "high", speed: "standard" }),
+    ]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([{ index: 2, label: "opus-4-6 → fable-5" }])
+  })
+
+  it("labels an effort change and a speed change separately", () => {
+    const buckets = [
+      bucket({ thinkingMode: "high", speed: "standard" }),
+      bucket({ thinkingMode: "low" }),
+      bucket({ speed: "fast" }),
+    ]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([
+      { index: 1, label: "effort low" },
+      { index: 2, label: "fast" },
+    ])
+  })
+
+  it("joins several changes in the same bucket with a middle dot", () => {
+    const buckets = [
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket({ model: "claude-fable-5", thinkingMode: "low", speed: "fast" }),
+    ]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([{ index: 1, label: "opus-4-6 → fable-5 · effort low · fast" }])
+  })
+
+  it("still marks fast speed at the very start, unlike model or effort", () => {
+    const buckets = [bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "fast" })]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([{ index: 0, label: "fast" }])
+  })
+
+  it("emits nothing when the starting speed is standard", () => {
+    const buckets = [bucket({ model: "claude-opus-4-6", speed: "standard" })]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([])
+  })
+
+  it("emits nothing when no bucket carries a mode signal", () => {
+    const buckets = [bucket(), bucket(), bucket()]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([])
   })
 })
 

@@ -47,6 +47,14 @@ export interface SessionBucket {
   isCacheRehydration: boolean
   /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
   subagentLaunches: number
+  /** The model that produced the last parent event in this bucket, when known. */
+  model: string | null
+  /** The thinking-effort mode of the last parent event in this bucket, when known. */
+  thinkingMode: string | null
+  /** The response speed of the last parent event in this bucket, when known. */
+  speed: string | null
+  /** True when any parent event in this bucket carries a thinking block. */
+  hasThinking: boolean
 }
 
 /* -------------------------------------------------------------------------

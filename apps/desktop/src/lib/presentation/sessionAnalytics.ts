@@ -16,6 +16,7 @@ import type {
   InitialContextSource,
   SessionBucket,
 } from "../types/session"
+import { modelShortName } from "./models"
 
 /* -------------------------------------------------------------------------
  * Buckets and chart series
@@ -34,6 +35,14 @@ export interface ContextTokenPoint {
   cacheWriteTokens: number
   isCacheRehydration: boolean
   subagentLaunches: number
+  /** Model that produced this point, forward-filled from the last bucket that named one. */
+  model: string | null
+  /** Thinking-effort mode at this point, forward-filled the same way. */
+  thinkingMode: string | null
+  /** Response speed at this point, forward-filled the same way. */
+  speed: string | null
+  /** True when this bucket itself carries a thinking block (not forward-filled). */
+  hasThinking: boolean
 }
 
 /**
@@ -68,6 +77,9 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     if (Number.isNaN(levels[i])) levels[i] = next
     else next = levels[i]!
   }
+  const models = forwardFillMode(buckets, (bucket) => bucket.model)
+  const thinkingModes = forwardFillMode(buckets, (bucket) => bucket.thinkingMode)
+  const speeds = forwardFillMode(buckets, (bucket) => bucket.speed)
   return buckets.map((bucket, index) => ({
     index,
     progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
@@ -79,7 +91,88 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     cacheWriteTokens: bucket.cacheWriteTokens,
     isCacheRehydration: bucket.isCacheRehydration,
     subagentLaunches: bucket.subagentLaunches,
+    model: models[index]!,
+    thinkingMode: thinkingModes[index]!,
+    speed: speeds[index]!,
+    hasThinking: bucket.hasThinking,
   }))
+}
+
+/**
+ * Carry a per-bucket mode value forward: a bucket with no value keeps the
+ * last one observed, so the mode reads as persisting until it changes. `null`
+ * until the first bucket that names a value.
+ */
+function forwardFillMode(
+  buckets: SessionBucket[],
+  pick: (bucket: SessionBucket) => string | null,
+): (string | null)[] {
+  let held: string | null = null
+  return buckets.map((bucket) => {
+    const value = pick(bucket)
+    if (value !== null) held = value
+    return held
+  })
+}
+
+export interface ModeChangeMarker {
+  /** Bucket index the change lands on, matching `ContextTokenPoint.index`. */
+  index: number
+  /** Compact label, e.g. `"opus → sonnet"`, `"effort high"`, `"fast"`. */
+  label: string
+}
+
+/**
+ * One marker per bucket where the model, thinking mode, or speed changes from
+ * the previous non-null value of that same field. The first bucket that names
+ * a field's value is the session's starting mode, not a change, so it draws
+ * no marker for that field — the tooltip shows it instead. The one exception:
+ * "fast" speed at the very start still gets a marker, since fast mode is easy
+ * to miss otherwise. Several fields changing in the same bucket join into one
+ * label with " · ".
+ */
+export function modeChangeMarkers(points: ContextTokenPoint[]): ModeChangeMarker[] {
+  const markers: ModeChangeMarker[] = []
+  let seenModel = false
+  let seenThinkingMode = false
+  let seenSpeed = false
+  let prevModel: string | null = null
+  let prevThinkingMode: string | null = null
+  let prevSpeed: string | null = null
+
+  for (const point of points) {
+    const parts: string[] = []
+
+    if (point.model !== null) {
+      if (seenModel && point.model !== prevModel) {
+        parts.push(`${modelShortName(prevModel!)} → ${modelShortName(point.model)}`)
+      }
+      prevModel = point.model
+      seenModel = true
+    }
+
+    if (point.thinkingMode !== null) {
+      if (seenThinkingMode && point.thinkingMode !== prevThinkingMode) {
+        parts.push(`effort ${point.thinkingMode}`)
+      }
+      prevThinkingMode = point.thinkingMode
+      seenThinkingMode = true
+    }
+
+    if (point.speed !== null) {
+      if (seenSpeed && point.speed !== prevSpeed) {
+        parts.push(point.speed)
+      } else if (!seenSpeed && point.speed === "fast") {
+        parts.push("fast")
+      }
+      prevSpeed = point.speed
+      seenSpeed = true
+    }
+
+    if (parts.length > 0) markers.push({ index: point.index, label: parts.join(" · ") })
+  }
+
+  return markers
 }
 
 /** Candidate axis steps, from fine to coarse. */

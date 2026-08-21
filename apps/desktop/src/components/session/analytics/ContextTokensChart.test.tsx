@@ -46,6 +46,10 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheWriteTokens: 0,
     isCacheRehydration: false,
     subagentLaunches: 0,
+    model: null,
+    thinkingMode: null,
+    speed: null,
+    hasThinking: false,
     ...over,
   }
 }
@@ -95,6 +99,26 @@ describe("ContextTokensChart", () => {
     expect(compactionLine?.getAttribute("stroke-dasharray")).toBeTruthy()
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
   })
+
+  it("draws a mode-change marker with no line, only its label", () => {
+    const buckets = [
+      bucket({ contextTokens: 100_000, model: "claude-opus-4-6" }),
+      bucket({ contextTokens: 100_000, model: "claude-fable-5" }),
+    ]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+    )
+
+    expect(screen.getByText("opus-4-6 → fable-5")).toBeInTheDocument()
+    expect(container.querySelectorAll('line[stroke="none"]').length).toBeGreaterThan(0)
+  })
+
+  it("draws no mode-change marker when no bucket carries a mode signal", () => {
+    const buckets = [bucket({ contextTokens: 100_000 }), bucket({ contextTokens: 120_000 })]
+    render(<ContextTokensChart buckets={buckets} contextWindow={200_000} />)
+
+    expect(screen.queryAllByText(/→|effort |^fast$/)).toEqual([])
+  })
 })
 
 function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
@@ -109,6 +133,10 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     cacheWriteTokens: 0,
     isCacheRehydration: false,
     subagentLaunches: 0,
+    model: null,
+    thinkingMode: null,
+    speed: null,
+    hasThinking: false,
     ...over,
   }
 }
@@ -136,5 +164,40 @@ describe("ContextTokensTooltip", () => {
     )
 
     expect(screen.queryByText(/Subagents launched/)).not.toBeInTheDocument()
+  })
+
+  it("shows model, effort, speed, and thinking lines when present", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              model: "claude-opus-4-6",
+              thinkingMode: "high",
+              speed: "fast",
+              hasThinking: true,
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Model · opus-4-6")).toBeInTheDocument()
+    expect(screen.getByText("Effort · high")).toBeInTheDocument()
+    expect(screen.getByText("Speed · fast")).toBeInTheDocument()
+    expect(screen.getByText("Thinking")).toBeInTheDocument()
+  })
+
+  it("omits model, effort, speed, and thinking lines when absent", () => {
+    render(
+      <ContextTokensTooltip active contextWindow={200_000} payload={[{ payload: point() }]} />,
+    )
+
+    expect(screen.queryByText(/^Model/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Effort/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Speed/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument()
   })
 })
