@@ -25,7 +25,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
-import type { ActiveSessionsSummary, SessionCostComponents, SkillDetail } from "./types/session"
+import type {
+  ActiveSessionsSummary,
+  BillableTokens,
+  SessionCostComponents,
+  SkillDetail,
+} from "./types/session"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
@@ -171,7 +176,10 @@ export interface ActivityEntryPayload {
   title: string | null
   hasForkParent: boolean
   forkChildCount: number
+  /** Cost of the parent transcript plus every sub-agent the session launched. */
   cost: SessionCostComponents | null
+  /** Every model that contributed billable tokens. The list covers the
+   * parent transcript and every sub-agent. */
   models: string[]
 }
 
@@ -221,7 +229,20 @@ export interface SessionAnalyticsPayload {
   title: string | null
   wslDistro: string | null
   isActive: boolean
+  /** Cost of the parent transcript plus every sub-agent it launched. */
   cost: SessionCostComponents | null
+  /** Cost of the parent transcript, without any sub-agent. */
+  topLevelCost: SessionCostComponents | null
+  /** Cost of every sub-agent this session launched, combined. The value is
+   * `null` when the session has no sub-agent, or when no sub-agent could
+   * be priced. */
+  subagentsCost: SessionCostComponents | null
+  /** Billable tokens that back `cost`. The count sums the parent transcript
+   * and every sub-agent. */
+  inclusiveTokens: BillableTokens | null
+  /** Billable tokens that back `subagentsCost`. The count sums every
+   * sub-agent. The value is `null` when the session has no sub-agent. */
+  subagentsTokens: BillableTokens | null
   models: string[]
   skills: SkillDetail[]
   orchestration: OrchestrationPayload | null

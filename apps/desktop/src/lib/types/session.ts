@@ -114,6 +114,20 @@ export interface SessionCostComponents {
   cacheWriteUsd: number
 }
 
+/**
+ * Billable token counts, summed across one or more models.
+ *
+ * A single session already carries these counts as separate fields. This
+ * type names a subject that spans more than one transcript, such as every
+ * sub-agent combined.
+ */
+export interface BillableTokens {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+}
+
 /** Billable token counts retained per normalized model key. */
 interface ModelTokens {
   inputTokens?: number
