@@ -75,7 +75,7 @@ body {
  * and over the material it reads as a slab with a hard edge.
  *
  * `bg-primary` is the surface the palette gives a translucent window. It is
- * white at 0.58 in light and near-black in dark, so it lifts the material
+ * mostly white in light and near-black in dark, so it lifts the material
  * toward the theme instead of covering it, and the desktop behind the window
  * can no longer drag the contrast down. It is also the one surface token with
  * a `prefers-reduced-transparency` value, which is what makes it solid for a
