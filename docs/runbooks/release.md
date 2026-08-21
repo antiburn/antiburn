@@ -123,10 +123,12 @@ successful **push** run of `.github/workflows/ci.yml` whose SHA exactly equals
 the tag SHA. A pull-request check, a successful run for a neighboring commit,
 or an untested tag is refused before any signing job starts.
 
-Protect `main` with one required check named `ci-required`. Require pull
-requests and resolved conversations, and prohibit force-pushes and deletion.
-The aggregate check is deliberately stable while its platform jobs remain free
-to run or skip according to the semantic diff classifier.
+`main` requires only the `ci-required` check. It does not require pull requests
+or resolved conversations, and it does not prohibit force-pushes or deletion.
+See [`branch-rules.md`](branch-rules.md) for the committed rule and its apply,
+verify, and rollback commands. The aggregate check is deliberately stable while
+its platform jobs remain free to run or skip according to the semantic diff
+classifier.
 
 The current solo-maintainer repository requires zero independent approvals.
 That is not permission to bypass the pull request: the exact-SHA main run is the
