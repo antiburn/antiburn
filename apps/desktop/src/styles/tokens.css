@@ -117,7 +117,7 @@
   /* Text — explicit fallbacks, replaced by live system tokens when available */
   --color-text-primary: rgb(0 0 0 / 0.85);
   --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.75);
+  --color-text-tertiary: rgb(60 60 67 / 0.79);
 
   /* Borders */
   --color-border: rgb(0 0 0 / 0.15);
@@ -189,12 +189,14 @@
 }
 
 /* The system tertiary label is ~30% opacity in light mode, which gives small
-   text about 2.6:1. Bump it to 75%, the point where 11px text reaches the
-   WCAG AA ratio of 4.5:1 on a card, which is the lightest surface it sits on.
-   Secondary stays above it at 85%, so the hierarchy holds. */
+   text about 2.6:1. Bump it to 79%, the point where 11px text reaches the
+   WCAG AA ratio of 4.5:1 on a card on the popover. That is the hardest case:
+   the popover surface is translucent, so a dark desktop behind the window
+   darkens the card the text sits on. Secondary stays above it at 85%, so the
+   hierarchy holds. */
 @media (prefers-color-scheme: light) {
   :root {
-    --color-text-tertiary: rgb(60 60 67 / 0.75);
+    --color-text-tertiary: rgb(60 60 67 / 0.79);
   }
 }
 
@@ -261,7 +263,7 @@
   --color-bg-selected: rgb(0 0 0 / 0.09);
   --color-text-primary: rgb(0 0 0 / 0.85);
   --color-text-secondary: rgb(60 60 67 / 0.85);
-  --color-text-tertiary: rgb(60 60 67 / 0.75);
+  --color-text-tertiary: rgb(60 60 67 / 0.79);
   --color-border: rgb(0 0 0 / 0.15);
   --color-accent-val: rgb(0 122 255);
   --color-accent-fill-val: rgb(0 113 227);

@@ -217,9 +217,10 @@ function themeVars(css, theme) {
 /**
  * The palette a reader gets while the app follows the system.
  *
- * Light is the bare `:root`. Dark is the bare `:root` with the
- * `prefers-color-scheme: dark` block on top, which states only what it
- * changes. The reduced-transparency blocks are a separate axis and stay out.
+ * The bare `:root` holds the whole palette, and a `prefers-color-scheme`
+ * block states only what that theme changes. Both themes have one: light
+ * restates the tertiary label the `@supports` block just made live. The
+ * reduced-transparency blocks are a separate axis and stay out.
  *
  * A live system token has no static value, so it is skipped here exactly as
  * it is in [`themeVars`]. That is what keeps the four `-apple-system-*` tokens
@@ -236,9 +237,7 @@ function systemVars(css, theme) {
     }
   };
   add(bareRootBodies(css));
-  if (theme === 'dark') {
-    for (const body of preferenceBlocks(css, 'dark')) add(bareRootBodies(body));
-  }
+  for (const body of preferenceBlocks(css, theme)) add(bareRootBodies(body));
   return out;
 }
 

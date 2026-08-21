@@ -53,8 +53,8 @@ colors:
   label-secondary:
     light: "rgb(60 60 67 / 0.85)"
     dark: "rgb(235 235 245 / 0.72)"
-  label-tertiary: # 4.5:1 on a card, the lightest surface it sits on
-    light: "rgb(60 60 67 / 0.75)"
+  label-tertiary: # 4.5:1 on a card on the popover, over any desktop behind it
+    light: "rgb(60 60 67 / 0.79)"
     dark: "rgb(235 235 245 / 0.55)"
   separator: # live system separator token where available
     light: "rgb(0 0 0 / 0.15)"
