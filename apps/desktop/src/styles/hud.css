@@ -41,7 +41,14 @@
   --color-bg-hud-val: rgb(32 32 32);
 }
 
-body[data-transparent-window] {
+/*
+ * The HUD window shows the desktop behind it, so it paints no surface. The
+ * shell paints the window surface on `#root`, so this must clear both: `body`
+ * keeps the canvas transparent, and `#root` drops the surface the shell gives
+ * every other window.
+ */
+body[data-transparent-window],
+body[data-transparent-window] #root {
   background-color: transparent;
 }
 

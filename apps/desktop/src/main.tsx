@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client"
 import { App } from "./App"
 import { installFocusModality } from "./lib/focusModality"
 import { applyPlatformAttribute } from "./lib/platform"
+import { applyRouteAttribute } from "./lib/route"
 import "./styles.css"
 
 const container = document.getElementById("root")
@@ -15,10 +16,12 @@ if (!container) {
   throw new Error("index.html is missing the #root mount point")
 }
 
-// Both write attributes the stylesheet keys off, so they run before the first
-// paint: `data-platform` guards the platform-specific control rules, and
-// `data-keyboard` gates the focus ring.
+// All three write attributes the stylesheet keys off, so they run before the
+// first paint: `data-platform` guards the platform-specific control rules,
+// `data-route` gives the popover window its corner, and `data-keyboard` gates
+// the focus ring.
 applyPlatformAttribute()
+applyRouteAttribute()
 installFocusModality()
 
 createRoot(container).render(
