@@ -228,6 +228,16 @@ pub enum Role {
     Tool,
 }
 
+/// Whether a compaction boundary was triggered by the user or by the agent's
+/// own context-limit auto-compaction. `None` when the transcript names no
+/// trigger, or does not distinguish one (Codex today).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactionTrigger {
+    Manual,
+    Auto,
+}
+
 /// Which transcript an event comes from, after [`crate::analysis::merge_subagent_events`]
 /// concatenates a parent session with its sub-agents into one stream.
 ///
@@ -296,6 +306,19 @@ pub struct NormalizedEvent {
     /// correct point.
     #[serde(default)]
     pub is_compaction_boundary: bool,
+    /// Whether this compaction boundary was manual or automatic, when the
+    /// transcript records it. `None` when this event is not a compaction
+    /// boundary, or the vendor names no trigger.
+    #[serde(default)]
+    pub compaction_trigger: Option<CompactionTrigger>,
+    /// The context token count right before this compaction, when the
+    /// transcript records it.
+    #[serde(default)]
+    pub compaction_pre_tokens: Option<u64>,
+    /// The context token count right after this compaction, when the
+    /// transcript records it. Some older Claude records omit this.
+    #[serde(default)]
+    pub compaction_post_tokens: Option<u64>,
 }
 
 impl NormalizedEvent {
@@ -312,6 +335,9 @@ impl NormalizedEvent {
             has_thinking: false,
             message_id: None,
             is_compaction_boundary: false,
+            compaction_trigger: None,
+            compaction_pre_tokens: None,
+            compaction_post_tokens: None,
         }
     }
 }

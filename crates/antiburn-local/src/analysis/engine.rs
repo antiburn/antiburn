@@ -19,7 +19,9 @@ pub use crate::model::skill::SkillUse;
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::initial_context::InitialContextBreakdown;
-use crate::analysis::model::{EventSource, ModelRun, NormalizedSession, ToolCategory};
+use crate::analysis::model::{
+    CompactionTrigger, EventSource, ModelRun, NormalizedSession, ToolCategory,
+};
 
 /// Number of progress buckets each session is resampled onto (0% → 100%).
 pub const BUCKETS: usize = 180;
@@ -153,6 +155,16 @@ pub struct Bucket {
     /// True when any parent event in this bucket carries a `thinking` block
     /// (or its vendor equivalent). Parent turns only.
     pub has_thinking: bool,
+    /// Whether the compaction in this bucket was manual or automatic, when
+    /// known. Parent turns only, same reason as `model`. When two
+    /// compactions land in one bucket, this keeps the last one's trigger.
+    pub compaction_trigger: Option<CompactionTrigger>,
+    /// The context token count right before the compaction in this bucket,
+    /// when known. Parent turns only. Keeps the last compaction's value.
+    pub compaction_pre_tokens: Option<u64>,
+    /// The context token count right after the compaction in this bucket,
+    /// when known. Parent turns only. Keeps the last compaction's value.
+    pub compaction_post_tokens: Option<u64>,
 }
 
 /// Estimated USD cost of a session, split by billable component. An on-device
@@ -383,6 +395,11 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
             bucket.is_compaction_boundary |= ev.is_compaction_boundary;
             if ev.is_compaction_boundary {
                 awaiting_first_turn_after_compaction = true;
+                // Keep the last compaction's trigger/sizes when two land in
+                // one bucket.
+                bucket.compaction_trigger = ev.compaction_trigger;
+                bucket.compaction_pre_tokens = ev.compaction_pre_tokens;
+                bucket.compaction_post_tokens = ev.compaction_post_tokens;
             }
             let context_tokens = ev.usage.context_tokens();
             if context_tokens > 0 {
@@ -716,6 +733,11 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         // different agent with its own model and mode, so one bucket cannot
         // carry a single true value across a multi-session summary — the
         // mode-change chart annotation is a single-session feature only.
+        //
+        // `compaction_trigger`, `compaction_pre_tokens`, and
+        // `compaction_post_tokens` stay `None` for the same reason: each
+        // contributing session's compaction is its own event, so one summary
+        // bucket cannot carry a single trigger or size across sessions.
     }
 
     ActiveSessionsSummary {

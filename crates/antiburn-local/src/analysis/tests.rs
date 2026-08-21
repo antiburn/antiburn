@@ -4,7 +4,7 @@
 
 use crate::analysis::engine::analyze_session;
 use crate::analysis::merge::merge_subagent_events;
-use crate::analysis::model::{EventSource, ModelRun, Role, ToolCategory};
+use crate::analysis::model::{CompactionTrigger, EventSource, ModelRun, Role, ToolCategory};
 use crate::analysis::{RawSource, SessionInput, analyze_sources, normalize_source};
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
@@ -514,6 +514,86 @@ fn claude_marked_compaction_resets_context_occupancy() {
     assert_eq!(after.context_tokens, 10_000);
 }
 
+/// A Claude session whose `compact_boundary` record carries `compactMetadata`
+/// with a manual trigger and both sizes.
+const CLAUDE_MANUAL_COMPACTION_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:30Z","content":"Compacted conversation","compactMetadata":{"trigger":"manual","preTokens":196000,"postTokens":11000}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":80,"cache_read_input_tokens":9500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn claude_manual_compaction_carries_trigger_and_sizes_into_bucket() {
+    let session =
+        normalize_source(&jsonl_input("claude", CLAUDE_MANUAL_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, Some(CompactionTrigger::Manual));
+    assert_eq!(boundary.compaction_pre_tokens, Some(196_000));
+    assert_eq!(boundary.compaction_post_tokens, Some(11_000));
+}
+
+/// Same shape as the manual fixture, but the trigger is `auto`.
+const CLAUDE_AUTO_COMPACTION_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:30Z","content":"Compacted conversation","compactMetadata":{"trigger":"auto","preTokens":198000,"postTokens":12000}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":80,"cache_read_input_tokens":9500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn claude_auto_compaction_carries_trigger_into_bucket() {
+    let session = normalize_source(&jsonl_input("claude", CLAUDE_AUTO_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, Some(CompactionTrigger::Auto));
+}
+
+#[test]
+fn claude_marked_compaction_without_metadata_leaves_trigger_and_sizes_none() {
+    let session =
+        normalize_source(&jsonl_input("claude", CLAUDE_MARKED_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, None);
+    assert_eq!(boundary.compaction_pre_tokens, None);
+    assert_eq!(boundary.compaction_post_tokens, None);
+}
+
+/// Codex's compaction event carries no trigger or size info at all.
+#[test]
+fn codex_marked_compaction_leaves_trigger_and_sizes_none() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_MARKED_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, None);
+    assert_eq!(boundary.compaction_pre_tokens, None);
+    assert_eq!(boundary.compaction_post_tokens, None);
+}
+
 /// The marked variant of `CODEX_COMPACTION_FIXTURE`: same two `token_count`
 /// occupancy readings (200k then 30k), but with the explicit
 /// `context_compacted` event between them — so the drop is a real compaction,
@@ -686,6 +766,41 @@ fn claude_compaction_sharing_bucket_with_pre_compaction_turn_still_resets() {
         .find(|b| b.context_tokens > 0)
         .expect("a context reading after the boundary");
     assert_eq!(after.context_tokens, 10_000);
+}
+
+/// Two compaction boundaries sharing one progress bucket (same timestamp),
+/// with different triggers and sizes — the bucket must keep the second one's.
+const CLAUDE_TWO_COMPACTIONS_SHARE_BUCKET_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:00Z","content":"Compacted conversation","compactMetadata":{"trigger":"manual","preTokens":196000,"postTokens":11000}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:00Z","content":"Compacted conversation","compactMetadata":{"trigger":"auto","preTokens":50000,"postTokens":5000}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":80,"cache_read_input_tokens":9500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn two_compactions_sharing_a_bucket_keep_the_last_triggers_and_sizes() {
+    let session = normalize_source(&jsonl_input(
+        "claude",
+        CLAUDE_TWO_COMPACTIONS_SHARE_BUCKET_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    let boundary_indices: Vec<usize> = m
+        .buckets
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_compaction_boundary)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(boundary_indices.len(), 1, "got {boundary_indices:?}");
+    let boundary = &m.buckets[boundary_indices[0]];
+    assert_eq!(boundary.compaction_trigger, Some(CompactionTrigger::Auto));
+    assert_eq!(boundary.compaction_pre_tokens, Some(50_000));
+    assert_eq!(boundary.compaction_post_tokens, Some(5_000));
 }
 
 /// A Claude session where a cached turn (large cache-read ratio) is followed
