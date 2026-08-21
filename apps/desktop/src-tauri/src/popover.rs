@@ -247,7 +247,11 @@ pub fn open_from_tray_menu(app: &AppHandle) {
     // popover has nothing to show, so send the reader to the flow they are owed.
     if crate::onboarding::is_pending(app) {
         if let Err(error) = crate::onboarding::open(app) {
-            eprintln!("antiburn: could not open the first-run window ({error})");
+            ::tracing::warn!(
+                event = "onboarding_window_open_failed",
+                trigger = "tray",
+                error = %error
+            );
         }
         return;
     }
@@ -266,7 +270,7 @@ pub fn open_from_tray_menu(app: &AppHandle) {
     let window = match get_or_create(app) {
         Ok(window) => window,
         Err(error) => {
-            eprintln!("antiburn: could not create the popover ({error})");
+            ::tracing::error!(event = "popover_create_failed", error = %error);
             return;
         }
     };
@@ -280,7 +284,7 @@ pub fn open_from_tray_menu(app: &AppHandle) {
         state.record_anchor(anchor);
         if let Err(error) = place(&window, anchor, WIDTH, state.height()) {
             // Positioning is best-effort here as everywhere else.
-            eprintln!("antiburn: could not anchor the popover ({error})");
+            ::tracing::warn!(event = "popover_anchor_failed", error = %error);
         }
     }
 
@@ -498,7 +502,11 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     // anyone who closed it partway through.
     if crate::onboarding::is_pending(app) {
         if let Err(error) = crate::onboarding::open(app) {
-            eprintln!("antiburn: could not open the first-run window ({error})");
+            ::tracing::warn!(
+                event = "onboarding_window_open_failed",
+                trigger = "tray",
+                error = %error
+            );
         }
         return;
     }
@@ -511,7 +519,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
         // and re-anchoring picks up a menu bar that has since moved display.
         if is_pinned(app) {
             if let Err(error) = anchor_to(&window, anchor) {
-                eprintln!("antiburn: could not anchor the popover ({error})");
+                ::tracing::warn!(event = "popover_anchor_failed", error = %error);
             }
             let _ = window.set_focus();
             return;
@@ -530,7 +538,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     let window = match get_or_create(app) {
         Ok(window) => window,
         Err(error) => {
-            eprintln!("antiburn: could not create the popover ({error})");
+            ::tracing::error!(event = "popover_create_failed", error = %error);
             return;
         }
     };
@@ -538,7 +546,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     if let Err(error) = anchor_to(&window, anchor) {
         // Positioning is best-effort: a popover in the wrong place still beats
         // no popover at all.
-        eprintln!("antiburn: could not anchor the popover ({error})");
+        ::tracing::warn!(event = "popover_anchor_failed", error = %error);
     }
 
     let _ = window.show();
@@ -765,7 +773,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
     let window = match get_or_create(app) {
         Ok(window) => window,
         Err(error) => {
-            eprintln!("antiburn: could not create the pinned popover ({error})");
+            ::tracing::error!(event = "popover_create_failed", error = %error);
             return;
         }
     };
@@ -794,7 +802,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
         if let Err(error) = placed {
             // Best-effort, as everywhere else: a popover in the wrong place
             // still beats a pin that appears to do nothing.
-            eprintln!("antiburn: could not anchor the popover ({error})");
+            ::tracing::warn!(event = "popover_anchor_failed", error = %error);
         }
 
         let _ = window.show();

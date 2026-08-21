@@ -94,6 +94,8 @@ pub fn internal_process_host_exit_code() -> Option<i32> {
             let target = windows::target_program(&target_args)
                 .and_then(|value| std::path::Path::new(value).file_name())
                 .unwrap_or_else(|| OsStr::new("target process"));
+            // The process host exits before the shell installs its subscriber.
+            // Keep stderr so the parent process can read this failure.
             eprintln!(
                 "process host could not launch {}: {error}",
                 target.to_string_lossy()

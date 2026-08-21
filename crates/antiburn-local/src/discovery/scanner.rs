@@ -139,7 +139,14 @@ pub async fn parse_session_metadata(file: &Path) -> SessionMetadata {
 pub async fn parse_session_metadata_with(explorers: Explorers, file: &Path) -> SessionMetadata {
     let content = match tokio::fs::read_to_string(file).await {
         Ok(c) => c,
-        Err(_) => return SessionMetadata::default(),
+        Err(error) => {
+            ::tracing::debug!(
+                event = "session_metadata_unreadable",
+                path = %file.display(),
+                error = %error
+            );
+            return SessionMetadata::default();
+        }
     };
     parse_session_metadata_with_content_for(explorers, file, &content).await
 }

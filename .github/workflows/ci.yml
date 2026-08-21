@@ -220,6 +220,7 @@ jobs:
           workspaces: |
             apps/desktop/src-tauri -> target
             apps/desktop/src-tauri/crates/hud -> target
+            apps/desktop/src-tauri/crates/trace -> target
           shared-key: desktop-backend-ci
           key: ${{ matrix.name }}
           cache-bin: false
@@ -228,6 +229,11 @@ jobs:
       - name: Check formatting
         if: runner.os == 'Linux'
         working-directory: apps/desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: Check diagnostic crate formatting
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop/src-tauri/crates/trace
         run: cargo fmt --check
 
       - name: Check HUD crate formatting
@@ -239,12 +245,20 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      - name: Clippy diagnostic crate
+        working-directory: apps/desktop/src-tauri/crates/trace
+        run: cargo clippy --all-targets --locked -- -D warnings
+
       - name: Clippy HUD crate
         working-directory: apps/desktop/src-tauri/crates/hud
         run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Tests
         working-directory: apps/desktop/src-tauri
+        run: cargo test --locked
+
+      - name: Test diagnostic crate
+        working-directory: apps/desktop/src-tauri/crates/trace
         run: cargo test --locked
 
       - name: Test HUD crate

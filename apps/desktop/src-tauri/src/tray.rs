@@ -154,14 +154,18 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             {
                 // The pin itself took effect; only the label is stale, and the
                 // next state change relabels it.
-                eprintln!("antiburn: could not relabel the pin item ({error})");
+                ::tracing::warn!(
+                    event = "tray_pin_relabel_failed",
+                    pinned,
+                    error = %error
+                );
             }
         }
         MENU_SETTINGS => {
             // No pane in particular: the tray's Settings item is a general
             // entry point, so it leaves the window wherever it was last.
             if let Err(error) = settings::open(app, None) {
-                eprintln!("antiburn: could not open settings ({error})");
+                ::tracing::error!(event = "settings_window_open_failed", error = %error);
             }
         }
         MENU_QUIT => {

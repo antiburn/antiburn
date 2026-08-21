@@ -21,6 +21,10 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Changed
+
+- Analysis and discovery now emit structured local diagnostic events at silent
+  recovery seams. This change does not alter analysis results or public APIs.
 ### Fixed
 
 - Codex title discovery now distinguishes user-set names and generated titles
