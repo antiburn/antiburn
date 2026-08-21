@@ -242,6 +242,7 @@ else
 fi`;
   assert.match(script, new RegExp(aislopBranch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.ok(script.indexOf(aislopBranch) < script.indexOf('exit "$failed"'));
+});
 
 test("the standalone HUD crate has dedicated backend checks", () => {
   assert.match(workflow, /apps\/desktop\/src-tauri\/crates\/hud -> target/);
