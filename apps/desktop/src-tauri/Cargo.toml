@@ -10,11 +10,11 @@
 # neither member nor excluded aborts resolution outright ("multiple workspace
 # roots found in the same workspace").
 [workspace]
-exclude = ["crates/nudge", "crates/sound"]
+exclude = ["crates/hud", "crates/nudge", "crates/sound"]
 
 [package]
 name = "antiburn"
-version = "0.1.0-rc.6"
+version = "0.1.0-rc.7"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
@@ -46,6 +46,9 @@ antiburn-local = { path = "../../../crates/antiburn-local" }
 # The notification window: mechanism only — every gating decision stays in
 # src/notifications.rs. Ported under D-023 (docs/oss/source-allowlist.toml).
 antiburn-nudge = { path = "crates/nudge" }
+# The floating usage HUD window: mechanism only. The shell owns its session
+# activity policy and IPC commands. Ported under D-026.
+antiburn-hud = { path = "crates/hud" }
 # The notification chime: samples synthesized in-process, no audio assets, no
 # decoders. Ported under D-023 (docs/oss/source-allowlist.toml).
 antiburn-sound = { path = "crates/sound" }
@@ -61,7 +64,7 @@ async-trait = "0.1"
 # when `auth.json` did not state one plainly. Decoding only — nothing here
 # verifies a signature or should be trusted as anything more than a hint the
 # provider's own response can still reject.
-base64 = "0.22"
+base64 = "0.23"
 # Direct provider usage fetch (`provider_usage::live::sources`): a plain
 # HTTPS request to the provider's own endpoint, with the reader's own
 # credential — a `GET` for the usage reading itself, and, for Codex, the
@@ -75,7 +78,7 @@ base64 = "0.22"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 # The app-owned local database. `bundled` compiles SQLite from source, so the
 # app never depends on a system library and CI needs no extra packages.
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 # Only to install the process-wide crypto provider `reqwest`'s
 # `rustls-no-provider` feature leaves unset — `ring`, matching what
 # `tauri-plugin-updater`'s own rustls dependency already resolves to.
@@ -85,7 +88,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `tray-icon` gives the menu-bar item; `image-png` lets the tray glyph be
 # decoded from the generated PNG.
-tauri = { version = "2", features = ["image-png", "tray-icon"] }
+# The HUD crate builds a transparent macOS window. Tauri's configuration check
+# requires the shell manifest to declare the matching private API feature.
+tauri = { version = "2", features = ["image-png", "tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 # RFC 3339 stamps for the store's own timestamps.
@@ -100,7 +105,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
-getrandom = "0.2"
+getrandom = "0.4"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds
@@ -128,7 +133,7 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttr
 [target.'cfg(target_os = "windows")'.dependencies]
 # Per-user Run-key registration. Kept in Rust so executable paths are quoted
 # correctly and stale entries can be refreshed after an update.
-winreg = "0.55"
+winreg = "0.56"
 
 [dev-dependencies]
 # Synthetic agent stores for the scan-pipeline tests.

@@ -86,7 +86,10 @@ pub struct SessionExport {
     /// The engine's per-session metrics, or absent when the transcript could
     /// not be analyzed.
     pub metrics: Option<SessionMetrics>,
+    /// Cost of the parent transcript plus every sub-agent it launched.
     pub cost: Option<SessionCost>,
+    /// Every model that contributed billable tokens. The list covers the
+    /// parent transcript and every sub-agent.
     pub models: Vec<String>,
     pub skills: Vec<SkillUse>,
     pub orchestration: Option<OrchestrationStatus>,

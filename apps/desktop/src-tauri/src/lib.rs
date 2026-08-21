@@ -59,6 +59,7 @@ mod disk_monitor;
 mod dto;
 mod export;
 mod global_click;
+mod hud;
 mod notifications;
 mod nudges;
 mod onboarding;
@@ -121,11 +122,13 @@ pub fn run() {
             commands::export_session,
             commands::get_provider_usage,
             commands::get_live_usage,
+            commands::get_latest_session_activity,
             commands::refresh_live_usage,
             commands::get_scan_status,
             commands::get_folder_permissions,
             commands::request_folder_access,
             commands::open_folder_access_settings,
+            commands::open_overlay_window,
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
             commands::get_session_analytics,
@@ -146,6 +149,7 @@ pub fn run() {
             commands::reveal_source,
             commands::scan_now,
             commands::set_popover_height,
+            commands::set_overlay_hover_region,
             commands::set_repository_enabled,
             commands::set_settings,
             commands::take_settings_pane,

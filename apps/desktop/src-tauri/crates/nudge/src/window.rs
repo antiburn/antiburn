@@ -17,8 +17,7 @@
 //! over the runtime.
 
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 use crate::NudgePlacement;
@@ -97,7 +96,21 @@ fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWind
             .accept_first_mouse(true);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        // The resizable flag is for the toolkit, not for the reader. GTK pins
+        // the geometry hints of a non-resizable window to its natural size, and
+        // then it refuses a later resize. The notification must match the height
+        // that the webview measures, so the flag stays on and overrides the
+        // shared `.resizable(false)` above. The window has no decorations, so it
+        // shows no resize handle and the reader cannot drag it.
+        builder = builder
+            .decorations(false)
+            .transparent(false)
+            .resizable(true);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         builder = builder.decorations(false).transparent(false);
     }
@@ -179,12 +192,22 @@ fn place_at_menu_bar_anchor(
 }
 
 fn set_frame(window: &WebviewWindow, w: f64, h: f64, x: f64, y: f64) {
-    // The window is built non-resizable (the OS clamps `set_size`); flip it
-    // resizable around the resize. It has no decorations, so no handle appears.
-    let _ = window.set_resizable(true);
-    let _ = window.set_size(LogicalSize::new(w, h));
-    let _ = window.set_resizable(false);
-    let _ = window.set_position(LogicalPosition::new(x, y));
+    // Linux applies its frame in `linux.rs`: the GTK toolkit needs the main
+    // thread, and it needs different resize handling.
+    #[cfg(target_os = "linux")]
+    crate::linux::apply_frame(window, w, h, x, y);
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        use tauri::{LogicalPosition, LogicalSize};
+
+        // The window is built non-resizable (the OS clamps `set_size`); flip it
+        // resizable around the resize. It has no decorations, so no handle appears.
+        let _ = window.set_resizable(true);
+        let _ = window.set_size(LogicalSize::new(w, h));
+        let _ = window.set_resizable(false);
+        let _ = window.set_position(LogicalPosition::new(x, y));
+    }
 
     // macOS: hand the same rect to the cursor-based hover watcher. `x`/`y` are
     // already in the global logical point space it hit-tests against, so it

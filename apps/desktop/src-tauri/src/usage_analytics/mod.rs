@@ -284,7 +284,7 @@ fn reset_session() {
 /// are not derived from anything about the machine.
 fn random_identifier() -> String {
     let mut bytes = [0u8; 16];
-    if getrandom::getrandom(&mut bytes).is_err() {
+    if getrandom::fill(&mut bytes).is_err() {
         // Randomness being unavailable is not a reason to fall back to
         // something guessable or machine-derived; a nil identifier is
         // honestly useless, which is the correct failure here.

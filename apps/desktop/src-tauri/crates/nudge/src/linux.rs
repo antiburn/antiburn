@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Linux-only: order the notification window front without taking input focus.
+//! Linux-only glue for the notification window: apply its frame, and order it
+//! front without taking input focus.
 //!
 //! `set_focus_on_map(false)` on the underlying GTK window suppresses the input
 //! focus grab GTK would otherwise perform when the window is mapped (shown),
@@ -17,7 +18,28 @@
 //! for its AppKit calls.
 
 use gtk::prelude::*;
-use tauri::WebviewWindow;
+use tauri::{LogicalPosition, LogicalSize, WebviewWindow};
+
+/// Size and position the notification window.
+///
+/// The window keeps its resizable flag for the whole of its life (see
+/// `window::build_nudge_window`). The other platforms turn that flag off again
+/// directly after the resize, but on GTK that clamps the window: GTK reads the
+/// geometry hints from the natural size of the window, and it can apply them
+/// before it allocates the new size. The window then keeps the size it had, and
+/// the page background paints the strip that the notification card does not
+/// cover.
+///
+/// The work runs on the GTK main-loop thread for the reason the module doc
+/// gives. It also makes the calls take effect inline, so the size and the
+/// position are correct before the show that comes after them.
+pub(crate) fn apply_frame(window: &WebviewWindow, w: f64, h: f64, x: f64, y: f64) {
+    let window = window.clone();
+    let _ = window.clone().run_on_main_thread(move || {
+        let _ = window.set_size(LogicalSize::new(w, h));
+        let _ = window.set_position(LogicalPosition::new(x, y));
+    });
+}
 
 pub(crate) fn show(window: &WebviewWindow) {
     let window = window.clone();

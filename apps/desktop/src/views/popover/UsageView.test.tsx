@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { fireEvent, render, screen, within } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type {
   LiveProviderUsagePayload,
@@ -15,6 +15,36 @@ import type {
   ProviderUsageWindowPayload,
 } from "../../lib/ipc"
 import { UsageView } from "./UsageView"
+
+const platform = vi.hoisted(() => ({ mac: false }))
+vi.mock("../../lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return { ...actual, isMacOS: () => platform.mac }
+})
+
+const hudWindow = vi.hoisted(() => ({ visible: false }))
+const openOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
+const hideOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
+const setFloatingHudEnabled = vi.hoisted(() => vi.fn())
+vi.mock("../../lib/overlayWindow", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  class HudVisibilitySession {
+    private listeners = new Set<() => void>()
+    private visible = hudWindow.visible
+    getSnapshot = () => this.visible
+    subscribe = (listener: () => void) => {
+      this.listeners.add(listener)
+      return () => this.listeners.delete(listener)
+    }
+    toggle = () => {
+      this.visible = !this.visible
+      setFloatingHudEnabled(this.visible)
+      void (this.visible ? openOverlayWindow() : hideOverlayWindow())
+      for (const listener of this.listeners) listener()
+    }
+  }
+  return { ...actual, HudVisibilitySession }
+})
 
 function usageWindow(
   overrides: Partial<ProviderUsageWindowPayload> = {},
@@ -440,5 +470,42 @@ describe("UsageView — what history says about a limit", () => {
     // The numbers are fine and simply too new — a different message from
     // "come back later", and a different one again from "go use your agent".
     expect(screen.getAllByText("Just reset").length).toBeGreaterThan(0)
+  })
+})
+
+describe("UsageView — HUD pop-out", () => {
+  beforeEach(() => {
+    platform.mac = true
+    hudWindow.visible = false
+    openOverlayWindow.mockClear()
+    hideOverlayWindow.mockClear()
+    setFloatingHudEnabled.mockClear()
+  })
+
+  it("offers the pop-out only on macOS", () => {
+    platform.mac = false
+    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    expect(
+      screen.queryByRole("button", { name: /floating usage hud/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("opens the HUD and records the preference", () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    const button = screen.getByRole("button", { name: "Show the floating usage HUD" })
+    fireEvent.click(button)
+    expect(openOverlayWindow).toHaveBeenCalled()
+    expect(setFloatingHudEnabled).toHaveBeenCalledWith(true)
+    expect(button).toHaveAttribute("aria-pressed", "true")
+  })
+
+  it("reflects a visible HUD and hides it on the second press", () => {
+    hudWindow.visible = true
+    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    const button = screen.getByRole("button", { name: "Hide the floating usage HUD" })
+    fireEvent.click(button)
+    expect(hideOverlayWindow).toHaveBeenCalled()
+    expect(setFloatingHudEnabled).toHaveBeenCalledWith(false)
+    expect(button).toHaveAttribute("aria-pressed", "false")
   })
 })

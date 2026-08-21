@@ -15,10 +15,11 @@
  *   focus                       keyboard-only focus ring
  *   controls                    button interaction + .ui-push-button
  *   platform-controls           styling for the headless control primitives
+ *   hud                         floating usage HUD presentation
  *   motion                      reduced-motion clamp, last so it wins
  *
- * Component-scoped stylesheets (text-roll.css) are imported by the component
- * that owns them, not from here.
+ * Other component-scoped stylesheets (text-roll.css) are imported by the
+ * component that owns them, not from here.
  */
 
 @import "tailwindcss";
@@ -29,6 +30,7 @@
 @import "./styles/focus.css";
 @import "./styles/controls.css";
 @import "./styles/platform-controls.css";
+@import "./styles/hud.css";
 @import "./styles/motion.css";
 
 /*
