@@ -437,15 +437,29 @@ fn resolve_context_window(reported: u64, peak: u64) -> u64 {
         .unwrap_or(peak)
 }
 
-/// Rescale a token count measured against `window` into the shared reference
-/// `CONTEXT_WINDOW`, so occupancy from models with different context sizes
-/// (e.g. Codex's 258k vs the 200k reference) lands on one comparable axis. This
-/// lets the summary keep a single `context_window` denominator for the frontend.
-fn to_reference_window(tokens: u64, window: u64) -> u64 {
-    if window == 0 || window == CONTEXT_WINDOW {
+/// Rescale a token count measured against `window` into the shared
+/// `reference` window, so occupancy from models with different context sizes
+/// lands on one comparable axis. The summary then keeps a single
+/// `context_window` denominator for the frontend. A session whose window is
+/// already the reference keeps its raw token counts.
+fn to_reference_window(tokens: u64, window: u64, reference: u64) -> u64 {
+    if window == 0 || window == reference {
         return tokens;
     }
-    ((tokens as u128 * CONTEXT_WINDOW as u128) / window as u128) as u64
+    ((tokens as u128 * reference as u128) / window as u128) as u64
+}
+
+/// The reference window for a summary: the largest window among the sessions
+/// that report context. A single session keeps its own window, so the detail
+/// view shows real token counts. A mixed summary scales the smaller windows up
+/// to the largest one instead of down to a fixed tier.
+fn reference_window(metrics: &[SessionMetrics]) -> u64 {
+    metrics
+        .iter()
+        .filter(|m| m.context_available)
+        .map(|m| m.context_window)
+        .max()
+        .unwrap_or(CONTEXT_WINDOW)
 }
 
 /// Aggregate per-session metrics into the averaged live summary.
@@ -478,14 +492,18 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     let mut active_sum = 0u64;
     // Sum cost only over priceable sessions; stays `None` if none had a known model.
     let mut cost_total_usd: Option<f64> = None;
+    let reference = reference_window(&metrics);
     for m in &metrics {
         tool_mix.merge(m.tool_mix);
         grep_total += m.grep_count;
         tokens_in_total += m.tokens_in;
         tokens_out_total += m.tokens_out;
         if m.context_available {
-            peak_context =
-                peak_context.max(to_reference_window(m.peak_context_tokens, m.context_window));
+            peak_context = peak_context.max(to_reference_window(
+                m.peak_context_tokens,
+                m.context_window,
+                reference,
+            ));
         }
         duration_sum += m.duration_secs;
         active_sum += m.active_secs;
@@ -514,9 +532,9 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
                 tok_contributors += 1;
             }
             // Normalize each session's occupancy into the shared reference window
-            // before averaging, so mixed-vendor summaries stay on one % axis.
+            // before averaging, so mixed-vendor summaries stay on one axis.
             let ctx = if m.context_available {
-                to_reference_window(b.context_tokens, m.context_window)
+                to_reference_window(b.context_tokens, m.context_window, reference)
             } else {
                 0
             };
@@ -541,7 +559,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         tokens_out_total,
         peak_context_tokens: peak_context,
         context_available: metrics.iter().any(|m| m.context_available),
-        context_window: CONTEXT_WINDOW,
+        context_window: reference,
         cost_total_usd,
         buckets,
         sessions: metrics,

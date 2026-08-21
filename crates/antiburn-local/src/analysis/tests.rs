@@ -1300,3 +1300,35 @@ fn skill_descriptions_are_grafted_from_the_listing() {
         Some("Fan-out web research harness.")
     );
 }
+
+/// The detail view summarizes one session. Its context must stay in real
+/// tokens against its own window, not shrink into a fixed reference tier.
+#[test]
+fn single_session_summary_keeps_its_own_window_and_raw_context() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":100,"cache_read_input_tokens":130000,"output_tokens":50},"content":[{"type":"text","text":"hi"}]}}"#;
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+    assert_eq!(summary.context_window, 1_000_000);
+    assert_eq!(summary.peak_context_tokens, 130_100);
+    let peak_bucket = summary
+        .buckets
+        .iter()
+        .map(|b| b.context_tokens)
+        .max()
+        .unwrap_or(0);
+    assert_eq!(peak_bucket, 130_100);
+}
+
+/// A mixed summary lands on the largest contributing window and scales the
+/// smaller-window session up to it, so occupancy stays comparable.
+#[test]
+fn mixed_summary_scales_to_the_largest_window() {
+    let small = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-3-5-haiku","usage":{"input_tokens":100000,"output_tokens":50},"content":[{"type":"text","text":"hi"}]}}"#;
+    let large = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":200000,"output_tokens":50},"content":[{"type":"text","text":"hi"}]}}"#;
+    let summary = analyze_sources(vec![
+        jsonl_input("claude", small),
+        jsonl_input("claude", large),
+    ]);
+    assert_eq!(summary.context_window, 1_000_000);
+    // 100k of a 200k window is 50%, which is 500k of the 1M reference.
+    assert_eq!(summary.peak_context_tokens, 500_000);
+}
