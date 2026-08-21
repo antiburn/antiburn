@@ -82,7 +82,11 @@ pub fn collect(sources: &[Box<dyn LiveUsageSource>], online: bool, max_age: Dura
         }
         let outcome = source.fetch(max_age);
         if let Some(error) = outcome.error {
-            collected.errors.push((source.id(), error));
+            collected.errors.push(SourceFailure {
+                source: source.id(),
+                provider: source.provider(),
+                error,
+            });
         }
         for snapshot in outcome.snapshots {
             collected.push(snapshot);
@@ -96,8 +100,22 @@ pub fn collect(sources: &[Box<dyn LiveUsageSource>], online: bool, max_age: Dura
 pub struct Collected {
     /// One snapshot per provider account, best reading kept.
     pub snapshots: Vec<ProviderUsageSnapshot>,
-    /// Failures worth telling the reader about, by source id.
-    pub errors: Vec<(&'static str, super::model::ProviderUsageError)>,
+    /// Failures worth telling the reader about.
+    pub errors: Vec<SourceFailure>,
+}
+
+/// One source's failure, with the provider it answers for.
+///
+/// The provider travels with the error because a failed source produces no
+/// snapshot: this is the only place the views can learn whose usage is
+/// missing.
+#[derive(Debug)]
+pub struct SourceFailure {
+    /// The failed source's stable id.
+    pub source: &'static str,
+    /// The canonical provider id the source answers for.
+    pub provider: &'static str,
+    pub error: super::model::ProviderUsageError,
 }
 
 impl Collected {

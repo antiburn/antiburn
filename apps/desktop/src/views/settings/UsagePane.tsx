@@ -23,7 +23,7 @@ import {
   setFloatingHudEnabled,
 } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
-import { liveSourceNote } from "../../lib/presentation/liveUsage"
+import { liveErrorNote, liveSourceNote } from "../../lib/presentation/liveUsage"
 import type { AppSettingsController } from "./useAppSettings"
 
 /**
@@ -46,20 +46,6 @@ import type { AppSettingsController } from "./useAppSettings"
  */
 
 export type UsagePaneProps = AppSettingsController
-
-/** What a failed source means, phrased as something a reader could act on. */
-function errorNote(category: string): string {
-  switch (category) {
-    case "authentication":
-      return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
-    case "rateLimited":
-      return "Your provider asked antiburn to slow down. It will try again later."
-    case "schema":
-      return "Your provider reported usage in a shape antiburn does not recognise."
-    default:
-      return "antiburn could not reach your provider for usage. It will try again later."
-  }
-}
 
 export function UsagePane({ settings, update }: UsagePaneProps) {
   const [hudShown, setHudShown] = useState(() => isFloatingHudEnabled())
@@ -149,8 +135,12 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
           {live.errors.map((error) => (
             <Row
               key={error.source}
-              label="Could not read usage"
-              description={errorNote(error.category)}
+              label={
+                error.displayName
+                  ? `Could not read ${error.displayName} usage`
+                  : "Could not read usage"
+              }
+              description={liveErrorNote(error.category)}
             />
           ))}
         </Card>

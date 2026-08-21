@@ -250,6 +250,9 @@ impl LiveUsageSource for Fixed {
     fn id(&self) -> &'static str {
         self.0
     }
+    fn provider(&self) -> &'static str {
+        crate::provider_usage::providers::ANTHROPIC
+    }
     fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
         SourceOutcome::found(self.1.clone())
     }
@@ -260,6 +263,9 @@ struct Broken(&'static str, ProviderUsageError);
 impl LiveUsageSource for Broken {
     fn id(&self) -> &'static str {
         self.0
+    }
+    fn provider(&self) -> &'static str {
+        crate::provider_usage::providers::ANTHROPIC
     }
     fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
         SourceOutcome::failed(self.1)
@@ -331,6 +337,10 @@ fn a_failed_source_reports_its_category_without_erasing_a_working_one() {
     assert_eq!(summary.errors.len(), 1);
     assert_eq!(summary.errors[0].source, "signed-out");
     assert_eq!(summary.errors[0].category, "authentication");
+    // The error names its provider, so the views can keep a section for a
+    // provider the failure left without a snapshot.
+    assert_eq!(summary.errors[0].provider, "anthropic");
+    assert_eq!(summary.errors[0].display_name, "Claude");
 }
 
 #[test]
@@ -387,6 +397,9 @@ struct Counted(Arc<AtomicUsize>);
 impl LiveUsageSource for Counted {
     fn id(&self) -> &'static str {
         "counted"
+    }
+    fn provider(&self) -> &'static str {
+        crate::provider_usage::providers::ANTHROPIC
     }
     fn requires_online_opt_in(&self) -> bool {
         true

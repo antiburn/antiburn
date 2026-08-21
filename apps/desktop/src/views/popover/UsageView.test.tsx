@@ -392,7 +392,16 @@ describe("UsageView — plan limits layered over local estimates", () => {
     render(
       <UsageView
         summary={summary()}
-        live={live({ errors: [{ source: "claude-usage-fetch", category: "authentication" }] })}
+        live={live({
+          errors: [
+            {
+              source: "claude-usage-fetch",
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "authentication",
+            },
+          ],
+        })}
         now={NOW}
         onBack={vi.fn()}
       />,

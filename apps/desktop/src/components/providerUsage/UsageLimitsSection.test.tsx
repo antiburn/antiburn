@@ -111,6 +111,29 @@ describe("UsageLimitsSection — visibility", () => {
     const { container } = section({ live: liveSummary([liveProvider({ windows: [] })]) })
     expect(container).toBeEmptyDOMElement()
   })
+
+  it("keeps a subsection for a provider whose source failed with nothing cached", () => {
+    // The error is the provider's only trace; a section that silently
+    // vanishes reads as data loss rather than as a passing failure.
+    section({
+      live: {
+        providers: [],
+        errors: [
+          {
+            source: "claude-usage-fetch",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "rateLimited",
+          },
+        ],
+        generatedAt: new Date().toISOString(),
+      },
+    })
+    const subsection = screen.getByTestId("usage-limits-unavailable")
+    expect(subsection).toHaveTextContent("Claude")
+    expect(subsection).toHaveTextContent("rate limited")
+    expect(subsection).toHaveTextContent(/asked antiburn to slow down/i)
+  })
 })
 
 describe("UsageLimitsSection — expanded", () => {

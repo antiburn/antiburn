@@ -265,6 +265,10 @@ impl LiveUsageSource for ClaudeDirectFetch {
         SOURCE_ID
     }
 
+    fn provider(&self) -> &'static str {
+        crate::provider_usage::providers::ANTHROPIC
+    }
+
     /// This source makes a request of its own, on the reader's own account —
     /// exactly the traffic the online opt-in exists to gate.
     fn requires_online_opt_in(&self) -> bool {

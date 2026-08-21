@@ -527,6 +527,18 @@ pub struct LiveExtraUsage {
 pub struct LiveUsageSourceError {
     /// The source's stable id.
     pub source: String,
+    /// The canonical id of the provider the source answers for.
+    ///
+    /// A failed source contributes no entry to `providers`, so this field is
+    /// the only place the views can learn whose usage is missing. Defaulted
+    /// on deserialize: a snapshot cached before this field existed must
+    /// still load.
+    #[serde(default)]
+    pub provider: String,
+    /// The provider's display name, for example "Claude". Defaulted like
+    /// `provider`.
+    #[serde(default)]
+    pub display_name: String,
     /// `authentication`, `rateLimited`, `schema`, or `unavailable`.
     pub category: String,
 }

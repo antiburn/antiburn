@@ -426,6 +426,15 @@ export interface LiveProviderUsagePayload {
 /** A source that failed, in terms a reader can act on. */
 export interface LiveUsageSourceErrorPayload {
   source: string
+  /**
+   * The canonical id of the provider the source answers for. A failed source
+   * contributes no entry to `providers`, so this is how the views keep a
+   * section for the provider the failure left without a reading. Empty on a
+   * snapshot cached before the field existed.
+   */
+  provider: string
+  /** The provider's display name, for example "Claude". Empty like `provider`. */
+  displayName: string
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
 }

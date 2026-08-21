@@ -88,6 +88,15 @@ pub trait LiveUsageSource: Send + Sync {
     /// A stable id for this source, used in the error surface and in logs.
     fn id(&self) -> &'static str;
 
+    /// The canonical id of the provider this source answers for — one of the
+    /// [`crate::provider_usage::providers`] constants.
+    ///
+    /// A failed source produces no snapshot, and without this the error would
+    /// be the only trace of the provider: the views could not say *whose*
+    /// usage they cannot show. Required rather than defaulted, so a new
+    /// source cannot forget to say.
+    fn provider(&self) -> &'static str;
+
     /// Whether this source may only run behind the online opt-in.
     ///
     /// Declared by the source rather than known by the caller, so adding one
@@ -232,9 +241,11 @@ pub fn summarize(
         errors: collected
             .errors
             .into_iter()
-            .map(|(source, error)| LiveUsageSourceError {
-                source: source.to_string(),
-                category: error.category().to_string(),
+            .map(|failure| LiveUsageSourceError {
+                source: failure.source.to_string(),
+                provider: failure.provider.to_string(),
+                display_name: super::providers::display_name(failure.provider).to_string(),
+                category: failure.error.category().to_string(),
             })
             .collect(),
         generated_at: crate::store::iso_from_epoch(Some(now)),

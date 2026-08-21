@@ -271,6 +271,10 @@ impl LiveUsageSource for CodexDirectFetch {
         super::CODEX_SOURCE_ID
     }
 
+    fn provider(&self) -> &'static str {
+        crate::provider_usage::providers::OPENAI
+    }
+
     fn requires_online_opt_in(&self) -> bool {
         true
     }
