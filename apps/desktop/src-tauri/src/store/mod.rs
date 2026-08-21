@@ -615,35 +615,22 @@ impl Store {
     pub fn save_analysis(&self, record: &AnalysisRecord) -> Result<()> {
         self.lock().execute(
             "INSERT INTO session_analysis (
-                 environment_key, agent, session_id, metrics_json, cost_json,
-                 model_breakdown_json, inclusive_models_json, active_secs, duration_secs,
-                 pattern_score, source_fingerprint, pricing_generation, analyzed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 environment_key, agent, session_id, model_breakdown_json,
+                 inclusive_models_json, source_fingerprint, pricing_generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
-                 metrics_json = excluded.metrics_json,
-                 cost_json = excluded.cost_json,
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
-                 active_secs = excluded.active_secs,
-                 duration_secs = excluded.duration_secs,
-                 pattern_score = excluded.pattern_score,
                  source_fingerprint = excluded.source_fingerprint,
-                 pricing_generation = excluded.pricing_generation,
-                 analyzed_at = excluded.analyzed_at",
+                 pricing_generation = excluded.pricing_generation",
             params![
                 record.key.environment_key,
                 record.key.agent,
                 record.key.session_id,
-                record.metrics_json,
-                record.cost_json,
                 record.model_breakdown_json,
                 record.inclusive_models_json,
-                record.active_secs,
-                record.duration_secs,
-                record.pattern_score,
                 record.source_fingerprint,
                 record.pricing_generation,
-                now_rfc3339(),
             ],
         )?;
         Ok(())
@@ -653,9 +640,8 @@ impl Store {
     pub fn analysis(&self, key: &SessionKey) -> Result<Option<AnalysisRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id, metrics_json, cost_json,
-                    model_breakdown_json, inclusive_models_json, active_secs, duration_secs,
-                    pattern_score, source_fingerprint, pricing_generation
+            "SELECT environment_key, agent, session_id, model_breakdown_json,
+                    inclusive_models_json, source_fingerprint, pricing_generation
                FROM session_analysis
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -669,15 +655,10 @@ impl Store {
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
                         ),
-                        metrics_json: row.get(3)?,
-                        cost_json: row.get(4)?,
-                        model_breakdown_json: row.get(5)?,
-                        inclusive_models_json: row.get(6)?,
-                        active_secs: row.get(7)?,
-                        duration_secs: row.get(8)?,
-                        pattern_score: row.get(9)?,
-                        source_fingerprint: row.get(10)?,
-                        pricing_generation: row.get(11)?,
+                        model_breakdown_json: row.get(3)?,
+                        inclusive_models_json: row.get(4)?,
+                        source_fingerprint: row.get(5)?,
+                        pricing_generation: row.get(6)?,
                     })
                 },
             )

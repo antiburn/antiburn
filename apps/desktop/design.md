@@ -119,21 +119,18 @@ colors:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
-  mode-implementing:
+  analytics-blue-strong:
     light: "hsl(224.2 76.3% 48%)"
     dark: "hsl(221.2 83% 53.3%)"
-  mode-testing:
+  analytics-green:
     light: "hsl(161.3 93% 30.4%)"
     dark: "hsl(158 64% 51.56%)"
-  mode-exploring:
+  analytics-blue:
     light: "hsl(217.2 91% 59.8%)"
     dark: "hsl(213 94% 67.8%)"
-  mode-thinking:
+  analytics-cyan:
     light: "hsl(188.7 94.4% 42.7%)"
     dark: "hsl(188 86% 53.3%)"
-  mode-disruption:
-    light: "hsl(20.5 90% 48.2%)"
-    dark: "hsl(34 100% 52%)"
   context-fill-top:
     light: "hsl(217.2 91% 59.8% / 0.55)"
     dark: "hsl(213 94% 67.8% / 0.6)"
@@ -152,7 +149,7 @@ colors:
   token-out:
     light: "hsl(255 91% 76.2%)"
     dark: "hsl(253 94% 85%)"
-  pattern-drifting:
+  context-warning:
     light: "hsl(32 95% 43.72%)"
     dark: "hsl(36.4 100% 52%)"
 fonts:

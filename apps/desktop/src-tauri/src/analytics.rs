@@ -17,8 +17,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use antiburn_local::analysis::{
     ActiveSessionsSummary, ModelRun, RawSource, SessionCost, SessionInput, SessionMetrics,
-    SkillUse, active_time_fraction, aggregate_metrics, analyze_sources_with, normalize_source,
-    price_breakdown, pricing_generation,
+    SkillUse, aggregate_metrics, analyze_sources_with, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, ForkObservation, SessionSource,
@@ -54,9 +53,7 @@ const TRUNCATION_MARK: char = '…';
 
 /// Hold every skill description to [`SKILL_DESCRIPTION_MAX_CHARS`].
 ///
-/// Applied to the metrics' own `skill_uses`, which is the single value that
-/// becomes the cached `metrics_json`, the exported `metrics`, and the exported
-/// `skills` — so capping it once here caps all three.
+/// Applied before skill invocations enter an export.
 fn cap_skill_descriptions(skills: &mut [SkillUse]) {
     for skill in skills {
         if let Some(description) = skill.description.take() {
@@ -146,21 +143,13 @@ impl SessionAnalysis {
 
     /// The cache record for this analysis, when there is anything to cache.
     pub fn record(&self, key: &SessionKey) -> Option<AnalysisRecord> {
-        let metrics = self.metrics.as_ref()?;
+        self.metrics.as_ref()?;
         Some(AnalysisRecord {
             key: key.clone(),
-            metrics_json: serde_json::to_string(metrics).ok()?,
-            cost_json: self
-                .cost
-                .as_ref()
-                .and_then(|cost| serde_json::to_string(cost).ok()),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
                 .unwrap_or_else(|_| "{}".to_string()),
             inclusive_models_json: serde_json::to_string(&self.model_runs)
                 .unwrap_or_else(|_| "[]".to_string()),
-            active_secs: metrics.active_secs as i64,
-            duration_secs: metrics.duration_secs as i64,
-            pattern_score: i64::from(metrics.pattern_score),
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
         })
@@ -310,9 +299,8 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
 
 /// Analyze one session and, in the same pass, every sub-agent it launched.
 ///
-/// One pass rather than N+1 because the engine's entry point already takes a
-/// batch: the sub-agents' metrics come back alongside the parent's, and the
-/// roster's health scores cost nothing extra.
+/// One pass avoids an extra analysis call for each sub-agent. The engine
+/// returns the parent and sub-agent metrics in one batch.
 pub async fn analyze(
     agent: AgentKind,
     session_id: &str,
@@ -372,16 +360,10 @@ pub async fn analyze(
 
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads.
-    let computed = tauri::async_runtime::spawn_blocking(move || {
-        let batch = analyze_sources_with(inputs, true);
-        // The spawn dots need the parent's normalized event stream to map a
-        // child's first-activity instant onto the parent's active-time axis.
-        let parent_stream = normalize_source(&parent_input).ok();
-        (batch, parent_stream)
-    })
-    .await;
+    let computed =
+        tauri::async_runtime::spawn_blocking(move || analyze_sources_with(inputs, true)).await;
 
-    let Ok((batch, parent_stream)) = computed else {
+    let Ok(batch) = computed else {
         return SessionAnalysis::unavailable();
     };
 
@@ -408,19 +390,10 @@ pub async fn analyze(
 
     let members: Vec<SubagentMember> = roster
         .into_iter()
-        .map(|(subagent_id, label)| {
-            let child = by_id.get(&subagent_id);
-            let spawn_progress = child
-                .and_then(|child| child.first_ts_ms)
-                .zip(parent_stream.as_ref())
-                .and_then(|(first_ts_ms, stream)| active_time_fraction(stream, first_ts_ms));
-            SubagentMember {
-                agent: agent_slug.clone(),
-                subagent_id,
-                label,
-                pattern_score: child.map(|child| child.pattern_score).unwrap_or(0),
-                spawn_progress,
-            }
+        .map(|(subagent_id, label)| SubagentMember {
+            agent: agent_slug.clone(),
+            subagent_id,
+            label,
         })
         .collect();
 
@@ -473,10 +446,9 @@ pub async fn analyze(
 
 /// Analyze one sub-agent transcript on its own.
 ///
-/// A sub-agent is a session in its own right — its own transcript, its own
-/// health — so the analytics surface opens it the same way it opens anything
-/// else. It has no roster of its own (vendors do not nest orchestration), so
-/// this is the single-input path rather than the batch above.
+/// A sub-agent is a session in its own right. The analytics surface opens its
+/// transcript like any other session. Vendors do not nest orchestration, so
+/// this path analyzes one input.
 pub async fn analyze_subagent(
     agent: AgentKind,
     parent_session_id: &str,
@@ -709,13 +681,8 @@ mod tests {
     fn a_source_with_no_file_behind_it_never_satisfies_the_cache() {
         let cached = AnalysisRecord {
             key: SessionKey::new("native", "claude-code", "abc"),
-            metrics_json: "{}".into(),
-            cost_json: None,
             model_breakdown_json: "{}".into(),
             inclusive_models_json: "[]".into(),
-            active_secs: 0,
-            duration_secs: 0,
-            pattern_score: 0,
             source_fingerprint: MISSING_FINGERPRINT.into(),
             pricing_generation: pricing_generation() as i64,
         };
@@ -733,13 +700,8 @@ mod tests {
     fn a_stale_pricing_generation_invalidates_a_matching_fingerprint() {
         let cached = AnalysisRecord {
             key: SessionKey::new("native", "claude-code", "abc"),
-            metrics_json: "{}".into(),
-            cost_json: None,
             model_breakdown_json: "{}".into(),
             inclusive_models_json: "[]".into(),
-            active_secs: 0,
-            duration_secs: 0,
-            pattern_score: 0,
             source_fingerprint: "123:456".into(),
             pricing_generation: pricing_generation() as i64 - 1,
         };

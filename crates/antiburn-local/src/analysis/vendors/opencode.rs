@@ -125,7 +125,6 @@ fn apply_message(
         .unwrap_or_default();
 
     let ev = event_for(id, role, by_msg, order);
-    ev.role = role;
     if ev.ts_ms.is_none() {
         ev.ts_ms = ts;
     }
@@ -162,11 +161,7 @@ fn apply_part(
     }
 
     match part_type {
-        "text" => ev.text_len += payload_text_len(payload),
-        "reasoning" => {
-            ev.thinking = true;
-            ev.text_len += payload_text_len(payload);
-        }
+        "text" | "reasoning" => {}
         "tool" => apply_tool_part(payload, ev),
         // A patch part is a committed file edit (it lists the files it touched).
         // No tool input to parse, so it stays a literal with `detail: None`.
@@ -195,12 +190,6 @@ fn apply_tool_part(payload: Option<&Value>, ev: &mut NormalizedEvent) {
     // shared builder pulls both the command and (for a `skill` tool) the skill name.
     let input = state.and_then(|s| s.get("input"));
     ev.tools.push(tool_call_from_input(name, input));
-    if matches!(
-        state.and_then(|s| s.get("status")).and_then(|s| s.as_str()),
-        Some("error") | Some("failed")
-    ) {
-        ev.is_error = true;
-    }
 }
 
 fn role_of(role: Option<&str>) -> Role {
@@ -210,13 +199,6 @@ fn role_of(role: Option<&str>) -> Role {
         Some("tool") => Role::Tool,
         _ => Role::Assistant,
     }
-}
-
-fn payload_text_len(payload: Option<&Value>) -> usize {
-    payload
-        .and_then(|p| p.get("text"))
-        .and_then(|t| t.as_str())
-        .map_or(0, str::len)
 }
 
 fn opencode_usage(tokens: &Map<String, Value>) -> Usage {
