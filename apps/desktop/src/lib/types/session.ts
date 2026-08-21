@@ -39,6 +39,12 @@ export interface SessionBucket {
   contextTokens: number
   /** True when a real compaction boundary landed in this bucket. */
   isCompactionBoundary: boolean
+  /** Cache-read tokens summed over this bucket's turns; already folded into `contextTokens`. */
+  cacheReadTokens: number
+  /** Cache-write tokens summed over this bucket's turns; a breakdown of `tokensIn`, not an addition. */
+  cacheWriteTokens: number
+  /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
+  isCacheRehydration: boolean
 }
 
 /* -------------------------------------------------------------------------

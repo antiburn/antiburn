@@ -28,6 +28,9 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     tokensOut: 0,
     contextTokens: 0,
     isCompactionBoundary: false,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    isCacheRehydration: false,
     ...over,
   }
 }
@@ -82,6 +85,20 @@ describe("contextTokenSeries", () => {
     ]
     const series = contextTokenSeries(buckets)
     expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
+  })
+
+  it("carries the cache read/write totals and rehydration flag onto each point", () => {
+    const buckets = [
+      bucket({ cacheReadTokens: 5_000, cacheWriteTokens: 200 }),
+      bucket({ cacheReadTokens: 0, cacheWriteTokens: 25_000, isCacheRehydration: true }),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(
+      series.map((p) => [p.cacheReadTokens, p.cacheWriteTokens, p.isCacheRehydration]),
+    ).toEqual([
+      [5_000, 200, false],
+      [0, 25_000, true],
+    ])
   })
 })
 

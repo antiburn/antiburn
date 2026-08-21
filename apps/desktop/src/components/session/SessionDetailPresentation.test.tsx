@@ -27,6 +27,9 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     tokensOut: 200,
     contextTokens: 40_000,
     isCompactionBoundary: false,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    isCacheRehydration: false,
     ...over,
   }
 }

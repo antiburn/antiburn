@@ -84,6 +84,13 @@ function ContextTokensTooltip({ active, payload, contextWindow }: ContextTokensT
             {row.label} · {formatCompact(point[row.key])}
           </span>
         ))}
+        <span>Cache read · {formatCompact(point.cacheReadTokens)}</span>
+        <span>Cache write · {formatCompact(point.cacheWriteTokens)}</span>
+        {point.isCacheRehydration && (
+          <span style={{ color: "var(--color-context-warning)" }}>
+            Cache rehydrated · {formatCompact(point.cacheWriteTokens)} written
+          </span>
+        )}
         {point.isCompactionBoundary && <span>Compaction</span>}
       </div>
     </div>
@@ -180,6 +187,22 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
               stroke="var(--color-label-tertiary)"
               strokeDasharray="2 2"
               strokeOpacity={0.8}
+            />
+          ))}
+        {/* A cache rehydration is a distinct, solid, warning-colored mark so it
+            reads apart from the dashed compaction lines: a TTL lapse, not a
+            reset. Its "cache" label uses the same style as the axis-band
+            labels, so it stays a small, secondary callout on the chart. */}
+        {data
+          .filter((point) => point.isCacheRehydration)
+          .map((point) => (
+            <ReferenceLine
+              key={`cache-rehydration-${point.index}`}
+              yAxisId={compactionAxisId}
+              x={point.index}
+              stroke="var(--color-context-warning)"
+              strokeOpacity={0.8}
+              label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
             />
           ))}
         <Tooltip
