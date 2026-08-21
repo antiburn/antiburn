@@ -22,6 +22,7 @@ function payload(over: Partial<ActivityEntryPayload> = {}): ActivityEntryPayload
     forkChildCount: 0,
     cost: null,
     models: [],
+    modelRuns: [],
     ...over,
   }
 }
@@ -38,14 +39,27 @@ function cost(totalUsd: number) {
 
 describe("toActivityEntries", () => {
   it("carries the identity, repository, and title straight through", () => {
-    const [entry] = toActivityEntries([payload()])
+    const [entry] = toActivityEntries([
+      payload({
+        models: ["claude-haiku-4-5"],
+        modelRuns: [{ model: "claude-haiku-4-5", thinkingMode: "low" }],
+      }),
+    ])
     expect(entry).toMatchObject({
       agent: "claude-code",
       sessionId: "session-1",
       repo: "widgets",
       title: "Wire the tray popover",
       surface: "cli",
+      modelRuns: [{ model: "claude-haiku-4-5", thinkingMode: "low" }],
     })
+  })
+
+  it("keeps raw models in the cost tooltip data", () => {
+    const [entry] = toActivityEntries([
+      payload({ cost: cost(1), models: ["claude-haiku-4-5"] }),
+    ])
+    expect(entry?.cost?.models).toEqual(["claude-haiku-4-5"])
   })
 
   it("labels a live session as a projection and a finished one as an estimate", () => {

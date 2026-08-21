@@ -56,6 +56,7 @@ export function toActivityEntries(
     ...(payload.title ? { title: payload.title } : {}),
     hasForkParent: payload.hasForkParent,
     forkChildCount: payload.forkChildCount,
+    modelRuns: payload.modelRuns,
     cost: payload.cost
       ? {
           totalUsd: payload.cost.totalUsd,

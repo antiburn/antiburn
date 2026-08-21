@@ -14,7 +14,7 @@
 //! around them belongs to the views — so these payloads carry values and facts,
 //! never labels.
 
-use antiburn_local::analysis::{ActiveSessionsSummary, SessionCost, SkillUse};
+use antiburn_local::analysis::{ActiveSessionsSummary, ModelRun, SessionCost, SkillUse};
 use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
@@ -45,9 +45,10 @@ pub struct ActivityEntry {
     /// session launched. The value is absent when no model in the combined
     /// breakdown has a price. This field never holds a partial total.
     pub cost: Option<SessionCost>,
-    /// Every model that contributed billable tokens. The list covers the
-    /// parent and every sub-agent. The cost tooltip shows this list.
+    /// Every model that contributed billable tokens.
     pub models: Vec<String>,
+    /// Parent model runs come before runs used only by sub-agents.
+    pub model_runs: Vec<ModelRun>,
 }
 
 /// Identity of one local session, as the views key on it.
