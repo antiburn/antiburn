@@ -70,6 +70,8 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
     // Best-effort across the pointers Codex has used; first non-empty wins. `None`
     // is fine — cost then has no local estimate for the session.
     let mut model: Option<String> = None;
+    let mut current_model: Option<String> = None;
+    let mut current_thinking_mode: Option<String> = None;
     let mut offset = 0;
     for line_with_ending in content.split_inclusive('\n') {
         let line_offset = offset;
@@ -86,21 +88,46 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
                     .and_then(Value::as_u64)
                     .filter(|&w| w > 0);
             }
-            if usage_is_owned && model.is_none() {
-                model = [
+            if usage_is_owned {
+                if let Some(next_model) = [
                     "/payload/model",
                     "/payload/info/model",
                     "/payload/turn_context/model",
                 ]
                 .iter()
                 .find_map(|p| value.pointer(p).and_then(Value::as_str))
-                .filter(|m| !m.is_empty())
-                .map(str::to_string);
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                {
+                    current_model = Some(next_model.to_string());
+                    if model.is_none() {
+                        model = current_model.clone();
+                    }
+                }
+                if let Some(next_mode) = [
+                    "/payload/effort",
+                    "/payload/reasoning_effort",
+                    "/payload/turn_context/effort",
+                    "/payload/turn_context/reasoning_effort",
+                    "/payload/thread_settings/reasoning_effort",
+                    "/payload/collaboration_mode/settings/reasoning_effort",
+                ]
+                .iter()
+                .find_map(|p| value.pointer(p).and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|mode| !mode.is_empty())
+                {
+                    current_thinking_mode = Some(next_mode.to_string());
+                }
             }
             let inherited_token_count = !usage_is_owned
                 && value.get("type").and_then(Value::as_str) == Some("event_msg")
                 && value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count");
-            if !inherited_token_count && let Some(ev) = record_to_event(&value) {
+            if !inherited_token_count && let Some(mut ev) = record_to_event(&value) {
+                if usage_is_owned {
+                    ev.model = ev.model.or_else(|| current_model.clone());
+                    ev.thinking_mode = current_thinking_mode.clone();
+                }
                 events.push(ev);
             }
         }

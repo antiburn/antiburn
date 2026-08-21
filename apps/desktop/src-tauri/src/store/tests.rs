@@ -308,6 +308,7 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
             metrics_json: "{}".into(),
             cost_json: None,
             model_breakdown_json: "{}".into(),
+            inclusive_models_json: "[]".into(),
             active_secs: 1,
             duration_secs: 1,
             pattern_score: 0,
@@ -615,6 +616,9 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
         metrics_json: r#"{"agent":"claude-code","sessionId":"abc"}"#.into(),
         cost_json: Some(r#"{"totalUsd":1.5}"#.into()),
         model_breakdown_json: r#"{"claude-opus-4-6":{"inputTokens":10}}"#.into(),
+        inclusive_models_json:
+            r#"[{"model":"claude-haiku-4-5"},{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
+                .into(),
         active_secs: 120,
         duration_secs: 300,
         pattern_score: 81,
@@ -689,6 +693,7 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
             metrics_json: "{}".into(),
             cost_json: None,
             model_breakdown_json: "{}".into(),
+            inclusive_models_json: "[]".into(),
             active_secs: 1,
             duration_secs: 1,
             pattern_score: 50,
@@ -825,6 +830,7 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
             metrics_json: "{}".into(),
             cost_json: None,
             model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
+            inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#.into(),
             active_secs: 1,
             duration_secs: 1,
             pattern_score: 0,

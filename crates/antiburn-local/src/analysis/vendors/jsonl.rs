@@ -202,6 +202,16 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
         .filter(|m| !m.is_empty() && *m != "<synthetic>")
         .map(str::to_string);
 
+    ev.thinking_mode = obj
+        .get("effort")
+        .or_else(|| obj.get("reasoning_effort"))
+        .or_else(|| msg.and_then(|m| m.get("effort")))
+        .or_else(|| msg.and_then(|m| m.get("reasoning_effort")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        .map(str::to_string);
+
     // Provider message id (Anthropic `message.id`), used by the Claude adapter to
     // de-duplicate re-logged copies of the same assistant message.
     ev.message_id = msg

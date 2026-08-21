@@ -97,7 +97,16 @@ describe("UsagePane", () => {
 
   it("turns each failure into something a reader could act on", async () => {
     getLiveUsage.mockResolvedValue(
-      summary({ errors: [{ source: "claude-usage-fetch", category: "authentication" }] }),
+      summary({
+        errors: [
+          {
+            source: "claude-usage-fetch",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "authentication",
+          },
+        ],
+      }),
     )
     pane()
     await waitFor(() =>

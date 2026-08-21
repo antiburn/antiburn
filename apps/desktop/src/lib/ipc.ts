@@ -165,6 +165,11 @@ export interface AppInfo {
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
+export interface ModelRunPayload {
+  model: string
+  thinkingMode?: string
+}
+
 export interface ActivityEntryPayload {
   agent: string
   sessionId: string
@@ -178,9 +183,10 @@ export interface ActivityEntryPayload {
   forkChildCount: number
   /** Cost of the parent transcript plus every sub-agent the session launched. */
   cost: SessionCostComponents | null
-  /** Every model that contributed billable tokens. The list covers the
-   * parent transcript and every sub-agent. */
+  /** Every model that contributed billable tokens. */
   models: string[]
+  /** Parent model runs followed by runs used only by sub-agents. */
+  modelRuns: ModelRunPayload[]
 }
 
 /** Identity of one local session, as the analytics view carries it. */
@@ -420,6 +426,15 @@ export interface LiveProviderUsagePayload {
 /** A source that failed, in terms a reader can act on. */
 export interface LiveUsageSourceErrorPayload {
   source: string
+  /**
+   * The canonical id of the provider the source answers for. A failed source
+   * contributes no entry to `providers`, so this is how the views keep a
+   * section for the provider the failure left without a reading. Empty on a
+   * snapshot cached before the field existed.
+   */
+  provider: string
+  /** The provider's display name, for example "Claude". Empty like `provider`. */
+  displayName: string
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
 }

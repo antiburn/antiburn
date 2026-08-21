@@ -411,6 +411,10 @@ fn activity_entry(
         .as_ref()
         .map(|record| analytics::price_cached_breakdown(&record.model_breakdown_json))
         .unwrap_or((None, Vec::new()));
+    let model_runs = analysis
+        .as_ref()
+        .map(|record| analytics::cached_inclusive_model_runs(&record.inclusive_models_json))
+        .unwrap_or_default();
 
     Ok(ActivityEntry {
         agent: session.key.agent.clone(),
@@ -425,6 +429,7 @@ fn activity_entry(
         fork_child_count: store.fork_children(&session.key)?.len() as u32,
         cost,
         models,
+        model_runs,
     })
 }
 

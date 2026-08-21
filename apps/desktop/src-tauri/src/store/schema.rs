@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -242,5 +242,14 @@ CREATE TABLE usage_analytics_identity (
 /// this kind of change. Dropping every row forces the next scan to
 /// recompute each one under the new merge rule.
 const V6: &str = r#"
+DELETE FROM session_analysis;
+"#;
+
+/// v7 — ordered model runs used by a session and its sub-agents.
+///
+/// The cost breakdown has no thinking modes or display order. The new list
+/// puts parent runs before runs used only by sub-agents.
+const V7: &str = r#"
+ALTER TABLE session_analysis ADD COLUMN inclusive_models_json TEXT NOT NULL DEFAULT '[]';
 DELETE FROM session_analysis;
 "#;

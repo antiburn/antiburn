@@ -877,7 +877,13 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
         else {
             continue;
         };
-        let fingerprint = analytics::fingerprint_of(&source);
+        let fingerprint = analytics::fingerprint_with_subagents(
+            agent,
+            &record.key.session_id,
+            record.wsl_distro.as_deref(),
+            &source,
+        )
+        .await;
         if let Some(cached) = store.analysis(&record.key)?
             && analytics::cache_is_fresh(&cached, &fingerprint)
         {

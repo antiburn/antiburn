@@ -8,6 +8,11 @@ import type { ReactNode } from "react"
 import { cn } from "../../lib/cn"
 import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import {
+  modelRunNames,
+  modelRunShortNames,
+  type PresentableModelRun,
+} from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
@@ -18,6 +23,7 @@ import {
 import { ScrollPane } from "../ui/ScrollPane"
 import { TruncatedText } from "./TruncatedText"
 import { countGroupedItems, groupActivityByDay } from "./activityFeedGrouping"
+import { mockSessionHygiene } from "./mockSessionHygiene"
 import { useActivityGroupPinning } from "./useActivityGroupPinning"
 
 import "../../styles/session-rows.css"
@@ -54,6 +60,8 @@ export interface LocalActivityEntry {
   forkChildCount?: number | undefined
   /** Display values for the cost pill; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
+  /** Parent model runs followed by runs used only by sub-agents. */
+  modelRuns?: PresentableModelRun[] | undefined
 }
 
 export interface LocalActivityListProps {
@@ -119,6 +127,12 @@ function SessionActivityRow({
   const clickable = !!entry.sessionId && !!onOpen
   const primary = primaryLine(entry)
   const hasRepo = entry.repo !== ""
+  const modelRuns = entry.modelRuns ?? []
+  const modelNames = modelRunShortNames(modelRuns)
+  const hygieneSeed = entry.sessionId
+    ? localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
+    : `${entry.agent}|${entry.repo}|${entry.timestamp}`
+  const hygieneChecks = mockSessionHygiene(hygieneSeed)
 
   return (
     <div
@@ -219,8 +233,37 @@ function SessionActivityRow({
             aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
             className="shrink-0 text-sm text-label-secondary"
           >
-            {relativeTime(entry.timestamp, { compact: true })}
+            {relativeTime(entry.timestamp)}
           </time>
+        </div>
+
+        <div className="flex w-full items-center justify-between gap-1.5">
+          {modelNames.length > 0 && (
+            <div className="min-w-0" title={modelRunNames(modelRuns).join("\n")}>
+              <TruncatedText
+                className="type-footnote text-label-tertiary"
+                text={modelNames.join(" · ")}
+              />
+            </div>
+          )}
+
+          <div className="ml-auto flex items-center gap-1.5">
+            {hygieneChecks.map((check) => (
+              <span
+                key={check.id}
+                className={cn(
+                  "inline-flex h-3 w-3 items-center justify-center rounded-full text-[0.55rem] leading-none text-white",
+                  check.passed
+                    ? "bg-(--color-system-green) opacity-30 hover:opacity-80"
+                    : "bg-(--color-system-red) opacity-50 hover:opacity-80",
+                )}
+                title={check.title}
+                aria-label={check.title}
+              >
+                {check.passed ? "✓" : "×"}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
     </div>
