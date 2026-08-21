@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest"
 
 import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
-  contextAxis,
+  axisScale,
   contextTokenSeries,
   costBreakdownRows,
   costFigureLabel,
@@ -73,30 +73,40 @@ describe("contextTokenSeries", () => {
   })
 })
 
-describe("contextAxis", () => {
-  it("scales the ceiling to the peak with headroom, not to the window", () => {
-    expect(contextAxis(130_000, 1_000_000)).toEqual({
+describe("axisScale", () => {
+  it("scales the ceiling to the peak with headroom, not to the cap", () => {
+    expect(axisScale(130_000, 1_000_000, 5)).toEqual({
       ceiling: 150_000,
-      bands: [50_000, 100_000],
+      ticks: [50_000, 100_000],
     })
   })
 
-  it("never exceeds the window", () => {
-    expect(contextAxis(195_000, 200_000)).toEqual({
+  it("never exceeds the cap", () => {
+    expect(axisScale(195_000, 200_000, 5)).toEqual({
       ceiling: 200_000,
-      bands: [50_000, 100_000, 150_000],
+      ticks: [50_000, 100_000, 150_000],
     })
   })
 
   it("uses coarse steps for a deep session", () => {
-    expect(contextAxis(900_000, 1_000_000)).toEqual({
+    expect(axisScale(900_000, 1_000_000, 5)).toEqual({
       ceiling: 1_000_000,
-      bands: [200_000, 400_000, 600_000, 800_000],
+      ticks: [200_000, 400_000, 600_000, 800_000],
     })
   })
 
   it("uses fine steps for a shallow session", () => {
-    expect(contextAxis(18_000, 1_000_000)).toEqual({ ceiling: 20_000, bands: [10_000] })
+    expect(axisScale(18_000, 1_000_000, 5)).toEqual({
+      ceiling: 20_000,
+      ticks: [5_000, 10_000, 15_000],
+    })
+  })
+
+  it("limits the token axis to two clean marks", () => {
+    expect(axisScale(77_300, Number.MAX_SAFE_INTEGER, 2)).toEqual({
+      ceiling: 100_000,
+      ticks: [50_000],
+    })
   })
 })
 

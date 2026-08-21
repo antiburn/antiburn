@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useId, type ReactElement } from "react"
+import { Fragment, useId, type ReactElement } from "react"
 import {
   Area,
   AreaChart,
@@ -14,7 +14,7 @@ import {
 } from "recharts"
 
 import {
-  contextAxis,
+  axisScale,
   contextTokenSeries,
   formatCompact,
   formatPct,
@@ -34,10 +34,12 @@ export interface ContextTokensChartProps {
 const WARM_FLOOR_TOKENS = 400_000
 /** Token level the warm ramp reaches full red at. */
 const CRITICAL_TOKENS = 1_000_000
-/** Tick text for both axes. */
-const AXIS_TICK = { fontSize: 9, fill: "var(--color-label-tertiary)" }
-/** Width reserved for each axis label column. */
-const AXIS_WIDTH = 34
+/** Label text for both axes, drawn inside the plot. */
+const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
+/** The token axis tick marks span this many progress points at the right edge. */
+const TOKEN_TICK_SPAN = 2
+/** Pixels between the right edge and the end of a token tick label. */
+const TOKEN_TICK_LABEL_OFFSET = 16
 
 interface ContextTokensTooltipProps {
   active?: boolean
@@ -102,10 +104,13 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
   const hasContext = contextWindow != null
 
-  const tokenSum = data.reduce((m, d) => Math.max(m, d.tokensIn + d.tokensOut), 0)
-  const tokenCeiling = Math.max(1, tokenSum * 3)
   const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
-  const axis = hasContext ? contextAxis(peak, contextWindow) : null
+  const tokenPeak = data.reduce((m, d) => Math.max(m, d.tokensIn + d.tokensOut), 0)
+  // The token axis ceiling is about three times the largest spike, so the
+  // spikes use the lower third of the chart and stay secondary.
+  const tokenAxis = axisScale(tokenPeak, Number.MAX_SAFE_INTEGER, 2)
+  const tokenCeiling = Math.max(1, tokenAxis.ceiling * 3)
+  const contextAxis = hasContext ? axisScale(peak, contextWindow, 5) : null
   // Every `ReferenceLine`, including the vertical compaction markers, needs a
   // `yAxisId` that names an axis the chart actually renders — recharts falls
   // back to an axis id of "0", which does not exist here. The chart always
@@ -146,7 +151,7 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
 
   return (
     <ResponsiveContainer width="100%" height={160}>
-      <AreaChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+      <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
         {hasContext && (
           <defs>
             <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
@@ -155,37 +160,44 @@ export function ContextTokensChart({ buckets, contextWindow }: ContextTokensChar
           </defs>
         )}
         <XAxis dataKey="progress" hide />
-        {axis && (
-          <YAxis
-            yAxisId="context"
-            domain={[0, axis.ceiling]}
-            ticks={axis.bands}
-            tickFormatter={formatTokenBand}
-            tick={AXIS_TICK}
-            axisLine={false}
-            tickLine={false}
-            width={AXIS_WIDTH}
-          />
-        )}
-        <YAxis
-          yAxisId="tokens"
-          orientation="right"
-          domain={[0, tokenCeiling]}
-          ticks={[tokenSum]}
-          tickFormatter={formatTokenBand}
-          tick={AXIS_TICK}
-          axisLine={false}
-          tickLine={false}
-          width={AXIS_WIDTH}
-        />
-        {axis?.bands.map((value) => (
+        {contextAxis && <YAxis yAxisId="context" hide domain={[0, contextAxis.ceiling]} />}
+        <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
+        {contextAxis?.ticks.map((value) => (
           <ReferenceLine
             key={`band-${value}`}
             yAxisId="context"
             y={value}
             stroke="var(--color-separator)"
             strokeDasharray="2 4"
+            label={{ ...AXIS_LABEL, value: formatTokenBand(value), position: "insideTopLeft" }}
           />
+        ))}
+        {tokenAxis.ticks.map((value) => (
+          // A short tick at the right edge marks the token scale. The label
+          // rides on a second, invisible full-width line, because recharts
+          // positions a segment label against the whole plot, not the segment.
+          <Fragment key={`token-tick-${value}`}>
+            <ReferenceLine
+              yAxisId="tokens"
+              segment={[
+                { x: 100 - TOKEN_TICK_SPAN, y: value },
+                { x: 100, y: value },
+              ]}
+              stroke="var(--color-label-tertiary)"
+              strokeOpacity={0.8}
+            />
+            <ReferenceLine
+              yAxisId="tokens"
+              y={value}
+              stroke="none"
+              label={{
+                ...AXIS_LABEL,
+                value: formatTokenBand(value),
+                position: "insideRight",
+                offset: TOKEN_TICK_LABEL_OFFSET,
+              }}
+            />
+          </Fragment>
         ))}
         {data
           .filter((point) => point.isCompactionBoundary)

@@ -53,34 +53,34 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
   })
 }
 
-/** Candidate band steps, from fine to coarse. */
-const CONTEXT_BAND_STEPS = [
-  10_000, 20_000, 25_000, 50_000, 100_000, 200_000, 250_000, 500_000, 1_000_000,
+/** Candidate axis steps, from fine to coarse. */
+const AXIS_STEPS = [
+  1_000, 2_000, 5_000, 10_000, 20_000, 25_000, 50_000, 100_000, 200_000, 250_000, 500_000,
+  1_000_000,
 ]
 
-/** The context axis of the chart: its top value and its band values. */
-export interface ContextAxis {
+/** One chart axis: its top value and the clean values it is marked at. */
+export interface AxisScale {
   /** Top of the axis, in tokens. */
   ceiling: number
-  /** Band values strictly between zero and the ceiling. */
-  bands: number[]
+  /** Marked values strictly between zero and the ceiling. */
+  ticks: number[]
 }
 
 /**
- * Scale the context axis to the session, not to the whole window. The ceiling
- * is the peak plus headroom, rounded up to a clean step that yields at most
- * five bands, and never above `contextWindow`. A session that used 130k of a
- * 1M window then fills the chart instead of a thin strip at the bottom.
+ * Scale an axis to the data, not to a fixed range. The ceiling is `peak`
+ * plus headroom, rounded up to the finest clean step that yields at most
+ * `maxTicks` marks, and never above `cap`. A session that used 130k of a 1M
+ * window then fills the chart instead of a thin strip at the bottom.
  */
-export function contextAxis(peak: number, contextWindow: number): ContextAxis {
-  const target = Math.min(contextWindow, Math.max(1, peak) * 1.1)
+export function axisScale(peak: number, cap: number, maxTicks: number): AxisScale {
+  const target = Math.min(cap, Math.max(1, peak) * 1.1)
   const step =
-    CONTEXT_BAND_STEPS.find((s) => target / s <= 5) ??
-    CONTEXT_BAND_STEPS[CONTEXT_BAND_STEPS.length - 1]!
-  const ceiling = Math.min(contextWindow, Math.ceil(target / step) * step)
-  const bands: number[] = []
-  for (let v = step; v < ceiling; v += step) bands.push(v)
-  return { ceiling, bands }
+    AXIS_STEPS.find((s) => target / s <= maxTicks) ?? AXIS_STEPS[AXIS_STEPS.length - 1]!
+  const ceiling = Math.min(cap, Math.ceil(target / step) * step)
+  const ticks: number[] = []
+  for (let v = step; v < ceiling; v += step) ticks.push(v)
+  return { ceiling, ticks }
 }
 
 export interface ToolSlice {
