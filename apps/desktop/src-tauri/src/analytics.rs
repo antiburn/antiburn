@@ -16,8 +16,9 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, ModelRun, RawSource, SessionCost, SessionInput, SessionMetrics,
-    SkillUse, aggregate_metrics, analyze_sources_with, price_breakdown, pricing_generation,
+    ActiveSessionsSummary, ModelRun, NormalizedSession, RawSource, SessionCost, SessionInput,
+    SessionMetrics, SkillUse, aggregate_metrics, analyze_session, analyze_sources_with,
+    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, ForkObservation, SessionSource,
@@ -297,10 +298,43 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
     }
 }
 
+/// Normalize the parent and every sub-agent input, then merge their events
+/// into one time-aligned session via [`merge_subagent_events`].
+///
+/// Matches inputs to the parent by `session_id` rather than by position, so
+/// this stays correct even if a vendor adapter fails to read one input (the
+/// same tolerance [`analyze_sources_with`] gives the per-source batch).
+/// `None` when the parent itself could not be normalized.
+fn merge_parent_and_subagents(
+    inputs: &[SessionInput],
+    parent_session_id: &str,
+) -> Option<NormalizedSession> {
+    let mut parent = None;
+    let mut subagents = Vec::new();
+    for input in inputs {
+        let Ok(normalized) = normalize_source(input) else {
+            continue;
+        };
+        if normalized.session_id == parent_session_id {
+            parent = Some(normalized);
+        } else {
+            subagents.push(normalized);
+        }
+    }
+    Some(merge_subagent_events(parent?, subagents))
+}
+
 /// Analyze one session and, in the same pass, every sub-agent it launched.
 ///
 /// One pass avoids an extra analysis call for each sub-agent. The engine
-/// returns the parent and sub-agent metrics in one batch.
+/// returns the parent and sub-agent metrics in one batch, analyzed
+/// independently, which this function uses for the top-level/sub-agents cost
+/// split. Separately, this merges every stream's events into one
+/// time-aligned session (sub-agents are an implementation detail of the
+/// parent, per the product rule) and analyzes that once more for the
+/// session's own headline metrics — buckets, token totals, tool mix — so the
+/// detail view's chart and header sum a sub-agent's activity into the same
+/// session instead of hiding it.
 pub async fn analyze(
     agent: AgentKind,
     session_id: &str,
@@ -358,12 +392,20 @@ pub async fn analyze(
         .map(|(id, label, _)| (id, label))
         .collect();
 
+    let inputs_for_merge = inputs.clone();
+    let parent_session_id_for_merge = parent_session_id.clone();
+
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads.
-    let computed =
-        tauri::async_runtime::spawn_blocking(move || analyze_sources_with(inputs, true)).await;
+    let computed = tauri::async_runtime::spawn_blocking(move || {
+        let batch = analyze_sources_with(inputs, true);
+        let merged = merge_parent_and_subagents(&inputs_for_merge, &parent_session_id_for_merge)
+            .map(|session| analyze_session(&session));
+        (batch, merged)
+    })
+    .await;
 
-    let Ok(batch) = computed else {
+    let Ok((batch, merged)) = computed else {
         return SessionAnalysis::unavailable();
     };
 
@@ -373,7 +415,7 @@ pub async fn analyze(
         .map(|metrics| (metrics.session_id.clone(), metrics))
         .collect();
 
-    let Some(mut metrics) = by_id.remove(&parent_session_id) else {
+    let Some(parent_metrics) = by_id.remove(&parent_session_id) else {
         // The transcript was readable but produced nothing analyzable — an
         // empty session, not a failure.
         return SessionAnalysis {
@@ -382,6 +424,20 @@ pub async fn analyze(
             ..SessionAnalysis::unavailable()
         };
     };
+
+    // `metrics` is the session's headline view: buckets, token totals, and
+    // tool mix summed across the parent and every sub-agent, time-aligned.
+    // `initial_context` and `skill_uses` stay off the merged pass — they are
+    // grafted onto `parent_metrics` from the parent's own raw transcript, and
+    // a sub-agent's initial context describes a different, disposable
+    // context window, not this session's. `merged` can only be `None` if the
+    // parent transcript stopped normalizing between the two analysis passes
+    // above, which does not happen in practice; falling back to
+    // `parent_metrics` keeps that theoretical case merely parent-only
+    // instead of unavailable.
+    let mut metrics = merged.unwrap_or_else(|| parent_metrics.clone());
+    metrics.initial_context = parent_metrics.initial_context.clone();
+    metrics.skill_uses = parent_metrics.skill_uses.clone();
 
     // The views key icons and copy off the discovery slug, so the vendor label
     // the adapter registry dispatches on never leaves this module.
@@ -405,22 +461,23 @@ pub async fn analyze(
         members,
     });
 
-    // Merge every sub-agent's breakdown into one map. Merge that map with
-    // the parent's breakdown too. `cost` then prices the whole session, not
-    // only the transcript a reader opened.
+    // `top_level_cost` prices the parent transcript alone; `subagents_cost`
+    // merges every sub-agent's own breakdown. `metrics.model_breakdown` is
+    // already inclusive — it comes from the merged event stream above, so it
+    // sums to the same totals `top_level_cost` and `subagents_cost` would
+    // combine to. `cost`/`inclusive_model_breakdown` read it directly instead
+    // of re-merging the per-source breakdowns a second way.
     let subagent_breakdowns: Vec<&HashMap<String, ModelTokens>> =
         by_id.values().map(|child| &child.model_breakdown).collect();
     let has_subagents = !subagent_breakdowns.is_empty();
     let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
-    let inclusive_model_breakdown = merge_model_breakdowns(
-        std::iter::once(&metrics.model_breakdown).chain(subagent_breakdowns.iter().copied()),
-    );
+    let inclusive_model_breakdown = metrics.model_breakdown.clone();
 
-    let top_level_cost = price_breakdown(&metrics.model_breakdown);
+    let top_level_cost = price_breakdown(&parent_metrics.model_breakdown);
     let subagents_cost = price_breakdown(&subagents_model_breakdown);
-    let cost = price_breakdown(&inclusive_model_breakdown);
+    let cost = metrics.cost;
     let models = sorted_models(&inclusive_model_breakdown);
-    let model_runs = model_runs_parent_first(&metrics, by_id.values());
+    let model_runs = model_runs_parent_first(&parent_metrics, by_id.values());
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
     let skills = metrics.skill_uses.clone();
