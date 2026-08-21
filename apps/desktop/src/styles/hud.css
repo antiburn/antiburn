@@ -25,7 +25,7 @@
   :root {
     --color-burn-val: rgb(255 106 0);
     --color-burn-muted-val: rgb(242 113 34);
-    --color-bg-hud-val: rgb(40 40 40);
+    --color-bg-hud-val: rgb(32 32 32);
   }
 }
 

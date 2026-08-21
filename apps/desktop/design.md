@@ -113,7 +113,7 @@ colors:
     dark: "rgb(242 113 34)"
   bg-hud:
     light: "rgb(246 246 246)"
-    dark: "rgb(32 32 32)" # @media dark: rgb(40 40 40)
+    dark: "rgb(32 32 32)"
   # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
   mode-implementing:
     light: "rgb(29 78 216)"
