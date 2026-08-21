@@ -16,9 +16,9 @@ import type {
   SessionMetrics,
 } from "../../lib/types/session"
 import {
-  SessionAnalyticsPresentation,
-  type SessionAnalyticsPresentationProps,
-} from "./SessionAnalyticsPresentation"
+  SessionDetailPresentation,
+  type SessionDetailPresentationProps,
+} from "./SessionDetailPresentation"
 
 afterEach(cleanup)
 
@@ -116,17 +116,42 @@ function cost(totalCostUsd = 2.4): LocalSessionCost {
   }
 }
 
-function view(over: Partial<SessionAnalyticsPresentationProps> = {}) {
-  const props: SessionAnalyticsPresentationProps = {
+function presentationProps(
+  over: Partial<SessionDetailPresentationProps> = {},
+): SessionDetailPresentationProps {
+  return {
     summary: summary(),
+    loading: false,
+    error: false,
     onBack: () => {},
-    session: { agent: "claude-code", sessionId: "session-1", title: "Fix the flaky test" },
+    session: {
+      agent: "claude-code",
+      sessionId: "session-1",
+      title: "Fix the flaky test",
+      wslDistro: null,
+    },
+    supportsAnalytics: true,
+    cost: null,
+    costSplit: null,
+    orchestration: null,
+    skills: [],
+    models: [],
+    relations: null,
+    onOpenSubagent: () => {},
+    onOpenOrchestrator: () => {},
+    onOpenRelatedSession: () => {},
+    onExportSession: () => {},
+    onDeleteSession: () => {},
+    renderAgentIcon: () => null,
     ...over,
   }
-  return render(<SessionAnalyticsPresentation {...props} />)
 }
 
-describe("SessionAnalyticsPresentation — chrome", () => {
+function view(over: Partial<SessionDetailPresentationProps> = {}) {
+  return render(<SessionDetailPresentation {...presentationProps(over)} />)
+}
+
+describe("SessionDetailPresentation — chrome", () => {
   it("renders the whole card hierarchy for a settled session", () => {
     view()
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
@@ -138,12 +163,54 @@ describe("SessionAnalyticsPresentation — chrome", () => {
     expect(screen.getByText("Tools")).toBeTruthy()
   })
 
+  it("shows the session title on no more than three lines", () => {
+    view({
+      session: {
+        agent: "claude-code",
+        sessionId: "session-1",
+        title: "A session title that can continue across more than one line",
+        wslDistro: null,
+      },
+    })
+    const title = screen.getByText(
+      "A session title that can continue across more than one line",
+    )
+    expect(title.className).toContain("truncated-text-lines")
+    expect(title.className).toContain("break-all")
+    expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("3")
+  })
+
+  it("arranges list metadata around the session title", () => {
+    const timestamp = new Date(Date.now() - 11 * 60_000).toISOString()
+    view({
+      session: {
+        agent: "claude-code",
+        sessionId: "session-1",
+        repo: "antiburn",
+        timestamp,
+        title: "Simplify the session detail",
+        wslDistro: null,
+      },
+      models: ["claude-opus-4-6"],
+      cost: cost(),
+    })
+
+    const summaryRow = screen.getByLabelText("Session summary")
+    expect(summaryRow).toHaveTextContent("antiburn")
+    expect(summaryRow).toHaveTextContent("$2.40")
+    expect(summaryRow).toHaveTextContent("11m ago")
+
+    const detailRow = screen.getByLabelText("Session timing and models")
+    expect(detailRow).toHaveTextContent("30m active · 1h overall")
+    expect(detailRow).toHaveTextContent("opus-4-6")
+    expect(screen.getByLabelText("Session hygiene checks").children).toHaveLength(6)
+  })
+
   it("names the back control for what it does, not for the view it leaves", () => {
     view()
-    // The heading and the control that leaves the view are two elements. A
-    // screen reader must not announce "Session Analytics, button" for a back
-    // arrow, and the view must have a heading of its own.
-    expect(screen.getByRole("heading", { name: "Session Analytics" })).toBeTruthy()
+    // The heading and the back control are separate elements.
+    // The screen reader announces the view and the control correctly.
+    expect(screen.getByRole("heading", { name: "Session Detail" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy()
   })
 
@@ -176,21 +243,14 @@ describe("SessionAnalyticsPresentation — chrome", () => {
     expect(onNext).not.toHaveBeenCalled()
     input.remove()
   })
-
-  it("summarizes the live aggregate instead of one session", () => {
-    view({ session: undefined, summary: summary({ sessionCount: 3 }) })
-    expect(screen.getByText("3 live sessions")).toBeTruthy()
-    expect(screen.getByText(/Averaged/)).toBeTruthy()
-    expect(screen.queryByLabelText("Newer session")).toBeNull()
-  })
 })
 
-describe("SessionAnalyticsPresentation — states", () => {
+describe("SessionDetailPresentation — states", () => {
   it("holds the skeleton back on a fast load and shows it on a slow one", () => {
     vi.useFakeTimers()
     try {
       const { rerender } = render(
-        <SessionAnalyticsPresentation summary={null} loading onBack={() => {}} />,
+        <SessionDetailPresentation {...presentationProps({ summary: null, loading: true })} />,
       )
       expect(screen.queryByTestId("session-analytics-skeleton")).toBeNull()
 
@@ -202,7 +262,9 @@ describe("SessionAnalyticsPresentation — states", () => {
       // Once shown it holds for its minimum-visible window even after the
       // load finishes, so it cannot flicker.
       rerender(
-        <SessionAnalyticsPresentation summary={summary()} loading={false} onBack={() => {}} />,
+        <SessionDetailPresentation
+          {...presentationProps({ summary: summary(), loading: false })}
+        />,
       )
       expect(screen.getByTestId("session-analytics-skeleton")).toBeTruthy()
 
@@ -229,7 +291,7 @@ describe("SessionAnalyticsPresentation — states", () => {
     view({
       summary: summary({ sessionCount: 0 }),
       supportsAnalytics: false,
-      session: { agent: "kiro", sessionId: "s1" },
+      session: { agent: "kiro", sessionId: "s1", wslDistro: null },
     })
     expect(screen.getByText(/Session health for Kiro sessions/)).toBeTruthy()
   })
@@ -248,17 +310,16 @@ describe("SessionAnalyticsPresentation — states", () => {
   it("still shows the price of a session it could not analyze", () => {
     view({
       summary: summary({ sessionCount: 0 }),
-      costBadge: { totalUsd: 2.4, figureLabel: "Estimated cost" },
+      cost: cost(),
     })
     expect(screen.getByLabelText("Estimated cost $2.40")).toBeTruthy()
   })
 })
 
-describe("SessionAnalyticsPresentation — session facts", () => {
+describe("SessionDetailPresentation — session facts", () => {
   it("shows the local cost badge and its breakdown", () => {
     view({
       cost: cost(),
-      costBadge: { totalUsd: 2.4, figureLabel: "Estimated cost" },
     })
     expect(screen.getByLabelText("Estimated cost $2.40")).toBeTruthy()
     expect(screen.getByText("Input")).toBeTruthy()
@@ -292,7 +353,7 @@ describe("SessionAnalyticsPresentation — session facts", () => {
     })
     fireEvent.click(screen.getByText("Orchestrated 2 agents"))
     fireEvent.click(screen.getByText("Write tests"))
-    expect(onOpenSubagent).toHaveBeenCalledWith("claude-code", "session-1", "b", "Write tests")
+    expect(onOpenSubagent).toHaveBeenCalledWith("b", "Write tests")
   })
 
   it("marks a sub-agent view and links up to its orchestrator", () => {
@@ -302,9 +363,8 @@ describe("SessionAnalyticsPresentation — session facts", () => {
       session: {
         agent: "claude-code",
         sessionId: "child-1",
+        wslDistro: null,
         subagent: {
-          parentSessionId: "parent-1",
-          subagentId: "child-1",
           parentTitle: "Ship the release",
         },
       },
@@ -372,7 +432,7 @@ describe("SessionAnalyticsPresentation — session facts", () => {
     expect(screen.getByText("Context occupancy is unavailable for this model.")).toBeTruthy()
   })
 
-  it("adds the initial-context card only for a single session that has one", () => {
+  it("adds the initial-context card when the session has initial context", () => {
     const withContext = summary({
       sessions: [
         metrics({
@@ -395,11 +455,11 @@ describe("SessionAnalyticsPresentation — session facts", () => {
   })
 })
 
-describe("SessionAnalyticsPresentation — host actions", () => {
-  it("shows no export, delete, or reveal control until the host supplies one", () => {
+describe("SessionDetailPresentation — host actions", () => {
+  it("always shows export and delete, but only shows reveal when it is available", () => {
     view()
-    expect(screen.queryByLabelText("Export this session")).toBeNull()
-    expect(screen.queryByLabelText("Delete this session")).toBeNull()
+    expect(screen.getByLabelText("Export this session")).toBeTruthy()
+    expect(screen.getByLabelText("Delete this session")).toBeTruthy()
     expect(screen.queryByLabelText("Reveal in file manager")).toBeNull()
   })
 
@@ -407,22 +467,20 @@ describe("SessionAnalyticsPresentation — host actions", () => {
     const onExportSession = vi.fn()
     const onDeleteSession = vi.fn()
     const onRevealSource = vi.fn()
-    view({ onExportSession, onDeleteSession, onRevealSource, revealLabel: "Reveal in Finder" })
+    view({ onExportSession, onDeleteSession, onRevealSource })
 
     fireEvent.click(screen.getByLabelText("Export this session"))
     fireEvent.click(screen.getByLabelText("Delete this session"))
-    fireEvent.click(screen.getByLabelText("Reveal in Finder"))
+    fireEvent.click(screen.getByLabelText("Reveal in file manager"))
     expect(onExportSession).toHaveBeenCalledOnce()
     expect(onDeleteSession).toHaveBeenCalledOnce()
     expect(onRevealSource).toHaveBeenCalledOnce()
   })
 
-  it("renders an agent icon only from the injected renderer", () => {
-    const { unmount } = view()
-    expect(screen.queryByTestId("agent-icon")).toBeNull()
-    unmount()
-
-    view({ renderAgentIcon: () => <span data-testid="agent-icon" /> })
-    expect(screen.getAllByTestId("agent-icon").length).toBeGreaterThan(0)
+  it("renders the agent icon from the app renderer", () => {
+    const renderAgentIcon = vi.fn(() => <span data-testid="agent-icon" />)
+    view({ renderAgentIcon })
+    expect(screen.getByTestId("agent-icon")).toBeTruthy()
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 20)
   })
 })

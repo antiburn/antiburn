@@ -13,12 +13,7 @@ export interface OrchestratedBadgeProps {
   /** The sub-agents this session launched, as discovered on disk. */
   status: LocalOrchestrationStatus
   /** Open one sub-agent's own analytics. */
-  onOpenSubagent: (
-    parentAgent: string,
-    parentSessionId: string,
-    subagentId: string,
-    label: string,
-  ) => void
+  onOpenSubagent: (subagentId: string, label: string) => void
   renderAgentIcon?: AgentIconRenderer | undefined
 }
 
@@ -56,14 +51,7 @@ export function OrchestratedBadge({
               {member.patternScore}%
             </span>
           }
-          onClick={() =>
-            onOpenSubagent(
-              status.orchestratorAgent,
-              status.orchestratorSessionId,
-              member.subagentId,
-              member.label,
-            )
-          }
+          onClick={() => onOpenSubagent(member.subagentId, member.label)}
         />
       ))}
     </CollapsibleOrchestrationCard>

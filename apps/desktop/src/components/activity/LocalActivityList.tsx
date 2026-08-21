@@ -8,6 +8,7 @@ import type { ReactNode } from "react"
 import { cn } from "../../lib/cn"
 import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { mockSessionHygiene } from "../../lib/presentation/mockSessionHygiene"
 import {
   modelRunNames,
   modelRunShortNames,
@@ -15,15 +16,14 @@ import {
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
+import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import {
   SessionCostBadge,
   type SessionCostBadgeProps,
 } from "../session/metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
-import { TruncatedText } from "./TruncatedText"
 import { countGroupedItems, groupActivityByDay } from "./activityFeedGrouping"
-import { mockSessionHygiene } from "./mockSessionHygiene"
 import { useActivityGroupPinning } from "./useActivityGroupPinning"
 
 import "../../styles/session-rows.css"
