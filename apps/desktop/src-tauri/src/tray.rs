@@ -9,6 +9,10 @@
 //! application menu — without it there would be no way to exit antiburn. It
 //! also carries the popover's pin, which needs a surface that survives the
 //! popover being dismissed — and the menu bar is the only one there is.
+//!
+//! Linux is different. The AppIndicator backend reports no click events, and
+//! every click opens the menu. So the menu's first item, Open antiburn, is what
+//! opens the popover there.
 
 use tauri::AppHandle;
 use tauri::image::Image;
@@ -26,6 +30,9 @@ pub const TRAY_ID: &str = "antiburn";
 /// installation cannot leave the app running with no menu-bar presence.
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
+/// Linux only: the item that stands in for the click the backend never reports.
+#[cfg(target_os = "linux")]
+const MENU_OPEN: &str = "open";
 const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
@@ -33,6 +40,10 @@ const MENU_QUIT: &str = "quit";
 /// Title case, matching "Quit antiburn" and the platform's own menus.
 const PIN_LABEL: &str = "Pin Window";
 const UNPIN_LABEL: &str = "Unpin Window";
+
+/// Linux only, and title case for the same reason the pin labels are.
+#[cfg(target_os = "linux")]
+const OPEN_LABEL: &str = "Open antiburn";
 
 /// The tray menu items whose text follows app state.
 ///
@@ -64,7 +75,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .tooltip("antiburn")
         .menu(&menu)
         // The menu belongs to the secondary button; the primary button is the
-        // popover toggle.
+        // popover toggle. Linux ignores this option, because the AppIndicator
+        // menu opens on every click.
         .show_menu_on_left_click(false)
         .on_tray_icon_event(on_tray_event)
         .on_menu_event(on_menu_event)
@@ -75,6 +87,10 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
 ///
 /// The pin sits above Settings: it acts on the window the reader just had in
 /// front of them, where the other two act on the application.
+///
+/// On Linux the menu is the only route into the popover, so Open goes first as
+/// the default action. It needs no separator of its own, because it acts on the
+/// same window the pin does.
 fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
     let pin_item = MenuItem::with_id(
         app,
@@ -87,7 +103,22 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
 
+    #[cfg(not(target_os = "linux"))]
     let menu = Menu::with_items(app, &[&pin_item, &settings_item, &separator, &quit_item])?;
+    #[cfg(target_os = "linux")]
+    let menu = {
+        let open_item = MenuItem::with_id(app, MENU_OPEN, OPEN_LABEL, true, None::<&str>)?;
+        Menu::with_items(
+            app,
+            &[
+                &open_item,
+                &pin_item,
+                &settings_item,
+                &separator,
+                &quit_item,
+            ],
+        )?
+    };
     Ok((menu, pin_item))
 }
 
@@ -106,6 +137,10 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
+        // The AppIndicator backend reports no click events, so this item is the
+        // popover's entry point on Linux.
+        #[cfg(target_os = "linux")]
+        MENU_OPEN => popover::open_from_tray_menu(app),
         MENU_PIN => {
             // The item names the action, so choosing it always means "do the
             // other thing"; the popover is re-shown by `set_pinned`, because
@@ -119,14 +154,18 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             {
                 // The pin itself took effect; only the label is stale, and the
                 // next state change relabels it.
-                eprintln!("antiburn: could not relabel the pin item ({error})");
+                ::tracing::warn!(
+                    event = "tray_pin_relabel_failed",
+                    pinned,
+                    error = %error
+                );
             }
         }
         MENU_SETTINGS => {
             // No pane in particular: the tray's Settings item is a general
             // entry point, so it leaves the window wherever it was last.
             if let Err(error) = settings::open(app, None) {
-                eprintln!("antiburn: could not open settings ({error})");
+                ::tracing::error!(event = "settings_window_open_failed", error = %error);
             }
         }
         MENU_QUIT => {

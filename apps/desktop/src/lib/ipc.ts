@@ -25,7 +25,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
-import type { ActiveSessionsSummary, SessionCostComponents, SkillDetail } from "./types/session"
+import type {
+  ActiveSessionsSummary,
+  BillableTokens,
+  SessionCostComponents,
+} from "./types/session"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
@@ -160,6 +164,11 @@ export interface AppInfo {
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
+export interface ModelRunPayload {
+  model: string
+  thinkingMode?: string
+}
+
 export interface ActivityEntryPayload {
   agent: string
   sessionId: string
@@ -171,8 +180,12 @@ export interface ActivityEntryPayload {
   title: string | null
   hasForkParent: boolean
   forkChildCount: number
+  /** Cost of the parent transcript plus every sub-agent the session launched. */
   cost: SessionCostComponents | null
+  /** Every model that contributed billable tokens. */
   models: string[]
+  /** Parent model runs followed by runs used only by sub-agents. */
+  modelRuns: ModelRunPayload[]
 }
 
 /** Identity of one local session, as the analytics view carries it. */
@@ -201,8 +214,6 @@ export interface SubagentMemberPayload {
   agent: string
   subagentId: string
   label: string
-  patternScore: number
-  spawnProgress: number | null
 }
 
 /** The sub-agent picture for one session. */
@@ -221,9 +232,23 @@ export interface SessionAnalyticsPayload {
   title: string | null
   wslDistro: string | null
   isActive: boolean
+  /** Cost of the parent transcript plus every sub-agent it launched. */
   cost: SessionCostComponents | null
+  /** Cost of the parent transcript, without any sub-agent. */
+  topLevelCost: SessionCostComponents | null
+  /** Cost of every sub-agent this session launched, combined. The value is
+   * `null` when the session has no sub-agent, or when no sub-agent could
+   * be priced. */
+  subagentsCost: SessionCostComponents | null
+  /** Billable tokens that back `cost`. The count sums the parent transcript
+   * and every sub-agent. */
+  inclusiveTokens: BillableTokens | null
+  /** Billable tokens that back `subagentsCost`. The count sums every
+   * sub-agent. The value is `null` when the session has no sub-agent. */
+  subagentsTokens: BillableTokens | null
   models: string[]
-  skills: SkillDetail[]
+  /** Parent model runs followed by runs used only by sub-agents. */
+  modelRuns: ModelRunPayload[]
   orchestration: OrchestrationPayload | null
   relations: SessionRelationsPayload | null
   /** The provider's own transcript, for the reveal action. */
@@ -399,6 +424,15 @@ export interface LiveProviderUsagePayload {
 /** A source that failed, in terms a reader can act on. */
 export interface LiveUsageSourceErrorPayload {
   source: string
+  /**
+   * The canonical id of the provider the source answers for. A failed source
+   * contributes no entry to `providers`, so this is how the views keep a
+   * section for the provider the failure left without a reading. Empty on a
+   * snapshot cached before the field existed.
+   */
+  provider: string
+  /** The provider's display name, for example "Claude". Empty like `provider`. */
+  displayName: string
   /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
   category: string
 }
@@ -872,6 +906,12 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   generatedAt: "",
 }
 
+/** Return the newest recent transcript write as epoch seconds. */
+export async function getLatestSessionActivity(): Promise<number | null> {
+  if (!hasShell()) return null
+  return invoke<number | null>("get_latest_session_activity")
+}
+
 /** Run a scan now, unless one is already in flight. */
 export async function scanNow(activityWindowDays?: number): Promise<ScanStatus | null> {
   if (!hasShell()) return null
@@ -1096,6 +1136,8 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
  * Events
  * ---------------------------------------------------------------------- */
 
+const noShellUnlisten: UnlistenFn = () => undefined
+
 /** Event names the scan emits. Mirrors `src-tauri/src/scan.rs`. */
 export const SCAN_EVENTS = {
   started: "scan:started",
@@ -1113,7 +1155,7 @@ export const SCAN_EVENTS = {
 export async function onScanEvent(
   handler: (status: ScanStatus, phase: keyof typeof SCAN_EVENTS) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   const unlisteners = await Promise.all(
     (Object.keys(SCAN_EVENTS) as (keyof typeof SCAN_EVENTS)[]).map((phase) =>
       listen<ScanStatus>(SCAN_EVENTS[phase], (event) => handler(event.payload, phase)),
@@ -1135,7 +1177,7 @@ export const SETTINGS_CHANGED_EVENT = "settings:changed"
 export async function onSettingsChanged(
   handler: (settings: AppSettings) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen<AppSettings>(SETTINGS_CHANGED_EVENT, (event) => handler(event.payload))
 }
 
@@ -1148,7 +1190,7 @@ export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
 
 /** Subscribe to out-of-band session-index changes. The result unsubscribes. */
 export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
 }
 
@@ -1166,7 +1208,7 @@ export const POPOVER_SHOWN_EVENT = "popover:shown"
 
 /** Subscribe to the popover reaching the screen. The result unsubscribes. */
 export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen(POPOVER_SHOWN_EVENT, () => handler())
 }
 
@@ -1177,7 +1219,7 @@ export const LIVE_USAGE_CHANGED_EVENT = "live-usage:changed"
 export async function onLiveUsageChanged(
   handler: (usage: LiveUsageSummaryPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen<LiveUsageSummaryPayload>(LIVE_USAGE_CHANGED_EVENT, (event) =>
     handler(event.payload),
   )
@@ -1195,7 +1237,7 @@ export const STORAGE_HEALTH_EVENT = "storage:health"
 export async function onStorageHealth(
   handler: (status: StorageHealthPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen<StorageHealthPayload>(STORAGE_HEALTH_EVENT, (event) => handler(event.payload))
 }
 
@@ -1209,7 +1251,7 @@ export const SETTINGS_PANE_EVENT = "settings:pane"
 export async function onSettingsPaneRequest(
   handler: (pane: string) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen<string>(SETTINGS_PANE_EVENT, (event) => handler(event.payload))
 }
 
@@ -1227,7 +1269,7 @@ export const UPDATE_EVENT = "update:status"
 export async function onUpdateStatus(
   handler: (status: UpdateStatusPayload) => void,
 ): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen<UpdateStatusPayload>(UPDATE_EVENT, (event) => handler(event.payload))
 }
 
@@ -1240,7 +1282,7 @@ export const NUDGE_SHOW_EVENT = "nudge:show"
 
 /** Subscribe to incoming nudges. The returned function unsubscribes. */
 export async function onNudgeShow(handler: (nudge: Nudge) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen<Nudge>(NUDGE_SHOW_EVENT, (event) => handler(event.payload))
 }
 
@@ -1257,7 +1299,7 @@ export const NUDGE_HOVER_EVENT = "nudge:hover"
 
 /** Subscribe to the native hover signal. The returned function unsubscribes. */
 export async function onNudgeHover(handler: (hovered: boolean) => void): Promise<UnlistenFn> {
-  if (!hasShell()) return () => {}
+  if (!hasShell()) return noShellUnlisten
   return listen<boolean>(NUDGE_HOVER_EVENT, (event) => handler(event.payload === true))
 }
 

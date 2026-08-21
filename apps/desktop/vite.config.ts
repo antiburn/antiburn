@@ -3,7 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import tailwindcss from "@tailwindcss/vite"
-import react from "@vitejs/plugin-react"
+import babel from "@rolldown/plugin-babel"
+import react, { reactCompilerPreset } from "@vitejs/plugin-react"
 // `vitest/config` re-exports Vite's `defineConfig` with the `test` block typed.
 import { defineConfig } from "vitest/config"
 
@@ -11,7 +12,7 @@ import { defineConfig } from "vitest/config"
 const DEV_SERVER_PORT = 1420
 
 export default defineConfig(({ command, mode }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss()],
 
   // Tauri reads the shell's stderr, so Vite must not clear it, and the dev
   // server has to stay on the exact port `devUrl` points at.

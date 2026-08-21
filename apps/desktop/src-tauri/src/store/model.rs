@@ -127,16 +127,11 @@ pub struct SessionActivityState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisRecord {
     pub key: SessionKey,
-    /// `SessionMetrics` as camelCase JSON — derived counts only.
-    pub metrics_json: String,
-    /// `SessionCost` components as camelCase JSON, or `None` when unpriced.
-    pub cost_json: Option<String>,
     /// Billable tokens per normalized model key, as camelCase JSON.
     pub model_breakdown_json: String,
-    pub active_secs: i64,
-    pub duration_secs: i64,
-    pub pattern_score: i64,
-    /// `mtime:size` of the transcript the analysis was computed from.
+    /// This JSON array puts parent model runs before sub-agent-only runs.
+    pub inclusive_models_json: String,
+    /// This fingerprint covers the parent transcript and its sub-agent transcripts.
     pub source_fingerprint: String,
     /// `antiburn_local::analysis::pricing_generation()` at the time of writing.
     pub pricing_generation: i64,

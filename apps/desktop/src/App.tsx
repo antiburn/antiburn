@@ -16,6 +16,9 @@ const OnboardingView = lazy(() =>
 const SettingsView = lazy(() =>
   import("./views/SettingsView").then(({ SettingsView: view }) => ({ default: view })),
 )
+const OverlayWindow = lazy(() =>
+  import("./views/OverlayWindow").then(({ OverlayWindow: view }) => ({ default: view })),
+)
 
 function RouteLoading() {
   return <div className="h-full" aria-busy="true" data-testid="route-loading" />
@@ -24,6 +27,13 @@ function RouteLoading() {
 export function App() {
   const route = useRoute()
   if (route === "nudge") return <NudgeView />
+  if (route === "overlay") {
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <OverlayWindow />
+      </Suspense>
+    )
+  }
   if (route !== "settings" && route !== "onboarding") return <PopoverView />
 
   const view = route === "settings" ? <SettingsView /> : <OnboardingView />

@@ -59,6 +59,7 @@ mod disk_monitor;
 mod dto;
 mod export;
 mod global_click;
+mod hud;
 mod notifications;
 mod nudges;
 mod onboarding;
@@ -103,6 +104,19 @@ impl Schedulers {
 /// created lazily and report their own failures at the interaction that asked
 /// for them.
 pub fn run() {
+    let log_directory_name = if cfg!(debug_assertions) {
+        "antiburn-debug"
+    } else {
+        "antiburn"
+    };
+    let trace_guard = antiburn_trace::init(&antiburn_trace::TraceConfig {
+        log_directory_name,
+        debug_build: cfg!(debug_assertions),
+    });
+    ::tracing::info!(event = "app_started", version = env!("CARGO_PKG_VERSION"));
+    let retention_log_dir = trace_guard.log_dir.clone();
+    let mut trace_guard = Some(trace_guard);
+
     // `register` installs the non-activating-panel support the notification
     // window needs on macOS; a no-op elsewhere.
     let builder = antiburn_nudge::register(tauri::Builder::default())
@@ -121,11 +135,13 @@ pub fn run() {
             commands::export_session,
             commands::get_provider_usage,
             commands::get_live_usage,
+            commands::get_latest_session_activity,
             commands::refresh_live_usage,
             commands::get_scan_status,
             commands::get_folder_permissions,
             commands::request_folder_access,
             commands::open_folder_access_settings,
+            commands::open_overlay_window,
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
             commands::get_session_analytics,
@@ -146,6 +162,7 @@ pub fn run() {
             commands::reveal_source,
             commands::scan_now,
             commands::set_popover_height,
+            commands::set_overlay_hover_region,
             commands::set_repository_enabled,
             commands::set_settings,
             commands::take_settings_pane,
@@ -218,7 +235,11 @@ pub fn run() {
                 // a Dock icon while the store is being read.
                 onboarding::apply_activation_policy(app.handle(), true);
                 if let Err(error) = onboarding::open(app.handle()) {
-                    eprintln!("antiburn: could not open the first-run window ({error})");
+                    ::tracing::warn!(
+                        event = "onboarding_window_open_failed",
+                        trigger = "startup",
+                        error = %error
+                    );
                 }
             }
 
@@ -259,34 +280,52 @@ pub fn run() {
             Ok(())
         });
 
-    builder
+    let app = builder
         .build(tauri::generate_context!())
-        .expect("failed to build the antiburn application")
-        .run(|app, event| match event {
-            RunEvent::ExitRequested { api, code, .. }
-                if should_prevent_exit(onboarding::is_pending(app), code) =>
+        .expect("failed to build the antiburn application");
+    let mut retention_cleanup = retention_log_dir.map(|log_dir| {
+        tauri::async_runtime::spawn_blocking(move || {
+            match antiburn_trace::clean_old_logs(&log_dir, antiburn_trace::DEFAULT_LOG_MAX_AGE) {
+                Ok(removed) => ::tracing::info!(event = "log_retention_cleaned", removed),
+                Err(error) => ::tracing::warn!(event = "log_retention_failed", error = %error),
+            }
+        })
+    });
+    app.run(move |app, event| match event {
+        RunEvent::ExitRequested { api, code, .. }
+            if should_prevent_exit(onboarding::is_pending(app), code) =>
+        {
+            api.prevent_exit();
+        }
+        // A deliberate quit: stop the background tasks before the store
+        // they write to is dropped.
+        RunEvent::Exit => {
+            abort_schedulers(app);
+            finish_retention_cleanup(&mut retention_cleanup);
+            if let Some(mut guard) = trace_guard.take() {
+                guard.flush();
+            }
+        }
+        // Clicking the Dock icon. Only reachable while the first run is
+        // pending, because that is the only time antiburn has a Dock icon
+        // (see `onboarding::policy_for`) — and it is exactly then that
+        // somebody who closed the window early has no other way back to it.
+        // A visible affordance that did nothing would be a worse failure
+        // than the one the Dock icon is here to fix.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            if onboarding::is_pending(app)
+                && let Err(error) = onboarding::open(app)
             {
-                api.prevent_exit();
+                ::tracing::warn!(
+                    event = "onboarding_window_open_failed",
+                    trigger = "dock",
+                    error = %error
+                );
             }
-            // A deliberate quit: stop the background tasks before the store
-            // they write to is dropped.
-            RunEvent::Exit => abort_schedulers(app),
-            // Clicking the Dock icon. Only reachable while the first run is
-            // pending, because that is the only time antiburn has a Dock icon
-            // (see `onboarding::policy_for`) — and it is exactly then that
-            // somebody who closed the window early has no other way back to it.
-            // A visible affordance that did nothing would be a worse failure
-            // than the one the Dock icon is here to fix.
-            #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => {
-                if onboarding::is_pending(app)
-                    && let Err(error) = onboarding::open(app)
-                {
-                    eprintln!("antiburn: could not reopen the first-run window ({error})");
-                }
-            }
-            _ => {}
-        });
+        }
+        _ => {}
+    });
 }
 
 /// Whether an exit request should be swallowed.
@@ -317,6 +356,15 @@ fn abort_schedulers(app: &tauri::AppHandle) {
     };
     for handle in handles.drain(..) {
         handle.abort();
+    }
+}
+
+/// Wait for the bounded retention sweep before tracing stops.
+fn finish_retention_cleanup(handle: &mut Option<tauri::async_runtime::JoinHandle<()>>) {
+    if let Some(handle) = handle.take()
+        && let Err(error) = tauri::async_runtime::block_on(handle)
+    {
+        ::tracing::warn!(event = "log_retention_join_failed", error = %error);
     }
 }
 
@@ -391,7 +439,7 @@ fn install_updater(app: &tauri::AppHandle) {
     #[cfg(not(debug_assertions))]
     {
         if !updates::signing_key_configured(app) {
-            eprintln!("antiburn: update checks are disabled (no updater public key is configured)");
+            ::tracing::warn!(event = "updater_disabled_no_public_key");
             return;
         }
         match app.plugin(tauri_plugin_updater::Builder::new().build()) {
@@ -400,7 +448,10 @@ fn install_updater(app: &tauri::AppHandle) {
                     state.note_registered();
                 }
             }
-            Err(error) => eprintln!("antiburn: update checks are disabled ({error})"),
+            Err(error) => ::tracing::warn!(
+                event = "updater_registration_failed",
+                error = %error
+            ),
         }
     }
     #[cfg(debug_assertions)]
@@ -413,7 +464,9 @@ fn install_updater(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClosePolicy, close_policy, should_prevent_exit};
+    use super::{ClosePolicy, close_policy, finish_retention_cleanup, should_prevent_exit};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn a_window_close_never_quits_the_finished_menu_bar_app() {
@@ -431,6 +484,20 @@ mod tests {
         // context menu both offer Quit and both arrive with no code; swallowing
         // them would ship a Quit item that does nothing.
         assert!(!should_prevent_exit(true, None));
+    }
+
+    #[test]
+    fn retention_cleanup_finishes_before_shutdown_continues() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let worker_completed = Arc::clone(&completed);
+        let mut handle = Some(tauri::async_runtime::spawn_blocking(move || {
+            worker_completed.store(true, Ordering::Release);
+        }));
+
+        finish_retention_cleanup(&mut handle);
+
+        assert!(completed.load(Ordering::Acquire));
+        assert!(handle.is_none());
     }
 
     #[test]

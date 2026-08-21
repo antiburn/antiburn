@@ -14,177 +14,12 @@ import type {
   ActiveSessionsSummary,
   InitialContextBreakdown,
   InitialContextSource,
-  PhaseDistribution,
   SessionBucket,
-  SessionPhase,
 } from "../types/session"
-
-/* -------------------------------------------------------------------------
- * Phases
- * ---------------------------------------------------------------------- */
-
-export interface PhaseMeta {
-  key: SessionPhase
-  label: string
-  /** CSS variable for the band color (see styles/session-analytics-colors.css). */
-  colorVar: string
-  /** One-line explanation of what the mode captures. */
-  tip: string
-  /** Healthy reference band, as fractions 0..1. */
-  reference: { lo: number; hi: number }
-}
-
-/** Ordered deepest → shallowest, matching the hypnogram lanes (bottom → top). */
-export const PHASES: readonly PhaseMeta[] = [
-  {
-    key: "implementing",
-    label: "Implement",
-    colorVar: "var(--color-mode-implementing)",
-    tip: "Editing or writing files — the deep-work core of a session.",
-    reference: { lo: 0.3, hi: 0.7 },
-  },
-  {
-    key: "testing",
-    label: "Test",
-    colorVar: "var(--color-mode-testing)",
-    tip: "Running tests, builds, or checks to verify behavior.",
-    reference: { lo: 0.05, hi: 0.25 },
-  },
-  {
-    key: "exploring",
-    label: "Explore",
-    colorVar: "var(--color-mode-exploring)",
-    tip: "Reading, searching, and running commands to gather context.",
-    reference: { lo: 0.1, hi: 0.4 },
-  },
-  {
-    key: "thinking",
-    label: "Plan",
-    colorVar: "var(--color-mode-thinking)",
-    tip: "Reasoning with no tool calls — mostly planning, but also any thinking between actions.",
-    reference: { lo: 0.05, hi: 0.3 },
-  },
-  {
-    key: "disruption",
-    label: "Errors",
-    colorVar: "var(--color-mode-disruption)",
-    tip: "Failed tools, rejected edits, and corrections — the session's wake-ups.",
-    reference: { lo: 0.0, hi: 0.1 },
-  },
-]
-
-/** Band color for a phase, falling back to a muted label color. */
-export function phaseColor(phase: SessionPhase): string {
-  return PHASES.find((p) => p.key === phase)?.colorVar ?? "var(--color-label-tertiary)"
-}
-
-/** Display label for a phase, falling back to the raw key. */
-export function phaseLabel(phase: SessionPhase): string {
-  return PHASES.find((p) => p.key === phase)?.label ?? phase
-}
-
-/* -------------------------------------------------------------------------
- * Pattern score
- * ---------------------------------------------------------------------- */
-
-/** Score at or above which a session reads as "Healthy". */
-const HEALTHY_SCORE_THRESHOLD = 75
-/** Score at or above which a session reads as "Drifting"; below it, "Thrashing". */
-const DRIFTING_SCORE_THRESHOLD = 50
-
-/**
- * A 0–100 session-health score to its swatch color: green healthy, amber
- * drifting, red disrupted. Shared by the score stat and the sub-agent roster
- * rows so both color the same score identically.
- */
-export function scoreColor(score: number): string {
-  if (score >= HEALTHY_SCORE_THRESHOLD) return "var(--color-system-green)"
-  if (score >= DRIFTING_SCORE_THRESHOLD) return "var(--color-pattern-drifting)"
-  return "var(--color-mode-disruption)"
-}
-
-/** The health-score band label paired with {@link scoreColor}. */
-export function scoreLabel(score: number): string {
-  if (score >= HEALTHY_SCORE_THRESHOLD) return "Healthy"
-  if (score >= DRIFTING_SCORE_THRESHOLD) return "Drifting"
-  return "Thrashing"
-}
-
-/* -------------------------------------------------------------------------
- * Phase breakdown
- * ---------------------------------------------------------------------- */
-
-/** Whether a phase sits outside its healthy reference band. */
-type ReferenceFlag = "high" | "low" | null
-
-export interface PhaseBreakdownRow extends PhaseMeta {
-  fraction: number
-  minutes: number
-  flag: ReferenceFlag
-}
-
-/** Per-phase rows for the donut breakdown list (percent, minutes, High/Low). */
-export function phaseBreakdown(summary: ActiveSessionsSummary): PhaseBreakdownRow[] {
-  // Distribute active (working) time, not wall-clock: the distribution is
-  // event-weighted, so multiplying by wall-clock would spread idle gaps across
-  // the phases. Active time excludes those gaps.
-  const totalMinutes = summary.avgActiveSecs / 60
-  return PHASES.map((meta) => {
-    const fraction = summary.phaseDistribution[meta.key]
-    let flag: ReferenceFlag = null
-    if (fraction > meta.reference.hi) flag = "high"
-    else if (fraction < meta.reference.lo) flag = "low"
-    return { ...meta, fraction, minutes: Math.round(totalMinutes * fraction), flag }
-  })
-}
 
 /* -------------------------------------------------------------------------
  * Buckets and chart series
  * ---------------------------------------------------------------------- */
-
-export interface BucketDetail {
-  /** Progress fraction × durationSecs (approximate; buckets are resampled). */
-  elapsedSecs: number
-  /** 0..100. */
-  progressPct: number
-  /** In {@link PHASES} order, only modes with a non-zero share. */
-  modes: { label: string; colorVar: string; pct: number }[]
-  tokensIn: number
-  tokensOut: number
-  /** 0..100, clamped; null when the context window is unknown. */
-  contextPct: number | null
-  /** True when the bucket holds no classifiable activity. */
-  empty: boolean
-}
-
-/** Per-bucket detail for the hypnogram hover tooltip. */
-export function bucketDetail(
-  bucket: SessionBucket,
-  index: number,
-  bucketCount: number,
-  durationSecs: number,
-  contextWindow: number,
-): BucketDetail {
-  const fraction = bucketCount > 1 ? index / (bucketCount - 1) : 0
-  const total = distributionTotal(bucket.distribution)
-  const modes = PHASES.map((meta) => ({
-    label: meta.label,
-    colorVar: meta.colorVar,
-    pct: pct(bucket.distribution[meta.key]),
-  })).filter((m) => m.pct > 0)
-  return {
-    elapsedSecs: Math.round(fraction * durationSecs),
-    progressPct: Math.round(fraction * 100),
-    modes,
-    tokensIn: bucket.tokensIn,
-    tokensOut: bucket.tokensOut,
-    contextPct:
-      contextWindow > 0
-        ? Math.min(100, Math.round((bucket.contextTokens / contextWindow) * 100))
-        : null,
-    empty: total <= 0,
-  }
-}
 
 export interface TokenPoint {
   progress: number
@@ -194,12 +29,17 @@ export interface TokenPoint {
 
 /** Input/output token throughput over session progress. */
 export function tokenSeries(buckets: SessionBucket[]): TokenPoint[] {
-  const active = activeBuckets(buckets)
-  return active.map((b, i) => ({
-    progress: Math.round((i / Math.max(1, active.length - 1)) * 100),
-    tokensIn: b.tokensIn,
-    tokensOut: b.tokensOut,
-  }))
+  return buckets.flatMap((bucket, index) =>
+    bucket.tokensIn > 0 || bucket.tokensOut > 0
+      ? [
+          {
+            progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
+            tokensIn: bucket.tokensIn,
+            tokensOut: bucket.tokensOut,
+          },
+        ]
+      : [],
+  )
 }
 
 export interface ContextPoint {
@@ -211,12 +51,17 @@ export interface ContextPoint {
 /** Context-window occupancy (0..100%) over progress. */
 export function contextSeries(buckets: SessionBucket[], contextWindow: number): ContextPoint[] {
   const window = contextWindow || 1
-  const active = activeBuckets(buckets, true)
-  return active.map((b, i) => ({
-    progress: Math.round((i / Math.max(1, active.length - 1)) * 100),
-    contextPct: Math.min(100, Math.round((b.contextTokens / window) * 100)),
-    isCompactionBoundary: b.isCompactionBoundary,
-  }))
+  return buckets.flatMap((bucket, index) =>
+    bucket.contextTokens > 0 || bucket.isCompactionBoundary
+      ? [
+          {
+            progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
+            contextPct: Math.min(100, Math.round((bucket.contextTokens / window) * 100)),
+            isCompactionBoundary: bucket.isCompactionBoundary,
+          },
+        ]
+      : [],
+  )
 }
 
 export interface ToolSlice {
@@ -226,18 +71,23 @@ export interface ToolSlice {
   colorVar: string
 }
 
-/** Tool-mix donut slices, ordered to match the hypnogram phase colors. */
+/** Tool-mix donut slices. */
 export function toolMixSlices(summary: ActiveSessionsSummary): ToolSlice[] {
   const m = summary.toolMix
   return [
-    { key: "edit", label: "Edits", value: m.edit, colorVar: "var(--color-mode-implementing)" },
-    { key: "test", label: "Tests", value: m.test, colorVar: "var(--color-mode-testing)" },
-    { key: "read", label: "Reads", value: m.read, colorVar: "var(--color-mode-exploring)" },
+    {
+      key: "edit",
+      label: "Edits",
+      value: m.edit,
+      colorVar: "var(--color-analytics-blue-strong)",
+    },
+    { key: "test", label: "Tests", value: m.test, colorVar: "var(--color-analytics-green)" },
+    { key: "read", label: "Reads", value: m.read, colorVar: "var(--color-analytics-blue)" },
     {
       key: "search",
       label: "Searches",
       value: m.search,
-      colorVar: "var(--color-mode-thinking)",
+      colorVar: "var(--color-analytics-cyan)",
     },
     { key: "bash", label: "Commands", value: m.bash, colorVar: "var(--color-label-secondary)" },
     { key: "other", label: "Other", value: m.other, colorVar: "var(--color-label-tertiary)" },
@@ -260,26 +110,26 @@ interface InitialContextSourceMeta {
  * Broad initial-context source dimensions, in display order. The
  * `unattributed` remainder is the platform's fixed baseline overhead — always
  * loaded and not user-editable. It is last and takes a neutral role color, not
- * a session "mode" hue, so the largest slice reads as inert baseline rather
+ * a saturated hue, so the largest slice reads as inert baseline rather
  * than as an alarm.
  */
 const INITIAL_CONTEXT_SOURCES: readonly InitialContextSourceMeta[] = [
   {
     key: "skill_instructions",
     label: "Skills",
-    colorVar: "var(--color-mode-thinking)",
+    colorVar: "var(--color-analytics-cyan)",
     tip: "Instructions loaded from installed skills before the first response.",
   },
   {
     key: "mcp_instructions",
     label: "MCP",
-    colorVar: "var(--color-mode-exploring)",
+    colorVar: "var(--color-analytics-blue)",
     tip: "Tool definitions and instructions from connected MCP servers.",
   },
   {
     key: "agent_instructions",
     label: "Agent files",
-    colorVar: "var(--color-mode-implementing)",
+    colorVar: "var(--color-analytics-blue-strong)",
     tip: "Project and personal agent files loaded at startup.",
   },
   {
@@ -417,32 +267,6 @@ export function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`
 }
 
-/** File size from a byte count — `"4.2 KiB"`, `"1.1 MiB"`. */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B"
-  if (bytes < 1024) return `${Math.round(bytes)} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
-}
-
-/**
- * Coarse "time ago" from an epoch-ms timestamp: `"just now"`, `"5m ago"`,
- * `"3h ago"`, `"6d ago"`, falling back to an absolute short date once it is
- * older than about a month. Used for on-disk file times.
- */
-export function formatRelativeTime(epochMs: number): string {
-  const deltaSec = Math.max(0, (Date.now() - epochMs) / 1000)
-  if (deltaSec < 60) return "just now"
-  const min = Math.floor(deltaSec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.floor(hr / 24)
-  if (day < 30) return `${day}d ago`
-  return new Date(epochMs).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-}
-
 /* -------------------------------------------------------------------------
  * Cost presentation
  * ---------------------------------------------------------------------- */
@@ -516,41 +340,7 @@ export function costOutlierThreshold(costs: number[]): number | null {
   return Math.max(HIGH_COST_FLOOR_USD, HIGH_COST_MEDIAN_MULTIPLE * median(costs))
 }
 
-/* -------------------------------------------------------------------------
- * Internals
- * ---------------------------------------------------------------------- */
-
-function distributionTotal(d: PhaseDistribution): number {
-  return d.implementing + d.testing + d.exploring + d.thinking + d.disruption
-}
-
-/**
- * Buckets that hold classifiable activity — drops idle gaps so charts read on
- * the active-time axis (matching the hypnogram), not wall-clock.
- *
- * `includeCompactionBoundaries` keeps a compaction marker's bucket even with no
- * classified activity: the marker record is never classified into a phase, so
- * it would otherwise be dropped here and the compaction line would never reach
- * the chart. Only {@link contextSeries} opts in — the marker bucket's token
- * counts are genuinely zero, so including it in {@link tokenSeries} would draw
- * a spurious dip rather than a meaningful data point.
- */
-function activeBuckets(
-  buckets: SessionBucket[],
-  includeCompactionBoundaries = false,
-): SessionBucket[] {
-  return buckets.filter(
-    (b) =>
-      (b.dominantPhase != null && distributionTotal(b.distribution) > 0) ||
-      (includeCompactionBoundaries && b.isCompactionBoundary),
-  )
-}
-
-/** True when no analyzed session produced any classifiable activity. */
+/** True when no session produced analyzed events. */
 export function isEmptySummary(summary: ActiveSessionsSummary): boolean {
-  return summary.sessionCount === 0 || distributionTotal(summary.phaseDistribution) <= 0
-}
-
-function pct(fraction: number): number {
-  return Math.round(fraction * 100)
+  return summary.sessionCount === 0
 }

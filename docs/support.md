@@ -16,7 +16,7 @@ listed here is not claimed — a cell that is absent means "not supported", not
 | macOS 12 or earlier | Not supported; the bundle declares macOS 13 as its minimum |
 | Windows 11 (x86-64) | Supported |
 | Windows 10 | Not tested; no support claimed |
-| Linux, mainstream x86-64 desktops with a system tray | Supported |
+| Linux, mainstream x86-64 desktops with a system tray | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session with no X server leaves that placement to the compositor |
 | Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application |
 | Mobile | Out of scope |
 

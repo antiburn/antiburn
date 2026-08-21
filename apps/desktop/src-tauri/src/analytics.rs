@@ -13,12 +13,11 @@
 //! never on a runtime worker, where a multi-megabyte transcript would stall
 //! every other command.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, RawSource, SessionCost, SessionInput, SessionMetrics, SkillUse,
-    active_time_fraction, aggregate_metrics, analyze_sources_with, normalize_source,
-    price_breakdown, pricing_generation,
+    ActiveSessionsSummary, ModelRun, RawSource, SessionCost, SessionInput, SessionMetrics,
+    SkillUse, aggregate_metrics, analyze_sources_with, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, ForkObservation, SessionSource,
@@ -28,7 +27,7 @@ use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
 
 use crate::agents::{supports_analytics, vendor_label};
-use crate::dto::{OrchestrationStatus, SubagentMember};
+use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
 use crate::store::{AnalysisRecord, SessionKey};
 
 /// Minimum sub-agents before a session reads as an orchestrator. One delegated
@@ -54,9 +53,7 @@ const TRUNCATION_MARK: char = '…';
 
 /// Hold every skill description to [`SKILL_DESCRIPTION_MAX_CHARS`].
 ///
-/// Applied to the metrics' own `skill_uses`, which is the single value that
-/// becomes the cached `metrics_json`, the exported `metrics`, and the exported
-/// `skills` — so capping it once here caps all three.
+/// Applied before skill invocations enter an export.
 fn cap_skill_descriptions(skills: &mut [SkillUse]) {
     for skill in skills {
         if let Some(description) = skill.description.take() {
@@ -83,8 +80,36 @@ pub struct SessionAnalysis {
     pub metrics: Option<SessionMetrics>,
     /// The same metrics shaped as the one-session summary the views render.
     pub summary: Option<ActiveSessionsSummary>,
+    /// Cost of the parent transcript plus every sub-agent it launched.
+    ///
+    /// This is the session's total cost. The activity list and the export
+    /// document show this figure.
+    ///
+    /// The value is `None` when a model in the combined breakdown has no
+    /// price. A partial total hides real cost.
     pub cost: Option<SessionCost>,
+    /// Cost of the parent transcript, without any sub-agent.
+    pub top_level_cost: Option<SessionCost>,
+    /// Cost of every sub-agent this session launched, combined.
+    ///
+    /// The value is `None` when the session has no sub-agent, or when no
+    /// sub-agent could be priced.
+    pub subagents_cost: Option<SessionCost>,
+    /// Billable token counts that back [`Self::cost`]. The count sums the
+    /// parent transcript and every sub-agent.
+    pub inclusive_tokens: Option<BillableTokens>,
+    /// Billable token counts that back [`Self::subagents_cost`]. The count
+    /// sums every sub-agent. The value is `None` when the session has no
+    /// sub-agent.
+    pub subagents_tokens: Option<BillableTokens>,
+    /// Every model that contributed billable tokens.
     pub models: Vec<String>,
+    /// Parent model runs followed by runs used only by sub-agents.
+    pub model_runs: Vec<ModelRun>,
+    /// Billable tokens per model. The map merges the parent transcript and
+    /// every sub-agent. The cache stores this map, so a later pass can
+    /// re-price the session without reading any transcript again.
+    pub inclusive_model_breakdown: HashMap<String, ModelTokens>,
     pub skills: Vec<SkillUse>,
     pub orchestration: Option<OrchestrationStatus>,
     /// The transcript this analysis was read from, when it is a file.
@@ -102,7 +127,13 @@ impl SessionAnalysis {
             metrics: None,
             summary: None,
             cost: None,
+            top_level_cost: None,
+            subagents_cost: None,
+            inclusive_tokens: None,
+            subagents_tokens: None,
             models: Vec::new(),
+            model_runs: Vec::new(),
+            inclusive_model_breakdown: HashMap::new(),
             skills: Vec::new(),
             orchestration: None,
             source_path: None,
@@ -112,29 +143,63 @@ impl SessionAnalysis {
 
     /// The cache record for this analysis, when there is anything to cache.
     pub fn record(&self, key: &SessionKey) -> Option<AnalysisRecord> {
-        let metrics = self.metrics.as_ref()?;
+        self.metrics.as_ref()?;
         Some(AnalysisRecord {
             key: key.clone(),
-            metrics_json: serde_json::to_string(metrics).ok()?,
-            cost_json: self
-                .cost
-                .as_ref()
-                .and_then(|cost| serde_json::to_string(cost).ok()),
-            model_breakdown_json: serde_json::to_string(&metrics.model_breakdown)
+            model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
                 .unwrap_or_else(|_| "{}".to_string()),
-            active_secs: metrics.active_secs as i64,
-            duration_secs: metrics.duration_secs as i64,
-            pattern_score: i64::from(metrics.pattern_score),
+            inclusive_models_json: serde_json::to_string(&self.model_runs)
+                .unwrap_or_else(|_| "[]".to_string()),
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
         })
     }
 }
 
+/// Merge per-model token breakdowns. Sum each model's counts across every
+/// breakdown. A model that both the parent and a sub-agent use adds its
+/// counts. No sub-agent spend is lost.
+fn merge_model_breakdowns<'a>(
+    breakdowns: impl IntoIterator<Item = &'a HashMap<String, ModelTokens>>,
+) -> HashMap<String, ModelTokens> {
+    let mut merged: HashMap<String, ModelTokens> = HashMap::new();
+    for breakdown in breakdowns {
+        for (model, tokens) in breakdown {
+            let entry = merged.entry(model.clone()).or_default();
+            entry.input_tokens += tokens.input_tokens;
+            entry.output_tokens += tokens.output_tokens;
+            entry.cache_read_tokens += tokens.cache_read_tokens;
+            entry.cache_creation_tokens += tokens.cache_creation_tokens;
+            entry.cache_creation_1h_tokens += tokens.cache_creation_1h_tokens;
+        }
+    }
+    merged
+}
+
+/// Sum billable tokens across every model in one breakdown.
+///
+/// The sum matches the `billable_*` fields the engine computes on
+/// `SessionMetrics` for a single transcript. Use this function for a
+/// breakdown that spans more than one transcript, such as a merged
+/// sub-agent breakdown.
+fn sum_billable_tokens(breakdown: &HashMap<String, ModelTokens>) -> BillableTokens {
+    let mut sum = BillableTokens::default();
+    for tokens in breakdown.values() {
+        sum.input_tokens += tokens.input_tokens;
+        sum.output_tokens += tokens.output_tokens;
+        sum.cache_read_tokens += tokens.cache_read_tokens;
+        sum.cache_creation_tokens += tokens.cache_creation_tokens;
+    }
+    sum
+}
+
 /// Fingerprint stood in for a source with no file behind it (a vendor database,
 /// an inline label). Such a source is never cache-skipped: it re-analyzes every
 /// pass, because there is no cheap way to tell whether it changed.
 pub const MISSING_FINGERPRINT: &str = "-";
+
+/// This version invalidates cached values when the analysis cache contract changes.
+const ANALYSIS_FINGERPRINT_VERSION: u8 = 1;
 
 /// `mtime:size` of a transcript file, or [`MISSING_FINGERPRINT`].
 pub fn fingerprint_of(source: &SessionSource) -> String {
@@ -151,6 +216,40 @@ pub fn fingerprint_of(source: &SessionSource) -> String {
         .map(|since| since.as_secs())
         .unwrap_or(0);
     format!("{mtime}:{}", metadata.len())
+}
+
+/// Fingerprint the parent transcript and all current sub-agent transcripts.
+pub async fn fingerprint_with_subagents(
+    agent: AgentKind,
+    session_id: &str,
+    wsl_distro: Option<&str>,
+    source: &SessionSource,
+) -> String {
+    let mut subagent_paths = Explorers::DISK
+        .list_subagents_in_environment(&agent, session_id, wsl_distro)
+        .await;
+    subagent_paths.sort();
+    combined_fingerprint(source, &subagent_paths)
+}
+
+/// Build one stable fingerprint from a parent and its sorted child paths.
+fn combined_fingerprint(source: &SessionSource, subagent_paths: &[std::path::PathBuf]) -> String {
+    let parent_fingerprint = fingerprint_of(source);
+    if parent_fingerprint == MISSING_FINGERPRINT {
+        return parent_fingerprint;
+    }
+
+    let parts = std::iter::once(("parent".to_string(), parent_fingerprint)).chain(
+        subagent_paths.iter().map(|path| {
+            (
+                path.to_string_lossy().into_owned(),
+                fingerprint_of(&SessionSource::File(path.clone())),
+            )
+        }),
+    );
+    serde_json::to_string(&parts.collect::<Vec<_>>())
+        .map(|fingerprint| format!("v{ANALYSIS_FINGERPRINT_VERSION}:{fingerprint}"))
+        .unwrap_or_else(|_| MISSING_FINGERPRINT.to_string())
 }
 
 /// Whether a cached analysis is still good for `source`.
@@ -200,9 +299,8 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
 
 /// Analyze one session and, in the same pass, every sub-agent it launched.
 ///
-/// One pass rather than N+1 because the engine's entry point already takes a
-/// batch: the sub-agents' metrics come back alongside the parent's, and the
-/// roster's health scores cost nothing extra.
+/// One pass avoids an extra analysis call for each sub-agent. The engine
+/// returns the parent and sub-agent metrics in one batch.
 pub async fn analyze(
     agent: AgentKind,
     session_id: &str,
@@ -225,11 +323,13 @@ pub async fn analyze(
     // Sub-agent transcripts, resolved before the analysis so all of them ride
     // the same batch. The engine short-circuits for vendors that record no
     // orchestration, so this needs no per-agent gate of its own.
-    let mut subagents: Vec<(String, String, SessionInput)> = Vec::new();
-    for path in Explorers::DISK
+    let mut subagent_paths = Explorers::DISK
         .list_subagents_in_environment(&agent, session_id, wsl_distro)
-        .await
-    {
+        .await;
+    subagent_paths.sort();
+    let fingerprint = combined_fingerprint(&source, &subagent_paths);
+    let mut subagents: Vec<(String, String, SessionInput)> = Vec::new();
+    for path in subagent_paths {
         let Some(subagent_id) = Explorers::DISK.subagent_id(&agent, &path) else {
             continue;
         };
@@ -245,7 +345,6 @@ pub async fn analyze(
         ));
     }
 
-    let fingerprint = fingerprint_of(&source);
     let source_path = source_path(&source);
     let parent_session_id = session_id.to_string();
     let agent_slug = agent.slug().to_string();
@@ -261,16 +360,10 @@ pub async fn analyze(
 
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads.
-    let computed = tauri::async_runtime::spawn_blocking(move || {
-        let batch = analyze_sources_with(inputs, true);
-        // The spawn dots need the parent's normalized event stream to map a
-        // child's first-activity instant onto the parent's active-time axis.
-        let parent_stream = normalize_source(&parent_input).ok();
-        (batch, parent_stream)
-    })
-    .await;
+    let computed =
+        tauri::async_runtime::spawn_blocking(move || analyze_sources_with(inputs, true)).await;
 
-    let Ok((batch, parent_stream)) = computed else {
+    let Ok(batch) = computed else {
         return SessionAnalysis::unavailable();
     };
 
@@ -297,19 +390,10 @@ pub async fn analyze(
 
     let members: Vec<SubagentMember> = roster
         .into_iter()
-        .map(|(subagent_id, label)| {
-            let child = by_id.get(&subagent_id);
-            let spawn_progress = child
-                .and_then(|child| child.first_ts_ms)
-                .zip(parent_stream.as_ref())
-                .and_then(|(first_ts_ms, stream)| active_time_fraction(stream, first_ts_ms));
-            SubagentMember {
-                agent: agent_slug.clone(),
-                subagent_id,
-                label,
-                pattern_score: child.map(|child| child.pattern_score).unwrap_or(0),
-                spawn_progress,
-            }
+        .map(|(subagent_id, label)| SubagentMember {
+            agent: agent_slug.clone(),
+            subagent_id,
+            label,
         })
         .collect();
 
@@ -321,8 +405,24 @@ pub async fn analyze(
         members,
     });
 
-    let cost = price_breakdown(&metrics.model_breakdown);
-    let models = sorted_models(&metrics.model_breakdown);
+    // Merge every sub-agent's breakdown into one map. Merge that map with
+    // the parent's breakdown too. `cost` then prices the whole session, not
+    // only the transcript a reader opened.
+    let subagent_breakdowns: Vec<&HashMap<String, ModelTokens>> =
+        by_id.values().map(|child| &child.model_breakdown).collect();
+    let has_subagents = !subagent_breakdowns.is_empty();
+    let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
+    let inclusive_model_breakdown = merge_model_breakdowns(
+        std::iter::once(&metrics.model_breakdown).chain(subagent_breakdowns.iter().copied()),
+    );
+
+    let top_level_cost = price_breakdown(&metrics.model_breakdown);
+    let subagents_cost = price_breakdown(&subagents_model_breakdown);
+    let cost = price_breakdown(&inclusive_model_breakdown);
+    let models = sorted_models(&inclusive_model_breakdown);
+    let model_runs = model_runs_parent_first(&metrics, by_id.values());
+    let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
+    let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
     let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
@@ -330,7 +430,13 @@ pub async fn analyze(
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
+        top_level_cost,
+        subagents_cost,
+        inclusive_tokens,
+        subagents_tokens,
         models,
+        model_runs,
+        inclusive_model_breakdown,
         skills,
         orchestration,
         source_path,
@@ -340,10 +446,9 @@ pub async fn analyze(
 
 /// Analyze one sub-agent transcript on its own.
 ///
-/// A sub-agent is a session in its own right — its own transcript, its own
-/// health — so the analytics surface opens it the same way it opens anything
-/// else. It has no roster of its own (vendors do not nest orchestration), so
-/// this is the single-input path rather than the batch above.
+/// A sub-agent is a session in its own right. The analytics surface opens its
+/// transcript like any other session. Vendors do not nest orchestration, so
+/// this path analyzes one input.
 pub async fn analyze_subagent(
     agent: AgentKind,
     parent_session_id: &str,
@@ -385,8 +490,14 @@ pub async fn analyze_subagent(
     metrics.agent = agent_slug;
     cap_skill_descriptions(&mut metrics.skill_uses);
 
+    // A sub-agent launches no sub-agent of its own. Its own transcript is
+    // the whole story. `cost` and `top_level_cost` name the same figure
+    // here.
     let cost = price_breakdown(&metrics.model_breakdown);
     let models = sorted_models(&metrics.model_breakdown);
+    let model_runs = model_runs_for_metrics(&metrics);
+    let inclusive_model_breakdown = metrics.model_breakdown.clone();
+    let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
@@ -394,7 +505,13 @@ pub async fn analyze_subagent(
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
+        top_level_cost: cost,
+        subagents_cost: None,
+        inclusive_tokens,
+        subagents_tokens: None,
         models,
+        model_runs,
+        inclusive_model_breakdown,
         skills,
         orchestration: None,
         source_path,
@@ -463,6 +580,74 @@ pub fn sorted_models(breakdown: &HashMap<String, ModelTokens>) -> Vec<String> {
     models
 }
 
+/// Return sorted parent model runs, followed by sorted child-only model runs.
+fn model_runs_parent_first<'a>(
+    parent: &SessionMetrics,
+    children: impl Iterator<Item = &'a SessionMetrics>,
+) -> Vec<ModelRun> {
+    model_runs_parent_first_lists(
+        model_runs_for_metrics(parent),
+        children.map(model_runs_for_metrics),
+    )
+}
+
+fn model_runs_parent_first_lists(
+    mut runs: Vec<ModelRun>,
+    child_runs: impl Iterator<Item = Vec<ModelRun>>,
+) -> Vec<ModelRun> {
+    let mut seen: HashSet<ModelRun> = runs.iter().cloned().collect();
+    let child_runs = child_runs.flatten().collect::<BTreeSet<_>>().into_iter();
+    runs.extend(child_runs.filter(|run| seen.insert(run.clone())));
+    runs
+}
+
+/// Return the distinct model runs for one session.
+fn model_runs_for_metrics(metrics: &SessionMetrics) -> Vec<ModelRun> {
+    if metrics.model_runs.is_empty() {
+        return sorted_models(&metrics.model_breakdown)
+            .into_iter()
+            .map(|model| ModelRun {
+                model,
+                thinking_mode: None,
+            })
+            .collect();
+    }
+    metrics
+        .model_runs
+        .iter()
+        .filter_map(normalize_model_run)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn normalize_model_run(run: &ModelRun) -> Option<ModelRun> {
+    let model = run.model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let mode = run
+        .thinking_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty());
+    Some(ModelRun {
+        model: model.to_string(),
+        thinking_mode: mode.map(str::to_string),
+    })
+}
+
+/// Read the inclusive model runs from a cached analysis.
+pub fn cached_inclusive_model_runs(inclusive_models_json: &str) -> Vec<ModelRun> {
+    let mut seen = HashSet::new();
+    serde_json::from_str::<Vec<ModelRun>>(inclusive_models_json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|run| normalize_model_run(&run))
+        .filter(|run| seen.insert(run.clone()))
+        .collect()
+}
+
 /// Whether meaningful session activity fell inside the active window. The
 /// timestamp is semantic when the transcript provides one, rather than a
 /// filesystem-touch heartbeat.
@@ -496,12 +681,8 @@ mod tests {
     fn a_source_with_no_file_behind_it_never_satisfies_the_cache() {
         let cached = AnalysisRecord {
             key: SessionKey::new("native", "claude-code", "abc"),
-            metrics_json: "{}".into(),
-            cost_json: None,
             model_breakdown_json: "{}".into(),
-            active_secs: 0,
-            duration_secs: 0,
-            pattern_score: 0,
+            inclusive_models_json: "[]".into(),
             source_fingerprint: MISSING_FINGERPRINT.into(),
             pricing_generation: pricing_generation() as i64,
         };
@@ -519,16 +700,78 @@ mod tests {
     fn a_stale_pricing_generation_invalidates_a_matching_fingerprint() {
         let cached = AnalysisRecord {
             key: SessionKey::new("native", "claude-code", "abc"),
-            metrics_json: "{}".into(),
-            cost_json: None,
             model_breakdown_json: "{}".into(),
-            active_secs: 0,
-            duration_secs: 0,
-            pattern_score: 0,
+            inclusive_models_json: "[]".into(),
             source_fingerprint: "123:456".into(),
             pricing_generation: pricing_generation() as i64 - 1,
         };
         assert!(!cache_is_fresh(&cached, "123:456"));
+    }
+
+    #[test]
+    fn inclusive_model_runs_put_parent_modes_before_subagent_modes() {
+        let parent = vec![
+            ModelRun {
+                model: "claude-opus-4-6".to_string(),
+                thinking_mode: Some("high".to_string()),
+            },
+            ModelRun {
+                model: "gpt-5.6-sol".to_string(),
+                thinking_mode: Some("xhigh".to_string()),
+            },
+        ];
+        let child = vec![
+            ModelRun {
+                model: "claude-fable-5".to_string(),
+                thinking_mode: Some("high".to_string()),
+            },
+            ModelRun {
+                model: "claude-haiku-4-5".to_string(),
+                thinking_mode: Some("low".to_string()),
+            },
+            ModelRun {
+                model: "gpt-5.6-sol".to_string(),
+                thinking_mode: Some("xhigh".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            model_runs_parent_first_lists(parent.clone(), [child.clone()].into_iter()),
+            vec![
+                parent[0].clone(),
+                parent[1].clone(),
+                child[0].clone(),
+                child[1].clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_runs_are_trimmed_without_losing_the_thinking_mode() {
+        assert_eq!(
+            normalize_model_run(&ModelRun {
+                model: " gpt-5.6-sol ".to_string(),
+                thinking_mode: Some(" xhigh ".to_string()),
+            }),
+            Some(ModelRun {
+                model: "gpt-5.6-sol".to_string(),
+                thinking_mode: Some("xhigh".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn cached_inclusive_model_runs_reject_invalid_json_and_normalize_values() {
+        assert!(cached_inclusive_model_runs("not json").is_empty());
+        assert_eq!(
+            cached_inclusive_model_runs(
+                r#"[{"model":" model-b ","thinkingMode":" high "},{"model":"model-b","thinkingMode":"high"},{"model":""}]"#,
+            ),
+            vec![ModelRun {
+                model: "model-b".to_string(),
+                thinking_mode: Some("high".to_string()),
+            }]
+        );
     }
 
     #[test]
@@ -546,6 +789,25 @@ mod tests {
         };
         assert_eq!(fingerprint_of(&inline), MISSING_FINGERPRINT);
         assert_eq!(source_path(&inline), None);
+    }
+
+    #[test]
+    fn a_child_transcript_change_updates_the_combined_fingerprint() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, "parent").unwrap();
+        std::fs::write(&child, "child").unwrap();
+        let source = SessionSource::File(parent);
+
+        let before = combined_fingerprint(&source, std::slice::from_ref(&child));
+        assert!(before.starts_with(&format!("v{ANALYSIS_FINGERPRINT_VERSION}:")));
+        std::fs::write(&child, "child has more model events").unwrap();
+
+        assert_ne!(
+            before,
+            combined_fingerprint(&source, std::slice::from_ref(&child))
+        );
     }
 
     #[test]
@@ -579,6 +841,103 @@ mod tests {
 
         // Garbage in the cache degrades to "unknown", never to a panic.
         assert_eq!(price_cached_breakdown("not json").0, None);
+    }
+
+    fn tokens(input: u64) -> ModelTokens {
+        ModelTokens {
+            input_tokens: input,
+            ..ModelTokens::default()
+        }
+    }
+
+    #[test]
+    fn merging_breakdowns_sums_a_model_used_by_the_parent_and_a_sub_agent() {
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), tokens(100))]);
+        let child = HashMap::from([("claude-opus-4-6".to_string(), tokens(50))]);
+
+        let merged = merge_model_breakdowns([&parent, &child]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged["claude-opus-4-6"].input_tokens, 150);
+    }
+
+    #[test]
+    fn merging_breakdowns_keeps_a_model_only_one_side_used() {
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), tokens(100))]);
+        let child_a = HashMap::from([
+            ("claude-opus-4-6".to_string(), tokens(50)),
+            ("claude-sonnet-4-5".to_string(), tokens(20)),
+        ]);
+        let child_b = HashMap::from([("gpt-5.6".to_string(), tokens(10))]);
+
+        let merged = merge_model_breakdowns([&parent, &child_a, &child_b]);
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged["claude-opus-4-6"].input_tokens, 150);
+        assert_eq!(merged["claude-sonnet-4-5"].input_tokens, 20);
+        assert_eq!(merged["gpt-5.6"].input_tokens, 10);
+    }
+
+    #[test]
+    fn merging_no_breakdowns_yields_an_empty_map() {
+        assert!(merge_model_breakdowns(std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn an_inclusive_breakdown_prices_the_parent_and_every_sub_agent_together() {
+        // This test mirrors the bug this rollup fixes. A parent spends
+        // little. Its sub-agents together spend much more. The session's
+        // cost must not show only the parent's price.
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), tokens(1_000_000))]);
+        let subagent_a = HashMap::from([("claude-opus-4-6".to_string(), tokens(2_000_000))]);
+        let subagent_b = HashMap::from([("claude-opus-4-6".to_string(), tokens(3_000_000))]);
+
+        let top_level_cost = price_breakdown(&parent).expect("the parent alone prices");
+        let inclusive = merge_model_breakdowns([&parent, &subagent_a, &subagent_b]);
+        let inclusive_cost = price_breakdown(&inclusive).expect("the merged breakdown prices");
+
+        // 1M + 2M + 3M input tokens of the same model total 6x the parent alone.
+        assert!((inclusive_cost.total_usd - top_level_cost.total_usd * 6.0).abs() < 1e-6);
+        assert!(inclusive_cost.total_usd > top_level_cost.total_usd);
+    }
+
+    /// A full `ModelTokens`, so the token-sum test below exercises every
+    /// billable component, not only input tokens.
+    fn full_tokens(input: u64, output: u64, cache_read: u64, cache_creation: u64) -> ModelTokens {
+        ModelTokens {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
+            cache_creation_1h_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn the_inclusive_token_sum_equals_the_parent_sum_plus_the_sub_agents_sum() {
+        let parent = HashMap::from([("claude-opus-4-6".to_string(), full_tokens(100, 20, 5, 3))]);
+        let subagent_a =
+            HashMap::from([("claude-opus-4-6".to_string(), full_tokens(50, 10, 2, 1))]);
+        let subagent_b =
+            HashMap::from([("claude-sonnet-4-5".to_string(), full_tokens(30, 6, 1, 0))]);
+
+        let subagents_merged = merge_model_breakdowns([&subagent_a, &subagent_b]);
+        let inclusive_merged = merge_model_breakdowns([&parent, &subagent_a, &subagent_b]);
+
+        let parent_sum = sum_billable_tokens(&parent);
+        let subagents_sum = sum_billable_tokens(&subagents_merged);
+        let inclusive_sum = sum_billable_tokens(&inclusive_merged);
+
+        assert_eq!(
+            inclusive_sum,
+            BillableTokens {
+                input_tokens: parent_sum.input_tokens + subagents_sum.input_tokens,
+                output_tokens: parent_sum.output_tokens + subagents_sum.output_tokens,
+                cache_read_tokens: parent_sum.cache_read_tokens + subagents_sum.cache_read_tokens,
+                cache_creation_tokens: parent_sum.cache_creation_tokens
+                    + subagents_sum.cache_creation_tokens,
+            }
+        );
     }
 
     #[test]

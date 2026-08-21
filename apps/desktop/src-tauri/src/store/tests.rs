@@ -37,6 +37,33 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
     );
 }
 
+#[test]
+fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
+    let store = store();
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('session_analysis')")
+        .unwrap();
+    let columns: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        columns,
+        vec![
+            "environment_key",
+            "agent",
+            "session_id",
+            "model_breakdown_json",
+            "inclusive_models_json",
+            "source_fingerprint",
+            "pricing_generation",
+        ]
+    );
+}
+
 /// Opting out is a withdrawal, not a pause: nothing queued survives it, and
 /// neither does the identifier that would let a later opt-in be joined to it.
 #[test]
@@ -305,12 +332,8 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     store
         .save_analysis(&AnalysisRecord {
             key: SessionKey::new("native", "claude-code", "abc"),
-            metrics_json: "{}".into(),
-            cost_json: None,
             model_breakdown_json: "{}".into(),
-            active_secs: 1,
-            duration_secs: 1,
-            pattern_score: 0,
+            inclusive_models_json: "[]".into(),
             source_fingerprint: "1:1".into(),
             pricing_generation: 0,
         })
@@ -612,12 +635,10 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
 
     let record = AnalysisRecord {
         key: key.clone(),
-        metrics_json: r#"{"agent":"claude-code","sessionId":"abc"}"#.into(),
-        cost_json: Some(r#"{"totalUsd":1.5}"#.into()),
         model_breakdown_json: r#"{"claude-opus-4-6":{"inputTokens":10}}"#.into(),
-        active_secs: 120,
-        duration_secs: 300,
-        pattern_score: 81,
+        inclusive_models_json:
+            r#"[{"model":"claude-haiku-4-5"},{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
+                .into(),
         source_fingerprint: "1700000000:4096".into(),
         pricing_generation: 0,
     };
@@ -625,13 +646,11 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
     assert_eq!(store.analysis(&key).unwrap().as_ref(), Some(&record));
 
     let updated = AnalysisRecord {
-        active_secs: 240,
         source_fingerprint: "1700000900:8192".into(),
         ..record
     };
     store.save_analysis(&updated).unwrap();
     let stored = store.analysis(&key).unwrap().expect("analysis");
-    assert_eq!(stored.active_secs, 240);
     assert_eq!(stored.source_fingerprint, "1700000900:8192");
 }
 
@@ -686,12 +705,8 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
     store
         .save_analysis(&AnalysisRecord {
             key: key.clone(),
-            metrics_json: "{}".into(),
-            cost_json: None,
             model_breakdown_json: "{}".into(),
-            active_secs: 1,
-            duration_secs: 1,
-            pattern_score: 50,
+            inclusive_models_json: "[]".into(),
             source_fingerprint: "x".into(),
             pricing_generation: 0,
         })
@@ -822,12 +837,8 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
     store
         .save_analysis(&AnalysisRecord {
             key: SessionKey::new("native", "claude-code", "analyzed"),
-            metrics_json: "{}".into(),
-            cost_json: None,
             model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
-            active_secs: 1,
-            duration_secs: 1,
-            pattern_score: 0,
+            inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#.into(),
             source_fingerprint: "1:1".into(),
             pricing_generation: 0,
         })

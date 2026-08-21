@@ -145,6 +145,28 @@ pub fn end_popover_hold(app: tauri::AppHandle) {
     popover::end_focus_hold(&app);
 }
 
+/* -------------------------------------------------------------------------
+ * Overlay window
+ * ---------------------------------------------------------------------- */
+
+/// Open or re-show the always-on-top usage HUD.
+#[tauri::command]
+pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    antiburn_hud::open(&app).map_err(fail)
+}
+
+/// Record the drawn panel edges for the native hover watcher.
+#[tauri::command]
+pub fn set_overlay_hover_region(top: f64, bottom: f64) {
+    antiburn_hud::set_hover_region(top, bottom);
+}
+
+/// Return the newest recent transcript write as epoch seconds.
+#[tauri::command]
+pub async fn get_latest_session_activity() -> Option<i64> {
+    crate::hud::latest_session_activity().await
+}
+
 /// Where the app came from and what it is running against.
 #[tauri::command]
 pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
@@ -389,6 +411,10 @@ fn activity_entry(
         .as_ref()
         .map(|record| analytics::price_cached_breakdown(&record.model_breakdown_json))
         .unwrap_or((None, Vec::new()));
+    let model_runs = analysis
+        .as_ref()
+        .map(|record| analytics::cached_inclusive_model_runs(&record.inclusive_models_json))
+        .unwrap_or_default();
 
     Ok(ActivityEntry {
         agent: session.key.agent.clone(),
@@ -403,6 +429,7 @@ fn activity_entry(
         fork_child_count: store.fork_children(&session.key)?.len() as u32,
         cost,
         models,
+        model_runs,
     })
 }
 
@@ -631,15 +658,19 @@ pub async fn get_session_analytics(
             scan::unix_now(),
         ),
         cost: analysis.cost,
+        top_level_cost: analysis.top_level_cost,
+        subagents_cost: analysis.subagents_cost,
+        inclusive_tokens: analysis.inclusive_tokens,
+        subagents_tokens: analysis.subagents_tokens,
         models: analysis.models.clone(),
-        skills: analysis.skills.clone(),
+        model_runs: analysis.model_runs.clone(),
         orchestration,
         relations: (!relations.is_empty()).then_some(relations),
         source_path: analysis.source_path.clone(),
     })
 }
 
-/// One sub-agent's own analysis, for the roster and the spawn markers.
+/// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
 pub async fn get_subagent_analytics(
     app: tauri::AppHandle,
@@ -666,17 +697,19 @@ pub async fn get_subagent_analytics(
         wsl_distro,
         is_active: false,
         cost: analysis.cost,
+        top_level_cost: analysis.top_level_cost,
+        subagents_cost: analysis.subagents_cost,
+        inclusive_tokens: analysis.inclusive_tokens,
+        subagents_tokens: analysis.subagents_tokens,
         models: analysis.models.clone(),
-        skills: analysis.skills.clone(),
+        model_runs: analysis.model_runs.clone(),
         orchestration: None,
         relations: None,
         source_path: analysis.source_path.clone(),
     })
 }
 
-/// The sub-agent roster the store already recorded, rebuilt as an orchestration
-/// status. Health scores and spawn positions are absent — those come from
-/// analyzing the children, which is exactly what did not happen this time.
+/// The sub-agent roster the store already recorded, rebuilt as an orchestration status.
 fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<OrchestrationStatus> {
     let members: Vec<SubagentMember> = store
         .relations(key)
@@ -690,8 +723,6 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
                 .clone()
                 .unwrap_or_else(|| "Sub-agent".to_string()),
             subagent_id: relation.related_id,
-            pattern_score: 0,
-            spawn_progress: None,
         })
         .collect();
     if members.is_empty() {

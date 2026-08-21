@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::analysis::engine::{Phase, analyze_session};
-use crate::analysis::model::{NormalizedSession, Role, ToolCategory};
+use crate::analysis::engine::analyze_session;
+use crate::analysis::model::{ModelRun, Role, ToolCategory};
 use crate::analysis::{RawSource, SessionInput, analyze_sources, normalize_source};
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
@@ -27,7 +27,7 @@ const CLAUDE_FIXTURE: &str = concat!(
 );
 
 #[test]
-fn claude_tokens_tools_and_phases() {
+fn claude_tokens_tools_and_timing() {
     let session = normalize_source(&jsonl_input("claude", CLAUDE_FIXTURE)).unwrap();
     assert_eq!(session.events.len(), 4);
 
@@ -40,7 +40,6 @@ fn claude_tokens_tools_and_phases() {
     assert_eq!(m.tool_mix.edit, 1);
     assert_eq!(m.tool_mix.search, 1);
     assert_eq!(m.grep_count, 1);
-    assert_eq!(m.disruption_count, 1);
     // Duration spans 12:00 → 12:03 = 180s.
     assert_eq!(m.duration_secs, 180);
     // Every gap is 60s (< idle threshold), so active time == wall-clock span.
@@ -48,7 +47,7 @@ fn claude_tokens_tools_and_phases() {
 }
 
 #[test]
-fn effective_input_includes_cache_writes_at_header_bucket_and_segment_level() {
+fn effective_input_includes_cache_writes_in_totals_and_buckets() {
     let fixture = concat!(
         r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":200,"cache_read_input_tokens":5000,"cache_creation_input_tokens":500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
         "\n",
@@ -65,13 +64,6 @@ fn effective_input_includes_cache_writes_at_header_bucket_and_segment_level() {
         m.buckets.iter().map(|bucket| bucket.tokens_in).sum::<u64>(),
         2000
     );
-
-    // Hypnogram segments independently attribute each turn's effective input.
-    assert_eq!(m.segments.len(), 2);
-    assert_eq!(m.segments[0].phase, Phase::Implementing);
-    assert_eq!(m.segments[0].tokens_in, 1500);
-    assert_eq!(m.segments[1].phase, Phase::Exploring);
-    assert_eq!(m.segments[1].tokens_in, 500);
 
     // Cost retains disjoint per-rate inputs, and occupancy still includes reads.
     assert_eq!(m.billable_input_tokens, 1200);
@@ -104,64 +96,7 @@ fn active_time_excludes_idle_gaps() {
 }
 
 #[test]
-fn phase_classification_rules() {
-    let edit = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{}}]}}"#,
-    ))
-    .unwrap();
-    assert_eq!(dominant_phase(&edit), Phase::Implementing);
-
-    let read = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{}}]}}"#,
-    ))
-    .unwrap();
-    assert_eq!(dominant_phase(&read), Phase::Exploring);
-
-    let error = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","is_error":true}]}}"#,
-    ))
-    .unwrap();
-    assert_eq!(dominant_phase(&error), Phase::Disruption);
-
-    let think = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"planning the work"}]}}"#,
-    ))
-    .unwrap();
-    assert_eq!(dominant_phase(&think), Phase::Thinking);
-
-    // A Bash call whose command is a test runner is Testing, not Exploring.
-    let testing = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test --workspace"}}]}}"#,
-    ))
-    .unwrap();
-    assert_eq!(testing.events[0].tools[0].category, ToolCategory::Test);
-    assert_eq!(dominant_phase(&testing), Phase::Testing);
-
-    // A non-test Bash command stays Exploring.
-    let bash = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}"#,
-    ))
-    .unwrap();
-    assert_eq!(bash.events[0].tools[0].category, ToolCategory::Bash);
-    assert_eq!(dominant_phase(&bash), Phase::Exploring);
-
-    // A failing test (same turn carries an error) is a Disruption: is_error wins.
-    let failing = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}},{"type":"tool_result","is_error":true,"content":"FAILED"}]}}"#,
-    ))
-    .unwrap();
-    assert_eq!(dominant_phase(&failing), Phase::Disruption);
-}
-
-#[test]
-fn pi_jsonl_tool_calls_drive_non_plan_phase_distribution() {
+fn pi_jsonl_tool_calls_feed_tool_mix() {
     let pi_fixture = concat!(
         r#"{"type":"message","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll inspect first."},{"type":"toolCall","id":"call_read","name":"read","arguments":{"path":"src/lib.rs"}}]}}"#,
         "\n",
@@ -174,24 +109,9 @@ fn pi_jsonl_tool_calls_drive_non_plan_phase_distribution() {
         r#"{"type":"message","timestamp":"2024-06-01T12:04:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Need another approach."}]}}"#,
     );
     let summary = analyze_sources(vec![jsonl_input("pi", pi_fixture)]);
-    let dist = summary.phase_distribution;
-
-    assert!(
-        dist.exploring > 0.0,
-        "Pi read toolCall should count as Explore"
-    );
-    assert!(
-        dist.implementing > 0.0,
-        "Pi edit toolCall should count as Implement"
-    );
-    assert!(
-        dist.disruption > 0.0,
-        "Pi toolResult isError should count as Errors"
-    );
-    assert!(
-        dist.thinking < 1.0,
-        "Pi transcript must not be 100% Plan: {dist:?}"
-    );
+    assert_eq!(summary.tool_mix.read, 1);
+    assert_eq!(summary.tool_mix.edit, 1);
+    assert_eq!(summary.tool_mix.test, 1);
 }
 
 #[test]
@@ -206,14 +126,6 @@ fn test_command_detection_is_token_aware() {
     assert!(!is_test_command("git checkout latest"));
     assert!(!is_test_command("echo contest"));
     assert!(!is_test_command("ls -la"));
-}
-
-fn dominant_phase(session: &NormalizedSession) -> Phase {
-    let m = analyze_session(session);
-    m.buckets
-        .iter()
-        .find_map(|b| b.dominant_phase)
-        .expect("a classified bucket")
 }
 
 #[test]
@@ -245,15 +157,6 @@ fn openai_cached_tokens_no_longer_double_count_downstream() {
         m.buckets.iter().map(|bucket| bucket.tokens_in).sum::<u64>(),
         600_000
     );
-    assert!(!m.segments.is_empty());
-    assert_eq!(
-        m.segments
-            .iter()
-            .map(|segment| segment.tokens_in)
-            .sum::<u64>(),
-        600_000
-    );
-
     let model_tokens = &m.model_breakdown["gpt-5.4"];
     assert_eq!(model_tokens.input_tokens, 600_000);
     assert_eq!(model_tokens.cache_read_tokens, 400_000);
@@ -359,47 +262,16 @@ fn codex_rollout_envelope_is_normalized() {
     assert_eq!(m.peak_context_tokens, 1000);
     // The model's real context window is captured from model_context_window.
     assert_eq!(m.context_window, 258400);
-    assert!(
-        m.buckets
-            .iter()
-            .any(|b| b.dominant_phase.is_some() && b.tokens_in > 0)
-    );
-    assert!(
-        m.buckets
-            .iter()
-            .any(|b| b.dominant_phase.is_some() && b.tokens_out > 0)
-    );
-    assert!(
-        m.buckets
-            .iter()
-            .any(|b| b.dominant_phase.is_some() && b.context_tokens > 0)
-    );
+    assert!(m.buckets.iter().any(|b| b.tokens_in > 0));
+    assert!(m.buckets.iter().any(|b| b.tokens_out > 0));
+    assert!(m.buckets.iter().any(|b| b.context_tokens > 0));
     // exec_command running `cargo test` is reclassified Bash → Test.
     assert_eq!(m.tool_mix.test, 1);
     assert_eq!(m.tool_mix.edit, 1); // apply_patch
-    // The non-zero exit code in the function_call_output is a disruption.
-    assert_eq!(m.disruption_count, 1);
-}
-
-fn codex_custom_output_is_error(output: serde_json::Value) -> bool {
-    let fixture = serde_json::json!({
-        "timestamp": "2026-08-05T12:00:00Z",
-        "type": "response_item",
-        "payload": {
-            "type": "custom_tool_call_output",
-            "call_id": "call_1",
-            "output": output,
-        },
-    })
-    .to_string();
-    normalize_source(&jsonl_input("codex", &fixture))
-        .unwrap()
-        .events[0]
-        .is_error
 }
 
 #[test]
-fn codex_exec_wrapper_recovers_current_tool_phases() {
+fn codex_exec_wrapper_recovers_current_tool_categories() {
     let records = [
         serde_json::json!({
             "timestamp": "2026-08-05T12:00:00Z",
@@ -408,7 +280,7 @@ fn codex_exec_wrapper_recovers_current_tool_phases() {
                 "type": "custom_tool_call",
                 "name": "exec",
                 "call_id": "explore",
-                "input": r#"const r = await tools.exec_command({"cmd":"rg phase src"}); text(r.output);"#,
+                "input": r#"const r = await tools.exec_command({"cmd":"rg src"}); text(r.output);"#,
             },
         }),
         serde_json::json!({
@@ -455,30 +327,11 @@ fn codex_exec_wrapper_recovers_current_tool_phases() {
     assert_eq!(session.events[2].tools.len(), 2);
     assert_eq!(session.events[2].tools[0].category, ToolCategory::Test);
     assert_eq!(session.events[2].tools[1].category, ToolCategory::Edit);
-    assert!(session.events[3].is_error);
 
     let metrics = analyze_session(&session);
     assert_eq!(metrics.tool_mix.bash, 1);
     assert_eq!(metrics.tool_mix.test, 2);
     assert_eq!(metrics.tool_mix.edit, 1);
-    assert_eq!(metrics.disruption_count, 1);
-    assert!(metrics.phase_distribution.exploring > 0.0);
-    assert!(metrics.phase_distribution.testing > 0.0);
-    assert!(metrics.phase_distribution.implementing > 0.0);
-    assert!(metrics.phase_distribution.disruption > 0.0);
-    assert_eq!(
-        metrics
-            .segments
-            .iter()
-            .map(|segment| segment.phase)
-            .collect::<Vec<_>>(),
-        vec![
-            Phase::Exploring,
-            Phase::Testing,
-            Phase::Implementing,
-            Phase::Disruption,
-        ]
-    );
 }
 
 #[test]
@@ -505,7 +358,6 @@ fn codex_exec_wrapper_ignores_tool_syntax_in_javascript_text() {
     assert_eq!(session.events[0].tools.len(), 1);
     assert_eq!(session.events[0].tools[0].name, "exec");
     assert_eq!(session.events[0].tools[0].category, ToolCategory::Bash);
-    assert_eq!(dominant_phase(&session), Phase::Exploring);
 }
 
 #[test]
@@ -546,42 +398,6 @@ fn write_stdin_is_process_control_not_an_edit() {
     assert_eq!(session.events[0].tools.len(), 1);
     assert_eq!(session.events[0].tools[0].name, "write_stdin");
     assert_eq!(session.events[0].tools[0].category, ToolCategory::Bash);
-    assert_eq!(dominant_phase(&session), Phase::Exploring);
-}
-
-#[test]
-fn codex_custom_outputs_detect_current_success_and_failure_shapes() {
-    let cases = [
-        (
-            serde_json::json!("Script completed\nWall time 0.1 seconds"),
-            false,
-        ),
-        (
-            serde_json::json!([{
-                "type": "input_text",
-                "text": "Script running with cell ID 5",
-            }]),
-            false,
-        ),
-        (
-            serde_json::json!([{"type": "input_text", "text": "Script failed"}]),
-            true,
-        ),
-        (serde_json::json!("Script terminated"), true),
-        (serde_json::json!("Process exited with code 1"), true),
-        (serde_json::json!(r#"{"metadata":{"exit_code":1}}"#), true),
-        (
-            serde_json::json!([
-                {"type": "input_text", "text": "Script completed\nWall time 0.2 seconds\nOutput:\n"},
-                {"type": "input_text", "text": r#"{"chunk_id":"chunk_1","exit_code":1,"output":"boom"}"#},
-            ]),
-            true,
-        ),
-    ];
-
-    for (output, expected) in cases {
-        assert_eq!(codex_custom_output_is_error(output), expected);
-    }
 }
 
 #[test]
@@ -613,9 +429,7 @@ fn codex_fork_bills_only_child_owned_requests() {
     let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
     let metrics = analyze_session(&session);
 
-    // Parent messages remain available as inherited context, but only the two
-    // requests made by the child contribute usage and cost buckets.
-    assert!(session.events.iter().any(|event| event.text_len > 0));
+    // Only the two requests made by the child contribute usage and cost.
     assert_eq!(metrics.billable_input_tokens, 300);
     assert_eq!(metrics.billable_output_tokens, 75);
     assert_eq!(metrics.billable_cache_read_tokens, 2700);
@@ -624,10 +438,7 @@ fn codex_fork_bills_only_child_owned_requests() {
     assert_eq!(metrics.model.as_deref(), Some("gpt-5.6-codex"));
 }
 
-/// Two turns, each ending in a `token_count`: the first at high occupancy
-/// (200k), the second after a compaction (30k). Occupancy (live prompt) sawtooths
-/// like Codex's real sessions, so the high-water-mark Context Drift curve must
-/// stay up at 200k while per-turn token throughput drops back to 30k.
+/// Two turns report separate live-context readings.
 const CODEX_COMPACTION_FIXTURE: &str = concat!(
     r#"{"timestamp":"2024-06-01T12:00:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c1"}}"#,
     "\n",
@@ -639,7 +450,7 @@ const CODEX_COMPACTION_FIXTURE: &str = concat!(
 );
 
 #[test]
-fn codex_context_drift_diverges_from_tokens() {
+fn codex_buckets_keep_observed_context_readings() {
     let session = normalize_source(&jsonl_input("codex", CODEX_COMPACTION_FIXTURE)).unwrap();
     let m = analyze_session(&session);
     // Peak occupancy is the largest live prompt (200k), well within the 258k
@@ -647,25 +458,13 @@ fn codex_context_drift_diverges_from_tokens() {
     assert_eq!(m.peak_context_tokens, 200000);
     assert_eq!(m.context_window, 258400);
 
-    // Context drift holds its high-water mark across the post-compaction turn...
     let ctx: Vec<u64> = m
         .buckets
         .iter()
-        .filter(|b| b.dominant_phase.is_some())
+        .filter(|b| b.context_tokens > 0)
         .map(|b| b.context_tokens)
         .collect();
-    assert!(
-        ctx.windows(2).all(|w| w[1] >= w[0]),
-        "context drift must be non-decreasing, got {ctx:?}"
-    );
-    // ...so the second turn's bucket shows context (200k carried) above its
-    // throughput (30k): the two charts are no longer 1:1.
-    assert!(
-        m.buckets
-            .iter()
-            .any(|b| b.dominant_phase.is_some() && b.context_tokens > b.tokens_in),
-        "context drift should diverge from token throughput for Codex"
-    );
+    assert_eq!(ctx, vec![200_000, 30_000]);
 }
 
 /// A Claude session with a real, *marked* compaction: a high-occupancy turn
@@ -681,7 +480,7 @@ const CLAUDE_MARKED_COMPACTION_FIXTURE: &str = concat!(
 );
 
 #[test]
-fn claude_marked_compaction_resets_context_drift() {
+fn claude_marked_compaction_resets_context_occupancy() {
     let session =
         normalize_source(&jsonl_input("claude", CLAUDE_MARKED_COMPACTION_FIXTURE)).unwrap();
     let m = analyze_session(&session);
@@ -700,21 +499,17 @@ fn claude_marked_compaction_resets_context_drift() {
     assert_eq!(boundary_indices.len(), 1, "got {boundary_indices:?}");
     let boundary = boundary_indices[0];
 
-    // The nearest active bucket strictly before the boundary still shows the
-    // pre-compaction peak.
     let before = m.buckets[..boundary]
         .iter()
         .rev()
-        .find(|b| b.dominant_phase.is_some())
-        .expect("an active bucket before the boundary");
+        .find(|b| b.context_tokens > 0)
+        .expect("a context reading before the boundary");
     assert_eq!(before.context_tokens, 200_000);
 
-    // The nearest active bucket at/after the boundary shows the real
-    // post-compaction occupancy, NOT the carried-forward peak.
     let after = m.buckets[boundary..]
         .iter()
-        .find(|b| b.dominant_phase.is_some())
-        .expect("an active bucket at/after the boundary");
+        .find(|b| b.context_tokens > 0)
+        .expect("a context reading at or after the boundary");
     assert_eq!(after.context_tokens, 10_000);
 }
 
@@ -735,7 +530,7 @@ const CODEX_MARKED_COMPACTION_FIXTURE: &str = concat!(
 );
 
 #[test]
-fn codex_marked_compaction_resets_context_drift() {
+fn codex_marked_compaction_resets_context_occupancy() {
     let session = normalize_source(&jsonl_input("codex", CODEX_MARKED_COMPACTION_FIXTURE)).unwrap();
     let m = analyze_session(&session);
     assert_eq!(m.peak_context_tokens, 200_000);
@@ -746,26 +541,16 @@ fn codex_marked_compaction_resets_context_drift() {
         "expected a compaction-boundary bucket"
     );
 
-    // The core regression check: the last active bucket shows the real
-    // post-compaction occupancy (30k), not the carried-forward peak (200k) —
-    // the opposite of `codex_context_drift_diverges_from_tokens`, whose fixture
-    // has no marker and correctly keeps the high-water mark.
-    let last_active = m
+    let last_context = m
         .buckets
         .iter()
         .rev()
-        .find(|b| b.dominant_phase.is_some())
-        .expect("an active bucket");
-    assert_eq!(last_active.context_tokens, 30_000);
+        .find(|b| b.context_tokens > 0)
+        .expect("a context reading");
+    assert_eq!(last_context.context_tokens, 30_000);
 }
 
-/// The pre-compaction turn and the `compact_boundary` record share the exact
-/// same timestamp, so they land in the *same* progress bucket — that bucket
-/// is both a classified, active bucket (from the turn) AND the compaction
-/// boundary. Without zeroing `context_tokens` at the boundary (not just the
-/// running mark), that bucket's own stale pre-compaction reading would
-/// immediately resurrect the high-water mark on the very next line and defeat
-/// the reset for every bucket after it.
+/// The pre-compaction turn and boundary share one progress bucket.
 const CLAUDE_COMPACTION_SHARES_BUCKET_FIXTURE: &str = concat!(
     r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
     "\n",
@@ -794,21 +579,13 @@ fn claude_compaction_sharing_bucket_with_pre_compaction_turn_still_resets() {
     assert_eq!(boundary_indices.len(), 1, "got {boundary_indices:?}");
     let boundary = boundary_indices[0];
 
-    // The shared bucket itself reads 0, not the pre-compaction peak it would
-    // otherwise have inherited from the co-located turn (it IS still active —
-    // the pre-compaction turn classified it — so this also proves the reset
-    // isn't merely skipping active buckets).
-    assert!(m.buckets[boundary].dominant_phase.is_some());
+    assert!(m.buckets[boundary].tokens_in > 0);
     assert_eq!(m.buckets[boundary].context_tokens, 0);
 
-    // The post-compaction turn's own, later bucket must show its real value —
-    // proof the high-water mark wasn't resurrected by the collision. Search
-    // strictly after `boundary`, since bucket[boundary] itself is already
-    // active (asserted above) and would otherwise short-circuit the search.
     let after = m.buckets[boundary + 1..]
         .iter()
-        .find(|b| b.dominant_phase.is_some())
-        .expect("an active bucket after the boundary");
+        .find(|b| b.context_tokens > 0)
+        .expect("a context reading after the boundary");
     assert_eq!(after.context_tokens, 10_000);
 }
 
@@ -835,17 +612,15 @@ fn opencode_message_part_stream_is_joined() {
     // Two messages → two events; the four parts merge onto them.
     assert_eq!(session.events.len(), 2);
 
-    // m0: the user prompt, text supplied by its text part.
+    // m0 is the user prompt.
     assert_eq!(session.events[0].role, Role::User);
-    assert_eq!(session.events[0].text_len, "review changelist".len());
 
-    // m1: usage from the message row, content + tools from its parts.
+    // m1 gets usage from the message row and tools from its parts.
     let a = &session.events[1];
     assert_eq!(a.role, Role::Assistant);
     assert_eq!(a.usage.input_tokens, 1000);
     assert_eq!(a.usage.output_tokens, 50);
     assert_eq!(a.usage.cache_creation_tokens, 500);
-    assert_eq!(a.text_len, "working on it".len());
     assert_eq!(a.tools.len(), 2); // bash + patch
 
     let m = analyze_session(&session);
@@ -855,11 +630,7 @@ fn opencode_message_part_stream_is_joined() {
     assert_eq!(m.tool_mix.edit, 1); // patch
 }
 
-/// Two assistant turns where the *second* does far less per-turn work (a small
-/// prompt) than the first. OpenCode has no cumulative occupancy field, so its
-/// per-turn occupancy equals its throughput — the engine's high-water-mark
-/// carry-forward is what keeps the Context Drift curve from collapsing onto the
-/// Tokens curve.
+/// OpenCode reports two distinct per-turn context readings.
 const OPENCODE_DRIFT_FIXTURE: &str = concat!(
     r#"{"type":"message","role":"assistant","time":{"created":1717243200000},"messageID":"m1","sessionID":"s2","payload":{"role":"assistant","tokens":{"input":8000,"output":50,"reasoning":0,"cache":{"write":0,"read":0}}}}"#,
     "\n",
@@ -871,56 +642,35 @@ const OPENCODE_DRIFT_FIXTURE: &str = concat!(
 );
 
 #[test]
-fn opencode_context_drift_diverges_from_tokens() {
+fn opencode_buckets_keep_observed_context_readings() {
     let session = normalize_source(&jsonl_input("opencode", OPENCODE_DRIFT_FIXTURE)).unwrap();
     let m = analyze_session(&session);
     // Throughput is per-turn: 8000 then 200 (input, no cache here).
     assert_eq!(m.tokens_in, 8000 + 200);
 
-    // Context drift is a monotone high-water mark across active buckets — it never
-    // dips back down to track a low-throughput turn.
     let ctx: Vec<u64> = m
         .buckets
         .iter()
-        .filter(|b| b.dominant_phase.is_some())
+        .filter(|b| b.context_tokens > 0)
         .map(|b| b.context_tokens)
         .collect();
-    assert!(
-        ctx.windows(2).all(|w| w[1] >= w[0]),
-        "context drift must be non-decreasing, got {ctx:?}"
-    );
-
-    // The bug this fixes: the second turn's bucket carries the earlier occupancy
-    // peak (8000) even though its throughput is tiny (200), so context != tokens.
-    assert!(
-        m.buckets
-            .iter()
-            .any(|b| b.dominant_phase.is_some() && b.context_tokens > b.tokens_in),
-        "context drift should diverge from token throughput for OpenCode"
-    );
+    assert_eq!(ctx, vec![8_000, 200]);
 }
 
-/// Claude reports each turn's full prompt, so its occupancy already rises with
-/// the conversation. The high-water-mark pass must leave that curve monotone and
-/// must not invent context beyond the real peak — i.e. Claude is not regressed.
+/// Claude reports each turn's full prompt.
 #[test]
-fn claude_context_drift_stays_at_real_peak() {
+fn claude_buckets_do_not_exceed_real_context_peak() {
     let session = normalize_source(&jsonl_input("claude", CLAUDE_FIXTURE)).unwrap();
     let m = analyze_session(&session);
-    // Occupancy is unchanged from before the fix: max(6000, 1200) = 6000.
     assert_eq!(m.peak_context_tokens, 6000);
     assert_eq!(m.context_window, crate::analysis::engine::CONTEXT_WINDOW);
     let ctx: Vec<u64> = m
         .buckets
         .iter()
-        .filter(|b| b.dominant_phase.is_some())
+        .filter(|b| b.context_tokens > 0)
         .map(|b| b.context_tokens)
         .collect();
-    assert!(
-        ctx.windows(2).all(|w| w[1] >= w[0]),
-        "context drift must be non-decreasing, got {ctx:?}"
-    );
-    // Carry-forward never fabricates occupancy above the real peak.
+    assert_eq!(ctx, vec![6_000, 1_200]);
     assert!(ctx.iter().all(|&c| c <= 6000));
 }
 
@@ -935,7 +685,7 @@ fn claude_infers_1m_window_from_model() {
     let m = analyze_session(&session);
     assert_eq!(m.peak_context_tokens, 300_000);
     assert_eq!(m.context_window, 1_000_000);
-    assert!(m.context_fraction < 0.5); // 0.3, not 1.5
+    assert!(m.peak_context_tokens * 2 < m.context_window);
     // Model is captured and priced; billable components are tracked separately
     // from the occupancy-based `tokens_in`.
     assert_eq!(m.model.as_deref(), Some("claude-opus-4-7"));
@@ -975,13 +725,6 @@ fn unknown_claude_context_is_unavailable() {
     assert_eq!(session.context_window, None);
     let metrics = analyze_session(&session);
     assert!(!metrics.context_available);
-    assert_eq!(metrics.context_fraction, 0.0);
-    assert!(
-        metrics
-            .signals
-            .iter()
-            .all(|signal| !signal.starts_with("Context at"))
-    );
     let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
     assert!(!summary.context_available);
 }
@@ -1045,6 +788,50 @@ fn mixed_model_session_prices_each_model_at_its_own_rate() {
     assert!(cost.total_usd < 50.0);
 }
 
+#[test]
+fn claude_records_distinct_model_thinking_modes() {
+    let fixture = concat!(
+        r#"{"type":"assistant","effort":"high","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"text","text":"one"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","effort":"low","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":20,"output_tokens":3},"content":[{"type":"text","text":"two"}]}}"#,
+    );
+    let metrics = analyze_session(&normalize_source(&jsonl_input("claude", fixture)).unwrap());
+
+    assert_eq!(
+        metrics.model_runs,
+        vec![
+            ModelRun {
+                model: "claude-fable-5".to_string(),
+                thinking_mode: Some("high".to_string()),
+            },
+            ModelRun {
+                model: "claude-fable-5".to_string(),
+                thinking_mode: Some("low".to_string()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn codex_applies_turn_effort_to_the_following_usage() {
+    let fixture = concat!(
+        r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"xhigh"}}"#,
+        "\n",
+        r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    assert_eq!(session.events[0].thinking_mode.as_deref(), Some("xhigh"));
+
+    let metrics = analyze_session(&session);
+    assert_eq!(
+        metrics.model_runs,
+        vec![ModelRun {
+            model: "gpt-5.6-sol".to_string(),
+            thinking_mode: Some("xhigh".to_string()),
+        }]
+    );
+}
+
 /// A model id carrying a context-window tag (`claude-opus-4-7[1m]`) still prices —
 /// the engine strips the `[..]` tag before the table lookup the crate doesn't.
 #[test]
@@ -1099,9 +886,9 @@ fn context_window_floors_to_observed_peak() {
     assert_eq!(session.context_window, None); // no model recorded
     let m = analyze_session(&session);
     assert_eq!(m.peak_context_tokens, 250_000);
-    // 250k > 200k default → snaps to the 1M tier; fraction stays ≤ 1.
+    // 250k exceeds the 200k default, so the window uses the 1M tier.
     assert_eq!(m.context_window, 1_000_000);
-    assert!(m.context_fraction <= 1.0);
+    assert!(m.peak_context_tokens <= m.context_window);
 }
 
 #[test]
@@ -1185,76 +972,25 @@ fn empty_inputs_give_empty_summary() {
     assert_eq!(summary.buckets.len(), crate::analysis::BUCKETS);
 }
 
-/// One high-output Implementing turn plus three zero-output error turns sharing
-/// the same timestamp, so they all land in the first progress bucket regardless
-/// of bucket count. A far later (unclassified) user turn gives the session a
-/// non-zero active span. Under flat turn-count weighting the bucket would be
-/// dominated by Disruption (3 turns vs 1); weighting by output tokens makes
-/// Implementing win.
-const TOKEN_WEIGHTED_FIXTURE: &str = concat!(
-    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"output_tokens":5000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
-    "\n",
-    r#"{"type":"user","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}"#,
-    "\n",
-    r#"{"type":"user","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}"#,
-    "\n",
-    r#"{"type":"user","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}"#,
-    "\n",
-    r#"{"type":"user","timestamp":"2024-06-01T13:00:00Z","message":{"role":"user","content":[{"type":"text","text":"ok"}]}}"#,
-);
-
 #[test]
-fn output_tokens_weight_the_dominant_phase() {
-    let session = normalize_source(&jsonl_input("claude", TOKEN_WEIGHTED_FIXTURE)).unwrap();
-    let m = analyze_session(&session);
-    // Three errors vs one edit: turn-count would pick Disruption…
-    assert_eq!(m.disruption_count, 3);
-    // …but the edit produced far more output tokens, so it wins the bucket.
-    let dominant = m
-        .buckets
-        .iter()
-        .find_map(|b| b.dominant_phase)
-        .expect("a classified bucket");
-    assert_eq!(dominant, Phase::Implementing);
-}
-
-#[test]
-fn segments_are_mutually_exclusive_and_merged() {
-    // Edit, Edit, Grep, error: two edits merge into one Implementing segment,
-    // then Exploring, then Disruption — three exclusive segments.
+fn serialized_metrics_exclude_removed_phase_and_health_data() {
     let session = normalize_source(&jsonl_input("claude", CLAUDE_FIXTURE)).unwrap();
-    let m = analyze_session(&session);
-    let phases: Vec<Phase> = m.segments.iter().map(|s| s.phase).collect();
-    assert_eq!(
-        phases,
-        vec![
-            Phase::Implementing,
-            Phase::Disruption,
-            Phase::Thinking,
-            Phase::Exploring
-        ]
-    );
-    // Each segment is a single mode; widths are active dwell (60s gaps → 60000ms).
-    assert!(m.segments.iter().all(|s| s.active_ms >= 0));
-    assert_eq!(m.segments[0].active_ms, 60_000);
-}
+    let value = serde_json::to_value(analyze_session(&session)).unwrap();
 
-#[test]
-fn consecutive_same_phase_turns_merge_into_one_segment() {
-    // Two back-to-back edits 30s apart → a single Implementing segment.
-    let session = normalize_source(&jsonl_input(
-        "claude",
-        concat!(
-            r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"output_tokens":10},"content":[{"type":"tool_use","name":"Edit","input":{}}]}}"#,
-            "\n",
-            r#"{"type":"assistant","timestamp":"2024-06-01T12:00:30Z","message":{"role":"assistant","usage":{"output_tokens":20},"content":[{"type":"tool_use","name":"Edit","input":{}}]}}"#,
-        ),
-    ))
-    .unwrap();
-    let m = analyze_session(&session);
-    assert_eq!(m.segments.len(), 1);
-    assert_eq!(m.segments[0].phase, Phase::Implementing);
-    assert_eq!(m.segments[0].tokens_out, 30); // 10 + 20 merged
+    for field in [
+        "disruptionCount",
+        "phaseDistribution",
+        "patternScore",
+        "signals",
+        "segments",
+        "skillUses",
+    ] {
+        assert!(value.get(field).is_none(), "unexpected field {field}");
+    }
+
+    let bucket = value["buckets"][0].as_object().expect("a bucket object");
+    assert!(!bucket.contains_key("dominantPhase"));
+    assert!(!bucket.contains_key("distribution"));
 }
 
 #[test]
@@ -1305,26 +1041,22 @@ fn antigravity_brain_transcript_normalizes_steps() {
 
     assert_eq!(session.events[0].role, Role::User);
 
-    // The planner step is a thinking turn that also carries the tool calls.
+    // The planner step carries the tool calls.
     assert_eq!(session.events[1].role, Role::Assistant);
-    assert!(session.events[1].thinking);
     assert_eq!(session.events[1].tools.len(), 2);
     assert_eq!(session.events[1].tools[0].category, ToolCategory::Search);
     assert_eq!(session.events[1].tools[1].category, ToolCategory::Edit);
 
-    // Action result steps are tool turns (shaping phases) but don't re-count
-    // the tools (those came from the planner's tool_calls).
+    // Action result steps do not count the planner's tool calls again.
     assert_eq!(session.events[2].role, Role::Tool);
     assert!(session.events[2].tools.is_empty());
 
     assert_eq!(session.events[4].role, Role::Tool);
-    assert!(session.events[4].is_error);
 
     let m = analyze_session(&session);
     assert_eq!(m.tool_mix.search, 1);
     assert_eq!(m.tool_mix.edit, 1);
     assert_eq!(m.grep_count, 1);
-    assert_eq!(m.disruption_count, 1);
     // Span 12:00 → 12:01:30 = 90s.
     assert_eq!(m.duration_secs, 90);
 }
@@ -1346,7 +1078,6 @@ fn antigravity_cascade_document_normalizes_steps() {
     assert_eq!(session.events.len(), 2);
 
     assert_eq!(session.events[0].role, Role::User);
-    assert_eq!(session.events[0].text_len, "hello world".len());
 
     assert_eq!(session.events[1].role, Role::Tool);
     assert_eq!(session.events[1].tools.len(), 1);
@@ -1390,30 +1121,8 @@ fn antigravity_aggregates_alongside_claude() {
 }
 
 #[test]
-fn disruption_lowers_pattern_score() {
-    // All-error session should score far below a clean implementing session.
-    let messy = normalize_source(&jsonl_input(
-        "claude",
-        concat!(
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","is_error":true}]}}"#,
-            "\n",
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","is_error":true}]}}"#,
-        ),
-    ))
-    .unwrap();
-    let clean = normalize_source(&jsonl_input(
-        "claude",
-        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{}}]}}"#,
-    ))
-    .unwrap();
-    assert!(analyze_session(&messy).pattern_score < analyze_session(&clean).pattern_score);
-}
-
-#[test]
 fn claude_skill_use_is_captured_with_position_tokens_and_duration() {
-    // A bare `Skill` tool_use classifies as Other → no phase, so it must be
-    // collected before the classify early-`continue`. The invoking turn's usage
-    // and the gap to the next event feed the marker's fields.
+    // The invoking turn supplies usage. The next event supplies duration.
     let fixture = concat!(
         r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":40},"content":[{"type":"tool_use","name":"Skill","input":{"skill":"deep-research"}}]}}"#,
         "\n",
@@ -1430,7 +1139,7 @@ fn claude_skill_use_is_captured_with_position_tokens_and_duration() {
     assert_eq!(su.duration_ms, Some(60_000));
     // No description until a skill listing grafts one (see analyze_sources test).
     assert_eq!(su.description, None);
-    // Skills don't perturb phases: they sit in `tool_mix.other` alongside the edit.
+    // The skill remains in `tool_mix.other`.
     assert_eq!(m.tool_mix.other, 1);
     assert_eq!(m.tool_mix.edit, 1);
 }

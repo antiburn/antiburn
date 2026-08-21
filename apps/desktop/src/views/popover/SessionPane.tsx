@@ -5,7 +5,8 @@
 import { confirm, save } from "@tauri-apps/plugin-dialog"
 import { useCallback } from "react"
 
-import { SessionAnalyticsPresentation } from "../../components/session/SessionAnalyticsPresentation"
+import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
+import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import {
   deleteSessionData,
@@ -15,9 +16,14 @@ import {
   type SessionAnalyticsPayload,
 } from "../../lib/ipc"
 import { agentSupportsAnalytics } from "../../lib/presentation/agents"
-import { costBreakdownRows, costFigureLabel } from "../../lib/presentation/sessionAnalytics"
-import { topLevelCostSubject, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
+import {
+  inclusiveCostSubject,
+  subagentsCostSubject,
+  topLevelCostSubject,
+  type LocalSessionCost,
+} from "../../lib/presentation/sessionCosts"
 import type {
+  BillableTokens,
   LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
@@ -36,9 +42,10 @@ import type {
 export interface SessionSubject {
   agent: string
   sessionId: string
+  repo?: string | undefined
+  timestamp?: string | undefined
   wslDistro?: string | null | undefined
   title?: string | undefined
-  isActive?: boolean | undefined
   /** Present when the subject is a sub-agent rather than a session a reader drove. */
   subagent?: {
     parentSessionId: string
@@ -75,37 +82,114 @@ function exportFileName(subject: SessionSubject): string {
   return `antiburn-${subject.agent}-${subject.sessionId.slice(0, 8)}.json`
 }
 
+/** All-zero token counts. Use this value when a subject has no billable-token summary. */
+const ZERO_TOKENS: BillableTokens = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+}
+
+/** One priced result for a cost subject. The function returns null when nothing priced the subject. */
+function localCost(
+  subject: LocalSessionCost["subject"],
+  cost: SessionAnalyticsPayload["cost"],
+  tokens: BillableTokens,
+  model: string | null,
+  isActive: boolean,
+): LocalSessionCost | null {
+  if (!cost) return null
+  return {
+    subject,
+    ...tokens,
+    totalTokens:
+      tokens.inputTokens +
+      tokens.outputTokens +
+      tokens.cacheReadTokens +
+      tokens.cacheCreationTokens,
+    inputCostUsd: cost.inputUsd,
+    outputCostUsd: cost.outputUsd,
+    cacheReadCostUsd: cost.cacheReadUsd,
+    cacheWriteCostUsd: cost.cacheWriteUsd,
+    totalCostUsd: cost.totalUsd,
+    model,
+    isActive,
+  }
+}
+
 /**
- * The cost result the breakdown card describes.
+ * The cost result the breakdown card describes. The function also returns
+ * the parent/sub-agent split alongside it.
  *
- * Token counts come from the metrics rather than the cost estimate, because the
- * estimate is dollars — the two are different views of the same subject and the
- * card shows both.
+ * A sub-agent launches no sub-agent of its own. Its own transcript is the
+ * whole story. The headline shows its own (`topLevel`) cost. The headline
+ * pairs that cost with its own tokens.
+ *
+ * An orchestrator's headline is `inclusive`. It covers every sub-agent the
+ * session launched. The headline pairs the inclusive dollar total with the
+ * inclusive token total.
+ *
+ * The split below the headline shows two rows. The parent row pairs the
+ * parent's own tokens with the parent's own dollars. The sub-agents row
+ * pairs the sub-agents' tokens with the sub-agents' dollars.
  */
 function toLocalCost(
   subject: SessionSubject,
   payload: SessionAnalyticsPayload,
-): LocalSessionCost | null {
-  if (!payload.cost) return null
+): { cost: LocalSessionCost | null; costSplit: TokensCostSplit | null } {
   const metrics = payload.summary?.sessions[0]
-  const inputTokens = metrics?.billableInputTokens ?? 0
-  const outputTokens = metrics?.billableOutputTokens ?? 0
-  const cacheReadTokens = metrics?.billableCacheReadTokens ?? 0
-  const cacheCreationTokens = metrics?.billableCacheCreationTokens ?? 0
+  const parentTokens: BillableTokens = {
+    inputTokens: metrics?.billableInputTokens ?? 0,
+    outputTokens: metrics?.billableOutputTokens ?? 0,
+    cacheReadTokens: metrics?.billableCacheReadTokens ?? 0,
+    cacheCreationTokens: metrics?.billableCacheCreationTokens ?? 0,
+  }
+  const model = metrics?.model ?? null
+
+  if (subject.subagent) {
+    const cost = localCost(
+      topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+      payload.cost,
+      parentTokens,
+      model,
+      payload.isActive,
+    )
+    return { cost, costSplit: null }
+  }
+
+  const cost = localCost(
+    inclusiveCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+    payload.cost,
+    payload.inclusiveTokens ?? ZERO_TOKENS,
+    model,
+    payload.isActive,
+  )
+
+  const subagentCount = payload.orchestration?.subagentCount ?? 0
+  const parent =
+    subagentCount > 0
+      ? localCost(
+          topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+          payload.topLevelCost,
+          parentTokens,
+          model,
+          payload.isActive,
+        )
+      : null
+  const subagents =
+    subagentCount > 0
+      ? localCost(
+          subagentsCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
+          payload.subagentsCost,
+          payload.subagentsTokens ?? ZERO_TOKENS,
+          null,
+          payload.isActive,
+        )
+      : null
+
   return {
-    subject: topLevelCostSubject(subject.agent, subject.sessionId, subject.wslDistro),
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheCreationTokens,
-    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
-    inputCostUsd: payload.cost.inputUsd,
-    outputCostUsd: payload.cost.outputUsd,
-    cacheReadCostUsd: payload.cost.cacheReadUsd,
-    cacheWriteCostUsd: payload.cost.cacheWriteUsd,
-    totalCostUsd: payload.cost.totalUsd,
-    model: metrics?.model ?? null,
-    isActive: payload.isActive,
+    cost,
+    costSplit: parent && subagents ? { parent, subagents, subagentCount } : null,
   }
 }
 
@@ -173,16 +257,9 @@ export function SessionPane({
     void revealSource(sourcePath)
   }, [sourcePath])
 
-  const cost = payload ? toLocalCost(subject, payload) : null
-  const costBadge = payload?.cost
-    ? {
-        totalUsd: payload.cost.totalUsd,
-        figureLabel: costFigureLabel(payload.isActive),
-        models: payload.models,
-        breakdownRows: costBreakdownRows(payload.cost),
-      }
-    : null
-
+  const { cost, costSplit } = payload
+    ? toLocalCost(subject, payload)
+    : { cost: null, costSplit: null }
   const orchestration: LocalOrchestrationStatus | null = payload?.orchestration ?? null
   const relations: LocalSessionRelations | null = payload?.relations ?? null
   // The stored title is the authority once it arrives; the one the list handed
@@ -190,70 +267,87 @@ export function SessionPane({
   const title = payload?.title ?? subject.title ?? undefined
 
   const openRelated = useCallback(
-    (target: LocalSessionRelation, title?: string) => {
+    (target: LocalSessionRelation, title: string) => {
       onOpenSession({
         agent: target.identity.agent,
         sessionId: target.identity.sessionId,
         wslDistro: target.identity.wslDistro ?? null,
-        ...(title ? { title } : {}),
+        title,
       })
     },
     [onOpenSession],
   )
 
   const openSubagent = useCallback(
-    (parentAgent: string, parentSessionId: string, subagentId: string, label: string) => {
+    (subagentId: string, label: string) => {
       onOpenSession({
-        agent: parentAgent,
+        agent: subject.agent,
         sessionId: subagentId,
+        ...(subject.repo ? { repo: subject.repo } : {}),
+        ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
         wslDistro: subject.wslDistro ?? null,
         title: label,
         subagent: {
-          parentSessionId,
+          parentSessionId: subject.sessionId,
           subagentId,
           ...(subject.title ? { parentTitle: subject.title } : {}),
         },
       })
     },
-    [onOpenSession, subject.wslDistro, subject.title],
+    [
+      onOpenSession,
+      subject.agent,
+      subject.repo,
+      subject.sessionId,
+      subject.timestamp,
+      subject.title,
+      subject.wslDistro,
+    ],
   )
 
+  const openOrchestrator = useCallback(() => {
+    if (!subject.subagent) return
+    onOpenSession({
+      agent: subject.agent,
+      sessionId: subject.subagent.parentSessionId,
+      ...(subject.repo ? { repo: subject.repo } : {}),
+      ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
+      wslDistro: subject.wslDistro ?? null,
+      ...(subject.subagent.parentTitle ? { title: subject.subagent.parentTitle } : {}),
+    })
+  }, [onOpenSession, subject])
+
   return (
-    <SessionAnalyticsPresentation
+    <SessionDetailPresentation
       summary={payload?.summary ?? null}
       loading={loading}
       error={error}
       session={{
         agent: subject.agent,
         sessionId: subject.sessionId,
+        ...(subject.repo ? { repo: subject.repo } : {}),
+        ...(subject.timestamp ? { timestamp: subject.timestamp } : {}),
         ...(title ? { title } : {}),
         wslDistro: subject.wslDistro ?? null,
-        isActive: payload?.isActive ?? subject.isActive ?? false,
-        ...(subject.subagent ? { subagent: subject.subagent } : {}),
+        ...(subject.subagent
+          ? {
+              subagent: subject.subagent.parentTitle
+                ? { parentTitle: subject.subagent.parentTitle }
+                : {},
+            }
+          : {}),
       }}
       supportsAnalytics={payload?.supportsAnalytics ?? agentSupportsAnalytics(subject.agent)}
       cost={cost}
-      costBadge={costBadge}
+      costSplit={costSplit}
       orchestration={orchestration}
-      skills={payload?.skills ?? []}
+      modelRuns={payload?.modelRuns ?? []}
       relations={relations}
       onBack={onBack}
       {...(onPrev ? { onPrev } : {})}
       {...(onNext ? { onNext } : {})}
       onOpenSubagent={openSubagent}
-      {...(subject.subagent
-        ? {
-            onOpenOrchestrator: () =>
-              onOpenSession({
-                agent: subject.agent,
-                sessionId: subject.subagent?.parentSessionId ?? subject.sessionId,
-                wslDistro: subject.wslDistro ?? null,
-                ...(subject.subagent?.parentTitle
-                  ? { title: subject.subagent.parentTitle }
-                  : {}),
-              }),
-          }
-        : {})}
+      onOpenOrchestrator={openOrchestrator}
       onOpenRelatedSession={openRelated}
       onExportSession={() => void handleExport()}
       onDeleteSession={() => void handleDelete()}

@@ -12,7 +12,14 @@ import type {
   ProviderUsagePayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
-import { liveSourceNote, liveWindows } from "../../lib/presentation/liveUsage"
+import type { UnavailableLiveProvider } from "../../lib/presentation/liveUsage"
+import {
+  liveErrorNote,
+  liveSourceNote,
+  liveUnavailableProviders,
+  liveUnavailableReason,
+  liveWindows,
+} from "../../lib/presentation/liveUsage"
 import { LiveUsageWindowRows } from "./LiveUsageWindowRows"
 import { ProviderUsageChips } from "./ProviderUsageChips"
 
@@ -50,7 +57,10 @@ export interface UsageLimitsSectionProps {
  * The whole section is silent when no provider has anything to say — live
  * usage off, or no reading has arrived yet — rather than rendering an empty
  * shell. There is nothing to collapse *to* in that case, so the reader who
- * has never turned the feature on sees nothing about it here at all.
+ * has never turned the feature on sees nothing about it here at all. A
+ * provider whose source *failed* is different: it keeps a subsection that
+ * names the failure, because a section that silently vanishes reads as data
+ * loss.
  */
 export function UsageLimitsSection({
   providers,
@@ -63,9 +73,12 @@ export function UsageLimitsSection({
 }: UsageLimitsSectionProps) {
   const at = now ?? (Date.parse(live.generatedAt) || 0)
   const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
+  // Providers whose only trace is a source error — a failed fetch with no
+  // cached reading. They keep a degraded subsection rather than vanishing.
+  const unavailable = liveUnavailableProviders(live)
   const headingId = useId()
 
-  if (limited.length === 0) return null
+  if (limited.length === 0 && unavailable.length === 0) return null
 
   const toggle = (
     <button
@@ -80,7 +93,7 @@ export function UsageLimitsSection({
         strokeWidth={2}
         aria-hidden="true"
         className={cn(
-          "transition-transform duration-[120ms] ease-out",
+          "transition-transform duration-[var(--duration-fast)] ease-out",
           expanded && "rotate-270",
         )}
       />
@@ -120,6 +133,9 @@ export function UsageLimitsSection({
               {limited.map((provider) => (
                 <ProviderLimitSubsection key={provider.provider} provider={provider} now={at} />
               ))}
+              {unavailable.map((entry) => (
+                <UnavailableLimitSubsection key={entry.provider} entry={entry} />
+              ))}
             </div>
           </div>
         </>
@@ -139,6 +155,25 @@ export function UsageLimitsSection({
           {spinner}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * One provider's subsection while its live reading is unavailable — a failed
+ * source with nothing cached to fall back on. The provider keeps its place
+ * with the failure named, instead of vanishing without a word.
+ */
+function UnavailableLimitSubsection({ entry }: { entry: UnavailableLiveProvider }) {
+  return (
+    <div data-testid="usage-limits-unavailable">
+      <div className="flex items-baseline justify-between gap-2 px-1 pb-1">
+        <h3 className="truncate text-label-secondary">{entry.displayName}</h3>
+        <span className="shrink-0 type-caption text-label-tertiary">
+          {liveUnavailableReason(entry.category)}
+        </span>
+      </div>
+      <p className="px-1 type-caption text-label-tertiary">{liveErrorNote(entry.category)}</p>
     </div>
   )
 }

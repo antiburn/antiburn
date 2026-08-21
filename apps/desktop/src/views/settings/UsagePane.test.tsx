@@ -13,6 +13,27 @@ const getLiveUsage = vi.hoisted(() => vi.fn())
 const refreshLiveUsage = vi.hoisted(() => vi.fn())
 const onLiveUsageChanged = vi.hoisted(() => vi.fn(async () => () => {}))
 
+const platform = vi.hoisted(() => ({ mac: false }))
+vi.mock("../../lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return { ...actual, isMacOS: () => platform.mac }
+})
+
+const openOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
+const hideOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
+const isFloatingHudEnabled = vi.hoisted(() => vi.fn(() => false))
+const setFloatingHudEnabled = vi.hoisted(() => vi.fn())
+vi.mock("../../lib/overlayWindow", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return {
+    ...actual,
+    openOverlayWindow,
+    hideOverlayWindow,
+    isFloatingHudEnabled,
+    setFloatingHudEnabled,
+  }
+})
+
 vi.mock("../../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../../lib/ipc")
   return { ...actual, getLiveUsage, refreshLiveUsage, onLiveUsageChanged }
@@ -38,6 +59,8 @@ describe("UsagePane", () => {
     refreshLiveUsage.mockReset()
     refreshLiveUsage.mockResolvedValue(summary())
     onLiveUsageChanged.mockClear()
+    platform.mac = false
+    isFloatingHudEnabled.mockReturnValue(false)
   })
 
   it("names both consequences of the one switch", async () => {
@@ -74,7 +97,16 @@ describe("UsagePane", () => {
 
   it("turns each failure into something a reader could act on", async () => {
     getLiveUsage.mockResolvedValue(
-      summary({ errors: [{ source: "claude-usage-fetch", category: "authentication" }] }),
+      summary({
+        errors: [
+          {
+            source: "claude-usage-fetch",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "authentication",
+          },
+        ],
+      }),
     )
     pane()
     await waitFor(() =>
@@ -112,5 +144,42 @@ describe("UsagePane", () => {
     getLiveUsage.mockRejectedValue(new Error("no shell"))
     pane()
     await waitFor(() => expect(screen.getByText("No plan limits found")).toBeInTheDocument())
+  })
+})
+
+describe("UsagePane — floating HUD", () => {
+  beforeEach(() => {
+    getLiveUsage.mockReset()
+    getLiveUsage.mockResolvedValue(summary())
+    refreshLiveUsage.mockResolvedValue(summary())
+    platform.mac = true
+    isFloatingHudEnabled.mockReset()
+    isFloatingHudEnabled.mockReturnValue(false)
+    setFloatingHudEnabled.mockClear()
+    openOverlayWindow.mockClear()
+    hideOverlayWindow.mockClear()
+  })
+
+  it("offers the HUD only on macOS", () => {
+    platform.mac = false
+    pane()
+    expect(screen.queryByText("Floating HUD")).not.toBeInTheDocument()
+  })
+
+  it("opens the HUD and stores the preference", () => {
+    pane()
+    fireEvent.click(screen.getByRole("switch", { name: "Show floating usage HUD" }))
+    expect(setFloatingHudEnabled).toHaveBeenCalledWith(true)
+    expect(openOverlayWindow).toHaveBeenCalled()
+  })
+
+  it("reads the preference and hides the HUD", () => {
+    isFloatingHudEnabled.mockReturnValue(true)
+    pane()
+    const toggle = screen.getByRole("switch", { name: "Show floating usage HUD" })
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+    expect(setFloatingHudEnabled).toHaveBeenCalledWith(false)
+    expect(hideOverlayWindow).toHaveBeenCalled()
   })
 })

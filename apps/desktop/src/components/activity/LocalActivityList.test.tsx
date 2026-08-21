@@ -113,6 +113,47 @@ describe("LocalActivityList — rows", () => {
     expect(screen.getByLabelText("Estimated cost $2.40")).toBeTruthy()
   })
 
+  it("shows short model names in the supplied parent-first order", () => {
+    list({
+      entries: [
+        entry({
+          modelRuns: [
+            { model: "gpt-5.6-sol", thinkingMode: "xhigh" },
+            { model: "claude-fable-5", thinkingMode: "high" },
+          ],
+        }),
+      ],
+    })
+    const models = screen.getByText("5.6-sol/xhigh · fable-5/high")
+    expect(models.parentElement?.title).toBe("gpt-5.6-sol/xhigh\nclaude-fable-5/high")
+  })
+
+  it("includes the relative-time suffix", () => {
+    list({ entries: [entry({ timestamp: at(0, 9) })] })
+    expect(screen.getByText(/ ago$/)).toBeTruthy()
+  })
+
+  it("shows six deterministic mock hygiene checks", () => {
+    const first = list({ entries: [entry({ sessionId: "mock-0" })] })
+    const labels = [
+      /session overdepth/i,
+      /model overthinking/i,
+      /overpowered subagents/i,
+      /obsolete model/i,
+      /fast mode overuse/i,
+      /excess cache rehydration/i,
+    ]
+    const firstResults = labels.map((label) => screen.getByLabelText(label).textContent)
+    expect(firstResults).toContain("✓")
+    expect(firstResults).toContain("×")
+
+    first.unmount()
+    list({ entries: [entry({ sessionId: "mock-0" })] })
+    expect(labels.map((label) => screen.getByLabelText(label).textContent)).toEqual(
+      firstResults,
+    )
+  })
+
   it("states the last-activity time", () => {
     list({ entries: [entry({ timestamp: at(0, 9) })] })
     expect(screen.getByLabelText(/^Last activity /)).toBeTruthy()

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest"
 import type {
   LiveProviderUsagePayload,
   LiveUsageForecastPayload,
+  LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../ipc"
@@ -18,6 +19,8 @@ import {
   liveResetLabel,
   liveSourceNote,
   liveStalenessNote,
+  liveUnavailableProviders,
+  liveUnavailableReason,
   liveWindowElapsed,
   liveWindowLabel,
   liveMetricRows,
@@ -383,20 +386,78 @@ describe("hiding unused model quota limits", () => {
   })
 })
 
+function sourceError(
+  overrides: Partial<LiveUsageSourceErrorPayload> = {},
+): LiveUsageSourceErrorPayload {
+  return {
+    source: "claude-usage-fetch",
+    provider: "anthropic",
+    displayName: "Claude",
+    category: "rateLimited",
+    ...overrides,
+  }
+}
+
 describe("the failure surface", () => {
   it("banners only the failure a reader can act on", () => {
     expect(liveAuthNote(summary())).toBeNull()
     // A rate limit passes on its own and an unreadable file is usually a
     // missing agent; neither is worth interrupting someone over.
     expect(
-      liveAuthNote(summary({ errors: [{ source: "s", category: "rateLimited" }] })),
+      liveAuthNote(summary({ errors: [sourceError({ category: "rateLimited" })] })),
     ).toBeNull()
     expect(
-      liveAuthNote(summary({ errors: [{ source: "s", category: "unavailable" }] })),
+      liveAuthNote(summary({ errors: [sourceError({ category: "unavailable" })] })),
     ).toBeNull()
     expect(
-      liveAuthNote(summary({ errors: [{ source: "s", category: "authentication" }] })),
+      liveAuthNote(summary({ errors: [sourceError({ category: "authentication" })] })),
     ).toMatch(/sign in again/i)
+  })
+
+  it("lists a provider whose failure left nothing to show", () => {
+    // The cold-start failure: first fetch rejected, nothing cached. The error
+    // is the only trace of the provider, so the views need it as a row.
+    const vanished = summary({ providers: [], errors: [sourceError()] })
+    expect(liveUnavailableProviders(vanished)).toEqual([
+      { provider: "anthropic", displayName: "Claude", category: "rateLimited" },
+    ])
+  })
+
+  it("does not list a provider that still shows windows beside its error", () => {
+    // A failed refresh after an earlier success: the cooldown keeps the
+    // last-good reading, so the provider is on screen and the staleness
+    // treatment covers it. A second, degraded row would say it twice.
+    const cached = summary({ errors: [sourceError()] })
+    expect(liveUnavailableProviders(cached)).toEqual([])
+  })
+
+  it("lists a provider whose reading is present but has no windows worth showing", () => {
+    const windowless = summary({
+      providers: [provider({ windows: [] })],
+      errors: [sourceError()],
+    })
+    expect(liveUnavailableProviders(windowless)).toHaveLength(1)
+  })
+
+  it("dedupes two failures for one provider and skips an error with no provider id", () => {
+    const noisy = summary({
+      providers: [],
+      errors: [
+        sourceError(),
+        sourceError({ source: "another-source" }),
+        // A snapshot cached before the provider field existed cannot name a
+        // section.
+        sourceError({ source: "legacy", provider: "", displayName: "" }),
+      ],
+    })
+    expect(liveUnavailableProviders(noisy)).toHaveLength(1)
+  })
+
+  it("phrases each failure category in a couple of words", () => {
+    expect(liveUnavailableReason("rateLimited")).toBe("rate limited")
+    expect(liveUnavailableReason("authentication")).toBe("sign-in needed")
+    expect(liveUnavailableReason("schema")).toBe("unreadable reply")
+    expect(liveUnavailableReason("somethingNew")).toBe("unreachable")
   })
 })
 

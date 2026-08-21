@@ -14,7 +14,7 @@
 //! around them belongs to the views — so these payloads carry values and facts,
 //! never labels.
 
-use antiburn_local::analysis::{ActiveSessionsSummary, SessionCost, SkillUse};
+use antiburn_local::analysis::{ActiveSessionsSummary, ModelRun, SessionCost};
 use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
@@ -41,11 +41,14 @@ pub struct ActivityEntry {
     pub has_fork_parent: bool,
     /// How many local sessions were branched from this one.
     pub fork_child_count: u32,
-    /// On-device cost estimate, or absent when no model in the session could be
-    /// priced. Never a partial total.
+    /// On-device cost estimate. The estimate covers every sub-agent this
+    /// session launched. The value is absent when no model in the combined
+    /// breakdown has a price. This field never holds a partial total.
     pub cost: Option<SessionCost>,
-    /// Every model that contributed billable tokens, for the cost tooltip.
+    /// Every model that contributed billable tokens.
     pub models: Vec<String>,
+    /// Parent model runs come before runs used only by sub-agents.
+    pub model_runs: Vec<ModelRun>,
 }
 
 /// Identity of one local session, as the views key on it.
@@ -91,10 +94,6 @@ pub struct SubagentMember {
     pub agent: String,
     pub subagent_id: String,
     pub label: String,
-    pub pattern_score: u8,
-    /// 0..1 position on the orchestrator's active-time axis, when the spawn
-    /// instant could be mapped onto it.
-    pub spawn_progress: Option<f32>,
 }
 
 /// The sub-agent picture for one session.
@@ -107,6 +106,22 @@ pub struct OrchestrationStatus {
     pub orchestrator_session_id: String,
     pub subagent_count: u32,
     pub members: Vec<SubagentMember>,
+}
+
+/// Billable token counts, summed across one or more models.
+///
+/// This struct mirrors the `billable_*` fields on `SessionMetrics`. A single
+/// session already carries those fields. This struct exists for a subject
+/// that spans more than one transcript, such as every sub-agent combined, or
+/// a parent plus every sub-agent. That subject has no single `SessionMetrics`
+/// of its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BillableTokens {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
 }
 
 /// Everything the session-analytics surface needs for one session.
@@ -122,9 +137,33 @@ pub struct SessionAnalytics {
     pub title: Option<String>,
     pub wsl_distro: Option<String>,
     pub is_active: bool,
+    /// Cost of the parent transcript plus every sub-agent it launched.
+    ///
+    /// This is the session's total cost. The activity list and the export
+    /// document show this figure.
+    ///
+    /// The value is `None` when a model in the combined breakdown has no
+    /// price. A partial total hides real cost.
     pub cost: Option<SessionCost>,
+    /// Cost of the parent transcript, without any sub-agent.
+    pub top_level_cost: Option<SessionCost>,
+    /// Cost of every sub-agent this session launched, combined.
+    ///
+    /// The value is `None` when the session has no sub-agent, or when no
+    /// sub-agent could be priced.
+    pub subagents_cost: Option<SessionCost>,
+    /// Billable token counts that back [`Self::cost`]. The count sums the
+    /// parent transcript and every sub-agent.
+    pub inclusive_tokens: Option<BillableTokens>,
+    /// Billable token counts that back [`Self::subagents_cost`]. The count
+    /// sums every sub-agent. The value is `None` when the session has no
+    /// sub-agent.
+    pub subagents_tokens: Option<BillableTokens>,
+    /// Every model that contributed billable tokens. The list covers the
+    /// parent transcript and every sub-agent. It matches [`Self::cost`].
     pub models: Vec<String>,
-    pub skills: Vec<SkillUse>,
+    /// Parent model runs come before runs used only by sub-agents.
+    pub model_runs: Vec<ModelRun>,
     pub orchestration: Option<OrchestrationStatus>,
     pub relations: Option<SessionRelations>,
     /// The transcript's own path, for the reveal action. Absent for sessions
@@ -485,6 +524,18 @@ pub struct LiveExtraUsage {
 pub struct LiveUsageSourceError {
     /// The source's stable id.
     pub source: String,
+    /// The canonical id of the provider the source answers for.
+    ///
+    /// A failed source contributes no entry to `providers`, so this field is
+    /// the only place the views can learn whose usage is missing. Defaulted
+    /// on deserialize: a snapshot cached before this field existed must
+    /// still load.
+    #[serde(default)]
+    pub provider: String,
+    /// The provider's display name, for example "Claude". Defaulted like
+    /// `provider`.
+    #[serde(default)]
+    pub display_name: String,
     /// `authentication`, `rateLimited`, `schema`, or `unavailable`.
     pub category: String,
 }

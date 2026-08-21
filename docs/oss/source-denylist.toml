@@ -23,7 +23,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025", "D-027"]
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025", "D-026", "D-027", "D-028", "D-029"]
 # D-025 (maintainer decision, 2026-08-18; definition of "local" in docs/deviations.md D-27):
 # fixes the boundary this manifest draws around what the installed app may DO.
 # antiburn is local in that it needs no service of antiburn's; as the reader's
@@ -39,10 +39,10 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # technique.) Every IP/licensing and synthetic-fixture rule here — which governs
 # what SOURCE may enter the repository, a separate question from what the app may
 # do — stands unchanged.
-# The gap at D-026 in the array above is deliberate, not a slip: that number
-# is allocated to a decision landing on its own branch. Two branches picked
-# the next free ID at the same time and this one yielded, being the later
-# claim; the register is append-only, so the number stays spent either way.
+# D-026 (maintainer decision, 2026-08-18): authorizes the adapt port named by
+# allowlist rule hud-window-mechanics. The port keeps the reviewed behavior and
+# extracts the native window mechanism into a standalone crate. The live bars
+# use public usage payloads, and the shell owns session discovery and IPC.
 # D-027 (maintainer decision, 2026-08-18; deviations register D-5 and D-28):
 # amends no-data-exfiltration below to permit exactly one first-party endpoint —
 # anonymised events about the application itself, carrying the app version,
@@ -66,6 +66,44 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # has no account to stitch to, and a stable identifier would defeat the
 # rotation D-28 relies on. The device-telemetry snapshot is a separate
 # private system and is not ported, permitted, or planned.
+# D-028 (maintainer decision, 2026-08-21): authorizes the adapt ports named by
+# allowlist rules design-drift-check and design-review-skill — the CI guard that
+# keeps apps/desktop/design.md equal to the stylesheets it names, and the
+# design-review rulebook that carries the interface guidance the token contract
+# deliberately leaves out.
+# The design contract itself came across earlier under desktop-design-contract,
+# but its enforcement did not, so the contract was prose that could rot in
+# silence — and had already started to: its source list had lost a stylesheet.
+# That is the gap this decision closes.
+# Neither port adds a runtime surface. The guard reads files already published
+# in this tree, runs in CI, and writes nothing; the rulebook is documentation
+# that reviews the app a reader already builds. No new source leaves the private
+# repository beyond the checking method itself, and both ports are rewritten
+# against the public token names.
+# The private script name and repository appear only in these manifests, which
+# the concept scan exempts, so the public tree names neither.
+# The rulebook's information-architecture, state, and copy sections are authored
+# for the public surfaces rather than extracted; they carry ordinary Git/DCO
+# provenance, the same footing as the store-backed ConsentGrants implementation
+# under D-024.
+# D-029 (maintainer decision, 2026-08-21): authorizes the adapt port named by
+# allowlist rule popover-window-corner — the macOS window treatment that gives
+# the popover a rounded corner instead of a square one.
+# The popover is a menu-bar surface, and it renders today as a square rectangle
+# because the window is opaque and carries no material. The stylesheets already
+# expect the opposite: the palette is built from translucent backgrounds, the
+# base rule paints html, body, and #root transparent for "a window that opts
+# into translucent material", and there is a whole reduced-transparency branch
+# that only means something once a material exists. This decision closes that
+# gap between the stylesheets and the window.
+# The radius is not private information. It comes from rounded.popover in
+# apps/desktop/design.md, which is already published; the private source happens
+# to use the same number.
+# The port adds no data flow. It changes how one window is built, and every
+# other platform keeps the opaque borderless window it has today.
+# The macos-private-api feature this needs is already in the build, resolved
+# through tauri-nspanel. The manifest now asks for it directly so the popover
+# does not depend on another crate's feature by accident.
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # startup-registration, disk-space-monitor, tray-title-attributed-string,
 # notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine.
@@ -119,6 +157,7 @@ exceptions = [
   "Only the paths and content slices explicitly named by source-allowlist.toml rules local-presentation-support, local-environment-identity-replacement, local-session-analytics-shaping, local-session-cost-replacement, local-presentation-primitives, local-orchestration-presentation, local-session-analytics-leaves, local-session-analytics-decoupled-leaves, local-session-cost-badges, local-session-analytics-composition, local-recent-activity-presentation, and local-repository-list-replacement are additionally exempt under D-021.",
   "Only the notification-window component slice explicitly named by source-allowlist.toml rule nudge-window-mechanics is additionally exempt under D-023.",
   "Only the folder-consent presentation slices explicitly named by source-allowlist.toml rule tcc-consent-frontend are additionally exempt under D-024, and only to the extent that rule's notes describe: the sequential per-directory state machine, the permission banner, and the permission slices of the discovery and repository-settings surfaces. Their containers, stores, command bindings, and organization-scoped filtering remain denied.",
+  "Only the floating HUD slices explicitly named by source-allowlist.toml rule hud-window-mechanics are additionally exempt under D-026. Unrelated source from the reviewed demo branch remains denied.",
   "An adapt exception authorizes only the behavior and exclusions recorded by its allowlist rule; it never authorizes copying an entire mixed file unchanged.",
 ]
 reason = "D-020 and D-021 approve exact, rights-cleared design, primitive, and local-domain presentation slices. Every other frontend file, package manifest, excluded mixed-file section, container, store, command binding, DTO, simulation, fixture, URL, and asset remains denied until separately reviewed."
@@ -151,6 +190,7 @@ patterns = [
 exceptions = [
   "Only the paths and content slices explicitly named by source-allowlist.toml rules disk-space-monitor, tray-title-attributed-string, and nudge-window-mechanics are exempt under D-023.",
   "Only the folder-access command slice explicitly named by source-allowlist.toml rule tcc-consent-commands is additionally exempt under D-024. Every other command, state struct, and configuration in the private shell remains denied -- including the private consent-grant record, which is deliberately not exempted: the public implementation is written against the engine's public trait rather than ported.",
+  "Only the HUD crate mechanism and the three overlay command slices explicitly named by source-allowlist.toml rule hud-window-mechanics are additionally exempt under D-026.",
 ]
 reason = "The current Tauri shell remains denied while approved generic tray, window, theme, and updater mechanics are reviewed at file/module granularity under D-017; private commands, state, CLI, and configuration remain private."
 

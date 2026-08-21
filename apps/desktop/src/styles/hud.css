@@ -1,0 +1,106 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+@import "@fontsource-variable/bitcount-prop-single/index.css";
+
+@theme {
+  --font-bitcount:
+    "Bitcount Prop Single Variable", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    system-ui, sans-serif;
+  --color-burn: var(--color-burn-val);
+  --color-burn-muted: var(--color-burn-muted-val);
+  --color-bg-hud: var(--color-bg-hud-val);
+}
+
+:root {
+  --color-burn-val: rgb(255 77 0);
+  --color-burn-muted-val: rgb(240 88 22);
+  --color-bg-hud-val: rgb(246 246 246);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-burn-val: rgb(255 106 0);
+    --color-burn-muted-val: rgb(242 113 34);
+    --color-bg-hud-val: rgb(32 32 32);
+  }
+}
+
+:root[data-theme="light"] {
+  --color-burn-val: rgb(255 77 0);
+  --color-burn-muted-val: rgb(240 88 22);
+  --color-bg-hud-val: rgb(246 246 246);
+}
+
+:root[data-theme="dark"] {
+  --color-burn-val: rgb(255 106 0);
+  --color-burn-muted-val: rgb(242 113 34);
+  --color-bg-hud-val: rgb(32 32 32);
+}
+
+/*
+ * The HUD window shows the desktop behind it, so it paints no surface. The
+ * shell paints the window surface on `#root`, so this must clear both: `body`
+ * keeps the canvas transparent, and `#root` drops the surface the shell gives
+ * every other window.
+ */
+body[data-transparent-window],
+body[data-transparent-window] #root {
+  background-color: transparent;
+}
+
+.stats-number {
+  font-family: var(--font-bitcount);
+  letter-spacing: 0.02em;
+}
+
+.led-caption {
+  font-family: var(--font-bitcount);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.led-blink {
+  animation: led-blink 3s steps(1, end) infinite;
+}
+
+@keyframes led-blink {
+  0%,
+  49.9% {
+    background-color: var(--led-on);
+  }
+
+  50%,
+  100% {
+    background-color: var(--color-surface-tertiary);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .led-blink {
+    animation: none;
+  }
+}
+
+.bevel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    inset 0 -1px 0 rgb(0 0 0 / 0.06);
+}
+
+:root[data-theme="dark"] .bevel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    inset 0 -1px 0 rgb(0 0 0 / 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .bevel {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.08),
+      inset 0 -1px 0 rgb(0 0 0 / 0.35);
+  }
+}

@@ -239,15 +239,6 @@ pub struct NormalizedEvent {
     pub usage: Usage,
     #[serde(default)]
     pub tools: Vec<ToolCall>,
-    /// Tool result / turn carried an error (failed command, rejected edit, …).
-    #[serde(default)]
-    pub is_error: bool,
-    /// Assistant emitted reasoning/thinking content (or was in plan mode).
-    #[serde(default)]
-    pub thinking: bool,
-    /// Length of any text payload, used to tell "thinking" turns from no-ops.
-    #[serde(default)]
-    pub text_len: usize,
     /// The model that produced this turn (e.g. `claude-opus-4-6`), when the
     /// transcript records it per-record. Lets the engine attribute this event's
     /// `usage` to the right model so cost prices per-model rather than at one
@@ -255,6 +246,9 @@ pub struct NormalizedEvent {
     /// falls back to the session's headline model.
     #[serde(default)]
     pub model: Option<String>,
+    /// The model's thinking mode for this turn, when the transcript records it.
+    #[serde(default)]
+    pub thinking_mode: Option<String>,
     /// The provider's message id (Anthropic `message.id`), when present. Claude
     /// transcripts re-log the same assistant message more than once, each copy
     /// carrying the full `usage`; this id lets the Claude adapter de-duplicate
@@ -264,9 +258,8 @@ pub struct NormalizedEvent {
     pub message_id: Option<String>,
     /// True when this event *is* the compaction boundary itself (Claude
     /// `system`/`compact_boundary`, Codex `event_msg`/`context_compacted`).
-    /// Vendor-neutral by design — the engine only needs *that* a compaction
-    /// happened and *where*, to reset the context-drift high-water mark instead
-    /// of smoothing the real drop away.
+    /// Vendor-neutral by design. The engine preserves the context drop at the
+    /// correct point.
     #[serde(default)]
     pub is_compaction_boundary: bool,
 }
@@ -278,14 +271,21 @@ impl NormalizedEvent {
             role,
             usage: Usage::default(),
             tools: Vec::new(),
-            is_error: false,
-            thinking: false,
-            text_len: 0,
             model: None,
+            thinking_mode: None,
             message_id: None,
             is_compaction_boundary: false,
         }
     }
+}
+
+/// One model and thinking-mode pair that produced billable tokens.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRun {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_mode: Option<String>,
 }
 
 /// A full session after normalization, ready for the engine.

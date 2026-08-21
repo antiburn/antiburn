@@ -44,6 +44,7 @@ fn pricing_table() -> &'static std::sync::RwLock<HashMap<String, ModelPricing>> 
 /// OpenAI entries remain authoritative over downloaded snapshots.
 pub fn install_runtime_pricing(runtime: HashMap<String, ModelPricing>) {
     let merged = merged_pricing(runtime);
+    let models = merged.len();
     let mut table = pricing_table()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -51,7 +52,8 @@ pub fn install_runtime_pricing(runtime: HashMap<String, ModelPricing>) {
         return;
     }
     *table = merged;
-    PRICING_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let generation = PRICING_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    ::tracing::info!(event = "runtime_pricing_installed", generation, models);
 }
 
 /// Monotonic process-local version used to invalidate cached cost-bearing
@@ -103,6 +105,9 @@ pub fn price_breakdown(breakdown: &HashMap<String, ModelTokens>) -> Option<Sessi
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let result = crate::pricing::calculate_cost(breakdown, &table);
     if !result.unpriced_models.is_empty() {
+        for model in &result.unpriced_models {
+            ::tracing::trace!(event = "model_unpriced", model);
+        }
         return None; // a partial subject total would silently undercount
     }
     let c = result.cost;

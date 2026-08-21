@@ -985,7 +985,17 @@ impl SessionLog {
 
 pub async fn session_source_content(source: &SessionSource) -> Option<String> {
     match source {
-        SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok(),
+        SessionSource::File(path) => match tokio::fs::read_to_string(path).await {
+            Ok(content) => Some(content),
+            Err(error) => {
+                ::tracing::debug!(
+                    event = "session_source_unreadable",
+                    path = %path.display(),
+                    error = %error
+                );
+                None
+            }
+        },
         SessionSource::Inline { content, .. } => Some(content.clone()),
         SessionSource::ProviderDb {
             agent: AgentKind::OpenCode,
