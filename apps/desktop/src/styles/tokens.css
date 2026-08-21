@@ -71,6 +71,13 @@
   /* Legible gold for *text/glyphs* on the gold tint — same split again. */
   --color-system-gold-text: var(--color-system-gold-text-val);
 
+  /* The band that sweeps across a running session title. The same value in
+     every theme branch: it sits between the two text colors, so it moves away
+     from the glyphs in each. Light mode lights its near-black text, dark mode
+     dims its near-white text. Each branch restates it because the design
+     contract reads the explicit palettes. */
+  --color-shimmer: var(--color-shimmer-val);
+
   /* Ink for vendor brand marks on agent rows. Deliberately firmer than
      label-secondary: a mark is a shape, not text, so it needs near-full
      contrast to read at 18px, and the set has to look like one set. Marks
@@ -141,6 +148,7 @@
   --color-system-indigo-val: rgb(88 86 214);
   --color-system-indigo-text-val: rgb(88 86 214);
   --color-system-gold-val: rgb(202 138 4);
+  --color-shimmer-val: rgb(218 90 38);
   --color-system-gold-text-val: rgb(146 100 0);
 
   /* Brand-mark ink */
@@ -231,6 +239,7 @@
     --color-system-indigo-val: rgb(94 92 230);
     --color-system-indigo-text-val: rgb(150 148 255);
     --color-system-gold-val: rgb(255 204 0);
+    --color-shimmer-val: rgb(218 90 38);
     --color-system-gold-text-val: rgb(245 203 92);
     --color-agent-mark-val: rgb(247 247 244);
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
@@ -282,6 +291,7 @@
   --color-system-indigo-val: rgb(88 86 214);
   --color-system-indigo-text-val: rgb(88 86 214);
   --color-system-gold-val: rgb(202 138 4);
+  --color-shimmer-val: rgb(218 90 38);
   --color-system-gold-text-val: rgb(146 100 0);
   --color-agent-mark-val: rgb(38 37 30);
 }
@@ -333,6 +343,7 @@
   --color-system-indigo-val: rgb(94 92 230);
   --color-system-indigo-text-val: rgb(150 148 255);
   --color-system-gold-val: rgb(255 204 0);
+  --color-shimmer-val: rgb(218 90 38);
   --color-system-gold-text-val: rgb(245 203 92);
   --color-agent-mark-val: rgb(247 247 244);
 }

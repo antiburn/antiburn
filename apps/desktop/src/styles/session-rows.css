@@ -13,7 +13,7 @@
    deliberately: a large surface pulsing at the title's rate is agitating. */
 .activity-row-active {
   --activity-row-pulse-cycle: 3200ms;
-  --activity-row-shimmer-cycle: 2000ms;
+  --activity-row-shimmer-cycle: 4000ms;
 }
 
 @keyframes activity-row-pulse {
@@ -60,8 +60,12 @@
 }
 
 .activity-row-title-shimmer {
+  /* A band of the brand orange sweeps across full-strength text. The band is
+     darker than the text in dark mode and lighter than it in light mode, so it
+     dims or lifts the glyphs it crosses. It never makes them brighter than the
+     text around them, which is what reads as a highlighter. */
   --activity-row-shimmer-base: var(--color-text-primary);
-  --activity-row-shimmer-highlight: var(--color-system-gold);
+  --activity-row-shimmer-highlight: var(--color-shimmer);
   position: relative;
   display: block;
   /* Contain the sweep's repaint to this box instead of invalidating the row. */
@@ -78,15 +82,21 @@
   white-space: nowrap;
   text-overflow: ellipsis;
   pointer-events: none;
+  /* The band stays at the center of a background 300% as wide as the box, so
+     the box shows one third of the background at a time. Thus the visible
+     window is fully transparent at both ends of the sweep: the band goes off
+     the right edge before it comes in again from the left. The 35% and 65%
+     stops are the widest band that keeps this clearance. A wider band needs a
+     larger background-size, or it stays visible across the wrap and jumps. */
   background-image: linear-gradient(
     90deg,
     transparent 0%,
-    transparent 30%,
+    transparent 35%,
     var(--activity-row-shimmer-highlight) 50%,
-    transparent 70%,
+    transparent 65%,
     transparent 100%
   );
-  background-size: 200% 100%;
+  background-size: 300% 100%;
   background-repeat: no-repeat;
   background-clip: text;
   -webkit-background-clip: text;
