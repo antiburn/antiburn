@@ -29,6 +29,15 @@ import type {
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../ipc"
+
+/** A provider whose live reading failed and left nothing to show. */
+export interface UnavailableLiveProvider {
+  /** Canonical provider id, from the failed source. */
+  provider: string
+  displayName: string
+  /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
+  category: string
+}
 import { relativeTime } from "./relativeTime"
 
 /**
@@ -260,6 +269,67 @@ export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
   const failed = summary.errors.some((error) => error.category === "authentication")
   if (!failed) return null
   return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
+}
+
+/**
+ * The providers whose live reading failed and left no windows to draw —
+ * exactly the ones the limits surfaces would otherwise drop without a word.
+ *
+ * A failed source with a cached last-good reading still appears in
+ * `providers`, carrying its stale figures; the staleness treatment covers
+ * that case and no entry appears here. This list is for the cold-start
+ * failure — first fetch rejected, nothing cached — where the error is the
+ * only trace of the provider. An error without a provider id (a snapshot
+ * cached before the field existed) cannot name a section and is skipped.
+ */
+export function liveUnavailableProviders(
+  summary: LiveUsageSummaryPayload,
+): UnavailableLiveProvider[] {
+  const showing = new Set(
+    summary.providers
+      .filter((provider) => liveWindows(provider).length > 0)
+      .map((provider) => provider.provider),
+  )
+  const seen = new Set<string>()
+  const unavailable: UnavailableLiveProvider[] = []
+  for (const error of summary.errors) {
+    if (!error.provider || showing.has(error.provider) || seen.has(error.provider)) continue
+    seen.add(error.provider)
+    unavailable.push({
+      provider: error.provider,
+      displayName: error.displayName || error.provider,
+      category: error.category,
+    })
+  }
+  return unavailable
+}
+
+/** A failure category as two or three words, for a row with no room. */
+export function liveUnavailableReason(category: string): string {
+  switch (category) {
+    case "authentication":
+      return "sign-in needed"
+    case "rateLimited":
+      return "rate limited"
+    case "schema":
+      return "unreadable reply"
+    default:
+      return "unreachable"
+  }
+}
+
+/** What a failed source means, phrased as something a reader could act on. */
+export function liveErrorNote(category: string): string {
+  switch (category) {
+    case "authentication":
+      return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
+    case "rateLimited":
+      return "Your provider asked antiburn to slow down. It will try again later."
+    case "schema":
+      return "Your provider reported usage in a shape antiburn does not recognise."
+    default:
+      return "antiburn could not reach your provider for usage. It will try again later."
+  }
 }
 
 /**
