@@ -1,0 +1,43 @@
+version: 1
+engines:
+  format: true
+  lint: true
+  code-quality: true
+  ai-slop: true
+  architecture: false
+  security: false
+# These limits are loose for the current tree. Issue #90 owns their reduction.
+# GH-89 does not reduce these limits.
+# The complexity rules set severity. They do not set sensitivity.
+# The Rust file cap is 3750 lines. opencode.rs has 3515 lines.
+# The TypeScript file cap is 1500 lines. ipc.ts has 1309 lines.
+# The Rust function budget is 1500 lines.
+quality:
+  maxFileLoc: 1500
+  maxFunctionLoc: 1000
+  maxNesting: 5
+  maxParams: 6
+# Type checking stays off because desktop-frontend already runs the workspace check.
+lint:
+  typecheck: false
+  expoDoctor: false
+# The security engine stays off so new notices do not fail unrelated changes.
+# Existing Rust checks and Dependabot provide the current advisory coverage.
+security:
+  audit: false
+  auditTimeout: 25000
+ci:
+  failBelow: 10
+  format: json
+telemetry:
+  enabled: false
+rules:
+  complexity/file-too-large: error
+  complexity/function-too-long: error
+  ai-slop/empty-function: error
+  ai-slop/narrative-comment: error
+  ai-slop/meta-comment: error
+  ai-slop/hardcoded-id: error
+  ai-slop/hardcoded-url: error
+  ai-slop/rust-non-test-unwrap: error
+  ai-slop/todo-stub: error
