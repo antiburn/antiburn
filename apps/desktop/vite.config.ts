@@ -42,6 +42,8 @@ export default defineConfig(({ command, mode }) => ({
 
   test: {
     environment: "jsdom",
+    // The label helpers format wall-clock times. Keep their output equal on all CI hosts.
+    env: { TZ: "UTC" },
     setupFiles: ["./src/test/setup.ts"],
     // `tests/` holds checks that must not live inside the tree they check
     // (see tests/no-exfiltration.test.ts).

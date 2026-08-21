@@ -233,16 +233,17 @@ describe("the elapsed marker", () => {
 })
 
 describe("reset labels", () => {
-  it("counts down within the day and names the day beyond it", () => {
+  it("names the wall-clock time within the day and adds the weekday beyond it", () => {
+    // A wall-clock time and not a countdown: it stays true for as long as it
+    // is on screen. The suite runs pinned to UTC — see `src/test/setup.ts`.
     expect(liveResetLabel(window({ resetsAt: "2027-01-15T14:30:00Z" }), NOW)).toBe(
-      "resets in 2h 30m",
+      "resets 2:30pm",
     )
-    expect(liveResetLabel(window({ resetsAt: "2027-01-15T12:45:00Z" }), NOW)).toBe(
-      "resets in 45m",
-    )
-    // Beyond a day, "resets in 76h" is not a sentence anyone reads as a time.
-    expect(liveResetLabel(window({ resetsAt: "2027-01-19T18:00:00Z" }), NOW)).toMatch(
-      /^resets \w{3} /,
+    // A reset on the hour drops the minutes.
+    expect(liveResetLabel(window({ resetsAt: "2027-01-15T13:00:00Z" }), NOW)).toBe("resets 1pm")
+    // Another day needs the day's name as well as the time.
+    expect(liveResetLabel(window({ resetsAt: "2027-01-19T18:00:00Z" }), NOW)).toBe(
+      "resets Tue 6pm",
     )
   })
 

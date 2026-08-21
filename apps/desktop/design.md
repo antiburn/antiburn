@@ -68,6 +68,12 @@ colors:
   accent-fill: # concrete fill; use bg-accent-fill for backgrounds
     light: "rgb(0 113 227)"
     dark: "rgb(10 110 235)"
+  brand: # antiburn orange for text and small glyphs
+    light: "rgb(191 63 8)"
+    dark: "rgb(255 106 44)"
+  brand-tint: # antiburn orange for large fills
+    light: "rgb(255 106 44)"
+    dark: "rgb(255 106 44)"
   system-green:
     light: "rgb(36 138 61)"
     dark: "rgb(48 219 91)"
@@ -161,7 +167,7 @@ typography:
   body: { fontSize: 13px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "-0.08px" }
   callout: { fontSize: 12px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0" }
   footnote: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.12px" }
-  caption: { fontSize: 10px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.06px" }
+  caption: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.06px" }
 spacing:
   1: 4px
   2: 8px

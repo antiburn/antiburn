@@ -255,7 +255,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(within(limits).getByText("5-hour limit")).toBeInTheDocument()
     expect(within(limits).getByText("81%")).toBeInTheDocument()
     expect(within(limits).getByText("Weekly limit")).toBeInTheDocument()
-    expect(within(limits).getByText(/resets in 2h 30m/)).toBeInTheDocument()
+    expect(within(limits).getByText(/resets 2:30pm/)).toBeInTheDocument()
 
     // The estimate half is still there and unchanged: a reader who connects a
     // source gains the limits, they do not trade one surface for the other.

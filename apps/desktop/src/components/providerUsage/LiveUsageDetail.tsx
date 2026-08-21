@@ -7,12 +7,11 @@ import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
   liveExtraUsageLabel,
   liveFreshnessToneClass,
-  liveMetricRows,
   liveSourceNote,
   liveStalenessNote,
-  liveWindowLabel,
   liveWindows,
 } from "../../lib/presentation/liveUsage"
+import { LiveMetricRows } from "./LiveMetricRows"
 import { LiveUsageWindowRows } from "./LiveUsageWindowRows"
 
 /**
@@ -69,21 +68,7 @@ export function LiveUsageDetail({
           under every per-model limit would triple the panel's height to say
           the same thing three ways; the full picture is one tap away in the
           Usage view, which has the room for it. */}
-      {/* An explicit group role: a description list carries no accessible name
-          of its own, so without it the label naming which window these rows
-          describe is announced to nobody. */}
-      <dl
-        role="group"
-        aria-label={`${liveWindowLabel(primary)} pace`}
-        className="space-y-0.5 border-t border-separator pt-1.5"
-      >
-        {liveMetricRows(primary, now).map((row) => (
-          <div key={row.key} className="flex items-baseline justify-between gap-3">
-            <dt className="type-caption text-label-tertiary">{row.label}</dt>
-            <dd className={cn("type-caption tabular-nums", row.toneClass)}>{row.value}</dd>
-          </div>
-        ))}
-      </dl>
+      <LiveMetricRows window={primary} now={now} className="border-t border-separator pt-1.5" />
 
       {extra && <p className="type-caption text-label-tertiary">{extra}</p>}
       {staleness && <p className="type-caption text-system-orange">{staleness}</p>}
