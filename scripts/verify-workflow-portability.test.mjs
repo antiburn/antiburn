@@ -242,4 +242,20 @@ else
 fi`;
   assert.match(script, new RegExp(aislopBranch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.ok(script.indexOf(aislopBranch) < script.indexOf('exit "$failed"'));
+
+test("the standalone HUD crate has dedicated backend checks", () => {
+  assert.match(workflow, /apps\/desktop\/src-tauri\/crates\/hud -> target/);
+
+  for (const [name, command] of [
+    ["Check HUD crate formatting", "cargo fmt --check"],
+    ["Clippy HUD crate", "cargo clippy --all-targets --locked -- -D warnings"],
+    ["Test HUD crate", "cargo test --locked"],
+  ]) {
+    const step = namedStep(name);
+    assert.match(
+      step,
+      /working-directory: apps\/desktop\/src-tauri\/crates\/hud/,
+    );
+    assert.ok(step.includes(`run: ${command}`));
+  }
 });
