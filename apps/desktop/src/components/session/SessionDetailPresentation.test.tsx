@@ -11,7 +11,6 @@ import {
 } from "../../lib/presentation/sessionCosts"
 import type {
   ActiveSessionsSummary,
-  PhaseSegment,
   SessionBucket,
   SessionMetrics,
 } from "../../lib/types/session"
@@ -22,33 +21,12 @@ import {
 
 afterEach(cleanup)
 
-const EVEN_MIX = {
-  implementing: 0.5,
-  testing: 0.1,
-  exploring: 0.2,
-  thinking: 0.15,
-  disruption: 0.05,
-}
-
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
-    dominantPhase: "implementing",
-    distribution: EVEN_MIX,
     tokensIn: 1000,
     tokensOut: 200,
     contextTokens: 40_000,
     isCompactionBoundary: false,
-    ...over,
-  }
-}
-
-function segment(over: Partial<PhaseSegment> = {}): PhaseSegment {
-  return {
-    phase: "implementing",
-    activeMs: 60_000,
-    tokensIn: 1000,
-    tokensOut: 200,
-    contextTokens: 40_000,
     ...over,
   }
 }
@@ -63,17 +41,11 @@ function metrics(over: Partial<SessionMetrics> = {}): SessionMetrics {
     tokensIn: 120_000,
     tokensOut: 8_000,
     peakContextTokens: 90_000,
-    contextFraction: 0.45,
     contextAvailable: true,
     contextWindow: 200_000,
     toolMix: { edit: 10, read: 8, search: 3, test: 2, bash: 5, other: 1 },
     grepCount: 3,
-    disruptionCount: 1,
-    phaseDistribution: EVEN_MIX,
-    patternScore: 82,
-    signals: [],
     buckets: [bucket(), bucket()],
-    segments: [segment()],
     ...over,
   }
 }
@@ -83,8 +55,6 @@ function summary(over: Partial<ActiveSessionsSummary> = {}): ActiveSessionsSumma
     sessionCount: 1,
     avgDurationSecs: 3600,
     avgActiveSecs: 1800,
-    avgPatternScore: 82,
-    phaseDistribution: EVEN_MIX,
     toolMix: { edit: 10, read: 8, search: 3, test: 2, bash: 5, other: 1 },
     grepTotal: 3,
     tokensInTotal: 120_000,
@@ -93,7 +63,6 @@ function summary(over: Partial<ActiveSessionsSummary> = {}): ActiveSessionsSumma
     contextAvailable: true,
     contextWindow: 200_000,
     buckets: [bucket(), bucket()],
-    signals: ["Repeated failed edits"],
     sessions: [metrics()],
     ...over,
   }
@@ -134,7 +103,6 @@ function presentationProps(
     cost: null,
     costSplit: null,
     orchestration: null,
-    skills: [],
     modelRuns: [],
     relations: null,
     onOpenSubagent: () => {},
@@ -152,12 +120,9 @@ function view(over: Partial<SessionDetailPresentationProps> = {}) {
 }
 
 describe("SessionDetailPresentation — chrome", () => {
-  it("renders the whole card hierarchy for a settled session", () => {
+  it("renders the useful card hierarchy for a settled session", () => {
     view()
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
-    expect(screen.getByText("Session rhythm")).toBeTruthy()
-    expect(screen.getByText("Modes")).toBeTruthy()
-    expect(screen.getByText("Pattern health")).toBeTruthy()
     expect(screen.getByText("Tokens")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.getByText("Tools")).toBeTruthy()
@@ -281,12 +246,12 @@ describe("SessionDetailPresentation — states", () => {
   it("reports a failure without pretending the session was empty", () => {
     view({ summary: null, error: true })
     expect(screen.getByText("Couldn't read this session.")).toBeTruthy()
-    expect(screen.queryByText("No session health available")).toBeNull()
+    expect(screen.queryByText("No session analysis available")).toBeNull()
   })
 
   it("explains an empty session, and an unsupported agent differently", () => {
     const { unmount } = view({ summary: summary({ sessionCount: 0 }) })
-    expect(screen.getByText("No session health available")).toBeTruthy()
+    expect(screen.getByText("No session analysis available")).toBeTruthy()
     unmount()
 
     view({
@@ -294,7 +259,7 @@ describe("SessionDetailPresentation — states", () => {
       supportsAnalytics: false,
       session: { agent: "kiro", sessionId: "s1", wslDistro: null },
     })
-    expect(screen.getByText(/Session health for Kiro sessions/)).toBeTruthy()
+    expect(screen.getByText(/Session analysis for Kiro sessions/)).toBeTruthy()
   })
 
   it("blames the fork parent when a fork has no activity of its own", () => {
@@ -347,8 +312,8 @@ describe("SessionDetailPresentation — session facts", () => {
         orchestratorSessionId: "session-1",
         subagentCount: 2,
         members: [
-          { agent: "claude-code", subagentId: "a", label: "Investigate", patternScore: 70 },
-          { agent: "claude-code", subagentId: "b", label: "Write tests", patternScore: 90 },
+          { agent: "claude-code", subagentId: "a", label: "Investigate" },
+          { agent: "claude-code", subagentId: "b", label: "Write tests" },
         ],
       },
     })

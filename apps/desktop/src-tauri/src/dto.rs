@@ -14,7 +14,7 @@
 //! around them belongs to the views — so these payloads carry values and facts,
 //! never labels.
 
-use antiburn_local::analysis::{ActiveSessionsSummary, ModelRun, SessionCost, SkillUse};
+use antiburn_local::analysis::{ActiveSessionsSummary, ModelRun, SessionCost};
 use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
@@ -94,10 +94,6 @@ pub struct SubagentMember {
     pub agent: String,
     pub subagent_id: String,
     pub label: String,
-    pub pattern_score: u8,
-    /// 0..1 position on the orchestrator's active-time axis, when the spawn
-    /// instant could be mapped onto it.
-    pub spawn_progress: Option<f32>,
 }
 
 /// The sub-agent picture for one session.
@@ -168,7 +164,6 @@ pub struct SessionAnalytics {
     pub models: Vec<String>,
     /// Parent model runs come before runs used only by sub-agents.
     pub model_runs: Vec<ModelRun>,
-    pub skills: Vec<SkillUse>,
     pub orchestration: Option<OrchestrationStatus>,
     pub relations: Option<SessionRelations>,
     /// The transcript's own path, for the reveal action. Absent for sessions

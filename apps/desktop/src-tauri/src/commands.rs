@@ -664,14 +664,13 @@ pub async fn get_session_analytics(
         subagents_tokens: analysis.subagents_tokens,
         models: analysis.models.clone(),
         model_runs: analysis.model_runs.clone(),
-        skills: analysis.skills.clone(),
         orchestration,
         relations: (!relations.is_empty()).then_some(relations),
         source_path: analysis.source_path.clone(),
     })
 }
 
-/// One sub-agent's own analysis, for the roster and the spawn markers.
+/// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
 pub async fn get_subagent_analytics(
     app: tauri::AppHandle,
@@ -704,16 +703,13 @@ pub async fn get_subagent_analytics(
         subagents_tokens: analysis.subagents_tokens,
         models: analysis.models.clone(),
         model_runs: analysis.model_runs.clone(),
-        skills: analysis.skills.clone(),
         orchestration: None,
         relations: None,
         source_path: analysis.source_path.clone(),
     })
 }
 
-/// The sub-agent roster the store already recorded, rebuilt as an orchestration
-/// status. Health scores and spawn positions are absent — those come from
-/// analyzing the children, which is exactly what did not happen this time.
+/// The sub-agent roster the store already recorded, rebuilt as an orchestration status.
 fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<OrchestrationStatus> {
     let members: Vec<SubagentMember> = store
         .relations(key)
@@ -727,8 +723,6 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
                 .clone()
                 .unwrap_or_else(|| "Sub-agent".to_string()),
             subagent_id: relation.related_id,
-            pattern_score: 0,
-            spawn_progress: None,
         })
         .collect();
     if members.is_empty() {

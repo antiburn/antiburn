@@ -569,17 +569,7 @@ notes = [
 id = "local-session-analytics-leaves"
 source_paths = [
   "desktop/src/components/tray/analytics/ContextDriftChart.tsx",
-  "desktop/src/components/tray/analytics/Hypnogram.tsx",
-  "desktop/src/components/tray/analytics/hypnogramGeometry.ts",
-  "desktop/src/components/tray/analytics/HypnogramMarkers.tsx",
-  "desktop/src/components/tray/analytics/HypnogramSegments.logic.ts",
-  "desktop/src/components/tray/analytics/HypnogramSegments.test.tsx",
-  "desktop/src/components/tray/analytics/HypnogramSegments.tsx",
   "desktop/src/components/tray/analytics/InitialContextChart.tsx",
-  "desktop/src/components/tray/analytics/markerCluster.test.ts",
-  "desktop/src/components/tray/analytics/markerCluster.ts",
-  "desktop/src/components/tray/analytics/PatternScore.tsx",
-  "desktop/src/components/tray/analytics/PhaseDonut.tsx",
   "desktop/src/components/tray/analytics/TokenAreaChart.tsx",
   "desktop/src/components/tray/analytics/ToolMixChart.tsx",
   "desktop/src/components/tray/analytics/tooltip.ts",
@@ -591,7 +581,7 @@ provenance = "Cadence company-authored local analytics presentation, geometry, a
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
-  "Retain chart geometry, phase/token/context/tool presentation, marker clustering, tooltip positioning, keyboard behavior, reduced-motion behavior, and synthetic tests.",
+  "Retain chart geometry, token/context/tool presentation, tooltip positioning, keyboard behavior, reduced-motion behavior, and synthetic tests.",
   "Replace private commands DTO imports with public antiburn-local DTOs or small public presentation types.",
   "Remove private Tauri and icon mocks from adapted tests by injecting public marker/icon presentation.",
   "Treat Recharts as an implementation dependency candidate whose exact public lockfile license must pass D-010.",
@@ -603,10 +593,6 @@ id = "local-session-analytics-decoupled-leaves"
 source_paths = [
   "desktop/src/components/tray/analytics/CostBreakdown.test.tsx",
   "desktop/src/components/tray/analytics/CostBreakdown.tsx",
-  "desktop/src/components/tray/analytics/SkillMarkerTooltip.test.tsx",
-  "desktop/src/components/tray/analytics/SkillMarkerTooltip.tsx",
-  "desktop/src/components/tray/analytics/skillMarkerKind.tsx",
-  "desktop/src/components/tray/analytics/spawnMarkerKind.tsx",
 ]
 path_kind = "files"
 disposition = "adapt"
@@ -615,9 +601,8 @@ provenance = "Cadence company-authored mixed analytics leaves; D-021 approves on
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
-  "Keep API-equivalent local cost rows, local skill evidence, marker rendering, and synthetic presentation tests.",
+  "Keep API-equivalent local cost rows and synthetic presentation tests.",
   "Remove SessionProviderUsageAttribution from CostBreakdown; review provider attribution with the Local Provider Usage source slice.",
-  "Replace SkillMarkerTooltip's direct revealInFinder command with an injected optional reveal callback.",
   "Replace private DTO and icon imports with public local types and independently approved public presentation.",
 ]
 

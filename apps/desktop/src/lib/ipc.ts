@@ -29,7 +29,6 @@ import type {
   ActiveSessionsSummary,
   BillableTokens,
   SessionCostComponents,
-  SkillDetail,
 } from "./types/session"
 
 /* -------------------------------------------------------------------------
@@ -215,8 +214,6 @@ export interface SubagentMemberPayload {
   agent: string
   subagentId: string
   label: string
-  patternScore: number
-  spawnProgress: number | null
 }
 
 /** The sub-agent picture for one session. */
@@ -252,7 +249,6 @@ export interface SessionAnalyticsPayload {
   models: string[]
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns: ModelRunPayload[]
-  skills: SkillDetail[]
   orchestration: OrchestrationPayload | null
   relations: SessionRelationsPayload | null
   /** The provider's own transcript, for the reveal action. */

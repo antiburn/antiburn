@@ -19,31 +19,21 @@ export interface SubagentRosterRowProps {
   agent: string
   /** Row title — a sub-agent's task label, or an orchestrator's session title. */
   label: string
-  /**
-   * Value rendered before the chevron: a colored health score on the roster, a
-   * plain progress percent in the timeline card.
-   */
-  trailing?: ReactNode
   onClick?: () => void
-  /** Tighter padding and label sizing, for the in-tooltip variant. */
-  dense?: boolean
   renderAgentIcon?: AgentIconRenderer | undefined
 }
 
 /**
- * One agent row: leading icon, truncated label, optional trailing value, and a
- * chevron that appears on hover to signal the row opens that agent's analytics.
+ * One agent row: leading icon, truncated label, and a chevron that appears on
+ * hover to signal the row opens that agent's analytics.
  *
- * Shared by the orchestrator roster, the "launched by" row on a sub-agent view,
- * and the hypnogram's spawn-cluster card, so the geometry lives in one place
- * and the three cannot drift apart.
+ * Shared by the orchestrator roster and the "launched by" row on a sub-agent
+ * view.
  */
 export function SubagentRosterRow({
   agent,
   label,
-  trailing,
   onClick,
-  dense = false,
   renderAgentIcon,
 }: SubagentRosterRowProps) {
   return (
@@ -52,16 +42,13 @@ export function SubagentRosterRow({
       onClick={onClick}
       className={cn(
         "group/srow flex w-full items-center gap-2 rounded-md text-left transition-colors duration-[var(--duration-fast)] ease-out hover:bg-system-indigo/10",
-        dense ? "px-1 py-1" : "px-2 py-1.5",
+        "px-2 py-1.5",
       )}
     >
       {renderAgentIcon?.(agent, 14)}
-      <span className={cn("min-w-0 flex-1 truncate", !dense && "type-callout text-label")}>
-        {label}
-      </span>
-      {trailing}
+      <span className="min-w-0 flex-1 truncate type-callout text-label">{label}</span>
       <ChevronRight
-        size={dense ? 12 : 13}
+        size={13}
         aria-hidden="true"
         className="shrink-0 text-label-tertiary opacity-0 transition-opacity group-hover/srow:opacity-100"
       />

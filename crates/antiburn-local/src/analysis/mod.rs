@@ -7,7 +7,7 @@
 //! The caller decides *which* sessions to analyze and hands them in as
 //! [`SessionInput`]s; this module owns everything after that: per-vendor
 //! normalization (the [`interface`] layer) and the vendor-neutral [`engine`]
-//! that turns the normalized stream into the sleep-style [`ActiveSessionsSummary`].
+//! that turns the normalized stream into an [`ActiveSessionsSummary`].
 //!
 //! A second, independent pass ([`initial_context`]) attributes each session's
 //! *initial* context window (tokens loaded before the first response) by source
@@ -28,7 +28,7 @@
 //!     source: RawSource::File("/path/to/abc.jsonl".into()),
 //! }];
 //! let summary = analyze_sources(inputs);
-//! println!("{} live sessions, health {}", summary.session_count, summary.avg_pattern_score);
+//! println!("{} live sessions", summary.session_count);
 //! ```
 
 mod engine;
@@ -39,8 +39,8 @@ mod pricing;
 mod vendors;
 
 pub use engine::{
-    ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, Phase, PhaseDistribution, PhaseSegment,
-    SessionCost, SessionMetrics, SkillUse, ToolMix, active_time_fraction, aggregate_metrics,
+    ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
+    ToolMix, aggregate_metrics,
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
 pub use interface::{RawSource, SessionInput, VendorAdapter};

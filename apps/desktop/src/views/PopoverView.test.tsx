@@ -116,7 +116,6 @@ const ANALYTICS = {
   cost: null,
   models: [],
   modelRuns: [],
-  skills: [],
   orchestration: null,
   relations: null,
   sourcePath: "/home/avery/.claude/projects/widgets/session-abc-123.jsonl",
