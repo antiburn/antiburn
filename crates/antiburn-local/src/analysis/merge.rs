@@ -47,6 +47,7 @@ pub fn merge_subagent_events(
         agent,
         session_id,
         events: parent_events,
+        cache_write_tokens_available,
         context_window,
         model,
     } = parent;
@@ -63,6 +64,7 @@ pub fn merge_subagent_events(
         agent,
         session_id,
         events: combined.into_iter().map(|(_, event)| event).collect(),
+        cache_write_tokens_available,
         context_window,
         model,
     }
@@ -97,6 +99,7 @@ mod tests {
             agent: "claude".into(),
             session_id: id.into(),
             events,
+            cache_write_tokens_available: true,
             context_window: None,
             model: None,
         }

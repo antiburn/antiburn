@@ -932,6 +932,7 @@ const CODEX_CACHE_FIXTURE: &str = concat!(
 #[test]
 fn codex_cache_read_tokens_are_carried_into_buckets() {
     let session = normalize_source(&jsonl_input("codex", CODEX_CACHE_FIXTURE)).unwrap();
+    assert!(!session.cache_write_tokens_available);
     let m = analyze_session(&session);
 
     assert_eq!(
@@ -948,6 +949,95 @@ fn codex_cache_read_tokens_are_carried_into_buckets() {
             .sum::<u64>(),
         0
     );
+}
+
+/// These values come from a Codex session after a long idle gap. The miss
+/// replays the old context, and the next turn confirms that the cache returns.
+const CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-22T07:55:39.907Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"cache_write_input_tokens":0,"output_tokens":194},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:21.967Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":577},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:29.777Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"cache_write_input_tokens":0,"output_tokens":271},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_rehydration_is_inferred_from_replay_and_recovery() {
+    let session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .filter(|bucket| bucket.is_cache_rehydration)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn known_zero_cache_writes_do_not_use_rehydration_inference() {
+    let mut session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE,
+    ))
+    .unwrap();
+    session.cache_write_tokens_available = true;
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_large_new_input_is_not_inferred_as_cache_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":5000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":102000,"cached_input_tokens":100000,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_cache_miss_without_recovery_is_not_a_confirmed_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_first_turn_after_compaction_is_not_an_inferred_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:20Z","type":"compacted","payload":{}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
 }
 
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +

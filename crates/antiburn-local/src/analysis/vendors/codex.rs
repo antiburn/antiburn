@@ -55,6 +55,7 @@ impl VendorAdapter for CodexAdapter {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
+            cache_write_tokens_available: false,
             context_window,
             model,
         })
