@@ -1,0 +1,1197 @@
+{
+  "normalizedSession": {
+    "agent": "claude",
+    "contextWindow": 200000,
+    "events": [
+      {
+        "isCompactionBoundary": false,
+        "messageId": null,
+        "model": null,
+        "role": "user",
+        "thinkingMode": null,
+        "tools": [],
+        "tsMs": 1777622400000,
+        "usage": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0
+        }
+      },
+      {
+        "isCompactionBoundary": false,
+        "messageId": null,
+        "model": null,
+        "role": "assistant",
+        "thinkingMode": null,
+        "tools": [],
+        "tsMs": 1777622402000,
+        "usage": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0
+        }
+      },
+      {
+        "isCompactionBoundary": false,
+        "messageId": "msg-unknown-1",
+        "model": "claude-3-5-haiku-20241022",
+        "role": "assistant",
+        "thinkingMode": null,
+        "tools": [],
+        "tsMs": 1777622403000,
+        "usage": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 0,
+          "inputTokens": 18,
+          "outputTokens": 9
+        }
+      }
+    ],
+    "model": "claude-3-5-haiku-20241022",
+    "sessionId": "unrecognized_type"
+  },
+  "sessions": [
+    {
+      "activeSecs": 3,
+      "agent": "claude",
+      "billableCacheCreationTokens": 0,
+      "billableCacheReadTokens": 0,
+      "billableInputTokens": 18,
+      "billableOutputTokens": 9,
+      "buckets": [
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 0,
+          "isCompactionBoundary": false,
+          "tokensIn": 0,
+          "tokensOut": 0
+        },
+        {
+          "contextTokens": 18,
+          "isCompactionBoundary": false,
+          "tokensIn": 18,
+          "tokensOut": 9
+        }
+      ],
+      "contextAvailable": true,
+      "contextWindow": 200000,
+      "cost": {
+        "cacheReadUsd": 0.0,
+        "cacheWriteUsd": 0.0,
+        "inputUsd": 0.0000144,
+        "outputUsd": 0.000036,
+        "totalUsd": 0.0000504
+      },
+      "durationSecs": 3,
+      "eventCount": 3,
+      "grepCount": 0,
+      "initialContext": {
+        "sources": [
+          {
+            "source": "unattributed",
+            "sourceName": null,
+            "tokenCount": 18
+          }
+        ],
+        "totalTokens": 18,
+        "trackingStatus": "trackedPartial"
+      },
+      "model": "claude-3-5-haiku-20241022",
+      "modelBreakdown": {
+        "claude-3-5-haiku-20241022": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 18,
+          "output_tokens": 9
+        }
+      },
+      "modelRuns": [
+        {
+          "model": "claude-3-5-haiku-20241022"
+        }
+      ],
+      "peakContextTokens": 18,
+      "sessionId": "unrecognized_type",
+      "tokensIn": 18,
+      "tokensOut": 9,
+      "toolMix": {
+        "bash": 0,
+        "edit": 0,
+        "other": 0,
+        "read": 0,
+        "search": 0,
+        "test": 0
+      }
+    }
+  ]
+}

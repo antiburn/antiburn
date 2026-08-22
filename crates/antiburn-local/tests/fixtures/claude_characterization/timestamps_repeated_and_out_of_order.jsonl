@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-02-01T09:00:10Z","message":{"role":"user","content":"Review the fictional orbit module."}}
+{"type":"assistant","timestamp":"2026-02-01T09:00:05Z","message":{"id":"msg-time-1","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":20,"output_tokens":10},"content":[{"type":"thinking","thinking":"I will review it."}]}}
+{"type":"assistant","timestamp":"2026-02-01T09:00:05Z","message":{"id":"msg-time-2","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":30,"output_tokens":15},"content":[{"type":"tool_use","id":"tool-time-1","name":"Grep","input":{"pattern":"orbit","path":"/home/avery/projects/demo-app"}}]}}
+{"type":"assistant","timestamp":"2026-02-01T09:00:20Z","message":{"id":"msg-time-3","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":40,"output_tokens":20},"content":[{"type":"text","text":"The fictional review is complete."}]}}
