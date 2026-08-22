@@ -575,7 +575,10 @@ mod tests {
         assert!(body.contains("times"), "body was {body}");
 
         // The reader is told why it costs, since that is the whole point.
-        for message in [cache_rehydration_message(1).1, cache_rehydration_message(9).1] {
+        for message in [
+            cache_rehydration_message(1).1,
+            cache_rehydration_message(9).1,
+        ] {
             assert!(message.contains("charged again"), "body was {message}");
         }
     }
