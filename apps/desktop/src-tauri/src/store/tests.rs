@@ -615,9 +615,7 @@ fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
         .unwrap();
     assert_eq!(children, vec!["child".to_string()]);
 
-    // A later scan carries no observation — it never reads transcripts deeply
-    // enough to see one — and must therefore leave the recorded lineage alone
-    // rather than reading absence as "no parent".
+    // A later scan can carry no observation. It must keep the recorded lineage.
     store.upsert_sessions(&[session("child", 2_100)]).unwrap();
     assert_eq!(
         store

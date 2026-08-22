@@ -1199,11 +1199,8 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
 
     // A fork parent is written only when the caller actually observed one.
     //
-    // Absence is *not* evidence: the scan never reads transcripts deep enough
-    // to see a lineage header, so it always passes `None`, and treating that as
-    // "no parent" would erase a relation resolved when the session was opened
-    // on every subsequent pass. Lineage is a property of a transcript, and a
-    // transcript's lineage does not change.
+    // Absence is not evidence. Some adapters resolve lineage only when a
+    // session opens. A later scan must not erase that relation.
     if let Some(parent) = &record.fork_parent_session_id {
         connection.execute(
             "INSERT INTO session_relation
