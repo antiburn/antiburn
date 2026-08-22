@@ -18,6 +18,7 @@ import {
   axisScale,
   contextTokenSeries,
   formatCompact,
+  formatDuration,
   formatPct,
   formatTokenBand,
   timeAxisTicks,
@@ -48,13 +49,24 @@ const REHYDRATION_BAR_WIDTH = 6
 export interface ContextTokensTooltipProps {
   active?: boolean
   contextWindow: number | null
+  activeSecs?: number | null
+  bucketCount?: number
   payload?: Array<{ payload?: ContextTokenPoint }>
 }
 
 /** Row swatches for the token-series lines, matching the chart's fill colors. */
-const TOKEN_ROWS: Array<{ key: "tokensIn" | "tokensOut"; label: string; colorVar: string }> = [
-  { key: "tokensIn", label: "In", colorVar: "var(--color-token-in)" },
-  { key: "tokensOut", label: "Out", colorVar: "var(--color-token-out)" },
+const TOKEN_ROWS: Array<{
+  key: "tokensIn" | "tokensOut" | "subagentTokens"
+  label: string
+  colorVar: string
+}> = [
+  { key: "tokensIn", label: "Parent in", colorVar: "var(--color-token-in)" },
+  { key: "tokensOut", label: "Parent out", colorVar: "var(--color-token-out)" },
+  {
+    key: "subagentTokens",
+    label: "Subagents",
+    colorVar: "var(--color-token-subagent)",
+  },
 ]
 
 /**
@@ -76,18 +88,22 @@ function compactionLabel(point: ContextTokenPoint): string {
 }
 
 /**
- * Custom tooltip: progress, context depth, token in/out, compaction, and a
- * sub-agent launch count. Exported so a test can render it directly with a
- * fixed payload — recharts only shows a tooltip after a synthetic hover, and
- * this content is what that hover would reveal.
+ * The custom tooltip shows active time, context depth, token throughput,
+ * compaction, and sub-agent launches. Tests can render it with a fixed payload.
  */
 export function ContextTokensTooltip({
   active,
   payload,
   contextWindow,
+  activeSecs = null,
+  bucketCount = 0,
 }: ContextTokensTooltipProps) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
+  const elapsed =
+    activeSecs != null && bucketCount > 1
+      ? formatDuration((point.index / (bucketCount - 1)) * activeSecs)
+      : `${point.progress}% through`
   const pct =
     contextWindow != null && contextWindow > 0
       ? Math.min(1, point.contextTokens / contextWindow)
@@ -103,7 +119,7 @@ export function ContextTokensTooltip({
         whiteSpace: "nowrap",
       }}
     >
-      <div className="mb-1">{point.progress}% through</div>
+      <div className="mb-1">{elapsed}</div>
       <div className="flex flex-col gap-1 text-label-secondary">
         {pct != null && (
           <span>
@@ -154,7 +170,10 @@ export function ContextTokensChart({
   const hasContext = contextWindow != null
 
   const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
-  const tokenPeak = data.reduce((m, d) => Math.max(m, d.tokensIn + d.tokensOut), 0)
+  const tokenPeak = data.reduce(
+    (m, d) => Math.max(m, d.tokensIn + d.tokensOut + d.subagentTokens),
+    0,
+  )
   // The largest spike reaches the top of the plot, so the token layer keeps
   // its full range of variation. Its low alpha keeps it secondary.
   const tokenCeiling = Math.max(1, tokenPeak)
@@ -281,7 +300,13 @@ export function ContextTokensChart({
         ))}
         <Tooltip
           cursor={{ stroke: "var(--color-separator)" }}
-          content={<ContextTokensTooltip contextWindow={contextWindow} />}
+          content={
+            <ContextTokensTooltip
+              contextWindow={contextWindow}
+              activeSecs={activeSecs}
+              bucketCount={data.length}
+            />
+          }
         />
         <Area
           yAxisId="tokens"
@@ -300,6 +325,16 @@ export function ContextTokensChart({
           stackId="t"
           stroke="none"
           fill="var(--color-token-out)"
+          fillOpacity={0.22}
+          isAnimationActive={false}
+        />
+        <Area
+          yAxisId="tokens"
+          type="monotone"
+          dataKey="subagentTokens"
+          stackId="t"
+          stroke="none"
+          fill="var(--color-token-subagent)"
           fillOpacity={0.22}
           isAnimationActive={false}
         />

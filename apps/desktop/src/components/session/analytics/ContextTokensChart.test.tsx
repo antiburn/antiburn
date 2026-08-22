@@ -40,6 +40,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
     tokensIn: 0,
     tokensOut: 0,
+    subagentTokens: 0,
     contextTokens: 0,
     isCompactionBoundary: false,
     cacheReadTokens: 0,
@@ -128,6 +129,15 @@ describe("ContextTokensChart", () => {
 
     expect(screen.queryAllByText(/→|effort |^fast$/)).toEqual([])
   })
+
+  it("draws sub-agent tokens as a third series on the token axis", () => {
+    const buckets = [bucket({ tokensIn: 100, tokensOut: 20 }), bucket({ subagentTokens: 500 })]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+    )
+
+    expect(container.querySelector('path[fill="var(--color-token-subagent)"]')).not.toBeNull()
+  })
 })
 
 function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
@@ -137,6 +147,7 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     contextTokens: 100_000,
     tokensIn: 1_000,
     tokensOut: 200,
+    subagentTokens: 0,
     isCompactionBoundary: false,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
@@ -154,6 +165,39 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
 }
 
 describe("ContextTokensTooltip", () => {
+  it("shows elapsed active time at the hovered bucket", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        activeSecs={7_200}
+        bucketCount={5}
+        payload={[{ payload: point({ index: 1, progress: 25 }) }]}
+      />,
+    )
+
+    expect(screen.getByText("30m")).toBeInTheDocument()
+    expect(screen.queryByText("25% through")).not.toBeInTheDocument()
+  })
+
+  it("separates parent input, parent output, and sub-agent tokens", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({ tokensIn: 1_000, tokensOut: 200, subagentTokens: 3_000 }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Parent in · 1.0k")).toBeInTheDocument()
+    expect(screen.getByText("Parent out · 200")).toBeInTheDocument()
+    expect(screen.getByText("Subagents · 3.0k")).toBeInTheDocument()
+  })
+
   it("shows the sub-agent launch count when the bucket launched one", () => {
     render(
       <ContextTokensTooltip

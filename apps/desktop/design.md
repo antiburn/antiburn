@@ -157,6 +157,9 @@ colors:
   token-out:
     light: "rgb(167 139 250)"
     dark: "rgb(196 181 253)"
+  token-subagent:
+    light: "rgb(5 150 105)"
+    dark: "rgb(52 211 153)"
   context-warning:
     light: "rgb(217 119 6)"
     dark: "rgb(255 159 10)"
