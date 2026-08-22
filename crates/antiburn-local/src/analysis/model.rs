@@ -228,6 +228,36 @@ pub enum Role {
     Tool,
 }
 
+/// Whether a compaction boundary was triggered by the user or by the agent's
+/// own context-limit auto-compaction. `None` when the transcript names no
+/// trigger, or does not distinguish one (Codex today).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactionTrigger {
+    Manual,
+    Auto,
+}
+
+/// Which transcript an event comes from, after [`crate::analysis::merge_subagent_events`]
+/// concatenates a parent session with its sub-agents into one stream.
+///
+/// The engine uses this to keep a few computations parent-only even after the
+/// merge: context occupancy, compaction boundaries, and cache-rehydration
+/// detection. A sub-agent has its own context window, so mixing its turns
+/// into those parent-window computations would not mean anything. Token
+/// sums, tool mix, and cost stay unconditional over every event, so a
+/// sub-agent's spend still counts toward the session's total — the product
+/// rule is that a sub-agent is an implementation detail of its parent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventSource {
+    /// The event comes from the session's own transcript.
+    #[default]
+    Parent,
+    /// The event comes from a sub-agent transcript, merged into the parent.
+    Subagent,
+}
+
 /// One normalized turn/record from a transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +265,11 @@ pub struct NormalizedEvent {
     /// Unix epoch milliseconds, when the transcript carries a timestamp.
     pub ts_ms: Option<i64>,
     pub role: Role,
+    /// Which transcript this event comes from. `Parent` for every event
+    /// before a merge; [`crate::analysis::merge_subagent_events`] tags
+    /// sub-agent events `Subagent`.
+    #[serde(default)]
+    pub source: EventSource,
     #[serde(default)]
     pub usage: Usage,
     #[serde(default)]
@@ -249,6 +284,15 @@ pub struct NormalizedEvent {
     /// The model's thinking mode for this turn, when the transcript records it.
     #[serde(default)]
     pub thinking_mode: Option<String>,
+    /// The response speed for this turn (e.g. Claude's "standard"/"fast"),
+    /// when the transcript records it. `None` when the vendor carries no
+    /// speed signal.
+    #[serde(default)]
+    pub speed: Option<String>,
+    /// True when this turn's content includes a `thinking` block (Claude) or
+    /// its vendor equivalent (Codex's `reasoning` response item).
+    #[serde(default)]
+    pub has_thinking: bool,
     /// The provider's message id (Anthropic `message.id`), when present. Claude
     /// transcripts re-log the same assistant message more than once, each copy
     /// carrying the full `usage`; this id lets the Claude adapter de-duplicate
@@ -262,6 +306,19 @@ pub struct NormalizedEvent {
     /// correct point.
     #[serde(default)]
     pub is_compaction_boundary: bool,
+    /// Whether this compaction boundary was manual or automatic, when the
+    /// transcript records it. `None` when this event is not a compaction
+    /// boundary, or the vendor names no trigger.
+    #[serde(default)]
+    pub compaction_trigger: Option<CompactionTrigger>,
+    /// The context token count right before this compaction, when the
+    /// transcript records it.
+    #[serde(default)]
+    pub compaction_pre_tokens: Option<u64>,
+    /// The context token count right after this compaction, when the
+    /// transcript records it. Some older Claude records omit this.
+    #[serde(default)]
+    pub compaction_post_tokens: Option<u64>,
 }
 
 impl NormalizedEvent {
@@ -269,12 +326,18 @@ impl NormalizedEvent {
         NormalizedEvent {
             ts_ms: None,
             role,
+            source: EventSource::default(),
             usage: Usage::default(),
             tools: Vec::new(),
             model: None,
             thinking_mode: None,
+            speed: None,
+            has_thinking: false,
             message_id: None,
             is_compaction_boundary: false,
+            compaction_trigger: None,
+            compaction_pre_tokens: None,
+            compaction_post_tokens: None,
         }
     }
 }

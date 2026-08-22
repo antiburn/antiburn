@@ -27,6 +27,17 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     tokensOut: 200,
     contextTokens: 40_000,
     isCompactionBoundary: false,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    isCacheRehydration: false,
+    subagentLaunches: 0,
+    model: null,
+    thinkingMode: null,
+    speed: null,
+    hasThinking: false,
+    compactionTrigger: null,
+    compactionPreTokens: null,
+    compactionPostTokens: null,
     ...over,
   }
 }
@@ -121,11 +132,17 @@ function view(over: Partial<SessionDetailPresentationProps> = {}) {
 
 describe("SessionDetailPresentation — chrome", () => {
   it("renders the useful card hierarchy for a settled session", () => {
-    view()
+    view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
-    expect(screen.getByText("Tokens")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.getByText("Cost")).toBeTruthy()
     expect(screen.getByText("Tools")).toBeTruthy()
+  })
+
+  it("omits the Cost card when nothing priced the session", () => {
+    view({ cost: null })
+    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.queryByText("Cost")).toBeNull()
   })
 
   it("shows the session title on no more than three lines", () => {
@@ -393,9 +410,9 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(onOpenRelatedSession).toHaveBeenCalledWith(expect.anything(), "Session abcdef1")
   })
 
-  it("states that context occupancy is unavailable rather than charting zero", () => {
-    view({ summary: summary({ contextAvailable: false }) })
-    expect(screen.getByText("Context occupancy is unavailable for this model.")).toBeTruthy()
+  it("still renders the Context card, with just the token layer, when context occupancy is unavailable", () => {
+    expect(() => view({ summary: summary({ contextAvailable: false }) })).not.toThrow()
+    expect(screen.getByText("Context")).toBeTruthy()
   })
 
   it("adds the initial-context card when the session has initial context", () => {

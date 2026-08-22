@@ -140,11 +140,11 @@ colors:
     light: "rgb(6 182 212)"
     dark: "rgb(34 211 238)"
   context-fill-top:
-    light: "rgb(59 130 246 / 0.55)"
-    dark: "rgb(96 165 250 / 0.6)"
+    light: "rgb(59 130 246 / 0.6)"
+    dark: "rgb(96 165 250 / 0.75)"
   context-fill-base:
-    light: "rgb(59 130 246 / 0.08)"
-    dark: "rgb(96 165 250 / 0.1)"
+    light: "rgb(59 130 246 / 0.2)"
+    dark: "rgb(96 165 250 / 0.25)"
   context-fixed:
     light: "rgb(100 116 139)"
     dark: "rgb(148 163 184)"
@@ -160,6 +160,9 @@ colors:
   context-warning:
     light: "rgb(217 119 6)"
     dark: "rgb(255 159 10)"
+  context-critical:
+    light: "rgb(220 38 38)"
+    dark: "rgb(248 113 113)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`

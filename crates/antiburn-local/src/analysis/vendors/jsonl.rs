@@ -18,7 +18,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::analysis::model::{NormalizedEvent, Role, ToolCall, Usage};
+use crate::analysis::model::{CompactionTrigger, NormalizedEvent, Role, ToolCall, Usage};
 
 /// Parse line-delimited JSON into normalized events, skipping blank/malformed
 /// lines.
@@ -186,10 +186,21 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
         .and_then(parse_ts);
 
     // Usage may live under message.usage (Anthropic) or top-level usage (OpenAI).
-    ev.usage = parse_usage(
-        msg.and_then(|m| m.get("usage"))
-            .or_else(|| obj.get("usage")),
-    );
+    let usage_value = msg
+        .and_then(|m| m.get("usage"))
+        .or_else(|| obj.get("usage"));
+    ev.usage = parse_usage(usage_value);
+
+    // The response speed (Claude's "standard"/"fast" fast-mode signal), when
+    // the transcript records it: message.usage.speed, top-level usage.speed,
+    // or a bare top-level speed field.
+    ev.speed = usage_value
+        .and_then(|u| u.get("speed"))
+        .or_else(|| obj.get("speed"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|speed| !speed.is_empty())
+        .map(str::to_string);
 
     // Model that produced this turn, when recorded: message.model (Anthropic) or
     // top-level model (OpenAI shape). `<synthetic>` is Claude's sentinel for
@@ -219,11 +230,25 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
         .filter(|id| !id.is_empty())
         .map(str::to_string);
 
-    // Claude marks a compaction boundary with a top-level system record.
+    // Claude marks a compaction boundary with a top-level system record, and
+    // (on most records) names the trigger and before/after size in
+    // compactMetadata.
     if top_type == "system"
         && obj.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
     {
         ev.is_compaction_boundary = true;
+        if let Some(meta) = obj.get("compactMetadata").and_then(|m| m.as_object()) {
+            ev.compaction_trigger =
+                meta.get("trigger")
+                    .and_then(Value::as_str)
+                    .and_then(|t| match t {
+                        "manual" => Some(CompactionTrigger::Manual),
+                        "auto" => Some(CompactionTrigger::Auto),
+                        _ => None,
+                    });
+            ev.compaction_pre_tokens = meta.get("preTokens").and_then(Value::as_u64);
+            ev.compaction_post_tokens = meta.get("postTokens").and_then(Value::as_u64);
+        }
     }
 
     // Standalone, top-level tool-shaped records.
@@ -310,6 +335,7 @@ fn process_content(content: Option<&Value>, ev: &mut NormalizedEvent) {
                     item.get("arguments").or_else(|| item.get("input")),
                     ev,
                 ),
+                "thinking" => ev.has_thinking = true,
                 _ => {}
             }
         }
@@ -492,6 +518,66 @@ mod tests {
     use super::*;
     use crate::analysis::model::{Role, ToolCategory};
     use serde_json::json;
+
+    #[test]
+    fn message_usage_speed_is_parsed() {
+        let record = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "usage": {"input_tokens": 10, "output_tokens": 5, "speed": "fast"}
+            }
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert_eq!(ev.speed.as_deref(), Some("fast"));
+    }
+
+    #[test]
+    fn top_level_speed_is_parsed_when_usage_carries_none() {
+        let record = json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "usage": {"input_tokens": 10}},
+            "speed": "standard"
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert_eq!(ev.speed.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn missing_speed_leaves_it_none() {
+        let record = json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "usage": {"input_tokens": 10}}
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert_eq!(ev.speed, None);
+    }
+
+    #[test]
+    fn thinking_content_block_sets_has_thinking() {
+        let record = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "let me see"}]
+            }
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert!(ev.has_thinking);
+    }
+
+    #[test]
+    fn no_thinking_block_leaves_has_thinking_false() {
+        let record = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}]
+            }
+        });
+        let ev = parse_record(&record).expect("record should parse");
+        assert!(!ev.has_thinking);
+    }
 
     #[test]
     fn openai_cached_tokens_are_split_from_prompt_tokens() {
@@ -841,6 +927,76 @@ mod tests {
         let ev = parse_record(&record).expect("compact_boundary should parse");
         assert_eq!(ev.role, Role::System);
         assert!(ev.is_compaction_boundary);
+    }
+
+    #[test]
+    fn claude_compact_boundary_parses_manual_trigger_and_sizes() {
+        let record = json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "compactMetadata": {
+                "trigger": "manual",
+                "preTokens": 196_000,
+                "postTokens": 11_000,
+            }
+        });
+
+        let ev = parse_record(&record).expect("compact_boundary should parse");
+        assert_eq!(ev.compaction_trigger, Some(CompactionTrigger::Manual));
+        assert_eq!(ev.compaction_pre_tokens, Some(196_000));
+        assert_eq!(ev.compaction_post_tokens, Some(11_000));
+    }
+
+    #[test]
+    fn claude_compact_boundary_parses_auto_trigger() {
+        let record = json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "compactMetadata": {
+                "trigger": "auto",
+                "preTokens": 200_000,
+                "postTokens": 12_000,
+            }
+        });
+
+        let ev = parse_record(&record).expect("compact_boundary should parse");
+        assert_eq!(ev.compaction_trigger, Some(CompactionTrigger::Auto));
+    }
+
+    #[test]
+    fn claude_compact_boundary_without_metadata_leaves_trigger_and_sizes_none() {
+        let record = json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+        });
+
+        let ev = parse_record(&record).expect("compact_boundary should parse");
+        assert!(ev.is_compaction_boundary);
+        assert_eq!(ev.compaction_trigger, None);
+        assert_eq!(ev.compaction_pre_tokens, None);
+        assert_eq!(ev.compaction_post_tokens, None);
+    }
+
+    #[test]
+    fn claude_compact_boundary_without_post_tokens_leaves_it_none() {
+        // Some older records omit postTokens entirely.
+        let record = json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "compactMetadata": {
+                "trigger": "auto",
+                "preTokens": 196_000,
+            }
+        });
+
+        let ev = parse_record(&record).expect("compact_boundary should parse");
+        assert_eq!(ev.compaction_trigger, Some(CompactionTrigger::Auto));
+        assert_eq!(ev.compaction_pre_tokens, Some(196_000));
+        assert_eq!(ev.compaction_post_tokens, None);
     }
 
     #[test]

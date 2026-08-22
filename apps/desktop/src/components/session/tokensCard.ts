@@ -2,12 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { formatCompact, formatCost } from "../../lib/presentation/sessionAnalytics"
+import { formatCompact } from "../../lib/presentation/sessionAnalytics"
 import type { LocalCostSubject, LocalSessionCost } from "../../lib/presentation/sessionCosts"
 
 /**
- * What the Tokens card says, as a pure function of the cost figures the view
- * was handed.
+ * What the Context and Tokens card says, and the cost split the Cost card
+ * shows, as a pure function of the figures the view was handed.
  *
  * A function rather than a branch buried in a render body: the caller resolves
  * which cost subject the card describes, passes the results in, and gets the
@@ -31,17 +31,14 @@ export interface TokensCardModel {
    * the headline. Mixing subjects would produce rows that do not add up.
    */
   split: TokensCostSplit | null
-  /** Info-tooltip copy. */
-  info: string
-  /** Right-hand hint: token counts, plus the cost once there is one. */
+  /** Right-hand hint: token counts, then compactions and rehydrations when any. */
   hint: string
 }
 
-const TOKENS_INFO_BASE =
-  "In = input tokens sent to the model for the first time (fresh input plus prompt-cache writes; cache reads are excluded); out = tokens it generated. Both accumulate as the session goes on. Cost is an approximate estimate from the model per-token rates."
-
-const TOKENS_INFO_ORCHESTRATOR =
-  "The token chart and in/out counts describe the parent agent — in = input tokens sent to the model for the first time (fresh input plus prompt-cache writes; cache reads are excluded); out = tokens it generated. Cost is inclusive of the parent and its sub-agents; the split below shows each part."
+/** "3 compactions", "1 compaction". */
+function countLabel(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`
+}
 
 /** Decide what the Tokens card says, given the already-selected cost figures. */
 export function tokensCardModel(input: {
@@ -64,6 +61,8 @@ export function tokensCardModel(input: {
   summaryCostTotalUsd?: number | null
   tokensInTotal: number
   tokensOutTotal: number
+  compactionCount?: number
+  cacheRehydrationCount?: number
 }): TokensCardModel {
   const {
     costScope,
@@ -74,6 +73,8 @@ export function tokensCardModel(input: {
     costSubagentCount,
     tokensInTotal,
     tokensOutTotal,
+    compactionCount = 0,
+    cacheRehydrationCount = 0,
   } = input
 
   const costTotal = selectedCost?.totalCostUsd ?? input.summaryCostTotalUsd ?? null
@@ -86,17 +87,9 @@ export function tokensCardModel(input: {
         }
       : null
 
-  const tokens = `${formatCompact(tokensInTotal)} in · ${formatCompact(tokensOutTotal)} out`
+  const parts = [`${formatCompact(tokensInTotal)} in`, `${formatCompact(tokensOutTotal)} out`]
+  if (compactionCount > 0) parts.push(countLabel(compactionCount, "compaction"))
+  if (cacheRehydrationCount > 0) parts.push(countLabel(cacheRehydrationCount, "rehydration"))
 
-  return {
-    costTotal,
-    split,
-    info: hasCostSubagents ? TOKENS_INFO_ORCHESTRATOR : TOKENS_INFO_BASE,
-    hint:
-      costTotal != null
-        ? hasCostSubagents
-          ? `${tokens} · incl. ${formatCost(costTotal)}`
-          : `${tokens} · ${formatCost(costTotal)}`
-        : tokens,
-  }
+  return { costTotal, split, hint: parts.join(" · ") }
 }

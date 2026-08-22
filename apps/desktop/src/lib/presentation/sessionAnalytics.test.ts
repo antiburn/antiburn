@@ -6,19 +6,22 @@ import { describe, expect, it } from "vitest"
 
 import type { InitialContextBreakdown, SessionBucket } from "../types/session"
 import {
-  contextSeries,
+  axisScale,
+  contextTokenSeries,
+  timeAxisTicks,
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
   formatCost,
   formatDuration,
+  formatTokenBand,
   HIGH_COST_FLOOR_USD,
   HIGH_COST_MEDIAN_MULTIPLE,
   HIGH_COST_MIN_SAMPLE,
   initialContextNamedRows,
   initialContextTotal,
   median,
-  tokenSeries,
+  modeChangeMarkers,
 } from "./sessionAnalytics"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
@@ -27,82 +30,231 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     tokensOut: 0,
     contextTokens: 0,
     isCompactionBoundary: false,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    isCacheRehydration: false,
+    subagentLaunches: 0,
+    model: null,
+    thinkingMode: null,
+    speed: null,
+    hasThinking: false,
+    compactionTrigger: null,
+    compactionPreTokens: null,
+    compactionPostTokens: null,
     ...over,
   }
 }
 
-describe("tokenSeries", () => {
-  it("keeps each observed token bucket at its measured progress", () => {
+describe("contextTokenSeries", () => {
+  it("keeps every bucket at its measured progress and holds the context level across empty ones", () => {
     const buckets = [
       bucket(),
-      bucket({ tokensIn: 100, tokensOut: 10 }),
+      bucket({ tokensIn: 100, tokensOut: 10, contextTokens: 50_000 }),
       bucket(),
-      bucket({ tokensIn: 300, tokensOut: 30 }),
-      bucket({ tokensIn: 500, tokensOut: 50 }),
+      bucket({ tokensIn: 300, tokensOut: 30, contextTokens: 150_000 }),
+      bucket({ tokensIn: 500, tokensOut: 50, contextTokens: 200_000 }),
       bucket(),
     ]
-    const series = tokenSeries(buckets)
-    expect(series).toHaveLength(3)
-    expect(series.map((p) => p.tokensIn)).toEqual([100, 300, 500])
-    expect(series.map((p) => p.progress)).toEqual([20, 60, 80])
+    const series = contextTokenSeries(buckets)
+    expect(series).toHaveLength(6)
+    expect(series.map((p) => p.progress)).toEqual([0, 20, 40, 60, 80, 100])
+    expect(series.map((p) => p.tokensIn)).toEqual([0, 100, 0, 300, 500, 0])
+    expect(series.map((p) => p.contextTokens)).toEqual([
+      0, 50_000, 50_000, 150_000, 200_000, 200_000,
+    ])
   })
 
-  it("returns an empty series when no bucket has activity", () => {
-    expect(tokenSeries([bucket(), bucket()])).toEqual([])
-  })
-
-  it("drops a compaction-only bucket instead of rendering a spurious zero dip", () => {
+  it("fills a compaction bucket and the empty buckets after it with the next level", () => {
     const buckets = [
-      bucket({ tokensIn: 100, tokensOut: 10 }),
-      bucket({ isCompactionBoundary: true }),
-      bucket({ tokensIn: 300, tokensOut: 30 }),
+      bucket({ contextTokens: 180_000 }),
+      bucket({ contextTokens: 0, isCompactionBoundary: true }),
+      bucket(),
+      bucket({ contextTokens: 20_000 }),
+      bucket(),
     ]
-    const series = tokenSeries(buckets)
-    expect(series).toHaveLength(2)
-    expect(series.map((p) => p.tokensIn)).toEqual([100, 300])
+    const series = contextTokenSeries(buckets)
+    expect(series.map((p) => p.contextTokens)).toEqual([
+      180_000, 20_000, 20_000, 20_000, 20_000,
+    ])
   })
-})
 
-describe("contextSeries", () => {
-  it("keeps each observed context bucket at its measured progress", () => {
-    const series = contextSeries(
-      [
-        bucket(),
-        bucket({ contextTokens: 50_000 }),
-        bucket(),
-        bucket({ contextTokens: 150_000 }),
-      ],
-      200_000,
-    )
-    expect(series).toHaveLength(2)
-    expect(series.map((p) => p.contextPct)).toEqual([25, 75])
-    expect(series.map((p) => p.progress)).toEqual([33, 100])
+  it("leaves a trailing compaction at zero when nothing follows it", () => {
+    const buckets = [
+      bucket({ contextTokens: 180_000 }),
+      bucket({ contextTokens: 0, isCompactionBoundary: true }),
+      bucket(),
+    ]
+    expect(contextTokenSeries(buckets).map((p) => p.contextTokens)).toEqual([180_000, 0, 0])
   })
 
   it("carries the compaction-boundary flag onto the matching point", () => {
-    const series = contextSeries(
-      [
-        bucket({ contextTokens: 180_000 }),
-        bucket({ contextTokens: 20_000, isCompactionBoundary: true }),
-        bucket({ contextTokens: 40_000 }),
-      ],
-      200_000,
-    )
+    const buckets = [
+      bucket({ contextTokens: 180_000 }),
+      bucket({ contextTokens: 0, isCompactionBoundary: true }),
+      bucket({ contextTokens: 20_000 }),
+    ]
+    const series = contextTokenSeries(buckets)
     expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
   })
 
-  it("keeps a compaction-only bucket", () => {
-    const series = contextSeries(
-      [
-        bucket({ contextTokens: 180_000 }),
-        bucket({ contextTokens: 0, isCompactionBoundary: true }),
-        bucket({ contextTokens: 20_000 }),
-      ],
-      200_000,
-    )
-    expect(series).toHaveLength(3)
-    expect(series.map((p) => p.isCompactionBoundary)).toEqual([false, true, false])
-    expect(series.map((p) => p.contextPct)).toEqual([90, 0, 10])
+  it("carries the cache read/write totals and rehydration flag onto each point", () => {
+    const buckets = [
+      bucket({ cacheReadTokens: 5_000, cacheWriteTokens: 200 }),
+      bucket({ cacheReadTokens: 0, cacheWriteTokens: 25_000, isCacheRehydration: true }),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(
+      series.map((p) => [p.cacheReadTokens, p.cacheWriteTokens, p.isCacheRehydration]),
+    ).toEqual([
+      [5_000, 200, false],
+      [0, 25_000, true],
+    ])
+  })
+
+  it("forward-fills model, thinking mode, and speed across buckets with no value", () => {
+    const buckets = [
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket(),
+      bucket({ model: "claude-fable-5" }),
+      bucket({ speed: "fast" }),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(series.map((p) => p.model)).toEqual([
+      "claude-opus-4-6",
+      "claude-opus-4-6",
+      "claude-fable-5",
+      "claude-fable-5",
+    ])
+    expect(series.map((p) => p.thinkingMode)).toEqual(["high", "high", "high", "high"])
+    expect(series.map((p) => p.speed)).toEqual(["standard", "standard", "standard", "fast"])
+  })
+
+  it("leaves model, thinking mode, and speed null before the first observed value", () => {
+    const buckets = [bucket(), bucket({ model: "claude-opus-4-6" })]
+    const series = contextTokenSeries(buckets)
+    expect(series[0]!.model).toBeNull()
+    expect(series[0]!.thinkingMode).toBeNull()
+    expect(series[0]!.speed).toBeNull()
+    expect(series[1]!.model).toBe("claude-opus-4-6")
+  })
+
+  it("carries hasThinking per-bucket, unfilled", () => {
+    const buckets = [bucket({ hasThinking: true }), bucket()]
+    const series = contextTokenSeries(buckets)
+    expect(series.map((p) => p.hasThinking)).toEqual([true, false])
+  })
+
+  it("carries the compaction trigger and sizes through per-bucket, unfilled", () => {
+    const buckets = [
+      bucket({
+        isCompactionBoundary: true,
+        compactionTrigger: "manual",
+        compactionPreTokens: 196_000,
+        compactionPostTokens: 11_000,
+      }),
+      bucket(),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(series[0]!.compactionTrigger).toBe("manual")
+    expect(series[0]!.compactionPreTokens).toBe(196_000)
+    expect(series[0]!.compactionPostTokens).toBe(11_000)
+    expect(series[1]!.compactionTrigger).toBeNull()
+    expect(series[1]!.compactionPreTokens).toBeNull()
+    expect(series[1]!.compactionPostTokens).toBeNull()
+  })
+})
+
+describe("modeChangeMarkers", () => {
+  it("emits no marker for the starting mode, only for later changes", () => {
+    const buckets = [
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket({ model: "claude-fable-5", thinkingMode: "high", speed: "standard" }),
+    ]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([{ index: 2, label: "opus-4-6 → fable-5" }])
+  })
+
+  it("labels an effort change and a speed change separately", () => {
+    const buckets = [
+      bucket({ thinkingMode: "high", speed: "standard" }),
+      bucket({ thinkingMode: "low" }),
+      bucket({ speed: "fast" }),
+    ]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([
+      { index: 1, label: "effort low" },
+      { index: 2, label: "fast" },
+    ])
+  })
+
+  it("joins several changes in the same bucket with a middle dot", () => {
+    const buckets = [
+      bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "standard" }),
+      bucket({ model: "claude-fable-5", thinkingMode: "low", speed: "fast" }),
+    ]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([{ index: 1, label: "opus-4-6 → fable-5 · effort low · fast" }])
+  })
+
+  it("still marks fast speed at the very start, unlike model or effort", () => {
+    const buckets = [bucket({ model: "claude-opus-4-6", thinkingMode: "high", speed: "fast" })]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([{ index: 0, label: "fast" }])
+  })
+
+  it("emits nothing when the starting speed is standard", () => {
+    const buckets = [bucket({ model: "claude-opus-4-6", speed: "standard" })]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([])
+  })
+
+  it("emits nothing when no bucket carries a mode signal", () => {
+    const buckets = [bucket(), bucket(), bucket()]
+    const markers = modeChangeMarkers(contextTokenSeries(buckets))
+    expect(markers).toEqual([])
+  })
+})
+
+describe("axisScale", () => {
+  it("scales the ceiling to the peak with headroom, not to the cap", () => {
+    expect(axisScale(130_000, 1_000_000, 5)).toEqual({
+      ceiling: 150_000,
+      ticks: [50_000, 100_000],
+    })
+  })
+
+  it("never exceeds the cap", () => {
+    expect(axisScale(195_000, 200_000, 5)).toEqual({
+      ceiling: 200_000,
+      ticks: [50_000, 100_000, 150_000],
+    })
+  })
+
+  it("uses coarse steps for a deep session", () => {
+    expect(axisScale(900_000, 1_000_000, 5)).toEqual({
+      ceiling: 1_000_000,
+      ticks: [200_000, 400_000, 600_000, 800_000],
+    })
+  })
+
+  it("uses fine steps for a shallow session", () => {
+    expect(axisScale(18_000, 1_000_000, 5)).toEqual({
+      ceiling: 20_000,
+      ticks: [5_000, 10_000, 15_000],
+    })
+  })
+})
+
+describe("formatTokenBand", () => {
+  it("drops a trailing .0 that formatCompact would show", () => {
+    expect(formatTokenBand(200_000)).toBe("200k")
+    expect(formatTokenBand(50_000)).toBe("50k")
+    expect(formatTokenBand(1_000_000)).toBe("1M")
+  })
+
+  it("keeps a real decimal", () => {
+    expect(formatTokenBand(1_500_000)).toBe("1.5M")
   })
 })
 
@@ -242,5 +394,24 @@ describe("median / costOutlierThreshold", () => {
     expect(costOutlierThreshold(Array(HIGH_COST_MIN_SAMPLE).fill(0.1))).toBe(
       HIGH_COST_FLOOR_USD,
     )
+  })
+})
+
+describe("timeAxisTicks", () => {
+  it("uses the coarsest step that keeps the mark count under the limit", () => {
+    // 2h 10m of active time over 181 buckets: 30m steps give four marks.
+    const ticks = timeAxisTicks(7800, 181, 6)
+    expect(ticks.map((t) => t.label)).toEqual(["30m", "1h", "1h 30m", "2h"])
+    expect(ticks[1]!.index).toBeCloseTo((3600 / 7800) * 180, 5)
+  })
+
+  it("returns nothing for an empty or instant session", () => {
+    expect(timeAxisTicks(0, 181, 6)).toEqual([])
+    expect(timeAxisTicks(600, 1, 6)).toEqual([])
+  })
+
+  it("never places a mark at or past the end", () => {
+    const ticks = timeAxisTicks(3600, 181, 6)
+    expect(ticks.map((t) => t.label)).toEqual(["10m", "20m", "30m", "40m", "50m"])
   })
 })

@@ -54,6 +54,11 @@
      vivid system orange down to a legible amber while dark mode keeps the
      saturated value. */
   --color-context-warning: var(--color-context-warning-val);
+
+  /* The critical end of the context heat ramp, above the warning amber. Used
+     only past 400k tokens, where the amber-to-red gradient reaches red at the
+     1M context window. */
+  --color-context-critical: var(--color-context-critical-val);
 }
 
 /* --- Light (default and explicit) --- */
@@ -63,13 +68,14 @@
   --color-analytics-green-val: rgb(5 150 105); /* emerald-600 */
   --color-analytics-blue-val: rgb(59 130 246); /* blue-500 */
   --color-analytics-cyan-val: rgb(6 182 212); /* cyan-500 */
-  --color-context-fill-top-val: rgb(59 130 246 / 0.55); /* blue-500 */
-  --color-context-fill-base-val: rgb(59 130 246 / 0.08);
+  --color-context-fill-top-val: rgb(59 130 246 / 0.6); /* blue-500 */
+  --color-context-fill-base-val: rgb(59 130 246 / 0.2);
   --color-context-fixed-val: rgb(100 116 139); /* slate-500 */
   --color-context-system-val: rgb(124 58 237); /* violet-600 */
   --color-token-in-val: rgb(59 130 246); /* blue-500 */
   --color-token-out-val: rgb(167 139 250); /* violet-400 */
   --color-context-warning-val: rgb(217 119 6); /* amber-600 */
+  --color-context-critical-val: rgb(220 38 38); /* red-600 */
 }
 
 /* --- Dark ---
@@ -82,13 +88,14 @@
     --color-analytics-green-val: rgb(52 211 153); /* emerald-400 */
     --color-analytics-blue-val: rgb(96 165 250); /* blue-400 */
     --color-analytics-cyan-val: rgb(34 211 238); /* cyan-400 */
-    --color-context-fill-top-val: rgb(96 165 250 / 0.6); /* blue-400 */
-    --color-context-fill-base-val: rgb(96 165 250 / 0.1);
+    --color-context-fill-top-val: rgb(96 165 250 / 0.75); /* blue-400 */
+    --color-context-fill-base-val: rgb(96 165 250 / 0.25);
     --color-context-fixed-val: rgb(148 163 184); /* slate-400 */
     --color-context-system-val: rgb(167 139 250); /* violet-400 */
     --color-token-in-val: rgb(96 165 250); /* blue-400 */
     --color-token-out-val: rgb(196 181 253); /* violet-300 */
     --color-context-warning-val: rgb(255 159 10); /* vivid amber */
+    --color-context-critical-val: rgb(248 113 113); /* red-400 */
   }
 }
 
@@ -97,11 +104,12 @@
   --color-analytics-green-val: rgb(52 211 153);
   --color-analytics-blue-val: rgb(96 165 250);
   --color-analytics-cyan-val: rgb(34 211 238);
-  --color-context-fill-top-val: rgb(96 165 250 / 0.6);
-  --color-context-fill-base-val: rgb(96 165 250 / 0.1);
+  --color-context-fill-top-val: rgb(96 165 250 / 0.75);
+  --color-context-fill-base-val: rgb(96 165 250 / 0.25);
   --color-context-fixed-val: rgb(148 163 184);
   --color-context-system-val: rgb(167 139 250);
   --color-token-in-val: rgb(96 165 250);
   --color-token-out-val: rgb(196 181 253);
   --color-context-warning-val: rgb(255 159 10);
+  --color-context-critical-val: rgb(248 113 113);
 }
