@@ -25,12 +25,10 @@
 //! present; the flat keys are the fallback, never a supplement, so one
 //! payload never yields the same window twice.
 //!
-//! Two more shape inconsistencies are absorbed rather than treated as errors,
-//! because the provider is not consistent about either across its own
-//! payload family: a usage figure may be a `0..=1` fraction or an
-//! already-multiplied percent (see
-//! [`normalize::used_percent_or_fraction`](super::normalize::used_percent_or_fraction)),
-//! and `resets_at` may be epoch seconds or an RFC 3339 string.
+//! Two more shape inconsistencies are absorbed rather than treated as errors.
+//! A `utilization` figure in the limits array may be a fraction or a percent.
+//! The explicit `percent` and legacy flat `utilization` fields are percentages.
+//! Also, `resets_at` may be epoch seconds or an RFC 3339 string.
 
 use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -169,16 +167,24 @@ fn window(
         role,
         kind,
         scope,
-        used_percent: used_percent_or_fraction(
-            value
-                .get("percent")
-                .or_else(|| value.get("utilization"))
-                .and_then(Value::as_f64),
-        )?,
+        used_percent: window_used_percent(name, value)?,
         starts_at: None,
         resets_at: reset_at(value.get("resets_at"))?,
         authoritative: true,
     })
+}
+
+/// Read the unit from the field and payload shape instead of the value.
+fn window_used_percent(name: &str, value: &Value) -> Result<Option<f64>, ProviderUsageError> {
+    if let Some(percent) = value.get("percent") {
+        return used_percent(percent.as_f64());
+    }
+
+    let utilization = value.get("utilization").and_then(Value::as_f64);
+    if matches!(name, "five_hour" | "seven_day") {
+        return used_percent(utilization);
+    }
+    used_percent_or_fraction(utilization)
 }
 
 /// Metered usage beyond the subscription allowance.
