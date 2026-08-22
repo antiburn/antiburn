@@ -300,6 +300,9 @@ Notes for what isn't expressible as a token:
 - **Utilities** — every `colors` key is a Tailwind utility via `bg-/text-/border-<name>` (e.g.
   `bg-surface`, `text-label`, `text-system-green`). Use `bg-accent-fill` for accent backgrounds; the
   live system accent token resolves incorrectly when used as a `background-color`.
+- **Floating surfaces** — use the shared `.ui-menu` and `.ui-tooltip` chrome. Feature code must not
+  recreate those materials in an independently positioned panel; use an existing primitive or add a
+  documented shared component.
 - **Type scale** — `.type-*` classes, declared outside any `@layer` in `src/styles/typography.css`.
   Unlayered CSS outranks Tailwind's `utilities` layer, so overriding a baked-in weight needs the
   important modifier (`font-normal!`), as `SectionGroup` does.

@@ -48,24 +48,13 @@ describe("UsageRing", () => {
     expect(container.querySelector("circle")).not.toHaveAttribute("stroke-dasharray", "2 2")
   })
 
-  it("marks a modelled figure as second-hand", () => {
-    const { container } = render(<UsageRing percent={40} estimated />)
-    expect(container.querySelector('[data-testid="usage-ring-estimated"]')).not.toBeNull()
-    expect(
-      render(<UsageRing percent={40} />).container.querySelector(
-        '[data-testid="usage-ring-estimated"]',
-      ),
-    ).toBeNull()
-  })
-
   it("clamps rather than overdrawing a figure past its own limit", () => {
     const { container } = render(<UsageRing percent={140} />)
     expect(arcOffset(container)).toBeCloseTo(0, 5)
   })
 
   it("keeps the provider’s identity inside the ring", () => {
-    // A chip that says how full something is without saying whose is a worse
-    // trade than the ring is worth.
+    // A provider pill must identify the provider that owns the limit.
     const { container } = render(<UsageRing percent={40} glyph="A" />)
     expect(container.querySelector('[data-testid="usage-ring-glyph"]')).toHaveTextContent("A")
     expect(

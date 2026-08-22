@@ -245,10 +245,9 @@ export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindow
  * The fullest of a provider's live windows, as a percentage, or null when
  * none of them carries one.
  *
- * A compact ring can only show one number, and "how full is the fullest
- * thing I'm watching" is the question a glance at a chip is asking — a
- * per-model limit at 95% is exactly as worth a glance as an account-wide one
- * at 95%. The full breakdown, with each window named, is one hover away.
+ * A compact ring can only show one number. A per-model limit at 95% is as
+ * important as an account-wide limit at 95%. The expanded bar names every
+ * window in the full breakdown.
  */
 export function maxLiveUsedPercent(provider: LiveProviderUsagePayload): number | null {
   return liveWindows(provider).reduce<number | null>((max, window) => {
