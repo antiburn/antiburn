@@ -25,6 +25,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
     tokensIn: 1000,
     tokensOut: 200,
+    subagentTokens: 0,
     contextTokens: 40_000,
     isCompactionBoundary: false,
     cacheReadTokens: 0,

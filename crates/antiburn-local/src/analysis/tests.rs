@@ -1599,10 +1599,9 @@ fn mixed_summary_scales_to_the_largest_window() {
 /* -------------------------------------------------------------------------
  * Sub-agent merge — `merge_subagent_events` + `analyze_session` together.
  * Ordering itself is covered by the unit tests in `analysis::merge`; these
- * exercise the product rule end to end: a sub-agent's tokens are an
- * implementation detail that sums into the parent, while context occupancy
- * and idle-gap timing stay governed by the parent's own turns (plus every
- * stream, for the idle rule).
+ * exercise the product rule end to end. Session totals include sub-agent
+ * tokens, while chart buckets keep a separate sub-agent series. Parent turns
+ * govern context occupancy. Every stream contributes to idle-gap timing.
  * ---------------------------------------------------------------------- */
 
 /// Two parent turns ten minutes apart, with one sub-agent turn at the
@@ -1615,7 +1614,7 @@ const MERGE_PARENT_FIXTURE: &str = concat!(
 const MERGE_SUBAGENT_FIXTURE: &str = r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":50},"content":[{"type":"text","text":"delegated"}]}}"#;
 
 #[test]
-fn subagent_tokens_sum_into_parent_buckets_time_aligned() {
+fn subagent_tokens_use_their_own_bucket_series_time_aligned() {
     let parent = normalize_source(&jsonl_input("claude", MERGE_PARENT_FIXTURE)).unwrap();
     let subagent = normalize_source(&jsonl_input("claude", MERGE_SUBAGENT_FIXTURE)).unwrap();
     let merged = merge_subagent_events(parent, vec![subagent]);
@@ -1642,11 +1641,17 @@ fn subagent_tokens_sum_into_parent_buckets_time_aligned() {
     // sub-agent turn lands exactly halfway through the progress grid.
     assert_eq!(m.buckets[0].tokens_in, 1000, "parent's first turn");
     assert_eq!(
-        m.buckets[90].tokens_in, 500,
+        m.buckets[90].subagent_tokens,
+        500 + 50,
         "sub-agent's turn, time-aligned to the midpoint"
     );
     assert_eq!(m.buckets[179].tokens_in, 2000, "parent's last turn");
-    assert_eq!(m.buckets.iter().map(|b| b.tokens_in).sum::<u64>(), 3500);
+    assert_eq!(m.buckets.iter().map(|b| b.tokens_in).sum::<u64>(), 3000);
+    assert_eq!(m.buckets.iter().map(|b| b.tokens_out).sum::<u64>(), 300);
+    assert_eq!(
+        m.buckets.iter().map(|b| b.subagent_tokens).sum::<u64>(),
+        550
+    );
 }
 
 #[test]
@@ -1678,9 +1683,20 @@ fn peak_context_and_context_window_stay_parent_only_after_merge() {
     // No bucket's `context_tokens` (the parent-only occupancy reading) ever
     // reflects the sub-agent's 900k-token turn.
     assert!(m.buckets.iter().all(|b| b.context_tokens <= 1500));
-    // The sub-agent's own huge input still lands in `tokens_in`, though —
-    // that side of the merge is inclusive.
+    // The session total stays inclusive. Chart buckets record child tokens in
+    // a separate series.
     assert_eq!(m.tokens_in, 1000 + 900_000 + 1500);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.subagent_tokens)
+            .sum::<u64>(),
+        900_000 + 50
+    );
+    assert_eq!(
+        m.buckets.iter().map(|bucket| bucket.tokens_in).sum::<u64>(),
+        1000 + 1500
+    );
 }
 
 #[test]

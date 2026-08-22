@@ -34,14 +34,18 @@ interface ToolMix {
 
 /** One point on the shared 0→100% session-progress grid. Mirrors engine `Bucket`. */
 export interface SessionBucket {
+  /** The bucket contains parent effective input tokens. */
   tokensIn: number
+  /** The bucket contains parent generated output tokens. */
   tokensOut: number
+  /** The bucket combines effective input and generated output from sub-agents. */
+  subagentTokens: number
   contextTokens: number
   /** True when a real compaction boundary landed in this bucket. */
   isCompactionBoundary: boolean
-  /** Cache-read tokens summed over this bucket's turns; already folded into `contextTokens`. */
+  /** The bucket sums parent cache-read tokens, which are already part of `contextTokens`. */
   cacheReadTokens: number
-  /** Cache-write tokens summed over this bucket's turns; a breakdown of `tokensIn`, not an addition. */
+  /** The bucket sums parent cache-write tokens, which are part of `tokensIn`. */
   cacheWriteTokens: number
   /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
   isCacheRehydration: boolean

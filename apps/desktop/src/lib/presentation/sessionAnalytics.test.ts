@@ -28,6 +28,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
     tokensIn: 0,
     tokensOut: 0,
+    subagentTokens: 0,
     contextTokens: 0,
     isCompactionBoundary: false,
     cacheReadTokens: 0,
@@ -49,7 +50,7 @@ describe("contextTokenSeries", () => {
   it("keeps every bucket at its measured progress and holds the context level across empty ones", () => {
     const buckets = [
       bucket(),
-      bucket({ tokensIn: 100, tokensOut: 10, contextTokens: 50_000 }),
+      bucket({ tokensIn: 100, tokensOut: 10, subagentTokens: 25, contextTokens: 50_000 }),
       bucket(),
       bucket({ tokensIn: 300, tokensOut: 30, contextTokens: 150_000 }),
       bucket({ tokensIn: 500, tokensOut: 50, contextTokens: 200_000 }),
@@ -59,6 +60,7 @@ describe("contextTokenSeries", () => {
     expect(series).toHaveLength(6)
     expect(series.map((p) => p.progress)).toEqual([0, 20, 40, 60, 80, 100])
     expect(series.map((p) => p.tokensIn)).toEqual([0, 100, 0, 300, 500, 0])
+    expect(series.map((p) => p.subagentTokens)).toEqual([0, 25, 0, 0, 0, 0])
     expect(series.map((p) => p.contextTokens)).toEqual([
       0, 50_000, 50_000, 150_000, 200_000, 200_000,
     ])
