@@ -226,6 +226,32 @@ fn a_fraction_shaped_utilization_is_scaled_the_same_as_an_already_stated_percent
 }
 
 #[test]
+fn an_explicit_one_percent_reading_stays_one_percent() {
+    let current = r#"{
+      "limits": [
+        {"kind": "session", "percent": 1, "resets_at": null, "scope": null},
+        {"kind": "weekly_all", "percent": 37, "resets_at": null, "scope": null}
+      ],
+      "five_hour": {"utilization": 1.0, "resets_at": null},
+      "seven_day": {"utilization": 37.0, "resets_at": null}
+    }"#;
+    let usage = anthropic::parse_usage(current).expect("parses");
+    assert_eq!(usage.windows[0].used_percent, Some(1.0));
+    assert_eq!(usage.windows[1].used_percent, Some(37.0));
+}
+
+#[test]
+fn a_legacy_one_percent_reading_stays_one_percent() {
+    let legacy = r#"{
+      "five_hour": {"utilization": 1.0, "resets_at": null},
+      "seven_day": {"utilization": 37.0, "resets_at": null}
+    }"#;
+    let usage = anthropic::parse_usage(legacy).expect("parses");
+    assert_eq!(usage.windows[0].used_percent, Some(1.0));
+    assert_eq!(usage.windows[1].used_percent, Some(37.0));
+}
+
+#[test]
 fn resets_at_is_read_whether_it_is_epoch_seconds_or_rfc_3339() {
     let mixed = r#"{"limits": [
       {"kind": "session", "percent": 10, "resets_at": 1800003600, "scope": null},
