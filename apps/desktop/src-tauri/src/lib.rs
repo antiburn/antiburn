@@ -65,6 +65,7 @@ mod nudges;
 mod onboarding;
 mod popover;
 mod provider_usage;
+mod rehydration_alert;
 mod repositories;
 mod scan;
 mod settings;

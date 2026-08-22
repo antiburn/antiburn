@@ -987,6 +987,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("notifyUsageAnomalies")
             .map(|value| value == "true")
             .unwrap_or(defaults.notify_usage_anomalies),
+        notify_cache_rehydration: stored
+            .get("notifyCacheRehydration")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.notify_cache_rehydration),
         milestones_5h: stored
             .get("milestones5h")
             .map(|value| Milestones::parse(value))
@@ -1082,6 +1086,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "notifyUsageAnomalies",
         bool_text(settings.notify_usage_anomalies)
+    ])?;
+    put.execute(params![
+        "notifyCacheRehydration",
+        bool_text(settings.notify_cache_rehydration)
     ])?;
     put.execute(params!["milestones5h", settings.milestones_5h.as_str()])?;
     put.execute(params![

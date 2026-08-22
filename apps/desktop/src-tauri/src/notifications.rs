@@ -62,6 +62,9 @@ pub enum Kind {
     UsageAnomaly,
     /// A live usage window crossed a milestone the reader asked about.
     UsageMilestone,
+    /// A session re-sent a context the prompt cache had already stored, so
+    /// the same content is billed a second time at the cache-write rate.
+    CacheRehydration,
     /// The first run finished and its window went away. Says where the app is
     /// now, once, in the reader's whole time with it.
     MenuBarHome,
@@ -94,6 +97,7 @@ pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
             Kind::ScanFailure => settings.notify_scan_failure,
             Kind::DiskSpaceLow => settings.notify_disk_space_low,
             Kind::UsageAnomaly => settings.notify_usage_anomalies,
+            Kind::CacheRehydration => settings.notify_cache_rehydration,
             // Milestones have no single switch: the two per-window rows are
             // the preference, and an empty selection is "off".
             Kind::UsageMilestone => {
@@ -165,6 +169,7 @@ fn deliver(
         Kind::DiskSpaceLow => (NudgeKind::DiskSpaceLow, NudgeTone::Warning),
         Kind::UsageAnomaly => (NudgeKind::UsageAnomaly, NudgeTone::Warning),
         Kind::UsageMilestone => (NudgeKind::UsageMilestone, NudgeTone::Info),
+        Kind::CacheRehydration => (NudgeKind::CacheRehydration, NudgeTone::Warning),
         Kind::MenuBarHome => (NudgeKind::MenuBarLocation, NudgeTone::Success),
         Kind::Test => (NudgeKind::Test, NudgeTone::Info),
     };
@@ -230,6 +235,26 @@ pub fn usage_anomaly_message(hour_usd: f64, week_usd: f64) -> (String, String) {
             "An estimated ${hour_usd:.2} in the last hour, against roughly \
              ${week_usd:.2} across the whole past week. Estimated locally \
              from your sessions — nothing was fetched."
+        ),
+    )
+}
+
+/// The title and body of a cache-rehydration notification.
+///
+/// The body carries a count and nothing else. A session title comes from
+/// transcript text, so naming the session would put session content in a
+/// notification.
+pub fn cache_rehydration_message(count: u64) -> (String, String) {
+    let detail = if count <= 1 {
+        "A session re-sent its whole context to the prompt cache.".to_string()
+    } else {
+        format!("A session re-sent its whole context to the prompt cache {count} times.")
+    };
+    (
+        "Ouch \u{2014} cache rehydration".to_string(),
+        format!(
+            "{detail} That content was already cached, so it is charged again \
+             at the cache-write rate."
         ),
     )
 }
@@ -371,6 +396,17 @@ pub fn note_usage_anomaly(app: &AppHandle, hour_usd: f64, week_usd: f64) -> bool
     true
 }
 
+/// Report a cache rehydration. Deciding that one is *new* is the caller's job
+/// ([`crate::rehydration_alert`]); this only applies the preference gate.
+pub fn note_cache_rehydration(app: &AppHandle, count: u64) -> bool {
+    if !enabled(app, Kind::CacheRehydration) {
+        return false;
+    }
+    let (title, body) = cache_rehydration_message(count);
+    deliver(app, Kind::CacheRehydration, title, body, None);
+    true
+}
+
 /// Report crossed milestones. Selection and dedup happen in the engine
 /// ([`crate::provider_usage::live`]); this only applies the preference gate.
 pub fn note_usage_milestone(
@@ -504,6 +540,44 @@ mod tests {
         assert_eq!(HOME_NOUN, "menu bar");
         #[cfg(not(target_os = "macos"))]
         assert_eq!(HOME_NOUN, "system tray");
+    }
+
+    #[test]
+    fn cache_rehydration_honors_its_own_switch_and_the_master() {
+        let settings = AppSettings {
+            notify_cache_rehydration: false,
+            ..settings()
+        };
+        assert!(!allowed(&settings, Kind::CacheRehydration));
+        assert!(
+            allowed(&settings, Kind::UsageAnomaly),
+            "one kind off must leave the others alone"
+        );
+
+        let master_off = AppSettings {
+            notifications_enabled: false,
+            ..AppSettings::default()
+        };
+        assert!(!allowed(&master_off, Kind::CacheRehydration));
+        assert!(allowed(&AppSettings::default(), Kind::CacheRehydration));
+    }
+
+    #[test]
+    fn the_rehydration_message_counts_without_naming_a_session() {
+        let (title, body) = cache_rehydration_message(1);
+        assert!(title.starts_with("Ouch"), "title was {title}");
+        assert!(title.contains("cache rehydration"), "title was {title}");
+        // One event reads as one event, not "1 times".
+        assert!(!body.contains('1'), "body was {body}");
+
+        let (_, body) = cache_rehydration_message(4);
+        assert!(body.contains('4'), "body was {body}");
+        assert!(body.contains("times"), "body was {body}");
+
+        // The reader is told why it costs, since that is the whole point.
+        for message in [cache_rehydration_message(1).1, cache_rehydration_message(9).1] {
+            assert!(message.contains("charged again"), "body was {message}");
+        }
     }
 
     #[test]

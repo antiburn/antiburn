@@ -92,6 +92,8 @@ export interface AppSettings {
   notifyDiskSpaceLow: boolean
   /** Notify when sustained spend is unusually fast for this machine. */
   notifyUsageAnomalies: boolean
+  /** Notify when a session re-sends a context the prompt cache already held. */
+  notifyCacheRehydration: boolean
   /** Five-hour-window milestones. Only fire while live usage is enabled. */
   milestones5h: Milestones
   /** Weekly-window milestones. */
@@ -531,6 +533,7 @@ export type NudgeKind =
   | "diskSpaceLow"
   | "usageAnomaly"
   | "usageMilestone"
+  | "cacheRehydration"
   | "test"
 
 /** Visual tone — informational, positive, or attention. Mirrors Rust `NudgeTone`. */
@@ -603,6 +606,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diskSpaceThresholdGb: 50,
   notifyDiskSpaceLow: true,
   notifyUsageAnomalies: true,
+  notifyCacheRehydration: true,
   milestones5h: { at50: true, at75: true, at90: true },
   milestonesWeekly: { at50: true, at75: true, at90: true },
   liveUsageEnabled: true,

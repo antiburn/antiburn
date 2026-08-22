@@ -858,6 +858,15 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
     let since = now - activity_days.max(1) * 86_400;
     let candidates = store.recent_sessions(since, MAX_ANALYSES_PER_PASS)?;
 
+    // Rehydration counts for every session this pass considers, so the map is
+    // pruned to the activity window rather than growing for the life of the
+    // install. Sessions whose analysis is still fresh keep their baseline.
+    let mut seen = crate::rehydration_alert::SeenCounts::load(&store);
+    let considered: std::collections::HashSet<String> = candidates
+        .iter()
+        .map(|record| crate::rehydration_alert::SeenCounts::retained_key(&record.key))
+        .collect();
+
     for record in candidates {
         // Analysis is the long tail of a pass — one whole transcript read per
         // session — so this is where a cancel is felt.
@@ -892,6 +901,16 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
 
         let analysis =
             analytics::analyze(agent, &record.key.session_id, record.wsl_distro.as_deref()).await;
+        if let Some(metrics) = analysis.metrics.as_ref() {
+            let count = metrics.cache_rehydration_count;
+            if seen.observe(&record.key, count) {
+                // Record before saying anything. A pass can still be cancelled
+                // or fail after this point, and a count that only lived in
+                // memory would announce the same rehydration again next pass.
+                seen.save(&store);
+                crate::rehydration_alert::announce(app, count);
+            }
+        }
         if let Some(cache) = analysis.record(&record.key) {
             store.save_analysis(&cache)?;
         }
@@ -912,6 +931,8 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
             )?;
         }
     }
+    seen.retain(&considered);
+    seen.save(&store);
     Ok(())
 }
 

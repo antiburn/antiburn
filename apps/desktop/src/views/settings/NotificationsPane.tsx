@@ -184,6 +184,14 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
             dimmed={!on}
             disabled={!on}
           />
+          <ToggleRow
+            label="Cache rehydrations"
+            description="Alerts when a session re-sends a context the prompt cache had already stored — content you have paid to cache, charged again at the write rate. Read from your own transcripts; nothing is fetched."
+            checked={settings.notifyCacheRehydration}
+            onChange={(next) => void update({ notifyCacheRehydration: next })}
+            dimmed={!on}
+            disabled={!on}
+          />
           <Row
             label="5-hour milestones"
             description="Notify once as each selected level of a provider's 5-hour limit is crossed. These need readings that keep moving, so they fire only while Settings → Usage is set to refresh. With that off you still see your limits; antiburn just never interrupts you about them."

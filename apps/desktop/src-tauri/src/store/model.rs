@@ -429,6 +429,8 @@ pub struct AppSettings {
     pub notify_disk_space_low: bool,
     /// Notify when sustained spend is unusually fast for this machine.
     pub notify_usage_anomalies: bool,
+    /// Notify when a session re-sends a context the prompt cache already held.
+    pub notify_cache_rehydration: bool,
     /// Five-hour-window usage milestones that notify. Only meaningful while
     /// the live usage source is enabled — milestones need a real limit.
     pub milestones_5h: Milestones,
@@ -479,6 +481,7 @@ impl Default for AppSettings {
             disk_space_threshold_gb: DEFAULT_DISK_THRESHOLD_GB,
             notify_disk_space_low: true,
             notify_usage_anomalies: true,
+            notify_cache_rehydration: true,
             milestones_5h: Milestones::default(),
             milestones_weekly: Milestones::default(),
             // On by default. This is antiburn's own agent asking a provider

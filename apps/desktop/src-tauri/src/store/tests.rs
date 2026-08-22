@@ -206,6 +206,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             disk_space_threshold_gb: 100,
             notify_disk_space_low: false,
             notify_usage_anomalies: false,
+            notify_cache_rehydration: false,
             milestones_5h: Milestones {
                 at50: false,
                 at75: true,
