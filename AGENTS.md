@@ -47,6 +47,20 @@ Reasons a comment shouldn't exist:
 
 Machine-read directives (`eslint-disable`, `@ts-expect-error`, `#[allow(...)]`, etc.) are not prose; keep them, but write their explanation text in STE.
 
+## Agent slop feedback
+
+Claude Code gives advisory aislop findings after `Edit`, `Write`, and `MultiEdit` operations. Codex gives advisory aislop findings only after `apply_patch` operations. The Codex hook does not cover other edit paths. Both hooks run the repository-pinned `node_modules/.bin/aislop` version 0.14.0. The Codex hook uses `scripts/codex-aislop-hook.mjs`.
+
+The hook scan is narrower than `pnpm run slop`. Hook runs disable the `format` and `lint` checks. Run `pnpm run slop` as the authoritative check before you open a pull request.
+
+Codex must trust the folder before it discovers `.codex/hooks.json` as a project source. You must then trust the hook with `/hooks` before it runs. Codex feedback stays inert until you complete both steps.
+
+The hook judges the whole edited file. It can report standing findings that issue #90 owns. Do not fix these findings unless your change caused them. If you must change a legacy file and cannot fix a standing finding, follow `CONTRIBUTING.md`. Use `<comment marker> aislop-ignore-next-line <rule id…> -- <justification naming #90>`.
+
+Do not run `aislop hook install` in this repository. It deletes each group that has a non-null `__aislop` sentinel. It then writes an unpinned command and destroys the repository pin.
+
+A global hook can cause duplicate feedback. For Claude Code, aislop generates the global hook. Run `aislop hook uninstall --claude --global` to remove it. For Codex, aislop generates no hook because its Codex installer writes rules text only. A global Codex hook is hand-authored, so remove it from your Codex configuration by hand. The Claude uninstall command does not remove a Codex hook.
+
 ## Commits
 
 Every commit must carry a DCO sign-off: run `git commit -s` (or add `Signed-off-by: Name <email>` to the message by hand).
