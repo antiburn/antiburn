@@ -30,6 +30,7 @@ export interface ContextTokenPoint {
   contextTokens: number
   tokensIn: number
   tokensOut: number
+  subagentTokens: number
   isCompactionBoundary: boolean
   cacheReadTokens: number
   cacheWriteTokens: number
@@ -92,6 +93,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     contextTokens: levels[index]!,
     tokensIn: bucket.tokensIn,
     tokensOut: bucket.tokensOut,
+    subagentTokens: bucket.subagentTokens,
     isCompactionBoundary: bucket.isCompactionBoundary,
     cacheReadTokens: bucket.cacheReadTokens,
     cacheWriteTokens: bucket.cacheWriteTokens,
