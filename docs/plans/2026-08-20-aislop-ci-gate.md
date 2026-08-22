@@ -75,12 +75,14 @@ Clearing the standing findings is issue #90, not this work.
 - Contributor documentation: how to run the gate locally, what it judges, an
   accurate sign-off note beside the existing DCO block, and the named files that
   fail the gate when a pull request touches them.
-- Green at enablement: every open pull request head at enablement time passes the
-  new gate against `main` before the rule is switched on, or its red finding is
-  resolved by a Decision 16 route (the contributor fixes it, or adds the
-  justified `#90` directive), or the pull request merges or closes first. This is
-  a diff-scoped claim about the heads that are open then, not a whole-tree
-  zero-error claim.
+- Gate proven live at enablement: at enablement time every open pull request is
+  read from GitHub's own record, and each head that can merge carries a
+  `ci-required` result produced by a workflow run that also produced the
+  `slop gate` check. A head that is red from slop findings is an expected,
+  acceptable outcome and does not block enablement; its contributor clears it
+  by a Decision 16 route. A head that cannot merge is recorded and skipped.
+  This is a claim about the gate being live and current on the heads that are
+  open then, not a claim that those heads are green.
 
 ## Current State (evidence)
 
@@ -119,10 +121,11 @@ Clearing the standing findings is issue #90, not this work.
 - `gh api repos/antiburn/antiburn/rulesets` → two active rulesets,
   `release-tag-creation` and `release-tag-immutability`, both `"target":"tag"`.
 - `gh api repos/antiburn/antiburn/branches/main/protection` → HTTP 404.
-- `gh api repos/antiburn/antiburn` permissions for this session:
-  `admin:false, maintain:false, push:true`.
+- `gh api repos/antiburn/antiburn` permissions for this session, measured
+  2026-08-20: `admin:false, maintain:false, push:true`. The applying account
+  reads `admin:true` today. No command in this plan depends on the line.
 - The open-pull-request set is **a moving target, so this plan names a command,
-  not a list**. The enablement sweep evaluates every open pull request head at
+  not a list**. The enablement preflight reads every open pull request at
   enablement time, listed by
   `gh pr list --state open --json number,author,isDraft,headRefName`.
   Dated snapshot, **illustrative only, not a claim any seam depends on**
@@ -133,9 +136,12 @@ Clearing the standing findings is issue #90, not this work.
 - **A known red head exists at the snapshot.** #86 adds 6 lines to
   `apps/desktop/src/lib/ipc.ts` (`gh pr diff 86`), and that file carries 10
   `ai-slop/empty-function` findings. The rule is threshold-independent
-  (Decision 15), so no threshold choice clears it. Decision 16 gives the only
-  routes: the contributor fixes the finding, or adds the justified `#90`
-  directive, or the pull request merges or closes before enablement.
+  (Decision 15), so no threshold choice clears it, and Decision 16 gives the
+  contributor's routes to green: fix the finding, or add the justified `#90`
+  directive. An open red head may also remain red through enablement — the
+  preflight classifies its gate `GATE_LIVE` and the rule goes on; that pull
+  request then cannot merge until its own `ci-required` is green, which is the
+  gate working.
 
 ### Measured aislop behavior (my runs, this checkout)
 
@@ -310,7 +316,8 @@ Clearing the standing findings is issue #90, not this work.
     `ci-required` is a scope outcome (CH-005), not an assumption and not a
     dependency on another issue. The seam commits the exact ruleset definition
     as a reviewable artifact, plus the apply and verify commands. A repository
-    admin runs the apply step, because the agent session holds `admin:false`.
+    admin runs the apply step, because applying a live merge rule is the
+    human-authorized action at the Tier 3 gate.
     CH-005 is verified only by the live API result, not by the committed file.
     Before CH-005 lands the check is advisory; after it lands the gate is
     required, and GH-89's "required gate" framing is exact.
@@ -414,9 +421,11 @@ Clearing the standing findings is issue #90, not this work.
   fetched.
 - **FR-5:** `ci-required` fails when that job fails on a pull request and
   tolerates its skip on push.
-- **FR-6:** With the committed config, every open pull request head passes
-  `aislop ci --changes --base <main sha>`, and the whole tree reports zero
-  `complexity/*` error findings. The tree is **not** free of promoted `ai-slop`
+- **FR-6:** With the committed config, every open pull request head **that can
+  merge** carries a `ci-required` result from a run that also produced the
+  `slop gate` check. A head GitHub reports as `mergeable: CONFLICTING` is
+  recorded and skipped, with no check-run claim made about it. The whole tree
+  reports zero `complexity/*` error findings. The tree is **not** free of promoted `ai-slop`
   errors: the 20 findings in 10 files listed in the Overview stay, and a pull
   request that touches one of those files fails until the finding is fixed or a
   Decision 16 directive suppresses it. A threshold change never clears such a
@@ -474,11 +483,9 @@ Clearing the standing findings is issue #90, not this work.
   touched; a seeded violation on the branch
   turns the check red, and removing it turns it green; the sweep runs
   `aislop ci --changes --base <main sha>` against **every open pull request head
-  listed by `gh pr list --state open` at sweep time**, and each still-open red
-  head is resolved before CH-005 by one of three routes — the contributor fixes
-  the finding, the contributor adds an `aislop-ignore` directive with a
-  justification and a `#90` reference (Decision 16), or the pull request merges
-  or closes. Threshold choice is not a route for a threshold-independent rule.
+  listed by `gh pr list --state open` at sweep time**, a still-open red head is
+  recorded, and its contributor clears it by a Decision 16 route; it does not
+  gate CH-005. Threshold choice is not a route for a threshold-independent rule.
   Likely touches:
   `.github/workflows/ci.yml`. Provisional tier: 3 — it changes the merge path for
   every contributor. (Refs: FR-4, FR-5, FR-6, FR-9, FR-10)
@@ -501,17 +508,22 @@ Clearing the standing findings is issue #90, not this work.
   before the check becomes required. Provisional tier: 2. (Refs: FR-11)
 - [ ] **CH-005 — `ci-required` becomes an enforced check on `main`.** This is the
   last outcome. It lands after CH-003 wiring, after CH-006 mutation coverage, and
-  after a fresh sweep of every open pull request head at that moment shows no
-  unresolved red head. Acceptance: no still-open head is red under the committed
-  config, where each red head was cleared by a fix, by a Decision 16 directive,
-  or by the pull request merging or closing; `gh api repos/antiburn/antiburn/rules/branches/main` returns an
+  after a pre-apply check reads every open pull request from GitHub and shows the
+  slop gate live and current on each head that can merge. Acceptance: for every
+  open pull request whose head can merge, GitHub reports a completed
+  `ci-required` check produced by a workflow run that also produced `slop gate`;
+  the conclusion of that check does not gate enablement, so a head red from slop
+  findings is an expected, acceptable outcome; a pull request reported
+  `mergeable: CONFLICTING` is recorded and skipped;
+  `gh api repos/antiburn/antiburn/rules/branches/main` returns an
   active rule of type `required_status_checks` naming `ci-required`; a pull
   request with a failing `ci-required` cannot merge; the ruleset definition is
   committed as a reviewable artifact (a JSON payload file, or a documented
   `gh api` call in repository docs) together with the apply, verify, and
-  rollback commands; the rollback disables or deletes that ruleset. **The agent
-  session holds `admin:false` and `maintain:false`, so the human applies the
-  ruleset as repository admin. The seam is not verified until live
+  rollback commands; the rollback disables or deletes that ruleset. **The human
+  applies the ruleset as repository admin, because that is the Tier 3 authorized
+  action of this plan; the ruleset API answers 404 to a caller without admin.
+  The seam is not verified until live
   `gh api repos/antiburn/antiburn/rules/branches/main` output shows a rule
   requiring the `ci-required` check.** Likely touches: a committed ruleset file
   under `docs/` or `.github/`, plus `CONTRIBUTING.md` if the seam adds a note.
@@ -520,7 +532,7 @@ Clearing the standing findings is issue #90, not this work.
 > Ordering is a dependency hint, and the IDs are append-only, so CH-006 is
 > presented before CH-005. The config precedes the job. The pin precedes CI use.
 > The job precedes its contract test. Enforcement is last: CH-005 follows
-> CH-003, CH-006, and a fresh sweep of every open pull request head.
+> CH-003, CH-006, and a fresh preflight over every open pull request.
 
 ## Out of Scope (Non-Goals)
 
@@ -542,8 +554,8 @@ Clearing the standing findings is issue #90, not this work.
 
 No open questions. Decision 16 settles the promotion and cost question.
 
-- **CH-005 needs a human admin step.** The agent session holds `admin:false` and
-  `maintain:false`, so the seam prepares the ruleset and the human applies it.
+- **CH-005 needs a human admin step.** The seam prepares the ruleset and the
+  human applies it as the Tier 3 authorized action.
   The risk is timing, not ownership: until the human applies it, CH-005 stays
   unverified and the gate stays advisory.
 - **Threshold numbers are language-multiplied**, so any number must be validated
@@ -555,13 +567,13 @@ No open questions. Decision 16 settles the promotion and cost question.
 - **Red-on-touch friction lands mostly on one hot file.**
   `apps/desktop/src/lib/ipc.ts` carries 10 of the 20 promoted findings, so it is
   the file most likely to make an unrelated pull request red. The enablement
-  sweep over open pull request heads (CH-003) measures the real cost before
-  CH-005 switches enforcement on.
+  preflight over open pull requests (CH-005) proves the gate is live and current
+  on each head.
 - **Version drift:** local binary is 0.14.0, npm `latest` is 0.14.1. The seam
   pins the version it verifies with and says which.
 - **Every open pull request gains a new check**, and the set changes daily. The
-  sweep therefore reads `gh pr list --state open` at enablement time; the dated
-  snapshot in Current State is illustrative. A snapshot head is known red: #86
+  preflight therefore reads `gh pr list --state open` at enablement time; the
+  dated snapshot in Current State is illustrative. A snapshot head is known red: #86
   touches `apps/desktop/src/lib/ipc.ts`. That rule is threshold-independent, so
   the remedy is a Decision 16 route or the pull request merging or closing.
 - **Sequencing:** the GH-70 base pull request (#91, draft, one commit) is already
@@ -601,15 +613,16 @@ its own, because a widened scan can also pass.
   URL and `:87` for the hardcoded ID.
 - **CI wiring:** `node --test` over the four control-plane files, including the
   new FR-11 case; demonstrate the new case failing under each mutation.
-- **Enablement sweep:** for every open pull request head listed by
-  `gh pr list --state open` **at sweep time**, run
-  `aislop ci --changes --base <main sha>` locally and record the result. A red
-  result on a threshold-independent rule cannot be cleared by threshold choice,
-  and Decisions 14 and 16 bar these seams from editing product code or writing a
-  directive. So each still-open red head is resolved before CH-005 by one of
-  three routes: the contributor fixes the finding, the contributor adds an
-  `aislop-ignore` directive with a justification and a `#90` reference, or the
-  pull request merges or closes. The seam report records the route per head.
+- **Enablement preflight:** for every open pull request listed by
+  `gh pr list --state open` **at check time**, retrieved without truncation,
+  read the head's check runs from
+  `gh api repos/antiburn/antiburn/commits/<sha>/check-runs` and record one
+  result per head: `CANNOT_MERGE`, `GATE_LIVE` (with the `ci-required`
+  conclusion), `GATE_PENDING`, `GATE_ABSENT`, or `GATE_STALE`. Enablement
+  proceeds only when every head that can merge is `GATE_LIVE` and the pass
+  completes. A red `ci-required` is recorded, never remedied here: Decisions 14
+  and 16 still bar these seams from editing product code or writing a
+  directive, and the contributor owns the fix under `#90`.
 - **Enforcement:** after the human applies the committed ruleset,
   `gh api repos/antiburn/antiburn/rules/branches/main` shows the
   `required_status_checks` rule naming `ci-required`. That live output is the

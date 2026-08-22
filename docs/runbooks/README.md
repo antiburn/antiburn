@@ -15,6 +15,7 @@ pressure arrives. Each one states what it is for, what it assumes, and what
 | [`compromised-release.md`](compromised-release.md) | A signing key, a build, or a published asset may be in someone else's hands |
 | [`updater-key-recovery.md`](updater-key-recovery.md) | The updater signing key is lost, rotated, or suspected exposed |
 | [`security-releases.md`](security-releases.md) | A vulnerability report has arrived and a fix has to ship |
+| [`branch-rules.md`](branch-rules.md) | Changing what `main` requires before a merge, or unblocking a merge the rule refuses |
 
 ## The rule these all rest on
 
