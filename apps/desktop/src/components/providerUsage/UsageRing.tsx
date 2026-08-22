@@ -31,24 +31,21 @@ function markTransform(mark: BrandMark): string {
 /**
  * A provider's nearest limit, as a ring.
  *
- * The footer has room for a glyph and a number, and a ring is the one shape
+ * A provider pill has room for a glyph and a number. A ring is the one shape
  * that adds "how much of it is gone" without adding a word. It is used only
  * where a provider *stated* a percentage — the estimate surfaces have no
  * denominator and must never borrow this shape, because a full ring means
  * something there that it does not mean here.
  *
- * Three states, and the difference between them is load-bearing:
+ * Two states, and the difference between them is load-bearing:
  *
  * - **Determinate.** A stated percentage. A solid arc.
  * - **Indeterminate.** A provider that reports a window but no figure for it.
  *   A dashed track and no arc — visibly a ring with nothing in it rather than
  *   a ring at zero, which would be a claim.
- * - **Estimated.** A figure that was modelled rather than stated. The arc,
- *   plus a hairline that marks it as second-hand.
  */
 export function UsageRing({
   percent,
-  estimated = false,
   glyph,
   mark,
   size = 16,
@@ -56,15 +53,12 @@ export function UsageRing({
 }: {
   /** Consumed capacity, 0–100. `null` renders the indeterminate ring. */
   percent: number | null
-  /** Whether the figure was modelled rather than stated by the provider. */
-  estimated?: boolean
   /**
    * What sits inside the ring — the provider's brand mark where one exists,
    * otherwise its initial.
    *
    * Not decoration. Where this replaces a provider glyph, dropping it would
-   * leave a chip that says how full something is without saying whose, which
-   * is a worse trade than the ring is worth.
+   * leave a provider pill that says how full something is without saying whose.
    */
   glyph?: string
   /** A brand mark, preferred over `glyph` when supplied. */
@@ -118,19 +112,6 @@ export function UsageRing({
           // reads as an arbitrary wedge rather than as a gauge.
           transform="rotate(-90 16 16)"
           data-testid="usage-ring-arc"
-        />
-      )}
-      {clamped != null && estimated && (
-        <circle
-          cx="16"
-          cy="16"
-          r={radius - 3}
-          fill="none"
-          strokeWidth="0.75"
-          stroke="currentColor"
-          strokeDasharray="1 2"
-          className="text-label-tertiary"
-          data-testid="usage-ring-estimated"
         />
       )}
       {mark && (

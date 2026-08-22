@@ -64,9 +64,8 @@ const SETTINGS = {
   launchAtLogin: false,
   autoUpdate: true,
   discoveryPaused: false,
-  // Collapsed, so the tests below that navigate through a provider chip do
-  // not each have to click the toggle open first. The expanded state itself
-  // is exercised in `UsageLimitsSection.test.tsx`.
+  // The collapsed state lets each test open Usage with one provider-pill click.
+  // `UsageLimitsBar.test.tsx` covers the expanded state.
   overviewLimitsExpanded: false,
 }
 
@@ -153,12 +152,9 @@ const LIVE_FORECAST = {
   usedToday: null,
 }
 
-// A different provider from `PROVIDER_USAGE`'s spend figures on purpose: the
-// usage-limits section — and the chip row it collapses to — is driven by
-// this payload, not by spend, so Codex is the only chip in these tests below
-// even though Anthropic is the only provider with any local spend. That
-// asymmetry is deliberate: it is what proves the chip row survives a day
-// with zero local spend, as long as a live reading exists.
+// Use a different provider from the local spend fixture. The limits bar uses
+// live readings, so only Codex gets a pill. This verifies that a live reading
+// does not require local spend.
 const LIVE_USAGE = {
   providers: [
     {
@@ -311,10 +307,8 @@ describe("PopoverView", () => {
   it("notes an opened usage view with a bucketable count and what it could show", async () => {
     render(<PopoverView />)
 
-    // A provider pill on the limits bar is the route to the Usage view: one
-    // click, where the chips needed a panel first. The pill is the fixture's
-    // Codex, not its Anthropic, because the bar draws from providers
-    // reporting live windows and the old footer drew from local estimates.
+    // A provider pill on the limits bar opens the Usage view. The pill is the
+    // fixture's Codex because the bar uses providers that report live windows.
     fireEvent.click(await screen.findByRole("button", { name: /codex/i }))
 
     // `live`, and it cannot currently be anything else. The bar returns null

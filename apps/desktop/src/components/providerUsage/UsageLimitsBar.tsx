@@ -62,8 +62,6 @@ export function UsageLimitsBar({
   refreshing,
   onViewAll,
 }: UsageLimitsBarProps) {
-  // The same predicate the chips use, so every limits surface agrees on which
-  // providers are showing anything.
   const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
   const unavailable = liveUnavailableProviders(live)
   const regionId = useId()

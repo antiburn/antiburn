@@ -124,11 +124,6 @@ function usageEvidence(
  * The activity surface's bottom bar: the app's name, which also carries the
  * surface's focus heading (see the class doc below), and the way to the
  * standalone Settings window.
- *
- * This used to also hold a chip per provider used today. Those moved to the
- * usage-limits section at the top of the surface, collapsed — the same
- * chips, just relocated, so the footer here is name and gear and nothing
- * else.
  */
 function PopoverFooter({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (

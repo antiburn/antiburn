@@ -351,28 +351,3 @@ html[data-platform="macos"] .ui-scroll-viewport {
 .ui-scrollbar-thumb:hover {
   background: rgb(128 128 128 / 0.7);
 }
-
-/* --- Anchored panel ---
-   The same surface as `.ui-menu`, for a panel a view positions itself rather
-   than one a Radix portal places. Chrome only: position, size, and layout stay
-   with the component, because those are what differ between the places a panel
-   is anchored. The entrance animation is neutralized by the reduced-motion
-   clamp in styles/motion.css, like every other animation in the app. */
-.ui-anchored-panel {
-  background: rgb(235 235 235 / 0.92);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-popover);
-  box-shadow:
-    0 4px 12px rgb(0 0 0 / 0.15),
-    0 1px 3px rgb(0 0 0 / 0.08);
-  animation: ui-menu-in 120ms ease-out;
-  z-index: 50;
-}
-
-@media (prefers-color-scheme: dark) {
-  .ui-anchored-panel {
-    background: rgb(50 50 50 / 0.96);
-  }
-}

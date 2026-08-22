@@ -8,13 +8,10 @@ import type { ProviderUsagePayload, ProviderUsageWindowPayload } from "../ipc"
 import {
   EMPTY_WINDOW,
   providerInitial,
-  providersForWindow,
   providerWindow,
   rankByWindow,
   sessionCountLabel,
   stalenessNote,
-  tokenRows,
-  totalForWindow,
   usageStateDescription,
   usageStateLabel,
   usageValueLabel,
@@ -69,16 +66,6 @@ describe("usage values", () => {
     // A priced window with no tokens is still evidence — it was measured.
     expect(windowHasEvidence(usageWindow({ estimatedUsd: 0 }))).toBe(true)
   })
-
-  it("splits the token rows the way the shell reports them", () => {
-    expect(
-      tokenRows(usageWindow({ tokensIn: 1_000, tokensOut: 2_000, cacheRead: 3_000 })),
-    ).toEqual([
-      { label: "Input", value: "1.0k" },
-      { label: "Output", value: "2.0k" },
-      { label: "Cache read", value: "3.0k" },
-    ])
-  })
 })
 
 describe("capability labels", () => {
@@ -128,7 +115,7 @@ describe("provider identity", () => {
   })
 })
 
-describe("ranking and totals", () => {
+describe("provider windows and ranking", () => {
   const anthropic = provider({
     provider: "anthropic",
     displayName: "Anthropic",
@@ -161,25 +148,6 @@ describe("ranking and totals", () => {
   it("ranks by cost first and by tokens where there is no cost", () => {
     const ranked = rankByWindow([anthropic, unpriced, openai], "today")
     expect(ranked.map((entry) => entry.provider)).toEqual(["openai", "anthropic", "unknown"])
-  })
-
-  it("drops providers with nothing in the selected window", () => {
-    const idle = provider({ provider: "cursor", displayName: "Cursor" })
-    expect(providersForWindow([anthropic, idle], "today").map((e) => e.provider)).toEqual([
-      "anthropic",
-    ])
-  })
-
-  it("adds the windows up and keeps an unpriced total unpriced", () => {
-    const total = totalForWindow([anthropic, openai, unpriced], "week")
-    expect(total.estimatedUsd).toBe(5)
-    expect(total.tokensIn).toBe(9_110)
-    expect(total.sessionCount).toBe(6)
-
-    // No provider contributed a price, so the total has none — rather than a
-    // $0.00 that would read as "free".
-    expect(totalForWindow([unpriced], "week").estimatedUsd).toBeNull()
-    expect(totalForWindow([], "week")).toEqual(EMPTY_WINDOW)
   })
 
   it("reads a window off a provider without the caller indexing it", () => {
