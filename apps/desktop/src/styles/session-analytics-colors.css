@@ -42,11 +42,11 @@
   --color-context-fixed: var(--color-context-fixed-val);
   --color-context-system: var(--color-context-system-val);
 
-  /* Paired series colors. Blue matches the area fill above; violet gives the
-     second series — and its legend swatch — a hue of its own instead of a
-     second blue. */
+  /* The series colors use blue for parent input, violet for parent output,
+     and green for combined sub-agent tokens. */
   --color-token-in: var(--color-token-in-val);
   --color-token-out: var(--color-token-out-val);
+  --color-token-subagent: var(--color-token-subagent-val);
 
   /* The one alert hue in this palette, shared by every surface that needs an
      attention step between neutral and critical states. Its own
@@ -74,6 +74,7 @@
   --color-context-system-val: rgb(124 58 237); /* violet-600 */
   --color-token-in-val: rgb(59 130 246); /* blue-500 */
   --color-token-out-val: rgb(167 139 250); /* violet-400 */
+  --color-token-subagent-val: rgb(5 150 105); /* emerald-600 */
   --color-context-warning-val: rgb(217 119 6); /* amber-600 */
   --color-context-critical-val: rgb(220 38 38); /* red-600 */
 }
@@ -94,6 +95,7 @@
     --color-context-system-val: rgb(167 139 250); /* violet-400 */
     --color-token-in-val: rgb(96 165 250); /* blue-400 */
     --color-token-out-val: rgb(196 181 253); /* violet-300 */
+    --color-token-subagent-val: rgb(52 211 153); /* emerald-400 */
     --color-context-warning-val: rgb(255 159 10); /* vivid amber */
     --color-context-critical-val: rgb(248 113 113); /* red-400 */
   }
@@ -110,6 +112,7 @@
   --color-context-system-val: rgb(167 139 250);
   --color-token-in-val: rgb(96 165 250);
   --color-token-out-val: rgb(196 181 253);
+  --color-token-subagent-val: rgb(52 211 153);
   --color-context-warning-val: rgb(255 159 10);
   --color-context-critical-val: rgb(248 113 113);
 }

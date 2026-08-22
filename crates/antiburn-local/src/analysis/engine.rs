@@ -120,18 +120,22 @@ impl ToolMix {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bucket {
-    /// Effective input (fresh + cache-written) / generated output throughput in
-    /// this bucket. Cache reads are excluded. `context_tokens` records the
-    /// cache-read-inclusive occupancy observed in this bucket.
+    /// The bucket records parent effective input (fresh + cache-written) and
+    /// generated output throughput. Cache reads are excluded. `context_tokens`
+    /// records the cache-read-inclusive parent occupancy.
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// The bucket combines effective input and generated output from
+    /// sub-agents. A sub-agent has its own context window, so this value stays
+    /// separate from the parent token series and `context_tokens`.
+    pub subagent_tokens: u64,
     pub context_tokens: u64,
     /// True when a real compaction boundary lands in this bucket.
     pub is_compaction_boundary: bool,
-    /// Cache-read tokens summed over this bucket's turns. Cost-only; already
-    /// folded into `context_tokens` occupancy, never into `tokens_in`.
+    /// The bucket sums parent cache-read tokens. This cost-only value is
+    /// already part of `context_tokens` and is never part of `tokens_in`.
     pub cache_read_tokens: u64,
-    /// Cache-write (cache-creation) tokens summed over this bucket's turns.
+    /// The bucket sums parent cache-write tokens.
     /// This is a breakdown of `tokens_in`, not an addition to it — `tokens_in`
     /// already includes cache writes as effective input.
     pub cache_write_tokens: u64,
@@ -389,24 +393,28 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         .clamp(0.0, 1.0);
         let bi = ((progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
         let bucket = &mut buckets[bi];
-        // Tokens sum across every stream: a sub-agent's spend counts toward
-        // this session's total, per the product rule that a sub-agent is an
-        // implementation detail of its parent.
-        bucket.tokens_in = bucket
-            .tokens_in
-            .saturating_add(ev.usage.effective_input_tokens());
-        bucket.tokens_out = bucket.tokens_out.saturating_add(ev.usage.output_tokens);
-        bucket.cache_read_tokens = bucket
-            .cache_read_tokens
-            .saturating_add(ev.usage.cache_read_tokens);
-        bucket.cache_write_tokens = bucket
-            .cache_write_tokens
-            .saturating_add(ev.usage.cache_creation_tokens);
+        // The chart keeps parent and sub-agent throughput separate. Session
+        // totals below still sum every stream.
+        if ev.source == EventSource::Subagent {
+            bucket.subagent_tokens = bucket
+                .subagent_tokens
+                .saturating_add(ev.usage.effective_input_tokens())
+                .saturating_add(ev.usage.output_tokens);
+        }
 
-        // Context occupancy, compaction, and cache-rehydration read the
-        // parent's own turns only. A sub-agent has its own context window,
-        // so folding its occupancy into the parent's would not mean anything.
+        // Parent throughput, context occupancy, compaction, cache metrics, and
+        // cache rehydration all describe the parent's own context window.
         if ev.source == EventSource::Parent {
+            bucket.tokens_in = bucket
+                .tokens_in
+                .saturating_add(ev.usage.effective_input_tokens());
+            bucket.tokens_out = bucket.tokens_out.saturating_add(ev.usage.output_tokens);
+            bucket.cache_read_tokens = bucket
+                .cache_read_tokens
+                .saturating_add(ev.usage.cache_read_tokens);
+            bucket.cache_write_tokens = bucket
+                .cache_write_tokens
+                .saturating_add(ev.usage.cache_creation_tokens);
             bucket.context_tokens = bucket.context_tokens.max(ev.usage.context_tokens());
             bucket.is_compaction_boundary |= ev.is_compaction_boundary;
             if ev.is_compaction_boundary {
@@ -709,6 +717,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     for (bi, bucket) in buckets.iter_mut().enumerate() {
         let mut tin = 0u64;
         let mut tout = 0u64;
+        let mut subagent_tokens = 0u64;
         let mut cache_read = 0u64;
         let mut cache_write = 0u64;
         // Average only sessions that report values in this bucket.
@@ -727,9 +736,10 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
             subagent_launches = subagent_launches.saturating_add(b.subagent_launches);
             tin = tin.saturating_add(b.tokens_in);
             tout = tout.saturating_add(b.tokens_out);
+            subagent_tokens = subagent_tokens.saturating_add(b.subagent_tokens);
             cache_read = cache_read.saturating_add(b.cache_read_tokens);
             cache_write = cache_write.saturating_add(b.cache_write_tokens);
-            if b.tokens_in > 0 || b.tokens_out > 0 {
+            if b.tokens_in > 0 || b.tokens_out > 0 || b.subagent_tokens > 0 {
                 tok_contributors += 1;
             }
             // Normalize each session's occupancy into the shared reference window
@@ -746,6 +756,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         }
         bucket.tokens_in = tin.checked_div(tok_contributors).unwrap_or(0);
         bucket.tokens_out = tout.checked_div(tok_contributors).unwrap_or(0);
+        bucket.subagent_tokens = subagent_tokens.checked_div(tok_contributors).unwrap_or(0);
         bucket.cache_read_tokens = cache_read.checked_div(tok_contributors).unwrap_or(0);
         bucket.cache_write_tokens = cache_write.checked_div(tok_contributors).unwrap_or(0);
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
