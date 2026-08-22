@@ -26,6 +26,10 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Fixed
 
+- **Codex forks now show their relationship in Recent Activity.** antiburn
+  reads Codex's declared parent session during discovery, so both the fork and
+  its parent show the correct relationship without an extra navigation step.
+
 - **Codex sessions show their short task names again.** Recent Activity now
   prefers Codex's generated title instead of displaying the full opening
   request when both are present.
