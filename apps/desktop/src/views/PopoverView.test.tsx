@@ -279,6 +279,26 @@ describe("PopoverView", () => {
     expect(screen.queryByRole("heading", { name: "Session Detail" })).not.toBeInTheDocument()
   })
 
+  it("brings the list back at the offset it was scrolled to before a session opened", async () => {
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    const viewportOf = () =>
+      screen
+        .getByRole("region", { name: "Activity feed" })
+        .querySelector<HTMLElement>(".ui-scroll-viewport")
+    const viewport = viewportOf()
+    expect(viewport).not.toBeNull()
+    viewport!.scrollTop = 240
+    fireEvent.scroll(viewport!)
+
+    fireEvent.click(screen.getByText("Wire the tray popover"))
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
+
+    await screen.findByText("Wire the tray popover")
+    expect(viewportOf()?.scrollTop).toBe(240)
+  })
+
   it("notes an opened session as an agent and an environment, and nothing else", async () => {
     render(<PopoverView />)
 

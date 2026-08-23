@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import * as ScrollArea from "@radix-ui/react-scroll-area"
-import type { ReactNode, Ref } from "react"
+import { useCallback, type ReactNode, type Ref } from "react"
 
 import { cn } from "../../lib/cn"
 
@@ -18,9 +18,10 @@ function syncTopEdgeFade(viewport: HTMLDivElement) {
   }
 }
 
-function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
-  if (typeof ref === "function") ref(value)
-  else if (ref) ref.current = value
+/** Assign a ref. A function ref may return a cleanup, which is passed on. */
+function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void | (() => void) {
+  if (typeof ref === "function") return ref(value)
+  if (ref) ref.current = value
 }
 
 /** A scroll container wired to the design foundation's scrollbar styling.
@@ -44,10 +45,15 @@ export function ScrollPane({
    *  initial position. The scrollbar remains outside the mask. */
   topEdgeFade?: boolean
 }) {
-  const assignViewportRef = (node: HTMLDivElement | null) => {
-    if (node && topEdgeFade) syncTopEdgeFade(node)
-    assignRef(viewportRef, node)
-  }
+  // Stable so React attaches it once per viewport. A caller's ref cleanup
+  // must reach React, or the caller's listeners outlive the node.
+  const assignViewportRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (node && topEdgeFade) syncTopEdgeFade(node)
+      return assignRef(viewportRef, node)
+    },
+    [viewportRef, topEdgeFade],
+  )
 
   return (
     <ScrollArea.Root className={cn("flex-1 overflow-hidden", className)}>
