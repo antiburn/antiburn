@@ -50,6 +50,9 @@ pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
 ///   compaction always rewrites the (now smaller) context and that is not a
 ///   TTL lapse.
 ///
+/// Some providers do not report cache writes. For them, the engine finds a
+/// large replay after a cache-read collapse. The next cached turn confirms it.
+///
 /// Ignore contexts under this size; a full rewrite of a small context is
 /// cheap and not worth flagging as a rehydration event.
 const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
@@ -62,6 +65,14 @@ const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.5;
 /// The previous turn's cache read must reach this share of its context so the
 /// rehydration is a real TTL lapse, not the first turn after a fresh session.
 const CACHE_REHYDRATION_PRIOR_READ_RATIO: f64 = 0.5;
+/// An inferred miss reads at most this share from the old cache.
+const CACHE_REHYDRATION_MISS_READ_RATIO: f64 = 0.2;
+/// An inferred miss keeps at least this share of the previous context.
+const CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO: f64 = 0.8;
+/// Replayed input must reach this share of the current context.
+const CACHE_REHYDRATION_REPLAY_RATIO: f64 = 0.5;
+/// The next turn must read at least this share from the rebuilt cache.
+const CACHE_REHYDRATION_RECOVERY_READ_RATIO: f64 = 0.5;
 
 /// Pure decision function for [`CACHE_REHYDRATION_*`] rehydration detection,
 /// factored out so the rule is unit-testable without a full event fixture.
@@ -82,6 +93,123 @@ fn is_cache_rehydration_turn(
     let prev_read_ratio = prev_cache_read_tokens as f64 / prev_context_tokens as f64;
     write_ratio >= CACHE_REHYDRATION_WRITE_RATIO
         && prev_read_ratio >= CACHE_REHYDRATION_PRIOR_READ_RATIO
+}
+
+#[derive(Clone, Copy)]
+struct CacheTurn<'a> {
+    event_index: usize,
+    context_tokens: u64,
+    fresh_input_tokens: u64,
+    cache_read_tokens: u64,
+    first_turn_after_compaction: bool,
+    model: Option<&'a str>,
+}
+
+fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
+    if context_tokens == 0 {
+        return 0.0;
+    }
+    tokens as f64 / context_tokens as f64
+}
+
+fn same_known_model(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    }
+}
+
+fn inferred_cache_rehydration_turn(previous: CacheTurn<'_>, current: CacheTurn<'_>) -> bool {
+    if current.first_turn_after_compaction
+        || current.context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+        || cache_ratio(previous.cache_read_tokens, previous.context_tokens)
+            < CACHE_REHYDRATION_PRIOR_READ_RATIO
+        || cache_ratio(current.cache_read_tokens, current.context_tokens)
+            > CACHE_REHYDRATION_MISS_READ_RATIO
+        || !same_known_model(previous.model, current.model)
+    {
+        return false;
+    }
+
+    let retained_context_ratio = current.context_tokens as f64 / previous.context_tokens as f64;
+    if retained_context_ratio < CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO {
+        return false;
+    }
+
+    let context_growth = current
+        .context_tokens
+        .saturating_sub(previous.context_tokens);
+    let replayed_input = current.fresh_input_tokens.saturating_sub(context_growth);
+    cache_ratio(replayed_input, current.context_tokens) >= CACHE_REHYDRATION_REPLAY_RATIO
+}
+
+fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize> {
+    let mut indices = HashSet::new();
+    let mut turns = Vec::new();
+    let mut previous_context = 0u64;
+    let mut previous_cache_read = 0u64;
+    let mut first_turn_after_compaction = false;
+    let mut active_model = session.model.as_deref();
+
+    for (event_index, event) in session.events.iter().enumerate() {
+        if event.source != EventSource::Parent {
+            continue;
+        }
+        if let Some(model) = event.model.as_deref().filter(|model| !model.is_empty()) {
+            active_model = Some(model);
+        }
+        if event.is_compaction_boundary {
+            first_turn_after_compaction = true;
+        }
+        let context_tokens = event.usage.context_tokens();
+        if context_tokens == 0 {
+            continue;
+        }
+
+        if session.cache_write_tokens_available
+            && is_cache_rehydration_turn(
+                context_tokens,
+                event.usage.cache_creation_tokens,
+                previous_context,
+                previous_cache_read,
+                first_turn_after_compaction,
+            )
+        {
+            indices.insert(event_index);
+        }
+        turns.push(CacheTurn {
+            event_index,
+            context_tokens,
+            fresh_input_tokens: event.usage.input_tokens,
+            cache_read_tokens: event.usage.cache_read_tokens,
+            first_turn_after_compaction,
+            model: active_model,
+        });
+        previous_context = context_tokens;
+        previous_cache_read = event.usage.cache_read_tokens;
+        first_turn_after_compaction = false;
+    }
+
+    if session.cache_write_tokens_available {
+        return indices;
+    }
+
+    for window in turns.windows(3) {
+        let [previous, current, next] = window else {
+            continue;
+        };
+        let recovery_ratio = cache_ratio(next.cache_read_tokens, next.context_tokens);
+        let recovery_retention = next.context_tokens as f64 / current.context_tokens as f64;
+        if inferred_cache_rehydration_turn(*previous, *current)
+            && !next.first_turn_after_compaction
+            && recovery_ratio >= CACHE_REHYDRATION_RECOVERY_READ_RATIO
+            && recovery_retention >= CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO
+            && same_known_model(current.model, next.model)
+        {
+            indices.insert(current.event_index);
+        }
+    }
+    indices
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,7 +268,7 @@ pub struct Bucket {
     /// already includes cache writes as effective input.
     pub cache_write_tokens: u64,
     /// True when a turn landing in this bucket is a detected cache
-    /// rehydration (see `CACHE_REHYDRATION_WRITE_RATIO`).
+    /// rehydration (see `cache_rehydration_event_indices`).
     pub is_cache_rehydration: bool,
     /// Count of `Task` tool calls in this bucket: how many sub-agents the
     /// parent session launched at this point. Parent turns only — a
@@ -205,7 +333,7 @@ pub struct SessionMetrics {
     /// Compaction boundaries in the parent transcript.
     #[serde(default)]
     pub compaction_count: u64,
-    /// Turns the engine flags as a cache rehydration (see `is_cache_rehydration_turn`).
+    /// Turns the engine flags as a cache rehydration.
     #[serde(default)]
     pub cache_rehydration_count: u64,
     /// Whether the model context window is known well enough to present
@@ -366,14 +494,9 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     let mut skill_event_idx: Vec<usize> = Vec::new();
     let mut buckets = vec![Bucket::default(); BUCKETS];
     let n = session.events.len();
+    let cache_rehydration_events = cache_rehydration_event_indices(session);
     // Timestamp-less events use the position of the preceding timestamped event.
     let mut last_progress = 0.0f32;
-    // Cache-rehydration detection state, carried turn to turn (a "turn" is an
-    // event with non-zero context occupancy; events with no usage, like tool
-    // results, don't move this state).
-    let mut prev_turn_context = 0u64;
-    let mut prev_turn_cache_read = 0u64;
-    let mut awaiting_first_turn_after_compaction = false;
     let mut compaction_count = 0u64;
     let mut cache_rehydration_count = 0u64;
     for (idx, ev) in session.events.iter().enumerate() {
@@ -419,28 +542,15 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
             bucket.is_compaction_boundary |= ev.is_compaction_boundary;
             if ev.is_compaction_boundary {
                 compaction_count += 1;
-                awaiting_first_turn_after_compaction = true;
                 // Keep the last compaction's trigger/sizes when two land in
                 // one bucket.
                 bucket.compaction_trigger = ev.compaction_trigger;
                 bucket.compaction_pre_tokens = ev.compaction_pre_tokens;
                 bucket.compaction_post_tokens = ev.compaction_post_tokens;
             }
-            let context_tokens = ev.usage.context_tokens();
-            if context_tokens > 0 {
-                if is_cache_rehydration_turn(
-                    context_tokens,
-                    ev.usage.cache_creation_tokens,
-                    prev_turn_context,
-                    prev_turn_cache_read,
-                    awaiting_first_turn_after_compaction,
-                ) {
-                    bucket.is_cache_rehydration = true;
-                    cache_rehydration_count += 1;
-                }
-                prev_turn_context = context_tokens;
-                prev_turn_cache_read = ev.usage.cache_read_tokens;
-                awaiting_first_turn_after_compaction = false;
+            if cache_rehydration_events.contains(&idx) {
+                bucket.is_cache_rehydration = true;
+                cache_rehydration_count += 1;
             }
             // A `Task` tool call launches a sub-agent. Mark the bucket so a
             // reader can see it in the tooltip; this never draws a chart line.

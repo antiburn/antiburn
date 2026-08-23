@@ -200,7 +200,7 @@ fn sum_billable_tokens(breakdown: &HashMap<String, ModelTokens>) -> BillableToke
 pub const MISSING_FINGERPRINT: &str = "-";
 
 /// This version invalidates cached values when the analysis cache contract changes.
-const ANALYSIS_FINGERPRINT_VERSION: u8 = 1;
+const ANALYSIS_FINGERPRINT_VERSION: u8 = 2;
 
 /// `mtime:size` of a transcript file, or [`MISSING_FINGERPRINT`].
 pub fn fingerprint_of(source: &SessionSource) -> String {

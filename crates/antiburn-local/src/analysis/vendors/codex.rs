@@ -55,6 +55,7 @@ impl VendorAdapter for CodexAdapter {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
+            cache_write_tokens_available: false,
             context_window,
             model,
         })
@@ -82,6 +83,8 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
     // back-to-back for the same compaction (see `compaction_event`).
     let mut previous_event_was_boundary = false;
     let mut previous_boundary_ts: Option<i64> = None;
+    // Dedupe state for `token_count` rows (see `token_count_key`).
+    let mut previous_token_count_key: Option<TokenCountKey> = None;
     let mut offset = 0;
     for line_with_ending in content.split_inclusive('\n') {
         let line_offset = offset;
@@ -135,6 +138,13 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
             let inherited_token_count = !usage_is_owned
                 && value.get("type").and_then(Value::as_str) == Some("event_msg")
                 && value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count");
+            if let Some(key) = token_count_key(&value) {
+                let duplicate_token_count = previous_token_count_key.as_ref() == Some(&key);
+                previous_token_count_key = Some(key);
+                if duplicate_token_count {
+                    continue;
+                }
+            }
             if !inherited_token_count && let Some(mut ev) = record_to_event(&value) {
                 if usage_is_owned {
                     ev.model = ev.model.or_else(|| current_model.clone());
@@ -566,6 +576,29 @@ fn token_count_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<No
     ev.ts_ms = ts;
     ev.usage = usage;
     Some(ev)
+}
+
+/// The usage pair that identifies one `token_count` row.
+type TokenCountKey = (Value, Value);
+
+/// Codex writes the last `token_count` row again when it resumes a rollout.
+/// The copy repeats both `last_token_usage` and `total_token_usage` exactly.
+/// A real turn always moves `total_token_usage`, so `parse_codex` drops a row
+/// whose pair equals the previous `token_count` row. This keeps a resume from
+/// adding a ghost turn with a second copy of the same context occupancy.
+fn token_count_key(value: &Value) -> Option<TokenCountKey> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg")
+        || value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count")
+    {
+        return None;
+    }
+    let info = value.pointer("/payload/info")?;
+    Some((
+        info.get("last_token_usage").cloned().unwrap_or(Value::Null),
+        info.get("total_token_usage")
+            .cloned()
+            .unwrap_or(Value::Null),
+    ))
 }
 
 /// The largest gap between two compaction records that `parse_codex` still

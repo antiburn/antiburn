@@ -1,6 +1,7 @@
 {
   "normalizedSession": {
     "agent": "claude",
+    "cacheWriteTokensAvailable": true,
     "contextWindow": 200000,
     "events": [
       {
