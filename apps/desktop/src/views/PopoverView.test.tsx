@@ -284,9 +284,9 @@ describe("PopoverView", () => {
     await screen.findByText("Wire the tray popover")
 
     const viewportOf = () =>
-      screen.getByRole("region", { name: "Activity feed" }).querySelector<HTMLElement>(
-        ".ui-scroll-viewport",
-      )
+      screen
+        .getByRole("region", { name: "Activity feed" })
+        .querySelector<HTMLElement>(".ui-scroll-viewport")
     const viewport = viewportOf()
     expect(viewport).not.toBeNull()
     viewport!.scrollTop = 240
