@@ -52,4 +52,4 @@ filetime = "0.2"
 serial_test = "4"
 tempfile = "3"
 # Manifest parsing for the mechanical source-boundary test.
-toml = "0.8"
+toml = "1.1"
