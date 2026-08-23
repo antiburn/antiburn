@@ -11,6 +11,86 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 
+#[tokio::test]
+async fn one_read_serves_metadata_preview_and_fingerprint() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("session.jsonl");
+    let content = b"{\"type\":\"user\",\"sessionId\":\"session-1\",\"cwd\":\"/repo\"}\n";
+    tokio::fs::write(&path, content)
+        .await
+        .expect("write source");
+    let log = SessionLog {
+        agent_type: AgentKind::Claude,
+        source: SessionSource::File(path),
+        updated_at: None,
+        environment: Default::default(),
+    };
+
+    let read = session_log_read(&log).await.expect("source read");
+
+    assert!(read.stat.is_some());
+    assert_eq!(read.head_hash, Some(source_version::head_hash_of(content)));
+    assert_eq!(read.content.as_deref(), std::str::from_utf8(content).ok());
+    assert_eq!(read.metadata.session_id.as_deref(), Some("session-1"));
+}
+
+#[tokio::test]
+async fn a_non_claude_file_source_also_has_a_head_hash() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("session.jsonl");
+    let content = b"{\"session_id\":\"session-1\"}\n";
+    tokio::fs::write(&path, content)
+        .await
+        .expect("write source");
+    let log = SessionLog {
+        agent_type: AgentKind::Pi,
+        source: SessionSource::File(path),
+        updated_at: None,
+        environment: Default::default(),
+    };
+
+    let read = session_log_read(&log).await.expect("source read");
+
+    assert_eq!(read.head_hash, Some(source_version::head_hash_of(content)));
+}
+
+#[tokio::test]
+async fn the_preview_output_is_unchanged() {
+    let dir = TempDir::new().expect("tempdir");
+    let invalid_tail = dir.path().join("invalid-tail.jsonl");
+    tokio::fs::write(&invalid_tail, b"valid\n\xf0\x9f")
+        .await
+        .expect("write invalid tail");
+    let oversized = dir.path().join("oversized.jsonl");
+    let oversized_bytes = vec![b'a'; SOURCE_PREVIEW_BYTES as usize + 1];
+    tokio::fs::write(&oversized, &oversized_bytes)
+        .await
+        .expect("write oversized source");
+
+    assert_eq!(
+        session_source_preview(&SessionSource::File(invalid_tail)).await,
+        Some("valid\n".to_string())
+    );
+    assert_eq!(
+        session_source_preview(&SessionSource::File(oversized))
+            .await
+            .map(|content| content.len()),
+        Some(SOURCE_PREVIEW_BYTES as usize)
+    );
+}
+
+#[test]
+fn the_preview_conversion_consumes_its_buffer() {
+    let mut bytes = Vec::with_capacity(64);
+    bytes.extend_from_slice(b"valid");
+    let expected_capacity = bytes.capacity();
+
+    let content = preview_from_owned(bytes).expect("preview");
+
+    assert_eq!(content, "valid");
+    assert_eq!(content.capacity(), expected_capacity);
+}
+
 #[test]
 fn resolved_titles_are_normalized_and_unicode_safely_bounded() {
     let raw = format!("  Reader\n\trequest  {}  ", "🧪".repeat(250));
