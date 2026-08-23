@@ -951,6 +951,40 @@ fn codex_cache_read_tokens_are_carried_into_buckets() {
     );
 }
 
+/// Codex writes the last `token_count` row again on resume. The third row here
+/// repeats the second exactly. The fourth row repeats `last_token_usage` but
+/// moves `total_token_usage`, so it is a real turn and must stay.
+const CODEX_RESUME_GHOST_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T07:56:39Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":61000,"cached_input_tokens":55000,"output_tokens":200},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":61000,"cached_input_tokens":55000,"output_tokens":200},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":92000,"cached_input_tokens":85000,"output_tokens":300},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_resume_does_not_repeat_the_last_token_count_as_a_turn() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_RESUME_GHOST_FIXTURE)).unwrap();
+    let turns: Vec<i64> = session
+        .events
+        .iter()
+        .filter(|event| event.usage.context_tokens() > 0)
+        .filter_map(|event| event.ts_ms)
+        .collect();
+
+    assert_eq!(
+        turns.len(),
+        3,
+        "the resume copy is dropped, the real repeat stays"
+    );
+    assert!(
+        !turns.contains(&1_787_397_861_000),
+        "the 11:24:21Z ghost row is absent"
+    );
+}
+
 /// These values come from a Codex session after a long idle gap. The miss
 /// replays the old context, and the next turn confirms that the cache returns.
 const CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE: &str = concat!(
