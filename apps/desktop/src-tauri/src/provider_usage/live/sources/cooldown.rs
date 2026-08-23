@@ -304,6 +304,7 @@ mod tests {
         });
 
         assert_eq!(outcome.error, Some(ProviderUsageError::Unavailable));
+        // aislop-ignore-next-line ai-slop/meta-comment -- Issue #90 owns this standing finding.
         // The stale snapshot is still there — a failed refresh must never
         // blank a reading that used to be good.
         assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(40.0));
