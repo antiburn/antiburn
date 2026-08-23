@@ -39,9 +39,10 @@ Two facts shape the design and were measured, not assumed:
    which is supported and measured below. A low `ci.failBelow` alone yields a
    gate that cannot fail. Promotion and threshold choice pull in opposite
    directions, and Decision 15 states how the plan resolves that.
-3. **Promotion makes 20 existing findings in 10 files error-severity, and the
-   plan accepts that cost.** The gate never scans an unchanged file, so those
-   findings are silent until a pull request touches one of these 10 files:
+3. **Promotion makes 20 existing findings in 10 files error-severity, measured
+   at `609d293`, and the plan accepts that cost.** The gate never scans an
+   unchanged file, so those findings are silent until a pull request touches one
+   of these 10 files, measured at `609d293`:
 
    | File | Promoted findings |
    | --- | --- |
@@ -148,7 +149,8 @@ Clearing the standing findings is issue #90, not this work.
 - `aislop scan .` → score 57, 322 files, 0 errors, 33 warnings; engines
   format 0, lint 0, code-quality 28, ai-slop 20, security 0. The 20 `ai-slop`
   findings are 15 `info` and 5 `warning` at default severity, and they are the
-  same 20 findings that the promoted config reports as errors. Format and lint are
+  same 20 findings, measured at `609d293`, that the promoted config reports as
+  errors. Format and lint are
   clean, so the bundled biome/oxlint do not fight the repository's own
   formatters.
 - `aislop scan -d` largest offenders: `opencode.rs` 3516, `cursor.rs` 3197,
@@ -190,7 +192,8 @@ Clearing the standing findings is issue #90, not this work.
   trailing comment and the pre-existing findings at lines 82 and 88 failed the
   run. Editing any line of a file with a promoted finding turns that pull request
   red.
-- **Promoted-set footprint today: 20 error findings in 10 files.** Whole-tree
+- **Promoted-set footprint measured at `609d293`: 20 error findings in 10
+  files.** Whole-tree
   `aislop scan --json` at `609d293` with all Decision 7 rules promoted:
   `ai-slop/empty-function` 15 — 10 in `apps/desktop/src/lib/ipc.ts`, and one each
   in `apps/desktop/src/components/presentation/TruncatedText.tsx`,
@@ -243,9 +246,9 @@ Clearing the standing findings is issue #90, not this work.
 - A repository rule on `main` requires the `ci-required` check, and its
   definition is committed in the repository.
 - `CONTRIBUTING.md` documents the gate, the local command, the diff-scoped
-  semantics, the ratchet policy, the 10 files that fail the gate when a pull
-  request touches them, the escape hatch of Decision 16, and the `git commit -s`
-  sign-off note.
+  semantics, the ratchet policy, the 10 files measured at `609d293` that fail
+  the gate when a pull request touches them, the escape hatch of Decision 16,
+  and the `git commit -s` sign-off note.
 
 ## Locked Decisions
 
@@ -276,7 +279,9 @@ Clearing the standing findings is issue #90, not this work.
    two first-party calls — the release-feed update check and the D-027 / D-28
    anonymised usage-analytics channel — and bans every other telemetry or
    analytics channel. A contributor tool that reports to its vendor is not one of
-   the two permitted calls, so it stays disabled.
+   the two permitted calls, so it stays disabled. aislop 0.14.0 ignores this
+   setting on its `hook` paths, so every committed hook invocation must also set
+   `AISLOP_NO_TELEMETRY=1`. CH-007 closes that gap.
 7. **Teeth come from promoted severities, not from a score floor.** The config
    `rules:` map promotes every slop class GH-89 names to `error`, because
    measured warnings never fail `aislop ci` and one warning in a small diff costs
@@ -347,7 +352,7 @@ Clearing the standing findings is issue #90, not this work.
     contributor has a documented escape hatch.** The alternatives lose more:
     promotion of only the zero-instance rules leaves the gate nearly toothless,
     and cleaning the 20 findings now pulls #90 work into this issue. So the 10
-    files of the Overview table stay red on touch. A contributor unblocks such a
+    files of the Overview table, measured at `609d293`, stay red on touch. A contributor unblocks such a
     pull request in one of two ways: fix the finding, or add an `aislop-ignore`
     directive that carries a justification comment and a `#90` reference. The
     directive token stays verbatim, because it is machine-read; its justification
@@ -426,7 +431,8 @@ Clearing the standing findings is issue #90, not this work.
   `slop gate` check. A head GitHub reports as `mergeable: CONFLICTING` is
   recorded and skipped, with no check-run claim made about it. The whole tree
   reports zero `complexity/*` error findings. The tree is **not** free of promoted `ai-slop`
-  errors: the 20 findings in 10 files listed in the Overview stay, and a pull
+  errors: the 20 findings in 10 files measured at `609d293` and listed in the
+  Overview stay, and a pull
   request that touches one of those files fails until the finding is fixed or a
   Decision 16 directive suppresses it. A threshold change never clears such a
   finding, because these rules are threshold-independent (Decision 15). The
@@ -461,8 +467,8 @@ Clearing the standing findings is issue #90, not this work.
   `.aislop/config.yml` exists with explicit `engines`, `quality`, `rules`
   severity promotions, `ci.failBelow`, and `telemetry.enabled: false`;
   `aislop scan` at the base commit reports zero `complexity/*` errors under it
-  and the same 20 `ai-slop` errors in the same 10 files that the Overview lists,
-  with no new one; a seeded
+  and the same 20 `ai-slop` errors in the same 10 files that the Overview lists
+  at `609d293`, with no new one; a seeded
   violation of each promoted rule exits 1; each threshold records its measured
   value and its margin over today's worst file or function; ratchet intent, the
   #90 reference, and the advisory-by-threshold rules are recorded in ASD-STE100
@@ -493,11 +499,24 @@ Clearing the standing findings is issue #90, not this work.
   explains the gate, the local command, that it judges changed files rather than
   the repository score, which rules fail a build, that thresholds are loose today
   and tighten under #90, which two rules are advisory by threshold, that the gate
-  runs on pull requests only, and which 10 files fail the gate when a pull request
-  touches them. The document states the Decision 16 escape hatch: fix the
-  finding, or add an `aislop-ignore` directive with a justification comment and a
+  runs on pull requests only, and which 10 files, measured at `609d293`, fail
+  the gate when a pull request touches them. The document states the Decision 16
+  escape hatch: fix the finding, or add an `aislop-ignore` directive with a justification comment and a
   `#90` reference, with the directive token verbatim and the justification in
   ASD-STE100. The sign-off note gives `git commit -s` and no other mechanism.
+  It also documents the committed edit-time hooks: feedback that is advisory and
+  blocks nothing; per-runtime coverage — Claude Code after each matched `Edit`,
+  `Write` or `MultiEdit`, Codex after `apply_patch` only, through the committed
+  adapter and only once both trust steps are done; the pinned invocation;
+  whole-edited-file judging and the standing #90 findings it can report;
+  `format` and `lint` disabled, so `pnpm run slop` stays authoritative; the
+  inert state before the trust steps; why `aislop hook install` must not run
+  here; and the per-runtime duplicate-hook removal route — for Claude Code,
+  aislop generates the global hook, so run
+  `aislop hook uninstall --claude --global`; for Codex, aislop generates no
+  hook, because its Codex installer writes rules text only, so a global Codex
+  hook is hand-authored and you remove it from your Codex configuration by hand,
+  and the Claude uninstall command does not remove a Codex hook.
   Likely touches: `CONTRIBUTING.md`. Provisional tier: 1. (Refs: FR-7)
 - [ ] **CH-006 — Automated coverage of the workflow contract.** Acceptance: a
   `node --test` case in `scripts/` fails when any element of FR-11 is removed
@@ -528,6 +547,27 @@ Clearing the standing findings is issue #90, not this work.
   requiring the `ci-required` check.** Likely touches: a committed ruleset file
   under `docs/` or `.github/`, plus `CONTRIBUTING.md` if the seam adds a note.
   Provisional tier: 3. (Refs: FR-12, FR-14)
+- [ ] **CH-007 — Pinned edit-time slop feedback for coding agents.** The gate
+  catches slop at the pull request; this item catches it as an agent writes the
+  code. Acceptance: committed `PostToolUse` hooks for Claude Code
+  (`.claude/settings.json`) and Codex (`.codex/hooks.json`, matching
+  `apply_patch` through the committed adapter `scripts/codex-aislop-hook.mjs`)
+  run the exact pinned `aislop`, resolved from the repository rather than
+  through `PATH`, and both set `AISLOP_NO_TELEMETRY=1` per Decision 6 as
+  extended above; the feedback is advisory, so neither hook blocks an edit nor
+  exits 2 over standing findings that #90 owns; a `node --test` guard drives
+  both committed commands against synthetic fixtures and covers the patch
+  parser, the adapter exit contract, and pinned resolution under a shadowed
+  `PATH`; `AGENTS.md` states the agent's rules in the imperative register and
+  length of its neighbours — fix findings your own change caused, leave standing
+  #90 findings, take the Decision 16 suppression route, run the authoritative
+  `pnpm run slop`, and never run `aislop hook install` here — and points to
+  `CONTRIBUTING.md` for the mechanics; `.gitignore` ignores all of `/.claude/*`
+  and all of `/.codex/*` and re-includes exactly two paths,
+  `!/.claude/settings.json` and `!/.codex/hooks.json`, so those two files are
+  the only agent-local files that become repository content and any other file
+  under `.claude/` or `.codex/` stays ignored. Likely touches: `.gitignore`,
+  `.claude/`, `.codex/`, `AGENTS.md`, `scripts/`. Provisional tier: 3. (Refs: FR-2, FR-3)
 
 > Ordering is a dependency hint, and the IDs are append-only, so CH-006 is
 > presented before CH-005. The config precedes the job. The pin precedes CI use.
@@ -565,7 +605,8 @@ No open questions. Decision 16 settles the promotion and cost question.
   the config, in `CONTRIBUTING.md`, and in #90, so nobody reads a green build as
   proof that file and function size are policed.
 - **Red-on-touch friction lands mostly on one hot file.**
-  `apps/desktop/src/lib/ipc.ts` carries 10 of the 20 promoted findings, so it is
+  `apps/desktop/src/lib/ipc.ts` carries 10 of the 20 promoted findings measured
+  at `609d293`, so it is
   the file most likely to make an unrelated pull request red. The enablement
   preflight over open pull requests (CH-005) proves the gate is live and current
   on each head.
