@@ -632,6 +632,7 @@ async fn describe_one_with_activity(
         activity_source,
         subagent_count,
         fork_parent_session_id,
+        source_fingerprint: None,
     }))
 }
 
@@ -1741,6 +1742,7 @@ mod tests {
             activity_source: "mtime".into(),
             subagent_count: 0,
             fork_parent_session_id: None,
+            source_fingerprint: None,
         }
     }
 

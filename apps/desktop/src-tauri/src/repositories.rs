@@ -749,6 +749,7 @@ mod tests {
             activity_source: "mtime".to_string(),
             subagent_count: 0,
             fork_parent_session_id: None,
+            source_fingerprint: None,
         };
         store
             .upsert_sessions(&[
@@ -835,6 +836,7 @@ mod tests {
             activity_source: "mtime".into(),
             subagent_count: 0,
             fork_parent_session_id: None,
+            source_fingerprint: None,
         };
         let sessions = vec![
             session("/home/avery/code/widgets"),
