@@ -24,7 +24,7 @@ import {
 } from "../session/metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
 import { countGroupedItems, groupActivityByDay } from "./activityFeedGrouping"
-import { useActivityGroupPinning } from "./useActivityGroupPinning"
+import { useActivityGroupPinning, type ViewportRef } from "./useActivityGroupPinning"
 
 import "../../styles/session-rows.css"
 
@@ -75,7 +75,7 @@ export interface LocalActivityListProps {
   /** Open a session's analytics. Omitted leaves rows inert. */
   onOpenSession?: (entry: LocalActivityEntry) => void
   /** The scrolling viewport, for a host that needs to observe it. */
-  viewportRef?: (node: HTMLDivElement | null) => void
+  viewportRef?: ViewportRef
   /** Frozen clock, for tests. */
   now?: Date
   renderAgentIcon?: ActivityAgentIconRenderer
