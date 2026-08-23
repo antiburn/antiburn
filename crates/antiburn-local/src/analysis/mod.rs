@@ -32,6 +32,7 @@
 //! ```
 
 mod engine;
+mod framing;
 mod initial_context;
 mod interface;
 mod merge;
@@ -42,6 +43,10 @@ mod vendors;
 pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
     ToolMix, aggregate_metrics, analyze_session,
+};
+pub use framing::{
+    BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
+    SCAN_QUANTUM_BYTES,
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
 pub use interface::{RawSource, SessionInput, VendorAdapter};
