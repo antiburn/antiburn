@@ -489,7 +489,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify every commit is signed off
+      - name: Verify every non-merge commit is signed off
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -501,7 +501,7 @@ jobs:
               echo "::error::commit $sha is missing a Signed-off-by trailer (git commit -s)"
               missing=1
             fi
-          done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
+          done < <(git rev-list --no-merges "$BASE_SHA".."$HEAD_SHA")
           exit "$missing"
 
   aislop:

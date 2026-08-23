@@ -7,7 +7,7 @@ Thanks for your interest in contributing!
 - **License:** the project is licensed under the [Mozilla Public License 2.0](LICENSE).
   By contributing, you agree your contributions are licensed under MPL-2.0.
   There is no CLA.
-- **DCO sign-off (required):** every commit must carry a
+- **DCO sign-off (required):** every non-merge commit you author must carry a
   [Developer Certificate of Origin](https://developercertificate.org/) sign-off:
 
   ```bash
@@ -15,7 +15,8 @@ Thanks for your interest in contributing!
   ```
 
   which adds a `Signed-off-by: Your Name <you@example.com>` trailer. CI rejects
-  pull requests containing unsigned commits.
+  pull requests containing unsigned non-merge commits. Merge commits are exempt
+  because they carry no authored content.
 
 ## Boundaries that pull requests must respect
 
