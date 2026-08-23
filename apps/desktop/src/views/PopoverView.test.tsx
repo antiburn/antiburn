@@ -178,6 +178,7 @@ const LIVE_USAGE = {
         },
       ],
       extraUsage: null,
+      resetCredits: null,
     },
   ],
   errors: [],

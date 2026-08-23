@@ -333,6 +333,7 @@ fn fetch_live(
         },
         windows: usage.windows,
         supplemental: usage.supplemental,
+        reset_credits: None,
     })
 }
 

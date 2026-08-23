@@ -382,6 +382,7 @@ fn build_snapshot(
         },
         windows: usage.windows,
         supplemental: None,
+        reset_credits: usage.reset_credits,
     })
 }
 

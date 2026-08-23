@@ -35,6 +35,9 @@
 //! the child. It is never left running: nothing here is a client of a
 //! long-lived server.
 //!
+//! The rate-limit response can include `rateLimitResetCredits`. This module
+//! keeps `availableCount` with the recurring windows.
+//!
 //! # What "no rate limits" means
 //!
 //! `account/read` names the account's own type. An OAuth ChatGPT sign-in is
@@ -55,8 +58,8 @@ use time::OffsetDateTime;
 
 use crate::provider_usage::live::codex::is_sliding_reset_projection;
 use crate::provider_usage::live::model::{
-    Confidence, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageScope, UsageSource,
-    UsageWindow, UsageWindowKind, WindowRole,
+    Confidence, ProviderUsageError, ProviderUsageSnapshot, RateLimitResetCredits, SchemaReason,
+    UsageScope, UsageSource, UsageWindow, UsageWindowKind, WindowRole,
 };
 
 use super::CODEX_SOURCE_ID;
@@ -112,6 +115,7 @@ pub fn fetch(now: OffsetDateTime) -> Result<Option<ProviderUsageSnapshot>, Provi
 
     let rate_limits = rpc_result(&rate_limits_response)?;
     let windows = parse_rate_limits(rate_limits, now)?;
+    let reset_credits = parse_reset_credits(rate_limits)?;
     if windows.is_empty() {
         return Err(ProviderUsageError::Schema(
             SchemaReason::MissingRequiredField,
@@ -131,6 +135,7 @@ pub fn fetch(now: OffsetDateTime) -> Result<Option<ProviderUsageSnapshot>, Provi
         },
         windows,
         supplemental: None,
+        reset_credits,
     }))
 }
 
@@ -341,6 +346,26 @@ fn parse_rate_limits(
     Ok(windows)
 }
 
+fn parse_reset_credits(
+    result: &Value,
+) -> Result<Option<RateLimitResetCredits>, ProviderUsageError> {
+    let Some(value) = result
+        .get("rateLimitResetCredits")
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(None);
+    };
+    let count = value
+        .get("availableCount")
+        .ok_or(ProviderUsageError::Schema(
+            SchemaReason::MissingRequiredField,
+        ))?;
+    let available_count = count
+        .as_u64()
+        .ok_or(ProviderUsageError::Schema(SchemaReason::InvalidValue))?;
+    Ok(Some(RateLimitResetCredits { available_count }))
+}
+
 fn parse_bucket(
     bucket_key: &str,
     bucket: &Value,
@@ -524,6 +549,40 @@ mod tests {
         });
         assert_eq!(
             parse_bucket("default", &bucket, at(NOW), &mut windows, &mut seen),
+            Err(ProviderUsageError::Schema(SchemaReason::InvalidValue))
+        );
+    }
+
+    #[test]
+    fn reset_credit_count_is_read_from_the_rate_limit_response() {
+        let result = serde_json::json!({
+            "rateLimitResetCredits": {
+                "availableCount": 1,
+                "credits": [{
+                    "id": "credit-1",
+                    "status": "available",
+                    "resetType": "codexRateLimits"
+                }]
+            }
+        });
+        assert_eq!(
+            parse_reset_credits(&result),
+            Ok(Some(RateLimitResetCredits { available_count: 1 }))
+        );
+    }
+
+    #[test]
+    fn missing_reset_credits_stay_unknown() {
+        assert_eq!(parse_reset_credits(&serde_json::json!({})), Ok(None));
+    }
+
+    #[test]
+    fn malformed_reset_credits_reject_the_response() {
+        let result = serde_json::json!({
+            "rateLimitResetCredits": {"availableCount": -1}
+        });
+        assert_eq!(
+            parse_reset_credits(&result),
             Err(ProviderUsageError::Schema(SchemaReason::InvalidValue))
         );
     }
