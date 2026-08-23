@@ -17,6 +17,6 @@
     "slop": "aislop ci --changes --base origin/main"
   },
   "devDependencies": {
-    "aislop": "0.14.0"
+    "aislop": "0.14.1"
   }
 }
