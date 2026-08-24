@@ -46,13 +46,19 @@ vi.mock("../lib/platform", async (importOriginal) => {
   return { ...actual, isMacOS: () => platform.mac }
 })
 
-const hudPreference = vi.hoisted(() => ({ enabled: false, popoverVisible: false }))
+const hudPreference = vi.hoisted(() => ({
+  enabled: false,
+  overlayVisible: false,
+  popoverVisible: false,
+}))
+const overlayVisibilityRead = vi.hoisted(() => vi.fn())
 vi.mock("../lib/overlayWindow", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
   return {
     ...actual,
     isCurrentWindowVisible: async () => hudPreference.popoverVisible,
     isFloatingHudEnabled: () => hudPreference.enabled,
+    isOverlayWindowVisible: overlayVisibilityRead,
   }
 })
 
@@ -886,7 +892,10 @@ describe("PopoverView — floating HUD restore", () => {
     mockCommands()
     platform.mac = false
     hudPreference.enabled = false
+    hudPreference.overlayVisible = false
     hudPreference.popoverVisible = false
+    overlayVisibilityRead.mockReset()
+    overlayVisibilityRead.mockImplementation(async () => hudPreference.overlayVisible)
   })
 
   it("keeps the stored HUD hidden while the popover prewarms", async () => {
@@ -917,6 +926,17 @@ describe("PopoverView — floating HUD restore", () => {
     render(<PopoverView />)
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+  })
+
+  it("does not show a stored HUD that is already visible", async () => {
+    platform.mac = true
+    hudPreference.enabled = true
+    hudPreference.overlayVisible = true
+    hudPreference.popoverVisible = true
+    render(<PopoverView />)
+
+    await waitFor(() => expect(overlayVisibilityRead).toHaveBeenCalled())
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
   })
 
   it("does not restore an off preference", async () => {

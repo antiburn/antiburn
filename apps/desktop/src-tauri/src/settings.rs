@@ -6,8 +6,8 @@
 //!
 //! Unlike the popover this is an ordinary window with real decorations: a
 //! place to read and change configuration, not a transient surface. It is
-//! fixed at 960×680 and created on demand. Closing it destroys its webview;
-//! the next request rebuilds it from settings already persisted by the shell.
+//! fixed at 960×680 and prewarmed after launch. Closing it hides the resident
+//! webview, so the next request can show the same ready renderer.
 //!
 //! On macOS the title bar is an overlay: decorations (traffic lights, system
 //! shadow, real close semantics) are kept, the bar itself is transparent, and
@@ -16,14 +16,15 @@
 //! `src/views/SettingsView.tsx`). Windows and Linux keep the stock title bar.
 
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::window_placement::center_on_active_monitor;
 use crate::window_readiness::{
-    OpenAction, ReadyAction, STALE_LOAD_AFTER, WindowReadiness, renderer_generation_script,
+    OpenAction, PrewarmAction, ReadyAction, STALE_LOAD_AFTER, WindowReadiness,
+    renderer_generation_script,
 };
 
 /// Window label. Also listed in `capabilities/default.json`.
@@ -81,6 +82,39 @@ const URL: &str = "settings.html";
 const WIDTH: f64 = 960.0;
 const HEIGHT: f64 = 680.0;
 
+/// Delay that staggers Settings after the main popover prewarm.
+const SETTINGS_PREWARM_DELAY: Duration = Duration::from_millis(750);
+
+/// Schedule one hidden Settings load after launch or onboarding.
+pub fn schedule_prewarm(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(SETTINGS_PREWARM_DELAY).await;
+        let prewarm_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || prewarm(&prewarm_app)) {
+            ::tracing::warn!(event = "settings_prewarm_schedule_failed", error = %error);
+        }
+    });
+}
+
+fn prewarm(app: &AppHandle) {
+    if crate::onboarding::is_pending(app) {
+        return;
+    }
+    let state = app.state::<SettingsWindowState>();
+    let action = {
+        let mut readiness = state.lock();
+        readiness.request_prewarm(Instant::now())
+    };
+    let PrewarmAction::StartLoading { generation } = action else {
+        return;
+    };
+    if let Err(error) = build(app, generation) {
+        cancel_load(app, generation);
+        ::tracing::warn!(event = "settings_prewarm_failed", error = %error);
+    }
+}
+
 /// Shows the settings window, creating it if this is the first request.
 ///
 /// `pane` is the section the caller wants shown — the popover's attention
@@ -88,8 +122,8 @@ const HEIGHT: f64 = 680.0;
 /// about, instead of on whichever pane they last left open.
 pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
     let state = app.state::<SettingsWindowState>();
+    app.state::<PendingPane>().set(pane.clone());
     let Some(existing) = app.get_webview_window(LABEL) else {
-        app.state::<PendingPane>().set(pane);
         let mut readiness = state.lock();
         let action = readiness.request_open(Instant::now());
         let generation = match action {
@@ -113,20 +147,18 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
         let mut readiness = state.lock();
         readiness.request_open(Instant::now())
     };
+    if pane_event_reaches_renderer(action)
+        && let Some(pane) = pane.as_ref()
+    {
+        app.emit_to(LABEL, EVENT_PANE, pane)?;
+    }
     match action {
         OpenAction::Reveal => {
             show(&existing)?;
-            if let Some(pane) = pane {
-                let _ = app.emit_to(LABEL, EVENT_PANE, pane);
-            }
             Ok(())
         }
-        OpenAction::AwaitReady => {
-            app.state::<PendingPane>().set(pane);
-            Ok(())
-        }
+        OpenAction::AwaitReady => Ok(()),
         OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
-            app.state::<PendingPane>().set(pane);
             if !state.lock().defer_build_until_destroyed(generation) {
                 return Ok(());
             }
@@ -137,6 +169,10 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
             Ok(())
         }
     }
+}
+
+fn pane_event_reaches_renderer(action: OpenAction) -> bool {
+    matches!(action, OpenAction::Reveal | OpenAction::AwaitReady)
 }
 
 /// Build a deferred replacement after Tauri removes the old window label.
@@ -293,6 +329,26 @@ mod tests {
     #[test]
     fn the_url_uses_the_settings_entry() {
         assert_eq!(URL, "settings.html");
+    }
+
+    #[test]
+    fn prewarm_staggers_settings_after_the_main_window() {
+        assert_eq!(
+            SETTINGS_PREWARM_DELAY,
+            std::time::Duration::from_millis(750)
+        );
+    }
+
+    #[test]
+    fn pane_requests_reach_ready_and_prewarming_renderers() {
+        assert!(pane_event_reaches_renderer(OpenAction::Reveal));
+        assert!(pane_event_reaches_renderer(OpenAction::AwaitReady));
+        assert!(!pane_event_reaches_renderer(OpenAction::StartLoading {
+            generation: 1
+        }));
+        assert!(!pane_event_reaches_renderer(OpenAction::Rebuild {
+            generation: 2
+        }));
     }
 
     #[test]

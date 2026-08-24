@@ -47,6 +47,7 @@ import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
   isCurrentWindowVisible,
   isFloatingHudEnabled,
+  isOverlayWindowVisible,
   openOverlayWindow,
 } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
@@ -448,6 +449,8 @@ export class PopoverSession {
     if (!isMacOS() || !isFloatingHudEnabled()) return
     const visible = await isCurrentWindowVisible()
     if (generation !== this.generation || !visible) return
+    const overlayVisible = await isOverlayWindowVisible()
+    if (generation !== this.generation || overlayVisible) return
     await openOverlayWindow().catch(() => {})
   }
 

@@ -43,7 +43,7 @@ export async function isCurrentWindowVisible(): Promise<boolean> {
   }
 }
 
-async function isOverlayWindowVisible(): Promise<boolean> {
+export async function isOverlayWindowVisible(): Promise<boolean> {
   try {
     const overlay = await WebviewWindow.getByLabel(OVERLAY_WINDOW_LABEL)
     return (await overlay?.isVisible()) ?? false

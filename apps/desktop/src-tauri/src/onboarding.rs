@@ -299,6 +299,7 @@ pub fn finish(app: &AppHandle) {
     apply_activation_policy(app, false);
     crate::notifications::note_menu_bar_home(app);
     crate::popover::schedule_prewarm(app);
+    crate::settings::schedule_prewarm(app);
 
     // `finish` runs inside the onboarding webview's final `set_settings` IPC.
     // Destroying that webview synchronously can cut off the command response;

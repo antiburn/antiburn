@@ -247,6 +247,7 @@ pub fn run() {
                 }
             } else {
                 popover::schedule_prewarm(app.handle());
+                settings::schedule_prewarm(app.handle());
             }
 
             // Registered before the update scheduler starts, so the first
@@ -378,6 +379,7 @@ fn finish_retention_cleanup(handle: &mut Option<tauri::async_runtime::JoinHandle
 enum ClosePolicy {
     Allow,
     HidePopover,
+    HideSettings,
     HidePendingOnboarding,
     HideNudge,
 }
@@ -385,6 +387,8 @@ enum ClosePolicy {
 fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
     if label == popover::LABEL {
         ClosePolicy::HidePopover
+    } else if label == settings::LABEL {
+        ClosePolicy::HideSettings
     } else if label == antiburn_nudge::NUDGE_LABEL {
         ClosePolicy::HideNudge
     } else if label == onboarding::LABEL && onboarding_pending {
@@ -410,6 +414,16 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     // Through `popover::hide` rather than `window.hide()`, so
                     // this path answers to the pin like every dismissal does.
                     popover::hide(window.app_handle());
+                }
+                ClosePolicy::HideSettings => {
+                    if let Err(error) = window.hide() {
+                        ::tracing::error!(
+                            event = "settings_window_hide_on_close_failed",
+                            error = %error
+                        );
+                    } else {
+                        api.prevent_close();
+                    }
                 }
                 ClosePolicy::HidePendingOnboarding => {
                     api.prevent_close();
@@ -528,7 +542,7 @@ mod tests {
         );
         assert_eq!(
             close_policy(super::settings::LABEL, false),
-            ClosePolicy::Allow
+            ClosePolicy::HideSettings
         );
         assert_eq!(
             close_policy(antiburn_nudge::NUDGE_LABEL, false),
