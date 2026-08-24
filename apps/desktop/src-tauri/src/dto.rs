@@ -502,6 +502,16 @@ pub struct LiveProviderUsage {
     pub windows: Vec<LiveUsageWindow>,
     /// Metered usage beyond the allowance, when the provider reports it.
     pub extra_usage: Option<LiveExtraUsage>,
+    /// The provider reports manual rate-limit resets here.
+    #[serde(default)]
+    pub reset_credits: Option<LiveUsageResetCredits>,
+}
+
+/// Provider credits that manually reset rate limits.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageResetCredits {
+    pub available_count: u64,
 }
 
 /// Metered spend alongside the allowance.

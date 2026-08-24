@@ -226,6 +226,7 @@ mod tests {
                 authoritative: true,
             }],
             supplemental: None,
+            reset_credits: None,
         }
     }
 

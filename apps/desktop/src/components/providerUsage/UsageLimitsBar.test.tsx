@@ -53,6 +53,7 @@ function liveProvider(
     observedAt: "2027-01-15T11:57:00Z",
     windows: [liveWindow()],
     extraUsage: null,
+    resetCredits: null,
     ...overrides,
   }
 }

@@ -83,6 +83,7 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
     observedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
     windows: [window()],
     extraUsage: null,
+    resetCredits: null,
     ...overrides,
   }
 }

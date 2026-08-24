@@ -130,6 +130,7 @@ describe("UsagePane", () => {
             observedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
             windows: [],
             extraUsage: null,
+            resetCredits: null,
           },
         ],
       }),

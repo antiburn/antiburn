@@ -405,6 +405,11 @@ export interface LiveExtraUsagePayload {
   currency: string | null
 }
 
+/** Provider credits that manually reset rate limits. */
+export interface LiveUsageResetCreditsPayload {
+  availableCount: number
+}
+
 /** One provider account's live usage. Mirrors Rust `LiveProviderUsage`. */
 export interface LiveProviderUsagePayload {
   /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
@@ -418,6 +423,7 @@ export interface LiveProviderUsagePayload {
   observedAt: string
   windows: LiveUsageWindowPayload[]
   extraUsage: LiveExtraUsagePayload | null
+  resetCredits: LiveUsageResetCreditsPayload | null
 }
 
 /** A source that failed, in terms a reader can act on. */

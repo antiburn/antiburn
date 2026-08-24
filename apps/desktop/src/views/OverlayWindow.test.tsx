@@ -97,6 +97,7 @@ function summary(): LiveUsageSummaryPayload {
           },
         ],
         extraUsage: null,
+        resetCredits: null,
       },
     ],
     errors: [],
