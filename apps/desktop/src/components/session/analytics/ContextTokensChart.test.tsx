@@ -157,7 +157,6 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     isCacheRehydration: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
-    userPrompts: 0,
     lastTool: null,
     betweenCalls: null,
     model: null,
