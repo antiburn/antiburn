@@ -172,7 +172,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
 
         <div className="flex min-w-0 items-center gap-1">
           <TruncatedText
-            className={cn("min-w-0 type-body-large", !entry.isActive && "text-label")}
+            className={cn("min-w-0 type-body", !entry.isActive && "text-label")}
             text={primary}
             lines={2}
             shimmer={entry.isActive}
