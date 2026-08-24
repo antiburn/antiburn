@@ -34,6 +34,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    secsSincePriorTurn: null,
     subagentLaunches: 0,
     model: null,
     thinkingMode: null,
@@ -111,6 +112,16 @@ describe("contextTokenSeries", () => {
       [5_000, 200, false],
       [0, 25_000, true],
     ])
+  })
+
+  it("carries the prior-turn gap only on its own bucket", () => {
+    const series = contextTokenSeries([
+      bucket(),
+      bucket({ contextTokens: 25_000, secsSincePriorTurn: 9_300 }),
+      bucket(),
+    ])
+
+    expect(series.map((point) => point.secsSincePriorTurn)).toEqual([null, 9_300, null])
   })
 
   it("forward-fills model, thinking mode, and speed across buckets with no value", () => {

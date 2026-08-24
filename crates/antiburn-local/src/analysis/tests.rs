@@ -849,8 +849,22 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
 
     let count = m.buckets.iter().filter(|b| b.is_cache_rehydration).count();
     assert_eq!(count, 1, "a 76% rewrite after a long gap is a rehydration");
+    let bucket = m
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_cache_rehydration)
+        .expect("the rehydration bucket");
+    assert_eq!(bucket.secs_since_prior_turn, Some(155 * 60));
     assert_eq!(m.cache_rehydration_count, 1);
     assert_eq!(m.compaction_count, 0);
+
+    let summary = crate::analysis::aggregate_metrics(vec![m]);
+    let summary_bucket = summary
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_cache_rehydration)
+        .expect("the summary rehydration bucket");
+    assert_eq!(summary_bucket.secs_since_prior_turn, Some(155 * 60));
 }
 
 #[test]
@@ -1886,6 +1900,11 @@ fn rehydration_detection_ignores_subagent_turns() {
         rehydrated.len(),
         1,
         "the parent's own rehydration must still be detected, got {rehydrated:?}"
+    );
+    assert_eq!(
+        m.buckets[rehydrated[0]].secs_since_prior_turn,
+        Some(5 * 60),
+        "the sub-agent turn must not reset the parent turn gap"
     );
 }
 

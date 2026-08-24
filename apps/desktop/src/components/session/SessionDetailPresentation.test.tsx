@@ -31,6 +31,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    secsSincePriorTurn: null,
     subagentLaunches: 0,
     model: null,
     thinkingMode: null,

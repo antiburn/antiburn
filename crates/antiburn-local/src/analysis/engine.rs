@@ -270,6 +270,10 @@ pub struct Bucket {
     /// True when a turn landing in this bucket is a detected cache
     /// rehydration (see `cache_rehydration_event_indices`).
     pub is_cache_rehydration: bool,
+    /// Wall-clock seconds since the prior parent turn. A rehydration turn takes
+    /// priority when multiple turns land in this bucket.
+    #[serde(default)]
+    pub secs_since_prior_turn: Option<u64>,
     /// Count of `Task` tool calls in this bucket: how many sub-agents the
     /// parent session launched at this point. Parent turns only — a
     /// sub-agent does not itself launch sub-agents in this count.
@@ -497,6 +501,7 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     let cache_rehydration_events = cache_rehydration_event_indices(session);
     // Timestamp-less events use the position of the preceding timestamped event.
     let mut last_progress = 0.0f32;
+    let mut prev_turn_ts: Option<i64> = None;
     let mut compaction_count = 0u64;
     let mut cache_rehydration_count = 0u64;
     for (idx, ev) in session.events.iter().enumerate() {
@@ -548,9 +553,21 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
                 bucket.compaction_pre_tokens = ev.compaction_pre_tokens;
                 bucket.compaction_post_tokens = ev.compaction_post_tokens;
             }
-            if cache_rehydration_events.contains(&idx) {
-                bucket.is_cache_rehydration = true;
-                cache_rehydration_count += 1;
+            let context_tokens = ev.usage.context_tokens();
+            if context_tokens > 0 {
+                let secs_since_prior_turn = ev.ts_ms.zip(prev_turn_ts).map(|(current, prior)| {
+                    u64::try_from((current - prior).max(0) / 1000).unwrap_or(0)
+                });
+                let is_cache_rehydration = cache_rehydration_events.contains(&idx);
+                if is_cache_rehydration {
+                    bucket.is_cache_rehydration = true;
+                    cache_rehydration_count += 1;
+                }
+                // Keep the exact rehydration gap if another turn shares the bucket.
+                if is_cache_rehydration || !bucket.is_cache_rehydration {
+                    bucket.secs_since_prior_turn = secs_since_prior_turn;
+                }
+                prev_turn_ts = ev.ts_ms;
             }
             // A `Task` tool call launches a sub-agent. Mark the bucket so a
             // reader can see it in the tooltip; this never draws a chart line.
@@ -872,6 +889,10 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
         bucket.is_cache_rehydration = is_cache_rehydration;
+        // A combined summary cannot name one prior-turn gap for several sessions.
+        if count == 1 {
+            bucket.secs_since_prior_turn = metrics[0].buckets[bi].secs_since_prior_turn;
+        }
         bucket.subagent_launches = subagent_launches;
         // `model`, `thinking_mode`, `speed`, and `has_thinking` stay at their
         // default (`None`/`false`) here. Each contributing session can be a

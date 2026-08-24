@@ -35,6 +35,7 @@ export interface ContextTokenPoint {
   cacheReadTokens: number
   cacheWriteTokens: number
   isCacheRehydration: boolean
+  secsSincePriorTurn: number | null
   subagentLaunches: number
   /** Model that produced this point, forward-filled from the last bucket that named one. */
   model: string | null
@@ -98,6 +99,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     cacheReadTokens: bucket.cacheReadTokens,
     cacheWriteTokens: bucket.cacheWriteTokens,
     isCacheRehydration: bucket.isCacheRehydration,
+    secsSincePriorTurn: bucket.secsSincePriorTurn,
     subagentLaunches: bucket.subagentLaunches,
     model: models[index]!,
     thinkingMode: thinkingModes[index]!,
