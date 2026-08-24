@@ -96,3 +96,14 @@ body {
   border-radius: var(--radius-popover);
   overflow: hidden;
 }
+
+/*
+ * The macOS notification window uses the same Popover material and radius.
+ * Keep the root transparent so the nudge card paints the only visible surface.
+ * Clip at the root so entrance, exit, and expanded states keep the same corner.
+ */
+:root[data-platform="macos"][data-route="nudge"] #root {
+  background-color: transparent;
+  border-radius: var(--radius-popover);
+  overflow: hidden;
+}

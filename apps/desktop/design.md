@@ -208,7 +208,7 @@ sizes:
 rounded:
   small: 4px
   control: 5px
-  popover: 10px
+  popover: 10px # outer corner for macOS floating popover and notification surfaces
   full: 9999px
 shadow:
   popover: "0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08)"
