@@ -98,7 +98,10 @@ const SCAN_STATUS = {
 
 function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
-    if (command in overrides) return Promise.resolve(overrides[command])
+    if (command in overrides) {
+      const result = overrides[command]
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    }
     switch (command) {
       case "get_settings":
         return Promise.resolve(SETTINGS)
@@ -682,6 +685,51 @@ describe("SettingsView", () => {
       "aria-selected",
       "true",
     )
+  })
+
+  it("restarts onboarding after explaining what the reset keeps", async () => {
+    confirmDialog.mockResolvedValue(true)
+    render(<SettingsView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
+
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
+    const [message] = confirmDialog.mock.calls[0] as [string]
+    expect(message).toMatch(/indexed sessions and current settings stay/i)
+    expect(message).toMatch(/returns the next time/i)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("restart_onboarding"))
+    expect(screen.getByRole("button", { name: "Run setup again…" })).toBeEnabled()
+  })
+
+  it("keeps onboarding unchanged when the restart is declined", async () => {
+    confirmDialog.mockResolvedValue(false)
+    render(<SettingsView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
+
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
+    expect(invoke).not.toHaveBeenCalledWith("restart_onboarding")
+  })
+
+  it("keeps an actionable error visible when setup cannot open", async () => {
+    confirmDialog.mockResolvedValue(true)
+    mockCommands({ restart_onboarding: new Error("window failed") })
+    render(<SettingsView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/setup could not open/i)
+    expect(screen.getByRole("status")).toHaveTextContent(/try again or restart antiburn/i)
+  })
+
+  it("keeps an actionable error visible when confirmation cannot open", async () => {
+    confirmDialog.mockRejectedValue(new Error("dialog failed"))
+    render(<SettingsView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/setup could not open/i)
+    expect(invoke).not.toHaveBeenCalledWith("restart_onboarding")
   })
 })
 

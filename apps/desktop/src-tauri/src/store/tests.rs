@@ -292,6 +292,41 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert_eq!(store.settings().unwrap(), saved);
 }
 
+#[test]
+fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
+    let store = store();
+    let before = store
+        .save_settings(&AppSettings {
+            theme: ThemePreference::Dark,
+            activity_window_days: 14,
+            onboarding_completed: true,
+            launch_at_login: false,
+            usage_analytics_enabled: true,
+            ..AppSettings::default()
+        })
+        .unwrap();
+    store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
+    store.add_scan_root("/home/avery/work").unwrap();
+    store
+        .queue_usage_analytics_event("app_launched", "{}")
+        .unwrap();
+
+    let (previous, restarted) = store.restart_onboarding().unwrap();
+
+    let mut expected = before.clone();
+    expected.onboarding_completed = false;
+    assert_eq!(previous, before);
+    assert_eq!(restarted, expected);
+    assert_eq!(store.settings().unwrap(), expected);
+    assert_eq!(store.session_count().unwrap(), 1);
+    assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
+    assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+
+    let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
+    assert_eq!(previous_again, expected);
+    assert_eq!(restarted_again, expected);
+}
+
 /// Pin the current session shape so migrations remain deliberate. This is not
 /// a restriction on what a future local visibility feature may store.
 #[test]

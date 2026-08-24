@@ -140,6 +140,7 @@ pub fn run() {
             commands::get_scan_status,
             commands::get_folder_permissions,
             commands::request_folder_access,
+            commands::restart_onboarding,
             commands::open_folder_access_settings,
             commands::open_overlay_window,
             commands::get_consent_diagnostics,
@@ -509,6 +510,10 @@ mod tests {
         assert_eq!(
             close_policy(super::onboarding::LABEL, true),
             ClosePolicy::HidePendingOnboarding
+        );
+        assert_eq!(
+            super::popover::primary_click_target(true),
+            super::popover::PrimaryClickTarget::Onboarding
         );
         assert_eq!(
             close_policy(super::onboarding::LABEL, false),

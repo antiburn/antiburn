@@ -67,6 +67,15 @@ const _: () = assert!(WIDTH < 1280.0 && HEIGHT < 800.0);
 // nothing visible in it.
 const _: () = assert!(HEIGHT - 44.0 - 57.0 > 150.0 + 110.0 + 60.0);
 
+/// Start setup again at Welcome and give it the first-run app presence.
+pub fn restart(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(existing) = app.get_webview_window(LABEL) {
+        existing.destroy()?;
+    }
+    apply_activation_policy(app, true);
+    open(app)
+}
+
 /// Shows the onboarding window, creating it if this is the first request.
 ///
 /// Called twice over a first run's life: once from setup, and again if the
@@ -126,11 +135,11 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
 
 /// Put the window away and point the reader at where the app now lives.
 ///
-/// Called from [`crate::commands::set_settings`] on the one transition that
-/// means the flow is over. The order is deliberate: the window goes first, so
+/// Called when the current setup run changes from pending to complete. The
+/// order is deliberate: the window goes first, so
 /// the notification arrives into the gap it leaves rather than on top of it —
-/// "where did that window go" is the question being answered, and it is only
-/// asked once the window is gone.
+/// "where did that window go" is the question being answered, and it is asked
+/// after the window is gone.
 pub fn finish(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.hide();

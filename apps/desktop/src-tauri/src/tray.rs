@@ -16,10 +16,12 @@
 
 use tauri::AppHandle;
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, Wry};
 
+#[cfg(debug_assertions)]
+use crate::commands;
 use crate::{popover, settings};
 
 /// The tray item's id, and how anything else gets a handle back to it.
@@ -35,6 +37,8 @@ const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 const MENU_OPEN: &str = "open";
 const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
+#[cfg(debug_assertions)]
+const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
@@ -44,6 +48,53 @@ const UNPIN_LABEL: &str = "Unpin Window";
 /// Linux only, and title case for the same reason the pin labels are.
 #[cfg(target_os = "linux")]
 const OPEN_LABEL: &str = "Open antiburn";
+#[cfg(debug_assertions)]
+const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayMenuEntry {
+    #[cfg(target_os = "linux")]
+    Open,
+    Pin,
+    Settings,
+    #[cfg(debug_assertions)]
+    ResetOnboarding,
+    Separator,
+    Quit,
+}
+
+#[cfg(all(target_os = "linux", debug_assertions))]
+const MENU_LAYOUT: &[TrayMenuEntry] = &[
+    TrayMenuEntry::Open,
+    TrayMenuEntry::Pin,
+    TrayMenuEntry::Settings,
+    TrayMenuEntry::ResetOnboarding,
+    TrayMenuEntry::Separator,
+    TrayMenuEntry::Quit,
+];
+#[cfg(all(target_os = "linux", not(debug_assertions)))]
+const MENU_LAYOUT: &[TrayMenuEntry] = &[
+    TrayMenuEntry::Open,
+    TrayMenuEntry::Pin,
+    TrayMenuEntry::Settings,
+    TrayMenuEntry::Separator,
+    TrayMenuEntry::Quit,
+];
+#[cfg(all(not(target_os = "linux"), debug_assertions))]
+const MENU_LAYOUT: &[TrayMenuEntry] = &[
+    TrayMenuEntry::Pin,
+    TrayMenuEntry::Settings,
+    TrayMenuEntry::ResetOnboarding,
+    TrayMenuEntry::Separator,
+    TrayMenuEntry::Quit,
+];
+#[cfg(all(not(target_os = "linux"), not(debug_assertions)))]
+const MENU_LAYOUT: &[TrayMenuEntry] = &[
+    TrayMenuEntry::Pin,
+    TrayMenuEntry::Settings,
+    TrayMenuEntry::Separator,
+    TrayMenuEntry::Quit,
+];
 
 /// The tray menu items whose text follows app state.
 ///
@@ -100,25 +151,35 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
         None::<&str>,
     )?;
     let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings…", true, None::<&str>)?;
+    #[cfg(debug_assertions)]
+    let reset_onboarding_item = MenuItem::with_id(
+        app,
+        MENU_RESET_ONBOARDING,
+        RESET_ONBOARDING_LABEL,
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
-
-    #[cfg(not(target_os = "linux"))]
-    let menu = Menu::with_items(app, &[&pin_item, &settings_item, &separator, &quit_item])?;
     #[cfg(target_os = "linux")]
-    let menu = {
-        let open_item = MenuItem::with_id(app, MENU_OPEN, OPEN_LABEL, true, None::<&str>)?;
-        Menu::with_items(
-            app,
-            &[
-                &open_item,
-                &pin_item,
-                &settings_item,
-                &separator,
-                &quit_item,
-            ],
-        )?
-    };
+    let open_item = MenuItem::with_id(app, MENU_OPEN, OPEN_LABEL, true, None::<&str>)?;
+
+    let items: Vec<&dyn IsMenuItem<Wry>> = MENU_LAYOUT
+        .iter()
+        .map(|entry| -> &dyn IsMenuItem<Wry> {
+            match entry {
+                #[cfg(target_os = "linux")]
+                TrayMenuEntry::Open => &open_item,
+                TrayMenuEntry::Pin => &pin_item,
+                TrayMenuEntry::Settings => &settings_item,
+                #[cfg(debug_assertions)]
+                TrayMenuEntry::ResetOnboarding => &reset_onboarding_item,
+                TrayMenuEntry::Separator => &separator,
+                TrayMenuEntry::Quit => &quit_item,
+            }
+        })
+        .collect();
+    let menu = Menu::with_items(app, &items)?;
     Ok((menu, pin_item))
 }
 
@@ -166,6 +227,12 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             // entry point, so it leaves the window wherever it was last.
             if let Err(error) = settings::open(app, None) {
                 ::tracing::error!(event = "settings_window_open_failed", error = %error);
+            }
+        }
+        #[cfg(debug_assertions)]
+        MENU_RESET_ONBOARDING => {
+            if let Err(error) = commands::restart_onboarding(app.clone()) {
+                ::tracing::error!(event = "onboarding_restart_failed", trigger = "tray", error);
             }
         }
         MENU_QUIT => {
@@ -255,5 +322,38 @@ mod tests {
     fn the_pin_item_always_names_the_action_it_would_take() {
         assert_eq!(pin_label(false), "Pin Window");
         assert_eq!(pin_label(true), "Unpin Window");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_debug_menu_includes_the_reset_action() {
+        assert_eq!(RESET_ONBOARDING_LABEL, "Reset Onboarding");
+        assert!(MENU_LAYOUT.contains(&TrayMenuEntry::ResetOnboarding));
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn the_release_menu_excludes_debug_actions() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            MENU_LAYOUT,
+            &[
+                TrayMenuEntry::Open,
+                TrayMenuEntry::Pin,
+                TrayMenuEntry::Settings,
+                TrayMenuEntry::Separator,
+                TrayMenuEntry::Quit,
+            ]
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            MENU_LAYOUT,
+            &[
+                TrayMenuEntry::Pin,
+                TrayMenuEntry::Settings,
+                TrayMenuEntry::Separator,
+                TrayMenuEntry::Quit,
+            ]
+        );
     }
 }

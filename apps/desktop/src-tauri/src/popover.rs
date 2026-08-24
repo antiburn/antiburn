@@ -497,6 +497,20 @@ fn get_or_create(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrimaryClickTarget {
+    Onboarding,
+    Popover,
+}
+
+pub(crate) fn primary_click_target(onboarding_pending: bool) -> PrimaryClickTarget {
+    if onboarding_pending {
+        PrimaryClickTarget::Onboarding
+    } else {
+        PrimaryClickTarget::Popover
+    }
+}
+
 /// Handles a click on the menu-bar item.
 ///
 /// `anchor` is the item's screen rectangle as reported by the tray backend.
@@ -506,7 +520,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     // gated on the same flag (see [`crate::scan`]). Send the click to the flow
     // that is actually owed the reader, which also gets the window back for
     // anyone who closed it partway through.
-    if crate::onboarding::is_pending(app) {
+    if primary_click_target(crate::onboarding::is_pending(app)) == PrimaryClickTarget::Onboarding {
         if let Err(error) = crate::onboarding::open(app) {
             ::tracing::warn!(
                 event = "onboarding_window_open_failed",
@@ -570,13 +584,35 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 /// No-op while pinned. The webview still asks — the decision is the shell's,
 /// so every dismissal answers to the same gate.
 pub fn hide(app: &AppHandle) {
-    if is_pinned(app) {
+    hide_with_policy(app, HidePolicy::RespectPin);
+}
+
+/// Hides the popover when setup must own the application surface.
+///
+/// This operation keeps the pin choice. The pin applies again after setup.
+pub fn hide_for_onboarding(app: &AppHandle) {
+    hide_with_policy(app, HidePolicy::IgnorePin);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HidePolicy {
+    RespectPin,
+    IgnorePin,
+}
+
+impl HidePolicy {
+    fn allows(self, pinned: bool) -> bool {
+        self == HidePolicy::IgnorePin || !pinned
+    }
+}
+
+fn hide_with_policy(app: &AppHandle, policy: HidePolicy) {
+    if !policy.allows(is_pinned(app)) {
         return;
     }
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
-    let _ = window.hide();
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.hide();
+    }
     note_hidden(app);
 }
 
@@ -751,16 +787,11 @@ pub fn is_pinned(app: &AppHandle) -> bool {
 /// menu was up, so without this there is no focus left to lose and the next
 /// click on another application would dismiss nothing.
 ///
-/// Refused outright while the first run is unfinished. Re-showing is the whole
-/// point of a pin, and this is the one period where the popover must not be
-/// shown at all — [`toggle`] sends the menu-bar click to the first-run window
-/// for the same reason, and a pin that reached around that gate would put an
-/// empty activity list on screen (the scan scheduler is gated on the same flag)
-/// while the flow it belongs behind is still open. The tray reads the pin state
-/// back after asking rather than trusting the request, so refusing here leaves
-/// its menu item correctly reading "Pin Window".
+/// Pinning is refused while the first run is unfinished. Re-showing is the
+/// point of a pin, and the popover must stay hidden during this period.
+/// Unpinning remains available so the tray action always does what it says.
 pub fn set_pinned(app: &AppHandle, pinned: bool) {
-    if crate::onboarding::is_pending(app) {
+    if !pin_change_allowed(crate::onboarding::is_pending(app), pinned) {
         return;
     }
     let Some(state) = app.try_state::<PopoverState>() else {
@@ -820,6 +851,10 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
     if window.is_visible().unwrap_or(false) {
         let _ = window.set_focus();
     }
+}
+
+fn pin_change_allowed(onboarding_pending: bool, pinned: bool) -> bool {
+    !onboarding_pending || !pinned
 }
 
 /// Everything that has to happen when the popover reaches the screen, whichever
@@ -1206,6 +1241,23 @@ mod tests {
         assert!(state.is_pinned());
         state.set_pinned(false);
         assert!(!state.is_pinned());
+    }
+
+    #[test]
+    fn a_lifecycle_hide_bypasses_the_pin_without_clearing_it() {
+        let state = PopoverState::default();
+        state.set_pinned(true);
+
+        assert!(!HidePolicy::RespectPin.allows(state.is_pinned()));
+        assert!(HidePolicy::IgnorePin.allows(state.is_pinned()));
+        assert!(state.is_pinned());
+    }
+
+    #[test]
+    fn pending_setup_allows_unpinning_but_not_pinning() {
+        assert!(!pin_change_allowed(true, true));
+        assert!(pin_change_allowed(true, false));
+        assert!(pin_change_allowed(false, true));
     }
 
     /// The tray right-click that opens the menu hides the popover, arming the

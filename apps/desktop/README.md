@@ -112,6 +112,26 @@ the app from (the frontend would have to be served separately), and `cargo
 fmt`/`clippy`/`test` never launch the app. Reach for `pnpm dev` rather than
 `pnpm tauri dev`, which bypasses the flag.
 
+## Restarting onboarding
+
+A debug build has **Reset Onboarding** in its tray menu. Packaged builds use
+**Settings → General → Run setup again**. Both actions change only the stored
+`onboardingCompleted` value to `false`, recreate the setup window at Welcome,
+and keep all indexed sessions and preferences. Closing setup before completion
+keeps it pending, so the window returns on the next launch or tray interaction.
+
+Do not edit the SQLite database while antiburn runs. For a true fresh-install
+test, open **Settings → About → Data folder**, reveal the active directory, and
+quit antiburn. Move that exact directory aside instead of deleting it. The move
+keeps the previous profile recoverable and avoids touching the other build's
+data.
+
+Forks must keep different bundle identifiers for debug and release builds. The
+identifier separates app data and platform privacy grants, so sharing it can
+make a development reset affect an installed build. Keep the debug override in
+the documented package scripts. A bare Tauri command that omits
+`tauri.debug.conf.json` can target the release identity.
+
 ## What keeps the app local
 
 Three independent checks, none of which relies on review:

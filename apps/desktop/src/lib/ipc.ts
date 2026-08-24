@@ -759,6 +759,12 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("set_settings", { settings })
 }
 
+/** Make setup pending and open it at Welcome without clearing local data. */
+export async function restartOnboarding(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("restart_onboarding")
+}
+
 /**
  * One interaction worth counting, in the shell's own closed vocabulary.
  *
