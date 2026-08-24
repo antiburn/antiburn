@@ -5,12 +5,11 @@
 //! The nudge content model — the wire contract between the app (which builds
 //! payloads) and the notification webview (which renders them).
 //!
-//! The renderer is intentionally **kind-agnostic**: it draws whatever fields are
-//! present (title, optional reason, optional recommendations, N actions). Adding
-//! a new trigger is a new [`NudgeKind`] variant plus an app-side payload builder
-//! and action route — no change to this model's shape and no change to the
-//! notification UI. `kind` is `#[non_exhaustive]` so adding variants is not a
-//! breaking change.
+//! The renderer is intentionally **kind-agnostic**: it draws the title, subtitle,
+//! description, optional recommendations, and actions. Adding a new trigger is
+//! a new [`NudgeKind`] variant plus an app-side payload builder and action route.
+//! It does not change this model's shape or the notification UI. `kind` is
+//! `#[non_exhaustive]` so adding variants is not a breaking change.
 //!
 //! Everything here serializes `camelCase`, which is what the rest of the shell's
 //! IPC surface speaks (see `src-tauri/src/dto.rs`) — so a nudge payload reads
@@ -33,8 +32,6 @@ pub enum NudgeKind {
     ScanFailure,
     /// Free space on the startup volume fell below the user's threshold.
     DiskSpaceLow,
-    /// Sustained spend is unusually fast for this machine.
-    UsageAnomaly,
     /// A provider quota window crossed a configured usage milestone.
     UsageMilestone,
     /// The first run just finished, and the app is about to become a glyph in
@@ -87,9 +84,8 @@ pub enum NudgeActionTarget {
     },
 }
 
-/// A nudge payload: a title, an optional reason, and optional recommendations,
-/// plus zero or more actions. Serialized to the notification webview as the
-/// `nudge:show` event body.
+/// A nudge payload with summary copy, expanded detail, and zero or more actions.
+/// Serialized to the notification webview as the `nudge:show` event body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nudge {
@@ -98,6 +94,10 @@ pub struct Nudge {
     pub kind: NudgeKind,
     pub tone: NudgeTone,
     pub title: String,
+    /// The short summary shown below the title in every state.
+    pub subtitle: String,
+    /// The detailed copy shown when the notification expands.
+    pub description: String,
     /// The person or agent this is about, when it is about one. `None` when it
     /// is about nobody — a disk-space warning is about a volume, not somebody's
     /// doing.
@@ -107,9 +107,6 @@ pub struct Nudge {
     /// the title has become a sentence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
-    /// Why this is being shown (a short description). Rendered only when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
     /// Optional suggested steps, rendered as a tight list once expanded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recommendations: Vec<String>,
@@ -127,23 +124,21 @@ impl Nudge {
         kind: NudgeKind,
         tone: NudgeTone,
         title: impl Into<String>,
+        subtitle: impl Into<String>,
+        description: impl Into<String>,
     ) -> Self {
         Self {
             id: id.into(),
             kind,
             tone,
             title: title.into(),
+            subtitle: subtitle.into(),
+            description: description.into(),
             actor: None,
-            reason: None,
             recommendations: Vec::new(),
             actions: Vec::new(),
             timeout_ms: None,
         }
-    }
-
-    pub fn reason(mut self, reason: impl Into<String>) -> Self {
-        self.reason = Some(reason.into());
-        self
     }
 
     /// Name whoever this is about. A blank or whitespace-only name is treated as

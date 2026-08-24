@@ -2,25 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The usage-alert monitor: spend anomalies now, live milestones when a
-//! source exists.
-//!
-//! # The anomaly rule
-//!
-//! "Unusually fast" is defined against the machine's own history, not a
-//! tuned constant: the last hour's estimated spend must be at least a
-//! quarter of the trailing week's total, *and* clear an absolute floor.
-//! Someone whose hour equals a quarter of their week is having a remarkable
-//! hour by construction — the rule normalizes itself to heavy and light
-//! users alike — and the floor keeps a quiet machine (where $2 can be a
-//! quarter of the week) from being interrupted over pocket change.
-//!
-//! Every figure is a local estimate priced from the bundled catalog
-//! ([`crate::provider_usage::spend_between`]); the copy says so. Episodes
-//! repeat at most once per [`EPISODE_SECS`], persisted through
-//! [`Store::internal_value`] so a relaunch mid-episode stays quiet.
-//!
-//! # Milestones
+//! The usage milestone monitor.
 //!
 //! The milestone engine ([`crate::provider_usage::live::milestones`])
 //! evaluates whatever the registered sources report — and those now report
@@ -52,29 +34,11 @@ pub const EVENT_CHANGED: &str = "live-usage:changed";
 /// Where the last complete view payload survives an application restart.
 const SNAPSHOT_KEY: &str = "internal:liveUsageSnapshot";
 
-/// How often the monitor looks. Coarser than the scan tick on purpose: an
-/// anomaly is a trend, and a trend does not change by the minute.
+/// How often the monitor looks for new milestone crossings.
 const TICK: Duration = Duration::from_secs(300);
 
 /// Let the first scans land before judging anything.
 const STARTUP_DELAY: Duration = Duration::from_secs(120);
-
-/// The trailing window the anomaly is measured over, and its baseline.
-const HOUR_SECS: i64 = 60 * 60;
-const WEEK_SECS: i64 = 7 * 24 * 60 * 60;
-
-/// The last hour must be at least this fraction of the trailing week.
-const WEEK_FRACTION: f64 = 0.25;
-
-/// …and at least this many estimated dollars, so a quiet machine's quarter
-/// is not an interruption.
-const FLOOR_USD: f64 = 10.0;
-
-/// Minimum quiet time between anomaly notifications.
-const EPISODE_SECS: i64 = 6 * 60 * 60;
-
-/// Where the last-fired moment survives a relaunch.
-const FIRED_KEY: &str = "internal:usageAnomalyFiredEpoch";
 
 /// How fresh a reading the milestone pass asks each source's cooldown for.
 ///
@@ -112,9 +76,8 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
 /// a `tokio` runtime on the calling thread, and dropping a runtime from
 /// inside an asynchronous context aborts with "Cannot drop a runtime in a
 /// context where blocking is not allowed". Called inline, that panic unwound
-/// the spawned task itself, so one tick took the whole monitor — anomalies
-/// and milestones alike — down for the rest of the process while the app
-/// carried on looking healthy.
+/// the spawned task itself, so one tick took the whole milestone monitor
+/// down for the rest of the process while the app carried on looking healthy.
 ///
 /// So the hop is what makes a pass *correct*, not just what keeps a
 /// fifteen-second request from stalling a worker — which is why it is a type
@@ -229,34 +192,7 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
     let Ok(settings) = store.settings() else {
         return;
     };
-    let now = crate::scan::unix_now();
-    anomaly_pass(app, &store, &settings, now);
     milestone_pass(app, &settings);
-}
-
-fn anomaly_pass(app: &AppHandle, store: &Store, settings: &crate::store::AppSettings, now: i64) {
-    if !settings.notifications_enabled || !settings.notify_usage_anomalies {
-        return;
-    }
-
-    let last_fired: i64 = store
-        .internal_value(FIRED_KEY)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
-    if now.saturating_sub(last_fired) < EPISODE_SECS {
-        return;
-    }
-
-    let Ok(evidence) = store.usage_evidence(now - WEEK_SECS) else {
-        return;
-    };
-    let Some((hour_usd, week_usd)) = anomaly(&evidence, now) else {
-        return;
-    };
-
-    if crate::notifications::note_usage_anomaly(app, hour_usd, week_usd) {
-        store.set_internal_value(FIRED_KEY, &now.to_string());
-    }
 }
 
 fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
@@ -291,8 +227,8 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     if let Some(content) = provider_usage::live::milestone_content(
         &mut ledger,
         &snapshots,
-        settings.milestones_5h,
-        settings.milestones_weekly,
+        &settings.milestones_5h,
+        &settings.milestones_weekly,
     ) {
         let _ = crate::notifications::note_usage_milestone(app, &content);
     }
@@ -300,17 +236,33 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
 
 /// Narrow a collected snapshot down to what the milestone engine needs.
 ///
-/// The engine deals in two window classes and an integer percentage; the
-/// collected model carries more than that, and most of the extra is exactly
-/// what a *notification* should not try to say. Three rules do the narrowing:
+/// The engine deals in two window classes, quota use, and elapsed time. The
+/// collected model carries more than that. Four rules do the narrowing:
 ///
 /// - A window with no stated reset is dropped. The reset epoch is part of the
 ///   window's identity, and without it a crossing could never re-arm — the
 ///   notification would fire once and then go quiet forever.
 /// - A supplemental weekly window (a per-model limit) counts as weekly, so it
 ///   follows the weekly preference row rather than inventing a third one.
+/// - A stated start defines elapsed time. Otherwise the known five-hour or
+///   seven-day duration is measured backward from the reset.
 /// - Anything else — a daily limit, a provider-specific bucket — is dropped
 ///   rather than forced into the nearer of two classes it does not belong to.
+fn window_elapsed_percent(
+    observed_at: time::OffsetDateTime,
+    starts_at: Option<time::OffsetDateTime>,
+    resets_at: time::OffsetDateTime,
+    fallback_duration: time::Duration,
+) -> Option<f64> {
+    let starts_at = starts_at.unwrap_or(resets_at - fallback_duration);
+    let span_seconds = (resets_at - starts_at).whole_seconds();
+    if span_seconds <= 0 {
+        return None;
+    }
+    let elapsed_seconds = (observed_at - starts_at).whole_seconds();
+    Some((elapsed_seconds as f64 / span_seconds as f64 * 100.0).clamp(0.0, 100.0))
+}
+
 fn milestone_snapshot(
     snapshot: &provider_usage::live::ProviderUsageSnapshot,
 ) -> provider_usage::live::milestones::LiveUsageSnapshot {
@@ -333,6 +285,17 @@ fn milestone_snapshot(
                     }
                     _ => return None,
                 };
+                let resets_at = window.resets_at?;
+                let duration = match class {
+                    UsageWindowClass::Short => time::Duration::hours(5),
+                    UsageWindowClass::Weekly => time::Duration::days(7),
+                };
+                let elapsed_percent = window_elapsed_percent(
+                    snapshot.observed_at,
+                    window.starts_at,
+                    resets_at,
+                    duration,
+                )?;
                 Some(LiveUsageWindow {
                     id: window.id.clone(),
                     class,
@@ -344,23 +307,13 @@ fn milestone_snapshot(
                         (UsageWindowClass::Weekly, _) => "weekly limit".to_string(),
                     },
                     used_percent: window.used_percent?,
-                    resets_at_epoch: window.resets_at?.unix_timestamp(),
+                    elapsed_percent,
+                    resets_at_epoch: resets_at.unix_timestamp(),
                     authoritative: window.authoritative,
                 })
             })
             .collect(),
     }
-}
-
-/// The pure half of the rule, separated so the arithmetic is testable
-/// without a store or a clock.
-fn anomaly(evidence: &[crate::store::UsageEvidenceRecord], now: i64) -> Option<(f64, f64)> {
-    let hour_usd = provider_usage::spend_between(evidence, now - HOUR_SECS, now + 1);
-    if hour_usd < FLOOR_USD {
-        return None;
-    }
-    let week_usd = provider_usage::spend_between(evidence, now - WEEK_SECS, now + 1);
-    (hour_usd >= week_usd * WEEK_FRACTION).then_some((hour_usd, week_usd))
 }
 
 #[cfg(test)]
@@ -370,7 +323,28 @@ mod tests {
         LiveProviderUsage, LiveUsageFreshness, LiveUsageSourceError, LiveUsageSummary,
         LiveUsageSupport,
     };
-    use crate::store::UsageEvidenceRecord;
+
+    fn at(epoch: i64) -> time::OffsetDateTime {
+        time::OffsetDateTime::from_unix_timestamp(epoch).unwrap()
+    }
+
+    #[test]
+    fn elapsed_window_percentage_uses_a_stated_start_or_the_known_duration() {
+        let reset = at(10 * 60 * 60);
+        assert_eq!(
+            window_elapsed_percent(at(7 * 60 * 60), None, reset, time::Duration::hours(5)),
+            Some(40.0)
+        );
+        assert_eq!(
+            window_elapsed_percent(
+                at(4 * 60 * 60),
+                Some(at(0)),
+                reset,
+                time::Duration::hours(5),
+            ),
+            Some(40.0)
+        );
+    }
 
     #[test]
     fn the_latest_live_usage_snapshot_survives_a_restart() {
@@ -445,52 +419,5 @@ mod tests {
         }));
 
         assert!(ran.load(Ordering::SeqCst));
-    }
-
-    fn record(epoch: i64, output_tokens: u64) -> UsageEvidenceRecord {
-        UsageEvidenceRecord {
-            agent: "claude-code".into(),
-            updated_at_epoch: epoch,
-            model_breakdown_json: Some(format!(
-                "{{\"claude-sonnet-4-5\":{{\"input_tokens\":0,\"output_tokens\":{output_tokens},\
-                 \"cache_read_tokens\":0,\"cache_creation_tokens\":0}}}}"
-            )),
-        }
-    }
-
-    const NOW: i64 = 1_700_000_000;
-
-    /// Output tokens that price above the floor with the bundled catalog.
-    /// (Sonnet output is $15/M at the time of writing; a million tokens is
-    /// comfortably past any plausible floor without depending on the exact
-    /// price.)
-    const BIG: u64 = 5_000_000;
-
-    #[test]
-    fn a_quiet_hour_is_no_anomaly_however_quiet_the_week() {
-        // Small hour, small week: under the floor, silent.
-        let evidence = vec![record(NOW - 100, 1_000)];
-        assert_eq!(anomaly(&evidence, NOW), None);
-    }
-
-    #[test]
-    fn a_heavy_hour_against_a_heavier_week_is_ordinary() {
-        // The hour clears the floor but is a sliver of the week.
-        let mut evidence = vec![record(NOW - 100, BIG)];
-        for day in 1..7 {
-            evidence.push(record(NOW - day * 24 * 60 * 60, BIG * 4));
-        }
-        assert_eq!(anomaly(&evidence, NOW), None);
-    }
-
-    #[test]
-    fn a_quarter_of_the_week_in_one_hour_is_the_anomaly() {
-        // One big burst now, modest history: the hour dominates the week.
-        let evidence = vec![
-            record(NOW - 100, BIG),
-            record(NOW - 3 * 24 * 60 * 60, BIG / 2),
-        ];
-        let (hour, week) = anomaly(&evidence, NOW).expect("fires");
-        assert!(hour > 0.0 && week >= hour);
     }
 }

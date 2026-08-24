@@ -200,14 +200,18 @@ Three independent checks, none of which relies on review:
   feature requires. See the policy at the top of `src-tauri/src/scan.rs`.
 - **Notifications.** Six kinds, all posted by the shell and never by the webview
   (which is granted no notification permission): an available update, a failed
-  scan, low disk space, a spend anomaly, a crossed usage milestone, and the
-  settings pane's own test. Each is gated by the master preference _and_ its own
-  — the test alone bypasses the master switch, because pressing it is the reader
-  asking to see one — and nothing repeats. See the policy at the top of
+  scan, low disk space, a crossed usage milestone, the first-run menu-bar
+  location, and the settings pane's own test. The test and first-run location
+  bypass the master switch because both follow a direct reader action. Other
+  kinds use the master preference and their own gate, and nothing repeats. See
+  the policy at the top of
   `src-tauri/src/notifications.rs`. Delivery is antiburn's own always-on-top
   window rather than the platform's notification centre: the `antiburn-nudge`
   crate under `src-tauri/crates/nudge/`, applied at the seam in
   `src-tauri/src/nudges.rs`. Nothing about a notification leaves the machine.
+  Usage milestones default to every 10% and compare quota consumed with the
+  share of the current limit window that has elapsed. Settings offers every 5%
+  step when a reader wants different milestones.
 - **Attention.** The popover shows a banner above the activity list when a
   repository cannot be read (which opens Settings at Sources) or when the local
   database rejects a write (which retries with a scan). Both are derived from

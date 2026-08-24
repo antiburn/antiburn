@@ -9,7 +9,7 @@
 //! at the OS-native corner, shows it without stealing focus, pushes a [`Nudge`]
 //! payload to the notification webview, and reports which CTA was clicked back to
 //! the app via a caller-supplied callback. It knows nothing about *why* a nudge
-//! fires (a failed scan, a usage anomaly, …), about user preferences, or about
+//! fires (a failed scan, a usage milestone, …), about user preferences, or about
 //! the app's navigation — that is the app's **policy**.
 //!
 //! The seam between crate and app is intentionally tiny:
