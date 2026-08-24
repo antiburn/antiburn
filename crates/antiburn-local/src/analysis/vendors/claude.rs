@@ -253,3 +253,46 @@ fn model_context_window(model: &str) -> Option<u64> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, BufReader, Error, Read};
+
+    use super::*;
+
+    #[test]
+    fn a_mid_stream_read_failure_omits_the_whole_session() {
+        let source = b"{\"type\":\"assistant\",\"message\":{\"id\":\"first\",\"role\":\"assistant\",\"content\":[]}}\n";
+        let reader = BufReader::new(DataThenError::new(source));
+        let mut collector = SessionCollector::new("claude", "read-failure");
+        let result = ClaudeAdapter.visit_reader(reader, &mut collector);
+        assert!(result.is_err());
+    }
+
+    struct DataThenError {
+        data: Vec<u8>,
+        returned_data: bool,
+    }
+
+    impl DataThenError {
+        fn new(data: &[u8]) -> Self {
+            Self {
+                data: data.to_vec(),
+                returned_data: false,
+            }
+        }
+    }
+
+    impl Read for DataThenError {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            if !self.returned_data {
+                let count = output.len().min(self.data.len());
+                output[..count].copy_from_slice(&self.data[..count]);
+                self.returned_data = true;
+                return Ok(count);
+            }
+
+            Err(Error::other("synthetic read failure"))
+        }
+    }
+}

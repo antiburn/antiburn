@@ -2,7 +2,11 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use antiburn_local::analysis::{RawSource, SessionInput, analyze_sources_with, normalize_source};
+use antiburn_local::analysis::{
+    MAX_RECORD_BYTES, NormalizedSession, PartialReason, RawSource, RecordCoverage,
+    SessionCollector, SessionInput, adapter_for, analyze_session, analyze_sources_with,
+    normalize_source,
+};
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> &'static str {
@@ -124,6 +128,10 @@ fn oversized_line_jsonl(payload_bytes: usize) -> String {
 }
 
 fn file_input(name: &str, source: &str, directory: &tempfile::TempDir) -> SessionInput {
+    file_input_bytes(name, source.as_bytes(), directory)
+}
+
+fn file_input_bytes(name: &str, source: &[u8], directory: &tempfile::TempDir) -> SessionInput {
     let path = directory.path().join(format!("{name}.jsonl"));
     fs::write(&path, source).expect("generated source must be written");
     SessionInput {
@@ -131,6 +139,58 @@ fn file_input(name: &str, source: &str, directory: &tempfile::TempDir) -> Sessio
         session_id: name.to_string(),
         source: RawSource::File(path),
     }
+}
+
+fn assistant_record(id: &str, timestamp: u64, input: u64, output: u64) -> String {
+    format!(
+        r#"{{"type":"assistant","timestamp":{timestamp},"message":{{"id":"{id}","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{{"input_tokens":{input},"output_tokens":{output}}},"content":[{{"type":"text","text":"{id}"}}]}}}}"#
+    )
+}
+
+fn three_record_source() -> String {
+    [
+        assistant_record("first", 1_761_000_000, 2, 3),
+        assistant_record("second", 1_761_000_001, 4, 5),
+        assistant_record("third", 1_761_000_002, 6, 7),
+    ]
+    .join("\n")
+}
+
+fn collect_claude(
+    input: &SessionInput,
+) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    adapter_for("claude")
+        .visit(input, &mut collector)
+        .expect("Claude source must be visited");
+    let coverage = collector.coverage();
+    let reasons = collector.partial_reasons().clone();
+    let session = collector
+        .into_session()
+        .expect("visited source must produce a session");
+    (coverage, reasons, session)
+}
+
+fn late_skill_source(marker_has_role: bool) -> String {
+    let command = r#"{"type":"user","message":{"role":"user","content":"<command-name>/orbit-tracker</command-name>"}}"#;
+    let marker = if marker_has_role {
+        r#"{"type":"user","message":{"role":"user","content":"Base directory for this skill: /tmp/orbit-tracker/SKILL.md"}}"#
+    } else {
+        r#"{"type":"attachment","message":{"content":"Base directory for this skill: /tmp/orbit-tracker/SKILL.md"}}"#
+    };
+    format!("{command}\n{marker}\n")
+}
+
+fn oversized_metric_jsonl(payload_bytes: usize) -> String {
+    let mut source = String::with_capacity(payload_bytes + 1_000);
+    source.push_str(&assistant_record("first-neighbour", 1_761_000_000, 2, 3));
+    source.push('\n');
+    source.push_str("{\"type\":\"assistant\",\"padding\":\"");
+    source.push_str(&"x".repeat(payload_bytes));
+    source.push_str("\",\"timestamp\":1761000001,\"message\":{\"id\":\"oversized\",\"role\":\"assistant\",\"model\":\"claude-3-5-haiku-20241022\",\"usage\":{\"input_tokens\":999999,\"output_tokens\":888888},\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"echo oversized\"}}]}}\n");
+    source.push_str(&assistant_record("second-neighbour", 1_761_000_002, 4, 5));
+    source.push('\n');
+    source
 }
 
 #[test]
@@ -223,12 +283,20 @@ fn golden_parent_and_subagent_are_independent() {
 }
 
 #[test]
-fn malformed_line_does_not_discard_neighbours() {
-    let normalized =
-        normalize_source(&input("malformed_between_valid")).expect("fixture must normalize");
-    assert_eq!(normalized.events.len(), 2);
-    assert_eq!(normalized.events[0].ts_ms, Some(1_772_352_000_000));
-    assert_eq!(normalized.events[1].ts_ms, Some(1_772_352_002_000));
+fn a_malformed_record_keeps_both_neighbour_events() {
+    let actual = normalize_source(&input("malformed_between_valid"))
+        .ok()
+        .map(|session| {
+            (
+                session.events.len(),
+                session.events[0].ts_ms,
+                session.events[1].ts_ms,
+            )
+        });
+    assert_eq!(
+        actual,
+        Some((2, Some(1_772_352_000_000), Some(1_772_352_002_000)))
+    );
 }
 
 #[test]
@@ -276,4 +344,205 @@ fn many_record_source_analyzes_to_completion() {
     assert_eq!(sessions[0].event_count, 10_000);
     assert_eq!(sessions[0].tokens_in, 70_000);
     assert_eq!(sessions[0].tokens_out, 30_000);
+}
+
+#[test]
+fn a_file_source_does_not_commit_an_unterminated_final_record() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let input = file_input("unterminated-file", &three_record_source(), &directory);
+    let session = normalize_source(&input).expect("file source must normalize");
+    assert_eq!(session.events.len(), 2);
+}
+
+#[test]
+fn an_in_memory_source_commits_an_unterminated_final_record() {
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "unterminated-memory".to_string(),
+        source: RawSource::Jsonl(three_record_source()),
+    };
+    let session = normalize_source(&input).expect("in-memory source must normalize");
+    assert_eq!(session.events.len(), 3);
+}
+
+#[test]
+fn a_slash_command_skill_resolves_when_its_marker_arrives_later() {
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "late-skill-marker".to_string(),
+        source: RawSource::Jsonl(late_skill_source(true)),
+    };
+    let session = normalize_source(&input).expect("skill source must normalize");
+    let detail = session.events[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "skill")
+        .and_then(|tool| tool.detail.as_deref());
+    assert_eq!(detail, Some("orbit-tracker"));
+}
+
+#[test]
+fn a_skill_marker_in_a_record_with_no_role_is_still_collected() {
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "roleless-skill-marker".to_string(),
+        source: RawSource::Jsonl(late_skill_source(false)),
+    };
+    let session = normalize_source(&input).expect("skill source must normalize");
+    let detail = session.events[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "skill")
+        .and_then(|tool| tool.detail.as_deref());
+    assert_eq!(detail, Some("orbit-tracker"));
+}
+
+#[test]
+fn two_priceable_models_of_equal_rank_keep_the_first_seen() {
+    let source = [
+        assistant_record("opus-47", 1_761_000_000, 2, 3)
+            .replace("claude-3-5-haiku-20241022", "claude-opus-4-7-20260115"),
+        assistant_record("opus-46", 1_761_000_001, 4, 5)
+            .replace("claude-3-5-haiku-20241022", "claude-opus-4-6-20260115"),
+    ]
+    .join("\n");
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "equal-rank-models".to_string(),
+        source: RawSource::Jsonl(source),
+    };
+    let session = normalize_source(&input).expect("model source must normalize");
+    assert_eq!(session.model.as_deref(), Some("claude-opus-4-7-20260115"));
+}
+
+#[test]
+fn an_unopenable_file_source_omits_the_whole_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "unopenable".to_string(),
+        source: RawSource::File(directory.path().join("missing.jsonl")),
+    };
+    let normalize_failed = normalize_source(&input).is_err();
+    let session_was_omitted = analyze_sources_with(vec![input], false).sessions.is_empty();
+    assert_eq!((normalize_failed, session_was_omitted), (true, true));
+}
+
+#[test]
+fn invalid_utf8_between_valid_records_omits_the_whole_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let mut source = assistant_record("first", 1_761_000_000, 2, 3).into_bytes();
+    source.push(b'\n');
+    source.extend_from_slice(b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"");
+    source.extend_from_slice(&[0xff, 0xfe]);
+    source.extend_from_slice(b"\"}}\n");
+    source.extend_from_slice(assistant_record("second", 1_761_000_002, 4, 5).as_bytes());
+    source.push(b'\n');
+    let input = file_input_bytes("invalid-middle", &source, &directory);
+    assert!(normalize_source(&input).is_err());
+}
+
+#[test]
+fn an_oversized_metric_bearing_record_is_dropped_for_both_source_variants() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let source = oversized_metric_jsonl(MAX_RECORD_BYTES + 1);
+    let inputs = [
+        file_input("oversized-metrics-file", &source, &directory),
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: "oversized-metrics-memory".to_string(),
+            source: RawSource::Jsonl(source),
+        },
+    ];
+
+    let actual: Vec<_> = inputs
+        .iter()
+        .map(|input| {
+            let (coverage, reasons, session) = collect_claude(input);
+            let metrics = analyze_session(&session);
+            (
+                coverage,
+                reasons,
+                session.events.len(),
+                metrics.tokens_in,
+                metrics.tokens_out,
+                metrics.tool_mix.bash,
+            )
+        })
+        .collect();
+    let expected = vec![
+        (
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::Oversized]),
+            2,
+            6,
+            8,
+            0,
+        );
+        2
+    ];
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn invalid_utf8_inside_an_oversized_record_does_not_omit_the_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let mut source = assistant_record("first", 1_761_000_000, 2, 3).into_bytes();
+    source.push(b'\n');
+    source.extend(std::iter::repeat_n(b'x', MAX_RECORD_BYTES + 1));
+    source.push(0xff);
+    source.push(b'\n');
+    source.extend_from_slice(assistant_record("second", 1_761_000_002, 4, 5).as_bytes());
+    source.push(b'\n');
+    let input = file_input_bytes("invalid-oversized", &source, &directory);
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    let visit_succeeded = adapter_for("claude").visit(&input, &mut collector).is_ok();
+    let actual = (
+        visit_succeeded,
+        collector.coverage(),
+        collector.partial_reasons().clone(),
+        collector
+            .into_session()
+            .ok()
+            .map(|session| session.events.len()),
+    );
+    assert_eq!(
+        actual,
+        (
+            true,
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::Oversized]),
+            Some(2),
+        )
+    );
+}
+
+#[test]
+fn invalid_utf8_inside_an_unterminated_tail_does_not_omit_the_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let mut source = assistant_record("first", 1_761_000_000, 2, 3).into_bytes();
+    source.push(b'\n');
+    source.extend_from_slice(b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"");
+    source.push(0xff);
+    let input = file_input_bytes("invalid-tail", &source, &directory);
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    let visit_succeeded = adapter_for("claude").visit(&input, &mut collector).is_ok();
+    let actual = (
+        visit_succeeded,
+        collector.coverage(),
+        collector.partial_reasons().clone(),
+        collector
+            .into_session()
+            .ok()
+            .map(|session| session.events.len()),
+    );
+    assert_eq!(
+        actual,
+        (
+            true,
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::IncompleteTail]),
+            Some(1),
+        )
+    );
 }
