@@ -65,7 +65,7 @@ impl VendorAdapter for CodexAdapter {
 fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<String>) {
     let mut events = Vec::new();
     // A forked rollout starts by replaying its parent's history. Keep those
-    // records available to the desktop analytics view, but do not attribute
+    // records available to the desktop analysis view, but do not attribute
     // their already-billed token_count events to the child. The first task
     // addressed to the child's agent path marks the owned usage boundary.
     let owned_usage_start = codex_fork_owned_offset(content);

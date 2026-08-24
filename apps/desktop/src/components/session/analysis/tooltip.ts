@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Shared surface for the analytics chart tooltips.
+ * Shared surface for the analysis chart tooltips.
  *
  * These are cursor-following hover cards, not the platform `Tooltip` — they
  * track the pointer across a chart rather than anchoring to a trigger — so they
@@ -12,7 +12,7 @@
 
 import type { CSSProperties } from "react"
 
-/** The frosted-glass surface every analytics chart tooltip paints on. */
+/** The frosted-glass surface every analysis chart tooltip paints on. */
 export const GLASS_TOOLTIP_STYLE: CSSProperties = {
   background: "color-mix(in srgb, var(--color-surface) 88%, transparent)",
   backdropFilter: "blur(6px)",

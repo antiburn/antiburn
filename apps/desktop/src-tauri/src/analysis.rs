@@ -27,7 +27,7 @@ use antiburn_local::discovery::{
 use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
 
-use crate::agents::{supports_analytics, vendor_label};
+use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
 use crate::store::{AnalysisRecord, SessionKey};
 
@@ -503,7 +503,7 @@ pub async fn analyze(
 
 /// Analyze one sub-agent transcript on its own.
 ///
-/// A sub-agent is a session in its own right. The analytics surface opens its
+/// A sub-agent is a session in its own right. The analysis surface opens its
 /// transcript like any other session. Vendors do not nest orchestration, so
 /// this path analyzes one input.
 pub async fn analyze_subagent(
@@ -577,8 +577,8 @@ pub async fn analyze_subagent(
 }
 
 /// Whether analysis of this agent's transcripts is more than a generic parse.
-pub fn analytics_supported(agent: AgentKind) -> bool {
-    supports_analytics(agent)
+pub fn analysis_supported(agent: AgentKind) -> bool {
+    supports_analysis(agent)
 }
 
 /// How many leading transcript lines are searched for fork evidence.

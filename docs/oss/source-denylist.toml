@@ -58,7 +58,7 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # disclosure of anything the reader's own work produced.
 # Provenance: the wire format is the private collector's documented
 # POST /v1/track contract, implemented in apps/desktop/src-tauri/src/
-# usage_analytics from that written contract. No source was copied, so this
+# analytics from that written contract. No source was copied, so this
 # needs no source-allowlist rule and carries ordinary Git/DCO provenance —
 # the same footing as the store-backed ConsentGrants implementation under
 # D-024. The contract's identify half, its userId/orgId fields, and its

@@ -25,7 +25,7 @@ export interface SubagentRosterRowProps {
 
 /**
  * One agent row: leading icon, truncated label, and a chevron that appears on
- * hover to signal the row opens that agent's analytics.
+ * hover to signal the row opens that agent's analysis.
  *
  * Shared by the orchestrator roster and the "launched by" row on a sub-agent
  * view.

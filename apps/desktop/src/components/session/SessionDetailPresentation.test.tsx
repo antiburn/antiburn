@@ -114,7 +114,7 @@ function presentationProps(
       title: "Fix the flaky test",
       wslDistro: null,
     },
-    supportsAnalytics: true,
+    supportsAnalysis: true,
     cost: null,
     costSplit: null,
     orchestration: null,
@@ -203,7 +203,7 @@ describe("SessionDetailPresentation — chrome", () => {
 
   it("shows a header spinner while a newer analysis is on its way", () => {
     view({ refreshing: true })
-    expect(screen.getByRole("status")).toHaveTextContent("Refreshing session analytics")
+    expect(screen.getByRole("status")).toHaveTextContent("Refreshing session analysis")
     expect(screen.getByRole("heading", { name: "Session Detail" })).toBeTruthy()
   })
 
@@ -245,12 +245,12 @@ describe("SessionDetailPresentation — states", () => {
       const { rerender } = render(
         <SessionDetailPresentation {...presentationProps({ summary: null, loading: true })} />,
       )
-      expect(screen.queryByTestId("session-analytics-skeleton")).toBeNull()
+      expect(screen.queryByTestId("session-analysis-skeleton")).toBeNull()
 
       act(() => {
         vi.advanceTimersByTime(250)
       })
-      expect(screen.getByTestId("session-analytics-skeleton")).toBeTruthy()
+      expect(screen.getByTestId("session-analysis-skeleton")).toBeTruthy()
 
       // Once shown it holds for its minimum-visible window even after the
       // load finishes, so it cannot flicker.
@@ -259,12 +259,12 @@ describe("SessionDetailPresentation — states", () => {
           {...presentationProps({ summary: summary(), loading: false })}
         />,
       )
-      expect(screen.getByTestId("session-analytics-skeleton")).toBeTruthy()
+      expect(screen.getByTestId("session-analysis-skeleton")).toBeTruthy()
 
       act(() => {
         vi.advanceTimersByTime(500)
       })
-      expect(screen.queryByTestId("session-analytics-skeleton")).toBeNull()
+      expect(screen.queryByTestId("session-analysis-skeleton")).toBeNull()
     } finally {
       vi.useRealTimers()
     }
@@ -283,7 +283,7 @@ describe("SessionDetailPresentation — states", () => {
 
     view({
       summary: summary({ sessionCount: 0 }),
-      supportsAnalytics: false,
+      supportsAnalysis: false,
       session: { agent: "kiro", sessionId: "s1", wslDistro: null },
     })
     expect(screen.getByText(/Session analysis for Kiro sessions/)).toBeTruthy()

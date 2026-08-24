@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Shaping and formatting for the session-analytics surface.
+ * Shaping and formatting for the session-analysis surface.
  *
  * Pure functions over the analysis summary the local engine produces, with no
  * React, no IPC, and no state — the charts consume the output, and these can be
@@ -348,15 +348,15 @@ export function toolMixSlices(summary: ActiveSessionsSummary): ToolSlice[] {
       key: "edit",
       label: "Edits",
       value: m.edit,
-      colorVar: "var(--color-analytics-blue-strong)",
+      colorVar: "var(--color-analysis-blue-strong)",
     },
-    { key: "test", label: "Tests", value: m.test, colorVar: "var(--color-analytics-green)" },
-    { key: "read", label: "Reads", value: m.read, colorVar: "var(--color-analytics-blue)" },
+    { key: "test", label: "Tests", value: m.test, colorVar: "var(--color-analysis-green)" },
+    { key: "read", label: "Reads", value: m.read, colorVar: "var(--color-analysis-blue)" },
     {
       key: "search",
       label: "Searches",
       value: m.search,
-      colorVar: "var(--color-analytics-cyan)",
+      colorVar: "var(--color-analysis-cyan)",
     },
     { key: "bash", label: "Commands", value: m.bash, colorVar: "var(--color-label-secondary)" },
     { key: "other", label: "Other", value: m.other, colorVar: "var(--color-label-tertiary)" },
@@ -386,19 +386,19 @@ const INITIAL_CONTEXT_SOURCES: readonly InitialContextSourceMeta[] = [
   {
     key: "skill_instructions",
     label: "Skills",
-    colorVar: "var(--color-analytics-cyan)",
+    colorVar: "var(--color-analysis-cyan)",
     tip: "Instructions loaded from installed skills before the first response.",
   },
   {
     key: "mcp_instructions",
     label: "MCP",
-    colorVar: "var(--color-analytics-blue)",
+    colorVar: "var(--color-analysis-blue)",
     tip: "Tool definitions and instructions from connected MCP servers.",
   },
   {
     key: "agent_instructions",
     label: "Agent files",
-    colorVar: "var(--color-analytics-blue-strong)",
+    colorVar: "var(--color-analysis-blue-strong)",
     tip: "Project and personal agent files loaded at startup.",
   },
   {

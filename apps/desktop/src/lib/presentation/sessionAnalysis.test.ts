@@ -22,7 +22,7 @@ import {
   initialContextTotal,
   median,
   modeChangeMarkers,
-} from "./sessionAnalytics"
+} from "./sessionAnalysis"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {

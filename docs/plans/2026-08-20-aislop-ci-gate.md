@@ -277,7 +277,7 @@ Clearing the standing findings is issue #90, not this work.
 6. **Third-party telemetry stays off.** `telemetry.enabled: false` is written
    into the committed config, not inherited. `CONTRIBUTING.md` permits exactly
    two first-party calls — the release-feed update check and the D-027 / D-28
-   anonymised usage-analytics channel — and bans every other telemetry or
+   anonymised analytics channel — and bans every other telemetry or
    analytics channel. A contributor tool that reports to its vendor is not one of
    the two permitted calls, so it stays disabled. aislop 0.14.0 ignores this
    setting on its `hook` paths, so every committed hook invocation must also set
@@ -372,7 +372,7 @@ Clearing the standing findings is issue #90, not this work.
   "Boundaries that pull requests must respect"). antiburn reaches no service of
   ours and hands the reader's data to no one who does not already hold it. Two
   first-party calls are permitted and no more: the release-feed update check, and
-  the anonymised usage-analytics channel recorded as D-027 and deviations D-28,
+  the anonymised analytics channel recorded as D-027 and deviations D-28,
   which must keep its four properties. No other telemetry or analytics channel
   may enter the tree; `scripts/check-boundary.mjs`,
   `crates/antiburn-local/tests/boundary.rs`, and

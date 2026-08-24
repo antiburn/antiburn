@@ -48,7 +48,7 @@ technique is not the boundary.
   no telemetry or analytics SDK, and no reporting endpoint carrying the reader's
   work, may enter the tree. Two first-party calls are permitted and no more: the
   update check — antiburn's own release feed, carrying nothing about the reader —
-  and the anonymised usage-analytics channel recorded as D-027 and deviations
+  and the anonymised analytics channel recorded as D-027 and deviations
   D-28. Four properties keep the second one inside this boundary and must all
   hold for any change to it: the reader is shown the control before a single
   event is sent, the payload carries no session content and no credential, the

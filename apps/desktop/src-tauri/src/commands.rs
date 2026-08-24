@@ -27,11 +27,11 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::agents::kind_from_slug;
-use crate::analytics;
+use crate::analysis;
 use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, LiveUsageSummary,
-    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics,
+    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
     SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
@@ -235,8 +235,8 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         // Same rule, same reason: derived from the build that is actually
         // running rather than from a `cfg!`, so no copy downstream can offer
         // a control this binary cannot honour.
-        usage_analytics_supported: crate::usage_analytics::available(),
-        usage_analytics_operator: crate::usage_analytics::operator().map(str::to_string),
+        analytics_supported: crate::analytics::available(),
+        analytics_operator: crate::analytics::operator().map(str::to_string),
     })
 }
 
@@ -289,7 +289,7 @@ pub fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
-    usage_analytics_enabled: bool,
+    analytics_enabled: bool,
 ) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved) = store
@@ -298,10 +298,10 @@ pub fn finish_onboarding(
             settings.launch_at_login = launch_at_login;
             // Written here and nowhere earlier. The draft the Ready screen
             // holds is the reader's answer *before* anything can be sent —
-            // `usage_analytics::allowed` also requires the flag set on the next
+            // `analytics::allowed` also requires the flag set on the next
             // line, so switching analytics off on that screen means no event
             // is ever recorded, rather than recorded and then withdrawn.
-            settings.usage_analytics_enabled = usage_analytics_enabled;
+            settings.analytics_enabled = analytics_enabled;
             settings.onboarding_completed = true;
         })
         .map_err(fail)?;
@@ -309,10 +309,10 @@ pub fn finish_onboarding(
     // After the transition, so the gate this event reads sees the saved flags.
     // A reader who declined on the Ready screen records nothing at all. An
     // explicit restart records a new completion because it is a new setup run.
-    crate::usage_analytics::record(
+    crate::analytics::record(
         &app,
-        crate::usage_analytics::event::EventName::OnboardingFinished,
-        crate::usage_analytics::event::Facts::default(),
+        crate::analytics::event::EventName::OnboardingFinished,
+        crate::analytics::event::Facts::default(),
     );
     Ok(saved)
 }
@@ -322,13 +322,10 @@ pub fn finish_onboarding(
 /// Infallible and silent: analytics that could fail an action the reader
 /// actually asked for would have their priorities inverted. The parameter is a
 /// closed enum rather than a name and a property map — see
-/// [`usage_analytics::event::Interaction`](crate::usage_analytics::event::Interaction).
+/// [`analytics::event::Interaction`](crate::analytics::event::Interaction).
 #[tauri::command]
-pub fn note_interaction(
-    app: tauri::AppHandle,
-    interaction: crate::usage_analytics::event::Interaction,
-) {
-    crate::usage_analytics::record_interaction(&app, interaction);
+pub fn note_interaction(app: tauri::AppHandle, interaction: crate::analytics::event::Interaction) {
+    crate::analytics::record_interaction(&app, interaction);
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
@@ -385,7 +382,7 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // the installation identifier so a later opt-in cannot be joined to this
     // one. Routed through the same hub as every other consequence so the two
     // can never drift apart.
-    crate::usage_analytics::handle_settings_transition(app, previous, saved);
+    crate::analytics::handle_settings_transition(app, previous, saved);
 
     // Which switch moved, never what it moved to, and only from this closed
     // list. A key alone answers "is this control being found at all"; the
@@ -409,10 +406,10 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         ),
     ] {
         if changed {
-            crate::usage_analytics::record(
+            crate::analytics::record(
                 app,
-                crate::usage_analytics::event::EventName::SettingToggled,
-                crate::usage_analytics::event::Facts {
+                crate::analytics::event::EventName::SettingToggled,
+                crate::analytics::event::Facts {
                     label: Some(key),
                     ..Default::default()
                 },
@@ -472,11 +469,11 @@ fn activity_entry(
     let analysis = store.analysis(&session.key)?;
     let (cost, models) = analysis
         .as_ref()
-        .map(|record| analytics::price_cached_breakdown(&record.model_breakdown_json))
+        .map(|record| analysis::price_cached_breakdown(&record.model_breakdown_json))
         .unwrap_or((None, Vec::new()));
     let model_runs = analysis
         .as_ref()
-        .map(|record| analytics::cached_inclusive_model_runs(&record.inclusive_models_json))
+        .map(|record| analysis::cached_inclusive_model_runs(&record.inclusive_models_json))
         .unwrap_or_default();
 
     Ok(ActivityEntry {
@@ -484,7 +481,7 @@ fn activity_entry(
         session_id: session.key.session_id.clone(),
         repo: repository_label(repositories, session.cwd.as_deref()),
         timestamp: iso_from_epoch(session.updated_at_epoch),
-        is_active: analytics::is_active(session.updated_at_epoch, now),
+        is_active: analysis::is_active(session.updated_at_epoch, now),
         surface: session.surface.clone(),
         wsl_distro: session.wsl_distro.clone(),
         title: session.title.clone(),
@@ -663,26 +660,26 @@ pub async fn refresh_live_usage(
 }
 
 /* -------------------------------------------------------------------------
- * Session analytics
+ * Session analysis
  * ---------------------------------------------------------------------- */
 
-/// Everything the session-analytics surface renders for one session.
+/// Everything the session-analysis surface renders for one session.
 ///
 /// Returns a payload with no summary rather than an error when the transcript
 /// is gone: a deleted conversation is an ordinary state, and the view says so.
 #[tauri::command]
-pub async fn get_session_analytics(
+pub async fn get_session_analysis(
     app: tauri::AppHandle,
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
 
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
     let store = app.state::<Store>();
@@ -711,12 +708,12 @@ pub async fn get_session_analytics(
         None => cached_orchestration(&store, &key),
     };
 
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: stored.as_ref().and_then(|record| record.title.clone()),
         wsl_distro,
-        is_active: analytics::is_active(
+        is_active: analysis::is_active(
             stored.as_ref().and_then(|record| record.updated_at_epoch),
             scan::unix_now(),
         ),
@@ -735,27 +732,27 @@ pub async fn get_session_analytics(
 
 /// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
-pub async fn get_subagent_analytics(
+pub async fn get_subagent_analysis(
     app: tauri::AppHandle,
     agent: String,
     parent_session_id: String,
     subagent_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
     let _ = &app;
-    let analysis = analytics::analyze_subagent(
+    let analysis = analysis::analyze_subagent(
         kind,
         &parent_session_id,
         &subagent_id,
         wsl_distro.as_deref(),
     )
     .await;
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: None,
         wsl_distro,
         is_active: false,
@@ -792,7 +789,7 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
         return None;
     }
     Some(OrchestrationStatus {
-        orchestrating: members.len() as u32 >= analytics::MIN_ORCHESTRATED_SUBAGENTS,
+        orchestrating: members.len() as u32 >= analysis::MIN_ORCHESTRATED_SUBAGENTS,
         orchestrator_agent: key.agent.clone(),
         orchestrator_session_id: key.session_id.clone(),
         subagent_count: members.len() as u32,
@@ -808,8 +805,8 @@ async fn resolve_lineage(
     wsl_distro: Option<&str>,
 ) -> SessionRelations {
     let store = app.state::<Store>();
-    let parent_id = match analytics::locate(kind, &key.session_id, wsl_distro).await {
-        Some(source) => analytics::fork_parent(&source).await,
+    let parent_id = match analysis::locate(kind, &key.session_id, wsl_distro).await {
+        Some(source) => analysis::fork_parent(&source).await,
         None => None,
     };
 
@@ -835,7 +832,7 @@ async fn resolve_lineage(
     };
 
     if let Some(parent_id) = parent_id {
-        let available = analytics::locate(kind, &parent_id, wsl_distro)
+        let available = analysis::locate(kind, &parent_id, wsl_distro)
             .await
             .is_some();
         let title = store
@@ -1046,7 +1043,7 @@ pub async fn export_session(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
 
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
     let stored = app.state::<Store>().session(&key).ok().flatten();

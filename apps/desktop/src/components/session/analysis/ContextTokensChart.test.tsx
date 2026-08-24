@@ -7,7 +7,7 @@ import { cloneElement, isValidElement, type ReactElement, type ReactNode } from 
 import type * as Recharts from "recharts"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { ContextTokenPoint } from "../../../lib/presentation/sessionAnalytics"
+import type { ContextTokenPoint } from "../../../lib/presentation/sessionAnalysis"
 import type { SessionBucket } from "../../../lib/types/session"
 import { ContextTokensChart, ContextTokensTooltip } from "./ContextTokensChart"
 

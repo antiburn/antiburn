@@ -70,7 +70,7 @@ export interface SessionListProps {
   /** Headline for the empty state; defaults to the range-aware wording. */
   emptyTitle?: string
   emptyDescription?: string
-  /** Open a session's analytics. Omitted leaves rows inert. */
+  /** Open a session's analysis. Omitted leaves rows inert. */
   onOpenSession?: (entry: SessionListEntry) => void
   /** The scrolling viewport, for a host that needs to observe it. */
   viewportRef?: ViewportRef
@@ -113,8 +113,8 @@ interface SessionRowProps {
  * One session in the list: its identity, location, fork relationships,
  * cost, and last activity time.
  *
- * The whole card opens the session analytics. Unsupported agents open an empty
- * analytics state that explains why no data is available.
+ * The whole card opens the session analysis. Unsupported agents open an empty
+ * analysis state that explains why no data is available.
  */
 function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps) {
   const clickable = !!entry.sessionId && !!onOpen

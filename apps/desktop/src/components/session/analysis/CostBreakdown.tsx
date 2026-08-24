@@ -6,7 +6,7 @@ import {
   costBreakdownRows,
   costFigureLabel,
   formatCost,
-} from "../../../lib/presentation/sessionAnalytics"
+} from "../../../lib/presentation/sessionAnalysis"
 import {
   resultComponentCost,
   type LocalSessionCost,

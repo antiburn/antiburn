@@ -385,7 +385,7 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
     expect(
-      await screen.findByRole("switch", { name: "Send anonymised usage analytics" }),
+      await screen.findByRole("switch", { name: "Send anonymised analytics" }),
     ).toBeInTheDocument()
 
     // What a reader sees without clicking anything: four headlines and
@@ -405,7 +405,7 @@ describe("SettingsView", () => {
     // The complete enumeration, one assertion per field on the wire. The
     // earlier version of this test sampled two of them, which is how five
     // fields went unnamed in the pane while the copy claimed to list them all.
-    // `usage_analytics::event::Event` is the other half of this pair, and its
+    // `analytics::event::Event` is the other half of this pair, and its
     // `the_wire_payload_is_exactly_these_thirteen_fields` pins the same number
     // from the Rust side.
     const enumeration = screen.getByRole("button", { name: "Exactly what is sent" })
@@ -482,7 +482,7 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
     const toggle = await screen.findByRole("switch", {
-      name: "Send anonymised usage analytics",
+      name: "Send anonymised analytics",
     })
     expect(toggle).toBeDisabled()
     expect(toggle).not.toBeChecked()

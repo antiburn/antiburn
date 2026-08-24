@@ -11,7 +11,7 @@ import { SubagentRosterRow, type AgentIconRenderer } from "./SubagentRosterRow"
 export interface OrchestratedBadgeProps {
   /** The sub-agents this session launched, as discovered on disk. */
   status: LocalOrchestrationStatus
-  /** Open one sub-agent's own analytics. */
+  /** Open one sub-agent's own analysis. */
   onOpenSubagent: (subagentId: string, label: string) => void
   renderAgentIcon?: AgentIconRenderer | undefined
 }
@@ -19,7 +19,7 @@ export interface OrchestratedBadgeProps {
 /**
  * The card that appears under a session header when that session orchestrated
  * sub-agents. Collapsed it states the fan-out. Expanded rows open sub-agent
- * analytics.
+ * analysis.
  *
  * The count comes from the caller, which has already applied the fan-out gate —
  * so this component renders whatever roster it is handed and does not

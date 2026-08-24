@@ -4,13 +4,13 @@ The antiburn desktop application: a menu-bar / system-tray shell around the
 local [`antiburn-local`](../../crates/antiburn-local) engine.
 
 The app discovers the coding-agent sessions already on this machine, analyzes
-them with the engine, and shows activity, per-session analytics, and
+them with the engine, and shows activity, per-session analysis, and
 API-equivalent cost estimates. Everything runs on the device, as you: antiburn
 needs no antiburn account, server, or backend of any kind, and nothing about
 your sessions is uploaded. It makes two calls to a service of ours, neither of
 which it depends on: the updater plugin, registered in release builds only,
-asking whether a newer version exists; and the anonymised usage-analytics
-channel in [`src-tauri/src/usage_analytics`](src-tauri/src/usage_analytics),
+asking whether a newer version exists; and the anonymised analytics
+channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
 which reports on the application itself behind a control the reader meets on
 the first-run Ready screen. A build with no endpoint injected — which is every
 build from a clean checkout — sends nothing at all.
@@ -146,7 +146,7 @@ Three independent checks, none of which relies on review:
    `src/` and fails on any imported telemetry, analytics, or crash-reporting
    SDK, and on any hardcoded reporting host. Browser networking APIs are
    permitted — the renderer may call a provider with the reader's own
-   credentials — and the usage-analytics channel is Rust-side, so the renderer
+   credentials — and the analytics channel is Rust-side, so the renderer
    still imports no reporting client. It lives outside `src/` on purpose: it
    names every API it bans, so a guard inside the tree it checks would trip
    its own check.

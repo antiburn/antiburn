@@ -12,7 +12,7 @@
 //! # Modules
 //!
 //! - [`agents`] — translating between the engine's two names for an agent.
-//! - [`analytics`] — turning a located transcript into what the views render.
+//! - [`analysis`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
 //! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
@@ -52,6 +52,7 @@
 //! to the same boundary by a test (`apps/desktop/tests/no-exfiltration.test.ts`).
 
 mod agents;
+mod analysis;
 mod analytics;
 mod commands;
 mod consent;
@@ -75,7 +76,6 @@ mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
-mod usage_analytics;
 mod window_placement;
 
 use std::sync::Mutex;
@@ -151,10 +151,10 @@ pub fn run() {
             commands::set_hud_detail_size,
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
-            commands::get_session_analytics,
+            commands::get_session_analysis,
             commands::get_settings,
             commands::get_storage_health,
-            commands::get_subagent_analytics,
+            commands::get_subagent_analysis,
             commands::hide_popover,
             commands::finish_onboarding,
             commands::note_interaction,
@@ -258,12 +258,12 @@ pub fn run() {
             // The consented analytics channel (D-027, deviations D-28). Both
             // calls are inert unless this build injected an endpoint AND the
             // reader has finished onboarding with the switch on — see
-            // `usage_analytics::allowed`, which is the single gate both go through.
-            usage_analytics::install(app.handle());
-            usage_analytics::record(
+            // `analytics::allowed`, which is the single gate both go through.
+            analytics::install(app.handle());
+            analytics::record(
                 app.handle(),
-                usage_analytics::event::EventName::AppLaunched,
-                usage_analytics::event::Facts::default(),
+                analytics::event::EventName::AppLaunched,
+                analytics::event::Facts::default(),
             );
 
             // The notification window's manager and the chime player. The

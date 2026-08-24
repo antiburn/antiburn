@@ -50,7 +50,7 @@ pub enum EventName {
 /// would make that test pass vacuously. `no_variant_escapes_the_catalog` below
 /// closes that with an exhaustive match: adding a variant is a *compile* error
 /// until it is listed here, and listing it here is what forces it into
-/// `docs/usage-analytics.md`.
+/// `docs/analytics.md`.
 #[cfg(test)]
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
@@ -443,7 +443,7 @@ mod tests {
         assert!(EVERY_EVENT.iter().copied().all(listed));
     }
 
-    /// The public catalog in `docs/usage-analytics.md` is a promise to a
+    /// The public catalog in `docs/analytics.md` is a promise to a
     /// reader who cannot read this file, so it cannot be allowed to drift.
     /// Adding a variant above without documenting it fails here rather than
     /// shipping a document that quietly under-reports what is sent.
@@ -451,12 +451,12 @@ mod tests {
     fn the_documented_catalog_matches_the_code() {
         let doc = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../docs/usage-analytics.md"
+            "/../../../docs/analytics.md"
         ));
         for name in EVERY_EVENT {
             assert!(
                 doc.contains(name.as_str()),
-                "{} is sent but is not in docs/usage-analytics.md",
+                "{} is sent but is not in docs/analytics.md",
                 name.as_str()
             );
         }
@@ -496,7 +496,7 @@ mod tests {
         };
 
         for path in [
-            "/../../../docs/usage-analytics.md",
+            "/../../../docs/analytics.md",
             "/../../../docs/privacy-policy.md",
             "/../../../docs/support.md",
             "/../src/views/settings/PrivacyPane.tsx",

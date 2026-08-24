@@ -233,7 +233,7 @@ tiny text like this."
 
 The blast radius is real and belongs in the PR description: **80 uses of
 `type-caption` across 25 files**, including the overlay window, onboarding, the
-repository list, the scan status bar, and every session-analytics chart. All of
+repository list, the scan status bar, and every session-analysis chart. All of
 them get a pixel taller. None should break — the class carries no layout
 assumption — but the reviewer deserves to know the change is not local to the
 meters.

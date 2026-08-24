@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest"
 
 import { indexOfSession, toActivityEntries } from "./activityEntries"
 import type { ActivityEntryPayload } from "./ipc"
-import { HIGH_COST_MIN_SAMPLE } from "./presentation/sessionAnalytics"
+import { HIGH_COST_MIN_SAMPLE } from "./presentation/sessionAnalysis"
 
 function payload(over: Partial<ActivityEntryPayload> = {}): ActivityEntryPayload {
   return {

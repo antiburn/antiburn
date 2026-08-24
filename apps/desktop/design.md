@@ -11,7 +11,7 @@ sources:
   - src/styles/motion.css
   - src/styles/platform-controls.css
   - src/styles/hud.css
-  - src/styles/session-analytics-colors.css
+  - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
   - src/components/ui/text-roll.css
 colors:
@@ -130,17 +130,17 @@ colors:
   bg-hud:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
-  # Session-analytics sub-palette only (src/styles/session-analytics-colors.css)
-  analytics-blue-strong:
+  # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
+  analysis-blue-strong:
     light: "hsl(224.2 76.3% 48%)"
     dark: "hsl(221.2 83% 53.3%)"
-  analytics-green:
+  analysis-green:
     light: "hsl(161.3 93% 30.4%)"
     dark: "hsl(158 64% 51.56%)"
-  analytics-blue:
+  analysis-blue:
     light: "hsl(217.2 91% 59.8%)"
     dark: "hsl(213 94% 67.8%)"
-  analytics-cyan:
+  analysis-cyan:
     light: "hsl(188.7 94.4% 42.7%)"
     dark: "hsl(188 86% 53.3%)"
   context-fill-top:
