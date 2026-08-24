@@ -205,8 +205,13 @@ function repositoryPayload(overrides: Record<string, unknown> = {}) {
 
 function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string, args?: unknown) => {
-    if (command in overrides) return Promise.resolve(overrides[command])
+    if (command in overrides) {
+      const result = overrides[command]
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    }
     switch (command) {
+      case "app_info":
+        return Promise.resolve({ appVersion: "0.1.0", debugBuild: true })
       case "get_settings":
         return Promise.resolve(SETTINGS)
       case "list_recent_sessions":
@@ -451,7 +456,7 @@ describe("PopoverView", () => {
     })
   })
 
-  it("shows the plain title-and-gear footer, with none of the usage surface in it", async () => {
+  it("shows the app version beside the title without putting usage in the footer", async () => {
     render(<PopoverView />)
     await screen.findByTestId("usage-limits-bar")
 
@@ -459,6 +464,26 @@ describe("PopoverView", () => {
     expect(footer).not.toBeNull()
     expect(footer).toHaveTextContent("antiburn")
     expect(footer?.querySelector('[data-testid="usage-limits-bar"]')).toBeNull()
+    expect(screen.getByRole("heading", { name: "antiburn" })).toBeInTheDocument()
+    const version = screen.getByText("v0.1.0 debug")
+    expect(version).toHaveClass("type-caption", "text-label-secondary")
+    expect(version.parentElement).toHaveClass("gap-2")
+  })
+
+  it("omits the debug label from a release build", async () => {
+    mockCommands({ app_info: { appVersion: "0.1.0", debugBuild: false } })
+    render(<PopoverView />)
+
+    expect(await screen.findByText("v0.1.0")).toBeInTheDocument()
+    expect(screen.queryByText("v0.1.0 debug")).toBeNull()
+  })
+
+  it("omits the version when app info cannot load", async () => {
+    mockCommands({ app_info: new Error("unavailable") })
+    render(<PopoverView />)
+
+    await screen.findByTestId("usage-limits-bar")
+    expect(screen.queryByText(/^v\d/)).toBeNull()
   })
 
   it("opens the full usage view from a provider pill and comes back", async () => {

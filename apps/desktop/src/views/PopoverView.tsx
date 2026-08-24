@@ -118,18 +118,34 @@ function usageEvidence(
 }
 
 /**
- * The activity surface's bottom bar: the app's name, which also carries the
- * surface's focus heading (see the class doc below), and the way to the
- * standalone Settings window.
+ * The activity surface's bottom bar shows the app name and version.
+ * The name also carries the surface's focus heading.
+ * The settings control opens the standalone Settings window.
  */
-function PopoverFooter({ onOpenSettings }: { onOpenSettings: () => void }) {
+function PopoverFooter({
+  appVersion,
+  debugBuild,
+  onOpenSettings,
+}: {
+  appVersion: string | null
+  debugBuild: boolean
+  onOpenSettings: () => void
+}) {
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-t border-separator px-4">
-      {/* Focused by the popover when this surface takes over, so a keyboard
-          or screen-reader user lands in the view rather than on <body>. */}
-      <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-        antiburn
-      </h1>
+      <div className="flex items-baseline gap-2">
+        {/* Focused by the popover when this surface takes over, so a keyboard
+            or screen-reader user lands in the view rather than on <body>. */}
+        <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
+          antiburn
+        </h1>
+        {appVersion && (
+          <span className="type-caption whitespace-nowrap text-label-secondary">
+            v{appVersion}
+            {debugBuild ? " debug" : ""}
+          </span>
+        )}
+      </div>
       <button
         type="button"
         onClick={onOpenSettings}
@@ -349,7 +365,11 @@ export function PopoverView() {
           )}
         </div>
 
-        <PopoverFooter onOpenSettings={() => void openSettingsWindow()} />
+        <PopoverFooter
+          appVersion={state.appVersion}
+          debugBuild={state.debugBuild}
+          onOpenSettings={() => void openSettingsWindow()}
+        />
       </div>
     )
   }
