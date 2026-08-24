@@ -1240,7 +1240,7 @@ mod tests {
         );
         let (title, source) = resolved;
         let title = title.expect("cleaned title");
-        assert!(title.starts_with("in this pane, it should be possible"));
+        assert!(title.starts_with("In this pane, it should be possible"));
         assert!(title.ends_with('…'));
         assert_eq!(source.as_deref(), Some("firstMessage"));
 
@@ -1255,7 +1255,7 @@ mod tests {
         assert_eq!(
             fallback,
             (
-                Some("please review this".into()),
+                Some("Please review this".into()),
                 Some("firstMessage".into())
             )
         );

@@ -68,11 +68,21 @@ func generateTitle(for request: TitleRequest) -> String? {
     guard case .available = SystemLanguageModel.default.availability else { return nil }
     let session = LanguageModelSession(
         instructions: """
-        You name coding-agent chat sessions. The user shows you the opening \
-        messages of one session. Name the session for its main task: the \
-        first message states it, and later messages only add context. Reply \
-        with only the title: 3 to 6 words, imperative mood, no quotes, no \
-        trailing period.
+        You name coding-agent chat sessions for a session list. The user \
+        shows you the opening messages of one session. Name the session for \
+        the work it asks for.
+
+        Rules:
+        - 4 to 8 words. A grammatical imperative phrase, not a word list.
+        - Name the main task the user asks for. Ignore routine git setup \
+        such as pulling main or creating a branch, unless that is the \
+        whole request.
+        - Keep the concrete nouns that identify the work: file names, \
+        command names, feature names, error codes, product names.
+        - Use sentence case: capitalize the first word and proper names \
+        only. No quotes. No trailing period.
+
+        Reply with only the title.
         """
     )
     // The caller owns the deadline: the app kills this process on timeout.

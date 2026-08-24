@@ -60,9 +60,9 @@ const GENERATED_TITLE_MAX_CHARS: usize = 60;
 const REFUSAL_PREFIXES: &[&str] = &["i can't", "i cannot", "i'm sorry", "sorry", "unable to"];
 
 /// Guardrails for model output: keep the first line, remove wrapping quotes,
-/// collapse whitespace, drop a trailing period, and cap the length at a word
-/// boundary. Returns `None` for empty or refusal-looking output, so the
-/// caller keeps the fallback title instead.
+/// collapse whitespace, drop a trailing period, capitalize the first letter,
+/// and cap the length at a word boundary. Returns `None` for empty or
+/// refusal-looking output, so the caller keeps the fallback title instead.
 pub fn sanitize_generated_title(raw: &str) -> Option<String> {
     let first_line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
     let unquoted = first_line
@@ -80,9 +80,10 @@ pub fn sanitize_generated_title(raw: &str) -> Option<String> {
     {
         return None;
     }
-    let chars: Vec<char> = trimmed.chars().collect();
+    let capitalized = capitalize_first(trimmed);
+    let chars: Vec<char> = capitalized.chars().collect();
     if chars.len() <= GENERATED_TITLE_MAX_CHARS {
-        return Some(trimmed.to_string());
+        return Some(capitalized);
     }
     let head: String = chars[..GENERATED_TITLE_MAX_CHARS].iter().collect();
     let cut = match head.rfind(char::is_whitespace) {
@@ -90,6 +91,16 @@ pub fn sanitize_generated_title(raw: &str) -> Option<String> {
         _ => head.as_str(),
     };
     Some(format!("{}…", cut.trim_end()))
+}
+
+/// Uppercase the first letter of `text`. Only a lowercase first letter
+/// changes; `to_uppercase` handles multi-character expansions.
+pub(crate) fn capitalize_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) if first.is_lowercase() => first.to_uppercase().chain(chars).collect(),
+        _ => text.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +125,19 @@ mod tests {
         assert!(sanitize_generated_title("\"\"").is_none());
         assert!(sanitize_generated_title("I'm sorry, I can't name this chat").is_none());
         assert!(sanitize_generated_title("Sorry, there is no content").is_none());
+    }
+
+    #[test]
+    fn sanitize_capitalizes_the_first_letter() {
+        assert_eq!(
+            sanitize_generated_title("examine cadence-cli data ingestion").as_deref(),
+            Some("Examine cadence-cli data ingestion")
+        );
+        // A first letter that is not a lowercase letter stays as it is.
+        assert_eq!(
+            sanitize_generated_title("3-D print a fridge shelf").as_deref(),
+            Some("3-D print a fridge shelf")
+        );
     }
 
     #[test]

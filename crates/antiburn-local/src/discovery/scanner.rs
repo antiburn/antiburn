@@ -768,6 +768,7 @@ const ATTACHMENT_MARKER_PREFIXES: &[&str] = &["image", "pasted text", "screensho
 /// 1. Remove attachment markers such as `[Image #1]`.
 /// 2. Keep only the first sentence of the first non-empty line.
 /// 3. Cut at a word boundary near [`CLEAN_TITLE_MAX_CHARS`] and add `…`.
+/// 4. Uppercase the first letter so the fallback reads like a title.
 ///
 /// Returns `None` when nothing readable remains, so the caller can fall back
 /// to its path label. This changes presentation only — the stored
@@ -784,7 +785,9 @@ pub fn clean_first_message_title(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    Some(truncate_at_word_boundary(trimmed))
+    Some(crate::titles::capitalize_first(&truncate_at_word_boundary(
+        trimmed,
+    )))
 }
 
 /// Remove every bracketed attachment marker from `text`. A bracket segment is
@@ -2341,7 +2344,7 @@ also not json {{{{
         let raw = "[Image #1] in this pane, it should be possible to click on the claude/codex/whatever section to drill through to see the sessions for that agent";
         let cleaned = clean_first_message_title(raw).unwrap();
         assert!(!cleaned.contains("[Image"));
-        assert!(cleaned.starts_with("in this pane, it should be possible"));
+        assert!(cleaned.starts_with("In this pane, it should be possible"));
         assert!(cleaned.ends_with('…'));
         assert!(cleaned.chars().count() <= CLEAN_TITLE_MAX_CHARS + 1);
         // The cut lands on a word boundary, not inside a word.
@@ -2371,7 +2374,7 @@ also not json {{{{
         assert_eq!(
             clean_first_message_title("ok. look at the notes for where the project is up to")
                 .as_deref(),
-            Some("ok. look at the notes for where the project is up to")
+            Some("Ok. look at the notes for where the project is up to")
         );
     }
 
@@ -2383,7 +2386,7 @@ also not json {{{{
         );
         assert_eq!(
             clean_first_message_title("[Pasted text #2 +12 lines] please review this").as_deref(),
-            Some("please review this")
+            Some("Please review this")
         );
     }
 
