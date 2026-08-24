@@ -12,7 +12,7 @@
  * one place the two meet, kept pure so it can be tested without a shell.
  */
 
-import type { LocalActivityEntry } from "../components/activity/LocalActivityList"
+import type { SessionListEntry } from "../components/session/SessionList"
 import type { ActivityEntryPayload } from "./ipc"
 import { defaultAgentSurface, type AgentSurface } from "./presentation/agents"
 import {
@@ -38,7 +38,7 @@ function surfaceOf(payload: ActivityEntryPayload): AgentSurface {
  */
 export function toActivityEntries(
   payloads: readonly ActivityEntryPayload[],
-): LocalActivityEntry[] {
+): SessionListEntry[] {
   const threshold = costOutlierThreshold(
     payloads
       .map((payload) => payload.cost?.totalUsd)
@@ -70,7 +70,7 @@ export function toActivityEntries(
 }
 
 export function indexOfSession(
-  entries: readonly LocalActivityEntry[],
+  entries: readonly SessionListEntry[],
   agent: string,
   sessionId: string,
   wslDistro?: string | null,

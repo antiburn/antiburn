@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LocalActivityEntry } from "../../components/activity/LocalActivityList"
+import type { SessionListEntry } from "../../components/session/SessionList"
 import { toActivityEntries } from "../../lib/activityEntries"
 import { applyTheme } from "../../lib/appearance"
 import type { AttentionKind } from "../../lib/attention"
@@ -67,7 +67,7 @@ type PopoverAnalyticsState = {
 
 export interface PopoverSnapshot {
   settings: AppSettings | null
-  entries: LocalActivityEntry[] | null
+  entries: SessionListEntry[] | null
   repositories: LocalRepositoryItem[]
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
@@ -418,6 +418,7 @@ export class PopoverSession {
     this.stopPopoverShownListening = unlisten
   }
 
+  // aislop-ignore-next-line ai-slop/narrative-comment -- Issue #90 owns this standing finding.
   // A refresh from any window replaces the cached value in this one. This
   // also lets the shell publish this window's own refresh before IPC returns.
   private listenLiveUsage = async (generation: number): Promise<void> => {

@@ -6,10 +6,7 @@ import { lazy, Suspense, useCallback, useRef, useState, useSyncExternalStore } f
 
 import { AlertTriangle, Settings } from "lucide-react"
 
-import {
-  LocalActivityList,
-  type LocalActivityEntry,
-} from "../components/activity/LocalActivityList"
+import { SessionList, type SessionListEntry } from "../components/session/SessionList"
 import { UsageLimitsBar } from "../components/providerUsage"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
@@ -208,7 +205,7 @@ export function PopoverView() {
     storage: state.storage,
   }).filter((banner) => !state.dismissed.includes(banner.id))
 
-  const subjectFor = (entry: LocalActivityEntry): SessionSubject => {
+  const subjectFor = (entry: SessionListEntry): SessionSubject => {
     return {
       agent: entry.agent,
       sessionId: entry.sessionId ?? "",
@@ -327,7 +324,7 @@ export function PopoverView() {
           {state.entries == null ? (
             <ActivitySkeleton />
           ) : (
-            <LocalActivityList
+            <SessionList
               entries={state.entries}
               days={windowDays}
               onOpenSession={(entry) => {

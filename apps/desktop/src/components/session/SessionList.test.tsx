@@ -5,11 +5,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import {
-  LocalActivityList,
-  type LocalActivityEntry,
-  type LocalActivityListProps,
-} from "./LocalActivityList"
+import { SessionList, type SessionListEntry, type SessionListProps } from "./SessionList"
 
 afterEach(cleanup)
 
@@ -22,7 +18,7 @@ function at(daysAgo: number, hour = 12): string {
   return date.toISOString()
 }
 
-function entry(over: Partial<LocalActivityEntry> = {}): LocalActivityEntry {
+function entry(over: Partial<SessionListEntry> = {}): SessionListEntry {
   return {
     agent: "claude-code",
     sessionId: "session-1",
@@ -33,17 +29,17 @@ function entry(over: Partial<LocalActivityEntry> = {}): LocalActivityEntry {
   }
 }
 
-function list(over: Partial<LocalActivityListProps> = {}) {
-  const props: LocalActivityListProps = {
+function list(over: Partial<SessionListProps> = {}) {
+  const props: SessionListProps = {
     entries: [entry()],
     days: 7,
     now: NOW,
     ...over,
   }
-  return render(<LocalActivityList {...props} />)
+  return render(<SessionList {...props} />)
 }
 
-describe("LocalActivityList — rows", () => {
+describe("SessionList — rows", () => {
   it("names a session by its title, then a short id, then its agent", () => {
     list({
       entries: [
@@ -160,7 +156,7 @@ describe("LocalActivityList — rows", () => {
   })
 })
 
-describe("LocalActivityList — navigation", () => {
+describe("SessionList — navigation", () => {
   it("opens a session by click and by keyboard from the row itself", () => {
     const onOpenSession = vi.fn()
     list({ entries: [entry({ title: "Fix the flaky test" })], onOpenSession })
@@ -196,7 +192,7 @@ describe("LocalActivityList — navigation", () => {
   })
 })
 
-describe("LocalActivityList — grouping", () => {
+describe("SessionList — grouping", () => {
   it("buckets rows by calendar day and pins the newest label", () => {
     list({
       entries: [
@@ -235,7 +231,7 @@ describe("LocalActivityList — grouping", () => {
   })
 })
 
-describe("LocalActivityList — empty state", () => {
+describe("SessionList — empty state", () => {
   it("explains an empty range and announces it once", () => {
     list({ entries: [] })
     expect(screen.getAllByText("No sessions in the last 7 days").length).toBe(2)

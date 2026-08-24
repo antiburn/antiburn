@@ -114,7 +114,7 @@ function LetterTile({ name, size }: { name: string; size: number }) {
 /**
  * Render one agent's icon.
  *
- * Matches the `ActivityAgentIconRenderer` / `AgentIconRenderer` signatures the
+ * Matches the `SessionAgentIconRenderer` / `AgentIconRenderer` signatures the
  * presentation components declare, so it can be passed straight into either.
  */
 export function renderAgentIcon(slug: string, size: number, surface?: AgentSurface): ReactNode {

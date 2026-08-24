@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
 ///
-/// Mirrors the fields `LocalActivityEntry` needs, minus the cost pill text.
+/// Mirrors the fields `SessionListEntry` needs, minus the cost pill text.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityEntry {
