@@ -49,6 +49,7 @@ describe("App", () => {
         case "app_info":
           return Promise.resolve({
             appVersion: "0.1.0",
+            debugBuild: false,
             pricingCatalogVersion: "2026-01-01",
             schemaVersion: 1,
             dataDir: "/home/avery/.antiburn",

@@ -50,6 +50,7 @@ const SETTINGS = {
 /// injected" is the state every clean checkout is in.
 const APP_INFO = {
   appVersion: "0.1.0",
+  debugBuild: false,
   arch: "aarch64",
   updatesSupported: false,
   usageAnalyticsSupported: true,

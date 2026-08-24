@@ -10,6 +10,7 @@ import {
   DEFAULT_SETTINGS,
   EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
+  appInfo,
   getLiveUsage,
   getProviderUsage,
   getSessionAnalytics,
@@ -66,6 +67,8 @@ type PopoverAnalyticsState = {
 } | null
 
 export interface PopoverSnapshot {
+  appVersion: string | null
+  debugBuild: boolean
   settings: AppSettings | null
   entries: SessionListEntry[] | null
   repositories: LocalRepositoryItem[]
@@ -164,6 +167,8 @@ export class PopoverSession {
   private stopLiveUsageListening: (() => void) | null = null
 
   private snapshot: PopoverSnapshot = {
+    appVersion: null,
+    debugBuild: false,
     settings: null,
     entries: null,
     repositories: [],
@@ -299,13 +304,19 @@ export class PopoverSession {
   // the stored time window. The cached limits do not wait for either read.
   private loadInitial = async (generation: number): Promise<void> => {
     const usage = this.loadCachedUsage()
-    const [stored, health] = await Promise.all([
+    const [stored, health, info] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getStorageHealth().catch(() => HEALTHY_STORAGE),
+      appInfo().catch(() => null),
     ])
     if (generation !== this.generation) return
     applyTheme(stored.theme)
-    this.update({ settings: stored, storage: health })
+    this.update({
+      appVersion: info?.appVersion ?? null,
+      debugBuild: info?.debugBuild ?? false,
+      settings: stored,
+      storage: health,
+    })
     // The repository list is read on first paint rather than waiting for a
     // scan to finish, because the source-access banner needs it — a blocked
     // repository is exactly the case where no scan will ever complete to

@@ -362,6 +362,8 @@ pub struct ProviderUsageSummary {
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub app_version: String,
+    /// True when Rust enables debug assertions for this binary.
+    pub debug_build: bool,
     /// CPU architecture this binary was compiled for, e.g. `aarch64`.
     pub arch: String,
     /// Review date of the engine's bundled pricing catalog.

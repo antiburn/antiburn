@@ -75,6 +75,7 @@ const SETTINGS = {
 
 const INFO = {
   appVersion: "0.1.0",
+  debugBuild: false,
   arch: "aarch64",
   pricingCatalogVersion: "2026-08-12",
   schemaVersion: 1,
