@@ -26,6 +26,15 @@ fn fixture(name: &str) -> &'static str {
             include_str!("fixtures/claude_characterization/parent_with_task_spawn.jsonl")
         }
         "subagent_child" => include_str!("fixtures/claude_characterization/subagent_child.jsonl"),
+        "multi_model_session" => {
+            include_str!("fixtures/claude_characterization/multi_model_session.jsonl")
+        }
+        "compaction_with_cache_rehydration" => {
+            include_str!("fixtures/claude_characterization/compaction_with_cache_rehydration.jsonl")
+        }
+        "inferred_cache_rehydration" => {
+            include_str!("fixtures/claude_characterization/inferred_cache_rehydration.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -157,6 +166,21 @@ fn golden_parent_with_task_spawn() {
 #[test]
 fn golden_subagent_child() {
     check_fixture_golden("subagent_child");
+}
+
+#[test]
+fn golden_multi_model_session() {
+    check_fixture_golden("multi_model_session");
+}
+
+#[test]
+fn golden_compaction_with_cache_rehydration() {
+    check_fixture_golden("compaction_with_cache_rehydration");
+}
+
+#[test]
+fn golden_inferred_cache_rehydration() {
+    check_fixture_golden("inferred_cache_rehydration");
 }
 
 #[test]
