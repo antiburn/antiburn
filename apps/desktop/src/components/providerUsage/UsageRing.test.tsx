@@ -48,6 +48,18 @@ describe("UsageRing", () => {
     expect(container.querySelector("circle")).not.toHaveAttribute("stroke-dasharray", "2 2")
   })
 
+  it("draws the remainder behind a stated arc, so a small share reads as one", () => {
+    // The usage bar states no figure beside the ring any more. An arc with
+    // nothing behind it states a length; an arc on a track states a share.
+    const { container } = render(<UsageRing percent={14} />)
+    expect(container.querySelector('[data-testid="usage-ring-track"]')).toBeInTheDocument()
+  })
+
+  it("draws no second track under the indeterminate ring", () => {
+    const { container } = render(<UsageRing percent={null} />)
+    expect(container.querySelector('[data-testid="usage-ring-track"]')).toBeNull()
+  })
+
   it("clamps rather than overdrawing a figure past its own limit", () => {
     const { container } = render(<UsageRing percent={140} />)
     expect(arcOffset(container)).toBeCloseTo(0, 5)
