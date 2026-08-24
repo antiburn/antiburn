@@ -5,15 +5,13 @@
 import { useSyncExternalStore } from "react"
 
 /**
- * The shell serves one bundle to every window and selects the view from the
- * URL fragment the window was opened with. There is no router: each Tauri
- * window owns exactly one route for its whole lifetime, and the fragment is
- * the only thing that distinguishes them.
+ * Each window publishes its surface name for shared styles. The resident shell
+ * uses a URL fragment to select the popover, nudge, or overlay view. Standalone
+ * windows use dedicated entries and pass their route directly.
  */
 export type Route = "popover" | "settings" | "nudge" | "onboarding" | "overlay"
 
-/** Fragment the Rust shell opens the settings window with. */
-export const SETTINGS_FRAGMENT = "#/settings"
+type ShellRoute = Exclude<Route, "settings" | "onboarding">
 
 /** Fragment the nudge crate opens the notification window with. */
 export const NUDGE_FRAGMENT = "#/nudge"
@@ -21,22 +19,15 @@ export const NUDGE_FRAGMENT = "#/nudge"
 /** Fragment the HUD crate opens for the floating usage window. */
 export const OVERLAY_FRAGMENT = "#/overlay"
 
-/**
- * Every fragment that names a window other than the popover. The popover is the
- * default rather than an entry, so an unknown fragment lands somewhere real
- * instead of rendering nothing.
- */
 // A Map, not a plain object: the fragment is outside input, and an object
 // index would resolve inherited names ("constructor") to functions rather
 // than falling back to the popover.
-const ROUTES = new Map<string, Route>([
-  ["settings", "settings"],
+const ROUTES = new Map<string, ShellRoute>([
   ["nudge", "nudge"],
-  ["onboarding", "onboarding"],
   ["overlay", "overlay"],
 ])
 
-export function routeFromHash(hash: string): Route {
+export function routeFromHash(hash: string): ShellRoute {
   return ROUTES.get(hash.replace(/^#\/?/, "")) ?? "popover"
 }
 
@@ -57,11 +48,11 @@ function subscribe(onChange: () => void): () => void {
   return () => window.removeEventListener("hashchange", onChange)
 }
 
-function currentRoute(): Route {
+function currentRoute(): ShellRoute {
   return routeFromHash(window.location.hash)
 }
 
 /** Reads the active route and re-renders if the fragment ever changes. */
-export function useRoute(): Route {
+export function useRoute(): ShellRoute {
   return useSyncExternalStore(subscribe, currentRoute, () => "popover" as const)
 }

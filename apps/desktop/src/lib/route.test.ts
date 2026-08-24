@@ -4,29 +4,20 @@
 
 import { describe, expect, it } from "vitest"
 
-import {
-  applyRouteAttribute,
-  NUDGE_FRAGMENT,
-  OVERLAY_FRAGMENT,
-  routeFromHash,
-  SETTINGS_FRAGMENT,
-} from "./route"
+import { applyRouteAttribute, NUDGE_FRAGMENT, OVERLAY_FRAGMENT, routeFromHash } from "./route"
 
 /**
- * The fragment is the only thing that distinguishes one window from another,
- * so a shell window opened with a fragment this table doesn't know would render
- * the popover inside it. That makes the exported fragment constants and the
- * parser worth checking together.
+ * The resident shell uses fragments for auxiliary surfaces. A fragment this
+ * table does not know renders the popover. Standalone windows use direct
+ * entries and do not participate in this parser.
  */
 describe("routeFromHash", () => {
   it("resolves the fragments the shell opens windows with", () => {
-    expect(routeFromHash(SETTINGS_FRAGMENT)).toBe("settings")
     expect(routeFromHash(NUDGE_FRAGMENT)).toBe("nudge")
     expect(routeFromHash(OVERLAY_FRAGMENT)).toBe("overlay")
   })
 
   it("accepts a fragment with or without the leading slash", () => {
-    expect(routeFromHash("#settings")).toBe("settings")
     expect(routeFromHash("#nudge")).toBe("nudge")
     expect(routeFromHash("#overlay")).toBe("overlay")
   })
@@ -39,6 +30,11 @@ describe("routeFromHash", () => {
 
   it("falls back to the popover rather than rendering nothing for an unknown one", () => {
     expect(routeFromHash("#/account")).toBe("popover")
+  })
+
+  it("does not route standalone entries through the resident shell", () => {
+    expect(routeFromHash("#/settings")).toBe("popover")
+    expect(routeFromHash("#/onboarding")).toBe("popover")
   })
 
   it("does not resolve a route from an inherited object property", () => {

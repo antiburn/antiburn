@@ -8,14 +8,6 @@ import { useRoute } from "./lib/route"
 import { NudgeView } from "./views/NudgeView"
 import { PopoverView } from "./views/PopoverView"
 
-// Keep the nudge and popover views in the entry chunk. Both must respond when
-// their shell window appears. The larger standalone windows load by route.
-const OnboardingView = lazy(() =>
-  import("./views/OnboardingView").then(({ OnboardingView: view }) => ({ default: view })),
-)
-const SettingsView = lazy(() =>
-  import("./views/SettingsView").then(({ SettingsView: view }) => ({ default: view })),
-)
 const OverlayWindow = lazy(() =>
   import("./views/OverlayWindow").then(({ OverlayWindow: view }) => ({ default: view })),
 )
@@ -34,9 +26,5 @@ export function App() {
       </Suspense>
     )
   }
-  if (route !== "settings" && route !== "onboarding") return <PopoverView />
-
-  const view = route === "settings" ? <SettingsView /> : <OnboardingView />
-
-  return <Suspense fallback={<RouteLoading />}>{view}</Suspense>
+  return <PopoverView />
 }

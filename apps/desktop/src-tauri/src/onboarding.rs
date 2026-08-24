@@ -36,9 +36,8 @@ use crate::window_placement::center_on_active_monitor;
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "onboarding";
 
-/// Fragment the onboarding window loads. The frontend serves one bundle and
-/// selects its view from this fragment (see `src/lib/route.ts`).
-const URL: &str = "index.html#/onboarding";
+/// Dedicated frontend entry for the onboarding window.
+const URL: &str = "onboarding.html";
 
 /// Fixed geometry. 480 tall leaves ~379pt of body under the 44pt header and
 /// over the 57pt footer, which is more than the tallest step needs; 680 wide is
@@ -220,15 +219,10 @@ pub fn is_pending(app: &AppHandle) -> bool {
 mod tests {
     use super::*;
 
-    /// The frontend has to be opened with the fragment its router recognizes,
-    /// and the two live in different languages — a rename on either side is
-    /// silent until a window renders the wrong view.
+    /// The shell must open the entry that mounts the first-run view.
     #[test]
-    fn the_url_carries_the_fragment_the_frontend_routes_on() {
-        assert!(
-            URL.ends_with("#/onboarding"),
-            "`src/lib/route.ts` maps this fragment to the first-run view"
-        );
+    fn the_url_uses_the_onboarding_entry() {
+        assert_eq!(URL, "onboarding.html");
         assert_eq!(
             LABEL, "onboarding",
             "also listed in capabilities/default.json"

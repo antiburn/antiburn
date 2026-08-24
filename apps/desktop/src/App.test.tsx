@@ -69,17 +69,6 @@ describe("App", () => {
     delete document.documentElement.dataset["theme"]
   })
 
-  it("renders the first-run window for the onboarding fragment", async () => {
-    window.location.hash = "#/onboarding"
-
-    render(<App />)
-
-    expect(
-      await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
-    ).toBeInTheDocument()
-    expect(invoke).toHaveBeenCalledWith("get_settings")
-  })
-
   it("renders the popover for an unknown fragment, not the first-run flow", async () => {
     // The default route is the popover on purpose, so a fragment nothing
     // recognizes lands somewhere real. Since onboarding moved to its own
@@ -94,17 +83,6 @@ describe("App", () => {
     expect(
       screen.queryByRole("heading", { name: "Stop hitting your token limits." }),
     ).not.toBeInTheDocument()
-  })
-
-  it("renders the settings window for the settings fragment", async () => {
-    window.location.hash = "#/settings"
-
-    render(<App />)
-
-    expect(
-      await screen.findByRole("tablist", { name: "Settings sections" }),
-    ).toBeInTheDocument()
-    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument()
   })
 
   it("renders the floating HUD for the overlay fragment", async () => {

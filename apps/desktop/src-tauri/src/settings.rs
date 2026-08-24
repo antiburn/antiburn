@@ -55,9 +55,8 @@ impl PendingPane {
     }
 }
 
-/// Fragment the settings window loads. The frontend serves one bundle and
-/// selects its view from this fragment (see `src/lib/route.ts`).
-const URL: &str = "index.html#/settings";
+/// Dedicated frontend entry for the settings window.
+const URL: &str = "settings.html";
 
 // Fixed geometry: a 220px sidebar leaves a ≥600px content column, and the
 // whole window still fits a 1280×800 display. Non-resizable — every pane is
@@ -129,6 +128,11 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_url_uses_the_settings_entry() {
+        assert_eq!(URL, "settings.html");
+    }
 
     #[test]
     fn a_requested_pane_is_delivered_exactly_once() {

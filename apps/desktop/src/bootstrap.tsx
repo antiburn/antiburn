@@ -1,0 +1,24 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import { StrictMode, type ReactNode } from "react"
+import { createRoot } from "react-dom/client"
+
+import { installFocusModality } from "./lib/focusModality"
+import { applyPlatformAttribute } from "./lib/platform"
+import { applyRouteAttribute, type Route } from "./lib/route"
+
+export function mountWindow(view: ReactNode, route?: Route): void {
+  const container = document.getElementById("root")
+  if (!container) {
+    throw new Error("The window entry is missing the #root mount point")
+  }
+
+  // Set the attributes before React starts the first render.
+  applyPlatformAttribute()
+  applyRouteAttribute(document.documentElement, route)
+  installFocusModality()
+
+  createRoot(container).render(<StrictMode>{view}</StrictMode>)
+}
