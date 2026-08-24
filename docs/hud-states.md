@@ -84,6 +84,12 @@ window is visible. The webview measures its rendered content and reports the
 height, and the shell sizes, places, and shows the window in one step — the
 window appears at final size and never resizes on screen.
 
+A hide runs through the webview as well: the webview clears the card while it
+can still paint, reports back, and only then does the shell hide the window,
+with a short fallback in case the report never comes. A hidden webview keeps
+its last frame and macOS flashes that frame on the next show — an empty last
+frame makes the next show start clean.
+
 ### Placement
 
 - The anchor is the HUD panel's drawn rect: the window position plus the hover

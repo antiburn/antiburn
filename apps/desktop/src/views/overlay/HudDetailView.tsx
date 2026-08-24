@@ -8,6 +8,7 @@ import { flushSync } from "react-dom"
 
 import { LedBar } from "../../components/ui/LedBar"
 import {
+  concealHudDetail,
   getHudDetailState,
   setHudDetailSize,
   type HudDetailState,
@@ -21,9 +22,11 @@ type DetailSnapshot = {
   now: number
   /** Counts the show requests, so each show restarts the enter animation. */
   shown: number
+  /** True after a conceal request: the card is gone until the next payload. */
+  concealed: boolean
 }
 
-const INITIAL_SNAPSHOT: DetailSnapshot = { bars: [], now: 0, shown: 0 }
+const INITIAL_SNAPSHOT: DetailSnapshot = { bars: [], now: 0, shown: 0, concealed: false }
 
 function resetDate(resetsAt: string | null): Date | null {
   if (!resetsAt) return null
@@ -46,7 +49,7 @@ class HudDetailSession {
   private generation = 0
   private snapshot: DetailSnapshot = INITIAL_SNAPSHOT
   private wrap: HTMLDivElement | null = null
-  private stopListening: (() => void) | null = null
+  private disposers: Array<() => void> = []
 
   getSnapshot = (): DetailSnapshot => this.snapshot
 
@@ -75,11 +78,22 @@ class HudDetailSession {
       })
       .catch(() => {})
 
-    void listen<HudDetailState>("hud-detail:state", (event) => {
-      if (this.isCurrent(generation)) this.apply(event.payload)
+    this.subscribeShell(generation, "hud-detail:state", (state: HudDetailState) =>
+      this.apply(state),
+    )
+    this.subscribeShell(generation, "hud-detail:conceal", () => this.conceal())
+  }
+
+  private subscribeShell<Payload>(
+    generation: number,
+    event: string,
+    handle: (payload: Payload) => void,
+  ): void {
+    void listen<Payload>(event, (received) => {
+      if (this.isCurrent(generation)) handle(received.payload)
     })
       .then((dispose) => {
-        if (this.isCurrent(generation)) this.stopListening = dispose
+        if (this.isCurrent(generation)) this.disposers.push(dispose)
         else dispose()
       })
       .catch(() => {})
@@ -88,8 +102,8 @@ class HudDetailSession {
   private stop(): void {
     this.started = false
     this.generation += 1
-    this.stopListening?.()
-    this.stopListening = null
+    for (const dispose of this.disposers) dispose()
+    this.disposers = []
     delete document.body.dataset.transparentWindow
   }
 
@@ -101,16 +115,36 @@ class HudDetailSession {
     const shown = state.reason === "show" ? this.snapshot.shown + 1 : this.snapshot.shown
     // flushSync, so the measurement below reads the fresh layout.
     flushSync(() => {
-      this.snapshot = { bars: state.bars, now: state.now, shown }
+      this.snapshot = { bars: state.bars, now: state.now, shown, concealed: false }
       for (const listener of this.listeners) listener()
     })
     this.reportSize()
   }
 
+  /**
+   * Clear the card while the window can still paint, then report back.
+   *
+   * A hidden webview keeps its last frame, and macOS flashes that frame on
+   * the next show. The two-frame wait lets the cleared card reach the screen
+   * before the shell hides the window.
+   */
+  private conceal(): void {
+    if (this.snapshot.concealed) return
+    flushSync(() => {
+      this.snapshot = { ...this.snapshot, concealed: true }
+      for (const listener of this.listeners) listener()
+    })
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        void concealHudDetail().catch(() => {})
+      })
+    })
+  }
+
   private reportSize(): void {
     // Before the first payload the card holds placeholder content. Reporting
     // that height would show the window at the wrong size for one frame.
-    if (!this.wrap || this.snapshot.shown === 0) return
+    if (!this.wrap || this.snapshot.shown === 0 || this.snapshot.concealed) return
     const height = this.wrap.getBoundingClientRect().height
     if (height > 0) void setHudDetailSize(height).catch(() => {})
   }
@@ -128,6 +162,10 @@ export function HudDetailView() {
     (node: HTMLDivElement | null) => session.registerWrap(node),
     [session],
   )
+
+  if (state.concealed) {
+    return <div ref={wrapRef} className="p-2" />
+  }
 
   return (
     <div ref={wrapRef} className="p-2">

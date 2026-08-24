@@ -11,15 +11,24 @@ import { HudDetailView } from "./HudDetailView"
 
 const getHudDetailState = vi.hoisted(() => vi.fn())
 const setHudDetailSize = vi.hoisted(() => vi.fn(async () => {}))
+const concealHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 vi.mock("../../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../../lib/ipc")
-  return { ...actual, getHudDetailState, setHudDetailSize }
+  return { ...actual, getHudDetailState, setHudDetailSize, concealHudDetail }
 })
 
-const push = vi.hoisted(() => ({ emit: null as ((state: HudDetailState) => void) | null }))
+const push = vi.hoisted(() => ({
+  emit: null as ((state: HudDetailState) => void) | null,
+  conceal: null as (() => void) | null,
+}))
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (_event: string, handler: (event: { payload: HudDetailState }) => void) => {
-    push.emit = (state: HudDetailState) => handler({ payload: state })
+  listen: vi.fn(async (event: string, handler: (received: { payload: unknown }) => void) => {
+    if (event === "hud-detail:state") {
+      push.emit = (state: HudDetailState) => handler({ payload: state })
+    }
+    if (event === "hud-detail:conceal") {
+      push.conceal = () => handler({ payload: undefined })
+    }
     return () => {}
   }),
 }))
@@ -46,7 +55,9 @@ describe("HudDetailView", () => {
     getHudDetailState.mockReset()
     getHudDetailState.mockResolvedValue(null)
     setHudDetailSize.mockClear()
+    concealHudDetail.mockClear()
     push.emit = null
+    push.conceal = null
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       height: 120,
     } as DOMRect)
@@ -101,6 +112,27 @@ describe("HudDetailView", () => {
     )
     expect(screen.getByText("82%")).toBeInTheDocument()
     expect(screen.queryByText("81%")).not.toBeInTheDocument()
+  })
+
+  it("clears the card on conceal and reports back after the paint", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.conceal).not.toBeNull())
+    act(() => push.emit!(detailState()))
+    expect(screen.getByText("5-hour limit")).toBeInTheDocument()
+    act(() => push.conceal!())
+    expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
+    await waitFor(() => expect(concealHudDetail).toHaveBeenCalledTimes(1))
+  })
+
+  it("shows the card again after a conceal", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.conceal).not.toBeNull())
+    act(() => push.emit!(detailState()))
+    act(() => push.conceal!())
+    setHudDetailSize.mockClear()
+    act(() => push.emit!(detailState()))
+    expect(screen.getByText("5-hour limit")).toBeInTheDocument()
+    expect(setHudDetailSize).toHaveBeenCalledWith(120)
   })
 
   it("shows the exact empty copy when no limits exist", async () => {

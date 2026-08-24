@@ -144,6 +144,14 @@ fn cursor_inside(window: &tauri::WebviewWindow) -> Option<bool> {
 #[cfg(target_os = "macos")]
 const DETAIL_STATE_EVENT: &str = "hud-detail:state";
 
+/// Event that asks the detail webview to clear its card before a hide.
+#[cfg(target_os = "macos")]
+const DETAIL_CONCEAL_EVENT: &str = "hud-detail:conceal";
+
+/// Longest wait for the webview's conceal report before a forced hide.
+#[cfg(target_os = "macos")]
+const DETAIL_CONCEAL_FALLBACK_MS: u64 = 80;
+
 /// Detail window width in logical pixels. Matches the HUD frame width.
 #[cfg(any(target_os = "macos", test))]
 const DETAIL_WIDTH: f64 = 176.0;
@@ -242,17 +250,49 @@ pub fn apply_detail_size(app: &AppHandle, height: f64) {
 #[cfg(not(target_os = "macos"))]
 pub fn apply_detail_size(_app: &AppHandle, _height: f64) {}
 
-/// Hide the detail window and cancel any pending show.
+/// Cancel any pending show and start the hide of the detail window.
+///
+/// A hidden webview keeps its last frame, and macOS flashes that frame on the
+/// next show. So the webview first clears its card while it can still paint,
+/// then reports through [`conceal_detail`], and only then does the window
+/// hide. A fallback hides the window anyway after a short wait.
 #[cfg(target_os = "macos")]
 pub fn hide_detail(app: &AppHandle) {
     DETAIL_SHOULD_SHOW.store(false, Ordering::Relaxed);
+    let Some(window) = app.get_webview_window(DETAIL_LABEL) else {
+        return;
+    };
+    if app.emit_to(DETAIL_LABEL, DETAIL_CONCEAL_EVENT, ()).is_err() {
+        let _ = window.hide();
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(DETAIL_CONCEAL_FALLBACK_MS)).await;
+        if !DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
+            let _ = window.hide();
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn hide_detail(_app: &AppHandle) {}
+
+/// Hide the detail window after the webview cleared its card.
+///
+/// A new show request can land between the clear and this report. The
+/// [`DETAIL_SHOULD_SHOW`] check keeps that fresh show on screen.
+#[cfg(target_os = "macos")]
+pub fn conceal_detail(app: &AppHandle) {
+    if DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(window) = app.get_webview_window(DETAIL_LABEL) {
         let _ = window.hide();
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn hide_detail(_app: &AppHandle) {}
+pub fn conceal_detail(_app: &AppHandle) {}
 
 /// Create the detail window hidden. Display only: the cursor never interacts
 /// with it, so every click passes through to whatever sits below.

@@ -950,6 +950,12 @@ export async function hideHudDetail(): Promise<void> {
   await invoke("hide_hud_detail")
 }
 
+/** Report that the detail card is cleared, so the shell can hide the window. */
+export async function concealHudDetail(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("conceal_hud_detail")
+}
+
 /** The newest detail payload, for a detail webview that mounts late. */
 export async function getHudDetailState(): Promise<HudDetailState | null> {
   if (!hasShell()) return null

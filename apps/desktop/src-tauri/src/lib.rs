@@ -144,6 +144,7 @@ pub fn run() {
             commands::open_overlay_window,
             commands::show_hud_detail,
             commands::hide_hud_detail,
+            commands::conceal_hud_detail,
             commands::get_hud_detail_state,
             commands::set_hud_detail_size,
             commands::get_consent_diagnostics,

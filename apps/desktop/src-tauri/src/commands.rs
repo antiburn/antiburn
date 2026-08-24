@@ -176,6 +176,12 @@ pub fn hide_hud_detail(app: tauri::AppHandle) {
     antiburn_hud::hide_detail(&app);
 }
 
+/// Hide the detail window now that its webview cleared the card.
+#[tauri::command]
+pub fn conceal_hud_detail(app: tauri::AppHandle) {
+    antiburn_hud::conceal_detail(&app);
+}
+
 /// Return the newest detail payload for a detail webview that mounts late.
 #[tauri::command]
 pub fn get_hud_detail_state() -> serde_json::Value {

@@ -37,11 +37,13 @@ export function OverlayWindow() {
         className="relative mx-2 select-none rounded-xl border border-transparent px-3 pt-2 pb-2"
         onMouseDown={(event) => session.startDrag(event)}
       >
+        {/* top-2/right-3 name the corner of the drawn bars (pt-2, px-3). The
+            translate centers the chip on that corner point. */}
         <button
           type="button"
           aria-label="Close overlay"
           onClick={() => session.close()}
-          className={`absolute top-0 right-0 rounded-full border border-separator p-1 text-label-tertiary hover:text-label-secondary transition-opacity duration-[var(--duration-fast)] ease-out ${
+          className={`absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-separator p-0.5 text-label-tertiary hover:text-label-secondary transition-opacity duration-[var(--duration-fast)] ease-out ${
             showClose ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
           style={{ backgroundColor: "var(--color-bg-hud)" }}
