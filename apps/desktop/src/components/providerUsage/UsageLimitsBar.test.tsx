@@ -101,7 +101,7 @@ function filledSegments(): number {
   return Array.from(segments).filter((node) => node.className.includes("bg-brand-tint")).length
 }
 
-describe("UsageLimitsBar — the pill row", () => {
+describe("UsageLimitsBar — the ring row", () => {
   it("states each provider's worst window as an accessible percentage", () => {
     bar()
     expect(screen.getByRole("button", { name: "Claude at 42 percent" })).toBeInTheDocument()
@@ -128,6 +128,16 @@ describe("UsageLimitsBar — the pill row", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Refreshing usage limits")
     expect(screen.getByRole("button", { name: "Claude at 42 percent" })).toBeInTheDocument()
   })
+
+  it("draws the reading as a ring alone, with the figure only on hover", () => {
+    // The row states no percentage: the ring is the glance, and the meters a
+    // click away are the readout. A figure printed here would be the same
+    // number twice.
+    bar()
+    const seat = screen.getByRole("button", { name: "Claude at 42 percent" })
+    expect(seat).toHaveTextContent("")
+    expect(seat).toHaveAttribute("title", "Claude — 42%")
+  })
 })
 
 describe("UsageLimitsBar — the disclosure", () => {
@@ -150,6 +160,50 @@ describe("UsageLimitsBar — the disclosure", () => {
     expect(open).toHaveAttribute("aria-pressed", "true")
     expect(open).toHaveAttribute("aria-controls", expect.any(String))
     expect(screen.getByRole("region", { name: "Usage limits" })).toBeInTheDocument()
+  })
+
+  it("drops the ring row and moves itself into the meters while open", () => {
+    // The point of the open state is the space the row gives back. The
+    // meters restate every ring, so keeping both spends the popover's height
+    // on one reading twice.
+    bar({ expanded: true })
+    expect(
+      screen.queryByRole("button", { name: "Claude at 42 percent" }),
+    ).not.toBeInTheDocument()
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    expect(region).toContainElement(
+      screen.getByRole("button", { name: "Collapse usage limits" }),
+    )
+  })
+
+  it("carries the refresh spinner with it into the open meters", () => {
+    bar({ expanded: true, refreshing: true })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    expect(region).toContainElement(screen.getByRole("status"))
+  })
+
+  it("keeps the settings gear's treatment in both states", () => {
+    // One treatment open and closed, at the reader's request, and the same
+    // one the footer's gear uses: the meters below say whether it is open,
+    // and an orange glyph competed with the orange arcs and segments around
+    // it. `PopoverView.tsx` holds the gear this matches.
+    const { rerender } = bar()
+    expect(screen.getByRole("button", { name: "Expand usage limits" }).className).toContain(
+      "text-label-secondary",
+    )
+
+    rerender(
+      <UsageLimitsBar
+        live={liveSummary()}
+        expanded
+        onToggleExpanded={vi.fn()}
+        refreshing={false}
+        onViewAll={vi.fn()}
+      />,
+    )
+    const open = screen.getByRole("button", { name: "Collapse usage limits" })
+    expect(open.className).toContain("text-label-secondary")
+    expect(open.className).not.toContain("text-brand")
   })
 
   it("names its provider group so two providers stay tellable apart", () => {
@@ -247,9 +301,11 @@ describe("UsageLimitsBar — degraded state", () => {
     // the error is the provider's only trace. The bar must not read as "your
     // Claude usage vanished".
     bar({ live: liveSummary({ providers: [], errors: [sourceError()] }) })
-    const pill = screen.getByTestId("usage-limits-unavailable")
-    expect(pill).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
-    expect(pill).toHaveTextContent("rate limited")
+    const seat = screen.getByTestId("usage-limits-unavailable")
+    expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
+    // The row states no words any more, so the failure has to survive on
+    // hover. It is also spelled out in full in the expanded listing.
+    expect(seat).toHaveAttribute("title", "Claude — rate limited")
   })
 
   it("explains the failure in the expanded listing", () => {
