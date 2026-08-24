@@ -142,6 +142,7 @@ pub fn run() {
             commands::request_folder_access,
             commands::restart_onboarding,
             commands::open_folder_access_settings,
+            commands::open_github_repo,
             commands::open_overlay_window,
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
