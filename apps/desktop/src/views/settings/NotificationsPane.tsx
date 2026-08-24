@@ -12,10 +12,12 @@ import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { cn } from "../../lib/cn"
 import {
+  postSampleNotification,
   postTestNotification,
   type DiskSpaceDisplay,
   type Milestones,
   type NudgePlacement,
+  type SampleNotificationKind,
 } from "../../lib/ipc"
 import { isMacOS } from "../../lib/platform"
 import type { AppSettingsController } from "./useAppSettings"
@@ -62,6 +64,17 @@ const DISK_THRESHOLDS: readonly { value: string; label: string }[] = [
   { value: "25", label: "25 GB" },
   { value: "50", label: "50 GB" },
   { value: "100", label: "100 GB" },
+]
+
+/** Every kind the shell can post, for the debug-only sample row. */
+const SAMPLE_KINDS: readonly { value: SampleNotificationKind; label: string }[] = [
+  { value: "updateAvailable", label: "Update" },
+  { value: "scanFailure", label: "Scan failure" },
+  { value: "diskSpaceLow", label: "Disk low" },
+  { value: "usageAnomaly", label: "Spend anomaly" },
+  { value: "usageMilestone", label: "Milestone" },
+  { value: "menuBarHome", label: "Menu bar home" },
+  { value: "test", label: "Test" },
 ]
 
 /** Three multi-select pills. Not a `SegmentedControl`: these are independent
@@ -157,6 +170,20 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
               <PushButton onClick={() => void postTestNotification()}>Show test</PushButton>
             }
           />
+          {import.meta.env.DEV && (
+            <Row
+              label="Sample notifications"
+              description="Debug builds only. Each button posts one kind with fixed figures, skipping every gate, so the copy can be checked on the real card."
+            >
+              <div className="mt-2 flex flex-wrap gap-2">
+                {SAMPLE_KINDS.map(({ value, label }) => (
+                  <PushButton key={value} onClick={() => void postSampleNotification(value)}>
+                    {label}
+                  </PushButton>
+                ))}
+              </div>
+            </Row>
+          )}
           {macOS && (
             <Row
               label="Position"

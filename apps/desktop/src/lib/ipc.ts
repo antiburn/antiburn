@@ -699,6 +699,25 @@ export async function postTestNotification(): Promise<void> {
   await invoke("post_test_notification")
 }
 
+/** The notification kinds the shell can post a sample of. */
+export type SampleNotificationKind =
+  | "updateAvailable"
+  | "scanFailure"
+  | "diskSpaceLow"
+  | "usageAnomaly"
+  | "usageMilestone"
+  | "menuBarHome"
+  | "test"
+
+/**
+ * Posts a sample notification of one kind, with fixed figures, so the copy
+ * can be checked on the real card. The shell refuses outside a debug build.
+ */
+export async function postSampleNotification(kind: SampleNotificationKind): Promise<void> {
+  if (!hasShell()) return
+  await invoke("post_sample_notification", { kind })
+}
+
 /**
  * Dismisses the tray popover.
  *

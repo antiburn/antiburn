@@ -850,6 +850,19 @@ describe("SettingsView — notifications", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("post_test_notification"))
   })
 
+  it("posts a sample of one kind from the debug row", async () => {
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Notifications" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Milestone" }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("post_sample_notification", {
+        kind: "usageMilestone",
+      }),
+    )
+  })
+
   it("persists a milestone pill toggle as the settings subset", async () => {
     render(<SettingsView />)
 

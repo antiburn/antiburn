@@ -69,6 +69,22 @@ pub enum Kind {
     Test,
 }
 
+impl Kind {
+    /// The wire id the settings pane's debug row sends for each kind.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Some(match id {
+            "updateAvailable" => Self::UpdateAvailable,
+            "scanFailure" => Self::ScanFailure,
+            "diskSpaceLow" => Self::DiskSpaceLow,
+            "usageAnomaly" => Self::UsageAnomaly,
+            "usageMilestone" => Self::UsageMilestone,
+            "menuBarHome" => Self::MenuBarHome,
+            "test" => Self::Test,
+            _ => return None,
+        })
+    }
+}
+
 /// Whether `kind` may be delivered under these preferences.
 ///
 /// The master switch wins: turning notifications off turns *all* of them off,
@@ -412,6 +428,57 @@ pub fn note_test(app: &AppHandle) {
     deliver(app, Kind::Test, title, body, None);
 }
 
+/// Post a sample of `kind` with representative figures, for copy work.
+///
+/// Debug builds only, from the settings pane's debug row. This skips every
+/// gate — the preferences, the once-per-run claims, the milestone ledger — on
+/// purpose: the reader wants to see the card, not earn it. The figures are
+/// fixed so the same wording shows on every press.
+pub fn note_sample(app: &AppHandle, kind: Kind) {
+    use crate::provider_usage::live::milestones::{MilestoneContent, MilestoneCrossing};
+
+    let (title, body, extra_action) = match kind {
+        Kind::UpdateAvailable => {
+            let (title, body) = update_message("0.2.0");
+            (title, body, Some(("view", "View")))
+        }
+        Kind::ScanFailure => {
+            let (title, body) = scan_failure_message("Could not read ~/.claude/projects");
+            (title, body, None)
+        }
+        Kind::DiskSpaceLow => {
+            let (title, body) = disk_space_low_message(18, 25);
+            (title, body, None)
+        }
+        Kind::UsageAnomaly => {
+            let (title, body) = usage_anomaly_message(14.2, 41.0);
+            (title, body, None)
+        }
+        Kind::UsageMilestone => {
+            let (title, body) = usage_milestone_message(&MilestoneContent {
+                provider: "anthropic".to_string(),
+                crossings: vec![MilestoneCrossing {
+                    window_label: "weekly limit".to_string(),
+                    threshold: 75,
+                    used_percent: 77.0,
+                    resets_at_epoch: 0,
+                }],
+            });
+            (title, body, None)
+        }
+        Kind::MenuBarHome => {
+            let (title, body) = menu_bar_home_message();
+            crate::nudges::anchor_next_to_the_tray(app);
+            (title, body, Some(("show", "Show me")))
+        }
+        Kind::Test => {
+            let (title, body) = test_message();
+            (title, body, None)
+        }
+    };
+    deliver(app, kind, title, body, extra_action);
+}
+
 /// The reader's preferences, read fresh, defaulting to *silence* when the store
 /// cannot be read: an unreadable preference is not permission.
 fn enabled(app: &AppHandle, kind: Kind) -> bool {
@@ -426,6 +493,22 @@ mod tests {
 
     fn settings() -> AppSettings {
         AppSettings::default()
+    }
+
+    #[test]
+    fn every_kind_has_a_wire_id_and_unknown_ids_are_rejected() {
+        for (id, kind) in [
+            ("updateAvailable", Kind::UpdateAvailable),
+            ("scanFailure", Kind::ScanFailure),
+            ("diskSpaceLow", Kind::DiskSpaceLow),
+            ("usageAnomaly", Kind::UsageAnomaly),
+            ("usageMilestone", Kind::UsageMilestone),
+            ("menuBarHome", Kind::MenuBarHome),
+            ("test", Kind::Test),
+        ] {
+            assert_eq!(Kind::from_id(id), Some(kind));
+        }
+        assert_eq!(Kind::from_id("anything-else"), None);
     }
 
     #[test]

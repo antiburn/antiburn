@@ -158,6 +158,7 @@ pub fn run() {
             commands::list_scan_roots,
             commands::open_settings_window,
             commands::post_test_notification,
+            commands::post_sample_notification,
             commands::quit_app,
             commands::refresh_repositories,
             commands::remove_scan_root,
