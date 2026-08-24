@@ -25,6 +25,7 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         activity_source: "mtime".into(),
         subagent_count: 0,
         fork_parent_session_id: None,
+        source_fingerprint: None,
     }
 }
 
@@ -38,7 +39,7 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
 }
 
 #[test]
-fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
+fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
     let store = store();
     let connection = store.lock();
     let mut statement = connection
@@ -60,6 +61,10 @@ fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
             "inclusive_models_json",
             "source_fingerprint",
             "pricing_generation",
+            "analyzed_generation",
+            "parser_revision",
+            "analyzer_revision",
+            "metrics_schema_revision",
         ]
     );
 }
@@ -321,6 +326,9 @@ fn the_session_table_shape_is_stable() {
             "last_seen_at",
             "activity_source",
             "activity_cursor",
+            "source_fingerprint",
+            "source_generation",
+            "started_at_epoch",
         ]
     );
 }
@@ -928,6 +936,194 @@ fn migrating_forward_drops_a_legacy_live_usage_off_row_so_the_new_default_applie
         store.settings().unwrap().live_usage_enabled,
         "with the legacy row gone, the read path falls through to the new default"
     );
+}
+
+#[test]
+fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
+    for start in 0..super::schema::MIGRATIONS.len() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        for &sql in &super::schema::MIGRATIONS[..start] {
+            connection.execute_batch(sql).unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", start as i64)
+            .unwrap();
+
+        let store = Store::from_connection(
+            connection,
+            Path::new("/tmp/antiburn-all-migrations-test").to_path_buf(),
+        )
+        .expect("migration reaches the head");
+        assert_eq!(
+            store.schema_version().unwrap(),
+            super::schema::MIGRATIONS.len() as i64
+        );
+        let connection = store.lock();
+        let added_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session')
+                   WHERE name IN ('source_fingerprint', 'source_generation', 'started_at_epoch')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let projection_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_analysis')
+                   WHERE name IN ('analyzed_generation', 'parser_revision',
+                                  'analyzer_revision', 'metrics_schema_revision')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(added_columns, 3, "start version {start}");
+        assert_eq!(projection_columns, 4, "start version {start}");
+    }
+}
+
+#[test]
+fn existing_analysis_rows_take_the_revision_defaults() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..8] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO session_analysis (
+                 environment_key, agent, session_id, model_breakdown_json,
+                 inclusive_models_json, source_fingerprint, pricing_generation)
+             VALUES ('native', 'claude-code', 'legacy', '{}', '[]', '1:1', 1)",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 8i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-analysis-migration-test").to_path_buf(),
+    )
+    .expect("migration reaches the head");
+    let revisions: (i64, i64, i64, i64) = store
+        .lock()
+        .query_row(
+            "SELECT analyzed_generation, parser_revision, analyzer_revision,
+                    metrics_schema_revision
+               FROM session_analysis
+              WHERE session_id = 'legacy'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+
+    assert_eq!(revisions, (0, 1, 1, 1));
+}
+
+#[test]
+fn a_session_keeps_its_key_across_the_migration() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..8] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label,
+                 surface, subagent_count, first_seen_at, last_seen_at,
+                 activity_source, activity_cursor)
+             VALUES ('native', 'claude-code', 'stable', 'file', '/tmp/stable.jsonl',
+                     'cli', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                     'mtime', '')",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 8i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-session-migration-test").to_path_buf(),
+    )
+    .expect("migration reaches the head");
+    let key = SessionKey::new("native", "claude-code", "stable");
+    let before = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(before.source_generation, 0);
+    assert_eq!(before.source_fingerprint, None);
+    assert_eq!(store.session(&key).unwrap().expect("session").key, key);
+
+    let mut rescanned = session("stable", 1_000);
+    rescanned.source_fingerprint = Some("sv1:stable".to_string());
+    store.upsert_sessions(&[rescanned]).unwrap();
+
+    assert_eq!(store.session_count().unwrap(), 1);
+    let after = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(after.source_generation, 1);
+    assert_eq!(after.source_fingerprint.as_deref(), Some("sv1:stable"));
+}
+
+#[test]
+fn the_generation_increments_only_when_the_fingerprint_changes() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "generation");
+    let mut record = session("generation", 1_000);
+    record.source_fingerprint = Some("sv1:first".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    let first = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(first.source_generation, 1);
+
+    record.source_fingerprint = Some("sv1:second".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    let second = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(second.source_generation, 2);
+    assert_eq!(second.source_fingerprint.as_deref(), Some("sv1:second"));
+
+    record.source_fingerprint = None;
+    store.upsert_sessions(&[record]).unwrap();
+    let unreadable = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(unreadable, second);
+}
+
+#[test]
+fn started_at_epoch_stays_null_through_scan_upserts() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "no-start");
+    let mut record = session("no-start", 1_000);
+    record.source_fingerprint = Some("sv1:first".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    record.source_fingerprint = Some("sv1:second".to_string());
+    store.upsert_sessions(&[record]).unwrap();
+
+    let state = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(state.started_at_epoch, None);
 }
 
 #[test]
