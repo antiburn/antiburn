@@ -272,6 +272,11 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
         .and_then(|m| m.get("content"))
         .or_else(|| obj.get("content"));
     process_content(content, &mut ev);
+    // Claude Code writes a tool result as a `user` record whose content is a
+    // `tool_result` block. That is the tool's turn, not a user prompt.
+    if ev.role == Role::User && has_tool_result_block(content) {
+        ev.role = Role::Tool;
+    }
 
     // OpenAI-style tool calls.
     if let Some(calls) = msg
@@ -322,6 +327,15 @@ fn resolve_role(
         },
     };
     Some(role)
+}
+
+fn has_tool_result_block(content: Option<&Value>) -> bool {
+    let Some(Value::Array(items)) = content else {
+        return false;
+    };
+    items
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str) == Some("tool_result"))
 }
 
 fn process_content(content: Option<&Value>, ev: &mut NormalizedEvent) {
@@ -724,6 +738,23 @@ mod tests {
         let ev = parse_record(&record).expect("record should parse");
         assert_eq!(ev.tools.len(), 1);
         assert_eq!(ev.tools[0].category, ToolCategory::Test);
+    }
+
+    #[test]
+    fn claude_tool_result_user_record_is_a_tool_event() {
+        let result = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+            }
+        });
+        let prompt = json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": "go"}]}
+        });
+        assert_eq!(parse_record(&result).unwrap().role, Role::Tool);
+        assert_eq!(parse_record(&prompt).unwrap().role, Role::User);
     }
 
     #[test]

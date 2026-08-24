@@ -53,6 +53,10 @@ export interface SessionBucket {
   secsSincePriorTurn: number | null
   /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
   subagentLaunches: number
+  /** Count of user prompts in this bucket. */
+  userPrompts: number
+  /** The name of the last parent tool call in this bucket, when any. */
+  lastTool: string | null
   /** The model that produced the last parent event in this bucket, when known. */
   model: string | null
   /** The thinking-effort mode of the last parent event in this bucket, when known. */

@@ -839,6 +839,42 @@ const CLAUDE_CACHE_REHYDRATION_WITH_CACHED_PREFIX_FIXTURE: &str = concat!(
 );
 
 #[test]
+fn bucket_keeps_the_gap_that_enters_it_and_counts_user_prompts() {
+    let assistant = |ts: &str| {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","usage":{{"input_tokens":100,"output_tokens":10}},"content":[{{"type":"text","text":"x"}}]}}}}"#
+        )
+    };
+    let mut lines = vec![
+        assistant("2024-06-01T10:00:00Z"),
+        r#"{"type":"user","timestamp":"2024-06-01T10:10:02Z","message":{"role":"user","content":"go"}}"#.to_string(),
+        assistant("2024-06-01T10:10:05Z"),
+        assistant("2024-06-01T10:10:12Z"),
+    ];
+    // Pad the session so a bucket spans about 20 seconds and the two follow-up
+    // turns share one bucket.
+    for minute in (15..=70).step_by(5) {
+        lines.push(assistant(&format!("2024-06-01T10:{minute}:00Z")));
+    }
+    let session = normalize_source(&jsonl_input("claude", &lines.join("\n"))).unwrap();
+    let m = analyze_session(&session);
+
+    let bucket = m
+        .buckets
+        .iter()
+        .find(|bucket| bucket.user_prompts > 0)
+        .expect("the bucket with the prompt");
+    assert_eq!(bucket.user_prompts, 1);
+    assert!(
+        bucket.tokens_in >= 200,
+        "both follow-up turns share the bucket"
+    );
+    // The first turn in the bucket sets the gap: 10m 5s since the prior turn,
+    // not the 7s between the two follow-up turns.
+    assert_eq!(bucket.secs_since_prior_turn, Some(605));
+}
+
+#[test]
 fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
     let session = normalize_source(&jsonl_input(
         "claude",
@@ -1994,9 +2030,26 @@ fn buckets_with_no_mode_signal_stay_none() {
 }
 
 #[test]
-fn aggregate_metrics_leaves_mode_signals_at_default() {
+fn single_session_summary_keeps_mode_signals() {
     let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"x"}]},"effort":"high"}"#;
     let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+
+    // The session detail view reads the summary buckets, so a one-session
+    // summary must carry the session's own mode signals through.
+    let first = &summary.buckets[0];
+    assert_eq!(first.model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(first.thinking_mode.as_deref(), Some("high"));
+    assert_eq!(first.speed.as_deref(), Some("fast"));
+    assert!(first.has_thinking);
+}
+
+#[test]
+fn aggregate_metrics_leaves_mode_signals_at_default() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"x"}]},"effort":"high"}"#;
+    let summary = analyze_sources(vec![
+        jsonl_input("claude", fixture),
+        jsonl_input("claude", fixture),
+    ]);
 
     // A multi-session summary cannot carry one session's mode signals, since
     // each contributing session can run a different agent/model.
