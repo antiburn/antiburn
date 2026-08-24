@@ -110,7 +110,7 @@ pnpm run slop
 ```
 
 This command expands to `aislop ci --changes --base origin/main` and uses the
-pinned `aislop 0.14.0`. CI runs the same script against the pull request base
+pinned `aislop 0.14.1`. CI runs the same script against the pull request base
 SHA. Run `git fetch origin main` first to make the local result close to the CI
 result. The results are not identical because the bases differ.
 
@@ -180,12 +180,22 @@ justification in ASD-STE100 and name #90.
 ## Edit-time agent hooks
 
 The repository commits `PostToolUse` hooks that give advisory aislop findings.
-Claude Code runs one after each matched `Edit`, `Write` or `MultiEdit`. Codex
-runs one after each `apply_patch`, through the committed adapter
+Claude Code runs one after each matched `Edit`, `Write` or `MultiEdit`, through
+`scripts/claude-aislop-hook.mjs`. Codex runs one after each `apply_patch`, through
 `scripts/codex-aislop-hook.mjs`, after no other Codex edit path, and only when
-you complete both trust steps below. Both hooks run the repository-pinned
-`node_modules/.bin/aislop` 0.14.0. The findings are advisory, so no hook blocks
+you complete both trust steps below. Both adapters run the repository-pinned
+`node_modules/.bin/aislop` 0.14.1. The findings are advisory, so no hook blocks
 an edit.
+
+Both adapters omit hook output when aislop finds no issue. When aislop finds an
+issue, they return only the counts and one line per finding. They do not put the
+score, accountability data, or suggested actions into the agent context. The
+compact context has this shape:
+
+```text
+aislop: 1 error
+error src/example.rs:12:4 ai-slop/example-rule: The finding message.
+```
 
 The hook judges the whole edited file, so it can report standing #90 findings
 in a file you touch. Hook runs also disable the `format` and `lint` checks, so
