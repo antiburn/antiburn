@@ -11,6 +11,12 @@ that plan wins — it is the ratified architecture. This file exists to record w
 code actually does right now, verified against the tree, and to be honest about the
 distance between that and the plan.
 
+**Verified against `main` at `3a666ce`.** Every claim below was checked against that
+revision. Prefer symbol names over line numbers when following them — the symbols are
+what this file is anchored to. Re-verify before trusting an entry after the analysis
+code moves; the cache-rehydration entry went stale within two days of first being
+written, which is exactly the failure mode to expect here.
+
 ## How to read the status column
 
 Three different things get called "detection" and conflating them wastes time:
@@ -29,7 +35,7 @@ unqualified absence — which is the main correctness debt in this area.
 
 | # | Event | Status today | Deterministic? |
 |---|---|---|---|
-| 1 | Cache rehydration after TTL lapse | Computed today | Yes, with thresholds |
+| 1 | Cache rehydration after TTL lapse | Computed today | Yes — two paths, seven thresholds |
 | 2 | Oversized-context compaction | Parsed, not judged | Yes |
 | 3 | Unused MCP servers | Both halves parsed, not joined | Yes |
 | 4 | Unused skills | Both halves parsed, not joined | Yes |
@@ -54,13 +60,17 @@ conversation to the cache instead of appending a suffix. Cache writes cost more 
 cache reads, so one lapsed turn can cost more than the dozen turns before it.
 
 **Status today: computed.** This is the one event on the list with a finished
-detector. `crates/antiburn-local/src/analysis/engine.rs` defines
-`is_cache_rehydration_turn`, `SessionMetrics::cache_rehydration_count`, and
-`Bucket::is_cache_rehydration`; `ActiveSessionsSummary::cache_rehydration_count` sums
-it across sessions.
+detector, and it is the most developed code in this area.
+`crates/antiburn-local/src/analysis/engine.rs` defines the rule;
+`SessionMetrics::cache_rehydration_count` and `Bucket::is_cache_rehydration` carry
+it, and `ActiveSessionsSummary::cache_rehydration_count` sums it across sessions.
 
-**Deterministic detection.** Yes, subject to three named thresholds. A turn counts
-when all of these hold:
+**Deterministic detection.** Yes, subject to seven named thresholds across **two
+paths**. Which path runs is decided by `NormalizedSession::cache_write_tokens_available`
+— that is, by whether the provider reports cache writes at all.
+
+*Direct path* (`is_cache_rehydration_turn`), for providers that report cache
+writes. A turn counts when all of these hold:
 
 - `context_tokens >= CACHE_REHYDRATION_MIN_CONTEXT_TOKENS` (20,000) — a full rewrite
   of a small context is not worth flagging;
@@ -73,11 +83,31 @@ when all of these hold:
 - and the turn is **not** the first after a compaction boundary, since compaction
   always rewrites the (smaller) context and that is not a TTL lapse.
 
-The rule is parent-only. `EventSource::Subagent` events are excluded because a
-subagent has its own context window, so mixing its turns into the parent's cache
-arithmetic means nothing.
+*Inferred path* (`inferred_cache_rehydration_turn`), for providers that report no
+cache writes — Codex is the case this was built for. With no write signal, the rule
+looks for a cache-read collapse followed by a large replay, then waits for the next
+turn to confirm the cache rebuilt:
 
-**What is genuinely a threshold, not a fact.** The three ratios are policy. Under the
+- the previous turn was mostly cache-served (same `PRIOR_READ_RATIO`), and this turn
+  reads at most `CACHE_REHYDRATION_MISS_READ_RATIO` (0.2) from the old cache;
+- the context did not shrink: `CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO` (0.8);
+- fresh input minus real context growth — the *replayed* portion — reaches
+  `CACHE_REHYDRATION_REPLAY_RATIO` (0.5) of the context;
+- the next turn reads back at least `CACHE_REHYDRATION_RECOVERY_READ_RATIO` (0.5)
+  from the rebuilt cache and itself retains the context.
+
+Both paths are parent-only: `EventSource::Subagent` events are skipped, because a
+subagent has its own context window and mixing its turns into the parent's cache
+arithmetic means nothing. Both also guard on the model: `same_known_model` stops a
+mid-session model switch from being read as a TTL lapse, since a switch invalidates
+the cache for a different reason.
+
+The inferred path is the more interesting piece of engineering and the more fragile
+one. It is a three-turn window with five ratios, inferring an event the transcript
+never records. It should be the first thing re-examined if rehydration counts ever
+look wrong on a provider that reports no cache writes.
+
+**What is genuinely a threshold, not a fact.** All seven ratios are policy. Under the
 plan's "findings are policy; evidence is fact" rule they should live in a detector
 over persisted evidence, not baked into the metrics pass — changing 0.5 to 0.6 today
 requires reparsing every transcript.
@@ -89,8 +119,10 @@ requires reparsing every transcript.
 - *User:* `/clear` before a break costs nothing; resuming a stale context costs the
   whole window.
 - *Agent:* avoid mid-session model switches, which invalidate the cache for the same
-  reason a TTL lapse does.
-- *Codebase:* nothing to fix — this one works.
+  reason a TTL lapse does. The detector knows this and excludes them, so a switch
+  costs real tokens without ever showing up as a rehydration finding.
+- *Codebase:* the detector works. The open question is confidence in the inferred
+  path, which has no ground truth to check itself against.
 
 ---
 
