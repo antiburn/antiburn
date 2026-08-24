@@ -6,6 +6,8 @@ import { dirname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { compactAislopOutput } from "./aislop-hook-output.mjs";
+import { run as runClaude } from "./claude-aislop-hook.mjs";
 import { AISLOP_BIN, patchFiles, run } from "./codex-aislop-hook.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,20 +50,30 @@ function assertProbeResult(result, path = probeRelative) {
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal("decision" in output, false);
-  const feedback = JSON.parse(output.hookSpecificOutput.additionalContext);
-  assert.equal(feedback.findings.length, 1);
-  assert.deepEqual(
-    {
-      ruleId: feedback.findings[0].ruleId,
-      severity: feedback.findings[0].severity,
-      file: feedback.findings[0].file,
-    },
-    { ruleId: "ai-slop/hardcoded-url", severity: "error", file: path },
+  const context = output.hookSpecificOutput.additionalContext;
+  assert.match(context, /^aislop: 1 error\n/);
+  assert.match(
+    context,
+    new RegExp(
+      `^error ${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:1 ai-slop/hardcoded-url:`,
+      "m",
+    ),
   );
+  assert.equal(context.split("\n").length, 2);
+  assert.doesNotMatch(context, /suggestedActions|accountability|no_action/);
   assert.doesNotMatch(result.stderr, /\[telemetry\]/);
 }
 
-async function captureRun(input, bin) {
+function hookEnvelope(feedback) {
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      additionalContext: JSON.stringify(feedback),
+    },
+  });
+}
+
+async function captureRun(input, bin, runner = run) {
   let stderr = "";
   const originalWrite = process.stderr.write;
   process.stderr.write = (chunk) => {
@@ -69,7 +81,7 @@ async function captureRun(input, bin) {
     return true;
   };
   try {
-    return { code: await run(input, bin), stderr };
+    return { code: await runner(input, bin), stderr };
   } finally {
     process.stderr.write = originalWrite;
   }
@@ -86,6 +98,7 @@ before(() => {
   writeFileSync(join(fx, "clean.rs"), "fn main() {}\n");
   writeFileSync(join(fx, 'a "q"\\b.rs'), probeSource);
   executable(join(fx, "fail-bin"), "#!/bin/sh\nexit 3\n");
+  executable(join(fx, "malformed-bin"), "#!/bin/sh\ncat >/dev/null\nprintf 'not json'\n");
   executable(join(fx, "signal-bin"), "#!/bin/sh\nkill -TERM $$\n");
   executable(join(shadow, "aislop"), "#!/bin/sh\necho shadow-aislop\n");
 });
@@ -97,7 +110,7 @@ after(() => {
 test("the hook uses the pinned aislop executable", () => {
   const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const version = packageJson.devDependencies.aislop;
-  assert.equal(version, "0.14.0");
+  assert.equal(version, "0.14.1");
   assert.equal(execFileSync(AISLOP_BIN, ["--version"], { encoding: "utf8" }).trim(), version);
   assert.match(AISLOP_BIN, /node_modules\/.bin\/aislop$/);
 });
@@ -110,8 +123,7 @@ test("the committed hook files have the required shapes", () => {
   assert.equal(claudeGroup.matcher, "Edit|Write|MultiEdit");
   assert.equal(claudeGroup.hooks.length, 1);
   const claudeCommand = claudeGroup.hooks[0].command;
-  assert.match(claudeCommand, /AISLOP_NO_TELEMETRY=1/);
-  assert.match(claudeCommand, /node_modules\/.bin\/aislop/);
+  assert.match(claudeCommand, /scripts\/claude-aislop-hook\.mjs/);
   const serialized = JSON.stringify(claude);
   assert.doesNotMatch(serialized, /"__aislop":(?!null)/);
   assert.ok(
@@ -166,35 +178,106 @@ test("the parser follows the apply_patch structure", () => {
   );
 });
 
-test("the Claude hook reports one finding without telemetry", () => {
+test("the compact output omits clean scans and trims finding feedback", () => {
+  const clean = hookEnvelope({
+    schema: "aislop.hook.v2",
+    counts: { error: 0, warning: 0, fixable: 0, total: 0 },
+    findings: [],
+    suggestedActions: [{ id: "no_action", label: "No findings. No action needed." }],
+  });
+  assert.equal(compactAislopOutput(clean), "");
+
+  const found = hookEnvelope({
+    schema: "aislop.hook.v2",
+    counts: { error: 1, warning: 1, fixable: 0, total: 2 },
+    findings: [
+      {
+        severity: "error",
+        file: "src/one.rs",
+        line: 4,
+        col: 2,
+        ruleId: "ai-slop/example",
+        message: "First finding",
+      },
+      {
+        severity: "warning",
+        file: "src/two.rs",
+        line: 8,
+        ruleId: "complexity/example",
+        message: "Second finding",
+      },
+    ],
+    accountability: { reason: "Verbose text" },
+  });
+  const compact = JSON.parse(compactAislopOutput(found));
+  assert.equal(
+    compact.hookSpecificOutput.additionalContext,
+    "aislop: 1 error, 1 warning\n" +
+      "error src/one.rs:4:2 ai-slop/example: First finding\n" +
+      "warning src/two.rs:8 complexity/example: Second finding",
+  );
+
+  assert.throws(
+    () =>
+      compactAislopOutput(
+        hookEnvelope({
+          schema: "aislop.hook.v2",
+          counts: { error: 0, warning: 0, total: 0 },
+          findings: [{ severity: "error" }],
+        }),
+      ),
+    /invalid aislop finding/,
+  );
+  assert.throws(
+    () =>
+      compactAislopOutput(
+        hookEnvelope({
+          schema: "aislop.hook.v2",
+          counts: { error: 0, warning: 0, total: 0 },
+          findings: [
+            {
+              severity: "error",
+              file: "src/one.rs",
+              line: 4,
+              ruleId: "ai-slop/example",
+              message: "First finding",
+            },
+          ],
+        }),
+      ),
+    /inconsistent aislop counts/,
+  );
+});
+
+test("the Claude hook is silent when clean and concise when it finds slop", () => {
   const claude = JSON.parse(readFileSync(join(root, ".claude/settings.json"), "utf8"));
   const command = claude.hooks.PostToolUse[0].hooks[0].command;
   const env = { ...telemetryEnv, CLAUDE_PROJECT_DIR: root };
-  const input = JSON.stringify({ tool_input: { edits: [{ file_path: probeRelative }] } });
-  assertProbeResult(runCommand(command, input, env));
+  const input = (path) => JSON.stringify({ tool_input: { edits: [{ file_path: path }] } });
+  assertProbeResult(runCommand(command, input(probeRelative), env));
+
+  const clean = runCommand(command, input(cleanRelative), env);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.equal(clean.stdout, "");
+  assert.doesNotMatch(clean.stderr, /\[telemetry\]/);
 });
 
-test("the Codex hook preserves paths and reports without telemetry", () => {
+test("the Codex hook preserves paths, stays silent when clean, and reports concisely", () => {
   const codex = JSON.parse(readFileSync(join(root, ".codex/hooks.json"), "utf8"));
   const command = codex.hooks.PostToolUse[0].hooks[0].command;
   assertProbeResult(runCommand(command, eventFor(probeRelative)));
 
   const clean = runCommand(command, eventFor(cleanRelative));
   assert.equal(clean.status, 0, clean.stderr);
-  const cleanEnvelope = JSON.parse(clean.stdout);
-  assert.deepEqual(Object.keys(cleanEnvelope), ["hookSpecificOutput"]);
-  assert.equal(cleanEnvelope.hookSpecificOutput.hookEventName, "PostToolUse");
-  const cleanFeedback = JSON.parse(cleanEnvelope.hookSpecificOutput.additionalContext);
-  assert.equal(cleanFeedback.schema, "aislop.hook.v2");
-  assert.deepEqual(cleanFeedback.counts, { error: 0, warning: 0, fixable: 0, total: 0 });
-  assert.deepEqual(cleanFeedback.findings, []);
+  assert.equal(clean.stdout, "");
   assert.doesNotMatch(clean.stderr, /\[telemetry\]/);
 
   assertProbeResult(runCommand(command, eventFor(quotedRelative)), quotedRelative);
 });
 
-test("the adapter applies its silent and fault exit contract", async () => {
+test("the adapters apply their silent and fault exit contracts", async () => {
   const failBin = join(fx, "fail-bin");
+  const malformedBin = join(fx, "malformed-bin");
   const signalBin = join(fx, "signal-bin");
   const silentInputs = [
     "",
@@ -215,8 +298,14 @@ test("the adapter applies its silent and fault exit contract", async () => {
     assertOneLine(result.stderr);
   }
 
-  for (const bin of [join(fx, "missing-bin"), failBin, signalBin]) {
+  for (const bin of [join(fx, "missing-bin"), failBin, malformedBin, signalBin]) {
     const result = await captureRun(eventFor(probeRelative), bin);
+    assert.equal(result.code, 1);
+    assertOneLine(result.stderr);
+  }
+
+  for (const bin of [join(fx, "missing-bin"), failBin, malformedBin, signalBin]) {
+    const result = await captureRun("{}", bin, runClaude);
     assert.equal(result.code, 1);
     assertOneLine(result.stderr);
   }
@@ -240,7 +329,7 @@ test("the absolute pin ignores an aislop shadow on PATH", () => {
     execFileSync("/bin/sh", ["-c", "command -v aislop"], { env, encoding: "utf8" }).trim(),
     join(shadow, "aislop"),
   );
-  assert.equal(execFileSync(AISLOP_BIN, ["--version"], { env, encoding: "utf8" }).trim(), "0.14.0");
+  assert.equal(execFileSync(AISLOP_BIN, ["--version"], { env, encoding: "utf8" }).trim(), "0.14.1");
   const codex = JSON.parse(readFileSync(join(root, ".codex/hooks.json"), "utf8"));
   const command = codex.hooks.PostToolUse[0].hooks[0].command;
   assertProbeResult(runCommand(command, eventFor(probeRelative), env));
