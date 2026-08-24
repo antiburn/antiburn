@@ -907,6 +907,7 @@ notes = [
   "Port the window mechanics without behavioral changes: the transparent always-on-top frame, create-or-show open, native cursor watcher, reported hover region, hover-intent expansion, manual drag, flip reserve, live-session blink, and localStorage preference.",
   "Extract the native mechanism into the standalone antiburn-hud crate. Keep session discovery and IPC policy in the desktop shell.",
   "Preserve the commands open_overlay_window, set_overlay_hover_region, and get_latest_session_activity.",
+  "Issue #108 later replaces the fixed hover-region command with original public dynamic-frame code; that post-port change is not derived from this source.",
   "Bind bar derivation to the public live-usage payloads. Do not port the private probe types or stores.",
   "Use an imperative external-system session with useSyncExternalStore. Do not add React effects.",
   "Do not copy rename scaffolding, login bypass, seeded data, share controls, analytics calls, settings rework, or unrelated fonts.",

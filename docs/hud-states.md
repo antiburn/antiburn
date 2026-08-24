@@ -60,35 +60,38 @@ stateDiagram-v2
   window blur ends the drag.
 - The drag moves the window manually at most once per animation frame.
 - The HUD always renders collapsed for the complete drag.
-- All visual transitions use 150ms.
+- Renderer transitions use 150ms. Native frame resizing uses the popover's
+  140ms ease and stops immediately when a drag starts.
 
 ## Positioning
 
-The native frame is 176×500 logical pixels. It has room for the panel to expand
-in either direction. The default position is centered under the primary macOS
-menu bar, with a 24px menu-bar allowance and an 8px gap. Reopening a live window
-keeps the reader's position.
+The native frame is 176 logical pixels wide and exactly as tall as the rendered
+panel, up to the original 500px ceiling. The default position is centered under
+the primary macOS menu bar, with a 24px menu-bar allowance and an 8px gap.
+Reopening a live window keeps the reader's position and measured height.
 
-The panel usually starts at the frame top and opens down. A HUD that is too low
-uses a 220px reserve above the panel and opens up. Every reserve change moves
-the frame by the equal and opposite distance. This keeps the visible panel in
-the same screen position. The panel stays hidden for the frame during the swap.
+The renderer measures the collapsed panel before the native window first
+appears. Turning the HUD off cancels that pending reveal, even if the measurement
+arrives later. Reopening uses the completed measurement. Later measurements
+resize the visible window. The panel normally keeps its top edge and opens down.
+A HUD that is too low keeps its bottom edge and opens up. Collapse uses the same
+anchor, so the collapsed HUD returns to the position the reader chose.
 
 The direction calculation keeps an 8px screen margin. Before the expanded panel
 has a measured height, it estimates 48px of chrome plus 50px for each bar. It
 uses the largest measured expanded height after the first expansion. It decides
-again after a drag and when the bar count or expanded height changes.
+again after a drag and before each expansion. Content changes during one hover
+recalculate the direction with the new bar count before the frame resizes.
 
-| Event                     | Result                                                           |
-| ------------------------- | ---------------------------------------------------------------- |
-| The reader drops the HUD  | The panel stays at the drop position.                            |
-| The reader hovers the HUD | The panel opens down or up without visible movement.             |
-| The reader leaves the HUD | The panel collapses without visible movement.                    |
-| A new limit appears       | The session recalculates the direction without moving the panel. |
+| Event                     | Result                                                   |
+| ------------------------- | -------------------------------------------------------- |
+| The reader drops the HUD  | The panel stays at the drop position.                    |
+| The reader hovers the HUD | The panel opens down or up without visible movement.     |
+| The reader leaves the HUD | The panel collapses without visible movement.            |
+| A new limit appears       | The frame recalculates its anchor and follows the panel. |
 
-The transparent part of the frame can swallow clicks intended for another
-application. Cursor pass-through made the prototype unresponsive, so v1 accepts
-this cost.
+The native frame no longer reserves transparent expansion space. Desktop clicks
+outside the visible HUD reach the application underneath it.
 
 ## Data and timing
 
@@ -125,10 +128,10 @@ always-on-top behavior.
 
 | Design                                      | Failure                                                  |
 | ------------------------------------------- | -------------------------------------------------------- |
-| Clamp the complete frame during expansion   | The large frame moves the panel hundreds of pixels.      |
-| Restore a clamped position after collapse   | The panel loops between enter and leave at screen edges. |
+| Keep a fixed 500px transparent frame        | Invisible space blocks clicks in other applications.     |
+| Make the complete window ignore mouse input | The visible HUD cannot expand, drag, or answer controls. |
 | Never move and never flip                   | The expanded panel clips at the bottom.                  |
-| Move only by the expansion shortfall        | The HUD remains in a position the reader did not choose. |
-| Reserve space at rest and snap after a drop | The HUD jumps when the reader releases it.               |
+| Move the collapsed anchor to make room      | The HUD leaves the position the reader chose.            |
+| Resize before collapsing for a drag         | The first drag movement uses the expanded origin.        |
 
 The panel direction is the correct lever. The visible HUD position is not.

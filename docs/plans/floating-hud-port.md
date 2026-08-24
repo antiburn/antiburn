@@ -13,6 +13,10 @@ timing, persistence, copy, information architecture, or resource bounds.
 Source-governance D-026 authorizes the port. Deviations-register D-30 records
 the macOS-only release and accepted costs.
 
+> **Post-port change:** issue #108 replaces the fixed 176×500 frame and hover
+> region command with an original public dynamic-frame implementation. The
+> historical parity requirements below describe the initial port.
+
 ## Authoritative behavior
 
 The observable reference is antiburn PR #40 at commit
