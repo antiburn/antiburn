@@ -15,7 +15,7 @@ _Plan. Branch `claude/hud-hover-tooltip-0214cd`. 2026-08-24._
 | 1. Rust: detail window + placement + commands | done |
 | 2. Frontend: HudDetailView + route | done |
 | 3. Frontend: strip expansion from HUD, ✕ on HUD | done |
-| 4. Docs + tests + slop pass | in progress |
+| 4. Docs + tests + slop pass | done — PR waits on a screenshot |
 
 Reviewed with Keith via discuss 2026-08-24; all three open questions decided
 (see Decisions).
