@@ -155,10 +155,21 @@ pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
     antiburn_hud::open(&app).map_err(fail)
 }
 
-/// Record the drawn panel edges for the native hover watcher.
+/// Hide the usage HUD and cancel any pending reveal.
 #[tauri::command]
-pub fn set_overlay_hover_region(top: f64, bottom: f64) {
-    antiburn_hud::set_hover_region(top, bottom);
+pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    antiburn_hud::hide(&app).map_err(fail)
+}
+
+/// Match the native HUD frame to the rendered panel.
+#[tauri::command]
+pub fn resize_overlay_window(
+    app: tauri::AppHandle,
+    height: f64,
+    anchor_bottom: bool,
+    animate: bool,
+) -> CommandResult<()> {
+    antiburn_hud::resize(&app, height, anchor_bottom, animate).map_err(fail)
 }
 
 /// Return the newest recent transcript write as epoch seconds.

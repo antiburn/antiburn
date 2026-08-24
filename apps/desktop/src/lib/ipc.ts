@@ -741,6 +741,16 @@ export async function setPopoverHeight(height: number, animate: boolean): Promis
   await invoke("set_popover_height", { height, animate })
 }
 
+/** Resize the floating HUD around its measured panel. */
+export async function resizeOverlayWindow(
+  height: number,
+  anchorBottom: boolean,
+  animate: boolean,
+): Promise<void> {
+  if (!hasShell()) return
+  await invoke("resize_overlay_window", { height, anchorBottom, animate })
+}
+
 /** Where the app came from and what it is running against. */
 export async function appInfo(): Promise<AppInfo | null> {
   if (!hasShell()) return null

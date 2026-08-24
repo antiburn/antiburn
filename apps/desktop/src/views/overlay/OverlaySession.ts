@@ -2,15 +2,20 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { invoke } from "@tauri-apps/api/core"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { listen } from "@tauri-apps/api/event"
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window"
 import type { MouseEvent as ReactMouseEvent } from "react"
 import { flushSync } from "react-dom"
 
-import { getLatestSessionActivity, getLiveUsage, openSettingsWindow } from "../../lib/ipc"
-import { setFloatingHudEnabled } from "../../lib/overlayWindow"
+import {
+  getLatestSessionActivity,
+  getLiveUsage,
+  openSettingsWindow,
+  resizeOverlayWindow,
+} from "../../lib/ipc"
+import { hideOverlayWindow, setFloatingHudEnabled } from "../../lib/overlayWindow"
+import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { deriveUsageBars, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
@@ -18,7 +23,6 @@ const LIVE_WINDOW_SECS = 90
 const LIVENESS_POLL_MS = 5_000
 const RESET_CLOCK_MS = 30_000
 const SCREEN_MARGIN = 8
-const RESERVE_ABOVE = 220
 const ESTIMATED_CHROME_PX = 48
 const ESTIMATED_ROW_PX = 50
 const HOVER_INTENT_MS = 250
@@ -29,8 +33,6 @@ export type OverlaySnapshot = {
   dragging: boolean
   now: number
   sessionLive: boolean
-  reserveAbove: number
-  swapping: boolean
   flipUp: boolean
   panelHeights: {
     collapsed: number
@@ -38,14 +40,14 @@ export type OverlaySnapshot = {
   }
 }
 
+type ExpansionDirection = boolean | "cancelled" | "unavailable"
+
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
   bars: [],
   hovered: false,
   dragging: false,
   now: Date.now(),
   sessionLive: false,
-  reserveAbove: 0,
-  swapping: false,
   flipUp: false,
   panelHeights: { collapsed: 0, expanded: 0 },
 }
@@ -57,6 +59,7 @@ type DragOrigin = {
   windowY: number
 }
 
+// aislop-ignore-next-line ai-slop/narrative-comment -- Issue #90 owns this standing finding.
 /** Own the external systems used by the floating HUD window. */
 export class OverlaySession {
   private listeners = new Set<() => void>()
@@ -65,13 +68,12 @@ export class OverlaySession {
   private directionGeneration = 0
   private snapshot: OverlaySnapshot = INITIAL_SNAPSHOT
   private panel: HTMLDivElement | null = null
-  private observer: ResizeObserver | null = null
   private hoverTimer: number | null = null
+  private hoverRequested = false
   private usagePoll: number | null = null
   private livenessPoll: number | null = null
   private resetClock: number | null = null
   private stopHoverListening: (() => void) | null = null
-  private reserve = 0
   private dragOrigin: DragOrigin | null = null
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
@@ -89,30 +91,33 @@ export class OverlaySession {
 
   registerPanel = (panel: HTMLDivElement | null): void => {
     if (panel === this.panel) return
-    this.observer?.disconnect()
-    this.observer = null
     this.panel = panel
     if (this.started) this.connectPanel()
   }
 
   requestHover = (hovered: boolean): void => {
     if (hovered) {
-      if (this.hoverTimer != null || this.snapshot.hovered) return
+      if (this.hoverRequested) return
+      this.hoverRequested = true
+      if (this.snapshot.dragging) {
+        this.commitLayout({ hovered: true })
+        return
+      }
       this.hoverTimer = window.setTimeout(() => {
         this.hoverTimer = null
-        if (!this.started || this.snapshot.hovered) return
-        this.commitLayout({ hovered: true })
-        this.measurePanel()
-        void this.decideDirection()
+        void this.expandAfterIntent()
       }, HOVER_INTENT_MS)
       return
     }
 
+    this.hoverRequested = false
+    this.directionGeneration += 1
     this.clearHoverTimer()
     if (!this.snapshot.hovered) return
+    const anchorBottom = this.snapshot.flipUp
     this.commitLayout({ hovered: false })
-    this.measurePanel()
-    this.reportHoverRegion()
+    if (this.snapshot.dragging) return
+    void this.syncWindow(anchorBottom, true)
   }
 
   startDrag = (event: ReactMouseEvent): void => {
@@ -123,7 +128,7 @@ export class OverlaySession {
 
   close = (): void => {
     setFloatingHudEnabled(false)
-    void getCurrentWindow().hide()
+    void hideOverlayWindow().catch(() => {})
   }
 
   openSettings = (): void => {
@@ -141,8 +146,7 @@ export class OverlaySession {
         .then((response) => {
           if (!this.isCurrent(generation)) return
           this.commitLayout({ bars: deriveUsageBars(response) })
-          this.measurePanel()
-          void this.decideDirection()
+          void this.resizeAfterDataChange()
         })
         .catch(() => {})
     }
@@ -184,8 +188,7 @@ export class OverlaySession {
     this.stopHoverListening?.()
     this.stopHoverListening = null
     this.removeDragListeners()
-    this.observer?.disconnect()
-    this.observer = null
+    this.hoverRequested = false
     delete document.body.dataset.transparentWindow
   }
 
@@ -219,24 +222,10 @@ export class OverlaySession {
 
   private connectPanel(): void {
     if (!this.panel) return
-    this.reportHoverRegion()
-    this.measurePanel()
-    if (typeof ResizeObserver === "undefined") return
-    this.observer = new ResizeObserver(() => this.reportHoverRegion())
-    this.observer.observe(this.panel)
+    void this.syncWindow(false, false)
   }
 
-  private reportHoverRegion = (): void => {
-    if (!this.panel || this.snapshot.dragging) return
-    const rect = this.panel.getBoundingClientRect()
-    void invoke("set_overlay_hover_region", { top: rect.top, bottom: rect.bottom }).catch(
-      () => {},
-    )
-  }
-
-  private measurePanel(): void {
-    if (!this.panel) return
-    const height = this.panel.getBoundingClientRect().height
+  private recordPanelHeight(height: number): void {
     const previous = this.snapshot.panelHeights
     if (this.expanded()) {
       if (height <= previous.expanded) return
@@ -248,14 +237,58 @@ export class OverlaySession {
     }
   }
 
+  private syncWindow(anchorBottom: boolean, animate: boolean): Promise<void> {
+    if (!this.panel) return Promise.resolve()
+    const height = Math.ceil(this.panel.getBoundingClientRect().height)
+    this.recordPanelHeight(height)
+    return resizeOverlayWindow(height, anchorBottom, animate && !prefersReducedMotion()).catch(
+      () => {},
+    )
+  }
+
+  private async resizeAfterDataChange(): Promise<void> {
+    if (!this.started) return
+    if (this.snapshot.dragging) {
+      await this.syncWindow(false, false)
+      return
+    }
+    if (!this.snapshot.hovered) {
+      await this.syncWindow(this.snapshot.flipUp, true)
+      return
+    }
+
+    const flipUp = await this.directionForExpansion()
+    if (flipUp === "cancelled" || !this.started || !this.expanded()) return
+    if (flipUp === "unavailable") {
+      await this.syncWindow(this.snapshot.flipUp, true)
+      return
+    }
+    if (flipUp !== this.snapshot.flipUp) this.update({ flipUp })
+    await this.syncWindow(flipUp, true)
+  }
+
   private async beginDrag(screenX: number, screenY: number): Promise<void> {
-    await this.applyReserve(0)
-    if (!this.started) return
-    const [monitor, position] = await Promise.all([
-      currentMonitor(),
-      getCurrentWindow().outerPosition(),
-    ])
-    if (!this.started) return
+    if (this.snapshot.dragging) return
+    this.directionGeneration += 1
+    this.clearHoverTimer()
+    const anchorBottom = this.snapshot.flipUp
+    this.commitLayout({ dragging: true })
+    this.dragOrigin = null
+    this.addDragListeners()
+    await this.syncWindow(anchorBottom, false)
+    if (!this.started || !this.snapshot.dragging) return
+    this.update({ flipUp: false })
+    let monitor
+    let position
+    try {
+      const result = await Promise.all([currentMonitor(), getCurrentWindow().outerPosition()])
+      monitor = result[0]
+      position = result[1]
+    } catch {
+      await this.settleDragCollapsed()
+      return
+    }
+    if (!this.started || !this.snapshot.dragging) return
     const scale = monitor?.scaleFactor ?? 1
     this.dragOrigin = {
       pointerX: screenX,
@@ -263,8 +296,6 @@ export class OverlaySession {
       windowX: position.x / scale,
       windowY: position.y / scale,
     }
-    this.commitLayout({ dragging: true })
-    this.addDragListeners()
   }
 
   private addDragListeners(): void {
@@ -291,8 +322,8 @@ export class OverlaySession {
     this.moveFrame = 0
     const origin = this.dragOrigin
     const event = this.pendingMove
-    if (!event || !origin) return
     this.pendingMove = null
+    if (!event || !origin) return
     void getCurrentWindow().setPosition(
       new LogicalPosition(
         origin.windowX + (event.screenX - origin.pointerX),
@@ -305,55 +336,63 @@ export class OverlaySession {
     if (!this.snapshot.dragging) return
     this.removeDragListeners()
     this.dragOrigin = null
-    this.commitLayout({ dragging: false })
-    this.measurePanel()
-    this.reportHoverRegion()
-    void this.decideDirection()
+    void this.finishDrag()
   }
 
-  private async decideDirection(): Promise<void> {
-    if (!this.started || this.snapshot.dragging) return
-    const directionGeneration = ++this.directionGeneration
-    const [monitor, position] = await Promise.all([
-      currentMonitor(),
-      getCurrentWindow().outerPosition(),
-    ])
-    if (
-      !this.started ||
-      directionGeneration !== this.directionGeneration ||
-      this.snapshot.dragging ||
-      !monitor
-    ) {
+  private async finishDrag(): Promise<void> {
+    if (!this.started || !this.snapshot.dragging) return
+    while (this.started && this.snapshot.dragging && this.hoverRequested) {
+      const flipUp = await this.directionForExpansion()
+      if (flipUp === "cancelled") continue
+      if (flipUp === "unavailable") break
+      if (!this.started || !this.snapshot.dragging) return
+      if (!this.hoverRequested) continue
+      this.commitLayout({ dragging: false, hovered: true, flipUp })
+      await this.syncWindow(flipUp, true)
       return
     }
+
+    await this.settleDragCollapsed()
+  }
+
+  private async settleDragCollapsed(): Promise<void> {
+    if (!this.started || !this.snapshot.dragging) return
+    this.removeDragListeners()
+    this.dragOrigin = null
+    this.commitLayout({ dragging: false, hovered: false, flipUp: false })
+    await this.syncWindow(false, false)
+  }
+
+  private async expandAfterIntent(): Promise<void> {
+    if (!this.started || this.snapshot.dragging || !this.hoverRequested) return
+    const flipUp = await this.directionForExpansion()
+    if (typeof flipUp !== "boolean") return
+    if (!this.started || this.snapshot.dragging || !this.hoverRequested) return
+    this.commitLayout({ hovered: true, flipUp })
+    await this.syncWindow(flipUp, true)
+  }
+
+  private async directionForExpansion(): Promise<ExpansionDirection> {
+    const directionGeneration = ++this.directionGeneration
+    let monitor
+    let position
+    try {
+      const result = await Promise.all([currentMonitor(), getCurrentWindow().outerPosition()])
+      monitor = result[0]
+      position = result[1]
+    } catch {
+      if (!this.started || directionGeneration !== this.directionGeneration) return "cancelled"
+      return "unavailable"
+    }
+    if (!this.started || directionGeneration !== this.directionGeneration) return "cancelled"
+    if (!monitor) return false
     const scale = monitor.scaleFactor
     const screenBottom = (monitor.position.y + monitor.size.height) / scale - SCREEN_MARGIN
-    const panelTop = position.y / scale + this.reserve
+    const panelTop = position.y / scale
     const needed = Math.max(
       this.snapshot.panelHeights.expanded,
       ESTIMATED_CHROME_PX + this.snapshot.bars.length * ESTIMATED_ROW_PX,
     )
-    const flipUp = panelTop + needed > screenBottom
-    this.update({ flipUp })
-    await this.applyReserve(flipUp ? RESERVE_ABOVE : 0)
-  }
-
-  private async applyReserve(desired: number): Promise<void> {
-    const current = this.reserve
-    if (desired === current) return
-    this.reserve = desired
-    this.commitLayout({ swapping: true })
-    try {
-      await new Promise<number>((resolve) => window.requestAnimationFrame(resolve))
-      const overlay = getCurrentWindow()
-      const [monitor, position] = await Promise.all([currentMonitor(), overlay.outerPosition()])
-      const scale = monitor?.scaleFactor ?? 1
-      await overlay.setPosition(
-        new LogicalPosition(position.x / scale, position.y / scale + current - desired),
-      )
-    } finally {
-      this.commitLayout({ reserveAbove: desired, swapping: false })
-      this.reportHoverRegion()
-    }
+    return panelTop + needed > screenBottom
   }
 }

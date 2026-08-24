@@ -12,8 +12,7 @@ export function openOverlayWindow(): Promise<void> {
 }
 
 export async function hideOverlayWindow(): Promise<void> {
-  const overlay = await WebviewWindow.getByLabel(OVERLAY_WINDOW_LABEL)
-  await overlay?.hide()
+  await invoke("hide_overlay_window")
 }
 
 const HUD_PREF_KEY = "antiburn.showFloatingHud"

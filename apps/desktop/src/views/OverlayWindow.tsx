@@ -21,30 +21,26 @@ export function OverlayWindow() {
     session.getSnapshot,
   )
   const expanded = state.hovered && !state.dragging
-  const lift =
-    expanded && state.flipUp
-      ? Math.max(0, state.panelHeights.expanded - state.panelHeights.collapsed)
-      : 0
   const panelRef = useCallback(
     (node: HTMLDivElement | null) => session.registerPanel(node),
     [session],
   )
 
   return (
-    <div className="h-screen w-screen bg-transparent">
+    <div
+      className="h-screen w-screen bg-transparent"
+      onMouseEnter={() => session.requestHover(true)}
+      onMouseLeave={() => session.requestHover(false)}
+    >
       <div
         ref={panelRef}
-        onMouseEnter={() => session.requestHover(true)}
-        onMouseLeave={() => session.requestHover(false)}
-        className={`mx-2 select-none rounded-xl transition-all duration-150 ${
+        className={`mx-2 select-none rounded-xl transition-colors duration-150 ${
           expanded
             ? "bevel border border-separator px-3 pt-2 pb-3"
             : "border border-transparent px-3 pt-2 pb-2"
         }`}
         style={{
-          marginTop: state.reserveAbove - lift,
           backgroundColor: expanded ? "var(--color-bg-hud)" : "transparent",
-          visibility: state.swapping ? "hidden" : "visible",
         }}
         onMouseDown={(event) => session.startDrag(event)}
       >
