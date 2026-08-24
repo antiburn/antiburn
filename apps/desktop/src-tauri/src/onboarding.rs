@@ -29,9 +29,16 @@
 //! floating title hidden, so the frontend paints its own
 //! `data-tauri-drag-region` strip (`src/views/onboarding/OnboardingFlow.tsx`).
 
+use std::sync::Mutex;
+use std::time::Instant;
+
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::window_placement::center_on_active_monitor;
+use crate::window_readiness::{
+    OpenAction, ReadyAction, STALE_LOAD_AFTER, WindowReadiness, renderer_generation_script,
+};
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "onboarding";
@@ -66,6 +73,18 @@ const _: () = assert!(WIDTH < 1280.0 && HEIGHT < 800.0);
 // nothing visible in it.
 const _: () = assert!(HEIGHT - 44.0 - 57.0 > 150.0 + 110.0 + 60.0);
 
+/// Renderer lifecycle for the onboarding window.
+#[derive(Default)]
+pub struct OnboardingWindowState(Mutex<WindowReadiness>);
+
+impl OnboardingWindowState {
+    fn lock(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// Shows the onboarding window, creating it if this is the first request.
 ///
 /// Called twice over a first run's life: once from setup, and again if the
@@ -75,17 +94,68 @@ const _: () = assert!(HEIGHT - 44.0 - 57.0 > 150.0 + 110.0 + 60.0);
 /// than destroys (see `crate::on_window_event`), so the flow comes back with
 /// the steps the reader already walked still behind it.
 pub fn open(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window(LABEL) {
-        // Re-centered on every open for the same reason Settings is: the window
-        // hides rather than being destroyed, so without this a reader who
-        // works across monitors gets it back on whichever display they last
-        // dismissed it on.
-        center_on_active_monitor(&existing, WIDTH, HEIGHT);
-        existing.show()?;
-        existing.unminimize()?;
-        existing.set_focus()?;
-        return Ok(());
+    let state = app.state::<OnboardingWindowState>();
+    let Some(existing) = app.get_webview_window(LABEL) else {
+        let mut readiness = state.lock();
+        let action = readiness.request_open(Instant::now());
+        let generation = match action {
+            OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
+                generation
+            }
+            OpenAction::AwaitReady => return Ok(()),
+            OpenAction::Reveal => {
+                readiness.reset();
+                match readiness.request_open(Instant::now()) {
+                    OpenAction::StartLoading { generation } => generation,
+                    _ => unreachable!("an idle lifecycle starts loading"),
+                }
+            }
+        };
+        drop(readiness);
+        return build(app, generation);
+    };
+
+    let action = {
+        let mut readiness = state.lock();
+        readiness.request_open(Instant::now())
+    };
+    match action {
+        OpenAction::Reveal => show(&existing),
+        OpenAction::AwaitReady => Ok(()),
+        OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
+            if !state.lock().defer_build_until_destroyed(generation) {
+                return Ok(());
+            }
+            if let Err(error) = existing.destroy() {
+                cancel_load(app, generation);
+                return Err(error);
+            }
+            Ok(())
+        }
     }
+}
+
+/// Build a deferred replacement after Tauri removes the old window label.
+pub fn rebuild_after_destroy(app: &AppHandle) {
+    let generation = app
+        .state::<OnboardingWindowState>()
+        .lock()
+        .begin_deferred_build(Instant::now());
+    let Some(generation) = generation else {
+        return;
+    };
+    if let Err(error) = build(app, generation) {
+        ::tracing::error!(event = "window_rebuild_failed", window = LABEL, error = %error);
+    }
+}
+
+fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
+    ::tracing::info!(
+        event = "window_renderer_load_started",
+        window = LABEL,
+        generation
+    );
+    arm_stale_warning(app, generation);
 
     // Built hidden and positioned before the first show, so the window never
     // visibly jumps from a default position to the right one. Deliberately no
@@ -93,11 +163,13 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
     // monitor before the window has a screen.
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
+        .initialization_script(renderer_generation_script(generation))
         .title("Set up antiburn")
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
         .maximizable(false)
-        .visible(false);
+        .visible(false)
+        .on_page_load(trace_page_load);
 
     #[cfg(target_os = "macos")]
     {
@@ -109,18 +181,103 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
             .hidden_title(true);
     }
 
-    let window = builder.build()?;
+    let window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            cancel_load(app, generation);
+            return Err(error);
+        }
+    };
     center_on_active_monitor(&window, WIDTH, HEIGHT);
-    window.show()?;
-    // This is the one window that opens without a click behind it, so nothing
-    // else is going to bring it forward. On macOS `set_focus` activates the
-    // application as well as ordering the window front — and by here the app is
-    // already `Regular` (see [`apply_activation_policy`], applied before this
-    // is called), so activating it means a Dock icon and a ⌘-Tab entry, not
-    // just a window that happens to be on top.
-    window.set_focus()?;
-
     Ok(())
+}
+
+/// Reveal onboarding after React commits its shell.
+pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
+    let app = window.app_handle();
+    let action = app
+        .state::<OnboardingWindowState>()
+        .lock()
+        .renderer_ready(generation, Instant::now());
+    match action {
+        ReadyAction::Reveal { loading_for } => {
+            ::tracing::info!(
+                event = "window_renderer_ready",
+                window = LABEL,
+                loading_ms = loading_for.as_millis() as u64,
+                reveal = true
+            );
+            if let Err(error) = show(window) {
+                ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
+            }
+        }
+        ReadyAction::StayHidden { loading_for } => {
+            ::tracing::info!(
+                event = "window_renderer_ready",
+                window = LABEL,
+                loading_ms = loading_for.as_millis() as u64,
+                reveal = false
+            );
+        }
+        ReadyAction::None => {}
+    }
+}
+
+fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    center_on_active_monitor(window, WIDTH, HEIGHT);
+    window.show()?;
+    window.unminimize()?;
+    // This window opens without a click behind it. Focus activates the regular
+    // macOS application and keeps the flow reachable from the Dock.
+    window.set_focus()?;
+    ::tracing::info!(event = "window_revealed", window = LABEL);
+    Ok(())
+}
+
+fn trace_page_load(window: tauri::WebviewWindow, payload: tauri::webview::PageLoadPayload<'_>) {
+    let phase = match payload.event() {
+        PageLoadEvent::Started => "started",
+        PageLoadEvent::Finished => "finished",
+    };
+    let loading_ms = window
+        .app_handle()
+        .state::<OnboardingWindowState>()
+        .lock()
+        .loading_duration(Instant::now())
+        .map(|duration| duration.as_millis() as u64);
+    ::tracing::debug!(
+        event = "window_page_load",
+        window = LABEL,
+        phase,
+        loading_ms
+    );
+}
+
+fn arm_stale_warning(app: &AppHandle, generation: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STALE_LOAD_AFTER).await;
+        if app
+            .state::<OnboardingWindowState>()
+            .lock()
+            .warning_is_current(generation, Instant::now())
+        {
+            ::tracing::warn!(
+                event = "window_renderer_ready_timeout",
+                window = LABEL,
+                generation,
+                timeout_ms = STALE_LOAD_AFTER.as_millis() as u64
+            );
+        }
+    });
+}
+
+fn cancel_load(app: &AppHandle, generation: u64) {
+    let state = app.state::<OnboardingWindowState>();
+    let mut readiness = state.lock();
+    if readiness.loading_generation() == Some(generation) {
+        readiness.reset();
+    }
 }
 
 /// Put the window away and point the reader at where the app now lives.

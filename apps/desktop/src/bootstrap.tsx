@@ -5,6 +5,7 @@
 import { StrictMode, type ReactNode } from "react"
 import { createRoot } from "react-dom/client"
 
+import { WindowReadyBoundary } from "./components/WindowReadyMarker"
 import { installFocusModality } from "./lib/focusModality"
 import { applyPlatformAttribute } from "./lib/platform"
 import { applyRouteAttribute, type Route } from "./lib/route"
@@ -20,5 +21,9 @@ export function mountWindow(view: ReactNode, route?: Route): void {
   applyRouteAttribute(document.documentElement, route)
   installFocusModality()
 
-  createRoot(container).render(<StrictMode>{view}</StrictMode>)
+  createRoot(container).render(
+    <StrictMode>
+      <WindowReadyBoundary>{view}</WindowReadyBoundary>
+    </StrictMode>,
+  )
 }

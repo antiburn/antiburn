@@ -77,6 +77,7 @@ mod updates;
 mod usage_alerts;
 mod usage_analytics;
 mod window_placement;
+mod window_readiness;
 
 use std::sync::Mutex;
 
@@ -166,6 +167,7 @@ pub fn run() {
             commands::set_repository_enabled,
             commands::set_settings,
             commands::take_settings_pane,
+            commands::window_ready,
             antiburn_nudge::commands::nudge_action,
             antiburn_nudge::commands::nudge_dismiss,
             antiburn_nudge::commands::nudge_ready,
@@ -212,6 +214,8 @@ pub fn run() {
             app.manage(notifications::NotificationState::default());
             app.manage(storage_health::StorageHealth::default());
             app.manage(settings::PendingPane::default());
+            app.manage(settings::SettingsWindowState::default());
+            app.manage(onboarding::OnboardingWindowState::default());
             app.manage(nudges::AnchorOverride::default());
 
             tray::create(app.handle())?;
@@ -422,6 +426,12 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                 }
             }
         }
+        WindowEvent::Destroyed => match window.label() {
+            popover::LABEL => popover::rebuild_after_destroy(window.app_handle()),
+            settings::LABEL => settings::rebuild_after_destroy(window.app_handle()),
+            onboarding::LABEL => onboarding::rebuild_after_destroy(window.app_handle()),
+            _ => {}
+        },
         _ => {}
     }
 }

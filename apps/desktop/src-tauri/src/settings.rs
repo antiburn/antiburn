@@ -16,10 +16,15 @@
 //! `src/views/SettingsView.tsx`). Windows and Linux keep the stock title bar.
 
 use std::sync::Mutex;
+use std::time::Instant;
 
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::window_placement::center_on_active_monitor;
+use crate::window_readiness::{
+    OpenAction, ReadyAction, STALE_LOAD_AFTER, WindowReadiness, renderer_generation_script,
+};
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "settings";
@@ -55,6 +60,18 @@ impl PendingPane {
     }
 }
 
+/// Renderer lifecycle for the Settings window.
+#[derive(Default)]
+pub struct SettingsWindowState(Mutex<WindowReadiness>);
+
+impl SettingsWindowState {
+    fn lock(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// Dedicated frontend entry for the settings window.
 const URL: &str = "settings.html";
 
@@ -70,26 +87,79 @@ const HEIGHT: f64 = 680.0;
 /// banners use it to land a reader on the pane that can fix what they were told
 /// about, instead of on whichever pane they last left open.
 pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window(LABEL) {
-        // Re-centered on every open, not just the first: this path covers a
-        // second request while Settings is already open, possibly after the
-        // reader moved the window to another display.
-        center_on_active_monitor(&existing, WIDTH, HEIGHT);
-        existing.show()?;
-        existing.unminimize()?;
-        existing.set_focus()?;
-        // Already mounted, so it will not ask for a pending pane again — and
-        // deliberately nothing is left pending, or a later reload of this
-        // webview would jump to a pane somebody asked for long ago.
-        if let Some(pane) = pane {
-            let _ = app.emit_to(LABEL, EVENT_PANE, pane);
-        }
-        return Ok(());
-    }
+    let state = app.state::<SettingsWindowState>();
+    let Some(existing) = app.get_webview_window(LABEL) else {
+        app.state::<PendingPane>().set(pane);
+        let mut readiness = state.lock();
+        let action = readiness.request_open(Instant::now());
+        let generation = match action {
+            OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
+                generation
+            }
+            OpenAction::AwaitReady => return Ok(()),
+            OpenAction::Reveal => {
+                readiness.reset();
+                match readiness.request_open(Instant::now()) {
+                    OpenAction::StartLoading { generation } => generation,
+                    _ => unreachable!("an idle lifecycle starts loading"),
+                }
+            }
+        };
+        drop(readiness);
+        return build(app, generation);
+    };
 
-    if let Some(pending) = app.try_state::<PendingPane>() {
-        pending.set(pane);
+    let action = {
+        let mut readiness = state.lock();
+        readiness.request_open(Instant::now())
+    };
+    match action {
+        OpenAction::Reveal => {
+            show(&existing)?;
+            if let Some(pane) = pane {
+                let _ = app.emit_to(LABEL, EVENT_PANE, pane);
+            }
+            Ok(())
+        }
+        OpenAction::AwaitReady => {
+            app.state::<PendingPane>().set(pane);
+            Ok(())
+        }
+        OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
+            app.state::<PendingPane>().set(pane);
+            if !state.lock().defer_build_until_destroyed(generation) {
+                return Ok(());
+            }
+            if let Err(error) = existing.destroy() {
+                cancel_load(app, generation);
+                return Err(error);
+            }
+            Ok(())
+        }
     }
+}
+
+/// Build a deferred replacement after Tauri removes the old window label.
+pub fn rebuild_after_destroy(app: &AppHandle) {
+    let generation = app
+        .state::<SettingsWindowState>()
+        .lock()
+        .begin_deferred_build(Instant::now());
+    let Some(generation) = generation else {
+        return;
+    };
+    if let Err(error) = build(app, generation) {
+        ::tracing::error!(event = "window_rebuild_failed", window = LABEL, error = %error);
+    }
+}
+
+fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
+    ::tracing::info!(
+        event = "window_renderer_load_started",
+        window = LABEL,
+        generation
+    );
+    arm_stale_warning(app, generation);
 
     // Built hidden and positioned before the first show, so the window never
     // visibly jumps from a default position to the right one. Deliberately no
@@ -98,11 +168,13 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
     // the wrong display" this function exists to avoid.
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
+        .initialization_script(renderer_generation_script(generation))
         .title("antiburn Settings")
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
         .maximizable(false)
-        .visible(false);
+        .visible(false)
+        .on_page_load(trace_page_load);
 
     #[cfg(target_os = "macos")]
     {
@@ -117,12 +189,101 @@ pub fn open(app: &AppHandle, pane: Option<String>) -> tauri::Result<()> {
             .hidden_title(true);
     }
 
-    let window = builder.build()?;
+    let window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            cancel_load(app, generation);
+            return Err(error);
+        }
+    };
     center_on_active_monitor(&window, WIDTH, HEIGHT);
-    window.show()?;
-    window.set_focus()?;
-
     Ok(())
+}
+
+/// Reveal Settings after React commits its shell.
+pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
+    let app = window.app_handle();
+    let action = app
+        .state::<SettingsWindowState>()
+        .lock()
+        .renderer_ready(generation, Instant::now());
+    match action {
+        ReadyAction::Reveal { loading_for } => {
+            ::tracing::info!(
+                event = "window_renderer_ready",
+                window = LABEL,
+                loading_ms = loading_for.as_millis() as u64,
+                reveal = true
+            );
+            if let Err(error) = show(window) {
+                ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
+            }
+        }
+        ReadyAction::StayHidden { loading_for } => {
+            ::tracing::info!(
+                event = "window_renderer_ready",
+                window = LABEL,
+                loading_ms = loading_for.as_millis() as u64,
+                reveal = false
+            );
+        }
+        ReadyAction::None => {}
+    }
+}
+
+fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    center_on_active_monitor(window, WIDTH, HEIGHT);
+    window.show()?;
+    window.unminimize()?;
+    window.set_focus()?;
+    ::tracing::info!(event = "window_revealed", window = LABEL);
+    Ok(())
+}
+
+fn trace_page_load(window: tauri::WebviewWindow, payload: tauri::webview::PageLoadPayload<'_>) {
+    let phase = match payload.event() {
+        PageLoadEvent::Started => "started",
+        PageLoadEvent::Finished => "finished",
+    };
+    let loading_ms = window
+        .app_handle()
+        .state::<SettingsWindowState>()
+        .lock()
+        .loading_duration(Instant::now())
+        .map(|duration| duration.as_millis() as u64);
+    ::tracing::debug!(
+        event = "window_page_load",
+        window = LABEL,
+        phase,
+        loading_ms
+    );
+}
+
+fn arm_stale_warning(app: &AppHandle, generation: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STALE_LOAD_AFTER).await;
+        if app
+            .state::<SettingsWindowState>()
+            .lock()
+            .warning_is_current(generation, Instant::now())
+        {
+            ::tracing::warn!(
+                event = "window_renderer_ready_timeout",
+                window = LABEL,
+                generation,
+                timeout_ms = STALE_LOAD_AFTER.as_millis() as u64
+            );
+        }
+    });
+}
+
+fn cancel_load(app: &AppHandle, generation: u64) {
+    let state = app.state::<SettingsWindowState>();
+    let mut readiness = state.lock();
+    if readiness.loading_generation() == Some(generation) {
+        readiness.reset();
+    }
 }
 
 #[cfg(test)]
