@@ -1340,6 +1340,12 @@ export async function openFolderAccessSettings(): Promise<void> {
   await invoke("open_folder_access_settings")
 }
 
+/** Open the antiburn GitHub repository in the system browser. */
+export async function openGithubRepo(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_github_repo")
+}
+
 /** Probe outcomes from this run, for a bug report. */
 export async function getConsentDiagnostics(): Promise<ProbeRecord[]> {
   if (!hasShell()) return []

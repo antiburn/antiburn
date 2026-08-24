@@ -1166,6 +1166,14 @@ pub fn open_folder_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
     app.opener().open_url(url, None::<&str>).map_err(fail)
 }
 
+/// Open the antiburn GitHub repository in the system browser.
+#[tauri::command]
+pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url("https://github.com/antiburn/antiburn", None::<&str>)
+        .map_err(fail)
+}
+
 /// Probe outcomes from this run, for the reader to copy into a bug report.
 ///
 /// Every entry uses the same vocabulary — `granted`, `denied`, `recorded-denial`
