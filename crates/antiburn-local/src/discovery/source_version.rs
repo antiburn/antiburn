@@ -36,6 +36,68 @@ pub enum Streamability {
     InlineMaterialized,
 }
 
+impl super::Explorers {
+    pub async fn source_version(
+        &self,
+        descriptor: &SourceDescriptor,
+        read: Option<&super::SourceRead>,
+    ) -> Option<SourceVersion> {
+        match &descriptor.source {
+            SessionSource::File(_) => {
+                let read = read?;
+                let stat = read.stat.clone()?;
+                let estimated_bytes = Some(stat.size);
+                let fingerprint = FingerprintInputs {
+                    stat,
+                    head_hash: read.head_hash,
+                }
+                .fingerprint();
+                let streamability = if descriptor.agent == AgentKind::Claude {
+                    Streamability::RecordStream
+                } else {
+                    Streamability::WholeDocumentFallback
+                };
+                Some(SourceVersion {
+                    fingerprint,
+                    estimated_bytes,
+                    streamability,
+                })
+            }
+            SessionSource::ProviderDb {
+                agent,
+                db_path,
+                session_id,
+            } => {
+                let (latest, rows) = self
+                    .provider_db_fingerprint(agent, db_path, session_id)
+                    .await?;
+                Some(SourceVersion {
+                    fingerprint: format!("sv1:db:{latest}:{rows}"),
+                    estimated_bytes: None,
+                    streamability: Streamability::DatabaseRows,
+                })
+            }
+            SessionSource::Inline { content, .. } => {
+                let stat = SourceStat {
+                    identity: None,
+                    size: content.len() as u64,
+                    modified_nanos: None,
+                    changed_nanos: None,
+                };
+                Some(SourceVersion {
+                    fingerprint: FingerprintInputs {
+                        stat,
+                        head_hash: Some(head_hash_of(content.as_bytes())),
+                    }
+                    .fingerprint(),
+                    estimated_bytes: Some(content.len() as u64),
+                    streamability: Streamability::InlineMaterialized,
+                })
+            }
+        }
+    }
+}
+
 /// Identity and time inputs from an open handle or a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceStat {
@@ -297,9 +359,189 @@ mod tests {
         assert_ne!(first.identity, second.identity);
     }
 
+    fn descriptor(agent: AgentKind, source: SessionSource) -> SourceDescriptor {
+        SourceDescriptor {
+            agent,
+            session_id: "session-1".to_string(),
+            environment: DiscoveryEnvironment::default(),
+            source,
+            updated_at_epoch: Some(100),
+        }
+    }
+
+    #[tokio::test]
+    async fn source_version_for_a_file_reports_size_and_record_stream() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        let content = b"{\"session_id\":\"session-1\"}\n";
+        tokio::fs::write(&path, content)
+            .await
+            .expect("write source");
+        let log = super::super::SessionLog {
+            agent_type: AgentKind::Claude,
+            source: SessionSource::File(path),
+            updated_at: Some(100),
+            environment: DiscoveryEnvironment::default(),
+        };
+        let read = super::super::session_log_read(&log)
+            .await
+            .expect("source read");
+        let descriptor = descriptor(log.agent_type, log.source);
+
+        let version = super::super::Explorers::DISK
+            .source_version(&descriptor, Some(&read))
+            .await
+            .expect("source version");
+
+        assert_eq!(version.estimated_bytes, Some(content.len() as u64));
+        assert_eq!(version.streamability, Streamability::RecordStream);
+        assert!(version.fingerprint.starts_with("sv1:"));
+    }
+
+    #[tokio::test]
+    async fn source_version_is_none_when_the_source_cannot_be_read() {
+        let descriptor = descriptor(
+            AgentKind::Claude,
+            SessionSource::File(std::path::PathBuf::from("/missing/session.jsonl")),
+        );
+
+        assert!(
+            super::super::Explorers::DISK
+                .source_version(&descriptor, None)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_inline_source_is_fingerprinted_from_its_content() {
+        let content = "synthetic inline session";
+        let descriptor = descriptor(
+            AgentKind::Claude,
+            SessionSource::Inline {
+                label: "inline-1".to_string(),
+                content: content.to_string(),
+            },
+        );
+
+        let version = super::super::Explorers::DISK
+            .source_version(&descriptor, None)
+            .await
+            .expect("source version");
+
+        assert_eq!(version.estimated_bytes, Some(content.len() as u64));
+        assert_eq!(version.streamability, Streamability::InlineMaterialized);
+        assert_eq!(
+            version.fingerprint,
+            format!(
+                "sv1:-:{}:-:-:{:016x}",
+                content.len(),
+                head_hash_of(content.as_bytes())
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_db_source_reuses_the_provider_fingerprint() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = dir.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&db_path).expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE session (
+                     id TEXT PRIMARY KEY, parent_id TEXT,
+                     time_created INTEGER, time_updated INTEGER);
+                 CREATE TABLE message (
+                     session_id TEXT, time_created INTEGER, time_updated INTEGER);
+                 CREATE TABLE part (
+                     session_id TEXT, time_created INTEGER, time_updated INTEGER);
+                 INSERT INTO session VALUES ('session-1', NULL, 100, 120);",
+            )
+            .expect("schema");
+        drop(connection);
+        let descriptor = descriptor(
+            AgentKind::OpenCode,
+            SessionSource::ProviderDb {
+                agent: AgentKind::OpenCode,
+                db_path,
+                session_id: "session-1".to_string(),
+            },
+        );
+
+        let version = super::super::Explorers::DISK
+            .source_version(&descriptor, None)
+            .await
+            .expect("source version");
+
+        assert_eq!(version.fingerprint, "sv1:db:120:1");
+        assert_eq!(version.estimated_bytes, None);
+        assert_eq!(version.streamability, Streamability::DatabaseRows);
+    }
+
     #[cfg(windows)]
-    #[test]
-    fn windows_change_time_handles_zero_and_pre_epoch_values() {
+    #[tokio::test]
+    async fn a_source_stat_reports_identity_and_change_time() {
+        use std::mem::MaybeUninit;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle,
+            GetFileInformationByHandleEx,
+        };
+
+        let dir = TempDir::new().expect("tempdir");
+        let first_path = dir.path().join("first.jsonl");
+        let second_path = dir.path().join("second.jsonl");
+        tokio::fs::write(&first_path, b"first")
+            .await
+            .expect("write first");
+        tokio::fs::write(&second_path, b"second")
+            .await
+            .expect("write second");
+        let first_file = tokio::fs::File::open(&first_path)
+            .await
+            .expect("open first");
+        let second_file = tokio::fs::File::open(&second_path)
+            .await
+            .expect("open second");
+
+        let first = SourceStat::from_open_file(&first_file)
+            .await
+            .expect("first stat");
+        let first_again = SourceStat::from_open_file(&first_file)
+            .await
+            .expect("second stat");
+        let second = SourceStat::from_open_file(&second_file)
+            .await
+            .expect("other stat");
+
+        let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let mut basic = MaybeUninit::<FILE_BASIC_INFO>::zeroed();
+        // SAFETY: the file owns the valid handle, and both output buffers match the requested types.
+        let (info_ok, basic_ok) = unsafe {
+            (
+                GetFileInformationByHandle(first_file.as_raw_handle(), info.as_mut_ptr()),
+                GetFileInformationByHandleEx(
+                    first_file.as_raw_handle(),
+                    FileBasicInfo,
+                    basic.as_mut_ptr().cast(),
+                    std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+                ),
+            )
+        };
+        assert_ne!(info_ok, 0);
+        assert_ne!(basic_ok, 0);
+        // SAFETY: both handle queries initialized their output buffers after they returned success.
+        let (info, basic) = unsafe { (info.assume_init(), basic.assume_init()) };
+        let file_index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        let expected_identity = format!("{}:{file_index}", info.dwVolumeSerialNumber);
+
+        assert_eq!(first.identity.as_deref(), Some(expected_identity.as_str()));
+        assert_eq!(
+            first.changed_nanos,
+            windows_change_time_to_unix_nanos(basic.ChangeTime)
+        );
+        assert_eq!(first, first_again);
+        assert_ne!(first.identity, second.identity);
         assert_eq!(windows_change_time_to_unix_nanos(0), None);
         assert!(windows_change_time_to_unix_nanos(1).is_some_and(|value| value < 0));
     }

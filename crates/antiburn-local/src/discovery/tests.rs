@@ -21,13 +21,15 @@ async fn one_read_serves_metadata_preview_and_fingerprint() {
         .expect("write source");
     let log = SessionLog {
         agent_type: AgentKind::Claude,
-        source: SessionSource::File(path),
+        source: SessionSource::File(path.clone()),
         updated_at: None,
         environment: Default::default(),
     };
 
+    track_head_reads(&path);
     let read = session_log_read(&log).await.expect("source read");
 
+    assert_eq!(take_tracked_head_reads(&path), 1);
     assert!(read.stat.is_some());
     assert_eq!(read.head_hash, Some(source_version::head_hash_of(content)));
     assert_eq!(read.content.as_deref(), std::str::from_utf8(content).ok());
@@ -35,7 +37,24 @@ async fn one_read_serves_metadata_preview_and_fingerprint() {
 }
 
 #[tokio::test]
-async fn a_non_claude_file_source_also_has_a_head_hash() {
+async fn a_non_consuming_inline_source_does_not_clone_content() {
+    let log = SessionLog {
+        agent_type: AgentKind::Cursor,
+        source: SessionSource::Inline {
+            label: "cursor-inline".to_string(),
+            content: "full inline transcript".to_string(),
+        },
+        updated_at: None,
+        environment: Default::default(),
+    };
+
+    let read = session_log_read(&log).await.expect("source read");
+
+    assert!(read.content.is_none());
+}
+
+#[tokio::test]
+async fn a_non_claude_file_source_uses_whole_document_fallback() {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path().join("session.jsonl");
     let content = b"{\"session_id\":\"session-1\"}\n";
@@ -50,8 +69,27 @@ async fn a_non_claude_file_source_also_has_a_head_hash() {
     };
 
     let read = session_log_read(&log).await.expect("source read");
+    let descriptor = SourceDescriptor {
+        agent: log.agent_type,
+        session_id: "session-1".to_string(),
+        environment: log.environment,
+        source: log.source,
+        updated_at_epoch: log.updated_at,
+    };
+    let expected_fingerprint = FingerprintInputs {
+        stat: read.stat.clone().expect("source stat"),
+        head_hash: Some(source_version::head_hash_of(content)),
+    }
+    .fingerprint();
 
-    assert_eq!(read.head_hash, Some(source_version::head_hash_of(content)));
+    let version = Explorers::DISK
+        .source_version(&descriptor, Some(&read))
+        .await
+        .expect("source version");
+
+    assert_eq!(version.streamability, Streamability::WholeDocumentFallback);
+    assert_eq!(version.estimated_bytes, Some(content.len() as u64));
+    assert_eq!(version.fingerprint, expected_fingerprint);
 }
 
 #[tokio::test]

@@ -1005,7 +1005,11 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
             agent: AgentKind::OpenCode,
             db_path,
             session_id,
-        } => agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await,
+        } => {
+            #[cfg(any(test, debug_assertions))]
+            record_tracked_provider_db_render(db_path);
+            agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await
+        }
         SessionSource::ProviderDb {
             agent,
             db_path,
@@ -1030,7 +1034,7 @@ pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
         return session_source_content(source).await;
     };
     use tokio::io::AsyncReadExt;
-    let file = tokio::fs::File::open(path).await.ok()?;
+    let file = open_file_for_head_read(path).await?;
     let mut bytes = Vec::new();
     file.take(SOURCE_PREVIEW_BYTES)
         .read_to_end(&mut bytes)
@@ -1162,24 +1166,37 @@ async fn session_source_read(
         SessionSource::Inline { content, .. } => {
             let mut metadata = scanner::parse_session_metadata_str(content);
             metadata.agent_type = agent_type;
+            let content = if matches!(agent_type, Some(AgentKind::Claude | AgentKind::Codex)) {
+                Some(content.clone())
+            } else {
+                None
+            };
             Some(SourceRead {
                 metadata,
                 stat: None,
                 head_hash: None,
-                content: None,
+                content,
             })
         }
         SessionSource::ProviderDb {
             agent: AgentKind::OpenCode,
             db_path,
             session_id,
-        } => Some(SourceRead {
-            metadata: agents::opencode::db_session_metadata(db_path.clone(), session_id.clone())
-                .await?,
-            stat: None,
-            head_hash: None,
-            content: None,
-        }),
+        } => {
+            let metadata =
+                agents::opencode::db_session_metadata(db_path.clone(), session_id.clone()).await?;
+            let content = if matches!(agent_type, Some(AgentKind::Claude | AgentKind::Codex)) {
+                session_source_content(source).await
+            } else {
+                None
+            };
+            Some(SourceRead {
+                metadata,
+                stat: None,
+                head_hash: None,
+                content,
+            })
+        }
         SessionSource::ProviderDb {
             agent,
             db_path,
@@ -1199,7 +1216,7 @@ async fn session_source_read(
 async fn read_file_source(path: &Path) -> Option<(Option<SourceStat>, u64, Option<String>)> {
     use tokio::io::AsyncReadExt;
 
-    let file = tokio::fs::File::open(path).await.ok()?;
+    let file = open_file_for_head_read(path).await?;
     let stat = SourceStat::from_open_file(&file).await;
     let mut bytes = Vec::new();
     file.take(SOURCE_PREVIEW_BYTES)
@@ -1209,6 +1226,80 @@ async fn read_file_source(path: &Path) -> Option<(Option<SourceStat>, u64, Optio
     let head_hash = source_version::head_hash_of(&bytes);
     let content = preview_from_owned(bytes);
     Some((stat, head_hash, content))
+}
+
+async fn open_file_for_head_read(path: &Path) -> Option<tokio::fs::File> {
+    #[cfg(any(test, debug_assertions))]
+    record_tracked_head_read(path);
+    tokio::fs::File::open(path).await.ok()
+}
+
+#[cfg(any(test, debug_assertions))]
+static TRACKED_PROVIDER_DB_RENDERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn track_provider_db_renders(path: &Path) {
+    TRACKED_PROVIDER_DB_RENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf(), 0);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn record_tracked_provider_db_render(path: &Path) {
+    let mut renders = TRACKED_PROVIDER_DB_RENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(count) = renders.get_mut(path) {
+        *count += 1;
+    }
+}
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn take_tracked_provider_db_renders(path: &Path) -> usize {
+    TRACKED_PROVIDER_DB_RENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(path)
+        .unwrap_or(0)
+}
+
+#[cfg(any(test, debug_assertions))]
+static TRACKED_HEAD_READS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn track_head_reads(path: &Path) {
+    TRACKED_HEAD_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf(), 0);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn record_tracked_head_read(path: &Path) {
+    let mut reads = TRACKED_HEAD_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(count) = reads.get_mut(path) {
+        *count += 1;
+    }
+}
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn take_tracked_head_reads(path: &Path) -> usize {
+    TRACKED_HEAD_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(path)
+        .unwrap_or(0)
 }
 
 /// Extract a JSON string value (`"field":"value"`) from a single line, as a
