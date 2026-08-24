@@ -49,6 +49,8 @@ export interface SessionBucket {
   cacheWriteTokens: number
   /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
   isCacheRehydration: boolean
+  /** Wall-clock seconds since the prior parent turn, when this bucket contains a timed turn. */
+  secsSincePriorTurn: number | null
   /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
   subagentLaunches: number
   /** The model that produced the last parent event in this bucket, when known. */

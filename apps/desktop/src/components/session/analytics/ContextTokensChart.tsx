@@ -121,6 +121,9 @@ export function ContextTokensTooltip({
     >
       <div className="mb-1">{elapsed}</div>
       <div className="flex flex-col gap-1 text-label-secondary">
+        {point.secsSincePriorTurn != null && (
+          <span>Since prior turn · {formatDuration(point.secsSincePriorTurn)}</span>
+        )}
         {pct != null && (
           <span>
             Context · {formatCompact(point.contextTokens)} ({formatPct(pct)})

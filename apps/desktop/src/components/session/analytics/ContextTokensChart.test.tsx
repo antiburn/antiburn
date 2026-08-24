@@ -46,6 +46,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    secsSincePriorTurn: null,
     subagentLaunches: 0,
     model: null,
     thinkingMode: null,
@@ -152,6 +153,7 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    secsSincePriorTurn: null,
     subagentLaunches: 0,
     model: null,
     thinkingMode: null,
@@ -178,6 +180,26 @@ describe("ContextTokensTooltip", () => {
 
     expect(screen.getByText("30m")).toBeInTheDocument()
     expect(screen.queryByText("25% through")).not.toBeInTheDocument()
+  })
+
+  it("shows the wall-clock gap since the prior parent turn", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[{ payload: point({ secsSincePriorTurn: 9_300 }) }]}
+      />,
+    )
+
+    expect(screen.getByText("Since prior turn · 2h 35m")).toBeInTheDocument()
+  })
+
+  it("omits the prior-turn gap for a bucket without a timed parent turn", () => {
+    render(
+      <ContextTokensTooltip active contextWindow={200_000} payload={[{ payload: point() }]} />,
+    )
+
+    expect(screen.queryByText(/^Since prior turn/)).not.toBeInTheDocument()
   })
 
   it("separates parent input, parent output, and sub-agent tokens", () => {
