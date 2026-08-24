@@ -94,6 +94,11 @@ export interface PopoverSnapshot {
    * way in — which is what keeps opening a session from cascading renders.
    */
   analytics: PopoverAnalyticsState
+  /**
+   * Whether a re-load of the open session's analytics is in flight while an
+   * earlier result is still on screen. Drives the detail header's spinner.
+   */
+  analyticsRefreshing: boolean
 }
 
 /**
@@ -157,6 +162,8 @@ export class PopoverSession {
    * still running. The snapshot's `usageRefreshing` is `count > 0`.
    */
   private usageRefreshCount = 0
+  /** How many `refreshAnalytics` calls are in flight; see `usageRefreshCount`. */
+  private analyticsRefreshCount = 0
   private liveUsageRevision = 0
 
   private stopSettingsListening: (() => void) | null = null
@@ -180,6 +187,7 @@ export class PopoverSession {
     dismissed: [],
     stack: [],
     analytics: null,
+    analyticsRefreshing: false,
   }
 
   getSnapshot = (): PopoverSnapshot => this.snapshot
@@ -415,12 +423,15 @@ export class PopoverSession {
   // paused or onboarding is unfinished, and even a scan that does run can
   // take a while to finish. Neither has any bearing on a provider's own
   // stated limits, so usage gets its own refresh here rather than waiting on
-  // — or being silenced by — the scan pipeline. Only usage: entries and the
-  // repository list are already covered by `listenScanEvent` above.
+  // — or being silenced by — the scan pipeline. Entries and the repository
+  // list are already covered by `listenScanEvent` above. The open session's
+  // analytics is not: its transcript can grow while the popover is hidden,
+  // and nothing else asks for it again until the reader navigates.
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
       void this.refreshUsage()
+      void this.refreshAnalytics()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -524,11 +535,11 @@ export class PopoverSession {
     })
   }
 
-  private loadAnalyticsFor = (subject: SessionSubject): void => {
+  private loadAnalyticsFor = (subject: SessionSubject): Promise<void> => {
     const key = sessionKey(subject)
     const generation = this.generation
     const token = ++this.analyticsToken
-    loadAnalytics(subject)
+    return loadAnalytics(subject)
       .then((payload) => {
         if (generation !== this.generation || token !== this.analyticsToken) return
         this.update({ analytics: { key, payload, error: false } })
@@ -537,6 +548,25 @@ export class PopoverSession {
         if (generation !== this.generation || token !== this.analyticsToken) return
         this.update({ analytics: { key, payload: null, error: true } })
       })
+  }
+
+  /**
+   * Re-load the analytics for the session on top of the stack. The settled
+   * result stays on screen until the new one lands: `loading` is derived from
+   * a key mismatch, and the key does not change here, so the reader sees the
+   * header spinner rather than the skeleton.
+   */
+  private refreshAnalytics = async (): Promise<void> => {
+    const top = this.snapshot.stack.at(-1)
+    if (!top) return
+    this.analyticsRefreshCount += 1
+    this.update({ analyticsRefreshing: true })
+    try {
+      await this.loadAnalyticsFor(top)
+    } finally {
+      this.analyticsRefreshCount -= 1
+      this.update({ analyticsRefreshing: this.analyticsRefreshCount > 0 })
+    }
   }
 
   /* -----------------------------------------------------------------------

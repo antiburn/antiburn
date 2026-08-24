@@ -612,6 +612,44 @@ describe("PopoverView", () => {
     expect(invoke).not.toHaveBeenCalledWith("scan_now", expect.anything())
   })
 
+  it("re-loads the open session’s analytics on the popover-shown signal and shows a spinner meanwhile", async () => {
+    render(<PopoverView />)
+    fireEvent.click(await screen.findByText("Wire the tray popover"))
+    await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 })
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
+
+    const loadsBeforeShown = invoke.mock.calls.filter(
+      ([command]) => command === "get_session_analytics",
+    ).length
+
+    let finishLoad: (() => void) | null = null
+    const baseInvoke = invoke.getMockImplementation()!
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command !== "get_session_analytics") return baseInvoke(command, args)
+      return new Promise((resolve) => {
+        finishLoad = () => resolve(ANALYTICS)
+      })
+    })
+
+    emit("popover:shown", undefined)
+
+    await waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "get_session_analytics").length,
+      ).toBe(loadsBeforeShown + 1),
+    )
+    // The settled analysis stays on screen; only the header spinner says a
+    // newer one is on its way.
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(screen.queryByTestId("session-analytics-skeleton")).not.toBeInTheDocument()
+
+    await act(async () => {
+      finishLoad?.()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
+  })
+
   it("never renders the first-run flow, whatever the flag says", async () => {
     // The flow has its own window now (D-25, `views/OnboardingView.tsx`), and
     // the shell sends the tray click there instead of here. A popover that
