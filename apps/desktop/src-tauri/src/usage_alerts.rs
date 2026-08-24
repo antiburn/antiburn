@@ -234,20 +234,10 @@ fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     }
 }
 
-/// Narrow a collected snapshot down to what the milestone engine needs.
+/// The share of the window that has passed at `observed_at`, as a percentage.
 ///
-/// The engine deals in two window classes, quota use, and elapsed time. The
-/// collected model carries more than that. Four rules do the narrowing:
-///
-/// - A window with no stated reset is dropped. The reset epoch is part of the
-///   window's identity, and without it a crossing could never re-arm — the
-///   notification would fire once and then go quiet forever.
-/// - A supplemental weekly window (a per-model limit) counts as weekly, so it
-///   follows the weekly preference row rather than inventing a third one.
-/// - A stated start defines elapsed time. Otherwise the known five-hour or
-///   seven-day duration is measured backward from the reset.
-/// - Anything else — a daily limit, a provider-specific bucket — is dropped
-///   rather than forced into the nearer of two classes it does not belong to.
+/// A stated start defines the span. Without one, the known five-hour or
+/// seven-day duration is measured backward from the reset.
 fn window_elapsed_percent(
     observed_at: time::OffsetDateTime,
     starts_at: Option<time::OffsetDateTime>,
@@ -263,6 +253,18 @@ fn window_elapsed_percent(
     Some((elapsed_seconds as f64 / span_seconds as f64 * 100.0).clamp(0.0, 100.0))
 }
 
+/// Narrow a collected snapshot down to what the milestone engine needs.
+///
+/// The engine deals in two window classes, quota use, and elapsed time. The
+/// collected model carries more than that. Three rules do the narrowing:
+///
+/// - A window with no stated reset is dropped. The reset epoch is part of the
+///   window's identity, and without it a crossing could never re-arm — the
+///   notification would fire once and then go quiet forever.
+/// - A supplemental weekly window (a per-model limit) counts as weekly, so it
+///   follows the weekly preference row rather than inventing a third one.
+/// - Anything else — a daily limit, a provider-specific bucket — is dropped
+///   rather than forced into the nearer of two classes it does not belong to.
 fn milestone_snapshot(
     snapshot: &provider_usage::live::ProviderUsageSnapshot,
 ) -> provider_usage::live::milestones::LiveUsageSnapshot {

@@ -238,18 +238,35 @@ pub fn update_message(version: &str) -> NotificationCopy {
 /// failure at worst — the scan never handles transcript text, so there is none
 /// to leak into a notification.
 pub fn scan_failure_message(error: &str) -> NotificationCopy {
+    let mut subtitle = error.trim_end().to_string();
+    if !subtitle.ends_with(['.', '!', '?']) {
+        subtitle.push('.');
+    }
     NotificationCopy::new(
         "Scan failed",
-        format!("{error}."),
+        subtitle,
         "Check which folders are being scanned, and whether antiburn has access to them. Everything already indexed is unaffected.",
     )
 }
 
 pub fn disk_space_low_message(free_gb: u64, threshold_gb: u32) -> NotificationCopy {
     NotificationCopy::new(
-        format!("{free_gb}GB of disk space left"),
-        format!("Free space dropped below your {threshold_gb}GB warning threshold."),
+        format!("{free_gb} GB of disk space left"),
+        format!("Free space dropped below your {threshold_gb} GB warning threshold."),
         "Agents working in multiple worktrees can use up a lot of space, so antiburn monitors that.",
+    )
+}
+
+/// The rounded percentages the milestone copy shows. The tone reads the same
+/// numbers, so the words and the tone always agree. Usage can be more than
+/// 100%, and the copy then shows it; the `as` cast saturates, so a wild
+/// reading cannot wrap.
+fn milestone_percents(
+    crossing: &crate::provider_usage::live::milestones::MilestoneCrossing,
+) -> (u8, u8) {
+    (
+        crossing.used_percent.round() as u8,
+        crossing.elapsed_percent.round() as u8,
     )
 }
 
@@ -257,8 +274,7 @@ pub fn usage_milestone_message(
     content: &crate::provider_usage::live::MilestoneContent,
 ) -> NotificationCopy {
     let crossing = &content.crossing;
-    let used = crossing.used_percent.round().clamp(0.0, 100.0) as u8;
-    let elapsed = crossing.elapsed_percent.round().clamp(0.0, 100.0) as u8;
+    let (used, elapsed) = milestone_percents(crossing);
     let title = if used > elapsed {
         format!(
             "Burn warning: {} {}",
@@ -291,8 +307,8 @@ pub fn usage_milestone_message(
 }
 
 fn usage_milestone_tone(content: &crate::provider_usage::live::MilestoneContent) -> NudgeTone {
-    let crossing = &content.crossing;
-    if crossing.used_percent.round() > crossing.elapsed_percent.round() {
+    let (used, elapsed) = milestone_percents(&content.crossing);
+    if used > elapsed {
         NudgeTone::Warning
     } else {
         NudgeTone::Info
@@ -604,6 +620,42 @@ mod tests {
         content.crossing.used_percent = 20.0;
         content.crossing.elapsed_percent = 40.0;
         assert_eq!(usage_milestone_tone(&content), NudgeTone::Info);
+    }
+
+    #[test]
+    fn a_milestone_past_the_limit_stays_a_warning() {
+        use crate::provider_usage::live::milestones::{MilestoneContent, MilestoneCrossing};
+
+        // 120% used with the window fully elapsed is ahead of pace. The tone
+        // and the copy must both say so.
+        let content = MilestoneContent {
+            provider: "anthropic".to_string(),
+            crossing: MilestoneCrossing {
+                window_label: "5-hour limit".to_string(),
+                threshold: 100,
+                used_percent: 120.0,
+                elapsed_percent: 100.0,
+                resets_at_epoch: 0,
+            },
+        };
+        assert_eq!(usage_milestone_tone(&content), NudgeTone::Warning);
+        let copy = usage_milestone_message(&content);
+        assert!(
+            copy.subtitle.contains("120%"),
+            "subtitle was {}",
+            copy.subtitle
+        );
+        assert!(
+            copy.title.starts_with("Burn warning"),
+            "title was {}",
+            copy.title
+        );
+    }
+
+    #[test]
+    fn a_scan_failure_subtitle_ends_with_exactly_one_period() {
+        assert_eq!(scan_failure_message("disk error").subtitle, "disk error.");
+        assert_eq!(scan_failure_message("disk error.").subtitle, "disk error.");
     }
 
     #[test]
