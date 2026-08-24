@@ -10,6 +10,7 @@ import {
   GitBranchPlus,
   GitFork,
   Info,
+  Loader2,
   Moon,
   Share,
   Trash2,
@@ -87,6 +88,8 @@ export interface SessionDetailPresentationProps {
   summary: ActiveSessionsSummary | null
   /** Whether the analysis is still being produced. */
   loading: boolean
+  /** Whether a newer analysis is on its way while `summary` stays on screen. */
+  refreshing?: boolean
   /** Whether producing it failed. */
   error: boolean
   /** The session this view describes. */
@@ -406,6 +409,7 @@ function useSkeletonVisible(loading: boolean): boolean {
 export function SessionDetailPresentation({
   summary,
   loading,
+  refreshing = false,
   error,
   session,
   supportsAnalytics,
@@ -515,6 +519,15 @@ export function SessionDetailPresentation({
           {subagent && (
             <span className="shrink-0 rounded bg-system-indigo/15 px-1.5 py-px type-caption font-medium text-system-indigo-text">
               Sub-agent
+            </span>
+          )}
+          {refreshing && (
+            <span
+              role="status"
+              className="inline-flex shrink-0 items-center text-label-tertiary"
+            >
+              <Loader2 size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
+              <span className="sr-only">Refreshing session analytics</span>
             </span>
           )}
         </div>

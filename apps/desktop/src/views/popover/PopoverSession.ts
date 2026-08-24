@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LocalActivityEntry } from "../../components/activity/LocalActivityList"
+import type { SessionListEntry } from "../../components/session/SessionList"
 import { toActivityEntries } from "../../lib/activityEntries"
 import { applyTheme } from "../../lib/appearance"
 import type { AttentionKind } from "../../lib/attention"
@@ -10,6 +10,7 @@ import {
   DEFAULT_SETTINGS,
   EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
+  appInfo,
   getLiveUsage,
   getProviderUsage,
   getSessionAnalytics,
@@ -66,8 +67,10 @@ type PopoverAnalyticsState = {
 } | null
 
 export interface PopoverSnapshot {
+  appVersion: string | null
+  debugBuild: boolean
   settings: AppSettings | null
-  entries: LocalActivityEntry[] | null
+  entries: SessionListEntry[] | null
   repositories: LocalRepositoryItem[]
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
@@ -91,6 +94,11 @@ export interface PopoverSnapshot {
    * way in — which is what keeps opening a session from cascading renders.
    */
   analytics: PopoverAnalyticsState
+  /**
+   * Whether a re-load of the open session's analytics is in flight while an
+   * earlier result is still on screen. Drives the detail header's spinner.
+   */
+  analyticsRefreshing: boolean
 }
 
 /**
@@ -154,6 +162,8 @@ export class PopoverSession {
    * still running. The snapshot's `usageRefreshing` is `count > 0`.
    */
   private usageRefreshCount = 0
+  /** How many `refreshAnalytics` calls are in flight; see `usageRefreshCount`. */
+  private analyticsRefreshCount = 0
   private liveUsageRevision = 0
 
   private stopSettingsListening: (() => void) | null = null
@@ -164,6 +174,8 @@ export class PopoverSession {
   private stopLiveUsageListening: (() => void) | null = null
 
   private snapshot: PopoverSnapshot = {
+    appVersion: null,
+    debugBuild: false,
     settings: null,
     entries: null,
     repositories: [],
@@ -175,6 +187,7 @@ export class PopoverSession {
     dismissed: [],
     stack: [],
     analytics: null,
+    analyticsRefreshing: false,
   }
 
   getSnapshot = (): PopoverSnapshot => this.snapshot
@@ -299,13 +312,19 @@ export class PopoverSession {
   // the stored time window. The cached limits do not wait for either read.
   private loadInitial = async (generation: number): Promise<void> => {
     const usage = this.loadCachedUsage()
-    const [stored, health] = await Promise.all([
+    const [stored, health, info] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getStorageHealth().catch(() => HEALTHY_STORAGE),
+      appInfo().catch(() => null),
     ])
     if (generation !== this.generation) return
     applyTheme(stored.theme)
-    this.update({ settings: stored, storage: health })
+    this.update({
+      appVersion: info?.appVersion ?? null,
+      debugBuild: info?.debugBuild ?? false,
+      settings: stored,
+      storage: health,
+    })
     // The repository list is read on first paint rather than waiting for a
     // scan to finish, because the source-access banner needs it — a blocked
     // repository is exactly the case where no scan will ever complete to
@@ -404,12 +423,15 @@ export class PopoverSession {
   // paused or onboarding is unfinished, and even a scan that does run can
   // take a while to finish. Neither has any bearing on a provider's own
   // stated limits, so usage gets its own refresh here rather than waiting on
-  // — or being silenced by — the scan pipeline. Only usage: entries and the
-  // repository list are already covered by `listenScanEvent` above.
+  // — or being silenced by — the scan pipeline. Entries and the repository
+  // list are already covered by `listenScanEvent` above. The open session's
+  // analytics is not: its transcript can grow while the popover is hidden,
+  // and nothing else asks for it again until the reader navigates.
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
       void this.refreshUsage()
+      void this.refreshAnalytics()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -418,6 +440,7 @@ export class PopoverSession {
     this.stopPopoverShownListening = unlisten
   }
 
+  // aislop-ignore-next-line ai-slop/narrative-comment -- Issue #90 owns this standing finding.
   // A refresh from any window replaces the cached value in this one. This
   // also lets the shell publish this window's own refresh before IPC returns.
   private listenLiveUsage = async (generation: number): Promise<void> => {
@@ -512,11 +535,11 @@ export class PopoverSession {
     })
   }
 
-  private loadAnalyticsFor = (subject: SessionSubject): void => {
+  private loadAnalyticsFor = (subject: SessionSubject): Promise<void> => {
     const key = sessionKey(subject)
     const generation = this.generation
     const token = ++this.analyticsToken
-    loadAnalytics(subject)
+    return loadAnalytics(subject)
       .then((payload) => {
         if (generation !== this.generation || token !== this.analyticsToken) return
         this.update({ analytics: { key, payload, error: false } })
@@ -525,6 +548,25 @@ export class PopoverSession {
         if (generation !== this.generation || token !== this.analyticsToken) return
         this.update({ analytics: { key, payload: null, error: true } })
       })
+  }
+
+  /**
+   * Re-load the analytics for the session on top of the stack. The settled
+   * result stays on screen until the new one lands: `loading` is derived from
+   * a key mismatch, and the key does not change here, so the reader sees the
+   * header spinner rather than the skeleton.
+   */
+  private refreshAnalytics = async (): Promise<void> => {
+    const top = this.snapshot.stack.at(-1)
+    if (!top) return
+    this.analyticsRefreshCount += 1
+    this.update({ analyticsRefreshing: true })
+    try {
+      await this.loadAnalyticsFor(top)
+    } finally {
+      this.analyticsRefreshCount -= 1
+      this.update({ analyticsRefreshing: this.analyticsRefreshCount > 0 })
+    }
   }
 
   /* -----------------------------------------------------------------------

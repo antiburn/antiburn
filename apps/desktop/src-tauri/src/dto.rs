@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
 ///
-/// Mirrors the fields `LocalActivityEntry` needs, minus the cost pill text.
+/// Mirrors the fields `SessionListEntry` needs, minus the cost pill text.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityEntry {
@@ -362,6 +362,8 @@ pub struct ProviderUsageSummary {
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub app_version: String,
+    /// True when Rust enables debug assertions for this binary.
+    pub debug_build: bool,
     /// CPU architecture this binary was compiled for, e.g. `aarch64`.
     pub arch: String,
     /// Review date of the engine's bundled pricing catalog.
@@ -502,6 +504,16 @@ pub struct LiveProviderUsage {
     pub windows: Vec<LiveUsageWindow>,
     /// Metered usage beyond the allowance, when the provider reports it.
     pub extra_usage: Option<LiveExtraUsage>,
+    /// The provider reports manual rate-limit resets here.
+    #[serde(default)]
+    pub reset_credits: Option<LiveUsageResetCredits>,
+}
+
+/// Provider credits that manually reset rate limits.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageResetCredits {
+    pub available_count: u64,
 }
 
 /// Metered spend alongside the allowance.

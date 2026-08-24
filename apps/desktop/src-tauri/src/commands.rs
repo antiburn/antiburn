@@ -173,6 +173,7 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
     let store = app.state::<Store>();
     Ok(AppInfo {
         app_version: app.package_info().version.to_string(),
+        debug_build: cfg!(debug_assertions),
         arch: std::env::consts::ARCH.to_string(),
         pricing_catalog_version: antiburn_local::pricing::PRICING_CATALOG_VERSION.to_string(),
         schema_version: store.schema_version().map_err(fail)?,
@@ -216,6 +217,20 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     Ok(saved)
 }
 
+/// Make setup pending, open it at Welcome, and keep all other local state.
+#[tauri::command]
+pub fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
+    let store = app.state::<Store>();
+    let (previous, saved) = store.restart_onboarding().map_err(fail)?;
+    apply_settings_transition(&app, &previous, &saved);
+    crate::onboarding::restart(&app).map_err(fail)?;
+    crate::popover::hide_for_onboarding(&app);
+    if let Err(error) = settings::hide(&app) {
+        ::tracing::warn!(event = "settings_hide_after_onboarding_restart_failed", error = %error);
+    }
+    Ok(())
+}
+
 /// Commit the first-run choices and finish onboarding as one transition.
 ///
 /// The webview treats these values as a draft until the final button. Keeping
@@ -244,7 +259,8 @@ pub fn finish_onboarding(
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
     // After the transition, so the gate this event reads sees the saved flags.
-    // A reader who declined on the Ready screen records nothing at all.
+    // A reader who declined on the Ready screen records nothing at all. An
+    // explicit restart records a new completion because it is a new setup run.
     crate::usage_analytics::record(
         &app,
         crate::usage_analytics::event::EventName::OnboardingFinished,
@@ -268,10 +284,9 @@ pub fn note_interaction(
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
-    // The one transition that means the first run is over. Named rather than
-    // inlined because two things now hang off it, and because it is the app's
-    // only "exactly once, ever" event: nothing writes this flag back to false,
-    // so neither consequence below needs a marker of its own to avoid repeating.
+    // This transition means the current setup run is over. It can repeat only
+    // after an explicit restart. Each completion refreshes data and explains
+    // where the menu-bar app went.
     let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
 
     if crate::startup_registration::should_reconcile_after_save(previous, saved) {
@@ -1163,6 +1178,14 @@ pub fn open_folder_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
     let url = repositories_engine::permission_settings_url()
         .ok_or_else(|| "no permission settings on this platform".to_string())?;
     app.opener().open_url(url, None::<&str>).map_err(fail)
+}
+
+/// Open the antiburn GitHub repository in the system browser.
+#[tauri::command]
+pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url("https://github.com/antiburn/antiburn", None::<&str>)
+        .map_err(fail)
 }
 
 /// Probe outcomes from this run, for the reader to copy into a bug report.

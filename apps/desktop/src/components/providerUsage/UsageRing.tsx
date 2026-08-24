@@ -31,24 +31,21 @@ function markTransform(mark: BrandMark): string {
 /**
  * A provider's nearest limit, as a ring.
  *
- * The footer has room for a glyph and a number, and a ring is the one shape
+ * A provider pill has room for a glyph and a number. A ring is the one shape
  * that adds "how much of it is gone" without adding a word. It is used only
  * where a provider *stated* a percentage — the estimate surfaces have no
  * denominator and must never borrow this shape, because a full ring means
  * something there that it does not mean here.
  *
- * Three states, and the difference between them is load-bearing:
+ * Two states, and the difference between them is load-bearing:
  *
- * - **Determinate.** A stated percentage. A solid arc.
+ * - **Determinate.** A stated percentage. A solid arc over a plain track.
  * - **Indeterminate.** A provider that reports a window but no figure for it.
  *   A dashed track and no arc — visibly a ring with nothing in it rather than
  *   a ring at zero, which would be a claim.
- * - **Estimated.** A figure that was modelled rather than stated. The arc,
- *   plus a hairline that marks it as second-hand.
  */
 export function UsageRing({
   percent,
-  estimated = false,
   glyph,
   mark,
   size = 16,
@@ -56,15 +53,12 @@ export function UsageRing({
 }: {
   /** Consumed capacity, 0–100. `null` renders the indeterminate ring. */
   percent: number | null
-  /** Whether the figure was modelled rather than stated by the provider. */
-  estimated?: boolean
   /**
    * What sits inside the ring — the provider's brand mark where one exists,
    * otherwise its initial.
    *
    * Not decoration. Where this replaces a provider glyph, dropping it would
-   * leave a chip that says how full something is without saying whose, which
-   * is a worse trade than the ring is worth.
+   * leave a provider pill that says how full something is without saying whose.
    */
   glyph?: string
   /** A brand mark, preferred over `glyph` when supplied. */
@@ -89,9 +83,7 @@ export function UsageRing({
     >
       {clamped == null && (
         // The indeterminate state keeps its dashed track. Without it the ring
-        // would vanish. A stated percentage draws the arc alone: the caption
-        // beside the ring already gives the number, so a grey remainder adds
-        // nothing.
+        // would vanish.
         <circle
           cx="16"
           cy="16"
@@ -104,34 +96,36 @@ export function UsageRing({
         />
       )}
       {clamped != null && (
-        <circle
-          cx="16"
-          cy="16"
-          r={radius}
-          fill="none"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          stroke="var(--color-brand-tint)"
-          strokeDasharray={circumference}
-          strokeDashoffset={circumference * (1 - clamped / 100)}
-          // Twelve o'clock, clockwise. A ring that starts at three o'clock
-          // reads as an arbitrary wedge rather than as a gauge.
-          transform="rotate(-90 16 16)"
-          data-testid="usage-ring-arc"
-        />
-      )}
-      {clamped != null && estimated && (
-        <circle
-          cx="16"
-          cy="16"
-          r={radius - 3}
-          fill="none"
-          strokeWidth="0.75"
-          stroke="currentColor"
-          strokeDasharray="1 2"
-          className="text-label-tertiary"
-          data-testid="usage-ring-estimated"
-        />
+        <>
+          {/* The remainder the arc is measured against. The usage bar states
+              no figure beside the ring any more, so the ring alone carries the
+              reading, and an arc with no track states a length and not a
+              share. The same grey as an unfilled segment on a meter. */}
+          <circle
+            cx="16"
+            cy="16"
+            r={radius}
+            fill="none"
+            strokeWidth="2.5"
+            stroke="var(--color-surface-tertiary)"
+            data-testid="usage-ring-track"
+          />
+          <circle
+            cx="16"
+            cy="16"
+            r={radius}
+            fill="none"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            stroke="var(--color-brand-tint)"
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * (1 - clamped / 100)}
+            // Twelve o'clock, clockwise. A ring that starts at three o'clock
+            // reads as an arbitrary wedge rather than as a gauge.
+            transform="rotate(-90 16 16)"
+            data-testid="usage-ring-arc"
+          />
+        </>
       )}
       {mark && (
         // Scaled from the mark's own box into the ring's 32-unit one and

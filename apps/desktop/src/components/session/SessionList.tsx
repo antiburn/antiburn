@@ -18,25 +18,23 @@ import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
-import {
-  SessionCostBadge,
-  type SessionCostBadgeProps,
-} from "../session/metrics/SessionCostBadge"
+import { SessionHygieneBadges } from "./SessionHygieneBadges"
+import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
-import { countGroupedItems, groupActivityByDay } from "./activityFeedGrouping"
-import { useActivityGroupPinning } from "./useActivityGroupPinning"
+import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
+import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
 
 import "../../styles/session-rows.css"
 
 /** The renderer shows an agent icon and can mark its surface. The caller supplies the artwork. */
-type ActivityAgentIconRenderer = (
+type SessionAgentIconRenderer = (
   slug: string,
   size: number,
   surface?: AgentSurface,
 ) => ReactNode
 
-/** One local coding session in the list. */
-export interface LocalActivityEntry {
+/** One coding session in the list. */
+export interface SessionListEntry {
   agent: string
   /** Absent for a session whose transcript id could not be read. */
   sessionId?: string | undefined
@@ -64,33 +62,33 @@ export interface LocalActivityEntry {
   modelRuns?: PresentableModelRun[] | undefined
 }
 
-export interface LocalActivityListProps {
+export interface SessionListProps {
   /** Sessions to show. Ordering and grouping are this component's job. */
-  entries: LocalActivityEntry[]
+  entries: SessionListEntry[]
   /** Calendar-day window for finished sessions. Also drives the empty copy. */
   days: number
   /** Headline for the empty state; defaults to the range-aware wording. */
   emptyTitle?: string
   emptyDescription?: string
   /** Open a session's analytics. Omitted leaves rows inert. */
-  onOpenSession?: (entry: LocalActivityEntry) => void
+  onOpenSession?: (entry: SessionListEntry) => void
   /** The scrolling viewport, for a host that needs to observe it. */
-  viewportRef?: (node: HTMLDivElement | null) => void
+  viewportRef?: ViewportRef
   /** Frozen clock, for tests. */
   now?: Date
-  renderAgentIcon?: ActivityAgentIconRenderer
+  renderAgentIcon?: SessionAgentIconRenderer
   /** Glyph for the WSL-origin badge. */
   wslIcon?: ReactNode
 }
 
-function primaryLine(entry: LocalActivityEntry): string {
+function primaryLine(entry: SessionListEntry): string {
   const title = entry.title?.trim()
   if (title) return title
   if (entry.sessionId) return `Session ${entry.sessionId.slice(0, 7)}`
   return agentDisplayName(entry.agent)
 }
 
-function EmptyActivity({ title, description }: { title: string; description: string }) {
+function EmptySessionList({ title, description }: { title: string; description: string }) {
   return (
     <div className="flex h-full items-center justify-center px-6 text-center">
       <div className="flex max-w-[230px] flex-col items-center">
@@ -104,26 +102,21 @@ function EmptyActivity({ title, description }: { title: string; description: str
   )
 }
 
-interface SessionActivityRowProps {
-  entry: LocalActivityEntry
+interface SessionRowProps {
+  entry: SessionListEntry
   onOpen?: () => void
-  renderAgentIcon?: ActivityAgentIconRenderer | undefined
+  renderAgentIcon?: SessionAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
 }
 
 /**
- * One local session in the list: its identity, location, fork relationships,
+ * One session in the list: its identity, location, fork relationships,
  * cost, and last activity time.
  *
  * The whole card opens the session analytics. Unsupported agents open an empty
  * analytics state that explains why no data is available.
  */
-function SessionActivityRow({
-  entry,
-  onOpen,
-  renderAgentIcon,
-  wslIcon,
-}: SessionActivityRowProps) {
+function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps) {
   const clickable = !!entry.sessionId && !!onOpen
   const primary = primaryLine(entry)
   const hasRepo = entry.repo !== ""
@@ -137,9 +130,9 @@ function SessionActivityRow({
   return (
     <div
       className={cn(
-        "relative flex items-start gap-3 py-3 px-2 w-full text-left rounded-md",
+        "session-row group relative flex items-start gap-3 py-3 px-2 w-full text-left rounded-md",
         "transition-colors duration-[var(--duration-fast)] ease-out",
-        entry.isActive && "activity-row-active isolate",
+        entry.isActive && "activity-row-active",
         clickable &&
           "cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover",
       )}
@@ -164,12 +157,22 @@ function SessionActivityRow({
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <div className="mt-0.5 shrink-0">{renderAgentIcon?.(entry.agent, 18, entry.surface)}</div>
+      {/* The margin sets the icon on the title line, past the model line above it. */}
+      <div className="mt-5 shrink-0">{renderAgentIcon?.(entry.agent, 18, entry.surface)}</div>
 
       <div className="min-w-0 flex-1 space-y-1">
+        {/* The line renders even with no model names, so every row keeps the
+            same vertical rhythm. */}
+        <div
+          className="session-model-names min-w-0 type-footnote text-label-tertiary"
+          {...(modelNames.length > 0 ? { title: modelRunNames(modelRuns).join("\n") } : {})}
+        >
+          {modelNames.length > 0 ? <TruncatedText text={modelNames.join(" · ")} /> : "\u00A0"}
+        </div>
+
         <div className="flex min-w-0 items-center gap-1">
           <TruncatedText
-            className={cn("min-w-0 type-callout", !entry.isActive && "text-label")}
+            className={cn("min-w-0 type-body", !entry.isActive && "text-label")}
             text={primary}
             lines={2}
             shimmer={entry.isActive}
@@ -199,8 +202,8 @@ function SessionActivityRow({
           )}
         </div>
 
-        <div className="flex w-full items-center justify-between gap-1.5">
-          <div className="flex min-w-0 items-center gap-1.5">
+        {(hasRepo || entry.wslDistro || entry.branch) && (
+          <div className="flex w-full min-w-0 items-center gap-1.5">
             {hasRepo && (
               <Tooltip
                 label={
@@ -224,59 +227,35 @@ function SessionActivityRow({
                 text={entry.branch}
               />
             )}
-
-            {entry.cost && <SessionCostBadge {...entry.cost} />}
           </div>
-
-          <time
-            dateTime={entry.timestamp}
-            aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-            className="shrink-0 text-sm text-label-secondary"
-          >
-            {relativeTime(entry.timestamp)}
-          </time>
-        </div>
-
-        <div className="flex w-full items-center justify-between gap-1.5">
-          {modelNames.length > 0 && (
-            <div className="min-w-0" title={modelRunNames(modelRuns).join("\n")}>
-              <TruncatedText
-                className="type-footnote text-label-tertiary"
-                text={modelNames.join(" · ")}
-              />
-            </div>
-          )}
-
-          <div className="ml-auto flex items-center gap-1.5">
-            {hygieneChecks.map((check) => (
-              <span
-                key={check.id}
-                className={cn(
-                  "inline-flex h-3 w-3 items-center justify-center rounded-full text-[0.55rem] leading-none text-white",
-                  check.passed
-                    ? "bg-(--color-system-green) opacity-30 hover:opacity-80"
-                    : "bg-(--color-system-red) opacity-50 hover:opacity-80",
-                )}
-                title={check.title}
-                aria-label={check.title}
-              >
-                {check.passed ? "✓" : "×"}
-              </span>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
+
+      {/* The rail is the positioned anchor for the hygiene fan. */}
+      <div className="relative mt-0.5 flex shrink-0 items-center gap-1.5">
+        <SessionHygieneBadges checks={hygieneChecks} />
+        {entry.cost && <SessionCostBadge {...entry.cost} />}
+      </div>
+
+      {/* The timestamp shows on hover only; assistive tech reads it at all times. */}
+      <time
+        dateTime={entry.timestamp}
+        aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+        className="absolute bottom-3 right-2 shrink-0 text-sm text-label-secondary opacity-0 transition-opacity duration-[var(--duration-fast)] ease-out group-hover:opacity-100"
+      >
+        {relativeTime(entry.timestamp)}
+      </time>
     </div>
   )
 }
 
 /**
- * A scrolling list of local coding sessions, grouped by activity state and day.
+ * A scrolling list of coding sessions, grouped by activity state and day.
  *
  * The host supplies entries, the visible range, and actions. The list controls
  * ordering, grouping, the sticky group label, and row presentation.
  */
-export function LocalActivityList({
+export function SessionList({
   entries,
   days,
   emptyTitle,
@@ -286,7 +265,7 @@ export function LocalActivityList({
   now,
   renderAgentIcon,
   wslIcon,
-}: LocalActivityListProps) {
+}: SessionListProps) {
   const items = entries.map((entry, index) => ({
     entry,
     at: entry.timestamp,
@@ -308,7 +287,7 @@ export function LocalActivityList({
     emptyTitle ?? (days === 1 ? "No sessions today" : `No sessions in the last ${days} days`)
 
   return (
-    <section aria-label="Activity feed" className="flex h-full min-h-0 flex-col pt-2">
+    <section aria-label="Sessions" className="flex h-full min-h-0 flex-col pt-2">
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {visibleCount === 0 ? resolvedEmptyTitle : ""}
       </span>
@@ -329,7 +308,7 @@ export function LocalActivityList({
         viewportClassName={cn("px-2", visibleCount === 0 && "[&>div]:h-full")}
       >
         {visibleCount === 0 ? (
-          <EmptyActivity title={resolvedEmptyTitle} description={emptyDescription} />
+          <EmptySessionList title={resolvedEmptyTitle} description={emptyDescription} />
         ) : (
           <div className="space-y-3 pb-3">
             {groups.map((group, groupIndex) => {
@@ -350,7 +329,7 @@ export function LocalActivityList({
 
                   <div className="space-y-1">
                     {group.items.map((item) => (
-                      <SessionActivityRow
+                      <SessionRow
                         key={item.key}
                         entry={item.entry}
                         {...(onOpenSession ? { onOpen: () => onOpenSession(item.entry) } : {})}

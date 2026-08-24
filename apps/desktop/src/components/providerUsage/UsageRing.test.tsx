@@ -48,14 +48,16 @@ describe("UsageRing", () => {
     expect(container.querySelector("circle")).not.toHaveAttribute("stroke-dasharray", "2 2")
   })
 
-  it("marks a modelled figure as second-hand", () => {
-    const { container } = render(<UsageRing percent={40} estimated />)
-    expect(container.querySelector('[data-testid="usage-ring-estimated"]')).not.toBeNull()
-    expect(
-      render(<UsageRing percent={40} />).container.querySelector(
-        '[data-testid="usage-ring-estimated"]',
-      ),
-    ).toBeNull()
+  it("draws the remainder behind a stated arc, so a small share reads as one", () => {
+    // The usage bar states no figure beside the ring any more. An arc with
+    // nothing behind it states a length; an arc on a track states a share.
+    const { container } = render(<UsageRing percent={14} />)
+    expect(container.querySelector('[data-testid="usage-ring-track"]')).toBeInTheDocument()
+  })
+
+  it("draws no second track under the indeterminate ring", () => {
+    const { container } = render(<UsageRing percent={null} />)
+    expect(container.querySelector('[data-testid="usage-ring-track"]')).toBeNull()
   })
 
   it("clamps rather than overdrawing a figure past its own limit", () => {
@@ -64,8 +66,7 @@ describe("UsageRing", () => {
   })
 
   it("keeps the provider’s identity inside the ring", () => {
-    // A chip that says how full something is without saying whose is a worse
-    // trade than the ring is worth.
+    // A provider pill must identify the provider that owns the limit.
     const { container } = render(<UsageRing percent={40} glyph="A" />)
     expect(container.querySelector('[data-testid="usage-ring-glyph"]')).toHaveTextContent("A")
     expect(

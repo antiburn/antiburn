@@ -358,6 +358,10 @@ pub struct NormalizedSession {
     pub agent: String,
     pub session_id: String,
     pub events: Vec<NormalizedEvent>,
+    /// True when the adapter can observe cache-write tokens. A false value
+    /// means zero cache writes are unknown, not that no cache write occurred.
+    #[serde(default)]
+    pub cache_write_tokens_available: bool,
     /// The model's context-window size for this session, when the vendor reports
     /// it (e.g. Codex `model_context_window`). Claude leaves this as `None` for
     /// unknown model ids so context occupancy can be presented as unavailable.

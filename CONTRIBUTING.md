@@ -7,7 +7,7 @@ Thanks for your interest in contributing!
 - **License:** the project is licensed under the [Mozilla Public License 2.0](LICENSE).
   By contributing, you agree your contributions are licensed under MPL-2.0.
   There is no CLA.
-- **DCO sign-off (required):** every commit must carry a
+- **DCO sign-off (required):** every non-merge commit you author must carry a
   [Developer Certificate of Origin](https://developercertificate.org/) sign-off:
 
   ```bash
@@ -15,7 +15,8 @@ Thanks for your interest in contributing!
   ```
 
   which adds a `Signed-off-by: Your Name <you@example.com>` trailer. CI rejects
-  pull requests containing unsigned commits.
+  pull requests containing unsigned non-merge commits. Merge commits are exempt
+  because they carry no authored content.
 
 ## Boundaries that pull requests must respect
 
@@ -85,11 +86,22 @@ cargo test
 All three must be clean before review. Behavior suites live in `tests/`;
 keep inline `#[cfg(test)]` modules small and tightly scoped.
 
+### Desktop onboarding tests
+
+Use **Reset Onboarding** in the debug-build tray menu for a one-step restart.
+Packaged builds provide **Settings → General → Run setup again**. Both paths
+keep indexed sessions, scan folders, repository choices, and preferences. They
+are not factory resets. Setup stays pending if you close it before completion.
+
+See [the desktop development guide](apps/desktop/README.md#restarting-onboarding)
+for clean-profile testing and the bundle-identifier rules that forks must keep.
+
 ## Slop gate
 
 The `slop gate` check runs on pull requests only. A failure also fails
 `ci-required`. The gate judges the files that the pull request changes, and it
 judges each touched file as a whole. It is not a repository score.
+`ci-required` is a required check on `main`, so a red slop gate blocks the merge.
 
 Run the local check before you push:
 
@@ -164,6 +176,34 @@ The `--` separator keeps the justification from being parsed as rule IDs.
 `aislop-ignore-file` covers the whole file from any line in it. Rule IDs are
 optional. Omitting them silences every rule on the target. Write the
 justification in ASD-STE100 and name #90.
+
+## Edit-time agent hooks
+
+The repository commits `PostToolUse` hooks that give advisory aislop findings.
+Claude Code runs one after each matched `Edit`, `Write` or `MultiEdit`. Codex
+runs one after each `apply_patch`, through the committed adapter
+`scripts/codex-aislop-hook.mjs`, after no other Codex edit path, and only when
+you complete both trust steps below. Both hooks run the repository-pinned
+`node_modules/.bin/aislop` 0.14.0. The findings are advisory, so no hook blocks
+an edit.
+
+The hook judges the whole edited file, so it can report standing #90 findings
+in a file you touch. Hook runs also disable the `format` and `lint` checks, so
+the hook scan is narrower than the gate. Run `pnpm run slop` before you push,
+because it stays the authoritative check.
+
+Codex needs two trust steps. Trust the folder, so Codex discovers
+`.codex/hooks.json` as a project source. Then trust the hook with `/hooks`.
+Codex feedback stays inert until you do both steps.
+
+Do not run `aislop hook install` here. It deletes each hook group that has a
+non-null `__aislop` sentinel, then writes an unpinned command, and that destroys
+the repository pin. A global hook causes duplicate feedback. For Claude Code,
+aislop generates the global hook, so run
+`aislop hook uninstall --claude --global`. For Codex, aislop generates no hook,
+because its Codex installer writes rules text only. A global Codex hook is
+hand-authored, so remove it from your Codex configuration by hand. The Claude
+uninstall command does not remove a Codex hook.
 
 ## Pull request boundaries
 

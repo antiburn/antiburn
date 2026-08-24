@@ -71,8 +71,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::discovery::scanner::{self, TitleSource};
 use antiburn_local::discovery::{
-    Explorers, ResolvedTitle, SessionLog, SessionSource, TitleLookupKind, session_log_metadata,
-    session_source_preview, session_source_tail,
+    Explorers, ResolvedTitle, SessionLog, SessionSource, SourceDescriptor, TitleLookupKind,
+    session_log_read, session_source_tail,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
@@ -326,7 +326,8 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
 
     // Everything discovered so far is already persisted, so a cancel here keeps
     // the reader's results and only skips the work still ahead.
-    if app.state::<ScanController>().cancelled() {
+    let controller = app.state::<ScanController>();
+    if controller.cancelled() {
         return Ok(records.len());
     }
 
@@ -338,9 +339,21 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
             crate::store::MIN_ACTIVITY_DAYS,
             crate::store::MAX_ACTIVITY_DAYS,
         );
-    top_up_analysis(app, now, i64::from(activity_window_days)).await?;
+    top_up_analysis(
+        &store,
+        &controller,
+        now,
+        i64::from(activity_window_days),
+        |agent, session_id, wsl_distro| async move {
+            analytics::locate(agent, &session_id, wsl_distro.as_deref()).await
+        },
+        |agent, session_id, wsl_distro| async move {
+            analytics::analyze(agent, &session_id, wsl_distro.as_deref()).await
+        },
+    )
+    .await?;
 
-    if app.state::<ScanController>().cancelled() {
+    if controller.cancelled() {
         return Ok(records.len());
     }
 
@@ -556,9 +569,9 @@ async fn describe_one_with_activity(
     indexed_title: Option<ResolvedTitle>,
     activity_state: Option<SessionActivityState>,
 ) -> DescribeOutcome {
-    let metadata = session_log_metadata(&log).await;
+    let read = session_log_read(&log).await;
+    let metadata = read.as_ref().map(|read| &read.metadata);
     let Some(session_id) = metadata
-        .as_ref()
         .and_then(|metadata| metadata.session_id.clone())
         .or_else(|| recovered_id(&log))
     else {
@@ -573,12 +586,13 @@ async fn describe_one_with_activity(
         log.agent_type.slug(),
         session_id.clone(),
     );
-    // One bounded content read serves both content checks below.
     let preview = match log.agent_type {
-        AgentKind::Claude | AgentKind::Codex => session_source_preview(&log.source).await,
+        AgentKind::Claude | AgentKind::Codex => {
+            read.as_ref().and_then(|read| read.content.as_deref())
+        }
         _ => None,
     };
-    if is_subagent_transcript(&log, preview.as_deref()) {
+    if is_subagent_transcript(&log, preview) {
         return DescribeOutcome::Subagent(key);
     }
 
@@ -589,12 +603,10 @@ async fn describe_one_with_activity(
     };
     let (title, title_source) = select_title_pair(
         resolved_title,
-        metadata
-            .as_ref()
-            .and_then(|metadata| metadata.title.clone()),
-        metadata.as_ref().and_then(|metadata| metadata.title_source),
+        metadata.and_then(|metadata| metadata.title.clone()),
+        metadata.and_then(|metadata| metadata.title_source),
         &log.agent_type,
-        preview.as_deref(),
+        preview,
     );
 
     // A dir listing per orchestrator-capable session; vendors that record no
@@ -610,10 +622,21 @@ async fn describe_one_with_activity(
         _ => Vec::new(),
     };
     let subagent_count = children.len() as u32;
+    let fork_parent_session_id = preview.and_then(analytics::fork_parent_from_content);
 
     let (updated_at_epoch, activity_source, activity_cursor) =
-        semantic_activity_for_log(&log, activity_state.as_ref(), &children, preview.as_deref())
-            .await;
+        semantic_activity_for_log(&log, activity_state.as_ref(), &children, preview).await;
+    let descriptor = SourceDescriptor {
+        agent: log.agent_type,
+        session_id: session_id.clone(),
+        environment: log.environment.clone(),
+        source: log.source.clone(),
+        updated_at_epoch: log.updated_at,
+    };
+    let source_fingerprint = Explorers::DISK
+        .source_version(&descriptor, read.as_ref())
+        .await
+        .map(|version| version.fingerprint);
 
     DescribeOutcome::Session(Box::new(SessionRecord {
         key,
@@ -622,16 +645,14 @@ async fn describe_one_with_activity(
         wsl_distro: log.environment.wsl_distro().map(str::to_string),
         title,
         title_source,
-        cwd: metadata.and_then(|metadata| metadata.cwd),
+        cwd: metadata.and_then(|metadata| metadata.cwd.clone()),
         surface: log.surface_label(home).to_string(),
         updated_at_epoch,
         activity_cursor,
         activity_source,
         subagent_count,
-        // Lineage is resolved when a session is opened: the observation lives
-        // inside the transcript, and reading every transcript on every pass
-        // would cost far more than the relationship is worth here.
-        fork_parent_session_id: None,
+        fork_parent_session_id,
+        source_fingerprint,
     }))
 }
 
@@ -853,15 +874,27 @@ fn per_agent_totals(records: &[SessionRecord]) -> Vec<(String, i64, Option<i64>)
 }
 
 /// Analyze the newest sessions whose cached analysis is missing or stale.
-async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyhow::Result<()> {
-    let store = app.state::<Store>();
+async fn top_up_analysis<F, Fut, A, AFut>(
+    store: &Store,
+    controller: &ScanController,
+    now: i64,
+    activity_days: i64,
+    mut locate: F,
+    mut analyze: A,
+) -> anyhow::Result<()>
+where
+    F: FnMut(AgentKind, String, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Option<SessionSource>>,
+    A: FnMut(AgentKind, String, Option<String>) -> AFut,
+    AFut: std::future::Future<Output = analytics::SessionAnalysis>,
+{
     let since = now - activity_days.max(1) * 86_400;
     let candidates = store.recent_sessions(since, MAX_ANALYSES_PER_PASS)?;
 
     for record in candidates {
         // Analysis is the long tail of a pass — one whole transcript read per
         // session — so this is where a cancel is felt.
-        if app.state::<ScanController>().cancelled() {
+        if controller.cancelled() {
             return Ok(());
         }
         let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
@@ -872,8 +905,12 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
             // metric; the view says so instead of showing one.
             continue;
         }
-        let Some(source) =
-            analytics::locate(agent, &record.key.session_id, record.wsl_distro.as_deref()).await
+        let Some(source) = locate(
+            agent,
+            record.key.session_id.clone(),
+            record.wsl_distro.clone(),
+        )
+        .await
         else {
             continue;
         };
@@ -890,8 +927,12 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
             continue;
         }
 
-        let analysis =
-            analytics::analyze(agent, &record.key.session_id, record.wsl_distro.as_deref()).await;
+        let analysis = analyze(
+            agent,
+            record.key.session_id.clone(),
+            record.wsl_distro.clone(),
+        )
+        .await;
         if let Some(cache) = analysis.record(&record.key) {
             store.save_analysis(&cache)?;
         }
@@ -960,6 +1001,36 @@ mod tests {
         path
     }
 
+    fn write_opencode_provider_db(home: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+        let path = home.join("opencode.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (
+                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
+                     directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL,
+                     time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+                 );
+                 CREATE TABLE message (
+                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                     time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+                 );
+                 CREATE TABLE part (
+                     id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                     time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session VALUES (?1, 'synthetic-project', NULL, '/repo',
+                                              'Synthetic session', '1', 100, 120, '{}')",
+                [session_id],
+            )
+            .unwrap();
+        path
+    }
+
     /// A synthetic Codex rollout: `<home>/.codex/sessions/YYYY/MM/DD/...jsonl`.
     fn write_codex_session(home: &std::path::Path, session_id: &str) -> std::path::PathBuf {
         let day = home
@@ -984,6 +1055,27 @@ mod tests {
             ),
         )
         .unwrap();
+        path
+    }
+
+    fn write_codex_fork_session(
+        home: &std::path::Path,
+        session_id: &str,
+        parent_session_id: &str,
+    ) -> std::path::PathBuf {
+        let path = write_codex_session(home, session_id);
+        let header = serde_json::json!({
+            "timestamp": "2026-08-01T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "forked_from_id": parent_session_id,
+                "cwd": "/home/avery/code/gadgets",
+                "source": "cli",
+                "thread_source": "user",
+            }
+        });
+        std::fs::write(&path, format!("{header}\n")).unwrap();
         path
     }
 
@@ -1165,6 +1257,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_codex_fork_records_its_parent_during_the_scan() {
+        let home = tempfile::TempDir::new().unwrap();
+        let parent_session_id = "parent-session";
+        let child_session_id = "child-session";
+        let path = write_codex_fork_session(home.path(), child_session_id, parent_session_id);
+
+        let DescribeOutcome::Session(child) = describe_one(
+            log(AgentKind::Codex, path, 1_800_000_000),
+            home.path(),
+            None,
+        )
+        .await
+        else {
+            panic!("Codex fork should be described");
+        };
+        assert_eq!(
+            child.fork_parent_session_id.as_deref(),
+            Some(parent_session_id)
+        );
+
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+        store
+            .upsert_sessions(&[record("codex", parent_session_id, Some(1_799_999_000))])
+            .unwrap();
+        store.upsert_sessions(std::slice::from_ref(&child)).unwrap();
+
+        assert_eq!(
+            store
+                .fork_children(&SessionKey::new("native", "codex", parent_session_id))
+                .unwrap(),
+            vec![child_session_id.to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn describing_transcripts_recovers_identity_title_and_working_directory() {
         let home = tempfile::TempDir::new().unwrap();
         let claude = write_claude_session(home.path(), "11111111-2222-3333-4444-555555555555");
@@ -1197,6 +1324,12 @@ mod tests {
         assert_eq!(claude.title.as_deref(), Some("Wire the tray popover"));
         assert_eq!(claude.source_kind, "file");
         assert_eq!(claude.subagent_count, 0);
+        assert!(
+            claude
+                .source_fingerprint
+                .as_deref()
+                .is_some_and(|value| value.starts_with("sv1:"))
+        );
 
         let codex = records
             .records
@@ -1209,6 +1342,307 @@ mod tests {
             codex.surface.as_str(),
             "cli" | "ide_desktop" | "unknown"
         ));
+    }
+
+    #[tokio::test]
+    async fn describing_a_claude_session_reads_the_head_once() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = write_claude_session(home.path(), "one-head-read");
+        antiburn_local::discovery::track_head_reads(&path);
+
+        let outcome = describe_one(
+            log(AgentKind::Claude, path.clone(), 1_800_000_000),
+            home.path(),
+            None,
+        )
+        .await;
+
+        assert!(matches!(outcome, DescribeOutcome::Session(_)));
+        assert_eq!(antiburn_local::discovery::take_tracked_head_reads(&path), 1);
+    }
+
+    #[tokio::test]
+    async fn describing_an_opencode_provider_db_does_not_render_the_transcript() {
+        let home = tempfile::TempDir::new().unwrap();
+        let session_id = "opencode-provider-db";
+        let db_path = write_opencode_provider_db(home.path(), session_id);
+        let log = SessionLog {
+            agent_type: AgentKind::OpenCode,
+            source: SessionSource::ProviderDb {
+                agent: AgentKind::OpenCode,
+                db_path: db_path.clone(),
+                session_id: session_id.to_string(),
+            },
+            updated_at: Some(120),
+            environment: DiscoveryEnvironment::Native,
+        };
+        antiburn_local::discovery::track_provider_db_renders(&db_path);
+
+        let outcome = describe_one(log, home.path(), None).await;
+
+        assert!(matches!(outcome, DescribeOutcome::Session(_)));
+        assert_eq!(
+            antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_consumed_provider_db_preview_is_rendered() {
+        let home = tempfile::TempDir::new().unwrap();
+        let session_id = "consumed-provider-db";
+        let db_path = write_opencode_provider_db(home.path(), session_id);
+        let log = SessionLog {
+            agent_type: AgentKind::Claude,
+            source: SessionSource::ProviderDb {
+                agent: AgentKind::OpenCode,
+                db_path: db_path.clone(),
+                session_id: session_id.to_string(),
+            },
+            updated_at: Some(120),
+            environment: DiscoveryEnvironment::Native,
+        };
+        antiburn_local::discovery::track_provider_db_renders(&db_path);
+
+        let read = session_log_read(&log).await.expect("source read");
+
+        assert!(read.content.is_some());
+        assert_eq!(
+            antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn an_inline_claude_subagent_is_rejected_on_the_scan_path() {
+        let content = concat!(
+            r#"{"type":"user","sessionId":"inline-subagent","isSidechain":true,"agentId":"agent-child","message":{"role":"user","content":"Investigate the failed deployment"}}"#,
+            "\n",
+        );
+        let log = SessionLog {
+            agent_type: AgentKind::Claude,
+            source: SessionSource::Inline {
+                label: "inline-subagent".to_string(),
+                content: content.to_string(),
+            },
+            updated_at: Some(1_800_000_000),
+            environment: DiscoveryEnvironment::Native,
+        };
+
+        assert!(matches!(
+            describe_one(log, std::path::Path::new("/tmp"), None).await,
+            DescribeOutcome::Subagent(key)
+                if key == SessionKey::new("native", "claude-code", "inline-subagent")
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_descriptor_takes_the_metadata_session_id() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = home.path().join("recovered-file-name.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"user","sessionId":"metadata-id","cwd":"/repo"}
+"#,
+        )
+        .unwrap();
+
+        let DescribeOutcome::Session(record) =
+            describe_one(log(AgentKind::Claude, path, 100), home.path(), None).await
+        else {
+            panic!("session should be described");
+        };
+
+        assert_eq!(record.key.session_id, "metadata-id");
+        assert!(record.source_fingerprint.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_descriptor_falls_back_to_the_recovered_id() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = home.path().join("recovered-id.jsonl");
+        std::fs::write(&path, "not json\n").unwrap();
+
+        let DescribeOutcome::Session(record) =
+            describe_one(log(AgentKind::Pi, path, 100), home.path(), None).await
+        else {
+            panic!("session should be described");
+        };
+
+        assert_eq!(record.key.session_id, "recovered-id");
+        assert!(record.source_fingerprint.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_empty_session_id_is_skipped() {
+        let log = SessionLog {
+            agent_type: AgentKind::Claude,
+            source: SessionSource::Inline {
+                label: String::new(),
+                content: "{}".to_string(),
+            },
+            updated_at: None,
+            environment: DiscoveryEnvironment::Native,
+        };
+
+        assert!(matches!(
+            describe_one(log, std::path::Path::new("/tmp"), None).await,
+            DescribeOutcome::Skip
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_appended_transcript_produces_a_different_fingerprint() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = write_claude_session(home.path(), "changing-session");
+        let DescribeOutcome::Session(first) =
+            describe_one(log(AgentKind::Claude, path.clone(), 100), home.path(), None).await
+        else {
+            panic!("session should be described");
+        };
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"type\":\"assistant\"}\n")
+            .unwrap();
+        let DescribeOutcome::Session(second) =
+            describe_one(log(AgentKind::Claude, path, 101), home.path(), None).await
+        else {
+            panic!("session should be described");
+        };
+
+        assert_ne!(first.source_fingerprint, second.source_fingerprint);
+    }
+
+    #[tokio::test]
+    async fn a_non_native_codex_title_survives_the_scan_path() {
+        let home = tempfile::TempDir::new().unwrap();
+        let session_id = "wsl-indexed-title";
+        let path = write_codex_session(home.path(), session_id);
+        std::fs::write(
+            home.path().join(".codex/session_index.jsonl"),
+            format!(
+                r#"{{"id":"{session_id}","thread_name":"Indexed WSL title"}}
+"#
+            ),
+        )
+        .unwrap();
+        let log = SessionLog {
+            environment: DiscoveryEnvironment::Wsl {
+                distribution: "SyntheticLinux".into(),
+                user: "avery".into(),
+            },
+            ..log(AgentKind::Codex, path, 100)
+        };
+
+        let DescribeOutcome::Session(record) = describe_one(log, home.path(), None).await else {
+            panic!("session should be described");
+        };
+
+        assert_eq!(record.title.as_deref(), Some("Indexed WSL title"));
+        assert_eq!(record.title_source.as_deref(), Some("aiGenerated"));
+    }
+
+    #[tokio::test]
+    async fn a_wsl_cwd_is_mapped_to_a_windows_path_in_the_scan_path() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = write_codex_session(home.path(), "wsl-cwd");
+        let log = SessionLog {
+            environment: DiscoveryEnvironment::Wsl {
+                distribution: "SyntheticLinux".into(),
+                user: "avery".into(),
+            },
+            ..log(AgentKind::Codex, path, 100)
+        };
+
+        let DescribeOutcome::Session(record) = describe_one(log, home.path(), None).await else {
+            panic!("session should be described");
+        };
+
+        assert_eq!(
+            record.cwd.as_deref(),
+            Some(r"\\wsl.localhost\SyntheticLinux\home\avery\code\gadgets")
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_freshness_ignores_the_session_source_fingerprint() {
+        let home = tempfile::TempDir::new().unwrap();
+        let session_id = "cache-contract-session";
+        let source = SessionSource::File(write_claude_session(home.path(), session_id));
+        let mut session = record("claude-code", session_id, Some(100));
+        session.source_fingerprint = Some("sv1:session-source".to_string());
+        let SessionSource::File(source_path) = &source else {
+            unreachable!("the fixture uses a file source");
+        };
+        session.source_label = source_path.to_string_lossy().into_owned();
+        let store = Store::open_in_memory(home.path()).unwrap();
+        store
+            .upsert_sessions(std::slice::from_ref(&session))
+            .unwrap();
+
+        let legacy_fingerprint =
+            analytics::fingerprint_with_subagents(AgentKind::Claude, session_id, None, &source)
+                .await;
+        let cached = crate::store::AnalysisRecord {
+            key: session.key.clone(),
+            model_breakdown_json: r#"{"cached":true}"#.to_string(),
+            inclusive_models_json: "[]".to_string(),
+            source_fingerprint: legacy_fingerprint.clone(),
+            pricing_generation: antiburn_local::analysis::pricing_generation() as i64,
+        };
+        store.save_analysis(&cached).unwrap();
+
+        let persisted_session = store
+            .session(&session.key)
+            .unwrap()
+            .expect("persisted session");
+        assert_eq!(
+            persisted_session.source_fingerprint.as_deref(),
+            Some("sv1:session-source")
+        );
+        assert!(analytics::cache_is_fresh(
+            &store
+                .analysis(&session.key)
+                .unwrap()
+                .expect("persisted analysis"),
+            &legacy_fingerprint
+        ));
+
+        let locate_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_locates = locate_calls.clone();
+        let analysis_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_analyses = analysis_calls.clone();
+        let located_source = source.clone();
+        let expected_id = session_id.to_string();
+        top_up_analysis(
+            &store,
+            &ScanController::default(),
+            200,
+            1,
+            move |agent, candidate_id, wsl_distro| {
+                observed_locates.fetch_add(1, Ordering::SeqCst);
+                let source = located_source.clone();
+                let matches = agent == AgentKind::Claude
+                    && candidate_id == expected_id
+                    && wsl_distro.is_none();
+                async move { matches.then_some(source) }
+            },
+            move |_, _, _| {
+                observed_analyses.fetch_add(1, Ordering::SeqCst);
+                async { analytics::SessionAnalysis::unavailable() }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(locate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(analysis_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.analysis(&session.key).unwrap().as_ref(),
+            Some(&cached)
+        );
     }
 
     #[tokio::test]
@@ -1685,6 +2119,7 @@ mod tests {
             activity_source: "mtime".into(),
             subagent_count: 0,
             fork_parent_session_id: None,
+            source_fingerprint: None,
         }
     }
 

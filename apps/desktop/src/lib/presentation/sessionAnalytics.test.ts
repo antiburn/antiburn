@@ -28,12 +28,16 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
     tokensIn: 0,
     tokensOut: 0,
+    subagentTokens: 0,
     contextTokens: 0,
     isCompactionBoundary: false,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    secsSincePriorTurn: null,
     subagentLaunches: 0,
+    userPrompts: 0,
+    lastTool: null,
     model: null,
     thinkingMode: null,
     speed: null,
@@ -49,7 +53,7 @@ describe("contextTokenSeries", () => {
   it("keeps every bucket at its measured progress and holds the context level across empty ones", () => {
     const buckets = [
       bucket(),
-      bucket({ tokensIn: 100, tokensOut: 10, contextTokens: 50_000 }),
+      bucket({ tokensIn: 100, tokensOut: 10, subagentTokens: 25, contextTokens: 50_000 }),
       bucket(),
       bucket({ tokensIn: 300, tokensOut: 30, contextTokens: 150_000 }),
       bucket({ tokensIn: 500, tokensOut: 50, contextTokens: 200_000 }),
@@ -59,6 +63,7 @@ describe("contextTokenSeries", () => {
     expect(series).toHaveLength(6)
     expect(series.map((p) => p.progress)).toEqual([0, 20, 40, 60, 80, 100])
     expect(series.map((p) => p.tokensIn)).toEqual([0, 100, 0, 300, 500, 0])
+    expect(series.map((p) => p.subagentTokens)).toEqual([0, 25, 0, 0, 0, 0])
     expect(series.map((p) => p.contextTokens)).toEqual([
       0, 50_000, 50_000, 150_000, 200_000, 200_000,
     ])
@@ -109,6 +114,42 @@ describe("contextTokenSeries", () => {
       [5_000, 200, false],
       [0, 25_000, true],
     ])
+  })
+
+  it("carries the prior-turn gap only on its own bucket", () => {
+    const series = contextTokenSeries([
+      bucket(),
+      bucket({ contextTokens: 25_000, secsSincePriorTurn: 9_300 }),
+      bucket(),
+    ])
+
+    expect(series.map((point) => point.secsSincePriorTurn)).toEqual([null, 9_300, null])
+  })
+
+  it("describes the gap a call-less bucket sits in", () => {
+    const series = contextTokenSeries([
+      bucket({ contextTokens: 20_000, tokensIn: 100, lastTool: "Bash" }),
+      bucket({ contextTokens: 0 }),
+      bucket({ contextTokens: 0 }),
+      bucket({ contextTokens: 25_000, tokensIn: 100, secsSincePriorTurn: 130 }),
+    ])
+
+    expect(series.map((point) => point.betweenCalls)).toEqual([
+      null,
+      { secs: 130, tool: "Bash", userPrompt: false },
+      { secs: 130, tool: "Bash", userPrompt: false },
+      null,
+    ])
+  })
+
+  it("marks a gap that a user prompt ends", () => {
+    const series = contextTokenSeries([
+      bucket({ contextTokens: 20_000, tokensIn: 100, lastTool: "Bash" }),
+      bucket({ contextTokens: 0 }),
+      bucket({ contextTokens: 25_000, tokensIn: 100, secsSincePriorTurn: 600, userPrompts: 1 }),
+    ])
+
+    expect(series[1]!.betweenCalls).toEqual({ secs: 600, tool: "Bash", userPrompt: true })
   })
 
   it("forward-fills model, thinking mode, and speed across buckets with no value", () => {

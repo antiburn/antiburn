@@ -2,14 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from "react"
+import { lazy, Suspense, useCallback, useRef, useState, useSyncExternalStore } from "react"
 
 import { AlertTriangle, Settings } from "lucide-react"
 
-import {
-  LocalActivityList,
-  type LocalActivityEntry,
-} from "../components/activity/LocalActivityList"
+import { SessionList, type SessionListEntry } from "../components/session/SessionList"
 import { UsageLimitsBar } from "../components/providerUsage"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
@@ -19,6 +16,7 @@ import { attentionBanners } from "../lib/attention"
 import {
   DEFAULT_SETTINGS,
   noteInteraction,
+  openGithubRepo,
   openSettingsWindow,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
@@ -121,23 +119,34 @@ function usageEvidence(
 }
 
 /**
- * The activity surface's bottom bar: the app's name, which also carries the
- * surface's focus heading (see the class doc below), and the way to the
- * standalone Settings window.
- *
- * This used to also hold a chip per provider used today. Those moved to the
- * usage-limits section at the top of the surface, collapsed — the same
- * chips, just relocated, so the footer here is name and gear and nothing
- * else.
+ * The activity surface's bottom bar shows the app name and version.
+ * The name also carries the surface's focus heading, and opens the
+ * project's GitHub repository when clicked.
+ * The settings control opens the standalone Settings window.
  */
-function PopoverFooter({ onOpenSettings }: { onOpenSettings: () => void }) {
+function PopoverFooter({
+  appVersion,
+  debugBuild,
+  onOpenSettings,
+}: {
+  appVersion: string | null
+  debugBuild: boolean
+  onOpenSettings: () => void
+}) {
+  const versionLabel = appVersion ? ` v${appVersion}${debugBuild ? " debug" : ""}` : ""
+
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-t border-separator px-4">
       {/* Focused by the popover when this surface takes over, so a keyboard
           or screen-reader user lands in the view rather than on <body>. */}
-      <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-        antiburn
-      </h1>
+      <button
+        type="button"
+        data-view-heading
+        onClick={() => void openGithubRepo()}
+        className="type-caption whitespace-nowrap text-label-secondary outline-none hover:underline"
+      >
+        antiburn{versionLabel}
+      </button>
       <button
         type="button"
         onClick={onOpenSettings}
@@ -178,6 +187,22 @@ export function PopoverView() {
     node?.querySelector<HTMLElement>("[data-view-heading]")?.focus()
   }, [])
 
+  // The same surface swap unmounts the activity list, so its viewport comes
+  // back at the top after a session closes. The reader expects to land where
+  // they left. The list's scroll offset lives here, on the component that
+  // outlives the swap: each scroll records it, and the viewport takes it back
+  // the moment the list mounts again.
+  const listScrollTop = useRef(0)
+  const restoreListScroll = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return
+    node.scrollTop = listScrollTop.current
+    const record = () => {
+      listScrollTop.current = node.scrollTop
+    }
+    node.addEventListener("scroll", record, { passive: true })
+    return () => node.removeEventListener("scroll", record)
+  }, [])
+
   /* ---------------------------------------------------------------------
    * Session analytics: derived from the session's tagged load result
    * ------------------------------------------------------------------ */
@@ -187,6 +212,9 @@ export function PopoverView() {
   const sessionPayload = settledAnalytics?.payload ?? null
   const sessionLoading = current != null && settledAnalytics == null
   const sessionError = settledAnalytics?.error ?? false
+  // Only a re-load over a settled result is "refreshing"; a first load shows
+  // the skeleton through `loading` instead.
+  const sessionRefreshing = state.analyticsRefreshing && settledAnalytics != null
 
   /* ---------------------------------------------------------------------
    * Attention banners
@@ -197,7 +225,7 @@ export function PopoverView() {
     storage: state.storage,
   }).filter((banner) => !state.dismissed.includes(banner.id))
 
-  const subjectFor = (entry: LocalActivityEntry): SessionSubject => {
+  const subjectFor = (entry: SessionListEntry): SessionSubject => {
     return {
       agent: entry.agent,
       sessionId: entry.sessionId ?? "",
@@ -256,6 +284,7 @@ export function PopoverView() {
             subject={displaySubject}
             payload={sessionPayload}
             loading={sessionLoading}
+            refreshing={sessionRefreshing}
             error={sessionError}
             onBack={session.goBack}
             onPrev={neighbour(-1)}
@@ -316,7 +345,7 @@ export function PopoverView() {
           {state.entries == null ? (
             <ActivitySkeleton />
           ) : (
-            <LocalActivityList
+            <SessionList
               entries={state.entries}
               days={windowDays}
               onOpenSession={(entry) => {
@@ -336,11 +365,16 @@ export function PopoverView() {
                 session.openSession(subjectFor(entry))
               }}
               renderAgentIcon={renderAgentIcon}
+              viewportRef={restoreListScroll}
             />
           )}
         </div>
 
-        <PopoverFooter onOpenSettings={() => void openSettingsWindow()} />
+        <PopoverFooter
+          appVersion={state.appVersion}
+          debugBuild={state.debugBuild}
+          onOpenSettings={() => void openSettingsWindow()}
+        />
       </div>
     )
   }

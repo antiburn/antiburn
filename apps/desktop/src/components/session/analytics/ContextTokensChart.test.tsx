@@ -40,12 +40,16 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
     tokensIn: 0,
     tokensOut: 0,
+    subagentTokens: 0,
     contextTokens: 0,
     isCompactionBoundary: false,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    secsSincePriorTurn: null,
     subagentLaunches: 0,
+    userPrompts: 0,
+    lastTool: null,
     model: null,
     thinkingMode: null,
     speed: null,
@@ -128,6 +132,15 @@ describe("ContextTokensChart", () => {
 
     expect(screen.queryAllByText(/→|effort |^fast$/)).toEqual([])
   })
+
+  it("draws sub-agent tokens as a third series on the token axis", () => {
+    const buckets = [bucket({ tokensIn: 100, tokensOut: 20 }), bucket({ subagentTokens: 500 })]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+    )
+
+    expect(container.querySelector('path[fill="var(--color-token-subagent)"]')).not.toBeNull()
+  })
 })
 
 function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
@@ -137,11 +150,15 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     contextTokens: 100_000,
     tokensIn: 1_000,
     tokensOut: 200,
+    subagentTokens: 0,
     isCompactionBoundary: false,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    secsSincePriorTurn: null,
     subagentLaunches: 0,
+    lastTool: null,
+    betweenCalls: null,
     model: null,
     thinkingMode: null,
     speed: null,
@@ -154,6 +171,161 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
 }
 
 describe("ContextTokensTooltip", () => {
+  it("names the tool call and gap length for a bucket with no model call", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              tokensIn: 0,
+              tokensOut: 0,
+              betweenCalls: { secs: 130, tool: "Bash", userPrompt: false },
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("During Bash call · 2m")).toBeInTheDocument()
+    expect(screen.queryByText("Tokens")).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Parent in/)).not.toBeInTheDocument()
+  })
+
+  it("names the drawn width of a long gap ended by a user prompt", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              tokensIn: 0,
+              tokensOut: 0,
+              betweenCalls: { secs: 1_500, tool: null, userPrompt: true },
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Waiting for user · 25m (5m shown)")).toBeInTheDocument()
+  })
+
+  it("keeps a long gap after a tool call attributed to the tool", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              tokensIn: 0,
+              tokensOut: 0,
+              betweenCalls: { secs: 1_500, tool: "Task", userPrompt: false },
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("During Task call · 25m (5m shown)")).toBeInTheDocument()
+  })
+
+  it("says the model waited for the user when a prompt ends a short gap", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              tokensIn: 0,
+              tokensOut: 0,
+              betweenCalls: { secs: 45, tool: "Bash", userPrompt: true },
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Waiting for user · 45s")).toBeInTheDocument()
+  })
+
+  it("falls back to a plain gap line when no tool is recorded", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              tokensIn: 0,
+              tokensOut: 0,
+              betweenCalls: { secs: null, tool: null, userPrompt: false },
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Between model calls")).toBeInTheDocument()
+  })
+
+  it("shows elapsed active time at the hovered bucket", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        activeSecs={7_200}
+        bucketCount={5}
+        payload={[{ payload: point({ index: 1, progress: 25 }) }]}
+      />,
+    )
+
+    expect(screen.getByText("30m into session")).toBeInTheDocument()
+    expect(screen.queryByText("25% through")).not.toBeInTheDocument()
+  })
+
+  it("shows the wall-clock gap since the prior parent turn", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[{ payload: point({ secsSincePriorTurn: 9_300 }) }]}
+      />,
+    )
+
+    expect(screen.getByText("Since prior turn · 2h 35m")).toBeInTheDocument()
+  })
+
+  it("omits the prior-turn gap for a bucket without a timed parent turn", () => {
+    render(
+      <ContextTokensTooltip active contextWindow={200_000} payload={[{ payload: point() }]} />,
+    )
+
+    expect(screen.queryByText(/^Since prior turn/)).not.toBeInTheDocument()
+  })
+
+  it("separates parent input, parent output, and sub-agent tokens", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({ tokensIn: 1_000, tokensOut: 200, subagentTokens: 3_000 }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Parent in · 1.0k")).toBeInTheDocument()
+    expect(screen.getByText("Parent out · 200")).toBeInTheDocument()
+    expect(screen.getByText("Subagents · 3.0k")).toBeInTheDocument()
+  })
+
   it("shows the sub-agent launch count when the bucket launched one", () => {
     render(
       <ContextTokensTooltip
@@ -200,6 +372,36 @@ describe("ContextTokensTooltip", () => {
     expect(screen.getByText("Effort · high")).toBeInTheDocument()
     expect(screen.getByText("Speed · fast")).toBeInTheDocument()
     expect(screen.getByText("Thinking")).toBeInTheDocument()
+  })
+
+  it("omits mode lines that match the session baseline", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        baseline={{
+          model: "claude-opus-4-6",
+          thinkingMode: "high",
+          speed: "fast",
+          hasThinking: true,
+        }}
+        payload={[
+          {
+            payload: point({
+              model: "claude-opus-4-6",
+              thinkingMode: "max",
+              speed: "fast",
+              hasThinking: true,
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.queryByText(/^Model/)).not.toBeInTheDocument()
+    expect(screen.getByText("Effort · max")).toBeInTheDocument()
+    expect(screen.queryByText(/^Speed/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Thinking")).not.toBeInTheDocument()
   })
 
   it("omits model, effort, speed, and thinking lines when absent", () => {

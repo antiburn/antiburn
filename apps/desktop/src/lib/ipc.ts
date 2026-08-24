@@ -120,10 +120,9 @@ export interface AppSettings {
    */
   usageAnalyticsEnabled: boolean
   /**
-   * Whether the popover's usage-limits section is expanded to its
-   * per-provider rows, rather than collapsed to the chip row. Purely a
-   * display preference — it never gates a fetch — so it defaults open and
-   * stays wherever the reader last left it.
+   * Whether the popover's usage-limits bar shows its per-provider rows.
+   * This display preference never gates a fetch. It defaults open and stays
+   * where the reader last left it.
    */
   overviewLimitsExpanded: boolean
 }
@@ -131,6 +130,8 @@ export interface AppSettings {
 /** Where the app came from. Mirrors Rust `AppInfo`. */
 export interface AppInfo {
   appVersion: string
+  /** True when the binary enables Rust debug assertions. */
+  debugBuild: boolean
   /** CPU architecture this binary was compiled for, e.g. `aarch64`. */
   arch: string
   pricingCatalogVersion: string
@@ -406,6 +407,11 @@ export interface LiveExtraUsagePayload {
   currency: string | null
 }
 
+/** Provider credits that manually reset rate limits. */
+export interface LiveUsageResetCreditsPayload {
+  availableCount: number
+}
+
 /** One provider account's live usage. Mirrors Rust `LiveProviderUsage`. */
 export interface LiveProviderUsagePayload {
   /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
@@ -419,6 +425,7 @@ export interface LiveProviderUsagePayload {
   observedAt: string
   windows: LiveUsageWindowPayload[]
   extraUsage: LiveExtraUsagePayload | null
+  resetCredits: LiveUsageResetCreditsPayload | null
 }
 
 /** A source that failed, in terms a reader can act on. */
@@ -750,6 +757,12 @@ export async function getSettings(): Promise<AppSettings> {
 export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   if (!hasShell()) return settings
   return invoke<AppSettings>("set_settings", { settings })
+}
+
+/** Make setup pending and open it at Welcome without clearing local data. */
+export async function restartOnboarding(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("restart_onboarding")
 }
 
 /**
@@ -1331,6 +1344,12 @@ export async function requestFolderAccess(dir: string): Promise<FolderAccessOutc
 export async function openFolderAccessSettings(): Promise<void> {
   if (!hasShell()) return
   await invoke("open_folder_access_settings")
+}
+
+/** Open the antiburn GitHub repository in the system browser. */
+export async function openGithubRepo(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_github_repo")
 }
 
 /** Probe outcomes from this run, for a bug report. */

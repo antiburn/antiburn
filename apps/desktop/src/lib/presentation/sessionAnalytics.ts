@@ -30,11 +30,23 @@ export interface ContextTokenPoint {
   contextTokens: number
   tokensIn: number
   tokensOut: number
+  subagentTokens: number
   isCompactionBoundary: boolean
   cacheReadTokens: number
   cacheWriteTokens: number
   isCacheRehydration: boolean
+  secsSincePriorTurn: number | null
   subagentLaunches: number
+  /** The name of the last parent tool call in this bucket, when any. */
+  lastTool: string | null
+  /**
+   * Set when no model call landed in this bucket: the slice sits inside the
+   * gap between two calls. `tool` names the call the model made before the
+   * gap, when the transcript records one. `secs` is the length of the whole
+   * gap, when the next call recorded it. `userPrompt` is true when a user
+   * prompt ends the gap: the model waited for the user, not for a tool.
+   */
+  betweenCalls: { secs: number | null; tool: string | null; userPrompt: boolean } | null
   /** Model that produced this point, forward-filled from the last bucket that named one. */
   model: string | null
   /** Thinking-effort mode at this point, forward-filled the same way. */
@@ -92,11 +104,15 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     contextTokens: levels[index]!,
     tokensIn: bucket.tokensIn,
     tokensOut: bucket.tokensOut,
+    subagentTokens: bucket.subagentTokens,
     isCompactionBoundary: bucket.isCompactionBoundary,
     cacheReadTokens: bucket.cacheReadTokens,
     cacheWriteTokens: bucket.cacheWriteTokens,
     isCacheRehydration: bucket.isCacheRehydration,
+    secsSincePriorTurn: bucket.secsSincePriorTurn,
     subagentLaunches: bucket.subagentLaunches,
+    lastTool: bucket.lastTool,
+    betweenCalls: betweenCalls(buckets, index),
     model: models[index]!,
     thinkingMode: thinkingModes[index]!,
     speed: speeds[index]!,
@@ -105,6 +121,77 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     compactionPreTokens: bucket.compactionPreTokens,
     compactionPostTokens: bucket.compactionPostTokens,
   }))
+}
+
+/**
+ * Mirrors `analysis::engine::IDLE_GAP_MS`. The engine counts each gap between
+ * events toward active time up to this cap, so the chart draws a longer gap
+ * as a shelf of this width.
+ */
+export const IDLE_GAP_SECS = 5 * 60
+
+/** True when a model call (parent or sub-agent) landed in the bucket. */
+function hasCall(bucket: SessionBucket): boolean {
+  return (
+    bucket.tokensIn > 0 ||
+    bucket.tokensOut > 0 ||
+    bucket.subagentTokens > 0 ||
+    bucket.secsSincePriorTurn != null
+  )
+}
+
+/**
+ * Describe the gap a call-less bucket sits in. The tool is the last one the
+ * parent called at or after the previous call bucket, so it names the call
+ * that ran during the gap. The length comes from the next call bucket, which
+ * records the seconds since the call before it. Null for a bucket with a call.
+ */
+function betweenCalls(
+  buckets: readonly SessionBucket[],
+  index: number,
+): ContextTokenPoint["betweenCalls"] {
+  const current = buckets[index]!
+  if (hasCall(current)) return null
+  let tool: string | null = null
+  for (let i = index; i >= 0; i--) {
+    const bucket = buckets[i]!
+    tool ??= bucket.lastTool
+    if (hasCall(bucket)) break
+  }
+  let secs: number | null = null
+  let userPrompt = current.userPrompts > 0
+  for (let i = index + 1; i < buckets.length; i++) {
+    const bucket = buckets[i]!
+    userPrompt ||= bucket.userPrompts > 0
+    if (hasCall(bucket)) {
+      secs = bucket.secsSincePriorTurn
+      break
+    }
+  }
+  return { secs, tool, userPrompt }
+}
+
+/** The mode the session starts in, as the detail header reports it. */
+export interface SessionModeBaseline {
+  model: string | null
+  thinkingMode: string | null
+  speed: string | null
+  hasThinking: boolean
+}
+
+/**
+ * The first observed model, effort, and speed, and whether the first bucket
+ * with a model signal carries a thinking block. The tooltip hides a mode row
+ * that matches this baseline, because the session header already names it.
+ */
+export function sessionModeBaseline(points: readonly ContextTokenPoint[]): SessionModeBaseline {
+  const first = points.find((point) => point.model != null)
+  return {
+    model: first?.model ?? null,
+    thinkingMode: points.find((point) => point.thinkingMode != null)?.thinkingMode ?? null,
+    speed: points.find((point) => point.speed != null)?.speed ?? null,
+    hasThinking: first?.hasThinking ?? false,
+  }
 }
 
 /**

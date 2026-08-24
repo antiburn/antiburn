@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { BarChartHorizontalBig, Loader2 } from "lucide-react"
-import { useId } from "react"
+import { useId, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 import type {
@@ -29,6 +29,17 @@ import { SegmentFigure } from "../ui/SegmentFigure"
 import { providerMark } from "./ProviderUsagePrimitives"
 import { UsageRing } from "./UsageRing"
 
+/**
+ * The diameter of a provider's ring on the closed bar, in logical pixels.
+ *
+ * Larger than the 22 it was inside a pill. The pill and the percentage beside
+ * it are gone, so the arc is the whole reading, and an arc has to be big
+ * enough to tell a low share from an empty one. It stops short of a size that
+ * competes with the session rows under it. Local geometry for this one
+ * visualization, not a shared token.
+ */
+const RING_SIZE = 26
+
 export interface UsageLimitsBarProps {
   /** The provider's own limit figures, when a source could prove any. */
   live?: LiveUsageSummaryPayload
@@ -42,9 +53,14 @@ export interface UsageLimitsBarProps {
 }
 
 /**
- * The popover's usage-limits bar: one pill per provider carrying the worst
- * live window as a mini radial and a percentage, and a chart-icon disclosure
- * that drops per-provider segmented meters below the row.
+ * The popover's usage-limits bar: one ring per provider carrying the worst
+ * live window, and a chart-icon disclosure that replaces the row with
+ * per-provider segmented meters.
+ *
+ * The two states do not stack. A closed bar is the ring row. An open one is
+ * the meters alone, with the disclosure moved onto the first provider's name:
+ * the meters restate every ring above them, and the popover needs the row's
+ * height for the activity list more than it needs the same reading twice.
  *
  * Nothing here is the local spend estimate. This bar reports only what a
  * provider itself says about the reader's standing against its own allowance.
@@ -62,8 +78,6 @@ export function UsageLimitsBar({
   refreshing,
   onViewAll,
 }: UsageLimitsBarProps) {
-  // The same predicate the chips use, so every limits surface agrees on which
-  // providers are showing anything.
   const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
   const unavailable = liveUnavailableProviders(live)
   const regionId = useId()
@@ -73,45 +87,35 @@ export function UsageLimitsBar({
 
   if (limited.length === 0 && unavailable.length === 0) return null
 
+  // The provider whose name line carries the disclosure while the meters are
+  // open — the topmost group, whichever list it came from.
+  const firstGroup = limited[0]?.provider ?? unavailable[0]?.provider
+
+  const disclosure = (compact: boolean) => (
+    <LimitsDisclosure
+      expanded={expanded}
+      onToggle={onToggleExpanded}
+      regionId={regionId}
+      refreshing={refreshing}
+      compact={compact}
+    />
+  )
+
   return (
     <div data-testid="usage-limits-bar" className="relative shrink-0 border-b border-separator">
-      <div className="flex min-w-0 items-center gap-2 px-3 py-3">
-        <div className="flex min-w-0 flex-1 items-center gap-3.5">
-          {limited.map((provider) => (
-            <ProviderRadial key={provider.provider} provider={provider} onOpen={onViewAll} />
-          ))}
-          {unavailable.map((entry) => (
-            <UnavailableRadial key={entry.provider} entry={entry} />
-          ))}
+      {!expanded && (
+        <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {limited.map((provider) => (
+              <ProviderRadial key={provider.provider} provider={provider} onOpen={onViewAll} />
+            ))}
+            {unavailable.map((entry) => (
+              <UnavailableRadial key={entry.provider} entry={entry} />
+            ))}
+          </div>
+          {disclosure(false)}
         </div>
-
-        {refreshing && (
-          <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
-            <Loader2 size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
-            <span className="sr-only">Refreshing usage limits</span>
-          </span>
-        )}
-
-        {/* A chart icon with a pressed state rather than a rotating chevron:
-            the control shows what it reveals — the per-window meters — and
-            its fill shows whether they are open. */}
-        <button
-          type="button"
-          onClick={onToggleExpanded}
-          aria-expanded={expanded}
-          aria-pressed={expanded}
-          aria-controls={expanded ? regionId : undefined}
-          aria-label={expanded ? "Collapse usage limits" : "Expand usage limits"}
-          // The same height as the provider pills on the row. The open state
-          // is the orange glyph alone, with no filled pill behind it.
-          className={cn(
-            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]",
-            expanded ? "text-brand" : "text-label-tertiary",
-          )}
-        >
-          <BarChartHorizontalBig size={15} strokeWidth={2} aria-hidden="true" />
-        </button>
-      </div>
+      )}
 
       {expanded && (
         <div
@@ -122,17 +126,85 @@ export function UsageLimitsBar({
           // gutters, and clear space between providers and between their
           // meters. The gutter splits between this region and each group, so
           // a group's hover highlight has room without moving the text.
-          className="space-y-1 px-2 pb-2"
+          //
+          // The top padding also holds the disclosure still. The button moves
+          // from this bar's own row onto the first provider's name line, and
+          // the two must sit at the same height, or the control jumps under
+          // the pointer that just clicked it.
+          className="space-y-1 px-2 pt-3 pb-2"
         >
           {limited.map((provider) => (
-            <ProviderGroup key={provider.provider} provider={provider} now={at} />
+            <ProviderGroup
+              key={provider.provider}
+              provider={provider}
+              now={at}
+              action={provider.provider === firstGroup ? disclosure(true) : undefined}
+            />
           ))}
           {unavailable.map((entry) => (
-            <UnavailableGroup key={entry.provider} entry={entry} />
+            <UnavailableGroup
+              key={entry.provider}
+              entry={entry}
+              action={entry.provider === firstGroup ? disclosure(true) : undefined}
+            />
           ))}
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * The chart-icon disclosure, and the refresh spinner that sits beside it.
+ *
+ * The same size, weight, and grey as the settings gear in the popover footer
+ * (`PopoverView.tsx`), and the same in both states. The control marks itself
+ * pressed for assistive technology, but the meters under it are the sighted
+ * answer to "is it open", and an orange glyph competed with the orange arcs
+ * and segments it sits among.
+ *
+ * `compact` is the open placement: the button shares a line with a provider's
+ * name, so it pulls its own padding back out of the line box and leaves the
+ * line the height the name alone would give it.
+ */
+function LimitsDisclosure({
+  expanded,
+  onToggle,
+  regionId,
+  refreshing,
+  compact,
+}: {
+  expanded: boolean
+  onToggle: () => void
+  regionId: string
+  refreshing: boolean
+  compact: boolean
+}) {
+  return (
+    <>
+      {refreshing && (
+        <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
+          <Loader2 size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
+          <span className="sr-only">Refreshing usage limits</span>
+        </span>
+      )}
+      {/* A chart icon rather than a rotating chevron: the control shows what
+          it reveals — the per-window meters. */}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-pressed={expanded}
+        aria-controls={expanded ? regionId : undefined}
+        aria-label={expanded ? "Collapse usage limits" : "Expand usage limits"}
+        className={cn(
+          "flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-hover",
+          compact && "-my-1.5",
+        )}
+      >
+        <BarChartHorizontalBig size={14} strokeWidth={1.75} aria-hidden="true" />
+      </button>
+    </>
   )
 }
 
@@ -142,7 +214,16 @@ export function UsageLimitsBar({
  * name back, so that two providers with the same window label stay tellable
  * apart.
  */
-function ProviderGroup({ provider, now }: { provider: LiveProviderUsagePayload; now: number }) {
+function ProviderGroup({
+  provider,
+  now,
+  action,
+}: {
+  provider: LiveProviderUsagePayload
+  now: number
+  /** The disclosure, on the topmost group only. */
+  action?: ReactNode
+}) {
   return (
     <div
       role="group"
@@ -151,9 +232,12 @@ function ProviderGroup({ provider, now }: { provider: LiveProviderUsagePayload; 
     >
       {/* The same type size and color as the window labels and figures
           below; the uppercase alone marks the grouping. */}
-      <h3 className="pb-1.5 type-footnote font-medium tracking-wide uppercase text-label">
-        {provider.displayName}
-      </h3>
+      <div className="flex items-center justify-between gap-2 pb-1.5">
+        <h3 className="type-footnote font-medium tracking-wide uppercase text-label">
+          {provider.displayName}
+        </h3>
+        {action}
+      </div>
       <div className="space-y-2.5">
         {liveWindows(provider).map((window) => (
           <WindowMeterRow
@@ -169,10 +253,14 @@ function ProviderGroup({ provider, now }: { provider: LiveProviderUsagePayload; 
 }
 
 /**
- * One provider's mini radial and worst-window percentage, dressed as a pill
- * button so that it reads as interactive. A click opens the full Usage view —
- * the review removed the separate "Show All…" text button, so the radials
- * themselves are the entry point.
+ * One provider's worst-window reading, as a ring and nothing else. A click
+ * opens the full Usage view — the review removed the separate "Show All…"
+ * text button, so the radials themselves are the entry point.
+ *
+ * The pill and the percentage beside it are both gone. The figure they stated
+ * is restated by every meter one click away, and the row's job here is a
+ * glance, not a readout. The words survive on hover and for assistive
+ * technology, so nothing that was said is now unsayable.
  */
 function ProviderRadial({
   provider,
@@ -182,11 +270,13 @@ function ProviderRadial({
   onOpen?: (() => void) | undefined
 }) {
   const percent = maxLiveUsedPercent(provider)
+  const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="flex shrink-0 items-center gap-1.5 rounded-full border border-separator px-2.5 py-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
+      title={`${provider.displayName} — ${figure}`}
+      className="shrink-0 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
       aria-label={`${provider.displayName}${
         percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
       }`}
@@ -195,12 +285,9 @@ function ProviderRadial({
         percent={percent}
         mark={providerMark(provider.provider)}
         glyph={providerInitial(provider.displayName)}
-        size={22}
-        className="shrink-0 text-label-secondary"
+        size={RING_SIZE}
+        className="block text-label-secondary"
       />
-      <span aria-hidden="true" className="type-footnote leading-none text-label">
-        <SegmentFigure>{percent != null ? `${Math.round(percent)}%` : "—"}</SegmentFigure>
-      </span>
     </button>
   )
 }
@@ -209,27 +296,30 @@ function ProviderRadial({
  * One provider's seat on the bar while its live reading is unavailable — a
  * failed source with nothing cached to fall back on.
  *
- * The same pill silhouette as `ProviderRadial`, so the provider visibly keeps
- * its place, with the indeterminate dashed ring and the failure in two words.
- * It is not a button: a click would open a surface with nothing on it.
+ * The same silhouette as `ProviderRadial`, so the provider visibly keeps its
+ * place, drawn with the indeterminate dashed ring. It is not a button: a
+ * click would open a surface with nothing on it.
+ *
+ * The failure is named on hover and to assistive technology, and in full in
+ * the open meters. A dashed ring on its own says "no reading", which is the
+ * part a glance needs.
  */
 function UnavailableRadial({ entry }: { entry: UnavailableLiveProvider }) {
+  const reason = liveUnavailableReason(entry.category)
   return (
     <div
       data-testid="usage-limits-unavailable"
-      className="flex shrink-0 items-center gap-1.5 rounded-full border border-separator px-2.5 py-1"
-      aria-label={`${entry.displayName}, usage unavailable (${liveUnavailableReason(entry.category)})`}
+      className="shrink-0 p-1"
+      title={`${entry.displayName} — ${reason}`}
+      aria-label={`${entry.displayName}, usage unavailable (${reason})`}
     >
       <UsageRing
         percent={null}
         mark={providerMark(entry.provider)}
         glyph={providerInitial(entry.displayName)}
-        size={22}
-        className="shrink-0 text-label-tertiary"
+        size={RING_SIZE}
+        className="block text-label-tertiary"
       />
-      <span aria-hidden="true" className="type-footnote leading-none text-label-tertiary">
-        {liveUnavailableReason(entry.category)}
-      </span>
     </div>
   )
 }
@@ -239,12 +329,22 @@ function UnavailableRadial({ entry }: { entry: UnavailableLiveProvider }) {
  * same eyebrow as `ProviderGroup`, then the failure and what it means in
  * place of the meters.
  */
-function UnavailableGroup({ entry }: { entry: UnavailableLiveProvider }) {
+function UnavailableGroup({
+  entry,
+  action,
+}: {
+  entry: UnavailableLiveProvider
+  /** The disclosure, when no provider above this one can carry it. */
+  action?: ReactNode
+}) {
   return (
     <div role="group" aria-label={entry.displayName} className="rounded-md px-2 py-2">
-      <h3 className="pb-1.5 type-footnote font-medium tracking-wide uppercase text-label">
-        {entry.displayName}
-      </h3>
+      <div className="flex items-center justify-between gap-2 pb-1.5">
+        <h3 className="type-footnote font-medium tracking-wide uppercase text-label">
+          {entry.displayName}
+        </h3>
+        {action}
+      </div>
       <p className="type-footnote text-label-secondary">
         Usage unavailable — {liveUnavailableReason(entry.category)}.
       </p>

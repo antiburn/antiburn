@@ -3,7 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const workflow = readFileSync(
@@ -60,6 +63,65 @@ function runBody(step) {
     .replace(/^ {10}/gm, "")
     .trimEnd();
 }
+
+function git(cwd, ...args) {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function commit(cwd, message, signedOff = true) {
+  const args = ["commit", "--allow-empty", "-m", message];
+  if (signedOff) {
+    args.push("-m", "Signed-off-by: Test User <test@example.com>");
+  }
+  git(cwd, ...args);
+}
+
+test("the DCO gate skips unsigned merges and rejects unsigned commits", (t) => {
+  const job = jobBlock("dco");
+  const steps = stepsIn(job);
+  const script = runBody(steps[1]);
+  assert.match(
+    script,
+    /git rev-list --no-merges "\$BASE_SHA"\.\."\$HEAD_SHA"/,
+  );
+
+  const repo = mkdtempSync(join(tmpdir(), "antiburn-dco-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  git(repo, "init", "--initial-branch=main");
+  git(repo, "config", "user.name", "Test User");
+  git(repo, "config", "user.email", "test@example.com");
+
+  commit(repo, "Base commit");
+  const baseSha = git(repo, "rev-parse", "HEAD");
+  git(repo, "branch", "feature");
+  commit(repo, "Main commit");
+  git(repo, "checkout", "feature");
+  commit(repo, "Feature commit");
+  git(repo, "checkout", "main");
+  git(repo, "merge", "--no-ff", "feature", "-m", "Unsigned merge");
+  const mergeSha = git(repo, "rev-parse", "HEAD");
+
+  const mergeResult = spawnSync("bash", ["-c", script], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, BASE_SHA: baseSha, HEAD_SHA: mergeSha },
+  });
+  assert.equal(mergeResult.status, 0, mergeResult.stderr || mergeResult.stdout);
+  assert.doesNotMatch(mergeResult.stdout, new RegExp(mergeSha));
+
+  commit(repo, "Unsigned authored commit", false);
+  const unsignedSha = git(repo, "rev-parse", "HEAD");
+  const commitResult = spawnSync("bash", ["-c", script], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, BASE_SHA: mergeSha, HEAD_SHA: unsignedSha },
+  });
+  assert.equal(commitResult.status, 1);
+  assert.equal(
+    commitResult.stdout.trim(),
+    `::error::commit ${unsignedSha} is missing a Signed-off-by trailer (git commit -s)`,
+  );
+});
 
 test("the cross-platform release cache target is shell-neutral", () => {
   const step = namedStep(

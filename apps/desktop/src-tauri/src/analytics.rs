@@ -200,7 +200,7 @@ fn sum_billable_tokens(breakdown: &HashMap<String, ModelTokens>) -> BillableToke
 pub const MISSING_FINGERPRINT: &str = "-";
 
 /// This version invalidates cached values when the analysis cache contract changes.
-const ANALYSIS_FINGERPRINT_VERSION: u8 = 1;
+const ANALYSIS_FINGERPRINT_VERSION: u8 = 2;
 
 /// `mtime:size` of a transcript file, or [`MISSING_FINGERPRINT`].
 pub fn fingerprint_of(source: &SessionSource) -> String {
@@ -581,9 +581,8 @@ pub fn analytics_supported(agent: AgentKind) -> bool {
     supports_analytics(agent)
 }
 
-/// How many leading transcript lines are searched for a fork observation.
-/// Vendors write it into the synthetic metadata header, which is the first
-/// record; a handful of lines is generous and keeps the read bounded.
+/// How many leading transcript lines are searched for fork evidence.
+/// The evidence is in a metadata header near the start of the transcript.
 const FORK_OBSERVATION_LINES: usize = 5;
 
 /// How deep the search descends into a header record. The observation sits at
@@ -601,20 +600,34 @@ pub async fn fork_parent(source: &SessionSource) -> Option<String> {
         SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok()?,
         SessionSource::ProviderDb { .. } => session_source_content(source).await?,
     };
+    fork_parent_from_content(&content)
+}
+
+/// Read a declared fork parent from a bounded transcript preview.
+pub fn fork_parent_from_content(content: &str) -> Option<String> {
     content
         .lines()
         .take(FORK_OBSERVATION_LINES)
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find_map(|value| find_fork_observation(&value, FORK_OBSERVATION_DEPTH))
+        .find_map(|value| find_fork_parent(&value, FORK_OBSERVATION_DEPTH))
 }
 
-/// Recursively look for the engine's fork-observation key and pull the parent
-/// session id out of it.
-fn find_fork_observation(value: &serde_json::Value, depth: usize) -> Option<String> {
+/// Read a fork parent from vendor metadata or a normalized observation.
+fn find_fork_parent(value: &serde_json::Value, depth: usize) -> Option<String> {
     if depth == 0 {
         return None;
     }
     let object = value.as_object()?;
+    if object.get("type").and_then(serde_json::Value::as_str) == Some("session_meta")
+        && let Some(parent_id) = object
+            .get("payload")
+            .and_then(|payload| payload.get("forked_from_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|parent_id| !parent_id.is_empty())
+    {
+        return Some(parent_id.to_string());
+    }
     if let Some(observation) = object.get(FORK_OBSERVATION_KEY)
         && let Ok(observation) = serde_json::from_value::<ForkObservation>(observation.clone())
         && !observation.parent_agent_session_id.is_empty()
@@ -623,7 +636,7 @@ fn find_fork_observation(value: &serde_json::Value, depth: usize) -> Option<Stri
     }
     object
         .values()
-        .find_map(|nested| find_fork_observation(nested, depth - 1))
+        .find_map(|nested| find_fork_parent(nested, depth - 1))
 }
 
 /// Every model that contributed billable tokens, in a stable order.
@@ -1028,18 +1041,50 @@ mod tests {
             }
         });
         assert_eq!(
-            find_fork_observation(&header, FORK_OBSERVATION_DEPTH).as_deref(),
+            find_fork_parent(&header, FORK_OBSERVATION_DEPTH).as_deref(),
             Some("parent-42")
         );
     }
 
     #[test]
+    fn a_codex_session_header_declares_its_fork_parent() {
+        let header = serde_json::json!({
+            "timestamp": "2026-08-22T04:05:01.756Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "child-42",
+                "forked_from_id": "parent-42",
+                "source": "cli",
+                "thread_source": "user",
+            }
+        });
+        assert_eq!(
+            find_fork_parent(&header, FORK_OBSERVATION_DEPTH).as_deref(),
+            Some("parent-42")
+        );
+    }
+
+    #[test]
+    fn a_codex_fork_parent_requires_a_session_header_and_a_nonempty_id() {
+        let message = serde_json::json!({
+            "type": "response_item",
+            "payload": { "forked_from_id": "not-a-parent" }
+        });
+        let empty = serde_json::json!({
+            "type": "session_meta",
+            "payload": { "forked_from_id": "  " }
+        });
+        assert_eq!(find_fork_parent(&message, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&empty, FORK_OBSERVATION_DEPTH), None);
+    }
+
+    #[test]
     fn a_header_without_an_observation_yields_no_parent() {
         let header = serde_json::json!({ "type": "session_meta", "metadata": { "cwd": "/x" } });
-        assert_eq!(find_fork_observation(&header, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&header, FORK_OBSERVATION_DEPTH), None);
         // A malformed observation is ignored rather than half-read.
         let broken = serde_json::json!({ FORK_OBSERVATION_KEY: { "parent_agent": "cursor" } });
-        assert_eq!(find_fork_observation(&broken, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&broken, FORK_OBSERVATION_DEPTH), None);
     }
 
     #[test]
@@ -1047,7 +1092,7 @@ mod tests {
         let deep = serde_json::json!({ "a": { "b": { "c": { "d": {
             FORK_OBSERVATION_KEY: { "parent_agent_session_id": "too-deep" }
         }}}}});
-        assert_eq!(find_fork_observation(&deep, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&deep, FORK_OBSERVATION_DEPTH), None);
     }
 
     fn skill(description: Option<&str>) -> SkillUse {

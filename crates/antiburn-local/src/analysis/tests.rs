@@ -839,6 +839,42 @@ const CLAUDE_CACHE_REHYDRATION_WITH_CACHED_PREFIX_FIXTURE: &str = concat!(
 );
 
 #[test]
+fn bucket_keeps_the_gap_that_enters_it_and_counts_user_prompts() {
+    let assistant = |ts: &str| {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","message":{{"role":"assistant","usage":{{"input_tokens":100,"output_tokens":10}},"content":[{{"type":"text","text":"x"}}]}}}}"#
+        )
+    };
+    let mut lines = vec![
+        assistant("2024-06-01T10:00:00Z"),
+        r#"{"type":"user","timestamp":"2024-06-01T10:10:02Z","message":{"role":"user","content":"go"}}"#.to_string(),
+        assistant("2024-06-01T10:10:05Z"),
+        assistant("2024-06-01T10:10:12Z"),
+    ];
+    // Pad the session so a bucket spans about 20 seconds and the two follow-up
+    // turns share one bucket.
+    for minute in (15..=70).step_by(5) {
+        lines.push(assistant(&format!("2024-06-01T10:{minute}:00Z")));
+    }
+    let session = normalize_source(&jsonl_input("claude", &lines.join("\n"))).unwrap();
+    let m = analyze_session(&session);
+
+    let bucket = m
+        .buckets
+        .iter()
+        .find(|bucket| bucket.user_prompts > 0)
+        .expect("the bucket with the prompt");
+    assert_eq!(bucket.user_prompts, 1);
+    assert!(
+        bucket.tokens_in >= 200,
+        "both follow-up turns share the bucket"
+    );
+    // The first turn in the bucket sets the gap: 10m 5s since the prior turn,
+    // not the 7s between the two follow-up turns.
+    assert_eq!(bucket.secs_since_prior_turn, Some(605));
+}
+
+#[test]
 fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
     let session = normalize_source(&jsonl_input(
         "claude",
@@ -849,8 +885,22 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
 
     let count = m.buckets.iter().filter(|b| b.is_cache_rehydration).count();
     assert_eq!(count, 1, "a 76% rewrite after a long gap is a rehydration");
+    let bucket = m
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_cache_rehydration)
+        .expect("the rehydration bucket");
+    assert_eq!(bucket.secs_since_prior_turn, Some(155 * 60));
     assert_eq!(m.cache_rehydration_count, 1);
     assert_eq!(m.compaction_count, 0);
+
+    let summary = crate::analysis::aggregate_metrics(vec![m]);
+    let summary_bucket = summary
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_cache_rehydration)
+        .expect("the summary rehydration bucket");
+    assert_eq!(summary_bucket.secs_since_prior_turn, Some(155 * 60));
 }
 
 #[test]
@@ -932,6 +982,7 @@ const CODEX_CACHE_FIXTURE: &str = concat!(
 #[test]
 fn codex_cache_read_tokens_are_carried_into_buckets() {
     let session = normalize_source(&jsonl_input("codex", CODEX_CACHE_FIXTURE)).unwrap();
+    assert!(!session.cache_write_tokens_available);
     let m = analyze_session(&session);
 
     assert_eq!(
@@ -948,6 +999,129 @@ fn codex_cache_read_tokens_are_carried_into_buckets() {
             .sum::<u64>(),
         0
     );
+}
+
+/// Codex writes the last `token_count` row again on resume. The third row here
+/// repeats the second exactly. The fourth row repeats `last_token_usage` but
+/// moves `total_token_usage`, so it is a real turn and must stay.
+const CODEX_RESUME_GHOST_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T07:56:39Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":61000,"cached_input_tokens":55000,"output_tokens":200},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":61000,"cached_input_tokens":55000,"output_tokens":200},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":92000,"cached_input_tokens":85000,"output_tokens":300},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_resume_does_not_repeat_the_last_token_count_as_a_turn() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_RESUME_GHOST_FIXTURE)).unwrap();
+    let turns: Vec<i64> = session
+        .events
+        .iter()
+        .filter(|event| event.usage.context_tokens() > 0)
+        .filter_map(|event| event.ts_ms)
+        .collect();
+
+    assert_eq!(
+        turns.len(),
+        3,
+        "the resume copy is dropped, the real repeat stays"
+    );
+    assert!(
+        !turns.contains(&1_787_397_861_000),
+        "the 11:24:21Z ghost row is absent"
+    );
+}
+
+/// These values come from a Codex session after a long idle gap. The miss
+/// replays the old context, and the next turn confirms that the cache returns.
+const CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-22T07:55:39.907Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"cache_write_input_tokens":0,"output_tokens":194},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:21.967Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":577},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:29.777Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"cache_write_input_tokens":0,"output_tokens":271},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_rehydration_is_inferred_from_replay_and_recovery() {
+    let session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .filter(|bucket| bucket.is_cache_rehydration)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn known_zero_cache_writes_do_not_use_rehydration_inference() {
+    let mut session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE,
+    ))
+    .unwrap();
+    session.cache_write_tokens_available = true;
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_large_new_input_is_not_inferred_as_cache_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":5000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":102000,"cached_input_tokens":100000,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_cache_miss_without_recovery_is_not_a_confirmed_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_first_turn_after_compaction_is_not_an_inferred_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:20Z","type":"compacted","payload":{}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
 }
 
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +
@@ -1599,10 +1773,9 @@ fn mixed_summary_scales_to_the_largest_window() {
 /* -------------------------------------------------------------------------
  * Sub-agent merge — `merge_subagent_events` + `analyze_session` together.
  * Ordering itself is covered by the unit tests in `analysis::merge`; these
- * exercise the product rule end to end: a sub-agent's tokens are an
- * implementation detail that sums into the parent, while context occupancy
- * and idle-gap timing stay governed by the parent's own turns (plus every
- * stream, for the idle rule).
+ * exercise the product rule end to end. Session totals include sub-agent
+ * tokens, while chart buckets keep a separate sub-agent series. Parent turns
+ * govern context occupancy. Every stream contributes to idle-gap timing.
  * ---------------------------------------------------------------------- */
 
 /// Two parent turns ten minutes apart, with one sub-agent turn at the
@@ -1615,7 +1788,7 @@ const MERGE_PARENT_FIXTURE: &str = concat!(
 const MERGE_SUBAGENT_FIXTURE: &str = r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":50},"content":[{"type":"text","text":"delegated"}]}}"#;
 
 #[test]
-fn subagent_tokens_sum_into_parent_buckets_time_aligned() {
+fn subagent_tokens_use_their_own_bucket_series_time_aligned() {
     let parent = normalize_source(&jsonl_input("claude", MERGE_PARENT_FIXTURE)).unwrap();
     let subagent = normalize_source(&jsonl_input("claude", MERGE_SUBAGENT_FIXTURE)).unwrap();
     let merged = merge_subagent_events(parent, vec![subagent]);
@@ -1642,11 +1815,17 @@ fn subagent_tokens_sum_into_parent_buckets_time_aligned() {
     // sub-agent turn lands exactly halfway through the progress grid.
     assert_eq!(m.buckets[0].tokens_in, 1000, "parent's first turn");
     assert_eq!(
-        m.buckets[90].tokens_in, 500,
+        m.buckets[90].subagent_tokens,
+        500 + 50,
         "sub-agent's turn, time-aligned to the midpoint"
     );
     assert_eq!(m.buckets[179].tokens_in, 2000, "parent's last turn");
-    assert_eq!(m.buckets.iter().map(|b| b.tokens_in).sum::<u64>(), 3500);
+    assert_eq!(m.buckets.iter().map(|b| b.tokens_in).sum::<u64>(), 3000);
+    assert_eq!(m.buckets.iter().map(|b| b.tokens_out).sum::<u64>(), 300);
+    assert_eq!(
+        m.buckets.iter().map(|b| b.subagent_tokens).sum::<u64>(),
+        550
+    );
 }
 
 #[test]
@@ -1678,9 +1857,20 @@ fn peak_context_and_context_window_stay_parent_only_after_merge() {
     // No bucket's `context_tokens` (the parent-only occupancy reading) ever
     // reflects the sub-agent's 900k-token turn.
     assert!(m.buckets.iter().all(|b| b.context_tokens <= 1500));
-    // The sub-agent's own huge input still lands in `tokens_in`, though —
-    // that side of the merge is inclusive.
+    // The session total stays inclusive. Chart buckets record child tokens in
+    // a separate series.
     assert_eq!(m.tokens_in, 1000 + 900_000 + 1500);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.subagent_tokens)
+            .sum::<u64>(),
+        900_000 + 50
+    );
+    assert_eq!(
+        m.buckets.iter().map(|bucket| bucket.tokens_in).sum::<u64>(),
+        1000 + 1500
+    );
 }
 
 #[test]
@@ -1746,6 +1936,11 @@ fn rehydration_detection_ignores_subagent_turns() {
         rehydrated.len(),
         1,
         "the parent's own rehydration must still be detected, got {rehydrated:?}"
+    );
+    assert_eq!(
+        m.buckets[rehydrated[0]].secs_since_prior_turn,
+        Some(5 * 60),
+        "the sub-agent turn must not reset the parent turn gap"
     );
 }
 
@@ -1835,9 +2030,26 @@ fn buckets_with_no_mode_signal_stay_none() {
 }
 
 #[test]
-fn aggregate_metrics_leaves_mode_signals_at_default() {
+fn single_session_summary_keeps_mode_signals() {
     let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"x"}]},"effort":"high"}"#;
     let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+
+    // The session detail view reads the summary buckets, so a one-session
+    // summary must carry the session's own mode signals through.
+    let first = &summary.buckets[0];
+    assert_eq!(first.model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(first.thinking_mode.as_deref(), Some("high"));
+    assert_eq!(first.speed.as_deref(), Some("fast"));
+    assert!(first.has_thinking);
+}
+
+#[test]
+fn aggregate_metrics_leaves_mode_signals_at_default() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"x"}]},"effort":"high"}"#;
+    let summary = analyze_sources(vec![
+        jsonl_input("claude", fixture),
+        jsonl_input("claude", fixture),
+    ]);
 
     // A multi-session summary cannot carry one session's mode signals, since
     // each contributing session can run a different agent/model.

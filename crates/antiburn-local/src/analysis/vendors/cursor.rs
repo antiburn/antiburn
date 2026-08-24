@@ -28,6 +28,7 @@ impl VendorAdapter for CursorAdapter {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
+            cache_write_tokens_available: true,
             context_window: None,
             model,
         })

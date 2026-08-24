@@ -8,10 +8,10 @@
 //! A Claude Code sub-agent (a `Task` tool run) writes its own transcript, but
 //! the product treats it as an implementation detail of the parent session:
 //! 1M tokens in one turn and 1M tokens spread over seven sub-agents read the
-//! same. [`merge_subagent_events`] concatenates every stream's events into
-//! one session so [`crate::analysis::analyze_session`] can walk it like a
-//! single transcript, summing tokens across every stream while keeping
-//! context occupancy, compaction, and cache-rehydration parent-only.
+//! same. [`merge_subagent_events`] combines every stream into one session.
+//! [`crate::analysis::analyze_session`] sums all session tokens but keeps a
+//! separate sub-agent bucket series. Context occupancy, compaction, and cache
+//! rehydration stay parent-only.
 
 use crate::analysis::model::{EventSource, NormalizedEvent, NormalizedSession};
 
@@ -47,6 +47,7 @@ pub fn merge_subagent_events(
         agent,
         session_id,
         events: parent_events,
+        cache_write_tokens_available,
         context_window,
         model,
     } = parent;
@@ -63,6 +64,7 @@ pub fn merge_subagent_events(
         agent,
         session_id,
         events: combined.into_iter().map(|(_, event)| event).collect(),
+        cache_write_tokens_available,
         context_window,
         model,
     }
@@ -97,6 +99,7 @@ mod tests {
             agent: "claude".into(),
             session_id: id.into(),
             events,
+            cache_write_tokens_available: true,
             context_window: None,
             model: None,
         }

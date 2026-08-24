@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-06-01T10:00:06Z","message":{"role":"user","content":"Inspect the fictional orbit module."}}
+{"type":"assistant","timestamp":"2026-06-01T10:00:09Z","message":{"id":"msg-child-1","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":35,"output_tokens":17},"content":[{"type":"tool_use","id":"tool-child-read-1","name":"Read","input":{"file_path":"/home/avery/projects/demo-app/src/orbit.rs"}}]}}
+{"type":"assistant","timestamp":"2026-06-01T10:00:12Z","message":{"id":"msg-child-2","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":20,"output_tokens":10},"content":[{"type":"text","text":"The fictional child report is complete."}]}}

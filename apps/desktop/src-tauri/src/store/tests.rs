@@ -25,6 +25,7 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         activity_source: "mtime".into(),
         subagent_count: 0,
         fork_parent_session_id: None,
+        source_fingerprint: None,
     }
 }
 
@@ -38,7 +39,7 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
 }
 
 #[test]
-fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
+fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
     let store = store();
     let connection = store.lock();
     let mut statement = connection
@@ -60,6 +61,10 @@ fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
             "inclusive_models_json",
             "source_fingerprint",
             "pricing_generation",
+            "analyzed_generation",
+            "parser_revision",
+            "analyzer_revision",
+            "metrics_schema_revision",
         ]
     );
 }
@@ -287,6 +292,41 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert_eq!(store.settings().unwrap(), saved);
 }
 
+#[test]
+fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
+    let store = store();
+    let before = store
+        .save_settings(&AppSettings {
+            theme: ThemePreference::Dark,
+            activity_window_days: 14,
+            onboarding_completed: true,
+            launch_at_login: false,
+            usage_analytics_enabled: true,
+            ..AppSettings::default()
+        })
+        .unwrap();
+    store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
+    store.add_scan_root("/home/avery/work").unwrap();
+    store
+        .queue_usage_analytics_event("app_launched", "{}")
+        .unwrap();
+
+    let (previous, restarted) = store.restart_onboarding().unwrap();
+
+    let mut expected = before.clone();
+    expected.onboarding_completed = false;
+    assert_eq!(previous, before);
+    assert_eq!(restarted, expected);
+    assert_eq!(store.settings().unwrap(), expected);
+    assert_eq!(store.session_count().unwrap(), 1);
+    assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
+    assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+
+    let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
+    assert_eq!(previous_again, expected);
+    assert_eq!(restarted_again, expected);
+}
+
 /// Pin the current session shape so migrations remain deliberate. This is not
 /// a restriction on what a future local visibility feature may store.
 #[test]
@@ -321,6 +361,9 @@ fn the_session_table_shape_is_stable() {
             "last_seen_at",
             "activity_source",
             "activity_cursor",
+            "source_fingerprint",
+            "source_generation",
+            "started_at_epoch",
         ]
     );
 }
@@ -615,9 +658,7 @@ fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
         .unwrap();
     assert_eq!(children, vec!["child".to_string()]);
 
-    // A later scan carries no observation — it never reads transcripts deeply
-    // enough to see one — and must therefore leave the recorded lineage alone
-    // rather than reading absence as "no parent".
+    // A later scan can carry no observation. It must keep the recorded lineage.
     store.upsert_sessions(&[session("child", 2_100)]).unwrap();
     assert_eq!(
         store
@@ -930,6 +971,106 @@ fn migrating_forward_drops_a_legacy_live_usage_off_row_so_the_new_default_applie
         store.settings().unwrap().live_usage_enabled,
         "with the legacy row gone, the read path falls through to the new default"
     );
+}
+
+#[test]
+fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
+    for start in 0..super::schema::MIGRATIONS.len() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        for &sql in &super::schema::MIGRATIONS[..start] {
+            connection.execute_batch(sql).unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", start as i64)
+            .unwrap();
+
+        let store = Store::from_connection(
+            connection,
+            Path::new("/tmp/antiburn-all-migrations-test").to_path_buf(),
+        )
+        .expect("migration reaches the head");
+        assert_eq!(
+            store.schema_version().unwrap(),
+            super::schema::MIGRATIONS.len() as i64
+        );
+        let connection = store.lock();
+        let added_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session')
+                   WHERE name IN ('source_fingerprint', 'source_generation', 'started_at_epoch')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let projection_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_analysis')
+                   WHERE name IN ('analyzed_generation', 'parser_revision',
+                                  'analyzer_revision', 'metrics_schema_revision')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(added_columns, 3, "start version {start}");
+        assert_eq!(projection_columns, 4, "start version {start}");
+    }
+}
+
+#[test]
+fn the_generation_increments_only_when_the_fingerprint_changes() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "generation");
+    let mut record = session("generation", 1_000);
+    record.source_fingerprint = Some("sv1:first".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    let first = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(first.source_generation, 1);
+
+    record.source_fingerprint = Some("sv1:second".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    let second = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(second.source_generation, 2);
+    assert_eq!(second.source_fingerprint.as_deref(), Some("sv1:second"));
+
+    record.source_fingerprint = None;
+    store.upsert_sessions(&[record]).unwrap();
+    let unreadable = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(unreadable, second);
+}
+
+#[test]
+fn started_at_epoch_stays_null_through_scan_upserts() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "no-start");
+    let mut record = session("no-start", 1_000);
+    record.source_fingerprint = Some("sv1:first".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    record.source_fingerprint = Some("sv1:second".to_string());
+    store.upsert_sessions(&[record]).unwrap();
+
+    let state = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(state.started_at_epoch, None);
 }
 
 #[test]

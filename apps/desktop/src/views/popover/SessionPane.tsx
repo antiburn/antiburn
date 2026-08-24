@@ -60,6 +60,8 @@ export interface SessionPaneProps {
   payload: SessionAnalyticsPayload | null
   /** Whether `payload` belongs to a load still in flight for this subject. */
   loading: boolean
+  /** Whether a re-load is in flight while `payload` is still on screen. */
+  refreshing: boolean
   /** Whether the load for this subject failed. */
   error: boolean
   onBack: () => void
@@ -197,6 +199,7 @@ export function SessionPane({
   subject,
   payload,
   loading,
+  refreshing,
   error,
   onBack,
   onPrev,
@@ -321,6 +324,7 @@ export function SessionPane({
     <SessionDetailPresentation
       summary={payload?.summary ?? null}
       loading={loading}
+      refreshing={refreshing}
       error={error}
       session={{
         agent: subject.agent,

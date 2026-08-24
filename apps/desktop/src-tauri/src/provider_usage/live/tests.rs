@@ -226,6 +226,32 @@ fn a_fraction_shaped_utilization_is_scaled_the_same_as_an_already_stated_percent
 }
 
 #[test]
+fn an_explicit_one_percent_reading_stays_one_percent() {
+    let current = r#"{
+      "limits": [
+        {"kind": "session", "percent": 1, "resets_at": null, "scope": null},
+        {"kind": "weekly_all", "percent": 37, "resets_at": null, "scope": null}
+      ],
+      "five_hour": {"utilization": 1.0, "resets_at": null},
+      "seven_day": {"utilization": 37.0, "resets_at": null}
+    }"#;
+    let usage = anthropic::parse_usage(current).expect("parses");
+    assert_eq!(usage.windows[0].used_percent, Some(1.0));
+    assert_eq!(usage.windows[1].used_percent, Some(37.0));
+}
+
+#[test]
+fn a_legacy_one_percent_reading_stays_one_percent() {
+    let legacy = r#"{
+      "five_hour": {"utilization": 1.0, "resets_at": null},
+      "seven_day": {"utilization": 37.0, "resets_at": null}
+    }"#;
+    let usage = anthropic::parse_usage(legacy).expect("parses");
+    assert_eq!(usage.windows[0].used_percent, Some(1.0));
+    assert_eq!(usage.windows[1].used_percent, Some(37.0));
+}
+
+#[test]
 fn resets_at_is_read_whether_it_is_epoch_seconds_or_rfc_3339() {
     let mixed = r#"{"limits": [
       {"kind": "session", "percent": 10, "resets_at": 1800003600, "scope": null},
@@ -295,6 +321,7 @@ fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageS
             authoritative: true,
         }],
         supplemental: None,
+        reset_credits: None,
     }
 }
 
@@ -377,6 +404,22 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
     }
     assert!(json.contains("\"support\":\"live\""));
     assert!(json.contains("\"freshness\":\"fresh\""));
+}
+
+#[test]
+fn the_live_payload_carries_manual_reset_credits() {
+    let mut reading = snapshot(Freshness::Fresh, NOW, 81.0);
+    reading.reset_credits = Some(super::model::RateLimitResetCredits { available_count: 1 });
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed("fixture", vec![reading]))];
+
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
+    assert_eq!(
+        summary.providers[0]
+            .reset_credits
+            .as_ref()
+            .map(|credits| credits.available_count),
+        Some(1)
+    );
 }
 
 fn required_present(json: &str, field: &str) -> bool {
@@ -527,6 +570,7 @@ fn weekly_scoped_snapshot(
             authoritative: true,
         }],
         supplemental: None,
+        reset_credits: None,
     }
 }
 

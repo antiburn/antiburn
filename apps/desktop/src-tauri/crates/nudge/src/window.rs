@@ -20,6 +20,9 @@ use tauri::{
     AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
+#[cfg(target_os = "macos")]
+use tauri::window::{Effect, EffectState, EffectsBuilder};
+
 use crate::NudgePlacement;
 use crate::geometry::{self, Rect};
 
@@ -28,6 +31,14 @@ use crate::geometry::{self, Rect};
 /// size. 344pt wide matches a native macOS notification banner.
 const NUDGE_WIDTH: f64 = 344.0;
 const NUDGE_HEIGHT: f64 = 168.0;
+
+/// Corner radius of the macOS notification window, in logical pixels.
+///
+/// This is `rounded.popover` from `apps/desktop/design.md`. The material and
+/// the clipped webview surface must agree. `scripts/check-design-drift.mjs`
+/// checks this copy against the design token.
+#[cfg(target_os = "macos")]
+const NUDGE_CORNER_RADIUS: f64 = 10.0;
 
 /// Inset from the screen edges.
 const NUDGE_MARGIN: f64 = 12.0;
@@ -86,13 +97,18 @@ fn build_nudge_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWind
     {
         // Undecorated with a real window shadow, and first-click-through so a CTA
         // responds to the click that would otherwise only have activated the
-        // window. The card paints its surface and its 16pt corner itself, so
-        // this window needs no vibrancy material. The popover takes the other
-        // route and lets a material draw its corner; see `popover.rs`.
+        // window. The Popover material draws the window corner. The nudge route
+        // clips its surface to the same design token in `src/styles.css`.
+        let effects = EffectsBuilder::new()
+            .effect(Effect::Popover)
+            .state(EffectState::Active)
+            .radius(NUDGE_CORNER_RADIUS)
+            .build();
         builder = builder
             .decorations(false)
-            .shadow(true)
-            .accept_first_mouse(true);
+            .transparent(true)
+            .accept_first_mouse(true)
+            .effects(effects);
     }
 
     #[cfg(target_os = "linux")]

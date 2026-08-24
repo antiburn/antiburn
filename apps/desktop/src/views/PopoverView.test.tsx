@@ -64,9 +64,8 @@ const SETTINGS = {
   launchAtLogin: false,
   autoUpdate: true,
   discoveryPaused: false,
-  // Collapsed, so the tests below that navigate through a provider chip do
-  // not each have to click the toggle open first. The expanded state itself
-  // is exercised in `UsageLimitsSection.test.tsx`.
+  // The collapsed state lets each test open Usage with one provider-pill click.
+  // `UsageLimitsBar.test.tsx` covers the expanded state.
   overviewLimitsExpanded: false,
 }
 
@@ -153,12 +152,9 @@ const LIVE_FORECAST = {
   usedToday: null,
 }
 
-// A different provider from `PROVIDER_USAGE`'s spend figures on purpose: the
-// usage-limits section — and the chip row it collapses to — is driven by
-// this payload, not by spend, so Codex is the only chip in these tests below
-// even though Anthropic is the only provider with any local spend. That
-// asymmetry is deliberate: it is what proves the chip row survives a day
-// with zero local spend, as long as a live reading exists.
+// Use a different provider from the local spend fixture. The limits bar uses
+// live readings, so only Codex gets a pill. This verifies that a live reading
+// does not require local spend.
 const LIVE_USAGE = {
   providers: [
     {
@@ -182,6 +178,7 @@ const LIVE_USAGE = {
         },
       ],
       extraUsage: null,
+      resetCredits: null,
     },
   ],
   errors: [],
@@ -208,8 +205,13 @@ function repositoryPayload(overrides: Record<string, unknown> = {}) {
 
 function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string, args?: unknown) => {
-    if (command in overrides) return Promise.resolve(overrides[command])
+    if (command in overrides) {
+      const result = overrides[command]
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    }
     switch (command) {
+      case "app_info":
+        return Promise.resolve({ appVersion: "0.1.0", debugBuild: true })
       case "get_settings":
         return Promise.resolve(SETTINGS)
       case "list_recent_sessions":
@@ -283,6 +285,26 @@ describe("PopoverView", () => {
     expect(screen.queryByRole("heading", { name: "Session Detail" })).not.toBeInTheDocument()
   })
 
+  it("brings the list back at the offset it was scrolled to before a session opened", async () => {
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    const viewportOf = () =>
+      screen
+        .getByRole("region", { name: "Sessions" })
+        .querySelector<HTMLElement>(".ui-scroll-viewport")
+    const viewport = viewportOf()
+    expect(viewport).not.toBeNull()
+    viewport!.scrollTop = 240
+    fireEvent.scroll(viewport!)
+
+    fireEvent.click(screen.getByText("Wire the tray popover"))
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
+
+    await screen.findByText("Wire the tray popover")
+    expect(viewportOf()?.scrollTop).toBe(240)
+  })
+
   it("notes an opened session as an agent and an environment, and nothing else", async () => {
     render(<PopoverView />)
 
@@ -311,10 +333,8 @@ describe("PopoverView", () => {
   it("notes an opened usage view with a bucketable count and what it could show", async () => {
     render(<PopoverView />)
 
-    // A provider pill on the limits bar is the route to the Usage view: one
-    // click, where the chips needed a panel first. The pill is the fixture's
-    // Codex, not its Anthropic, because the bar draws from providers
-    // reporting live windows and the old footer drew from local estimates.
+    // A provider pill on the limits bar opens the Usage view. The pill is the
+    // fixture's Codex because the bar uses providers that report live windows.
     fireEvent.click(await screen.findByRole("button", { name: /codex/i }))
 
     // `live`, and it cannot currently be anything else. The bar returns null
@@ -436,7 +456,7 @@ describe("PopoverView", () => {
     })
   })
 
-  it("shows the plain title-and-gear footer, with none of the usage surface in it", async () => {
+  it("shows the app version beside the title", async () => {
     render(<PopoverView />)
     await screen.findByTestId("usage-limits-bar")
 
@@ -444,6 +464,33 @@ describe("PopoverView", () => {
     expect(footer).not.toBeNull()
     expect(footer).toHaveTextContent("antiburn")
     expect(footer?.querySelector('[data-testid="usage-limits-bar"]')).toBeNull()
+    const nameAndVersion = screen.getByRole("button", { name: "antiburn v0.1.0 debug" })
+    expect(nameAndVersion).toHaveClass("type-caption", "text-label-secondary")
+  })
+
+  it("opens the GitHub repo when the name and version are clicked", async () => {
+    render(<PopoverView />)
+    await screen.findByTestId("usage-limits-bar")
+
+    fireEvent.click(screen.getByRole("button", { name: "antiburn v0.1.0 debug" }))
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_github_repo"))
+  })
+
+  it("omits the debug label from a release build", async () => {
+    mockCommands({ app_info: { appVersion: "0.1.0", debugBuild: false } })
+    render(<PopoverView />)
+
+    expect(await screen.findByRole("button", { name: "antiburn v0.1.0" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "antiburn v0.1.0 debug" })).toBeNull()
+  })
+
+  it("omits the version when app info cannot load", async () => {
+    mockCommands({ app_info: new Error("unavailable") })
+    render(<PopoverView />)
+
+    await screen.findByTestId("usage-limits-bar")
+    expect(screen.queryByText(/^v\d/)).toBeNull()
   })
 
   it("opens the full usage view from a provider pill and comes back", async () => {
@@ -480,7 +527,7 @@ describe("PopoverView", () => {
     await screen.findByText("Wire the tray popover")
     expect(screen.queryByTestId("usage-limits-bar")).not.toBeInTheDocument()
     // The plain footer is unaffected — it never depended on usage at all.
-    expect(screen.getByRole("heading", { name: "antiburn" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "antiburn v0.1.0 debug" })).toBeInTheDocument()
   })
 
   it("persists the usage-limits toggle through set_settings, and opens the meters", async () => {
@@ -570,6 +617,44 @@ describe("PopoverView", () => {
     )
     // Not riding the scan pipeline: no scan command was ever asked for.
     expect(invoke).not.toHaveBeenCalledWith("scan_now", expect.anything())
+  })
+
+  it("re-loads the open session’s analytics on the popover-shown signal and shows a spinner meanwhile", async () => {
+    render(<PopoverView />)
+    fireEvent.click(await screen.findByText("Wire the tray popover"))
+    await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 })
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
+
+    const loadsBeforeShown = invoke.mock.calls.filter(
+      ([command]) => command === "get_session_analytics",
+    ).length
+
+    let finishLoad: (() => void) | null = null
+    const baseInvoke = invoke.getMockImplementation()!
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command !== "get_session_analytics") return baseInvoke(command, args)
+      return new Promise((resolve) => {
+        finishLoad = () => resolve(ANALYTICS)
+      })
+    })
+
+    emit("popover:shown", undefined)
+
+    await waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "get_session_analytics").length,
+      ).toBe(loadsBeforeShown + 1),
+    )
+    // The settled analysis stays on screen; only the header spinner says a
+    // newer one is on its way.
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(screen.queryByTestId("session-analytics-skeleton")).not.toBeInTheDocument()
+
+    await act(async () => {
+      finishLoad?.()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
   })
 
   it("never renders the first-run flow, whatever the flag says", async () => {
@@ -784,7 +869,7 @@ describe("PopoverView — window behaviour", () => {
   it("moves focus to the heading of the surface that takes over", async () => {
     render(<PopoverView />)
 
-    const activity = await screen.findByRole("heading", { name: "antiburn" })
+    const activity = await screen.findByRole("button", { name: "antiburn v0.1.0 debug" })
     await waitFor(() => expect(activity).toHaveFocus())
 
     fireEvent.click(await screen.findByRole("button", { name: "Codex at 40 percent" }))

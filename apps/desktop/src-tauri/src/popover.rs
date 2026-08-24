@@ -106,6 +106,12 @@ const RESIZE_DURATION: Duration = Duration::from_millis(140);
 const RESIZE_STEPS: u32 = 12;
 
 /// Gap in logical pixels between the menu-bar item and the popover edge.
+///
+/// The macOS popover touches the menu bar. Windows and Linux keep a small gap
+/// from their taskbar or panel.
+#[cfg(target_os = "macos")]
+const ANCHOR_GAP: f64 = 0.0;
+#[cfg(not(target_os = "macos"))]
 const ANCHOR_GAP: f64 = 6.0;
 
 /// Minimum logical gap between the popover and the edge of its display.
@@ -567,10 +573,20 @@ pub fn hide(app: &AppHandle) {
     if is_pinned(app) {
         return;
     }
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
-    let _ = window.hide();
+    hide_window(app);
+}
+
+/// Hides the popover when setup must own the application surface.
+///
+/// This operation keeps the pin choice. The pin applies again after setup.
+pub fn hide_for_onboarding(app: &AppHandle) {
+    hide_window(app);
+}
+
+fn hide_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.hide();
+    }
     note_hidden(app);
 }
 
@@ -745,16 +761,11 @@ pub fn is_pinned(app: &AppHandle) -> bool {
 /// menu was up, so without this there is no focus left to lose and the next
 /// click on another application would dismiss nothing.
 ///
-/// Refused outright while the first run is unfinished. Re-showing is the whole
-/// point of a pin, and this is the one period where the popover must not be
-/// shown at all — [`toggle`] sends the menu-bar click to the first-run window
-/// for the same reason, and a pin that reached around that gate would put an
-/// empty activity list on screen (the scan scheduler is gated on the same flag)
-/// while the flow it belongs behind is still open. The tray reads the pin state
-/// back after asking rather than trusting the request, so refusing here leaves
-/// its menu item correctly reading "Pin Window".
+/// Pinning is refused while the first run is unfinished. Re-showing is the
+/// point of a pin, and the popover must stay hidden during this period.
+/// Unpinning remains available so the tray action always does what it says.
 pub fn set_pinned(app: &AppHandle, pinned: bool) {
-    if crate::onboarding::is_pending(app) {
+    if pinned && crate::onboarding::is_pending(app) {
         return;
     }
     let Some(state) = app.try_state::<PopoverState>() else {
@@ -985,6 +996,11 @@ fn compute_position(
 
     if let Some(frame) = frame {
         let left = frame.left + SCREEN_MARGIN;
+        // The macOS tray rectangle can end one logical pixel above the monitor frame.
+        // Keep its anchor position so the clamp does not restore a gap.
+        #[cfg(target_os = "macos")]
+        let top = frame.top.min(y);
+        #[cfg(not(target_os = "macos"))]
         let top = frame.top + SCREEN_MARGIN;
         let right = frame.right - width - SCREEN_MARGIN;
         let bottom = frame.bottom - height - SCREEN_MARGIN;
@@ -1031,6 +1047,36 @@ mod tests {
     #[test]
     fn clamp_prefers_the_low_edge_on_undersized_displays() {
         assert_eq!(clamp(500.0, 8.0, -20.0), 8.0);
+    }
+
+    /// The macOS popover starts at the menu bar's bottom edge.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_popover_touches_the_menu_bar() {
+        let frame = MonitorFrame {
+            left: 0.0,
+            top: -497.0,
+            right: 1728.0,
+            bottom: 620.0,
+            scale: 2.0,
+        };
+        let anchor = AnchorRect {
+            x: 3000.0,
+            y: -1044.0,
+            width: 60.0,
+            height: 48.0,
+        };
+        let (_, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
+        let menu_bar_bottom = (anchor.y + anchor.height) / frame.scale;
+
+        assert!((y - menu_bar_bottom).abs() < 0.5, "y was {y}");
+    }
+
+    /// Windows and Linux keep the existing gap from their taskbar or panel.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn other_platforms_keep_the_existing_anchor_gap() {
+        assert_eq!(ANCHOR_GAP, 6.0);
     }
 
     /// A 2x display: the anchor arrives in physical pixels, the window is
@@ -1365,6 +1411,7 @@ mod tests {
         assert!((y - (30.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_bottom_anchored_panel_flips_the_popover_above_its_item() {
         // The maths `place` runs, reproduced against a 1080px-tall display with

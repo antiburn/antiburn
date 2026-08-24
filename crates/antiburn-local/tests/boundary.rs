@@ -155,7 +155,7 @@ fn approved_source_manifests_are_present_and_well_formed() {
                 path.display()
             )
         });
-        let value: toml::Value = content.parse().expect("manifest parses as TOML");
+        let value: toml::Table = content.parse().expect("manifest parses as TOML");
         assert_eq!(
             value.get("schema_version").and_then(|v| v.as_integer()),
             Some(1),
