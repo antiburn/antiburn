@@ -39,6 +39,17 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
 }
 
 #[test]
+fn a_fresh_database_selects_every_ten_percent_milestone() {
+    let settings = store().settings().unwrap();
+
+    for threshold in MILESTONE_OPTIONS {
+        let expected = threshold % 10 == 0;
+        assert_eq!(settings.milestones_5h.contains(threshold), expected);
+        assert_eq!(settings.milestones_weekly.contains(threshold), expected);
+    }
+}
+
+#[test]
 fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
     let store = store();
     let connection = store.lock();
@@ -210,17 +221,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             disk_space_display: DiskSpaceDisplay::Always,
             disk_space_threshold_gb: 100,
             notify_disk_space_low: false,
-            notify_usage_anomalies: false,
-            milestones_5h: Milestones {
-                at50: false,
-                at75: true,
-                at90: true,
-            },
-            milestones_weekly: Milestones {
-                at50: false,
-                at75: false,
-                at90: false,
-            },
+            milestones_5h: Milestones::selected([75, 90]),
+            milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
             usage_analytics_enabled: false,
             overview_limits_expanded: false,
@@ -236,7 +238,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // The empty milestone subset survives a round trip as "none selected",
     // not as a reset back to the defaults.
     assert!(!saved.milestones_weekly.any());
-    assert!(saved.milestones_5h.at75 && !saved.milestones_5h.at50);
+    assert!(saved.milestones_5h.contains(75) && !saved.milestones_5h.contains(50));
     assert!(saved.live_usage_enabled);
     assert!(!saved.overview_limits_expanded);
     assert!(saved.onboarding_completed);

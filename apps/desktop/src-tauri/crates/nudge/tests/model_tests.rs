@@ -12,11 +12,12 @@ mod tests {
     fn builder_assembles_full_payload() {
         let n = Nudge::new(
             "usage-42",
-            NudgeKind::UsageAnomaly,
-            NudgeTone::Warning,
-            "Usage rising fast",
+            NudgeKind::UsageMilestone,
+            NudgeTone::Info,
+            "75% of your weekly limit used",
+            "The provider reported this usage milestone.",
+            "The percentage comes from the provider's current usage reading.",
         )
-        .reason("Well above your usual pace")
         .recommendations(vec![
             "Review usage".into(),
             "Check provider dashboard".into(),
@@ -34,15 +35,29 @@ mod tests {
 
     #[test]
     fn primary_action_sorts_last_regardless_of_call_order() {
-        let primary_first = Nudge::new("n-1", NudgeKind::UsageAnomaly, NudgeTone::Warning, "T")
-            .action("view_usage", "View usage", true)
-            .action("dismiss", "Dismiss", false);
+        let primary_first = Nudge::new(
+            "n-1",
+            NudgeKind::UsageMilestone,
+            NudgeTone::Warning,
+            "T",
+            "S",
+            "D",
+        )
+        .action("view_usage", "View usage", true)
+        .action("dismiss", "Dismiss", false);
         assert_eq!(primary_first.actions[0].id, "dismiss");
         assert_eq!(primary_first.actions[1].id, "view_usage");
 
-        let primary_last = Nudge::new("n-2", NudgeKind::UsageAnomaly, NudgeTone::Warning, "T")
-            .action("dismiss", "Dismiss", false)
-            .action("view_usage", "View usage", true);
+        let primary_last = Nudge::new(
+            "n-2",
+            NudgeKind::UsageMilestone,
+            NudgeTone::Warning,
+            "T",
+            "S",
+            "D",
+        )
+        .action("dismiss", "Dismiss", false)
+        .action("view_usage", "View usage", true);
 
         assert_eq!(
             primary_first.actions, primary_last.actions,
@@ -57,13 +72,16 @@ mod tests {
             NudgeKind::UpdateAvailable,
             NudgeTone::Info,
             "A new version is available",
+            "Version 0.2.0 is available.",
+            "Open the About pane to see the update status.",
         )
         .action("open_updates", "Update", true);
 
         let json = serde_json::to_string(&minimal).unwrap();
-        // camelCase kind, and empty reason/recommendations/timeout are omitted.
+        // The kind uses camelCase. Empty optional fields do not appear.
         assert!(json.contains("\"kind\":\"updateAvailable\""));
-        assert!(!json.contains("reason"));
+        assert!(json.contains("\"subtitle\""));
+        assert!(json.contains("\"description\""));
         assert!(!json.contains("recommendations"));
         assert!(!json.contains("timeoutMs"));
         assert!(!json.contains("actor"));
@@ -76,18 +94,39 @@ mod tests {
     /// this field, and an empty string would read as a person who doesn't exist.
     #[test]
     fn a_blank_actor_is_nobody() {
-        let named =
-            Nudge::new("a-1", NudgeKind::UsageAnomaly, NudgeTone::Info, "T").actor(Some("claude"));
+        let named = Nudge::new(
+            "a-1",
+            NudgeKind::UsageMilestone,
+            NudgeTone::Info,
+            "T",
+            "S",
+            "D",
+        )
+        .actor(Some("claude"));
         assert_eq!(named.actor.as_deref(), Some("claude"));
 
         for blank in ["", "   "] {
-            let nudge =
-                Nudge::new("a-2", NudgeKind::UsageAnomaly, NudgeTone::Info, "T").actor(Some(blank));
+            let nudge = Nudge::new(
+                "a-2",
+                NudgeKind::UsageMilestone,
+                NudgeTone::Info,
+                "T",
+                "S",
+                "D",
+            )
+            .actor(Some(blank));
             assert_eq!(nudge.actor, None, "{blank:?} should be nobody");
         }
 
-        let none =
-            Nudge::new("a-3", NudgeKind::UsageAnomaly, NudgeTone::Info, "T").actor(None::<String>);
+        let none = Nudge::new(
+            "a-3",
+            NudgeKind::UsageMilestone,
+            NudgeTone::Info,
+            "T",
+            "S",
+            "D",
+        )
+        .actor(None::<String>);
         assert_eq!(none.actor, None);
     }
 
@@ -106,12 +145,12 @@ mod tests {
             "\"diskSpaceLow\""
         );
         assert_eq!(
-            serde_json::to_string(&NudgeKind::UsageAnomaly).unwrap(),
-            "\"usageAnomaly\""
-        );
-        assert_eq!(
             serde_json::to_string(&NudgeKind::UsageMilestone).unwrap(),
             "\"usageMilestone\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NudgeKind::MenuBarLocation).unwrap(),
+            "\"menuBarLocation\""
         );
         assert_eq!(serde_json::to_string(&NudgeKind::Test).unwrap(), "\"test\"");
     }
@@ -120,9 +159,11 @@ mod tests {
     fn action_target_serializes_as_tagged_payload() {
         let n = Nudge::new(
             "session-1",
-            NudgeKind::UsageAnomaly,
+            NudgeKind::UsageMilestone,
             NudgeTone::Warning,
-            "Usage rising fast",
+            "75% of your weekly limit used",
+            "The provider reported this usage milestone.",
+            "The percentage comes from the provider's current usage reading.",
         )
         .action_with_target(
             "view_session",
@@ -144,7 +185,7 @@ mod tests {
     #[test]
     fn action_event_uses_camel_case_kind() {
         let ev = NudgeActionEvent {
-            kind: NudgeKind::UsageAnomaly,
+            kind: NudgeKind::UsageMilestone,
             action_id: "view_usage".into(),
             target: Some(NudgeActionTarget::ProviderUsage {
                 provider: "openai".into(),
@@ -152,7 +193,7 @@ mod tests {
             }),
         };
         let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"kind\":\"usageAnomaly\""));
+        assert!(json.contains("\"kind\":\"usageMilestone\""));
         assert!(json.contains("\"actionId\":\"view_usage\""));
         assert!(json.contains("\"type\":\"providerUsage\""));
     }

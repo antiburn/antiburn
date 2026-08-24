@@ -165,14 +165,15 @@ credential, and has no plan limits to show.
 
 **Notifications are local.** antiburn shows them in its own small notification
 window and posts exactly these: an update check that found a newer version, the
-first scan failure of a run, free disk space dropping below your threshold, an
-hour of unusually fast estimated spend, a usage milestone, and the test button's
-own sample. Milestones need readings that keep moving, so they fire only while
-Settings → Usage is set to refresh; with that off they stay silent. Every
-figure in them is computed on this machine; nothing about a notification leaves
-it. All of them can be turned off in Settings → Notifications, together or one at
-a time — the test alone ignores the master switch, so you can preview a
-notification before allowing any.
+first scan failure of a run, free disk space dropping below your threshold, a
+usage milestone, the first-run menu-bar location, and the test button's own
+sample. Milestones need readings that keep moving, so they fire only while
+Settings → Usage is set to refresh; with that off they stay silent. By default,
+they fire at every 10% of a limit and compare quota used with time elapsed in
+that limit's window. Settings → Notifications offers every 5% step, plus
+select-all and clear-all controls. antiburn constructs each notification on this
+machine, and nothing about it leaves the machine. The test and first-run
+location ignore the master switch because both follow a direct action.
 
 ## Reporting a gap
 

@@ -32,7 +32,7 @@
 //! - [`tray`] — the menu-bar item and its click and menu handling.
 //! - [`tray_title`] — the attributed-string text beside the tray glyph.
 //! - [`updates`] — whether, and when, the release feed may be contacted.
-//! - [`usage_alerts`] — the spend-anomaly and milestone monitor.
+//! - [`usage_alerts`] — the usage milestone monitor.
 //! - [`window_placement`] — where the app's ordinary windows open.
 //!
 //! # Local by construction
@@ -163,6 +163,7 @@ pub fn run() {
             commands::list_scan_roots,
             commands::open_settings_window,
             commands::post_test_notification,
+            commands::post_sample_notification,
             commands::quit_app,
             commands::refresh_repositories,
             commands::remove_scan_root,

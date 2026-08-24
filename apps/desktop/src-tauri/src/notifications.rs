@@ -10,8 +10,8 @@
 //! so the whole policy is here rather than spread across the callers:
 //!
 //! - **Every kind is enumerated here.** A newer version, a failed scan, low
-//!   disk space, unusually fast spend, a crossed usage milestone, where the app
-//!   went when the first run finished, and the settings pane's own test. Each is
+//!   disk space, a crossed usage milestone, where the app went when the first
+//!   run finished, and the settings pane's own test. Each is
 //!   something a reader would act on (or, for the test, explicitly asked for);
 //!   none is a progress report. Nothing else in the app posts a notification.
 //! - **Every kind is gated twice** — once by the master preference and once by
@@ -37,7 +37,7 @@
 //! Every notification here is generated on this machine; none of it comes
 //! from a service of ours. A nudge is an event emitted to a local webview,
 //! and antiburn's notification bodies carry a version string, a scan error,
-//! or a locally-estimated figure — never session content.
+//! or a provider usage percentage — never session content.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -49,6 +49,8 @@ use crate::dto::ScanStatus;
 use crate::store::{AppSettings, Store};
 use crate::updates::UpdateStatus;
 
+pub(crate) const NOTIFICATION_SETTINGS_ACTION_ID: &str = "notification_settings";
+
 /// Something antiburn is willing to interrupt a reader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -58,8 +60,6 @@ pub enum Kind {
     ScanFailure,
     /// Free disk space dropped below the reader's threshold.
     DiskSpaceLow,
-    /// Sustained spend unusually fast for this machine.
-    UsageAnomaly,
     /// A live usage window crossed a milestone the reader asked about.
     UsageMilestone,
     /// The first run finished and its window went away. Says where the app is
@@ -67,6 +67,21 @@ pub enum Kind {
     MenuBarHome,
     /// The settings pane's "Show test" button.
     Test,
+}
+
+impl Kind {
+    /// The wire id the settings pane's debug row sends for each kind.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Some(match id {
+            "updateAvailable" => Self::UpdateAvailable,
+            "scanFailure" => Self::ScanFailure,
+            "diskSpaceLow" => Self::DiskSpaceLow,
+            "usageMilestone" => Self::UsageMilestone,
+            "menuBarHome" => Self::MenuBarHome,
+            "test" => Self::Test,
+            _ => return None,
+        })
+    }
 }
 
 /// Whether `kind` may be delivered under these preferences.
@@ -93,7 +108,6 @@ pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
             Kind::UpdateAvailable => settings.notify_update_available,
             Kind::ScanFailure => settings.notify_scan_failure,
             Kind::DiskSpaceLow => settings.notify_disk_space_low,
-            Kind::UsageAnomaly => settings.notify_usage_anomalies,
             // Milestones have no single switch: the two per-window rows are
             // the preference, and an empty selection is "off".
             Kind::UsageMilestone => {
@@ -113,6 +127,28 @@ pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
 pub struct NotificationState {
     scan_failure_reported: AtomicBool,
     update_version_reported: Mutex<Option<String>>,
+}
+
+/// The three layers of copy every notification displays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationCopy {
+    pub title: String,
+    pub subtitle: String,
+    pub description: String,
+}
+
+impl NotificationCopy {
+    fn new(
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            subtitle: subtitle.into(),
+            description: description.into(),
+        }
+    }
 }
 
 impl NotificationState {
@@ -149,28 +185,35 @@ impl NotificationState {
 ///
 /// The id is unique per delivery — the view de-duplicates re-emitted events
 /// by id, so reusing one would make a genuinely new nudge look like an echo.
-/// Every nudge carries a dismiss CTA; `extra_action` is the one optional
-/// deeper destination (routed in [`crate::nudges`]).
+/// Every nudge links to notification settings and carries a dismiss CTA.
+/// `extra_action` is the optional destination for the notification subject.
 fn deliver(
     app: &AppHandle,
     kind: Kind,
-    title: String,
-    body: String,
+    copy: NotificationCopy,
     extra_action: Option<(&str, &str)>,
+    tone_override: Option<NudgeTone>,
 ) {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let (nudge_kind, tone) = match kind {
+    let (nudge_kind, default_tone) = match kind {
         Kind::UpdateAvailable => (NudgeKind::UpdateAvailable, NudgeTone::Info),
         Kind::ScanFailure => (NudgeKind::ScanFailure, NudgeTone::Warning),
         Kind::DiskSpaceLow => (NudgeKind::DiskSpaceLow, NudgeTone::Warning),
-        Kind::UsageAnomaly => (NudgeKind::UsageAnomaly, NudgeTone::Warning),
         Kind::UsageMilestone => (NudgeKind::UsageMilestone, NudgeTone::Info),
         Kind::MenuBarHome => (NudgeKind::MenuBarLocation, NudgeTone::Success),
         Kind::Test => (NudgeKind::Test, NudgeTone::Info),
     };
+    let tone = tone_override.unwrap_or(default_tone);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let mut nudge =
-        Nudge::new(format!("antiburn-{sequence}"), nudge_kind, tone, title).reason(body);
+    let mut nudge = Nudge::new(
+        format!("antiburn-{sequence}"),
+        nudge_kind,
+        tone,
+        copy.title,
+        copy.subtitle,
+        copy.description,
+    )
+    .action(NOTIFICATION_SETTINGS_ACTION_ID, "Settings", false);
     if let Some((id, label)) = extra_action {
         nudge = nudge.action(id, label, true);
     }
@@ -178,86 +221,98 @@ fn deliver(
     crate::nudges::deliver(app, nudge);
 }
 
-/// The title and body of an update notification.
-///
 /// Deliberately does not say "ready to install". This build checks the release
 /// feed and reports what it found; downloading and installing an update is the
 /// release milestone's work and has no UI yet (`docs/deviations.md`). A
 /// notification that promised an install button would be describing an app
 /// nobody has shipped.
-pub fn update_message(version: &str) -> (String, String) {
-    (
-        "antiburn update available".to_string(),
-        format!(
-            "Version {version} is on the release feed. \
-             This build checks for updates but does not install them yet — \
-             Settings → About shows what the last check found."
-        ),
+pub fn update_message(version: &str) -> NotificationCopy {
+    NotificationCopy::new(
+        "antiburn update released",
+        format!("New version {version} is available."),
+        "This build checks the release feed but does not install updates yet.",
     )
 }
 
-/// The title and body of a scan-failure notification.
-///
 /// The error is the store's or the engine's own words. It names a path or a
 /// failure at worst — the scan never handles transcript text, so there is none
 /// to leak into a notification.
-pub fn scan_failure_message(error: &str) -> (String, String) {
-    (
-        "antiburn could not finish a scan".to_string(),
-        format!("{error}. Open antiburn to try again; everything already indexed is unaffected."),
+pub fn scan_failure_message(error: &str) -> NotificationCopy {
+    let mut subtitle = error.trim_end().to_string();
+    if !subtitle.ends_with(['.', '!', '?']) {
+        subtitle.push('.');
+    }
+    NotificationCopy::new(
+        "Scan failed",
+        subtitle,
+        "Check which folders are being scanned, and whether antiburn has access to them. Everything already indexed is unaffected.",
     )
 }
 
-/// The title and body of a low-disk notification.
-pub fn disk_space_low_message(free_gb: u64, threshold_gb: u32) -> (String, String) {
-    (
+pub fn disk_space_low_message(free_gb: u64, threshold_gb: u32) -> NotificationCopy {
+    NotificationCopy::new(
         format!("{free_gb} GB of disk space left"),
-        format!(
-            "Free space dropped below your {threshold_gb} GB mark. \
-             Settings → Notifications has the threshold."
-        ),
+        format!("Free space dropped below your {threshold_gb} GB warning threshold."),
+        "Agents working in multiple worktrees can use up a lot of space, so antiburn monitors that.",
     )
 }
 
-/// The title and body of a spend-anomaly notification.
-///
-/// Estimates, and the copy says so: the figures come from the local pricing
-/// catalog over this machine's own transcripts, never from a provider.
-pub fn usage_anomaly_message(hour_usd: f64, week_usd: f64) -> (String, String) {
+/// The rounded percentages the milestone copy shows. The tone reads the same
+/// numbers, so the words and the tone always agree. Usage can be more than
+/// 100%, and the copy then shows it; the `as` cast saturates, so a wild
+/// reading cannot wrap.
+fn milestone_percents(
+    crossing: &crate::provider_usage::live::milestones::MilestoneCrossing,
+) -> (u8, u8) {
     (
-        "Spending unusually fast".to_string(),
-        format!(
-            "An estimated ${hour_usd:.2} in the last hour, against roughly \
-             ${week_usd:.2} across the whole past week. Estimated locally \
-             from your sessions — nothing was fetched."
-        ),
+        crossing.used_percent.round() as u8,
+        crossing.elapsed_percent.round() as u8,
     )
 }
 
-/// The title and body of a usage-milestone notification.
 pub fn usage_milestone_message(
     content: &crate::provider_usage::live::MilestoneContent,
-) -> (String, String) {
-    let highest = content
-        .crossings
-        .iter()
-        .map(|crossing| crossing.threshold)
-        .max()
-        .unwrap_or(0);
-    let windows = content
-        .crossings
-        .iter()
-        .map(|crossing| crossing.window_label.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    (
-        format!("{}% of your {} used", highest, windows),
+) -> NotificationCopy {
+    let crossing = &content.crossing;
+    let (used, elapsed) = milestone_percents(crossing);
+    let title = if used > elapsed {
         format!(
-            "{} reports the crossing; the number is the provider's own. \
-             Settings → Notifications chooses which milestones speak.",
-            content.provider
-        ),
+            "Burn warning: {} {}",
+            crate::provider_usage::providers::display_name(&content.provider),
+            crossing.window_label
+        )
+    } else {
+        format!(
+            "Burn milestone: {} {}",
+            crate::provider_usage::providers::display_name(&content.provider),
+            crossing.window_label
+        )
+    };
+    let description = if used > elapsed {
+        format!(
+            "You might hit your limits if you don't slow down. Your burn is faster than a straight line estimate - currently {}% ahead.",
+            used - elapsed
+        )
+    } else {
+        format!(
+            "All looks fine, you're burning slower than a straight line estimate - currently {}% into safety.",
+            elapsed - used
+        )
+    };
+    NotificationCopy::new(
+        title,
+        format!("{used}% used in {elapsed}% of the usage window."),
+        description,
     )
+}
+
+fn usage_milestone_tone(content: &crate::provider_usage::live::MilestoneContent) -> NudgeTone {
+    let (used, elapsed) = milestone_percents(&content.crossing);
+    if used > elapsed {
+        NudgeTone::Warning
+    } else {
+        NudgeTone::Info
+    }
 }
 
 /// What the reader's platform calls the strip the app now lives in.
@@ -271,31 +326,25 @@ const HOME_NOUN: &str = "menu bar";
 #[cfg(not(target_os = "macos"))]
 const HOME_NOUN: &str = "system tray";
 
-/// The title and body of the "this is where antiburn lives now" notification.
-///
-/// One sentence each: the title carries the place, the body carries what
-/// clicking there does. The notification renders antiburn's own icon beside
-/// them, which is the cue that matches the glyph the reader is about to hunt
-/// for, so the copy does not describe it.
-///
 /// Deliberately no direction — no "above", no "up there". This notice is
 /// normally anchored right under the menu-bar item, but the anchor is
 /// macOS-only and needs a tray rectangle the backend will not always report; on
 /// the fallback path it appears at the platform's notification corner instead,
 /// and any wording that pointed somewhere would be wrong exactly there. A test
 /// below pins that.
-pub fn menu_bar_home_message() -> (String, String) {
-    (
+pub fn menu_bar_home_message() -> NotificationCopy {
+    NotificationCopy::new(
         format!("antiburn is in your {HOME_NOUN}"),
-        "Click it any time to see what your coding agents have been doing.".to_string(),
+        "Click it to see your limits and details of your coding sessions.",
+        "antiburn runs in the background after onboarding closes.",
     )
 }
 
-/// The title and body of the settings pane's test notification.
-pub fn test_message() -> (String, String) {
-    (
-        "antiburn notifications are working".to_string(),
-        "This is a sample notification from your settings.".to_string(),
+pub fn test_message() -> NotificationCopy {
+    NotificationCopy::new(
+        "antiburn notifications are working",
+        "This sample uses your current position and timing settings.",
+        "The notification sound also follows your current choice.",
     )
 }
 
@@ -313,8 +362,13 @@ pub fn note_scan_outcome(app: &AppHandle, status: &ScanStatus) {
     if !state.claim_scan_failure() {
         return;
     }
-    let (title, body) = scan_failure_message(error);
-    deliver(app, Kind::ScanFailure, title, body, None);
+    deliver(
+        app,
+        Kind::ScanFailure,
+        scan_failure_message(error),
+        Some(("review_sources", "Review sources")),
+        None,
+    );
 }
 
 /// Report the outcome of an update check, if it found a version worth naming.
@@ -338,13 +392,12 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
     if !state.claim_update(version) {
         return;
     }
-    let (title, body) = update_message(version);
     deliver(
         app,
         Kind::UpdateAvailable,
-        title,
-        body,
+        update_message(version),
         Some(("view", "View")),
+        None,
     );
 }
 
@@ -355,19 +408,13 @@ pub fn note_disk_space_low(app: &AppHandle, free_gb: u64, threshold_gb: u32) -> 
     if !enabled(app, Kind::DiskSpaceLow) {
         return false;
     }
-    let (title, body) = disk_space_low_message(free_gb, threshold_gb);
-    deliver(app, Kind::DiskSpaceLow, title, body, None);
-    true
-}
-
-/// Report a spend anomaly. Once-per-episode is the caller's job
-/// ([`crate::usage_alerts`]); this only applies the preference gate.
-pub fn note_usage_anomaly(app: &AppHandle, hour_usd: f64, week_usd: f64) -> bool {
-    if !enabled(app, Kind::UsageAnomaly) {
-        return false;
-    }
-    let (title, body) = usage_anomaly_message(hour_usd, week_usd);
-    deliver(app, Kind::UsageAnomaly, title, body, None);
+    deliver(
+        app,
+        Kind::DiskSpaceLow,
+        disk_space_low_message(free_gb, threshold_gb),
+        None,
+        None,
+    );
     true
 }
 
@@ -380,8 +427,13 @@ pub fn note_usage_milestone(
     if !enabled(app, Kind::UsageMilestone) {
         return false;
     }
-    let (title, body) = usage_milestone_message(content);
-    deliver(app, Kind::UsageMilestone, title, body, None);
+    deliver(
+        app,
+        Kind::UsageMilestone,
+        usage_milestone_message(content),
+        None,
+        Some(usage_milestone_tone(content)),
+    );
     true
 }
 
@@ -393,14 +445,13 @@ pub fn note_usage_milestone(
 /// would be worse than none. Called only from [`crate::onboarding::finish`], so
 /// it appears after each setup run, including an explicit restart.
 pub fn note_menu_bar_home(app: &AppHandle) {
-    let (title, body) = menu_bar_home_message();
     crate::nudges::anchor_next_to_the_tray(app);
     deliver(
         app,
         Kind::MenuBarHome,
-        title,
-        body,
+        menu_bar_home_message(),
         Some(("show", "Show me")),
+        None,
     );
 }
 
@@ -408,8 +459,47 @@ pub fn note_menu_bar_home(app: &AppHandle) {
 /// the reader pressed the button — but is otherwise the same delivery path as
 /// every real kind, so what they see is what they will get.
 pub fn note_test(app: &AppHandle) {
-    let (title, body) = test_message();
-    deliver(app, Kind::Test, title, body, None);
+    deliver(app, Kind::Test, test_message(), None, None);
+}
+
+/// Post a sample of `kind` with representative figures, for copy work.
+///
+/// Debug builds only, from the settings pane's debug row. This skips every
+/// gate — the preferences, the once-per-run claims, the milestone ledger — on
+/// purpose: the reader wants to see the card, not earn it. The figures are
+/// fixed so the same wording shows on every press.
+pub fn note_sample(app: &AppHandle, kind: Kind) {
+    use crate::provider_usage::live::milestones::{MilestoneContent, MilestoneCrossing};
+
+    let (copy, extra_action, tone) = match kind {
+        Kind::UpdateAvailable => (update_message("0.2.0"), Some(("view", "View")), None),
+        Kind::ScanFailure => (
+            scan_failure_message("Could not read ~/.claude/projects"),
+            Some(("review_sources", "Review sources")),
+            None,
+        ),
+        Kind::DiskSpaceLow => (disk_space_low_message(18, 25), None, None),
+        Kind::UsageMilestone => {
+            let content = MilestoneContent {
+                provider: "anthropic".to_string(),
+                crossing: MilestoneCrossing {
+                    window_label: "weekly limit".to_string(),
+                    threshold: 40,
+                    used_percent: 42.0,
+                    elapsed_percent: 20.0,
+                    resets_at_epoch: 0,
+                },
+            };
+            let tone = usage_milestone_tone(&content);
+            (usage_milestone_message(&content), None, Some(tone))
+        }
+        Kind::MenuBarHome => {
+            crate::nudges::anchor_next_to_the_tray(app);
+            (menu_bar_home_message(), Some(("show", "Show me")), None)
+        }
+        Kind::Test => (test_message(), None, None),
+    };
+    deliver(app, kind, copy, extra_action, tone);
 }
 
 /// The reader's preferences, read fresh, defaulting to *silence* when the store
@@ -426,6 +516,21 @@ mod tests {
 
     fn settings() -> AppSettings {
         AppSettings::default()
+    }
+
+    #[test]
+    fn every_kind_has_a_wire_id_and_unknown_ids_are_rejected() {
+        for (id, kind) in [
+            ("updateAvailable", Kind::UpdateAvailable),
+            ("scanFailure", Kind::ScanFailure),
+            ("diskSpaceLow", Kind::DiskSpaceLow),
+            ("usageMilestone", Kind::UsageMilestone),
+            ("menuBarHome", Kind::MenuBarHome),
+            ("test", Kind::Test),
+        ] {
+            assert_eq!(Kind::from_id(id), Some(kind));
+        }
+        assert_eq!(Kind::from_id("anything-else"), None);
     }
 
     #[test]
@@ -473,7 +578,6 @@ mod tests {
             Kind::UpdateAvailable,
             Kind::ScanFailure,
             Kind::DiskSpaceLow,
-            Kind::UsageAnomaly,
             Kind::UsageMilestone,
         ] {
             assert!(!allowed(&settings, kind));
@@ -481,45 +585,16 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_bar_copy_names_the_place_once_and_says_what_clicking_does() {
-        let (title, body) = menu_bar_home_message();
-        assert!(title.contains("antiburn"));
-        assert!(title.contains(HOME_NOUN), "title was {title}");
-        assert!(
-            body.contains("Click it"),
-            "a reader who has never noticed the glyph needs to be told what it does"
-        );
-        // Said once. The title carries the place; a body that repeats it reads
-        // as two sentences about the same fact.
-        assert!(!body.contains(HOME_NOUN), "body was {body}");
-        // And no direction, because the anchored placement is not guaranteed —
-        // on the corner fallback "above" or "up there" would be a lie.
-        for direction in ["above", "up there", "top of", "pointing"] {
-            assert!(!body.contains(direction), "body claims a direction: {body}");
-        }
-        // The platform's own word, not macOS's everywhere.
-        #[cfg(target_os = "macos")]
-        assert_eq!(HOME_NOUN, "menu bar");
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(HOME_NOUN, "system tray");
-    }
-
-    #[test]
     fn an_empty_milestone_selection_is_how_milestones_are_off() {
-        let none = crate::store::Milestones {
-            at50: false,
-            at75: false,
-            at90: false,
-        };
         let settings = AppSettings {
-            milestones_5h: none,
-            milestones_weekly: none,
+            milestones_5h: crate::store::Milestones::none(),
+            milestones_weekly: crate::store::Milestones::none(),
             ..settings()
         };
         assert!(!allowed(&settings, Kind::UsageMilestone));
 
         let settings = AppSettings {
-            milestones_weekly: none,
+            milestones_weekly: crate::store::Milestones::none(),
             ..AppSettings::default()
         };
         // One row still selected is still a preference to hear about it.
@@ -527,25 +602,70 @@ mod tests {
     }
 
     #[test]
-    fn disk_and_anomaly_kinds_honor_their_own_switches() {
-        let settings = AppSettings {
-            notify_disk_space_low: false,
-            notify_usage_anomalies: false,
-            ..settings()
+    fn a_milestone_warns_only_when_quota_is_ahead_of_elapsed_time() {
+        use crate::provider_usage::live::milestones::{MilestoneContent, MilestoneCrossing};
+
+        let mut content = MilestoneContent {
+            provider: "anthropic".to_string(),
+            crossing: MilestoneCrossing {
+                window_label: "5-hour limit".to_string(),
+                threshold: 40,
+                used_percent: 40.0,
+                elapsed_percent: 20.0,
+                resets_at_epoch: 0,
+            },
         };
-        assert!(!allowed(&settings, Kind::DiskSpaceLow));
-        assert!(!allowed(&settings, Kind::UsageAnomaly));
-        assert!(allowed(&settings, Kind::ScanFailure));
+        assert_eq!(usage_milestone_tone(&content), NudgeTone::Warning);
+
+        content.crossing.used_percent = 20.0;
+        content.crossing.elapsed_percent = 40.0;
+        assert_eq!(usage_milestone_tone(&content), NudgeTone::Info);
     }
 
     #[test]
-    fn the_anomaly_copy_says_the_figures_are_local_estimates() {
-        let (_, body) = usage_anomaly_message(12.5, 40.0);
-        assert!(body.contains("$12.50"));
+    fn a_milestone_past_the_limit_stays_a_warning() {
+        use crate::provider_usage::live::milestones::{MilestoneContent, MilestoneCrossing};
+
+        // 120% used with the window fully elapsed is ahead of pace. The tone
+        // and the copy must both say so.
+        let content = MilestoneContent {
+            provider: "anthropic".to_string(),
+            crossing: MilestoneCrossing {
+                window_label: "5-hour limit".to_string(),
+                threshold: 100,
+                used_percent: 120.0,
+                elapsed_percent: 100.0,
+                resets_at_epoch: 0,
+            },
+        };
+        assert_eq!(usage_milestone_tone(&content), NudgeTone::Warning);
+        let copy = usage_milestone_message(&content);
         assert!(
-            body.contains("Estimated locally") && body.contains("nothing was fetched"),
-            "an estimate must not read as a provider's own number"
+            copy.subtitle.contains("120%"),
+            "subtitle was {}",
+            copy.subtitle
         );
+        assert!(
+            copy.title.starts_with("Burn warning"),
+            "title was {}",
+            copy.title
+        );
+    }
+
+    #[test]
+    fn a_scan_failure_subtitle_ends_with_exactly_one_period() {
+        assert_eq!(scan_failure_message("disk error").subtitle, "disk error.");
+        assert_eq!(scan_failure_message("disk error.").subtitle, "disk error.");
+    }
+
+    #[test]
+    fn the_disk_kind_honors_its_own_switch() {
+        let settings = AppSettings {
+            notify_disk_space_low: false,
+            ..settings()
+        };
+        assert!(!allowed(&settings, Kind::DiskSpaceLow));
+        assert!(allowed(&settings, Kind::ScanFailure));
     }
 
     #[test]
@@ -568,32 +688,5 @@ mod tests {
         assert!(!state.claim_update("0.2.0"));
         assert!(state.claim_update("0.3.0"));
         assert!(!state.claim_update("0.3.0"));
-    }
-
-    #[test]
-    fn the_delivered_copy_names_the_version_and_claims_no_install_this_build_cannot_do() {
-        let (title, body) = update_message("0.2.0");
-        assert!(title.contains("antiburn"));
-        assert!(body.contains("0.2.0"));
-        assert!(
-            body.contains("Settings"),
-            "a notification must say where to look"
-        );
-        // There is no install flow in this build; the copy must not imply one.
-        assert!(
-            body.contains("does not install them yet"),
-            "an update notification must not promise an install this build cannot perform"
-        );
-    }
-
-    #[test]
-    fn a_scan_failure_notification_carries_the_error_and_reassures() {
-        let (title, body) = scan_failure_message("permission denied reading /home/avery/code");
-        assert!(title.contains("scan"));
-        assert!(body.contains("permission denied"));
-        assert!(
-            body.contains("already indexed"),
-            "a failure must not read as data loss"
-        );
     }
 }

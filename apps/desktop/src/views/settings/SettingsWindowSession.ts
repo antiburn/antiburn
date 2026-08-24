@@ -24,6 +24,7 @@ export class SettingsWindowSession {
   private started = false
   private generation = 0
   private stopPaneListening: (() => void) | null = null
+  private initialPaneRequest: Promise<string | null> | null = null
 
   private snapshot: SettingsWindowSnapshot = { info: null, pane: "general" }
 
@@ -62,12 +63,11 @@ export class SettingsWindowSession {
     // already open never mounts again). Unknown ids are ignored rather than
     // rendering nothing. `takeSettingsPane` is called before `onSettingsPaneRequest`
     // is awaited below, matching the relative ordering the original effects ran in.
-    void takeSettingsPane()
-      .then((requested) => {
-        if (generation !== this.generation) return
-        if (isSettingsPane(requested)) this.update({ pane: requested })
-      })
-      .catch(() => {})
+    this.initialPaneRequest ??= takeSettingsPane().catch(() => null)
+    void this.initialPaneRequest.then((requested) => {
+      if (generation !== this.generation) return
+      if (isSettingsPane(requested)) this.update({ pane: requested })
+    })
 
     const stop = await onSettingsPaneRequest((requested) => {
       if (generation !== this.generation) return

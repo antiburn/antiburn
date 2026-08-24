@@ -43,9 +43,10 @@ use crate::dto::DeferredPermissionDir;
 #[cfg(test)]
 pub use model::SourceVersionState;
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS,
-    Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey,
-    SessionActivityState, SessionKey, SessionRecord, ThemePreference, UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
+    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord,
+    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, ThemePreference,
+    UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -1014,16 +1015,12 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("notifyDiskSpaceLow")
             .map(|value| value == "true")
             .unwrap_or(defaults.notify_disk_space_low),
-        notify_usage_anomalies: stored
-            .get("notifyUsageAnomalies")
-            .map(|value| value == "true")
-            .unwrap_or(defaults.notify_usage_anomalies),
         milestones_5h: stored
-            .get("milestones5h")
+            .get("milestonePercentages5h")
             .map(|value| Milestones::parse(value))
             .unwrap_or(defaults.milestones_5h),
         milestones_weekly: stored
-            .get("milestonesWeekly")
+            .get("milestonePercentagesWeekly")
             .map(|value| Milestones::parse(value))
             .unwrap_or(defaults.milestones_weekly),
         live_usage_enabled: stored
@@ -1111,12 +1108,11 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         bool_text(settings.notify_disk_space_low)
     ])?;
     put.execute(params![
-        "notifyUsageAnomalies",
-        bool_text(settings.notify_usage_anomalies)
+        "milestonePercentages5h",
+        settings.milestones_5h.as_str()
     ])?;
-    put.execute(params!["milestones5h", settings.milestones_5h.as_str()])?;
     put.execute(params![
-        "milestonesWeekly",
+        "milestonePercentagesWeekly",
         settings.milestones_weekly.as_str()
     ])?;
     put.execute(params![

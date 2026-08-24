@@ -99,6 +99,21 @@ pub fn post_test_notification(app: tauri::AppHandle) {
     crate::notifications::note_test(&app);
 }
 
+/// Post a sample notification of one kind, for copy work.
+///
+/// Debug builds only: a release build refuses, so the row that sends this can
+/// never become a way around the preferences.
+#[tauri::command]
+pub fn post_sample_notification(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("sample notifications are for debug builds only".to_string());
+    }
+    let kind = crate::notifications::Kind::from_id(&kind)
+        .ok_or_else(|| format!("unknown notification kind: {kind}"))?;
+    crate::notifications::note_sample(&app, kind);
+    Ok(())
+}
+
 /// Whether the local database is still accepting writes.
 #[tauri::command]
 pub fn get_storage_health(app: tauri::AppHandle) -> crate::storage_health::StorageHealthStatus {
