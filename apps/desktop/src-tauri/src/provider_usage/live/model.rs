@@ -181,6 +181,13 @@ pub struct SupplementalUsage {
     pub balance: Option<CreditBalance>,
 }
 
+/// Credits that let the reader reset provider rate limits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RateLimitResetCredits {
+    /// Credits the provider says remain available.
+    pub available_count: u64,
+}
+
 /// Where a snapshot's facts came from, and how far they can be trusted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageSource {
@@ -214,6 +221,8 @@ pub struct ProviderUsageSnapshot {
     pub windows: Vec<UsageWindow>,
     /// Metered usage alongside the windows, when the provider reports it.
     pub supplemental: Option<SupplementalUsage>,
+    /// The provider reports manual rate-limit resets here.
+    pub reset_credits: Option<RateLimitResetCredits>,
 }
 
 #[cfg(test)]

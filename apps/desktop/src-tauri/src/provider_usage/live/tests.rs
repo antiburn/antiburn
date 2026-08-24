@@ -321,6 +321,7 @@ fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageS
             authoritative: true,
         }],
         supplemental: None,
+        reset_credits: None,
     }
 }
 
@@ -403,6 +404,22 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
     }
     assert!(json.contains("\"support\":\"live\""));
     assert!(json.contains("\"freshness\":\"fresh\""));
+}
+
+#[test]
+fn the_live_payload_carries_manual_reset_credits() {
+    let mut reading = snapshot(Freshness::Fresh, NOW, 81.0);
+    reading.reset_credits = Some(super::model::RateLimitResetCredits { available_count: 1 });
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed("fixture", vec![reading]))];
+
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
+    assert_eq!(
+        summary.providers[0]
+            .reset_credits
+            .as_ref()
+            .map(|credits| credits.available_count),
+        Some(1)
+    );
 }
 
 fn required_present(json: &str, field: &str) -> bool {
@@ -553,6 +570,7 @@ fn weekly_scoped_snapshot(
             authoritative: true,
         }],
         supplemental: None,
+        reset_credits: None,
     }
 }
 

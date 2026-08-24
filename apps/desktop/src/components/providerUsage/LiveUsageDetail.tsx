@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { RotateCcw } from "lucide-react"
+
 import { cn } from "../../lib/cn"
 import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
@@ -64,6 +66,10 @@ export function LiveUsageDetail({
 
       <LiveUsageWindowRows provider={live} now={now} />
 
+      {live.resetCredits && live.resetCredits.availableCount > 0 && (
+        <ResetCreditsNotice availableCount={live.resetCredits.availableCount} />
+      )}
+
       {/* Derived rows for the primary window only. Repeating pace and runway
           under every per-model limit would triple the panel's height to say
           the same thing three ways; the full picture is one tap away in the
@@ -73,5 +79,25 @@ export function LiveUsageDetail({
       {extra && <p className="type-caption text-label-tertiary">{extra}</p>}
       {staleness && <p className="type-caption text-system-orange">{staleness}</p>}
     </section>
+  )
+}
+
+function ResetCreditsNotice({ availableCount }: { availableCount: number }) {
+  const noun = availableCount === 1 ? "reset" : "resets"
+  return (
+    <div className="flex items-start gap-1.5 rounded-control bg-system-green/10 px-2 py-1.5">
+      <RotateCcw
+        size={13}
+        strokeWidth={2}
+        aria-hidden="true"
+        className="mt-px shrink-0 text-system-green"
+      />
+      <p className="min-w-0 type-footnote text-label-secondary">
+        <span className="font-medium text-system-green">
+          {availableCount} usage limit {noun} available.
+        </span>{" "}
+        Run <span className="font-mono">/usage</span> in Codex to use one.
+      </p>
+    </div>
   )
 }
