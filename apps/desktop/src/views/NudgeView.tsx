@@ -81,10 +81,8 @@ export function NudgeView() {
         key={nudge.id}
         ref={cardRef}
         // The card fills the window edge to edge and paints its own surface.
-        // This build does not enable tauri's `macos-private-api`, so the
-        // notification window is opaque and undecorated — the same chrome as the
-        // popover — and a rounded card would only reveal the window's square
-        // corners behind it.
+        // On macOS, the transparent window material and the route root clip it
+        // to `rounded.popover`. Other platforms keep their opaque window shell.
         //
         // Hover-revealed chrome below is driven by `expanded` (which is exactly
         // the hover state) rather than CSS `:hover`/`group-hover`: the pointer
