@@ -457,6 +457,11 @@ pub struct AppSettings {
     /// display preference — it never gates a fetch — so it defaults open and
     /// stays wherever the reader last left it.
     pub overview_limits_expanded: bool,
+    /// Whether the scan may generate session titles with the platform's
+    /// on-device model, for sessions whose only name is their first message.
+    /// Everything runs on this machine and no API tokens are spent; today
+    /// only macOS ships a backend, and elsewhere the switch does nothing.
+    pub local_summary_titles: bool,
 }
 
 impl Default for AppSettings {
@@ -500,6 +505,9 @@ impl Default for AppSettings {
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,
+            // On by default: the work is local, free, and only replaces a
+            // fallback name nobody chose.
+            local_summary_titles: true,
         }
     }
 }

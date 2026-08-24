@@ -1,0 +1,4 @@
+/target
+
+# Built sidecar binaries; build.rs compiles them from sidecar/.
+/binaries/

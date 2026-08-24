@@ -109,7 +109,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # instead, and the Codex app-server fallback spawns synchronously through
 # `std::process` — so this feature list still names only what this crate's own
 # async code needs.
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
 getrandom = "0.4"

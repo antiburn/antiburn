@@ -193,6 +193,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Open by default, same reasoning: a reader who has limits to see should
     // see them without an extra click the first time they notice the section.
     assert!(defaults.overview_limits_expanded);
+    // On by default: local, free, and only replaces a fallback name.
+    assert!(defaults.local_summary_titles);
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -222,6 +224,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             live_usage_enabled: true,
             analytics_enabled: false,
             overview_limits_expanded: false,
+            local_summary_titles: false,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
@@ -237,6 +240,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(saved.milestones_5h.contains(75) && !saved.milestones_5h.contains(50));
     assert!(saved.live_usage_enabled);
     assert!(!saved.overview_limits_expanded);
+    assert!(!saved.local_summary_titles);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
     // Each notification preference is stored on its own key, so a reader who

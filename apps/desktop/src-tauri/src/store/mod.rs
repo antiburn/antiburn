@@ -1063,6 +1063,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("overviewLimitsExpanded")
             .map(|value| value == "true")
             .unwrap_or(defaults.overview_limits_expanded),
+        local_summary_titles: stored
+            .get("localSummaryTitles")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.local_summary_titles),
     }
     .normalized())
 }
@@ -1143,6 +1147,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "overviewLimitsExpanded",
         bool_text(settings.overview_limits_expanded)
+    ])?;
+    put.execute(params![
+        "localSummaryTitles",
+        bool_text(settings.local_summary_titles)
     ])?;
     Ok(())
 }

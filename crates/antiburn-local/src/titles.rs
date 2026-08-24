@@ -15,8 +15,10 @@
 
 use async_trait::async_trait;
 
-/// What a summarizer needs to name one session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a summarizer needs to name one session. Serializes as the JSON a
+/// sidecar backend writes to the helper's stdin.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TitleInput {
     /// Repository or directory name, when known. Anchors the title.
     pub repo: Option<String>,

@@ -119,6 +119,13 @@ export interface AppSettings {
    * where the reader last left it.
    */
   overviewLimitsExpanded: boolean
+  /**
+   * Whether the scan may name sessions with the platform's on-device model,
+   * when a session's only name is its first message. Everything runs on this
+   * machine and no API tokens are spent. Only macOS ships a backend today;
+   * elsewhere the switch does nothing.
+   */
+  localSummaryTitles: boolean
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -611,6 +618,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   liveUsageEnabled: true,
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
+  localSummaryTitles: true,
 }
 
 /* -------------------------------------------------------------------------

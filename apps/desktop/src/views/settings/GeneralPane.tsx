@@ -20,6 +20,7 @@ import {
   type AppInfo,
   type ScanStatus,
 } from "../../lib/ipc"
+import { isMacOS } from "../../lib/platform"
 import { relativeTime } from "../../lib/presentation/relativeTime"
 import { scanStatusStore } from "../../lib/scanStatusStore"
 import type { AppSettingsController } from "./useAppSettings"
@@ -122,6 +123,16 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
             checked={!settings.discoveryPaused}
             onChange={(next) => void update({ discoveryPaused: !next })}
           />
+          {/* macOS only: the on-device backend is Apple's model, and no
+              other platform ships one yet. */}
+          {isMacOS() && (
+            <ToggleRow
+              label="Name sessions on this Mac"
+              description="When a session's only name is its first message, antiburn asks Apple's on-device model for a short title. Everything runs on this machine; no API tokens are spent."
+              checked={settings.localSummaryTitles}
+              onChange={(next) => void update({ localSummaryTitles: next })}
+            />
+          )}
           <Row
             label="Historical scan"
             description={`Read every session file antiburn can find on this machine, from the start. ${scanSummary(

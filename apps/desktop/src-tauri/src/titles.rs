@@ -28,11 +28,112 @@ pub struct LocalSummaryCandidate {
 
 /// The summarizer this platform ships, when one exists.
 ///
-/// No backend ships yet. Step 3 of `docs/plans/local-session-titles.md`
-/// returns the macOS Foundation Models sidecar here; other platforms stay
-/// `None` and keep the cleaned first-message fallback.
+/// macOS ships the Foundation Models sidecar. Other platforms return `None`
+/// and keep the cleaned first-message fallback.
+#[cfg(target_os = "macos")]
+pub fn platform_summarizer() -> Option<Arc<dyn TitleSummarizer>> {
+    let binary = sidecar::binary_path()?;
+    Some(Arc::new(sidecar::SidecarSummarizer::new(binary)))
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn platform_summarizer() -> Option<Arc<dyn TitleSummarizer>> {
     None
+}
+
+/// The macOS backend: a bundled Swift helper (`title-summarizer`) that talks
+/// to the on-device Apple Foundation Models. One process run per request:
+/// `--probe` answers availability, and a run without arguments reads the
+/// [`TitleInput`] JSON on stdin and writes the title to stdout.
+#[cfg(target_os = "macos")]
+mod sidecar {
+    use std::path::PathBuf;
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    use antiburn_local::titles::{SummarizerAvailability, TitleInput, TitleSummarizer};
+    use async_trait::async_trait;
+    use tokio::io::AsyncWriteExt;
+
+    /// Wall time for one helper run. Generation takes 300ms–1s warm; the
+    /// margin covers a cold model load. On timeout the process is killed and
+    /// the session keeps its fallback title.
+    const RUN_TIMEOUT: Duration = Duration::from_secs(20);
+
+    pub struct SidecarSummarizer {
+        binary: PathBuf,
+    }
+
+    impl SidecarSummarizer {
+        pub fn new(binary: PathBuf) -> Self {
+            Self { binary }
+        }
+
+        async fn run(&self, args: &[&str], stdin: Option<Vec<u8>>) -> Option<String> {
+            let mut command = tokio::process::Command::new(&self.binary);
+            command
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            let mut child = command.spawn().ok()?;
+            if let Some(payload) = stdin
+                && let Some(mut input) = child.stdin.take()
+            {
+                let _ = input.write_all(&payload).await;
+            } else {
+                drop(child.stdin.take());
+            }
+            let output = tokio::time::timeout(RUN_TIMEOUT, child.wait_with_output())
+                .await
+                .ok()?
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            String::from_utf8(output.stdout).ok()
+        }
+    }
+
+    #[async_trait]
+    impl TitleSummarizer for SidecarSummarizer {
+        async fn availability(&self) -> SummarizerAvailability {
+            match self.run(&["--probe"], None).await {
+                Some(answer) if answer.trim() == "available" => SummarizerAvailability::Available,
+                Some(answer) => SummarizerAvailability::Unavailable(answer.trim().to_string()),
+                None => SummarizerAvailability::Unavailable("the sidecar did not answer".into()),
+            }
+        }
+
+        async fn title(&self, input: &TitleInput) -> Option<String> {
+            let payload = serde_json::to_vec(input).ok()?;
+            self.run(&[], Some(payload)).await
+        }
+    }
+
+    /// Find the bundled helper. A packaged app carries it beside the main
+    /// executable; a development build falls back to the copy that build.rs
+    /// compiled into the manifest's `binaries/` directory.
+    pub fn binary_path() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let bundled = exe.parent()?.join("title-summarizer");
+        if bundled.is_file() {
+            return Some(bundled);
+        }
+        if cfg!(debug_assertions) {
+            let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("binaries")
+                .join(format!(
+                    "title-summarizer-{}",
+                    env!("ANTIBURN_TARGET_TRIPLE")
+                ));
+            if dev.is_file() {
+                return Some(dev);
+            }
+        }
+        None
+    }
 }
 
 /// Model calls one pass may spend. A first scan can surface hundreds of
@@ -279,5 +380,76 @@ mod tests {
         let (title, source) = stored_title(&store, &key);
         assert_eq!(title.as_deref(), Some("Reader's own name"));
         assert_eq!(source.as_deref(), Some("userRename"));
+    }
+
+    #[cfg(target_os = "macos")]
+    mod sidecar {
+        use super::super::sidecar::SidecarSummarizer;
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        /// A stand-in helper script, so the tests cover the process protocol
+        /// without the real model.
+        fn stub(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+            let path = dir.join("title-summarizer");
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+
+        #[tokio::test]
+        async fn probe_maps_stdout_to_availability() {
+            let dir = tempfile::tempdir().unwrap();
+            let available = SidecarSummarizer::new(stub(dir.path(), r#"echo "available""#));
+            assert_eq!(
+                available.availability().await,
+                SummarizerAvailability::Available
+            );
+
+            let off = SidecarSummarizer::new(stub(
+                dir.path(),
+                r#"echo "unavailable: Apple Intelligence is off""#,
+            ));
+            assert_eq!(
+                off.availability().await,
+                SummarizerAvailability::Unavailable(
+                    "unavailable: Apple Intelligence is off".into()
+                )
+            );
+        }
+
+        #[tokio::test]
+        async fn title_sends_input_json_and_returns_stdout() {
+            let dir = tempfile::tempdir().unwrap();
+            // The stub echoes the JSON it receives, so the assertion covers
+            // both directions of the protocol.
+            let echoing = SidecarSummarizer::new(stub(dir.path(), "cat"));
+            let input = TitleInput {
+                repo: Some("antiburn".into()),
+                first_message: "make the pane clickable".into(),
+                context: vec!["also fix hover".into()],
+            };
+            let round_trip = echoing.title(&input).await.unwrap();
+            assert_eq!(
+                round_trip,
+                r#"{"repo":"antiburn","firstMessage":"make the pane clickable","context":["also fix hover"]}"#
+            );
+        }
+
+        #[tokio::test]
+        async fn a_failing_helper_yields_no_title() {
+            let dir = tempfile::tempdir().unwrap();
+            let failing = SidecarSummarizer::new(stub(dir.path(), "exit 1"));
+            let input = TitleInput {
+                repo: None,
+                first_message: "anything".into(),
+                context: vec![],
+            };
+            assert!(failing.title(&input).await.is_none());
+            assert!(matches!(
+                failing.availability().await,
+                SummarizerAvailability::Unavailable(_)
+            ));
+        }
     }
 }
