@@ -179,6 +179,7 @@ typography:
   title-1: { fontSize: 22px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.35px" }
   title-2: { fontSize: 17px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.43px" }
   title-3: { fontSize: 15px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.23px" }
+  body-large: { fontSize: 14px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "-0.15px" }
   headline: { fontSize: 13px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.08px" }
   body: { fontSize: 13px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "-0.08px" }
   callout: { fontSize: 12px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0" }
@@ -232,6 +233,8 @@ motion:
   progress-pulse: "1.5s loop"
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
+  session-hygiene-fan: "hover fan-out 240ms ease-out-quart + quick fade-in, 15ms outward stagger; hover-out fades 200ms in place (transform snap-back waits for the fade); the row's model names crossfade out of the fan's path over 200ms; reduced motion fades only"
+  session-hygiene-mark: "check/cross marks rise in above their glyphs after a hover held 2s, left to right at 200ms apart (~1s across a full row), each a 300ms ease-out-quart rise + scale + fade; off hover they drop and fade quick; reduced motion fades only"
 components:
   button-secondary:
     className: ui-push-button
@@ -340,9 +343,9 @@ Notes for what isn't expressible as a token:
   (`src/styles/motion.css`). A surface that still needs a hint of movement re-states a short
   duration there, with the reason; today the only such exception is the segmented control's
   reduced-motion fill, which crossfades over 60ms instead of swapping instantly. An ambient loop
-  stops instead of shortening: no duration makes a loop acceptable, so the activity-row pulse and
-  title shimmer in `src/styles/session-rows.css` set `animation: none` and each keeps its resting
-  meaning — the pulse settles at a fixed tint, and the title paints as plain primary text.
+  stops instead of shortening: no duration makes a loop acceptable, so the activity-row title
+  shimmer in `src/styles/session-rows.css` sets `animation: none` and keeps its resting
+  meaning — the title paints as plain primary text.
 - **State** — style the headless control primitives via `[data-state]` / `[data-highlighted]`, not
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to

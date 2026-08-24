@@ -18,13 +18,13 @@ describe("SessionCostBadge", () => {
   it("carries the outlier meaning in the accessible name, not just in color", () => {
     render(<SessionCostBadge totalUsd={19.5} figureLabel="Estimated cost" isHighCost />)
     const pill = screen.getByLabelText("Estimated cost $19.50, higher than usual")
-    expect(pill.className).toContain("bg-system-red/15")
+    expect(pill.className).toContain("bg-brand-tint")
   })
 
   it("uses the calm palette when the session is not an outlier", () => {
     render(<SessionCostBadge totalUsd={0.4} figureLabel="Projected cost" />)
     expect(screen.getByLabelText("Projected cost $0.40").className).toContain(
-      "bg-system-gold/15",
+      "bg-label-tertiary/15",
     )
   })
 

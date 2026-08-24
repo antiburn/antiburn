@@ -139,15 +139,16 @@ describe("SessionList — rows", () => {
       /fast mode overuse/i,
       /excess cache rehydration/i,
     ]
-    const firstResults = labels.map((label) => screen.getByLabelText(label).textContent)
-    expect(firstResults).toContain("✓")
-    expect(firstResults).toContain("×")
+    // The glyph color names the state: brand orange fails, tertiary passes.
+    const stateOf = (label: RegExp) =>
+      screen.getByLabelText(label).className.includes("text-brand-tint") ? "fail" : "pass"
+    const firstResults = labels.map(stateOf)
+    expect(firstResults).toContain("pass")
+    expect(firstResults).toContain("fail")
 
     first.unmount()
     list({ entries: [entry({ sessionId: "mock-0" })] })
-    expect(labels.map((label) => screen.getByLabelText(label).textContent)).toEqual(
-      firstResults,
-    )
+    expect(labels.map(stateOf)).toEqual(firstResults)
   })
 
   it("states the last-activity time", () => {

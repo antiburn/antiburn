@@ -4,43 +4,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-/* These styles show active sessions with a background pulse and a title shimmer. */
+/* These styles show active sessions with a title shimmer. */
 
-/* --- Running-session pulse --- */
-
-/* The two cycles live on the row so the background and the title read as one
-   effect with two tempos. The broad-area background is the slower of the two
-   deliberately: a large surface pulsing at the title's rate is agitating. */
 .activity-row-active {
-  --activity-row-pulse-cycle: 3200ms;
   --activity-row-shimmer-cycle: 4000ms;
-}
-
-@keyframes activity-row-pulse {
-  0%,
-  100% {
-    opacity: 0.12;
-  }
-
-  50% {
-    opacity: 0.28;
-  }
-}
-
-/* Behind the card, never in front of it: `z-index: -1` on a layer inside a
-   row that establishes its own stacking context (the component pairs this
-   class with `isolate`), so the tint cannot cover the row's own content. */
-.activity-row-active::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background-color: var(--color-bg-secondary);
-  opacity: 0.12;
-  pointer-events: none;
-  animation: activity-row-pulse var(--activity-row-pulse-cycle) cubic-bezier(0.77, 0, 0.175, 1)
-    infinite;
 }
 
 /* --- Running-session title shimmer --- */
@@ -112,19 +79,142 @@
   -webkit-line-clamp: var(--truncated-text-lines);
 }
 
+/* --- Hygiene glyph fan --- */
+
+/* The passing checks sit outside the flow. The rail is the positioned
+   ancestor, so `right: calc(100% + gap)` pins this box to the left edge of
+   the leftmost failed glyph, or of the cost pill when every check passes. */
+.session-hygiene-pass {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + var(--space-xs));
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  transform: translateY(-50%);
+}
+
+/* At rest the glyphs are invisible and stacked at the anchor. The transform
+   snap-back waits for the fade to end: a pointer that leaves the row sees
+   the glyphs fade in place, never slide back in. */
+.session-hygiene-pass .session-hygiene-glyph {
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 200ms ease-out,
+    transform 0s 200ms;
+}
+
+/* The state mark floats above its glyph and never covers it. It is hidden at
+   rest. On a hover held for two seconds the marks rise in one at a time,
+   left to right, 200ms apart — about one second across a full row. The
+   component sets each mark's place with --hygiene-mark-index. Off hover
+   they drop and fade right away. */
+.session-hygiene-mark {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  margin-bottom: 1px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(4px) scale(0.5);
+  transition:
+    opacity var(--duration-quick) ease-out,
+    transform var(--duration-quick) ease-out;
+}
+
+.session-row:hover .session-hygiene-mark {
+  --hygiene-mark-delay: calc(2000ms + var(--hygiene-mark-index, 0) * 200ms);
+  opacity: 1;
+  transform: translateX(-50%);
+  transition:
+    opacity var(--duration-slow) var(--ease-out-quart) var(--hygiene-mark-delay),
+    transform var(--duration-slow) var(--ease-out-quart) var(--hygiene-mark-delay);
+}
+
+/* The open fan can reach over the model names. The names step aside: they
+   fade out while the fan is open, only in a row that has a fan to open. */
+.session-row:has(.session-hygiene-pass) .session-model-names {
+  transition: opacity 200ms ease-out;
+}
+
+.session-row:has(.session-hygiene-pass):hover .session-model-names {
+  opacity: 0;
+}
+
+/* Stack offsets: one glyph pitch (20px glyph + 4px gap) per position. */
+.session-hygiene-pass .session-hygiene-glyph:nth-last-child(2) {
+  transform: translateX(24px);
+}
+
+.session-hygiene-pass .session-hygiene-glyph:nth-last-child(3) {
+  transform: translateX(48px);
+}
+
+.session-hygiene-pass .session-hygiene-glyph:nth-last-child(4) {
+  transform: translateX(72px);
+}
+
+.session-hygiene-pass .session-hygiene-glyph:nth-last-child(5) {
+  transform: translateX(96px);
+}
+
+.session-hygiene-pass .session-hygiene-glyph:nth-last-child(6) {
+  transform: translateX(120px);
+}
+
+.session-row:hover .session-hygiene-pass .session-hygiene-glyph {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition:
+    transform 240ms var(--ease-out-quart),
+    opacity var(--duration-quick) ease-out;
+}
+
+/* The delay grows with the distance, so the fan opens outward. */
+.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(2) {
+  transition-delay: 15ms;
+}
+
+.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(3) {
+  transition-delay: 30ms;
+}
+
+.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(4) {
+  transition-delay: 45ms;
+}
+
+.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(5) {
+  transition-delay: 60ms;
+}
+
+.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(6) {
+  transition-delay: 75ms;
+}
+
 /* --- Reduced motion --- */
 
-/* The global clamp in motion.css shortens transitions; these two effects are
-   *ambient loops*, which no duration makes acceptable, so they stop outright.
-   Each keeps its resting meaning: the pulse settles at a fixed tint that still
-   marks the row, and the title drops the overlay and paints as plain primary
-   text rather than staying at the dimmed shimmer base. */
+/* The fan is an interaction response, not an ambient loop, but the slide is
+   decorative: with reduced motion the glyphs only fade, in both directions. */
 @media (prefers-reduced-motion: reduce) {
-  .activity-row-active::before {
-    animation: none !important;
-    opacity: 0.18;
+  .session-hygiene-pass .session-hygiene-glyph {
+    transform: none !important;
+    transition: opacity var(--duration-quick) ease-out;
   }
 
+  .session-hygiene-mark {
+    transform: translateX(-50%) !important;
+    transition: opacity var(--duration-quick) ease-out;
+  }
+}
+
+/* The global clamp in motion.css shortens transitions; the shimmer is an
+   *ambient loop*, which no duration makes acceptable, so it stops outright.
+   It keeps its resting meaning: the title drops the overlay and paints as
+   plain primary text rather than staying at the dimmed shimmer base. */
+@media (prefers-reduced-motion: reduce) {
   .activity-row-title-shimmer {
     color: var(--color-text-primary);
   }
