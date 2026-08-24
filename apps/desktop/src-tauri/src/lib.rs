@@ -245,6 +245,8 @@ pub fn run() {
                         error = %error
                     );
                 }
+            } else {
+                popover::schedule_prewarm(app.handle());
             }
 
             // Registered before the update scheduler starts, so the first

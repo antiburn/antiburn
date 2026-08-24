@@ -54,7 +54,7 @@ use tauri::{
 };
 
 use crate::window_readiness::{
-    OpenAction, ReadyAction, STALE_LOAD_AFTER, ToggleAction, WindowReadiness,
+    OpenAction, PrewarmAction, ReadyAction, STALE_LOAD_AFTER, ToggleAction, WindowReadiness,
     renderer_generation_script,
 };
 
@@ -130,6 +130,9 @@ const SCREEN_MARGIN: f64 = 8.0;
 /// *before* the tray click arrives, so a naive toggle would hide the popover
 /// and immediately reopen it. This window swallows that second half.
 const REOPEN_SUPPRESSION: Duration = Duration::from_millis(250);
+
+/// Delay before the app creates the resident hidden popover.
+const PREWARM_DELAY: Duration = Duration::from_millis(500);
 
 /// The menu-bar item's rectangle, in physical pixels on the display it lives
 /// on. Kept as plain numbers rather than a [`Rect`] so a height change can
@@ -521,6 +524,36 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
             cancel_load(app, generation);
             Err(error)
         }
+    }
+}
+
+/// Schedule one hidden popover load after the app gets a display context.
+pub fn schedule_prewarm(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(PREWARM_DELAY).await;
+        let prewarm_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || prewarm(&prewarm_app)) {
+            ::tracing::warn!(event = "popover_prewarm_schedule_failed", error = %error);
+        }
+    });
+}
+
+fn prewarm(app: &AppHandle) {
+    if crate::onboarding::is_pending(app) {
+        return;
+    }
+    let state = app.state::<PopoverState>();
+    let action = {
+        let mut readiness = state.readiness();
+        readiness.request_prewarm(Instant::now())
+    };
+    let PrewarmAction::StartLoading { generation } = action else {
+        return;
+    };
+    if let Err(error) = build_window(app, generation) {
+        cancel_load(app, generation);
+        ::tracing::warn!(event = "popover_prewarm_failed", error = %error);
     }
 }
 
@@ -1318,6 +1351,11 @@ mod tests {
     #[test]
     fn other_platforms_keep_the_existing_anchor_gap() {
         assert_eq!(ANCHOR_GAP, 6.0);
+    }
+
+    #[test]
+    fn prewarm_waits_for_the_display_context() {
+        assert_eq!(PREWARM_DELAY, Duration::from_millis(500));
     }
 
     /// A 2x display: the anchor arrives in physical pixels, the window is

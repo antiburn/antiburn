@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 
 const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
 
@@ -31,6 +32,14 @@ export function setFloatingHudEnabled(enabled: boolean): void {
     localStorage.setItem(HUD_PREF_KEY, enabled ? "1" : "0")
   } catch {
     // The HUD still works when preference storage is unavailable.
+  }
+}
+
+export async function isCurrentWindowVisible(): Promise<boolean> {
+  try {
+    return await getCurrentWindow().isVisible()
+  } catch {
+    return false
   }
 }
 
