@@ -11,9 +11,9 @@
 //! shell owns IPC policy and session discovery.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]

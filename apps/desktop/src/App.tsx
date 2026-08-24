@@ -20,7 +20,9 @@ const OverlayWindow = lazy(() =>
   import("./views/OverlayWindow").then(({ OverlayWindow: view }) => ({ default: view })),
 )
 const HudDetailView = lazy(() =>
-  import("./views/overlay/HudDetailView").then(({ HudDetailView: view }) => ({ default: view })),
+  import("./views/overlay/HudDetailView").then(({ HudDetailView: view }) => ({
+    default: view,
+  })),
 )
 
 function RouteLoading() {

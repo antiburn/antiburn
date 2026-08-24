@@ -178,17 +178,13 @@ export function HudDetailView() {
           antiburn
         </p>
         {state.bars.length === 0 ? (
-          <p className="type-caption text-label-tertiary">
-            No usage limits detected yet.
-          </p>
+          <p className="type-caption text-label-tertiary">No usage limits detected yet.</p>
         ) : (
           <div className="space-y-2">
             {state.bars.map((bar) => (
               <div key={bar.key}>
                 <div className="flex items-baseline justify-between gap-2 type-caption">
-                  <span className="led-caption text-label-secondary truncate">
-                    {bar.label}
-                  </span>
+                  <span className="led-caption text-label-secondary truncate">{bar.label}</span>
                   <span className="stats-number text-[13px] text-label shrink-0">
                     {Math.round(bar.percent)}%
                   </span>

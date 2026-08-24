@@ -178,4 +178,4 @@ Roughly 400–600 lines net, one PR.
 - Shrinking the HUD's 500px transparent frame (follow-up).
 - Windows/Linux support (the HUD is macOS-only; the detail window inherits
   that boundary).
-- Any change to bars, blinking, polling cadences, or the flinch work (#57).
+- Any change to bars, blinking, polling rates, or the flinch work (#57).
