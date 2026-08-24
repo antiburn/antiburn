@@ -703,6 +703,17 @@ async fn describe_one_with_activity(
 /// few early prompts improve the title; the whole transcript would not.
 const LOCAL_SUMMARY_CONTEXT_MESSAGES: usize = 3;
 
+/// True when a user-role turn holds text that Codex injects, not text the
+/// user wrote. Codex records project instructions ("# AGENTS.md instructions
+/// for …") and synthetic elements ("<environment_context>…") as user turns.
+/// The check is prefix-only because the extractor truncates long turns.
+/// A real prompt that starts with "<" is rare, and the cost of a skip is
+/// small: the summarizer anchors on the next user message instead.
+fn is_injected_codex_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with('<') || trimmed.starts_with("# AGENTS.md instructions")
+}
+
 /// Collect a candidate for local title generation. Only a native Codex
 /// session stuck on the `firstMessage` fallback qualifies; every other
 /// provenance already carries a better name.
@@ -720,6 +731,7 @@ fn local_summary_candidate(
         return None;
     }
     let mut messages = scanner::user_message_titles_from_content(preview?);
+    messages.retain(|message| !is_injected_codex_text(message));
     if messages.is_empty() {
         return None;
     }
@@ -1324,6 +1336,58 @@ mod tests {
         assert!(
             local_summary_candidate(&in_wsl, &key, None, Some(preview), Some("firstMessage"))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn summary_candidates_skip_injected_codex_turns() {
+        let codex = log(
+            AgentKind::Codex,
+            std::path::PathBuf::from("/tmp/rollout.jsonl"),
+            1_800_000_000,
+        );
+        let key = SessionKey::new("native", "codex", "session-1");
+        // Codex records project instructions and environment context as
+        // user-role turns before the first real prompt.
+        let preview = concat!(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /home/avery/code/gadgets\n\n<INSTRUCTIONS>\nUse the makefile.\n</INSTRUCTIONS>"}]}}"##,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/home/avery/code/gadgets</cwd>\n</environment_context>"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"make the pane clickable"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"also fix the hover state"}]}}"#,
+            "\n",
+        );
+
+        let candidate = local_summary_candidate(
+            &codex,
+            &key,
+            Some("/home/avery/code/gadgets"),
+            Some(preview),
+            Some("firstMessage"),
+        )
+        .expect("the real prompt still qualifies");
+        assert_eq!(candidate.input.first_message, "make the pane clickable");
+        assert_eq!(
+            candidate.input.context,
+            vec!["also fix the hover state".to_string()]
+        );
+
+        // A session with only injected turns yields no candidate.
+        let injected_only = concat!(
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /home/avery/code/gadgets"}]}}"##,
+            "\n",
+        );
+        assert!(
+            local_summary_candidate(
+                &codex,
+                &key,
+                None,
+                Some(injected_only),
+                Some("firstMessage")
+            )
+            .is_none()
         );
     }
 

@@ -9,7 +9,7 @@ Approved 2026-08-24 after review. Windows (Phi Silica) and Ollama backends are f
 | Step | Status |
 | --- | --- |
 | 1. Heuristic fallback cleanup | Done (marker strip + first sentence + word-boundary truncation in `clean_first_message_title`, applied in `select_title_pair`) |
-| 2. `TitleSummarizer` trait + storage | Done (`TitleSummarizer` trait + `sanitize_generated_title` in the engine; `localSummary` provenance, guarded store writes, candidate collection in the scan, `local_summary_pass` wired after upsert — `platform_summarizer()` returns `None` until step 3) |
+| 2. `TitleSummarizer` trait + storage | Done (`TitleSummarizer` trait + `sanitize_generated_title` in the engine; `localSummary` provenance, guarded store writes, candidate collection in the scan, `local_summary_pass` wired after upsert — `platform_summarizer()` returns `None` until step 3. Follow-up fix 2026-08-25: candidate collection skips Codex-injected user turns — `# AGENTS.md instructions …` and `<environment_context>`-style elements — found when running the pipeline against Keith's real rollouts; without the filter the model titled the boilerplate) |
 | 3. macOS backend (Apple Foundation Models sidecar) | Done (Swift sidecar `sidecar/title-summarizer.swift` compiled by build.rs and bundled via `tauri.macos.conf.json` externalBin; `SidecarSummarizer` runs it with a 20s timeout; `local_summary_titles` setting, default on, macOS-only toggle in General settings; generate-once per session, 15 titles per pass, newest first) |
 
 ## Background (investigated 2026-08-24)
