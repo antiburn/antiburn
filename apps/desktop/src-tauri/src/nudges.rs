@@ -97,13 +97,11 @@ pub fn deliver(app: &AppHandle, mut nudge: Nudge) {
     }
 }
 
-/// Which kinds carry the chime. Deliberately short — a sound that plays for
-/// everything is a sound people silence: the test plays it (so the toggle is
-/// auditable), and the anomaly plays it (the one kind meant to catch someone
-/// mid-flow). Updates, scans, disk, and milestones stay quiet.
+/// Which kinds carry the chime. The test plays it so the toggle is auditable.
+/// Updates, scans, disk, and milestones stay quiet.
 fn sound_for(kind: NudgeKind) -> Option<antiburn_sound::SoundKind> {
     match kind {
-        NudgeKind::Test | NudgeKind::UsageAnomaly => Some(antiburn_sound::SoundKind::Notification),
+        NudgeKind::Test => Some(antiburn_sound::SoundKind::Notification),
         _ => None,
     }
 }
@@ -142,6 +140,10 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     if event.action_id == "dismiss" {
         return;
     }
+    if event.action_id == crate::notifications::NOTIFICATION_SETTINGS_ACTION_ID {
+        let _ = crate::settings::open(app, Some("notifications".to_string()));
+        return;
+    }
     // "Show me" opens the popover under the glyph the notification is already
     // pointing at, so the reader's first sight of it is the thing the icon
     // does rather than a settings pane about it.
@@ -158,10 +160,8 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     let pane = match event.kind {
         // Software update lives inside About (with the build it updates).
         NudgeKind::UpdateAvailable => Some("about"),
-        NudgeKind::ScanFailure => Some("general"),
-        NudgeKind::DiskSpaceLow | NudgeKind::UsageAnomaly | NudgeKind::UsageMilestone => {
-            Some("notifications")
-        }
+        NudgeKind::ScanFailure => Some("sources"),
+        NudgeKind::DiskSpaceLow | NudgeKind::UsageMilestone => Some("notifications"),
         // Test, and anything the crate's non-exhaustive enum grows later: a
         // CTA with no better home still lands somewhere real.
         _ => None,

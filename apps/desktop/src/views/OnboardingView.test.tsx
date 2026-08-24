@@ -42,7 +42,7 @@ const SETTINGS = {
   launchAtLogin: true,
   autoUpdate: true,
   discoveryPaused: false,
-  usageAnalyticsEnabled: true,
+  analyticsEnabled: true,
 }
 
 /// A build that *can* transmit, so the consent control renders as a live
@@ -53,8 +53,8 @@ const APP_INFO = {
   debugBuild: false,
   arch: "aarch64",
   updatesSupported: false,
-  usageAnalyticsSupported: true,
-  usageAnalyticsOperator: "the antiburn team",
+  analyticsSupported: true,
+  analyticsOperator: "the antiburn team",
 }
 
 const SCAN_STATUS = {
@@ -209,7 +209,7 @@ describe("OnboardingView", () => {
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 14,
         launchAtLogin: true,
-        usageAnalyticsEnabled: true,
+        analyticsEnabled: true,
       }),
     )
   })
@@ -221,7 +221,7 @@ describe("OnboardingView", () => {
     await advanceToReady()
 
     const analytics = screen.getByRole("switch", {
-      name: "Send anonymised usage analytics",
+      name: "Send anonymised analytics",
     })
     expect(analytics).toBeChecked()
     // Nothing has been written yet: the whole point of putting this on the
@@ -232,7 +232,7 @@ describe("OnboardingView", () => {
   /// A build with no endpoint injected cannot send anything, so the row says
   /// so rather than offering a switch over nothing.
   it("disables the analytics control in a build with no endpoint", async () => {
-    mockCommands({ app_info: { ...APP_INFO, usageAnalyticsSupported: false } })
+    mockCommands({ app_info: { ...APP_INFO, analyticsSupported: false } })
     render(<OnboardingView />)
 
     // Welcome first, because it is the screen that used to overstate this.
@@ -247,7 +247,7 @@ describe("OnboardingView", () => {
     await advanceToReady()
 
     const analytics = screen.getByRole("switch", {
-      name: "Send anonymised usage analytics",
+      name: "Send anonymised analytics",
     })
     expect(analytics).toBeDisabled()
     expect(analytics).not.toBeChecked()
@@ -260,14 +260,14 @@ describe("OnboardingView", () => {
     render(<OnboardingView />)
     await advanceToReady()
 
-    fireEvent.click(screen.getByRole("switch", { name: "Send anonymised usage analytics" }))
+    fireEvent.click(screen.getByRole("switch", { name: "Send anonymised analytics" }))
     fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 7,
         launchAtLogin: true,
-        usageAnalyticsEnabled: false,
+        analyticsEnabled: false,
       }),
     )
   })
@@ -287,7 +287,7 @@ describe("OnboardingView", () => {
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 7,
         launchAtLogin: false,
-        usageAnalyticsEnabled: true,
+        analyticsEnabled: true,
       }),
     )
   })

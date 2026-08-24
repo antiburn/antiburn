@@ -1,9 +1,8 @@
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-export const AISLOP_BIN = fileURLToPath(
-  new URL("../node_modules/.bin/aislop", import.meta.url),
-);
+import { AISLOP_BIN, runAislopHook } from "./aislop-hook-output.mjs";
+
+export { AISLOP_BIN };
 
 export function patchFiles(patch) {
   const entries = [];
@@ -57,10 +56,6 @@ export function patchFiles(patch) {
     .filter((path) => path && !seen.has(path) && seen.add(path));
 }
 
-function reportFailure() {
-  process.stderr.write("codex aislop hook failed\n");
-}
-
 export async function run(stdinText, bin = AISLOP_BIN) {
   if (stdinText.trim() === "") return 0;
 
@@ -87,25 +82,7 @@ export async function run(stdinText, bin = AISLOP_BIN) {
     tool_input: { edits: files.map((file_path) => ({ file_path })) },
   });
 
-  return new Promise((resolve) => {
-    const child = spawn(bin, ["hook", "claude"], {
-      cwd: process.cwd(),
-      env: { ...process.env, AISLOP_NO_TELEMETRY: "1" },
-      stdio: ["pipe", "inherit", "inherit"],
-    });
-    let done = false;
-    const finish = (code) => {
-      if (done) return;
-      done = true;
-      if (code !== 0) reportFailure();
-      resolve(code);
-    };
-
-    child.on("error", () => finish(1));
-    child.on("exit", (code, signal) => finish(code === 0 && signal === null ? 0 : 1));
-    child.stdin.on("error", () => {});
-    child.stdin.end(input);
-  });
+  return runAislopHook(input, bin, "codex aislop hook");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -44,9 +44,9 @@ described in [Network](#network).
 live language-server APIs those two editors expose aren't read, so a session that
 exists only in memory will not appear.
 
-**Session analytics** — the timeline, phases, context, token, and cost views — need a
+**Session analysis** — the timeline, phases, context, token, and cost views — need a
 transcript format antiburn understands in detail. Where it has only a generic parse,
-the session is still listed and the analytics view says so rather than showing an
+the session is still listed and the analysis view says so rather than showing an
 empty chart that looks like an idle session.
 
 ## Cost estimates
@@ -127,7 +127,7 @@ version exists, and which the app never depends on.
 - It runs on a schedule only while "check for updates automatically" is on, and can
   always be run by hand from Settings → About.
 - Development builds carry no updater at all.
-- **Anonymised usage analytics** are the one thing antiburn reports about itself.
+- **Anonymised analytics** are the one thing antiburn reports about itself.
   On by default; the switch is in Settings → Privacy, and the first-run Ready
   screen shows it before anything is sent. Each event carries thirteen fields and
   no others: the constant `desktop`; a random per-message id used to discard
@@ -139,7 +139,7 @@ version exists, and which the app never depends on.
   field able to carry anything else. Because each event is timestamped and the
   identifier lasts up to 30 days, the events do show roughly when the
   application is used within that window; they do not show what it was used on.
-  [usage-analytics.md](usage-analytics.md) is the complete account: every field,
+  [analytics.md](analytics.md) is the complete account: every field,
   the full event catalog, and how to verify all of it yourself.
   Never sent: sessions, transcripts, prompts, titles, file paths, repository or
   branch names, token counts, costs, or credentials. Switching it off deletes
@@ -165,14 +165,15 @@ credential, and has no plan limits to show.
 
 **Notifications are local.** antiburn shows them in its own small notification
 window and posts exactly these: an update check that found a newer version, the
-first scan failure of a run, free disk space dropping below your threshold, an
-hour of unusually fast estimated spend, a usage milestone, and the test button's
-own sample. Milestones need readings that keep moving, so they fire only while
-Settings → Usage is set to refresh; with that off they stay silent. Every
-figure in them is computed on this machine; nothing about a notification leaves
-it. All of them can be turned off in Settings → Notifications, together or one at
-a time — the test alone ignores the master switch, so you can preview a
-notification before allowing any.
+first scan failure of a run, free disk space dropping below your threshold, a
+usage milestone, the first-run menu-bar location, and the test button's own
+sample. Milestones need readings that keep moving, so they fire only while
+Settings → Usage is set to refresh; with that off they stay silent. By default,
+they fire at every 10% of a limit and compare quota used with time elapsed in
+that limit's window. Settings → Notifications offers every 5% step, plus
+select-all and clear-all controls. antiburn constructs each notification on this
+machine, and nothing about it leaves the machine. The test and first-run
+location ignore the master switch because both follow a direct action.
 
 ## Reporting a gap
 

@@ -83,6 +83,31 @@ impl ManagedWindowReadiness for OnboardingWindowState {
     }
 }
 
+/// Start setup again at Welcome and give it the first-run app presence.
+pub fn restart(app: &AppHandle) -> tauri::Result<()> {
+    apply_activation_policy(app, true);
+    let Some(existing) = app.get_webview_window(LABEL) else {
+        return open(app);
+    };
+
+    let generation = {
+        let state = app.state::<OnboardingWindowState>();
+        let mut readiness = state.readiness();
+        readiness.reset();
+        let OpenAction::StartLoading { generation } = readiness.request_open(Instant::now()) else {
+            unreachable!("an idle lifecycle starts loading")
+        };
+        let deferred = readiness.defer_build_until_destroyed(generation);
+        debug_assert!(deferred, "the replacement generation must remain active");
+        generation
+    };
+    if let Err(error) = existing.destroy() {
+        window_lifecycle::cancel_load::<OnboardingWindowState>(app, generation);
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Shows the onboarding window, creating it if this is the first request.
 ///
 /// Called twice over a first run's life: once from setup, and again if the
@@ -217,11 +242,11 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 
 /// Put the window away and point the reader at where the app now lives.
 ///
-/// Called from [`crate::commands::set_settings`] on the one transition that
-/// means the flow is over. The order is deliberate: the window goes first, so
+/// Called when the current setup run changes from pending to complete. The
+/// order is deliberate: the window goes first, so
 /// the notification arrives into the gap it leaves rather than on top of it —
-/// "where did that window go" is the question being answered, and it is only
-/// asked once the window is gone.
+/// "where did that window go" is the question being answered, and it is asked
+/// after the window is gone.
 pub fn finish(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.hide();

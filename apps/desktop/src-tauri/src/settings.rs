@@ -251,6 +251,14 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Hide Settings after it starts work in another window.
+pub fn hide(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        window.hide()?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

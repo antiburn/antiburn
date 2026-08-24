@@ -20,7 +20,9 @@ name = "antiburn_nudge"
 path = "src/lib.rs"
 
 [dependencies]
-tauri = { version = "2" }
+# The macOS notification uses a transparent window and a rounded Popover
+# material. Tauri gates both builder methods behind this feature.
+tauri = { version = "2", features = ["macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 # Facade only — the app installs the subscriber. Lets display resolution report
 # which signal picked the screen, so a misplaced notification is diagnosable from

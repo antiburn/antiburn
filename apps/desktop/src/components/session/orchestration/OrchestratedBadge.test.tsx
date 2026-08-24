@@ -49,7 +49,7 @@ describe("OrchestratedBadge", () => {
     expect(screen.getByText("Investigate the build")).toBeTruthy()
   })
 
-  it("opens a sub-agent's analytics from a roster row", () => {
+  it("opens a sub-agent's analysis from a roster row", () => {
     const onOpenSubagent = vi.fn()
     render(
       <OrchestratedBadge

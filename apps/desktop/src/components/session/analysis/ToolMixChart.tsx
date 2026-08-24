@@ -4,7 +4,7 @@
 
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts"
 
-import { toolMixSlices } from "../../../lib/presentation/sessionAnalytics"
+import { toolMixSlices } from "../../../lib/presentation/sessionAnalysis"
 import type { ActiveSessionsSummary } from "../../../lib/types/session"
 
 export interface ToolMixChartProps {

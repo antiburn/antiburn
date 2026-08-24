@@ -7,10 +7,10 @@ import { describe, expect, it } from "vitest"
 import { sessionKey } from "./PopoverSession"
 
 /**
- * `sessionKey` tags the analytics load a subject's payload belongs to. Get it
+ * `sessionKey` tags the analysis load a subject's payload belongs to. Get it
  * wrong and a subject that moves between environments — or a sub-agent whose
  * id happens to collide with one from a different parent — shows another
- * session's cached (or in-flight) analytics instead of its own.
+ * session's cached (or in-flight) analysis instead of its own.
  */
 
 describe("sessionKey", () => {

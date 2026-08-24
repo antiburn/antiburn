@@ -16,6 +16,7 @@ import { attentionBanners } from "../lib/attention"
 import {
   DEFAULT_SETTINGS,
   noteInteraction,
+  openGithubRepo,
   openSettingsWindow,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
@@ -25,7 +26,7 @@ import { PopoverSession, sessionKey } from "./popover/PopoverSession"
 import { UsageView } from "./popover/UsageView"
 import type { SessionSubject } from "./popover/SessionPane"
 
-// Session analytics pulls in the charting library and a substantial set of
+// Session analysis pulls in the charting library and a substantial set of
 // presentation components. Keep it out of the activity surface's initial
 // chunk; opening a session is the only action that needs this code.
 const SessionPane = lazy(() =>
@@ -36,7 +37,7 @@ const SessionPane = lazy(() =>
  * The tray popover.
  *
  * Three surfaces share one 380px window: the activity list, one session's
- * analytics, and local provider usage. There is no router — a popover is a
+ * analysis, and local provider usage. There is no router — a popover is a
  * single place, and a stack of "where I came from" is all the navigation it
  * needs.
  *
@@ -119,7 +120,8 @@ function usageEvidence(
 
 /**
  * The activity surface's bottom bar shows the app name and version.
- * The name also carries the surface's focus heading.
+ * The name also carries the surface's focus heading, and opens the
+ * project's GitHub repository when clicked.
  * The settings control opens the standalone Settings window.
  */
 function PopoverFooter({
@@ -131,21 +133,20 @@ function PopoverFooter({
   debugBuild: boolean
   onOpenSettings: () => void
 }) {
+  const versionLabel = appVersion ? ` v${appVersion}${debugBuild ? " debug" : ""}` : ""
+
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-t border-separator px-4">
-      <div className="flex items-baseline gap-2">
-        {/* Focused by the popover when this surface takes over, so a keyboard
-            or screen-reader user lands in the view rather than on <body>. */}
-        <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-          antiburn
-        </h1>
-        {appVersion && (
-          <span className="type-caption whitespace-nowrap text-label-secondary">
-            v{appVersion}
-            {debugBuild ? " debug" : ""}
-          </span>
-        )}
-      </div>
+      {/* Focused by the popover when this surface takes over, so a keyboard
+          or screen-reader user lands in the view rather than on <body>. */}
+      <button
+        type="button"
+        data-view-heading
+        onClick={() => void openGithubRepo()}
+        className="type-caption whitespace-nowrap text-label-secondary outline-none hover:underline"
+      >
+        antiburn{versionLabel}
+      </button>
       <button
         type="button"
         onClick={onOpenSettings}
@@ -203,17 +204,17 @@ export function PopoverView() {
   }, [])
 
   /* ---------------------------------------------------------------------
-   * Session analytics: derived from the session's tagged load result
+   * Session analysis: derived from the session's tagged load result
    * ------------------------------------------------------------------ */
 
   const currentKey = current ? sessionKey(current) : null
-  const settledAnalytics = state.analytics?.key === currentKey ? state.analytics : null
-  const sessionPayload = settledAnalytics?.payload ?? null
-  const sessionLoading = current != null && settledAnalytics == null
-  const sessionError = settledAnalytics?.error ?? false
+  const settledAnalysis = state.analysis?.key === currentKey ? state.analysis : null
+  const sessionPayload = settledAnalysis?.payload ?? null
+  const sessionLoading = current != null && settledAnalysis == null
+  const sessionError = settledAnalysis?.error ?? false
   // Only a re-load over a settled result is "refreshing"; a first load shows
   // the skeleton through `loading` instead.
-  const sessionRefreshing = state.analyticsRefreshing && settledAnalytics != null
+  const sessionRefreshing = state.analysisRefreshing && settledAnalysis != null
 
   /* ---------------------------------------------------------------------
    * Attention banners

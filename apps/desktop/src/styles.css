@@ -9,7 +9,7 @@
  *
  *   tailwindcss                 preflight + the theme/utility layers
  *   tokens                      @theme aliases and every palette branch
- *   session-analytics-colors    the session-analytics @theme sub-palette
+ *   session-analysis-colors     the session-analysis @theme sub-palette
  *   base                        unlayered element behavior
  *   typography                  unlayered type scale (outranks utilities)
  *   focus                       keyboard-only focus ring
@@ -24,7 +24,7 @@
 
 @import "tailwindcss";
 @import "./styles/tokens.css";
-@import "./styles/session-analytics-colors.css";
+@import "./styles/session-analysis-colors.css";
 @import "./styles/base.css";
 @import "./styles/typography.css";
 @import "./styles/focus.css";
@@ -93,6 +93,17 @@ body {
  */
 :root[data-platform="macos"][data-route="popover"] #root {
   background-color: var(--color-bg-primary);
+  border-radius: var(--radius-popover);
+  overflow: hidden;
+}
+
+/*
+ * The macOS notification window uses the same Popover material and radius.
+ * Keep the root transparent so the nudge card paints the only visible surface.
+ * Clip at the root so entrance, exit, and expanded states keep the same corner.
+ */
+:root[data-platform="macos"][data-route="nudge"] #root {
+  background-color: transparent;
   border-radius: var(--radius-popover);
   overflow: hidden;
 }

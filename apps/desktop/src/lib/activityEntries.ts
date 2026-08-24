@@ -8,7 +8,7 @@
  * The shell sends values such as a cost estimate and a model list. The
  * *wording* around them ("Projected cost", the breakdown row labels) and the
  * cohort judgement ("this one is unusually expensive") are presentation, and
- * they already exist in `lib/presentation/sessionAnalytics`. This module is the
+ * they already exist in `lib/presentation/sessionAnalysis`. This module is the
  * one place the two meet, kept pure so it can be tested without a shell.
  */
 
@@ -19,7 +19,7 @@ import {
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
-} from "./presentation/sessionAnalytics"
+} from "./presentation/sessionAnalysis"
 
 /** Narrow the shell's surface string to the presentation layer's union. */
 function surfaceOf(payload: ActivityEntryPayload): AgentSurface {

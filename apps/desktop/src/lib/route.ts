@@ -9,7 +9,7 @@ import { useSyncExternalStore } from "react"
  * uses a URL fragment to select the popover, nudge, or overlay view. Standalone
  * windows use dedicated entries and pass their route directly.
  */
-export type Route = "popover" | "settings" | "nudge" | "onboarding" | "overlay"
+export type Route = "popover" | "settings" | "nudge" | "onboarding" | "overlay" | "hud-detail"
 
 type ShellRoute = Exclude<Route, "settings" | "onboarding">
 
@@ -25,6 +25,7 @@ export const OVERLAY_FRAGMENT = "#/overlay"
 const ROUTES = new Map<string, ShellRoute>([
   ["nudge", "nudge"],
   ["overlay", "overlay"],
+  ["hud-detail", "hud-detail"],
 ])
 
 export function routeFromHash(hash: string): ShellRoute {

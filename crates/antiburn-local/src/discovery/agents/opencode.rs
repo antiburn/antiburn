@@ -568,7 +568,7 @@ pub async fn discover_recent_in_wsl(
 ///
 /// Repository discovery needs only location/count metadata. Keeping it on the
 /// single CLI metadata query avoids the much more expensive export and chunked
-/// reconstruction path used by upload, detail, and analytics. Legacy fragmented
+/// reconstruction path used by upload, detail, and analysis. Legacy fragmented
 /// storage remains the fallback when the distro CLI cannot provide metadata.
 pub async fn discover_cwds_in_wsl(
     info: &WslEnvironmentInfo,

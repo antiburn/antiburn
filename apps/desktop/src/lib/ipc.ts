@@ -44,12 +44,8 @@ export type NudgePlacement = "menuBar" | "topRight"
 /** When the menu bar shows the free-disk-space number. */
 export type DiskSpaceDisplay = "always" | "whenLow" | "never"
 
-/** Which usage-milestone thresholds notify, for one window class. */
-export interface Milestones {
-  at50: boolean
-  at75: boolean
-  at90: boolean
-}
+/** Selected usage-milestone percentages for one window class. */
+export type Milestones = number[]
 
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
@@ -90,8 +86,6 @@ export interface AppSettings {
   diskSpaceThresholdGb: number
   /** Notify once each time free space drops below the threshold. */
   notifyDiskSpaceLow: boolean
-  /** Notify when sustained spend is unusually fast for this machine. */
-  notifyUsageAnomalies: boolean
   /** Five-hour-window milestones. Only fire while live usage is enabled. */
   milestones5h: Milestones
   /** Weekly-window milestones. */
@@ -116,9 +110,9 @@ export interface AppSettings {
    * Ready screen before anything can be sent; off for a store that finished
    * onboarding under copy promising no analytics at all. Nothing is
    * transmitted until onboarding completes, and no build without an injected
-   * endpoint transmits at all — see `AppInfo.usageAnalyticsSupported`.
+   * endpoint transmits at all — see `AppInfo.analyticsSupported`.
    */
-  usageAnalyticsEnabled: boolean
+  analyticsEnabled: boolean
   /**
    * Whether the popover's usage-limits bar shows its per-provider rows.
    * This display preference never gates a fetch. It defaults open and stays
@@ -158,10 +152,10 @@ export interface AppInfo {
    * this repository, because the endpoint is injected at build time and this
    * tree carries none.
    */
-  usageAnalyticsSupported: boolean
+  analyticsSupported: boolean
   /** Who receives those events, in the reader's own words. Null when this
    *  build has no endpoint. */
-  usageAnalyticsOperator: string | null
+  analyticsOperator: string | null
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
@@ -189,7 +183,7 @@ export interface ActivityEntryPayload {
   modelRuns: ModelRunPayload[]
 }
 
-/** Identity of one local session, as the analytics view carries it. */
+/** Identity of one local session, as the analysis view carries it. */
 export interface SessionIdentityPayload {
   agent: string
   sessionId: string
@@ -226,10 +220,10 @@ export interface OrchestrationPayload {
   members: SubagentMemberPayload[]
 }
 
-/** Everything the session-analytics surface renders for one session. */
-export interface SessionAnalyticsPayload {
+/** Everything the session-analysis surface renders for one session. */
+export interface SessionAnalysisPayload {
   summary: ActiveSessionsSummary | null
-  supportsAnalytics: boolean
+  supportsAnalysis: boolean
   title: string | null
   wslDistro: string | null
   isActive: boolean
@@ -537,8 +531,8 @@ export type NudgeKind =
   | "updateAvailable"
   | "scanFailure"
   | "diskSpaceLow"
-  | "usageAnomaly"
   | "usageMilestone"
+  | "menuBarLocation"
   | "test"
 
 /** Visual tone — informational, positive, or attention. Mirrors Rust `NudgeTone`. */
@@ -566,17 +560,19 @@ export interface NudgeAction {
  * Payload of the `nudge:show` event. Mirrors Rust `Nudge`.
  *
  * Empty optionals are omitted on the wire (`skip_serializing_if` in Rust), so
- * `recommendations` arrives absent rather than as `[]` — the view defaults it.
+ * `recommendations` arrives absent rather than as `[]`.
  */
 export interface Nudge {
   id: string
   kind: NudgeKind
   tone: NudgeTone
   title: string
+  /** Short summary that stays visible in collapsed and expanded states. */
+  subtitle: string
+  /** Detailed copy revealed when the notification expands. */
+  description: string
   /** Who or what this is about, when it is about one. Never drawn; the shell acts on it. */
   actor?: string
-  /** Why this is being shown. Rendered only when present. */
-  reason?: string
   /** Suggested steps, revealed when the notification expands on hover. */
   recommendations?: string[]
   actions: NudgeAction[]
@@ -610,11 +606,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diskSpaceDisplay: "whenLow",
   diskSpaceThresholdGb: 50,
   notifyDiskSpaceLow: true,
-  notifyUsageAnomalies: true,
-  milestones5h: { at50: true, at75: true, at90: true },
-  milestonesWeekly: { at50: true, at75: true, at90: true },
+  milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+  milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
-  usageAnalyticsEnabled: true,
+  analyticsEnabled: true,
   overviewLimitsExpanded: true,
 }
 
@@ -705,6 +700,19 @@ export async function postTestNotification(): Promise<void> {
   await invoke("post_test_notification")
 }
 
+/** The notification kinds the shell can post a sample of. */
+export type SampleNotificationKind =
+  "updateAvailable" | "scanFailure" | "diskSpaceLow" | "usageMilestone" | "menuBarHome" | "test"
+
+/**
+ * Posts a sample notification of one kind, with fixed figures, so the copy
+ * can be checked on the real card. The shell refuses outside a debug build.
+ */
+export async function postSampleNotification(kind: SampleNotificationKind): Promise<void> {
+  if (!hasShell()) return
+  await invoke("post_sample_notification", { kind })
+}
+
 /**
  * Dismisses the tray popover.
  *
@@ -765,6 +773,12 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("set_settings", { settings })
 }
 
+/** Make setup pending and open it at Welcome without clearing local data. */
+export async function restartOnboarding(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("restart_onboarding")
+}
+
 /**
  * One interaction worth counting, in the shell's own closed vocabulary.
  *
@@ -773,7 +787,7 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
  * it, so the set of things that can ever be reported is fixed there rather
  * than here — no call site in this webview can widen it, and none can put a
  * path, a title, or a repository name into a payload. See
- * `src-tauri/src/usage_analytics/event.rs`.
+ * `src-tauri/src/analytics/event.rs`.
  */
 export type Interaction =
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
@@ -803,21 +817,21 @@ export function noteInteraction(interaction: Interaction): void {
 export async function finishOnboarding(
   activityWindowDays: number,
   launchAtLogin: boolean,
-  usageAnalyticsEnabled: boolean,
+  analyticsEnabled: boolean,
 ): Promise<AppSettings> {
   if (!hasShell()) {
     return {
       ...DEFAULT_SETTINGS,
       activityWindowDays,
       launchAtLogin,
-      usageAnalyticsEnabled,
+      analyticsEnabled,
       onboardingCompleted: true,
     }
   }
   return invoke<AppSettings>("finish_onboarding", {
     activityWindowDays,
     launchAtLogin,
-    usageAnalyticsEnabled,
+    analyticsEnabled,
   })
 }
 
@@ -830,13 +844,13 @@ export async function listRecentSessions(windowDays?: number): Promise<ActivityE
 }
 
 /** One session's analysis, sub-agent roster, and fork relations. */
-export async function getSessionAnalytics(
+export async function getSessionAnalysis(
   agent: string,
   sessionId: string,
   wslDistro?: string | null,
-): Promise<SessionAnalyticsPayload | null> {
+): Promise<SessionAnalysisPayload | null> {
   if (!hasShell()) return null
-  return invoke<SessionAnalyticsPayload>("get_session_analytics", {
+  return invoke<SessionAnalysisPayload>("get_session_analysis", {
     agent,
     sessionId,
     wslDistro: wslDistro ?? null,
@@ -844,14 +858,14 @@ export async function getSessionAnalytics(
 }
 
 /** One sub-agent's own analysis. */
-export async function getSubagentAnalytics(
+export async function getSubagentAnalysis(
   agent: string,
   parentSessionId: string,
   subagentId: string,
   wslDistro?: string | null,
-): Promise<SessionAnalyticsPayload | null> {
+): Promise<SessionAnalysisPayload | null> {
   if (!hasShell()) return null
-  return invoke<SessionAnalyticsPayload>("get_subagent_analytics", {
+  return invoke<SessionAnalysisPayload>("get_subagent_analysis", {
     agent,
     parentSessionId,
     subagentId,
@@ -923,6 +937,55 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
 export async function getLatestSessionActivity(): Promise<number | null> {
   if (!hasShell()) return null
   return invoke<number | null>("get_latest_session_activity")
+}
+
+/** One usage bar as the hover detail window renders it. */
+export interface HudDetailBar {
+  key: string
+  label: string
+  percent: number
+  /** ISO timestamp, or null when the reset time is unknown. */
+  resetsAt: string | null
+  color: string
+}
+
+/** The payload the HUD pushes to the hover detail window. */
+export interface HudDetailState {
+  /** "show" restarts the enter animation; "refresh" repaints in place. */
+  reason: "show" | "refresh"
+  bars: HudDetailBar[]
+  /** Epoch milliseconds the reset labels are computed against. */
+  now: number
+}
+
+/** Request the hover detail window with the newest usage payload. */
+export async function showHudDetail(state: HudDetailState): Promise<void> {
+  if (!hasShell()) return
+  await invoke("show_hud_detail", { state })
+}
+
+/** Hide the hover detail window. */
+export async function hideHudDetail(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("hide_hud_detail")
+}
+
+/** Report that the detail card is cleared, so the shell can hide the window. */
+export async function concealHudDetail(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("conceal_hud_detail")
+}
+
+/** The newest detail payload, for a detail webview that mounts late. */
+export async function getHudDetailState(): Promise<HudDetailState | null> {
+  if (!hasShell()) return null
+  return (await invoke<HudDetailState | null>("get_hud_detail_state")) ?? null
+}
+
+/** Report the detail webview's measured height so the shell can show it. */
+export async function setHudDetailSize(height: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("set_hud_detail_size", { height })
 }
 
 /** Run a scan now, unless one is already in flight. */
@@ -1344,6 +1407,12 @@ export async function requestFolderAccess(dir: string): Promise<FolderAccessOutc
 export async function openFolderAccessSettings(): Promise<void> {
   if (!hasShell()) return
   await invoke("open_folder_access_settings")
+}
+
+/** Open the antiburn GitHub repository in the system browser. */
+export async function openGithubRepo(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_github_repo")
 }
 
 /** Probe outcomes from this run, for a bug report. */

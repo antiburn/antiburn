@@ -11,6 +11,11 @@ import { PopoverView } from "./views/PopoverView"
 const OverlayWindow = lazy(() =>
   import("./views/OverlayWindow").then(({ OverlayWindow: view }) => ({ default: view })),
 )
+const HudDetailView = lazy(() =>
+  import("./views/overlay/HudDetailView").then(({ HudDetailView: view }) => ({
+    default: view,
+  })),
+)
 
 function RouteLoading() {
   return <div className="h-full" aria-busy="true" data-testid="route-loading" />
@@ -23,6 +28,13 @@ export function App() {
     return (
       <Suspense fallback={<RouteLoading />}>
         <OverlayWindow />
+      </Suspense>
+    )
+  }
+  if (route === "hud-detail") {
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <HudDetailView />
       </Suspense>
     )
   }

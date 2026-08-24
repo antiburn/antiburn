@@ -13,10 +13,10 @@ import {
   appInfo,
   getLiveUsage,
   getProviderUsage,
-  getSessionAnalytics,
+  getSessionAnalysis,
   getSettings,
   getStorageHealth,
-  getSubagentAnalytics,
+  getSubagentAnalysis,
   HEALTHY_STORAGE,
   hidePopover,
   listRecentSessions,
@@ -35,7 +35,7 @@ import {
   type AppSettings,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
-  type SessionAnalyticsPayload,
+  type SessionAnalysisPayload,
   type StorageHealthPayload,
 } from "../../lib/ipc"
 import {
@@ -64,10 +64,10 @@ import type { SessionSubject } from "./SessionPane"
  * same shape applied to the first-run window.
  */
 
-/** One session's loaded analytics, tagged with the subject it belongs to. */
-type PopoverAnalyticsState = {
+/** One session's loaded analysis, tagged with the subject it belongs to. */
+type PopoverAnalysisState = {
   key: string
-  payload: SessionAnalyticsPayload | null
+  payload: SessionAnalysisPayload | null
   error: boolean
 } | null
 
@@ -90,7 +90,7 @@ export interface PopoverSnapshot {
   /** Navigation stack. Empty means the activity list is showing. */
   stack: SessionSubject[]
   /**
-   * The most recently settled (or failed) analytics load, tagged with its
+   * The most recently settled (or failed) analysis load, tagged with its
    * subject's key.
    *
    * One field rather than three, and it carries its own key: "still loading"
@@ -98,21 +98,21 @@ export interface PopoverSnapshot {
    * top of the stack) instead of being a flag this class has to flip on the
    * way in — which is what keeps opening a session from cascading renders.
    */
-  analytics: PopoverAnalyticsState
+  analysis: PopoverAnalysisState
   /**
-   * Whether a re-load of the open session's analytics is in flight while an
+   * Whether a re-load of the open session's analysis is in flight while an
    * earlier result is still on screen. Drives the detail header's spinner.
    */
-  analyticsRefreshing: boolean
+  analysisRefreshing: boolean
 }
 
 /**
- * Identity key for a subject's analytics load. Stable across re-navigation.
+ * Identity key for a subject's analysis load. Stable across re-navigation.
  *
  * Scoped by environment as well as agent and id: the same session id can
  * exist natively and inside a WSL distribution, and without the environment
  * in the key a subject moving between the two would keep showing the other
- * environment's stale (or loading) analytics.
+ * environment's stale (or loading) analysis.
  *
  * A sub-agent id is only unique within its launching session, so its key
  * carries the parent's local identity too.
@@ -127,17 +127,17 @@ export function sessionKey(subject: SessionSubject): string {
     : localSessionKey(subject.agent, subject.sessionId, subject.wslDistro)
 }
 
-/** Load one subject's analytics. Sub-agents come from their own command. */
-async function loadAnalytics(subject: SessionSubject): Promise<SessionAnalyticsPayload | null> {
+/** Load one subject's analysis. Sub-agents come from their own command. */
+async function loadAnalysis(subject: SessionSubject): Promise<SessionAnalysisPayload | null> {
   if (subject.subagent) {
-    return getSubagentAnalytics(
+    return getSubagentAnalysis(
       subject.agent,
       subject.subagent.parentSessionId,
       subject.subagent.subagentId,
       subject.wslDistro,
     )
   }
-  return getSessionAnalytics(subject.agent, subject.sessionId, subject.wslDistro)
+  return getSessionAnalysis(subject.agent, subject.sessionId, subject.wslDistro)
 }
 
 /** Narrow the shell's status string to the repository list's union. */
@@ -157,7 +157,7 @@ export class PopoverSession {
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
-  private analyticsToken = 0
+  private analysisToken = 0
   /**
    * How many `refreshUsage` calls are currently in flight.
    *
@@ -167,8 +167,8 @@ export class PopoverSession {
    * still running. The snapshot's `usageRefreshing` is `count > 0`.
    */
   private usageRefreshCount = 0
-  /** How many `refreshAnalytics` calls are in flight; see `usageRefreshCount`. */
-  private analyticsRefreshCount = 0
+  /** How many `refreshAnalysis` calls are in flight; see `usageRefreshCount`. */
+  private analysisRefreshCount = 0
   private liveUsageRevision = 0
 
   private stopSettingsListening: (() => void) | null = null
@@ -191,8 +191,8 @@ export class PopoverSession {
     storage: HEALTHY_STORAGE,
     dismissed: [],
     stack: [],
-    analytics: null,
-    analyticsRefreshing: false,
+    analysis: null,
+    analysisRefreshing: false,
   }
 
   getSnapshot = (): PopoverSnapshot => this.snapshot
@@ -213,21 +213,21 @@ export class PopoverSession {
   openSession = (subject: SessionSubject): void => {
     this.update({ stack: [...this.snapshot.stack, subject] })
     this.syncHeight()
-    this.loadAnalyticsFor(subject)
+    this.loadAnalysisFor(subject)
   }
 
   goBack = (): void => {
     this.update({ stack: this.snapshot.stack.slice(0, -1) })
     this.syncHeight()
     const top = this.snapshot.stack.at(-1)
-    if (top) this.loadAnalyticsFor(top)
+    if (top) this.loadAnalysisFor(top)
   }
 
   /** Replace the top of the stack, for the newer/older traversal. */
   replaceTop = (subject: SessionSubject): void => {
     this.update({ stack: [...this.snapshot.stack.slice(0, -1), subject] })
     this.syncHeight()
-    this.loadAnalyticsFor(subject)
+    this.loadAnalysisFor(subject)
   }
 
   /** The shown session's local records were deleted: go back and re-list. */
@@ -428,14 +428,14 @@ export class PopoverSession {
   // stated limits, so usage gets its own refresh here rather than waiting on
   // — or being silenced by — the scan pipeline. Entries and the repository
   // list are already covered by `listenScanEvent` above. The open session's
-  // analytics is not: its transcript can grow while the popover is hidden,
+  // analysis is not: its transcript can grow while the popover is hidden,
   // and nothing else asks for it again until the reader navigates.
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
       void this.restoreFloatingHud(generation)
       void this.refreshUsage()
-      void this.refreshAnalytics()
+      void this.refreshAnalysis()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -549,37 +549,37 @@ export class PopoverSession {
     })
   }
 
-  private loadAnalyticsFor = (subject: SessionSubject): Promise<void> => {
+  private loadAnalysisFor = (subject: SessionSubject): Promise<void> => {
     const key = sessionKey(subject)
     const generation = this.generation
-    const token = ++this.analyticsToken
-    return loadAnalytics(subject)
+    const token = ++this.analysisToken
+    return loadAnalysis(subject)
       .then((payload) => {
-        if (generation !== this.generation || token !== this.analyticsToken) return
-        this.update({ analytics: { key, payload, error: false } })
+        if (generation !== this.generation || token !== this.analysisToken) return
+        this.update({ analysis: { key, payload, error: false } })
       })
       .catch(() => {
-        if (generation !== this.generation || token !== this.analyticsToken) return
-        this.update({ analytics: { key, payload: null, error: true } })
+        if (generation !== this.generation || token !== this.analysisToken) return
+        this.update({ analysis: { key, payload: null, error: true } })
       })
   }
 
   /**
-   * Re-load the analytics for the session on top of the stack. The settled
+   * Re-load the analysis for the session on top of the stack. The settled
    * result stays on screen until the new one lands: `loading` is derived from
    * a key mismatch, and the key does not change here, so the reader sees the
    * header spinner rather than the skeleton.
    */
-  private refreshAnalytics = async (): Promise<void> => {
+  private refreshAnalysis = async (): Promise<void> => {
     const top = this.snapshot.stack.at(-1)
     if (!top) return
-    this.analyticsRefreshCount += 1
-    this.update({ analyticsRefreshing: true })
+    this.analysisRefreshCount += 1
+    this.update({ analysisRefreshing: true })
     try {
-      await this.loadAnalyticsFor(top)
+      await this.loadAnalysisFor(top)
     } finally {
-      this.analyticsRefreshCount -= 1
-      this.update({ analyticsRefreshing: this.analyticsRefreshCount > 0 })
+      this.analysisRefreshCount -= 1
+      this.update({ analysisRefreshing: this.analysisRefreshCount > 0 })
     }
   }
 

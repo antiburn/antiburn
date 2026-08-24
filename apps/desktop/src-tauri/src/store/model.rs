@@ -308,70 +308,65 @@ impl DiskSpaceDisplay {
     }
 }
 
-/// Which usage-milestone thresholds notify, for one window class.
-///
-/// Stored as the subset text `"50,75,90"` (possibly empty) so the setting
-/// stays a scalar row like every other key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Milestones {
-    pub at50: bool,
-    pub at75: bool,
-    pub at90: bool,
-}
+pub const MILESTONE_OPTIONS: [u8; 20] = [
+    5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100,
+];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Milestones(Vec<u8>);
 
 impl Default for Milestones {
     fn default() -> Self {
-        // All three on, because they are not the consent point: nothing
-        // fires until onboarding has finished and Settings → Usage's switch
-        // (on by default) lets a source actually run, and that switch's own
-        // copy names milestones as one of its two consequences. Asking a
-        // second time, in a second place, for permission the default already
-        // implies is how a preference screen becomes a form.
-        Self {
-            at50: true,
-            at75: true,
-            at90: true,
-        }
+        Self((10..=100).step_by(10).collect())
     }
 }
 
 impl Milestones {
-    pub fn as_str(self) -> String {
-        let mut parts = Vec::new();
-        if self.at50 {
-            parts.push("50");
-        }
-        if self.at75 {
-            parts.push("75");
-        }
-        if self.at90 {
-            parts.push("90");
-        }
-        parts.join(",")
+    #[cfg(test)]
+    pub fn none() -> Self {
+        Self(Vec::new())
     }
 
-    /// Lenient by design: unknown fragments are dropped rather than failing
-    /// the whole read, so a hand-edited row degrades instead of resetting.
+    #[cfg(test)]
+    pub fn all() -> Self {
+        Self(MILESTONE_OPTIONS.to_vec())
+    }
+
+    pub fn selected(values: impl IntoIterator<Item = u8>) -> Self {
+        Self(values.into_iter().collect()).normalized()
+    }
+
+    pub fn as_str(&self) -> String {
+        self.0
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     pub fn parse(value: &str) -> Self {
-        let mut milestones = Self {
-            at50: false,
-            at75: false,
-            at90: false,
-        };
-        for part in value.split(',') {
-            match part.trim() {
-                "50" => milestones.at50 = true,
-                "75" => milestones.at75 = true,
-                "90" => milestones.at90 = true,
-                _ => {}
-            }
-        }
-        milestones
+        Self::selected(
+            value
+                .split(',')
+                .filter_map(|part| part.trim().parse::<u8>().ok()),
+        )
     }
 
-    pub fn any(self) -> bool {
-        self.at50 || self.at75 || self.at90
+    pub fn any(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    pub fn contains(&self, threshold: u8) -> bool {
+        self.0.binary_search(&threshold).is_ok()
+    }
+
+    fn normalized(mut self) -> Self {
+        self.0
+            .retain(|value| MILESTONE_OPTIONS.binary_search(value).is_ok());
+        self.0.sort_unstable();
+        self.0.dedup();
+        self
     }
 }
 
@@ -437,8 +432,6 @@ pub struct AppSettings {
     pub disk_space_threshold_gb: u32,
     /// Notify once each time free space drops below the threshold.
     pub notify_disk_space_low: bool,
-    /// Notify when sustained spend is unusually fast for this machine.
-    pub notify_usage_anomalies: bool,
     /// Five-hour-window usage milestones that notify. Only meaningful while
     /// the live usage source is enabled — milestones need a real limit.
     pub milestones_5h: Milestones,
@@ -458,7 +451,7 @@ pub struct AppSettings {
     /// default for a new install, which meets the control on the Ready
     /// screen before anything is sent; off for a store that finished
     /// onboarding under copy that promised no analytics at all.
-    pub usage_analytics_enabled: bool,
+    pub analytics_enabled: bool,
     /// Whether the popover's usage-limits section is expanded to its
     /// per-provider rows, rather than collapsed to the chip row. Purely a
     /// display preference — it never gates a fetch — so it defaults open and
@@ -488,7 +481,6 @@ impl Default for AppSettings {
             disk_space_display: DiskSpaceDisplay::default(),
             disk_space_threshold_gb: DEFAULT_DISK_THRESHOLD_GB,
             notify_disk_space_low: true,
-            notify_usage_anomalies: true,
             milestones_5h: Milestones::default(),
             milestones_weekly: Milestones::default(),
             // On by default. This is antiburn's own agent asking a provider
@@ -504,7 +496,7 @@ impl Default for AppSettings {
             // off there means nothing ever leaves the machine.
             // `settings_from` downgrades this to false for a database that
             // predates the setting.
-            usage_analytics_enabled: true,
+            analytics_enabled: true,
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,
@@ -540,6 +532,8 @@ impl AppSettings {
         self.disk_space_threshold_gb = self
             .disk_space_threshold_gb
             .clamp(MIN_DISK_THRESHOLD_GB, MAX_DISK_THRESHOLD_GB);
+        self.milestones_5h = self.milestones_5h.normalized();
+        self.milestones_weekly = self.milestones_weekly.normalized();
         self
     }
 }

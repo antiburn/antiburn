@@ -16,7 +16,7 @@
 //! their own, is the opening of the first user message, capped at 200
 //! characters by the engine) and each `skills[].description` (the one line the
 //! transcript's own skill listing carries, capped at
-//! [`crate::analytics::SKILL_DESCRIPTION_MAX_CHARS`] characters).
+//! [`crate::analysis::SKILL_DESCRIPTION_MAX_CHARS`] characters).
 //!
 //! None of it is "safe to publish". Those excerpts, working directory paths,
 //! repository names, model ids, and skill names all describe real work, which
@@ -105,7 +105,7 @@ impl SessionExport {
     pub fn new(
         app_version: String,
         session: ExportedSession,
-        analysis: &crate::analytics::SessionAnalysis,
+        analysis: &crate::analysis::SessionAnalysis,
     ) -> SessionExport {
         SessionExport {
             format: FORMAT,
@@ -127,7 +127,7 @@ impl SessionExport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analytics::SessionAnalysis;
+    use crate::analysis::SessionAnalysis;
 
     fn session() -> ExportedSession {
         ExportedSession {
@@ -214,7 +214,7 @@ mod tests {
         assert!(
             CONTENT_NOTICE.contains(&format!(
                 "capped at {} characters",
-                crate::analytics::SKILL_DESCRIPTION_MAX_CHARS
+                crate::analysis::SKILL_DESCRIPTION_MAX_CHARS
             )),
             "the notice's figure and the cap must not drift apart"
         );

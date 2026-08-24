@@ -6,7 +6,7 @@
  * Whether this machine looks like it is in a jurisdiction where analytics need
  * consent *before* they start, rather than a control the reader can find.
  *
- * antiburn ships usage analytics on by default (deviations register D-28). In
+ * antiburn ships analytics on by default (deviations register D-28). In
  * the EU, the EEA, and the UK that default is the wrong way round: ePrivacy
  * Article 5(3) and the GDPR treat non-essential analytics as something a reader
  * opts *into*. So in those places the first-run control still appears in
