@@ -919,6 +919,49 @@ export async function getLatestSessionActivity(): Promise<number | null> {
   return invoke<number | null>("get_latest_session_activity")
 }
 
+/** One usage bar as the hover detail window renders it. */
+export interface HudDetailBar {
+  key: string
+  label: string
+  percent: number
+  /** ISO timestamp, or null when the reset time is unknown. */
+  resetsAt: string | null
+  color: string
+}
+
+/** The payload the HUD pushes to the hover detail window. */
+export interface HudDetailState {
+  /** "show" restarts the enter animation; "refresh" repaints in place. */
+  reason: "show" | "refresh"
+  bars: HudDetailBar[]
+  /** Epoch milliseconds the reset labels are computed against. */
+  now: number
+}
+
+/** Request the hover detail window with the newest usage payload. */
+export async function showHudDetail(state: HudDetailState): Promise<void> {
+  if (!hasShell()) return
+  await invoke("show_hud_detail", { state })
+}
+
+/** Hide the hover detail window. */
+export async function hideHudDetail(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("hide_hud_detail")
+}
+
+/** The newest detail payload, for a detail webview that mounts late. */
+export async function getHudDetailState(): Promise<HudDetailState | null> {
+  if (!hasShell()) return null
+  return (await invoke<HudDetailState | null>("get_hud_detail_state")) ?? null
+}
+
+/** Report the detail webview's measured height so the shell can show it. */
+export async function setHudDetailSize(height: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("set_hud_detail_size", { height })
+}
+
 /** Run a scan now, unless one is already in flight. */
 export async function scanNow(activityWindowDays?: number): Promise<ScanStatus | null> {
   if (!hasShell()) return null

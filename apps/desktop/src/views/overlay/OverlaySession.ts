@@ -7,9 +7,14 @@ import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { listen } from "@tauri-apps/api/event"
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window"
 import type { MouseEvent as ReactMouseEvent } from "react"
-import { flushSync } from "react-dom"
 
-import { getLatestSessionActivity, getLiveUsage, openSettingsWindow } from "../../lib/ipc"
+import {
+  getLatestSessionActivity,
+  getLiveUsage,
+  hideHudDetail,
+  showHudDetail,
+  type HudDetailState,
+} from "../../lib/ipc"
 import { setFloatingHudEnabled } from "../../lib/overlayWindow"
 import { deriveUsageBars, type UsageBarItem } from "../../lib/usageBars"
 
@@ -17,11 +22,8 @@ const REFRESH_MS = 60_000
 const LIVE_WINDOW_SECS = 90
 const LIVENESS_POLL_MS = 5_000
 const RESET_CLOCK_MS = 30_000
-const SCREEN_MARGIN = 8
-const RESERVE_ABOVE = 220
-const ESTIMATED_CHROME_PX = 48
-const ESTIMATED_ROW_PX = 50
-const HOVER_INTENT_MS = 250
+/** The tooltip delay before the detail window shows. */
+const SHOW_DELAY_MS = 400
 
 export type OverlaySnapshot = {
   bars: UsageBarItem[]
@@ -29,13 +31,6 @@ export type OverlaySnapshot = {
   dragging: boolean
   now: number
   sessionLive: boolean
-  reserveAbove: number
-  swapping: boolean
-  flipUp: boolean
-  panelHeights: {
-    collapsed: number
-    expanded: number
-  }
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
@@ -44,10 +39,6 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   dragging: false,
   now: Date.now(),
   sessionLive: false,
-  reserveAbove: 0,
-  swapping: false,
-  flipUp: false,
-  panelHeights: { collapsed: 0, expanded: 0 },
 }
 
 type DragOrigin = {
@@ -57,21 +48,19 @@ type DragOrigin = {
   windowY: number
 }
 
-/** Own the external systems used by the floating HUD window. */
 export class OverlaySession {
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
-  private directionGeneration = 0
   private snapshot: OverlaySnapshot = INITIAL_SNAPSHOT
   private panel: HTMLDivElement | null = null
   private observer: ResizeObserver | null = null
-  private hoverTimer: number | null = null
+  private showTimer: number | null = null
+  private detailShown = false
   private usagePoll: number | null = null
   private livenessPoll: number | null = null
   private resetClock: number | null = null
   private stopHoverListening: (() => void) | null = null
-  private reserve = 0
   private dragOrigin: DragOrigin | null = null
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
@@ -97,22 +86,15 @@ export class OverlaySession {
 
   requestHover = (hovered: boolean): void => {
     if (hovered) {
-      if (this.hoverTimer != null || this.snapshot.hovered) return
-      this.hoverTimer = window.setTimeout(() => {
-        this.hoverTimer = null
-        if (!this.started || this.snapshot.hovered) return
-        this.commitLayout({ hovered: true })
-        this.measurePanel()
-        void this.decideDirection()
-      }, HOVER_INTENT_MS)
+      if (!this.snapshot.hovered) this.update({ hovered: true })
+      // A drag suppresses the timer until mouse up.
+      if (!this.snapshot.dragging) this.armShowTimer()
       return
     }
 
-    this.clearHoverTimer()
-    if (!this.snapshot.hovered) return
-    this.commitLayout({ hovered: false })
-    this.measurePanel()
-    this.reportHoverRegion()
+    if (this.snapshot.hovered) this.update({ hovered: false })
+    this.clearShowTimer()
+    this.hideDetail()
   }
 
   startDrag = (event: ReactMouseEvent): void => {
@@ -126,10 +108,6 @@ export class OverlaySession {
     void getCurrentWindow().hide()
   }
 
-  openSettings = (): void => {
-    void openSettingsWindow("general").catch(() => {})
-  }
-
   private start(): void {
     this.started = true
     const generation = ++this.generation
@@ -140,9 +118,11 @@ export class OverlaySession {
       void getLiveUsage()
         .then((response) => {
           if (!this.isCurrent(generation)) return
-          this.commitLayout({ bars: deriveUsageBars(response) })
-          this.measurePanel()
-          void this.decideDirection()
+          this.update({ bars: deriveUsageBars(response) })
+          // A visible detail window repaints with the fresh bars.
+          if (this.detailShown) {
+            void showHudDetail(this.detailState("refresh")).catch(() => {})
+          }
         })
         .catch(() => {})
     }
@@ -176,8 +156,8 @@ export class OverlaySession {
   private stop(): void {
     this.started = false
     this.generation += 1
-    this.directionGeneration += 1
-    this.clearHoverTimer()
+    this.clearShowTimer()
+    this.hideDetail()
     this.clearInterval("usagePoll")
     this.clearInterval("livenessPoll")
     this.clearInterval("resetClock")
@@ -199,9 +179,39 @@ export class OverlaySession {
     this[field] = null
   }
 
-  private clearHoverTimer(): void {
-    if (this.hoverTimer != null) window.clearTimeout(this.hoverTimer)
-    this.hoverTimer = null
+  private armShowTimer(): void {
+    if (this.showTimer != null || this.detailShown) return
+    this.showTimer = window.setTimeout(() => {
+      this.showTimer = null
+      if (!this.started || !this.snapshot.hovered || this.snapshot.dragging) return
+      this.detailShown = true
+      void showHudDetail(this.detailState("show")).catch(() => {})
+    }, SHOW_DELAY_MS)
+  }
+
+  private clearShowTimer(): void {
+    if (this.showTimer != null) window.clearTimeout(this.showTimer)
+    this.showTimer = null
+  }
+
+  private hideDetail(): void {
+    if (!this.detailShown) return
+    this.detailShown = false
+    void hideHudDetail().catch(() => {})
+  }
+
+  private detailState(reason: HudDetailState["reason"]): HudDetailState {
+    return {
+      reason,
+      now: Date.now(),
+      bars: this.snapshot.bars.map((bar) => ({
+        key: bar.key,
+        label: bar.label,
+        percent: bar.percent,
+        resetsAt: bar.resetsAt ? bar.resetsAt.toISOString() : null,
+        color: bar.color,
+      })),
+    }
   }
 
   private update(change: Partial<OverlaySnapshot>): void {
@@ -209,19 +219,12 @@ export class OverlaySession {
     for (const listener of this.listeners) listener()
   }
 
-  private commitLayout(change: Partial<OverlaySnapshot>): void {
-    flushSync(() => this.update(change))
-  }
-
-  private expanded(): boolean {
-    return this.snapshot.hovered && !this.snapshot.dragging
-  }
-
   private connectPanel(): void {
     if (!this.panel) return
     this.reportHoverRegion()
-    this.measurePanel()
     if (typeof ResizeObserver === "undefined") return
+    // The panel height moves with the bar count and fonts. The shell needs
+    // the fresh edges for its cursor watcher and for detail placement.
     this.observer = new ResizeObserver(() => this.reportHoverRegion())
     this.observer.observe(this.panel)
   }
@@ -234,23 +237,10 @@ export class OverlaySession {
     )
   }
 
-  private measurePanel(): void {
-    if (!this.panel) return
-    const height = this.panel.getBoundingClientRect().height
-    const previous = this.snapshot.panelHeights
-    if (this.expanded()) {
-      if (height <= previous.expanded) return
-      this.update({ panelHeights: { ...previous, expanded: height } })
-      return
-    }
-    if (height !== previous.collapsed) {
-      this.update({ panelHeights: { ...previous, collapsed: height } })
-    }
-  }
-
   private async beginDrag(screenX: number, screenY: number): Promise<void> {
-    await this.applyReserve(0)
-    if (!this.started) return
+    // A drag cancels the show timer and hides the detail window at once.
+    this.clearShowTimer()
+    this.hideDetail()
     const [monitor, position] = await Promise.all([
       currentMonitor(),
       getCurrentWindow().outerPosition(),
@@ -263,7 +253,7 @@ export class OverlaySession {
       windowX: position.x / scale,
       windowY: position.y / scale,
     }
-    this.commitLayout({ dragging: true })
+    this.update({ dragging: true })
     this.addDragListeners()
   }
 
@@ -305,55 +295,9 @@ export class OverlaySession {
     if (!this.snapshot.dragging) return
     this.removeDragListeners()
     this.dragOrigin = null
-    this.commitLayout({ dragging: false })
-    this.measurePanel()
+    this.update({ dragging: false })
     this.reportHoverRegion()
-    void this.decideDirection()
-  }
-
-  private async decideDirection(): Promise<void> {
-    if (!this.started || this.snapshot.dragging) return
-    const directionGeneration = ++this.directionGeneration
-    const [monitor, position] = await Promise.all([
-      currentMonitor(),
-      getCurrentWindow().outerPosition(),
-    ])
-    if (
-      !this.started ||
-      directionGeneration !== this.directionGeneration ||
-      this.snapshot.dragging ||
-      !monitor
-    ) {
-      return
-    }
-    const scale = monitor.scaleFactor
-    const screenBottom = (monitor.position.y + monitor.size.height) / scale - SCREEN_MARGIN
-    const panelTop = position.y / scale + this.reserve
-    const needed = Math.max(
-      this.snapshot.panelHeights.expanded,
-      ESTIMATED_CHROME_PX + this.snapshot.bars.length * ESTIMATED_ROW_PX,
-    )
-    const flipUp = panelTop + needed > screenBottom
-    this.update({ flipUp })
-    await this.applyReserve(flipUp ? RESERVE_ABOVE : 0)
-  }
-
-  private async applyReserve(desired: number): Promise<void> {
-    const current = this.reserve
-    if (desired === current) return
-    this.reserve = desired
-    this.commitLayout({ swapping: true })
-    try {
-      await new Promise<number>((resolve) => window.requestAnimationFrame(resolve))
-      const overlay = getCurrentWindow()
-      const [monitor, position] = await Promise.all([currentMonitor(), overlay.outerPosition()])
-      const scale = monitor?.scaleFactor ?? 1
-      await overlay.setPosition(
-        new LogicalPosition(position.x / scale, position.y / scale + current - desired),
-      )
-    } finally {
-      this.commitLayout({ reserveAbove: desired, swapping: false })
-      this.reportHoverRegion()
-    }
+    // The timer restarts from zero when the pointer is still on the HUD.
+    if (this.snapshot.hovered) this.armShowTimer()
   }
 }
