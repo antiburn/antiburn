@@ -16,7 +16,7 @@
 //! `src/views/SettingsView.tsx`). Windows and Linux keep the stock title bar.
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -81,19 +81,13 @@ const URL: &str = "settings.html";
 const WIDTH: f64 = 960.0;
 const HEIGHT: f64 = 680.0;
 
-/// Delay that staggers Settings after the main popover prewarm.
-const SETTINGS_PREWARM_DELAY: Duration = Duration::from_millis(750);
-
 /// Schedule one hidden Settings load after launch or onboarding.
 pub fn schedule_prewarm(app: &AppHandle) {
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(SETTINGS_PREWARM_DELAY).await;
-        let prewarm_app = app.clone();
-        if let Err(error) = app.run_on_main_thread(move || prewarm(&prewarm_app)) {
-            ::tracing::warn!(event = "settings_prewarm_schedule_failed", error = %error);
-        }
-    });
+    let prewarm_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || prewarm(&prewarm_app)) {
+        ::tracing::warn!(event = "settings_prewarm_schedule_failed", error = %error);
+    }
 }
 
 fn prewarm(app: &AppHandle) {

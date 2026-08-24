@@ -247,7 +247,6 @@ pub fn run() {
                     );
                 }
             } else {
-                popover::schedule_prewarm(app.handle());
                 settings::schedule_prewarm(app.handle());
             }
 

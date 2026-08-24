@@ -898,7 +898,7 @@ describe("PopoverView — floating HUD restore", () => {
     overlayVisibilityRead.mockImplementation(async () => hudPreference.overlayVisible)
   })
 
-  it("keeps the stored HUD hidden while the popover prewarms", async () => {
+  it("keeps the stored HUD hidden before the popover is shown", async () => {
     platform.mac = true
     hudPreference.enabled = true
     render(<PopoverView />)

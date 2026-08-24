@@ -57,7 +57,6 @@ type DragOrigin = {
   windowY: number
 }
 
-/** Own the external systems used by the floating HUD window. */
 export class OverlaySession {
   private listeners = new Set<() => void>()
   private started = false
