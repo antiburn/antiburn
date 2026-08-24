@@ -464,18 +464,25 @@ describe("PopoverView", () => {
     expect(footer).not.toBeNull()
     expect(footer).toHaveTextContent("antiburn")
     expect(footer?.querySelector('[data-testid="usage-limits-bar"]')).toBeNull()
-    expect(screen.getByRole("heading", { name: "antiburn" })).toBeInTheDocument()
-    const version = screen.getByText("v0.1.0 debug")
-    expect(version).toHaveClass("type-caption", "text-label-secondary")
-    expect(version.parentElement).toHaveClass("gap-2")
+    const nameAndVersion = screen.getByRole("button", { name: "antiburn v0.1.0 debug" })
+    expect(nameAndVersion).toHaveClass("type-caption", "text-label-secondary")
+  })
+
+  it("opens the GitHub repo when the name and version are clicked", async () => {
+    render(<PopoverView />)
+    await screen.findByTestId("usage-limits-bar")
+
+    fireEvent.click(screen.getByRole("button", { name: "antiburn v0.1.0 debug" }))
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_github_repo"))
   })
 
   it("omits the debug label from a release build", async () => {
     mockCommands({ app_info: { appVersion: "0.1.0", debugBuild: false } })
     render(<PopoverView />)
 
-    expect(await screen.findByText("v0.1.0")).toBeInTheDocument()
-    expect(screen.queryByText("v0.1.0 debug")).toBeNull()
+    expect(await screen.findByRole("button", { name: "antiburn v0.1.0" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "antiburn v0.1.0 debug" })).toBeNull()
   })
 
   it("omits the version when app info cannot load", async () => {
@@ -520,7 +527,7 @@ describe("PopoverView", () => {
     await screen.findByText("Wire the tray popover")
     expect(screen.queryByTestId("usage-limits-bar")).not.toBeInTheDocument()
     // The plain footer is unaffected — it never depended on usage at all.
-    expect(screen.getByRole("heading", { name: "antiburn" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "antiburn v0.1.0 debug" })).toBeInTheDocument()
   })
 
   it("persists the usage-limits toggle through set_settings, and opens the meters", async () => {
@@ -862,7 +869,7 @@ describe("PopoverView — window behaviour", () => {
   it("moves focus to the heading of the surface that takes over", async () => {
     render(<PopoverView />)
 
-    const activity = await screen.findByRole("heading", { name: "antiburn" })
+    const activity = await screen.findByRole("button", { name: "antiburn v0.1.0 debug" })
     await waitFor(() => expect(activity).toHaveFocus())
 
     fireEvent.click(await screen.findByRole("button", { name: "Codex at 40 percent" }))

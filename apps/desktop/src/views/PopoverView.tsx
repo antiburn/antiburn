@@ -143,7 +143,6 @@ function PopoverFooter({
         type="button"
         data-view-heading
         onClick={() => void openGithubRepo()}
-        aria-label={`antiburn${versionLabel} — open the GitHub repository`}
         className="type-caption whitespace-nowrap text-label-secondary outline-none hover:underline"
       >
         antiburn{versionLabel}
