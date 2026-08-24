@@ -16,6 +16,7 @@ import { attentionBanners } from "../lib/attention"
 import {
   DEFAULT_SETTINGS,
   noteInteraction,
+  openGithubRepo,
   openSettingsWindow,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
@@ -119,7 +120,8 @@ function usageEvidence(
 
 /**
  * The activity surface's bottom bar shows the app name and version.
- * The name also carries the surface's focus heading.
+ * The name also carries the surface's focus heading, and opens the
+ * project's GitHub repository when clicked.
  * The settings control opens the standalone Settings window.
  */
 function PopoverFooter({
@@ -131,21 +133,20 @@ function PopoverFooter({
   debugBuild: boolean
   onOpenSettings: () => void
 }) {
+  const versionLabel = appVersion ? ` v${appVersion}${debugBuild ? " debug" : ""}` : ""
+
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-t border-separator px-4">
-      <div className="flex items-baseline gap-2">
-        {/* Focused by the popover when this surface takes over, so a keyboard
-            or screen-reader user lands in the view rather than on <body>. */}
-        <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-          antiburn
-        </h1>
-        {appVersion && (
-          <span className="type-caption whitespace-nowrap text-label-secondary">
-            v{appVersion}
-            {debugBuild ? " debug" : ""}
-          </span>
-        )}
-      </div>
+      {/* Focused by the popover when this surface takes over, so a keyboard
+          or screen-reader user lands in the view rather than on <body>. */}
+      <button
+        type="button"
+        data-view-heading
+        onClick={() => void openGithubRepo()}
+        className="type-caption whitespace-nowrap text-label-secondary outline-none hover:underline"
+      >
+        antiburn{versionLabel}
+      </button>
       <button
         type="button"
         onClick={onOpenSettings}

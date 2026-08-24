@@ -40,6 +40,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::dto::DeferredPermissionDir;
 
+#[cfg(test)]
+pub use model::SourceVersionState;
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS,
     Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey,
@@ -251,6 +253,11 @@ impl Store {
         write_settings(&tx, &saved)?;
         tx.commit()?;
         Ok((previous, saved))
+    }
+
+    /// Make setup pending without changing the reader's data or choices.
+    pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
+        self.update_settings(|settings| settings.onboarding_completed = false)
     }
 
     /// Replace every preference, returning what was actually stored (clamped).
@@ -495,7 +502,8 @@ impl Store {
                          AND r.agent = s.agent
                          AND r.session_id = s.session_id
                          AND r.kind = 'forkParent'
-                       LIMIT 1)
+                       LIMIT 1),
+                    s.source_fingerprint
                FROM session s
               WHERE COALESCE(updated_at_epoch, 0) >= ?1
               ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
@@ -551,7 +559,8 @@ impl Store {
                          AND r.agent = s.agent
                          AND r.session_id = s.session_id
                          AND r.kind = 'forkParent'
-                       LIMIT 1)
+                       LIMIT 1),
+                    s.source_fingerprint
                FROM session s
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -559,6 +568,28 @@ impl Store {
             .query_row(
                 params![key.environment_key, key.agent, key.session_id],
                 session_from_row,
+            )
+            .optional()?)
+    }
+
+    /// One session's persisted source version and optional start time.
+    // CH-005 and CH-007 add production consumers before this test-only accessor enters runtime code.
+    #[cfg(test)]
+    pub fn session_source_state(&self, key: &SessionKey) -> Result<Option<SourceVersionState>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT source_fingerprint, source_generation, started_at_epoch
+                   FROM session
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| {
+                    Ok(SourceVersionState {
+                        source_fingerprint: row.get(0)?,
+                        source_generation: row.get(1)?,
+                        started_at_epoch: row.get(2)?,
+                    })
+                },
             )
             .optional()?)
     }
@@ -1136,10 +1167,11 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
              environment_key, agent, session_id, source_kind, source_label, wsl_distro,
              title, title_source, cwd, surface, updated_at_epoch,
              activity_cursor, activity_source, subagent_count,
-             first_seen_at, last_seen_at)
+             first_seen_at, last_seen_at, source_fingerprint, source_generation)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END,
-                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
+                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16,
+                 CASE WHEN ?16 IS NOT NULL THEN 1 ELSE 0 END)
          ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
              source_kind = excluded.source_kind,
              source_label = excluded.source_label,
@@ -1174,6 +1206,13 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
                  ELSE excluded.activity_source
              END,
              subagent_count = excluded.subagent_count,
+             source_fingerprint = COALESCE(excluded.source_fingerprint, session.source_fingerprint),
+             source_generation = CASE
+                 WHEN excluded.source_fingerprint IS NULL THEN session.source_generation
+                 WHEN session.source_fingerprint = excluded.source_fingerprint
+                     THEN session.source_generation
+                 ELSE session.source_generation + 1
+             END,
              last_seen_at = excluded.last_seen_at",
         params![
             record.key.environment_key,
@@ -1191,6 +1230,7 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
             record.activity_source,
             record.subagent_count,
             now,
+            record.source_fingerprint,
         ],
     )?;
 
@@ -1253,5 +1293,6 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
         activity_source: row.get(12)?,
         subagent_count: row.get(13)?,
         fork_parent_session_id: row.get(14)?,
+        source_fingerprint: row.get(15)?,
     })
 }

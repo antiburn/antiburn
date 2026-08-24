@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -279,12 +279,27 @@ DROP TABLE session_analysis;
 ALTER TABLE session_analysis_v8 RENAME TO session_analysis;
 "#;
 
-/// v9 — rename the analytics-event tables for the analytics naming change.
+/// v9 — source generations and analysis projection revisions.
+///
+/// The source fingerprint is a derived identity value. It contains no
+/// transcript content. The head hash contributes to it and is never stored
+/// separately.
+const V9: &str = r#"
+ALTER TABLE session ADD COLUMN source_fingerprint TEXT;
+ALTER TABLE session ADD COLUMN source_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE session ADD COLUMN started_at_epoch INTEGER;
+ALTER TABLE session_analysis ADD COLUMN analyzed_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE session_analysis ADD COLUMN parser_revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE session_analysis ADD COLUMN analyzer_revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE session_analysis ADD COLUMN metrics_schema_revision INTEGER NOT NULL DEFAULT 1;
+"#;
+
+/// v10 — rename the analytics-event tables for the analytics naming change.
 ///
 /// The code dropped the "usage_" prefix from the Rust module and its
 /// identifiers. This migration renames the two tables to match, so an
 /// existing database still works with the renamed code.
-const V9: &str = r#"
+const V10: &str = r#"
 ALTER TABLE usage_analytics_event RENAME TO analytics_event;
 ALTER TABLE usage_analytics_identity RENAME TO analytics_identity;
 "#;

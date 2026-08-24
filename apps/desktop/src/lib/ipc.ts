@@ -759,6 +759,12 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("set_settings", { settings })
 }
 
+/** Make setup pending and open it at Welcome without clearing local data. */
+export async function restartOnboarding(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("restart_onboarding")
+}
+
 /**
  * One interaction worth counting, in the shell's own closed vocabulary.
  *
@@ -1338,6 +1344,12 @@ export async function requestFolderAccess(dir: string): Promise<FolderAccessOutc
 export async function openFolderAccessSettings(): Promise<void> {
   if (!hasShell()) return
   await invoke("open_folder_access_settings")
+}
+
+/** Open the antiburn GitHub repository in the system browser. */
+export async function openGithubRepo(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_github_repo")
 }
 
 /** Probe outcomes from this run, for a bug report. */

@@ -18,7 +18,7 @@ if (!container) {
 
 // All three write attributes the stylesheet keys off, so they run before the
 // first paint: `data-platform` guards the platform-specific control rules,
-// `data-route` gives the popover window its corner, and `data-keyboard` gates
+// `data-route` gives floating windows their corners, and `data-keyboard` gates
 // the focus ring.
 applyPlatformAttribute()
 applyRouteAttribute()

@@ -88,6 +88,16 @@ pub struct SessionRecord {
     pub subagent_count: u32,
     /// The session this one was branched from, when the vendor records it.
     pub fork_parent_session_id: Option<String>,
+    pub source_fingerprint: Option<String>,
+}
+
+// CH-005 and CH-007 add production consumers before this test-only type enters runtime code.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceVersionState {
+    pub source_fingerprint: Option<String>,
+    pub source_generation: i64,
+    pub started_at_epoch: Option<i64>,
 }
 
 /// Identity of one persisted activity cursor. The source label alone is not
