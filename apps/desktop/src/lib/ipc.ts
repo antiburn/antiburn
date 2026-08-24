@@ -120,10 +120,9 @@ export interface AppSettings {
    */
   usageAnalyticsEnabled: boolean
   /**
-   * Whether the popover's usage-limits section is expanded to its
-   * per-provider rows, rather than collapsed to the chip row. Purely a
-   * display preference — it never gates a fetch — so it defaults open and
-   * stays wherever the reader last left it.
+   * Whether the popover's usage-limits bar shows its per-provider rows.
+   * This display preference never gates a fetch. It defaults open and stays
+   * where the reader last left it.
    */
   overviewLimitsExpanded: boolean
 }
@@ -406,6 +405,11 @@ export interface LiveExtraUsagePayload {
   currency: string | null
 }
 
+/** Provider credits that manually reset rate limits. */
+export interface LiveUsageResetCreditsPayload {
+  availableCount: number
+}
+
 /** One provider account's live usage. Mirrors Rust `LiveProviderUsage`. */
 export interface LiveProviderUsagePayload {
   /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
@@ -419,6 +423,7 @@ export interface LiveProviderUsagePayload {
   observedAt: string
   windows: LiveUsageWindowPayload[]
   extraUsage: LiveExtraUsagePayload | null
+  resetCredits: LiveUsageResetCreditsPayload | null
 }
 
 /** A source that failed, in terms a reader can act on. */

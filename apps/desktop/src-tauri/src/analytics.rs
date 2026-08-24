@@ -16,8 +16,9 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, ModelRun, RawSource, SessionCost, SessionInput, SessionMetrics,
-    SkillUse, aggregate_metrics, analyze_sources_with, price_breakdown, pricing_generation,
+    ActiveSessionsSummary, ModelRun, NormalizedSession, RawSource, SessionCost, SessionInput,
+    SessionMetrics, SkillUse, aggregate_metrics, analyze_session, analyze_sources_with,
+    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, ForkObservation, SessionSource,
@@ -199,7 +200,7 @@ fn sum_billable_tokens(breakdown: &HashMap<String, ModelTokens>) -> BillableToke
 pub const MISSING_FINGERPRINT: &str = "-";
 
 /// This version invalidates cached values when the analysis cache contract changes.
-const ANALYSIS_FINGERPRINT_VERSION: u8 = 1;
+const ANALYSIS_FINGERPRINT_VERSION: u8 = 2;
 
 /// `mtime:size` of a transcript file, or [`MISSING_FINGERPRINT`].
 pub fn fingerprint_of(source: &SessionSource) -> String {
@@ -297,10 +298,43 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
     }
 }
 
+/// Normalize the parent and every sub-agent input, then merge their events
+/// into one time-aligned session via [`merge_subagent_events`].
+///
+/// Matches inputs to the parent by `session_id` rather than by position, so
+/// this stays correct even if a vendor adapter fails to read one input (the
+/// same tolerance [`analyze_sources_with`] gives the per-source batch).
+/// `None` when the parent itself could not be normalized.
+fn merge_parent_and_subagents(
+    inputs: &[SessionInput],
+    parent_session_id: &str,
+) -> Option<NormalizedSession> {
+    let mut parent = None;
+    let mut subagents = Vec::new();
+    for input in inputs {
+        let Ok(normalized) = normalize_source(input) else {
+            continue;
+        };
+        if normalized.session_id == parent_session_id {
+            parent = Some(normalized);
+        } else {
+            subagents.push(normalized);
+        }
+    }
+    Some(merge_subagent_events(parent?, subagents))
+}
+
 /// Analyze one session and, in the same pass, every sub-agent it launched.
 ///
 /// One pass avoids an extra analysis call for each sub-agent. The engine
-/// returns the parent and sub-agent metrics in one batch.
+/// returns the parent and sub-agent metrics in one batch, analyzed
+/// independently, which this function uses for the top-level/sub-agents cost
+/// split. Separately, this merges every stream's events into one
+/// time-aligned session (sub-agents are an implementation detail of the
+/// parent, per the product rule) and analyzes that once more for the
+/// session's own headline metrics — buckets, token totals, tool mix — so the
+/// detail view's chart and header sum a sub-agent's activity into the same
+/// session instead of hiding it.
 pub async fn analyze(
     agent: AgentKind,
     session_id: &str,
@@ -358,12 +392,20 @@ pub async fn analyze(
         .map(|(id, label, _)| (id, label))
         .collect();
 
+    let inputs_for_merge = inputs.clone();
+    let parent_session_id_for_merge = parent_session_id.clone();
+
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads.
-    let computed =
-        tauri::async_runtime::spawn_blocking(move || analyze_sources_with(inputs, true)).await;
+    let computed = tauri::async_runtime::spawn_blocking(move || {
+        let batch = analyze_sources_with(inputs, true);
+        let merged = merge_parent_and_subagents(&inputs_for_merge, &parent_session_id_for_merge)
+            .map(|session| analyze_session(&session));
+        (batch, merged)
+    })
+    .await;
 
-    let Ok(batch) = computed else {
+    let Ok((batch, merged)) = computed else {
         return SessionAnalysis::unavailable();
     };
 
@@ -373,7 +415,7 @@ pub async fn analyze(
         .map(|metrics| (metrics.session_id.clone(), metrics))
         .collect();
 
-    let Some(mut metrics) = by_id.remove(&parent_session_id) else {
+    let Some(parent_metrics) = by_id.remove(&parent_session_id) else {
         // The transcript was readable but produced nothing analyzable — an
         // empty session, not a failure.
         return SessionAnalysis {
@@ -382,6 +424,20 @@ pub async fn analyze(
             ..SessionAnalysis::unavailable()
         };
     };
+
+    // `metrics` is the session's headline view: buckets, token totals, and
+    // tool mix summed across the parent and every sub-agent, time-aligned.
+    // `initial_context` and `skill_uses` stay off the merged pass — they are
+    // grafted onto `parent_metrics` from the parent's own raw transcript, and
+    // a sub-agent's initial context describes a different, disposable
+    // context window, not this session's. `merged` can only be `None` if the
+    // parent transcript stopped normalizing between the two analysis passes
+    // above, which does not happen in practice; falling back to
+    // `parent_metrics` keeps that theoretical case merely parent-only
+    // instead of unavailable.
+    let mut metrics = merged.unwrap_or_else(|| parent_metrics.clone());
+    metrics.initial_context = parent_metrics.initial_context.clone();
+    metrics.skill_uses = parent_metrics.skill_uses.clone();
 
     // The views key icons and copy off the discovery slug, so the vendor label
     // the adapter registry dispatches on never leaves this module.
@@ -405,22 +461,23 @@ pub async fn analyze(
         members,
     });
 
-    // Merge every sub-agent's breakdown into one map. Merge that map with
-    // the parent's breakdown too. `cost` then prices the whole session, not
-    // only the transcript a reader opened.
+    // `top_level_cost` prices the parent transcript alone; `subagents_cost`
+    // merges every sub-agent's own breakdown. `metrics.model_breakdown` is
+    // already inclusive — it comes from the merged event stream above, so it
+    // sums to the same totals `top_level_cost` and `subagents_cost` would
+    // combine to. `cost`/`inclusive_model_breakdown` read it directly instead
+    // of re-merging the per-source breakdowns a second way.
     let subagent_breakdowns: Vec<&HashMap<String, ModelTokens>> =
         by_id.values().map(|child| &child.model_breakdown).collect();
     let has_subagents = !subagent_breakdowns.is_empty();
     let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
-    let inclusive_model_breakdown = merge_model_breakdowns(
-        std::iter::once(&metrics.model_breakdown).chain(subagent_breakdowns.iter().copied()),
-    );
+    let inclusive_model_breakdown = metrics.model_breakdown.clone();
 
-    let top_level_cost = price_breakdown(&metrics.model_breakdown);
+    let top_level_cost = price_breakdown(&parent_metrics.model_breakdown);
     let subagents_cost = price_breakdown(&subagents_model_breakdown);
-    let cost = price_breakdown(&inclusive_model_breakdown);
+    let cost = metrics.cost;
     let models = sorted_models(&inclusive_model_breakdown);
-    let model_runs = model_runs_parent_first(&metrics, by_id.values());
+    let model_runs = model_runs_parent_first(&parent_metrics, by_id.values());
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
     let skills = metrics.skill_uses.clone();
@@ -524,9 +581,8 @@ pub fn analytics_supported(agent: AgentKind) -> bool {
     supports_analytics(agent)
 }
 
-/// How many leading transcript lines are searched for a fork observation.
-/// Vendors write it into the synthetic metadata header, which is the first
-/// record; a handful of lines is generous and keeps the read bounded.
+/// How many leading transcript lines are searched for fork evidence.
+/// The evidence is in a metadata header near the start of the transcript.
 const FORK_OBSERVATION_LINES: usize = 5;
 
 /// How deep the search descends into a header record. The observation sits at
@@ -544,20 +600,34 @@ pub async fn fork_parent(source: &SessionSource) -> Option<String> {
         SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok()?,
         SessionSource::ProviderDb { .. } => session_source_content(source).await?,
     };
+    fork_parent_from_content(&content)
+}
+
+/// Read a declared fork parent from a bounded transcript preview.
+pub fn fork_parent_from_content(content: &str) -> Option<String> {
     content
         .lines()
         .take(FORK_OBSERVATION_LINES)
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find_map(|value| find_fork_observation(&value, FORK_OBSERVATION_DEPTH))
+        .find_map(|value| find_fork_parent(&value, FORK_OBSERVATION_DEPTH))
 }
 
-/// Recursively look for the engine's fork-observation key and pull the parent
-/// session id out of it.
-fn find_fork_observation(value: &serde_json::Value, depth: usize) -> Option<String> {
+/// Read a fork parent from vendor metadata or a normalized observation.
+fn find_fork_parent(value: &serde_json::Value, depth: usize) -> Option<String> {
     if depth == 0 {
         return None;
     }
     let object = value.as_object()?;
+    if object.get("type").and_then(serde_json::Value::as_str) == Some("session_meta")
+        && let Some(parent_id) = object
+            .get("payload")
+            .and_then(|payload| payload.get("forked_from_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|parent_id| !parent_id.is_empty())
+    {
+        return Some(parent_id.to_string());
+    }
     if let Some(observation) = object.get(FORK_OBSERVATION_KEY)
         && let Ok(observation) = serde_json::from_value::<ForkObservation>(observation.clone())
         && !observation.parent_agent_session_id.is_empty()
@@ -566,7 +636,7 @@ fn find_fork_observation(value: &serde_json::Value, depth: usize) -> Option<Stri
     }
     object
         .values()
-        .find_map(|nested| find_fork_observation(nested, depth - 1))
+        .find_map(|nested| find_fork_parent(nested, depth - 1))
 }
 
 /// Every model that contributed billable tokens, in a stable order.
@@ -971,18 +1041,50 @@ mod tests {
             }
         });
         assert_eq!(
-            find_fork_observation(&header, FORK_OBSERVATION_DEPTH).as_deref(),
+            find_fork_parent(&header, FORK_OBSERVATION_DEPTH).as_deref(),
             Some("parent-42")
         );
     }
 
     #[test]
+    fn a_codex_session_header_declares_its_fork_parent() {
+        let header = serde_json::json!({
+            "timestamp": "2026-08-22T04:05:01.756Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "child-42",
+                "forked_from_id": "parent-42",
+                "source": "cli",
+                "thread_source": "user",
+            }
+        });
+        assert_eq!(
+            find_fork_parent(&header, FORK_OBSERVATION_DEPTH).as_deref(),
+            Some("parent-42")
+        );
+    }
+
+    #[test]
+    fn a_codex_fork_parent_requires_a_session_header_and_a_nonempty_id() {
+        let message = serde_json::json!({
+            "type": "response_item",
+            "payload": { "forked_from_id": "not-a-parent" }
+        });
+        let empty = serde_json::json!({
+            "type": "session_meta",
+            "payload": { "forked_from_id": "  " }
+        });
+        assert_eq!(find_fork_parent(&message, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&empty, FORK_OBSERVATION_DEPTH), None);
+    }
+
+    #[test]
     fn a_header_without_an_observation_yields_no_parent() {
         let header = serde_json::json!({ "type": "session_meta", "metadata": { "cwd": "/x" } });
-        assert_eq!(find_fork_observation(&header, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&header, FORK_OBSERVATION_DEPTH), None);
         // A malformed observation is ignored rather than half-read.
         let broken = serde_json::json!({ FORK_OBSERVATION_KEY: { "parent_agent": "cursor" } });
-        assert_eq!(find_fork_observation(&broken, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&broken, FORK_OBSERVATION_DEPTH), None);
     }
 
     #[test]
@@ -990,7 +1092,7 @@ mod tests {
         let deep = serde_json::json!({ "a": { "b": { "c": { "d": {
             FORK_OBSERVATION_KEY: { "parent_agent_session_id": "too-deep" }
         }}}}});
-        assert_eq!(find_fork_observation(&deep, FORK_OBSERVATION_DEPTH), None);
+        assert_eq!(find_fork_parent(&deep, FORK_OBSERVATION_DEPTH), None);
     }
 
     fn skill(description: Option<&str>) -> SkillUse {

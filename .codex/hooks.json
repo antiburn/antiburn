@@ -1,0 +1,17 @@
+{
+  "description": "Give advisory aislop feedback after Codex edits a file.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^apply_patch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "set -e; root=$(git rev-parse --show-toplevel); exec node \"$root/scripts/codex-aislop-hook.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

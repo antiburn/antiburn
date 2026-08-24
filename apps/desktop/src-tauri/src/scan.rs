@@ -610,6 +610,9 @@ async fn describe_one_with_activity(
         _ => Vec::new(),
     };
     let subagent_count = children.len() as u32;
+    let fork_parent_session_id = preview
+        .as_deref()
+        .and_then(analytics::fork_parent_from_content);
 
     let (updated_at_epoch, activity_source, activity_cursor) =
         semantic_activity_for_log(&log, activity_state.as_ref(), &children, preview.as_deref())
@@ -628,10 +631,7 @@ async fn describe_one_with_activity(
         activity_cursor,
         activity_source,
         subagent_count,
-        // Lineage is resolved when a session is opened: the observation lives
-        // inside the transcript, and reading every transcript on every pass
-        // would cost far more than the relationship is worth here.
-        fork_parent_session_id: None,
+        fork_parent_session_id,
     }))
 }
 
@@ -987,6 +987,27 @@ mod tests {
         path
     }
 
+    fn write_codex_fork_session(
+        home: &std::path::Path,
+        session_id: &str,
+        parent_session_id: &str,
+    ) -> std::path::PathBuf {
+        let path = write_codex_session(home, session_id);
+        let header = serde_json::json!({
+            "timestamp": "2026-08-01T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "forked_from_id": parent_session_id,
+                "cwd": "/home/avery/code/gadgets",
+                "source": "cli",
+                "thread_source": "user",
+            }
+        });
+        std::fs::write(&path, format!("{header}\n")).unwrap();
+        path
+    }
+
     fn log(agent: AgentKind, path: std::path::PathBuf, updated_at: i64) -> SessionLog {
         SessionLog {
             agent_type: agent,
@@ -1162,6 +1183,41 @@ mod tests {
         assert_eq!(wsl.key.environment_key, "wsl:syntheticlinux");
         assert_eq!(wsl.title.as_deref(), Some("Fallback transcript request"));
         assert_eq!(wsl.title_source.as_deref(), Some("firstMessage"));
+    }
+
+    #[tokio::test]
+    async fn a_codex_fork_records_its_parent_during_the_scan() {
+        let home = tempfile::TempDir::new().unwrap();
+        let parent_session_id = "parent-session";
+        let child_session_id = "child-session";
+        let path = write_codex_fork_session(home.path(), child_session_id, parent_session_id);
+
+        let DescribeOutcome::Session(child) = describe_one(
+            log(AgentKind::Codex, path, 1_800_000_000),
+            home.path(),
+            None,
+        )
+        .await
+        else {
+            panic!("Codex fork should be described");
+        };
+        assert_eq!(
+            child.fork_parent_session_id.as_deref(),
+            Some(parent_session_id)
+        );
+
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+        store
+            .upsert_sessions(&[record("codex", parent_session_id, Some(1_799_999_000))])
+            .unwrap();
+        store.upsert_sessions(std::slice::from_ref(&child)).unwrap();
+
+        assert_eq!(
+            store
+                .fork_children(&SessionKey::new("native", "codex", parent_session_id))
+                .unwrap(),
+            vec![child_session_id.to_string()]
+        );
     }
 
     #[tokio::test]

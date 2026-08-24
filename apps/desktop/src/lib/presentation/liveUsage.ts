@@ -136,28 +136,35 @@ export function liveWindowElapsed(window: LiveUsageWindowPayload, now: number): 
 }
 
 /**
- * `"resets in 3h 12m"` for something imminent, `"resets Tue 15:00"` further
- * out, and an honest admission when the provider did not say.
+ * `"resets 4pm"` for a reset later today, `"resets Tue 4pm"` further out, and
+ * an honest admission when the provider did not say.
  *
- * The switch is at a day because "resets in 76h" is not a sentence anyone
- * reads as a time, and a weekday and clock time is.
+ * A wall-clock time and not a countdown: a clock time stays true for as long
+ * as it is on screen, where "in 2h" is wrong a minute after it renders.
  */
 export function liveResetLabel(window: LiveUsageWindowPayload, now: number): string {
   if (!window.resetsAt) return "reset unavailable"
   const at = new Date(window.resetsAt).getTime()
   if (Number.isNaN(at)) return "reset unavailable"
-  const remaining = at - now
   // Already past, and the provider has not published the next one yet. Not an
   // error: a rolling window resets on the provider's clock, not ours.
-  if (remaining <= 0) return "reset pending"
-  if (remaining < 86_400_000) {
-    const hours = Math.floor(remaining / 3_600_000)
-    const minutes = Math.floor((remaining % 3_600_000) / 60_000)
-    return hours > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`
-  }
+  if (at - now <= 0) return "reset pending"
   const date = new Date(at)
+  const hours24 = date.getHours()
+  const hour = hours24 % 12 === 0 ? 12 : hours24 % 12
+  const suffix = hours24 < 12 ? "am" : "pm"
+  const minutes = date.getMinutes()
+  const time =
+    minutes === 0 ? `${hour}${suffix}` : `${hour}:${String(minutes).padStart(2, "0")}${suffix}`
+  const from = new Date(now)
+  // The weekday only when the reset falls on a different calendar day. "Resets
+  // 4pm" is unambiguous today and ambiguous tomorrow.
+  const sameDay =
+    date.getFullYear() === from.getFullYear() &&
+    date.getMonth() === from.getMonth() &&
+    date.getDate() === from.getDate()
+  if (sameDay) return `resets ${time}`
   const day = date.toLocaleDateString(undefined, { weekday: "short" })
-  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
   return `resets ${day} ${time}`
 }
 
@@ -238,10 +245,9 @@ export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindow
  * The fullest of a provider's live windows, as a percentage, or null when
  * none of them carries one.
  *
- * A compact ring can only show one number, and "how full is the fullest
- * thing I'm watching" is the question a glance at a chip is asking — a
- * per-model limit at 95% is exactly as worth a glance as an account-wide one
- * at 95%. The full breakdown, with each window named, is one hover away.
+ * A compact ring can only show one number. A per-model limit at 95% is as
+ * important as an account-wide limit at 95%. The expanded bar names every
+ * window in the full breakdown.
  */
 export function maxLiveUsedPercent(provider: LiveProviderUsagePayload): number | null {
   return liveWindows(provider).reduce<number | null>((max, window) => {
@@ -507,14 +513,27 @@ export function liveMetricRows(window: LiveUsageWindowPayload, now: number): Liv
 
   const rows = [pace, trend, runway]
   if (forecast.usedToday != null) {
+    // The shell reports percentage points of this window's allowance, and only
+    // for a window longer than a day. "Points" is the unit, not a word a
+    // reader knows, so the row gives the share of the limit instead.
     rows.push({
       key: "today",
       label: "Today",
-      value: `${forecast.usedToday.toFixed(1)} points of this window`,
+      value: `${formatAllowanceShare(forecast.usedToday)} of this limit`,
       toneClass: muted,
     })
   }
   return rows
+}
+
+/**
+ * A share of a limit's allowance, as a percentage.
+ *
+ * A decimal below ten, so a small but real share does not round away to `0%`;
+ * a whole number above it, where the decimal adds nothing.
+ */
+function formatAllowanceShare(points: number): string {
+  return points < 10 ? `${points.toFixed(1)}%` : `${Math.round(points)}%`
 }
 
 /**

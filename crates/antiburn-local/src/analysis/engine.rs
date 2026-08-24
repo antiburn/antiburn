@@ -19,7 +19,9 @@ pub use crate::model::skill::SkillUse;
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::initial_context::InitialContextBreakdown;
-use crate::analysis::model::{ModelRun, NormalizedSession, ToolCategory};
+use crate::analysis::model::{
+    CompactionTrigger, EventSource, ModelRun, NormalizedSession, ToolCategory,
+};
 
 /// Number of progress buckets each session is resampled onto (0% → 100%).
 pub const BUCKETS: usize = 180;
@@ -33,6 +35,182 @@ const CONTEXT_WINDOW_TIERS: [u64; 2] = [200_000, 1_000_000];
 /// Inter-event gaps at or above this are treated as "away" time and excluded
 /// from active time; shorter gaps count as active work. Tunable.
 pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
+
+/// A prompt-cache entry expires after its provider's TTL. When a turn arrives
+/// after the cache has lapsed, the whole context re-writes to the cache in one
+/// turn instead of only the new suffix. This "cache rehydration" turn costs
+/// far more than a normal cache hit, so the engine flags it separately from
+/// ordinary cache writes. A turn counts as a rehydration only when all of
+/// these hold, each guarded by a named threshold below:
+/// - the turn's context is large enough that a full rewrite is not noise;
+/// - most of the turn's context is a fresh cache write, not a cache hit;
+/// - the turn right before it was mostly served from cache, so the drop to a
+///   full rewrite is a real TTL lapse and not just the session's first turn;
+/// - the turn is not the first turn after a compaction boundary, since a
+///   compaction always rewrites the (now smaller) context and that is not a
+///   TTL lapse.
+///
+/// Some providers do not report cache writes. For them, the engine finds a
+/// large replay after a cache-read collapse. The next cached turn confirms it.
+///
+/// Ignore contexts under this size; a full rewrite of a small context is
+/// cheap and not worth flagging as a rehydration event.
+const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
+/// A turn's cache write must reach this share of its context to count as a
+/// full rewrite rather than an incremental cache write. The share is not
+/// near 1.0: the system prompt and tool definitions stay cached across
+/// sessions, so a rehydration re-writes only the conversation. In real
+/// sessions that is 60% to 80% of the context; normal turns write under 10%.
+const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.5;
+/// The previous turn's cache read must reach this share of its context so the
+/// rehydration is a real TTL lapse, not the first turn after a fresh session.
+const CACHE_REHYDRATION_PRIOR_READ_RATIO: f64 = 0.5;
+/// An inferred miss reads at most this share from the old cache.
+const CACHE_REHYDRATION_MISS_READ_RATIO: f64 = 0.2;
+/// An inferred miss keeps at least this share of the previous context.
+const CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO: f64 = 0.8;
+/// Replayed input must reach this share of the current context.
+const CACHE_REHYDRATION_REPLAY_RATIO: f64 = 0.5;
+/// The next turn must read at least this share from the rebuilt cache.
+const CACHE_REHYDRATION_RECOVERY_READ_RATIO: f64 = 0.5;
+
+/// Pure decision function for [`CACHE_REHYDRATION_*`] rehydration detection,
+/// factored out so the rule is unit-testable without a full event fixture.
+fn is_cache_rehydration_turn(
+    context_tokens: u64,
+    cache_write_tokens: u64,
+    prev_context_tokens: u64,
+    prev_cache_read_tokens: u64,
+    first_turn_after_compaction: bool,
+) -> bool {
+    if first_turn_after_compaction
+        || context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+        || prev_context_tokens == 0
+    {
+        return false;
+    }
+    let write_ratio = cache_write_tokens as f64 / context_tokens as f64;
+    let prev_read_ratio = prev_cache_read_tokens as f64 / prev_context_tokens as f64;
+    write_ratio >= CACHE_REHYDRATION_WRITE_RATIO
+        && prev_read_ratio >= CACHE_REHYDRATION_PRIOR_READ_RATIO
+}
+
+#[derive(Clone, Copy)]
+struct CacheTurn<'a> {
+    event_index: usize,
+    context_tokens: u64,
+    fresh_input_tokens: u64,
+    cache_read_tokens: u64,
+    first_turn_after_compaction: bool,
+    model: Option<&'a str>,
+}
+
+fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
+    if context_tokens == 0 {
+        return 0.0;
+    }
+    tokens as f64 / context_tokens as f64
+}
+
+fn same_known_model(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    }
+}
+
+fn inferred_cache_rehydration_turn(previous: CacheTurn<'_>, current: CacheTurn<'_>) -> bool {
+    if current.first_turn_after_compaction
+        || current.context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+        || cache_ratio(previous.cache_read_tokens, previous.context_tokens)
+            < CACHE_REHYDRATION_PRIOR_READ_RATIO
+        || cache_ratio(current.cache_read_tokens, current.context_tokens)
+            > CACHE_REHYDRATION_MISS_READ_RATIO
+        || !same_known_model(previous.model, current.model)
+    {
+        return false;
+    }
+
+    let retained_context_ratio = current.context_tokens as f64 / previous.context_tokens as f64;
+    if retained_context_ratio < CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO {
+        return false;
+    }
+
+    let context_growth = current
+        .context_tokens
+        .saturating_sub(previous.context_tokens);
+    let replayed_input = current.fresh_input_tokens.saturating_sub(context_growth);
+    cache_ratio(replayed_input, current.context_tokens) >= CACHE_REHYDRATION_REPLAY_RATIO
+}
+
+fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize> {
+    let mut indices = HashSet::new();
+    let mut turns = Vec::new();
+    let mut previous_context = 0u64;
+    let mut previous_cache_read = 0u64;
+    let mut first_turn_after_compaction = false;
+    let mut active_model = session.model.as_deref();
+
+    for (event_index, event) in session.events.iter().enumerate() {
+        if event.source != EventSource::Parent {
+            continue;
+        }
+        if let Some(model) = event.model.as_deref().filter(|model| !model.is_empty()) {
+            active_model = Some(model);
+        }
+        if event.is_compaction_boundary {
+            first_turn_after_compaction = true;
+        }
+        let context_tokens = event.usage.context_tokens();
+        if context_tokens == 0 {
+            continue;
+        }
+
+        if session.cache_write_tokens_available
+            && is_cache_rehydration_turn(
+                context_tokens,
+                event.usage.cache_creation_tokens,
+                previous_context,
+                previous_cache_read,
+                first_turn_after_compaction,
+            )
+        {
+            indices.insert(event_index);
+        }
+        turns.push(CacheTurn {
+            event_index,
+            context_tokens,
+            fresh_input_tokens: event.usage.input_tokens,
+            cache_read_tokens: event.usage.cache_read_tokens,
+            first_turn_after_compaction,
+            model: active_model,
+        });
+        previous_context = context_tokens;
+        previous_cache_read = event.usage.cache_read_tokens;
+        first_turn_after_compaction = false;
+    }
+
+    if session.cache_write_tokens_available {
+        return indices;
+    }
+
+    for window in turns.windows(3) {
+        let [previous, current, next] = window else {
+            continue;
+        };
+        let recovery_ratio = cache_ratio(next.cache_read_tokens, next.context_tokens);
+        let recovery_retention = next.context_tokens as f64 / current.context_tokens as f64;
+        if inferred_cache_rehydration_turn(*previous, *current)
+            && !next.first_turn_after_compaction
+            && recovery_ratio >= CACHE_REHYDRATION_RECOVERY_READ_RATIO
+            && recovery_retention >= CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO
+            && same_known_model(current.model, next.model)
+        {
+            indices.insert(current.event_index);
+        }
+    }
+    indices
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolMix {
@@ -70,14 +248,55 @@ impl ToolMix {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bucket {
-    /// Effective input (fresh + cache-written) / generated output throughput in
-    /// this bucket. Cache reads are excluded. `context_tokens` records the
-    /// cache-read-inclusive occupancy observed in this bucket.
+    /// The bucket records parent effective input (fresh + cache-written) and
+    /// generated output throughput. Cache reads are excluded. `context_tokens`
+    /// records the cache-read-inclusive parent occupancy.
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// The bucket combines effective input and generated output from
+    /// sub-agents. A sub-agent has its own context window, so this value stays
+    /// separate from the parent token series and `context_tokens`.
+    pub subagent_tokens: u64,
     pub context_tokens: u64,
     /// True when a real compaction boundary lands in this bucket.
     pub is_compaction_boundary: bool,
+    /// The bucket sums parent cache-read tokens. This cost-only value is
+    /// already part of `context_tokens` and is never part of `tokens_in`.
+    pub cache_read_tokens: u64,
+    /// The bucket sums parent cache-write tokens.
+    /// This is a breakdown of `tokens_in`, not an addition to it — `tokens_in`
+    /// already includes cache writes as effective input.
+    pub cache_write_tokens: u64,
+    /// True when a turn landing in this bucket is a detected cache
+    /// rehydration (see `cache_rehydration_event_indices`).
+    pub is_cache_rehydration: bool,
+    /// Count of `Task` tool calls in this bucket: how many sub-agents the
+    /// parent session launched at this point. Parent turns only — a
+    /// sub-agent does not itself launch sub-agents in this count.
+    pub subagent_launches: u32,
+    /// The model that produced the last parent event in this bucket. Parent
+    /// turns only — a sub-agent runs its own model, which says nothing about
+    /// the parent session's mode at this point.
+    pub model: Option<String>,
+    /// The thinking mode of the last parent event in this bucket. Parent
+    /// turns only, for the same reason as `model`.
+    pub thinking_mode: Option<String>,
+    /// The response speed of the last parent event in this bucket. Parent
+    /// turns only, for the same reason as `model`.
+    pub speed: Option<String>,
+    /// True when any parent event in this bucket carries a `thinking` block
+    /// (or its vendor equivalent). Parent turns only.
+    pub has_thinking: bool,
+    /// Whether the compaction in this bucket was manual or automatic, when
+    /// known. Parent turns only, same reason as `model`. When two
+    /// compactions land in one bucket, this keeps the last one's trigger.
+    pub compaction_trigger: Option<CompactionTrigger>,
+    /// The context token count right before the compaction in this bucket,
+    /// when known. Parent turns only. Keeps the last compaction's value.
+    pub compaction_pre_tokens: Option<u64>,
+    /// The context token count right after the compaction in this bucket,
+    /// when known. Parent turns only. Keeps the last compaction's value.
+    pub compaction_post_tokens: Option<u64>,
 }
 
 /// Estimated USD cost of a session, split by billable component. An on-device
@@ -111,6 +330,12 @@ pub struct SessionMetrics {
     /// Generated output tokens ("out").
     pub tokens_out: u64,
     pub peak_context_tokens: u64,
+    /// Compaction boundaries in the parent transcript.
+    #[serde(default)]
+    pub compaction_count: u64,
+    /// Turns the engine flags as a cache rehydration.
+    #[serde(default)]
+    pub cache_rehydration_count: u64,
     /// Whether the model context window is known well enough to present
     /// occupancy. Unknown Claude model ids deliberately leave this unavailable.
     pub context_available: bool,
@@ -176,6 +401,12 @@ pub struct ActiveSessionsSummary {
     pub tokens_in_total: u64,
     pub tokens_out_total: u64,
     pub peak_context_tokens: u64,
+    /// Compactions summed over the included sessions.
+    #[serde(default)]
+    pub compaction_count: u64,
+    /// Cache rehydrations summed over the included sessions.
+    #[serde(default)]
+    pub cache_rehydration_count: u64,
     pub context_available: bool,
     pub context_window: u64,
     /// Summed on-device cost estimate (`~$`) across priceable sessions, or `None`
@@ -197,6 +428,8 @@ impl ActiveSessionsSummary {
             tokens_in_total: 0,
             tokens_out_total: 0,
             peak_context_tokens: 0,
+            compaction_count: 0,
+            cache_rehydration_count: 0,
             context_available: false,
             context_window: CONTEXT_WINDOW,
             cost_total_usd: None,
@@ -207,6 +440,14 @@ impl ActiveSessionsSummary {
 }
 
 /// Compute metrics for one normalized session.
+///
+/// `session` may be a plain transcript, or the result of
+/// [`crate::analysis::merge_subagent_events`] merging a parent with its
+/// sub-agents into one event stream. In the merged case, token, tool, and
+/// cost tallies sum over every event regardless of [`crate::analysis::model::EventSource`]
+/// (a sub-agent is an implementation detail of its parent), while context
+/// occupancy, compaction, and cache-rehydration detection read parent-tagged
+/// events only (a sub-agent has its own context window).
 pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     // Time span (prefer real timestamps; fall back to event ordering).
     let mut timestamps: Vec<i64> = session.events.iter().filter_map(|e| e.ts_ms).collect();
@@ -253,8 +494,11 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     let mut skill_event_idx: Vec<usize> = Vec::new();
     let mut buckets = vec![Bucket::default(); BUCKETS];
     let n = session.events.len();
+    let cache_rehydration_events = cache_rehydration_event_indices(session);
     // Timestamp-less events use the position of the preceding timestamped event.
     let mut last_progress = 0.0f32;
+    let mut compaction_count = 0u64;
+    let mut cache_rehydration_count = 0u64;
     for (idx, ev) in session.events.iter().enumerate() {
         if active_ms > 0
             && let Some(ts) = ev.ts_ms
@@ -272,12 +516,66 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         .clamp(0.0, 1.0);
         let bi = ((progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
         let bucket = &mut buckets[bi];
-        bucket.tokens_in = bucket
-            .tokens_in
-            .saturating_add(ev.usage.effective_input_tokens());
-        bucket.tokens_out = bucket.tokens_out.saturating_add(ev.usage.output_tokens);
-        bucket.context_tokens = bucket.context_tokens.max(ev.usage.context_tokens());
-        bucket.is_compaction_boundary |= ev.is_compaction_boundary;
+        // The chart keeps parent and sub-agent throughput separate. Session
+        // totals below still sum every stream.
+        if ev.source == EventSource::Subagent {
+            bucket.subagent_tokens = bucket
+                .subagent_tokens
+                .saturating_add(ev.usage.effective_input_tokens())
+                .saturating_add(ev.usage.output_tokens);
+        }
+
+        // Parent throughput, context occupancy, compaction, cache metrics, and
+        // cache rehydration all describe the parent's own context window.
+        if ev.source == EventSource::Parent {
+            bucket.tokens_in = bucket
+                .tokens_in
+                .saturating_add(ev.usage.effective_input_tokens());
+            bucket.tokens_out = bucket.tokens_out.saturating_add(ev.usage.output_tokens);
+            bucket.cache_read_tokens = bucket
+                .cache_read_tokens
+                .saturating_add(ev.usage.cache_read_tokens);
+            bucket.cache_write_tokens = bucket
+                .cache_write_tokens
+                .saturating_add(ev.usage.cache_creation_tokens);
+            bucket.context_tokens = bucket.context_tokens.max(ev.usage.context_tokens());
+            bucket.is_compaction_boundary |= ev.is_compaction_boundary;
+            if ev.is_compaction_boundary {
+                compaction_count += 1;
+                // Keep the last compaction's trigger/sizes when two land in
+                // one bucket.
+                bucket.compaction_trigger = ev.compaction_trigger;
+                bucket.compaction_pre_tokens = ev.compaction_pre_tokens;
+                bucket.compaction_post_tokens = ev.compaction_post_tokens;
+            }
+            if cache_rehydration_events.contains(&idx) {
+                bucket.is_cache_rehydration = true;
+                cache_rehydration_count += 1;
+            }
+            // A `Task` tool call launches a sub-agent. Mark the bucket so a
+            // reader can see it in the tooltip; this never draws a chart line.
+            let launches = ev
+                .tools
+                .iter()
+                .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+                .count() as u32;
+            bucket.subagent_launches = bucket.subagent_launches.saturating_add(launches);
+
+            // Mode signals: the last parent event seen in this bucket wins.
+            // Sub-agents run their own model/effort/speed, which says nothing
+            // about the parent session's mode at this point, so they never
+            // reach here.
+            if let Some(model) = ev.model.as_deref().filter(|m| !m.is_empty()) {
+                bucket.model = Some(model.to_string());
+            }
+            if let Some(mode) = ev.thinking_mode.as_deref().filter(|m| !m.is_empty()) {
+                bucket.thinking_mode = Some(mode.to_string());
+            }
+            if let Some(speed) = ev.speed.as_deref().filter(|s| !s.is_empty()) {
+                bucket.speed = Some(speed.to_string());
+            }
+            bucket.has_thinking |= ev.has_thinking;
+        }
 
         // Collect skill invocations for exports.
         for tool in &ev.tools {
@@ -317,7 +615,9 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     // effective input (fresh + cache writes, matching the web app) / generated
     // output. Cache reads are excluded and surface as occupancy via `peak_context` /
     // `context_tokens`. The `bill_*` accumulators carry the four per-rate components
-    // for the cost estimate.
+    // for the cost estimate. These tallies (and `tool_mix`/`grep_count` below) sum
+    // over every event, including any sub-agent merged in by
+    // `merge_subagent_events` — only `peak_context` stays parent-only, guarded below.
     let mut tokens_in = 0u64;
     let mut tokens_out = 0u64;
     let mut bill_in = 0u64;
@@ -341,7 +641,11 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         bill_out = bill_out.saturating_add(ev.usage.output_tokens);
         bill_cr = bill_cr.saturating_add(ev.usage.cache_read_tokens);
         bill_cw = bill_cw.saturating_add(ev.usage.cache_creation_tokens);
-        peak_context = peak_context.max(ev.usage.context_tokens());
+        // Peak occupancy is a parent-only figure: a sub-agent's own context
+        // window does not describe the parent's, so it never raises this.
+        if ev.source == EventSource::Parent {
+            peak_context = peak_context.max(ev.usage.context_tokens());
+        }
         let u = ev.usage;
         let has_tokens = u.input_tokens != 0
             || u.output_tokens != 0
@@ -403,6 +707,8 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         tokens_in,
         tokens_out,
         peak_context_tokens: peak_context,
+        compaction_count,
+        cache_rehydration_count,
         context_available,
         context_window,
         tool_mix,
@@ -437,15 +743,29 @@ fn resolve_context_window(reported: u64, peak: u64) -> u64 {
         .unwrap_or(peak)
 }
 
-/// Rescale a token count measured against `window` into the shared reference
-/// `CONTEXT_WINDOW`, so occupancy from models with different context sizes
-/// (e.g. Codex's 258k vs the 200k reference) lands on one comparable axis. This
-/// lets the summary keep a single `context_window` denominator for the frontend.
-fn to_reference_window(tokens: u64, window: u64) -> u64 {
-    if window == 0 || window == CONTEXT_WINDOW {
+/// Rescale a token count measured against `window` into the shared
+/// `reference` window, so occupancy from models with different context sizes
+/// lands on one comparable axis. The summary then keeps a single
+/// `context_window` denominator for the frontend. A session whose window is
+/// already the reference keeps its raw token counts.
+fn to_reference_window(tokens: u64, window: u64, reference: u64) -> u64 {
+    if window == 0 || window == reference {
         return tokens;
     }
-    ((tokens as u128 * CONTEXT_WINDOW as u128) / window as u128) as u64
+    ((tokens as u128 * reference as u128) / window as u128) as u64
+}
+
+/// The reference window for a summary: the largest window among the sessions
+/// that report context. A single session keeps its own window, so the detail
+/// view shows real token counts. A mixed summary scales the smaller windows up
+/// to the largest one instead of down to a fixed tier.
+fn reference_window(metrics: &[SessionMetrics]) -> u64 {
+    metrics
+        .iter()
+        .filter(|m| m.context_available)
+        .map(|m| m.context_window)
+        .max()
+        .unwrap_or(CONTEXT_WINDOW)
 }
 
 /// Aggregate per-session metrics into the averaged live summary.
@@ -476,16 +796,24 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     let mut peak_context = 0u64;
     let mut duration_sum = 0u64;
     let mut active_sum = 0u64;
+    let mut compaction_count = 0u64;
+    let mut cache_rehydration_count = 0u64;
     // Sum cost only over priceable sessions; stays `None` if none had a known model.
     let mut cost_total_usd: Option<f64> = None;
+    let reference = reference_window(&metrics);
     for m in &metrics {
         tool_mix.merge(m.tool_mix);
         grep_total += m.grep_count;
         tokens_in_total += m.tokens_in;
         tokens_out_total += m.tokens_out;
+        compaction_count += m.compaction_count;
+        cache_rehydration_count += m.cache_rehydration_count;
         if m.context_available {
-            peak_context =
-                peak_context.max(to_reference_window(m.peak_context_tokens, m.context_window));
+            peak_context = peak_context.max(to_reference_window(
+                m.peak_context_tokens,
+                m.context_window,
+                reference,
+            ));
         }
         duration_sum += m.duration_secs;
         active_sum += m.active_secs;
@@ -499,24 +827,35 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     for (bi, bucket) in buckets.iter_mut().enumerate() {
         let mut tin = 0u64;
         let mut tout = 0u64;
+        let mut subagent_tokens = 0u64;
+        let mut cache_read = 0u64;
+        let mut cache_write = 0u64;
         // Average only sessions that report values in this bucket.
         let mut tok_contributors = 0u64;
         let mut ctx_sum = 0u64;
         let mut ctx_contributors = 0u64;
-        // A compaction in any contributing session marks the summary bucket.
+        // A compaction (or a rehydration) in any contributing session marks
+        // the summary bucket.
         let mut is_compaction_boundary = false;
+        let mut is_cache_rehydration = false;
+        let mut subagent_launches = 0u32;
         for m in &metrics {
             let b = &m.buckets[bi];
             is_compaction_boundary |= b.is_compaction_boundary;
+            is_cache_rehydration |= b.is_cache_rehydration;
+            subagent_launches = subagent_launches.saturating_add(b.subagent_launches);
             tin = tin.saturating_add(b.tokens_in);
             tout = tout.saturating_add(b.tokens_out);
-            if b.tokens_in > 0 || b.tokens_out > 0 {
+            subagent_tokens = subagent_tokens.saturating_add(b.subagent_tokens);
+            cache_read = cache_read.saturating_add(b.cache_read_tokens);
+            cache_write = cache_write.saturating_add(b.cache_write_tokens);
+            if b.tokens_in > 0 || b.tokens_out > 0 || b.subagent_tokens > 0 {
                 tok_contributors += 1;
             }
             // Normalize each session's occupancy into the shared reference window
-            // before averaging, so mixed-vendor summaries stay on one % axis.
+            // before averaging, so mixed-vendor summaries stay on one axis.
             let ctx = if m.context_available {
-                to_reference_window(b.context_tokens, m.context_window)
+                to_reference_window(b.context_tokens, m.context_window, reference)
             } else {
                 0
             };
@@ -527,8 +866,23 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         }
         bucket.tokens_in = tin.checked_div(tok_contributors).unwrap_or(0);
         bucket.tokens_out = tout.checked_div(tok_contributors).unwrap_or(0);
+        bucket.subagent_tokens = subagent_tokens.checked_div(tok_contributors).unwrap_or(0);
+        bucket.cache_read_tokens = cache_read.checked_div(tok_contributors).unwrap_or(0);
+        bucket.cache_write_tokens = cache_write.checked_div(tok_contributors).unwrap_or(0);
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
+        bucket.is_cache_rehydration = is_cache_rehydration;
+        bucket.subagent_launches = subagent_launches;
+        // `model`, `thinking_mode`, `speed`, and `has_thinking` stay at their
+        // default (`None`/`false`) here. Each contributing session can be a
+        // different agent with its own model and mode, so one bucket cannot
+        // carry a single true value across a multi-session summary — the
+        // mode-change chart annotation is a single-session feature only.
+        //
+        // `compaction_trigger`, `compaction_pre_tokens`, and
+        // `compaction_post_tokens` stay `None` for the same reason: each
+        // contributing session's compaction is its own event, so one summary
+        // bucket cannot carry a single trigger or size across sessions.
     }
 
     ActiveSessionsSummary {
@@ -540,8 +894,10 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         tokens_in_total,
         tokens_out_total,
         peak_context_tokens: peak_context,
+        compaction_count,
+        cache_rehydration_count,
         context_available: metrics.iter().any(|m| m.context_available),
-        context_window: CONTEXT_WINDOW,
+        context_window: reference,
         cost_total_usd,
         buckets,
         sessions: metrics,

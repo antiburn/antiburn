@@ -16,52 +16,236 @@ import type {
   InitialContextSource,
   SessionBucket,
 } from "../types/session"
+import { modelShortName } from "./models"
 
 /* -------------------------------------------------------------------------
  * Buckets and chart series
  * ---------------------------------------------------------------------- */
 
-export interface TokenPoint {
+export interface ContextTokenPoint {
+  /** Bucket position; the chart's x value, so marks and areas share one scale. */
+  index: number
+  /** Rounded percentage through the session, for labels. */
   progress: number
+  contextTokens: number
   tokensIn: number
   tokensOut: number
-}
-
-/** Input/output token throughput over session progress. */
-export function tokenSeries(buckets: SessionBucket[]): TokenPoint[] {
-  return buckets.flatMap((bucket, index) =>
-    bucket.tokensIn > 0 || bucket.tokensOut > 0
-      ? [
-          {
-            progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
-            tokensIn: bucket.tokensIn,
-            tokensOut: bucket.tokensOut,
-          },
-        ]
-      : [],
-  )
-}
-
-export interface ContextPoint {
-  progress: number
-  contextPct: number
+  subagentTokens: number
   isCompactionBoundary: boolean
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  isCacheRehydration: boolean
+  subagentLaunches: number
+  /** Model that produced this point, forward-filled from the last bucket that named one. */
+  model: string | null
+  /** Thinking-effort mode at this point, forward-filled the same way. */
+  thinkingMode: string | null
+  /** Response speed at this point, forward-filled the same way. */
+  speed: string | null
+  /** True when this bucket itself carries a thinking block (not forward-filled). */
+  hasThinking: boolean
+  /** Whether the compaction in this bucket was manual or automatic, when known. */
+  compactionTrigger: "manual" | "auto" | null
+  /** The context token count right before the compaction in this bucket, when known. */
+  compactionPreTokens: number | null
+  /** The context token count right after the compaction in this bucket, when known. */
+  compactionPostTokens: number | null
 }
 
-/** Context-window occupancy (0..100%) over progress. */
-export function contextSeries(buckets: SessionBucket[], contextWindow: number): ContextPoint[] {
-  const window = contextWindow || 1
-  return buckets.flatMap((bucket, index) =>
-    bucket.contextTokens > 0 || bucket.isCompactionBoundary
-      ? [
-          {
-            progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
-            contextPct: Math.min(100, Math.round((bucket.contextTokens / window) * 100)),
-            isCompactionBoundary: bucket.isCompactionBoundary,
-          },
-        ]
-      : [],
-  )
+/**
+ * Merged context-and-token series over session progress, one point per
+ * bucket. This keeps every bucket, including empty ones, so the context area
+ * and the token areas share one x-axis grid and cannot drift apart.
+ *
+ * Context is a level, not a rate. The engine records the largest usage it
+ * observes in a bucket, so a bucket with only tool events holds zero. The
+ * series carries the last observed level across such buckets. A compaction
+ * bucket is a reset, but the new level is unknown until the next model call,
+ * so the series fills the compaction bucket and the empty buckets after it
+ * with the next observed level. The line then falls at the mark, not to zero.
+ */
+export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[] {
+  const levels: number[] = []
+  let held = 0
+  let afterCompaction = false
+  for (const bucket of buckets) {
+    if (bucket.isCompactionBoundary) {
+      afterCompaction = true
+      held = 0
+    } else if (bucket.contextTokens > 0) {
+      afterCompaction = false
+      held = bucket.contextTokens
+    }
+    // NaN marks a bucket that waits for the next observation.
+    levels.push(afterCompaction ? Number.NaN : held)
+  }
+  let next = 0
+  for (let i = levels.length - 1; i >= 0; i--) {
+    if (Number.isNaN(levels[i])) levels[i] = next
+    else next = levels[i]!
+  }
+  const models = forwardFillMode(buckets, (bucket) => bucket.model)
+  const thinkingModes = forwardFillMode(buckets, (bucket) => bucket.thinkingMode)
+  const speeds = forwardFillMode(buckets, (bucket) => bucket.speed)
+  return buckets.map((bucket, index) => ({
+    index,
+    progress: Math.round((index / Math.max(1, buckets.length - 1)) * 100),
+    contextTokens: levels[index]!,
+    tokensIn: bucket.tokensIn,
+    tokensOut: bucket.tokensOut,
+    subagentTokens: bucket.subagentTokens,
+    isCompactionBoundary: bucket.isCompactionBoundary,
+    cacheReadTokens: bucket.cacheReadTokens,
+    cacheWriteTokens: bucket.cacheWriteTokens,
+    isCacheRehydration: bucket.isCacheRehydration,
+    subagentLaunches: bucket.subagentLaunches,
+    model: models[index]!,
+    thinkingMode: thinkingModes[index]!,
+    speed: speeds[index]!,
+    hasThinking: bucket.hasThinking,
+    compactionTrigger: bucket.compactionTrigger,
+    compactionPreTokens: bucket.compactionPreTokens,
+    compactionPostTokens: bucket.compactionPostTokens,
+  }))
+}
+
+/**
+ * Carry a per-bucket mode value forward: a bucket with no value keeps the
+ * last one observed, so the mode reads as persisting until it changes. `null`
+ * until the first bucket that names a value.
+ */
+function forwardFillMode(
+  buckets: SessionBucket[],
+  pick: (bucket: SessionBucket) => string | null,
+): (string | null)[] {
+  let held: string | null = null
+  return buckets.map((bucket) => {
+    const value = pick(bucket)
+    if (value !== null) held = value
+    return held
+  })
+}
+
+export interface ModeChangeMarker {
+  /** Bucket index the change lands on, matching `ContextTokenPoint.index`. */
+  index: number
+  /** Compact label, e.g. `"opus → sonnet"`, `"effort high"`, `"fast"`. */
+  label: string
+}
+
+/**
+ * One marker per bucket where the model, thinking mode, or speed changes from
+ * the previous non-null value of that same field. The first bucket that names
+ * a field's value is the session's starting mode, not a change, so it draws
+ * no marker for that field — the tooltip shows it instead. The one exception:
+ * "fast" speed at the very start still gets a marker, since fast mode is easy
+ * to miss otherwise. Several fields changing in the same bucket join into one
+ * label with " · ".
+ */
+export function modeChangeMarkers(points: ContextTokenPoint[]): ModeChangeMarker[] {
+  const markers: ModeChangeMarker[] = []
+  let seenModel = false
+  let seenThinkingMode = false
+  let seenSpeed = false
+  let prevModel: string | null = null
+  let prevThinkingMode: string | null = null
+  let prevSpeed: string | null = null
+
+  for (const point of points) {
+    const parts: string[] = []
+
+    if (point.model !== null) {
+      if (seenModel && point.model !== prevModel) {
+        parts.push(`${modelShortName(prevModel!)} → ${modelShortName(point.model)}`)
+      }
+      prevModel = point.model
+      seenModel = true
+    }
+
+    if (point.thinkingMode !== null) {
+      if (seenThinkingMode && point.thinkingMode !== prevThinkingMode) {
+        parts.push(`effort ${point.thinkingMode}`)
+      }
+      prevThinkingMode = point.thinkingMode
+      seenThinkingMode = true
+    }
+
+    if (point.speed !== null) {
+      if (seenSpeed && point.speed !== prevSpeed) {
+        parts.push(point.speed)
+      } else if (!seenSpeed && point.speed === "fast") {
+        parts.push("fast")
+      }
+      prevSpeed = point.speed
+      seenSpeed = true
+    }
+
+    if (parts.length > 0) markers.push({ index: point.index, label: parts.join(" · ") })
+  }
+
+  return markers
+}
+
+/** Candidate axis steps, from fine to coarse. */
+const AXIS_STEPS = [
+  1_000, 2_000, 5_000, 10_000, 20_000, 25_000, 50_000, 100_000, 200_000, 250_000, 500_000,
+  1_000_000,
+]
+
+/** One chart axis: its top value and the clean values it is marked at. */
+export interface AxisScale {
+  /** Top of the axis, in tokens. */
+  ceiling: number
+  /** Marked values strictly between zero and the ceiling. */
+  ticks: number[]
+}
+
+/**
+ * Scale an axis to the data, not to a fixed range. The ceiling is `peak`
+ * plus headroom, rounded up to the finest clean step that yields at most
+ * `maxTicks` marks, and never above `cap`. A session that used 130k of a 1M
+ * window then fills the chart instead of a thin strip at the bottom.
+ */
+export function axisScale(peak: number, cap: number, maxTicks: number): AxisScale {
+  const target = Math.min(cap, Math.max(1, peak) * 1.1)
+  const step =
+    AXIS_STEPS.find((s) => target / s <= maxTicks) ?? AXIS_STEPS[AXIS_STEPS.length - 1]!
+  const ceiling = Math.min(cap, Math.ceil(target / step) * step)
+  const ticks: number[] = []
+  for (let v = step; v < ceiling; v += step) ticks.push(v)
+  return { ceiling, ticks }
+}
+
+/** Candidate spacings for the time axis, in seconds. */
+const TIME_AXIS_STEPS_SECS = [
+  60, 120, 300, 600, 900, 1800, 3600, 7200, 10_800, 14_400, 21_600, 28_800, 43_200, 86_400,
+]
+
+export interface TimeAxisTick {
+  /** Bucket index, possibly fractional, on the numeric x axis. */
+  index: number
+  label: string
+}
+
+/**
+ * Elapsed active-time marks for the x axis. Buckets span active time evenly,
+ * so a mark at `t` seconds sits at `t / activeSecs` of the way across. Marks
+ * use the coarsest step that still gives at most `maxTicks` marks.
+ */
+export function timeAxisTicks(
+  activeSecs: number,
+  bucketCount: number,
+  maxTicks: number,
+): TimeAxisTick[] {
+  if (activeSecs <= 0 || bucketCount < 2) return []
+  const step =
+    TIME_AXIS_STEPS_SECS.find((s) => activeSecs / s <= maxTicks) ??
+    TIME_AXIS_STEPS_SECS[TIME_AXIS_STEPS_SECS.length - 1]!
+  const ticks: TimeAxisTick[] = []
+  for (let t = step; t < activeSecs; t += step) {
+    ticks.push({ index: (t / activeSecs) * (bucketCount - 1), label: formatDuration(t) })
+  }
+  return ticks
 }
 
 export interface ToolSlice {
@@ -251,6 +435,15 @@ export function formatCompact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return `${n}`
+}
+
+/**
+ * Compact integer for a context-band value, with a trailing ".0" dropped —
+ * `"200k"`, `"1.5M"`, `"50k"`. Only for band labels; other callers keep
+ * {@link formatCompact}'s fixed one decimal place.
+ */
+export function formatTokenBand(n: number): string {
+  return formatCompact(n).replace(/\.0(?=[kM])/, "")
 }
 
 /**

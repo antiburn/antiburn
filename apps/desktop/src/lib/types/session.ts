@@ -34,11 +34,37 @@ interface ToolMix {
 
 /** One point on the shared 0→100% session-progress grid. Mirrors engine `Bucket`. */
 export interface SessionBucket {
+  /** The bucket contains parent effective input tokens. */
   tokensIn: number
+  /** The bucket contains parent generated output tokens. */
   tokensOut: number
+  /** The bucket combines effective input and generated output from sub-agents. */
+  subagentTokens: number
   contextTokens: number
   /** True when a real compaction boundary landed in this bucket. */
   isCompactionBoundary: boolean
+  /** The bucket sums parent cache-read tokens, which are already part of `contextTokens`. */
+  cacheReadTokens: number
+  /** The bucket sums parent cache-write tokens, which are part of `tokensIn`. */
+  cacheWriteTokens: number
+  /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
+  isCacheRehydration: boolean
+  /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
+  subagentLaunches: number
+  /** The model that produced the last parent event in this bucket, when known. */
+  model: string | null
+  /** The thinking-effort mode of the last parent event in this bucket, when known. */
+  thinkingMode: string | null
+  /** The response speed of the last parent event in this bucket, when known. */
+  speed: string | null
+  /** True when any parent event in this bucket carries a thinking block. */
+  hasThinking: boolean
+  /** Whether the compaction in this bucket was manual or automatic, when known. */
+  compactionTrigger: "manual" | "auto" | null
+  /** The context token count right before the compaction in this bucket, when known. */
+  compactionPreTokens: number | null
+  /** The context token count right after the compaction in this bucket, when known. */
+  compactionPostTokens: number | null
 }
 
 /* -------------------------------------------------------------------------
@@ -123,6 +149,10 @@ export interface SessionMetrics {
   tokensIn: number
   tokensOut: number
   peakContextTokens: number
+  /** Compaction boundaries in the parent transcript. */
+  compactionCount?: number
+  /** Turns the engine flagged as a cache rehydration. */
+  cacheRehydrationCount?: number
   /** False when the model's context window is unknown. */
   contextAvailable?: boolean
   contextWindow: number
@@ -153,6 +183,10 @@ export interface ActiveSessionsSummary {
   tokensInTotal: number
   tokensOutTotal: number
   peakContextTokens: number
+  /** Compactions summed over the included sessions. */
+  compactionCount?: number
+  /** Cache rehydrations summed over the included sessions. */
+  cacheRehydrationCount?: number
   /** Whether at least one included session has a known context window. */
   contextAvailable?: boolean
   contextWindow: number

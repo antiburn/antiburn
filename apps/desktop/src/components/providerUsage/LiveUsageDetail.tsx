@@ -2,17 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { RotateCcw } from "lucide-react"
+
 import { cn } from "../../lib/cn"
 import type { LiveProviderUsagePayload } from "../../lib/ipc"
 import {
   liveExtraUsageLabel,
   liveFreshnessToneClass,
-  liveMetricRows,
   liveSourceNote,
   liveStalenessNote,
-  liveWindowLabel,
   liveWindows,
 } from "../../lib/presentation/liveUsage"
+import { LiveMetricRows } from "./LiveMetricRows"
 import { LiveUsageWindowRows } from "./LiveUsageWindowRows"
 
 /**
@@ -65,28 +66,38 @@ export function LiveUsageDetail({
 
       <LiveUsageWindowRows provider={live} now={now} />
 
+      {live.resetCredits && live.resetCredits.availableCount > 0 && (
+        <ResetCreditsNotice availableCount={live.resetCredits.availableCount} />
+      )}
+
       {/* Derived rows for the primary window only. Repeating pace and runway
           under every per-model limit would triple the panel's height to say
           the same thing three ways; the full picture is one tap away in the
           Usage view, which has the room for it. */}
-      {/* An explicit group role: a description list carries no accessible name
-          of its own, so without it the label naming which window these rows
-          describe is announced to nobody. */}
-      <dl
-        role="group"
-        aria-label={`${liveWindowLabel(primary)} pace`}
-        className="space-y-0.5 border-t border-separator pt-1.5"
-      >
-        {liveMetricRows(primary, now).map((row) => (
-          <div key={row.key} className="flex items-baseline justify-between gap-3">
-            <dt className="type-caption text-label-tertiary">{row.label}</dt>
-            <dd className={cn("type-caption tabular-nums", row.toneClass)}>{row.value}</dd>
-          </div>
-        ))}
-      </dl>
+      <LiveMetricRows window={primary} now={now} className="border-t border-separator pt-1.5" />
 
       {extra && <p className="type-caption text-label-tertiary">{extra}</p>}
       {staleness && <p className="type-caption text-system-orange">{staleness}</p>}
     </section>
+  )
+}
+
+function ResetCreditsNotice({ availableCount }: { availableCount: number }) {
+  const noun = availableCount === 1 ? "reset" : "resets"
+  return (
+    <div className="flex items-start gap-1.5 rounded-control bg-system-green/10 px-2 py-1.5">
+      <RotateCcw
+        size={13}
+        strokeWidth={2}
+        aria-hidden="true"
+        className="mt-px shrink-0 text-system-green"
+      />
+      <p className="min-w-0 type-footnote text-label-secondary">
+        <span className="font-medium text-system-green">
+          {availableCount} usage limit {noun} available.
+        </span>{" "}
+        Run <span className="font-mono">/usage</span> in Codex to use one.
+      </p>
+    </div>
   )
 }

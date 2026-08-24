@@ -42,11 +42,11 @@
   --color-context-fixed: var(--color-context-fixed-val);
   --color-context-system: var(--color-context-system-val);
 
-  /* Paired series colors. Blue matches the area fill above; violet gives the
-     second series — and its legend swatch — a hue of its own instead of a
-     second blue. */
+  /* The series colors use blue for parent input, violet for parent output,
+     and green for combined sub-agent tokens. */
   --color-token-in: var(--color-token-in-val);
   --color-token-out: var(--color-token-out-val);
+  --color-token-subagent: var(--color-token-subagent-val);
 
   /* The one alert hue in this palette, shared by every surface that needs an
      attention step between neutral and critical states. Its own
@@ -54,6 +54,11 @@
      vivid system orange down to a legible amber while dark mode keeps the
      saturated value. */
   --color-context-warning: var(--color-context-warning-val);
+
+  /* The critical end of the context heat ramp, above the warning amber. Used
+     only past 400k tokens, where the amber-to-red gradient reaches red at the
+     1M context window. */
+  --color-context-critical: var(--color-context-critical-val);
 }
 
 /* --- Light (default and explicit) --- */
@@ -63,13 +68,15 @@
   --color-analytics-green-val: hsl(161.3 93% 30.4%); /* emerald-600 */
   --color-analytics-blue-val: hsl(217.2 91% 59.8%); /* blue-500 */
   --color-analytics-cyan-val: hsl(188.7 94.4% 42.7%); /* cyan-500 */
-  --color-context-fill-top-val: hsl(217.2 91% 59.8% / 0.55); /* blue-500 */
-  --color-context-fill-base-val: hsl(217.2 91% 59.8% / 0.08);
+  --color-context-fill-top-val: hsl(217.2 91% 59.8% / 0.6); /* blue-500 */
+  --color-context-fill-base-val: hsl(217.2 91% 59.8% / 0.2);
   --color-context-fixed-val: hsl(215 16% 46.9%); /* slate-500 */
   --color-context-system-val: hsl(262 83% 57.8%); /* violet-600 */
   --color-token-in-val: hsl(217.2 91% 59.8%); /* blue-500 */
   --color-token-out-val: hsl(255 91% 76.2%); /* violet-400 */
+  --color-token-subagent-val: hsl(161.3 93% 30.4%); /* emerald-600 */
   --color-context-warning-val: hsl(32 95% 43.72%); /* amber-600 */
+  --color-context-critical-val: hsl(0 72% 50.5%); /* red-600 */
 }
 
 /* --- Dark ---
@@ -82,13 +89,15 @@
     --color-analytics-green-val: hsl(158 64% 51.56%); /* emerald-400 */
     --color-analytics-blue-val: hsl(213 94% 67.8%); /* blue-400 */
     --color-analytics-cyan-val: hsl(188 86% 53.3%); /* cyan-400 */
-    --color-context-fill-top-val: hsl(213 94% 67.8% / 0.6); /* blue-400 */
-    --color-context-fill-base-val: hsl(213 94% 67.8% / 0.1);
+    --color-context-fill-top-val: hsl(213 94% 67.8% / 0.75); /* blue-400 */
+    --color-context-fill-base-val: hsl(213 94% 67.8% / 0.25);
     --color-context-fixed-val: hsl(215 20% 65%); /* slate-400 */
     --color-context-system-val: hsl(255 91% 76.2%); /* violet-400 */
     --color-token-in-val: hsl(213 94% 67.8%); /* blue-400 */
     --color-token-out-val: hsl(253 94% 85%); /* violet-300 */
+    --color-token-subagent-val: hsl(158 64% 51.56%); /* emerald-400 */
     --color-context-warning-val: hsl(36.4 100% 52%); /* vivid amber */
+    --color-context-critical-val: hsl(0 90% 70.7%); /* red-400 */
   }
 }
 
@@ -97,11 +106,13 @@
   --color-analytics-green-val: hsl(158 64% 51.56%);
   --color-analytics-blue-val: hsl(213 94% 67.8%);
   --color-analytics-cyan-val: hsl(188 86% 53.3%);
-  --color-context-fill-top-val: hsl(213 94% 67.8% / 0.6);
-  --color-context-fill-base-val: hsl(213 94% 67.8% / 0.1);
+  --color-context-fill-top-val: hsl(213 94% 67.8% / 0.75);
+  --color-context-fill-base-val: hsl(213 94% 67.8% / 0.25);
   --color-context-fixed-val: hsl(215 20% 65%);
   --color-context-system-val: hsl(255 91% 76.2%);
   --color-token-in-val: hsl(213 94% 67.8%);
   --color-token-out-val: hsl(253 94% 85%);
+  --color-token-subagent-val: hsl(158 64% 51.56%);
   --color-context-warning-val: hsl(36.4 100% 52%);
+  --color-context-critical-val: hsl(0 90% 70.7%);
 }

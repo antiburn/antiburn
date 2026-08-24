@@ -52,6 +52,13 @@
   /* accent-fill is the concrete value; the live system accent token breaks when
      used as a background-color, so backgrounds must use this one. */
   --color-accent-fill: var(--color-accent-fill-val);
+  /* The antiburn brand orange, in the two-token shape system-orange uses.
+     brand-tint fills a large shape — a meter segment, a ring arc, a hover
+     wash — and carries the mark unchanged in both themes. brand inks text and
+     small glyphs, where the mark alone measures 2.9:1 on a light surface and
+     fails the contrast a reader needs. */
+  --color-brand: var(--color-brand-val);
+  --color-brand-tint: var(--color-brand-tint-val);
   --color-system-green: var(--color-system-green-val);
   --color-system-orange: var(--color-system-orange-val);
   --color-system-orange-tint: var(--color-system-orange-tint-val);
@@ -70,6 +77,13 @@
   --color-system-gold: var(--color-system-gold-val);
   /* Legible gold for *text/glyphs* on the gold tint — same split again. */
   --color-system-gold-text: var(--color-system-gold-text-val);
+
+  /* The band that sweeps across a running session title. The same value in
+     every theme branch: it sits between the two text colors, so it moves away
+     from the glyphs in each. Light mode lights its near-black text, dark mode
+     dims its near-white text. Each branch restates it because the design
+     contract reads the explicit palettes. */
+  --color-shimmer: var(--color-shimmer-val);
 
   /* Ink for vendor brand marks on agent rows. Deliberately firmer than
      label-secondary: a mark is a shape, not text, so it needs near-full
@@ -129,6 +143,12 @@
   --color-accent-fill-val: hsl(210 100% 44.5%);
   --color-accent-hover-val: hsl(210.4 100% 39%);
 
+  /* Brand — the antiburn orange. The mark itself fills large shapes in both
+     themes. On a light surface it measures 2.9:1, so text and small glyphs
+     take the darkened value, which clears 4.5:1. */
+  --color-brand-tint-val: hsl(17.6 100% 58.6%);
+  --color-brand-val: hsl(18 92% 39%);
+
   /* Status — accessible variants, tuned for contrast on a light surface */
   --color-system-green-val: hsl(135 59% 34%);
   --color-system-orange-val: hsl(27 100% 35.1%);
@@ -141,6 +161,7 @@
   --color-system-indigo-val: hsl(241 61% 58.8%);
   --color-system-indigo-text-val: hsl(241 61% 58.8%);
   --color-system-gold-val: hsl(40.6 96% 40.4%);
+  --color-shimmer-val: hsl(17.3 71% 50.2%);
   --color-system-gold-text-val: hsl(41 100% 28.6%);
 
   /* Brand-mark ink */
@@ -221,6 +242,9 @@
     --color-accent-val: hsl(210 100% 51.9%);
     --color-accent-fill-val: hsl(213.3 92% 48%);
     --color-accent-hover-val: hsl(213.5 91% 42%);
+    /* The mark measures 7.4:1 on a dark surface, so text keeps it too. */
+    --color-brand-tint-val: hsl(17.6 100% 58.6%);
+    --color-brand-val: hsl(17.6 100% 58.6%);
     --color-system-green-val: hsl(135 70% 52.3%);
     --color-system-orange-val: hsl(36 100% 62.5%);
     --color-system-orange-tint-val: hsl(36.4 100% 52%);
@@ -231,6 +255,7 @@
     --color-system-indigo-val: hsl(241 73% 63%);
     --color-system-indigo-text-val: hsl(241 100% 79%);
     --color-system-gold-val: hsl(48 100% 50%);
+    --color-shimmer-val: hsl(17.3 71% 50.2%);
     --color-system-gold-text-val: hsl(43.5 88% 66%);
     --color-agent-mark-val: hsl(60 15% 96.2%);
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
@@ -272,6 +297,8 @@
   --color-accent-val: hsl(211.2 100% 50%);
   --color-accent-fill-val: hsl(210 100% 44.5%);
   --color-accent-hover-val: hsl(210.4 100% 39%);
+  --color-brand-tint-val: hsl(17.6 100% 58.6%);
+  --color-brand-val: hsl(18 92% 39%);
   --color-system-green-val: hsl(135 59% 34%);
   --color-system-orange-val: hsl(27 100% 35.1%);
   --color-system-orange-tint-val: hsl(35 100% 50%);
@@ -282,6 +309,7 @@
   --color-system-indigo-val: hsl(241 61% 58.8%);
   --color-system-indigo-text-val: hsl(241 61% 58.8%);
   --color-system-gold-val: hsl(40.6 96% 40.4%);
+  --color-shimmer-val: hsl(17.3 71% 50.2%);
   --color-system-gold-text-val: hsl(41 100% 28.6%);
   --color-agent-mark-val: hsl(52 11% 13.3%);
 }
@@ -323,6 +351,8 @@
   --color-accent-val: hsl(210 100% 51.9%);
   --color-accent-fill-val: hsl(213.3 92% 48%);
   --color-accent-hover-val: hsl(213.5 91% 42%);
+  --color-brand-tint-val: hsl(17.6 100% 58.6%);
+  --color-brand-val: hsl(17.6 100% 58.6%);
   --color-system-green-val: hsl(135 70% 52.3%);
   --color-system-orange-val: hsl(36 100% 62.5%);
   --color-system-orange-tint-val: hsl(36.4 100% 52%);
@@ -333,6 +363,7 @@
   --color-system-indigo-val: hsl(241 73% 63%);
   --color-system-indigo-text-val: hsl(241 100% 79%);
   --color-system-gold-val: hsl(48 100% 50%);
+  --color-shimmer-val: hsl(17.3 71% 50.2%);
   --color-system-gold-text-val: hsl(43.5 88% 66%);
   --color-agent-mark-val: hsl(60 15% 96.2%);
 }

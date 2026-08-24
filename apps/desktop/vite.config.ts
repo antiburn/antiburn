@@ -12,7 +12,22 @@ import { defineConfig } from "vitest/config"
 const DEV_SERVER_PORT = 1420
 
 export default defineConfig(({ command, mode }) => ({
-  plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss()],
+  plugins: [
+    {
+      name: "tauri-webview-module-cache",
+      configureServer(server) {
+        server.middlewares.use((request, _response, next) => {
+          // A new Tauri webview can lack the cached body for a conditional Vite response. Send every module body.
+          delete request.headers["if-none-match"]
+          delete request.headers["if-modified-since"]
+          next()
+        })
+      },
+    },
+    react(),
+    babel({ presets: [reactCompilerPreset()] }),
+    tailwindcss(),
+  ],
 
   // Tauri reads the shell's stderr, so Vite must not clear it, and the dev
   // server has to stay on the exact port `devUrl` points at.
@@ -21,6 +36,8 @@ export default defineConfig(({ command, mode }) => ({
     host: "127.0.0.1",
     port: DEV_SERVER_PORT,
     strictPort: true,
+    // Do not store a partial module graph for a later webview.
+    headers: { "Cache-Control": "no-store" },
   },
 
   // Only variables with these prefixes reach the renderer.
@@ -42,6 +59,8 @@ export default defineConfig(({ command, mode }) => ({
 
   test: {
     environment: "jsdom",
+    // The label helpers format wall-clock times. Keep their output equal on all CI hosts.
+    env: { TZ: "UTC" },
     setupFiles: ["./src/test/setup.ts"],
     // `tests/` holds checks that must not live inside the tree they check
     // (see tests/no-exfiltration.test.ts).

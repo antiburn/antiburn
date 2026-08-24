@@ -72,6 +72,12 @@ colors:
   accent-fill: # concrete fill; use bg-accent-fill for backgrounds
     light: "hsl(210 100% 44.5%)"
     dark: "hsl(213.3 92% 48%)"
+  brand: # antiburn orange for text and small glyphs
+    light: "hsl(18 92% 39%)"
+    dark: "hsl(17.6 100% 58.6%)"
+  brand-tint: # antiburn orange for large fills
+    light: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 58.6%)"
   system-green:
     light: "hsl(135 59% 34%)"
     dark: "hsl(135 70% 52.3%)"
@@ -102,6 +108,12 @@ colors:
   system-gold:
     light: "hsl(40.6 96% 40.4%)"
     dark: "hsl(48 100% 50%)"
+  shimmer: # the running-session title sweep. One value for both themes, sitting
+    # between the two text colors: it lights the near-black glyphs in light mode
+    # and dims the near-white ones in dark mode. Below 4.5:1 on a light row on
+    # purpose; the band is transient and the text under it is legible at rest.
+    light: "hsl(17.3 71% 50.2%)"
+    dark: "hsl(17.3 71% 50.2%)"
   system-gold-text:
     light: "hsl(41 100% 28.6%)"
     dark: "hsl(43.5 88% 66%)"
@@ -132,11 +144,11 @@ colors:
     light: "hsl(188.7 94.4% 42.7%)"
     dark: "hsl(188 86% 53.3%)"
   context-fill-top:
-    light: "hsl(217.2 91% 59.8% / 0.55)"
-    dark: "hsl(213 94% 67.8% / 0.6)"
+    light: "hsl(217.2 91% 59.8% / 0.6)"
+    dark: "hsl(213 94% 67.8% / 0.75)"
   context-fill-base:
-    light: "hsl(217.2 91% 59.8% / 0.08)"
-    dark: "hsl(213 94% 67.8% / 0.1)"
+    light: "hsl(217.2 91% 59.8% / 0.2)"
+    dark: "hsl(213 94% 67.8% / 0.25)"
   context-fixed:
     light: "hsl(215 16% 46.9%)"
     dark: "hsl(215 20% 65%)"
@@ -149,9 +161,15 @@ colors:
   token-out:
     light: "hsl(255 91% 76.2%)"
     dark: "hsl(253 94% 85%)"
+  token-subagent:
+    light: "hsl(161.3 93% 30.4%)"
+    dark: "hsl(158 64% 51.56%)"
   context-warning:
     light: "hsl(32 95% 43.72%)"
     dark: "hsl(36.4 100% 52%)"
+  context-critical:
+    light: "hsl(0 72% 50.5%)"
+    dark: "hsl(0 90% 70.7%)"
 fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`
@@ -165,7 +183,7 @@ typography:
   body: { fontSize: 13px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "-0.08px" }
   callout: { fontSize: 12px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0" }
   footnote: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.12px" }
-  caption: { fontSize: 10px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.06px" }
+  caption: { fontSize: 11px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.06px" }
 spacing:
   1: 4px
   2: 8px
@@ -289,6 +307,9 @@ Notes for what isn't expressible as a token:
 - **Utilities** — every `colors` key is a Tailwind utility via `bg-/text-/border-<name>` (e.g.
   `bg-surface`, `text-label`, `text-system-green`). Use `bg-accent-fill` for accent backgrounds; the
   live system accent token resolves incorrectly when used as a `background-color`.
+- **Floating surfaces** — use the shared `.ui-menu` and `.ui-tooltip` chrome. Feature code must not
+  recreate those materials in an independently positioned panel; use an existing primitive or add a
+  documented shared component.
 - **Type scale** — `.type-*` classes, declared outside any `@layer` in `src/styles/typography.css`.
   Unlayered CSS outranks Tailwind's `utilities` layer, so overriding a baked-in weight needs the
   important modifier (`font-normal!`), as `SectionGroup` does.

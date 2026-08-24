@@ -3,7 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::analysis::engine::analyze_session;
-use crate::analysis::model::{ModelRun, Role, ToolCategory};
+use crate::analysis::merge::merge_subagent_events;
+use crate::analysis::model::{CompactionTrigger, EventSource, ModelRun, Role, ToolCategory};
 use crate::analysis::{RawSource, SessionInput, analyze_sources, normalize_source};
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
@@ -497,6 +498,7 @@ fn claude_marked_compaction_resets_context_occupancy() {
         .map(|(i, _)| i)
         .collect();
     assert_eq!(boundary_indices.len(), 1, "got {boundary_indices:?}");
+    assert_eq!(m.compaction_count, 1);
     let boundary = boundary_indices[0];
 
     let before = m.buckets[..boundary]
@@ -511,6 +513,86 @@ fn claude_marked_compaction_resets_context_occupancy() {
         .find(|b| b.context_tokens > 0)
         .expect("a context reading at or after the boundary");
     assert_eq!(after.context_tokens, 10_000);
+}
+
+/// A Claude session whose `compact_boundary` record carries `compactMetadata`
+/// with a manual trigger and both sizes.
+const CLAUDE_MANUAL_COMPACTION_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:30Z","content":"Compacted conversation","compactMetadata":{"trigger":"manual","preTokens":196000,"postTokens":11000}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":80,"cache_read_input_tokens":9500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn claude_manual_compaction_carries_trigger_and_sizes_into_bucket() {
+    let session =
+        normalize_source(&jsonl_input("claude", CLAUDE_MANUAL_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, Some(CompactionTrigger::Manual));
+    assert_eq!(boundary.compaction_pre_tokens, Some(196_000));
+    assert_eq!(boundary.compaction_post_tokens, Some(11_000));
+}
+
+/// Same shape as the manual fixture, but the trigger is `auto`.
+const CLAUDE_AUTO_COMPACTION_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:30Z","content":"Compacted conversation","compactMetadata":{"trigger":"auto","preTokens":198000,"postTokens":12000}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":80,"cache_read_input_tokens":9500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn claude_auto_compaction_carries_trigger_into_bucket() {
+    let session = normalize_source(&jsonl_input("claude", CLAUDE_AUTO_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, Some(CompactionTrigger::Auto));
+}
+
+#[test]
+fn claude_marked_compaction_without_metadata_leaves_trigger_and_sizes_none() {
+    let session =
+        normalize_source(&jsonl_input("claude", CLAUDE_MARKED_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, None);
+    assert_eq!(boundary.compaction_pre_tokens, None);
+    assert_eq!(boundary.compaction_post_tokens, None);
+}
+
+/// Codex's compaction event carries no trigger or size info at all.
+#[test]
+fn codex_marked_compaction_leaves_trigger_and_sizes_none() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_MARKED_COMPACTION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let boundary = m
+        .buckets
+        .iter()
+        .find(|b| b.is_compaction_boundary)
+        .expect("a compaction-boundary bucket");
+    assert_eq!(boundary.compaction_trigger, None);
+    assert_eq!(boundary.compaction_pre_tokens, None);
+    assert_eq!(boundary.compaction_post_tokens, None);
 }
 
 /// The marked variant of `CODEX_COMPACTION_FIXTURE`: same two `token_count`
@@ -541,6 +623,104 @@ fn codex_marked_compaction_resets_context_occupancy() {
         "expected a compaction-boundary bucket"
     );
 
+    let last_context = m
+        .buckets
+        .iter()
+        .rev()
+        .find(|b| b.context_tokens > 0)
+        .expect("a context reading");
+    assert_eq!(last_context.context_tokens, 30_000);
+}
+
+/// Newer Codex rollouts mark a finished compaction with a top-level
+/// `{"type":"compacted", ...}` record instead of the `context_compacted`
+/// event_msg. Two real compactions, well separated in time with ordinary
+/// turns between them, must each produce their own boundary event — not
+/// zero (the historical bug) and not one merged marker.
+const CODEX_COMPACTED_RECORD_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2024-06-01T12:00:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c1"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:30Z","type":"compacted","payload":{"message":"","window_number":1,"replacement_history":[]}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c2"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"output_tokens":80},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:05:00Z","type":"compacted","payload":{"message":"","window_number":2,"replacement_history":[]}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:05:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50000,"output_tokens":60},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_top_level_compacted_records_mark_boundaries() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_COMPACTED_RECORD_FIXTURE)).unwrap();
+
+    // Both `compacted` records survive parsing as their own boundary event, at
+    // their own timestamp.
+    let boundaries: Vec<Option<i64>> = session
+        .events
+        .iter()
+        .filter(|ev| ev.is_compaction_boundary)
+        .map(|ev| ev.ts_ms)
+        .collect();
+    assert_eq!(
+        boundaries,
+        vec![Some(1_717_243_230_000), Some(1_717_243_500_000)],
+        "expected one boundary event per compacted record, at its own timestamp"
+    );
+
+    let m = analyze_session(&session);
+    assert_eq!(m.peak_context_tokens, 200_000);
+    let boundary_buckets = m
+        .buckets
+        .iter()
+        .filter(|b| b.is_compaction_boundary)
+        .count();
+    assert_eq!(
+        boundary_buckets, 2,
+        "expected two distinct compaction-boundary buckets"
+    );
+}
+
+/// Some Codex rollouts write both sibling records for the same compaction:
+/// the top-level `compacted` record and the `context_compacted` event_msg,
+/// back-to-back with no turn between them. That must still produce exactly
+/// one boundary, not two.
+const CODEX_COMPACTED_AND_EVENT_MSG_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2024-06-01T12:00:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c1"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:30Z","type":"compacted","payload":{"message":"","window_number":1,"replacement_history":[]}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:30Z","type":"event_msg","payload":{"type":"context_compacted"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c2"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:01:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"output_tokens":80},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_compacted_record_and_event_msg_sibling_dedupe_to_one_boundary() {
+    let session =
+        normalize_source(&jsonl_input("codex", CODEX_COMPACTED_AND_EVENT_MSG_FIXTURE)).unwrap();
+
+    let boundaries: Vec<Option<i64>> = session
+        .events
+        .iter()
+        .filter(|ev| ev.is_compaction_boundary)
+        .map(|ev| ev.ts_ms)
+        .collect();
+    assert_eq!(
+        boundaries,
+        vec![Some(1_717_243_230_000)],
+        "the second sibling record must be deduped, not counted as a new compaction"
+    );
+
+    let m = analyze_session(&session);
+    assert_eq!(m.peak_context_tokens, 200_000);
     let last_context = m
         .buckets
         .iter()
@@ -587,6 +767,311 @@ fn claude_compaction_sharing_bucket_with_pre_compaction_turn_still_resets() {
         .find(|b| b.context_tokens > 0)
         .expect("a context reading after the boundary");
     assert_eq!(after.context_tokens, 10_000);
+}
+
+/// Two compaction boundaries sharing one progress bucket (same timestamp),
+/// with different triggers and sizes — the bucket must keep the second one's.
+const CLAUDE_TWO_COMPACTIONS_SHARE_BUCKET_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100,"cache_read_input_tokens":199000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:00Z","content":"Compacted conversation","compactMetadata":{"trigger":"manual","preTokens":196000,"postTokens":11000}}"#,
+    "\n",
+    r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:00Z","content":"Compacted conversation","compactMetadata":{"trigger":"auto","preTokens":50000,"postTokens":5000}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":80,"cache_read_input_tokens":9500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn two_compactions_sharing_a_bucket_keep_the_last_triggers_and_sizes() {
+    let session = normalize_source(&jsonl_input(
+        "claude",
+        CLAUDE_TWO_COMPACTIONS_SHARE_BUCKET_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    let boundary_indices: Vec<usize> = m
+        .buckets
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_compaction_boundary)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(boundary_indices.len(), 1, "got {boundary_indices:?}");
+    let boundary = &m.buckets[boundary_indices[0]];
+    assert_eq!(boundary.compaction_trigger, Some(CompactionTrigger::Auto));
+    assert_eq!(boundary.compaction_pre_tokens, Some(50_000));
+    assert_eq!(boundary.compaction_post_tokens, Some(5_000));
+}
+
+/// A Claude session where a cached turn (large cache-read ratio) is followed
+/// by a turn that rewrites almost the whole context back to the cache — the
+/// TTL-lapse pattern a cache rehydration should catch.
+const CLAUDE_CACHE_REHYDRATION_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn cache_rehydration_is_detected_after_a_ttl_lapse() {
+    let session =
+        normalize_source(&jsonl_input("claude", CLAUDE_CACHE_REHYDRATION_FIXTURE)).unwrap();
+    let m = analyze_session(&session);
+
+    let rehydrated: Vec<usize> = m
+        .buckets
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_cache_rehydration)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(rehydrated.len(), 1, "got {rehydrated:?}");
+}
+
+/// Real numbers from a Claude session after a 155-minute idle gap. The
+/// system prompt and tools (24,682 tokens) stay cached; only the conversation
+/// re-writes, so the write share is 76%, not close to 100%.
+const CLAUDE_CACHE_REHYDRATION_WITH_CACHED_PREFIX_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":101,"output_tokens":50,"cache_read_input_tokens":99584,"cache_creation_input_tokens":1879},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T14:35:00Z","message":{"role":"assistant","usage":{"input_tokens":2,"output_tokens":50,"cache_read_input_tokens":24682,"cache_creation_input_tokens":77040},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
+    let session = normalize_source(&jsonl_input(
+        "claude",
+        CLAUDE_CACHE_REHYDRATION_WITH_CACHED_PREFIX_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    let count = m.buckets.iter().filter(|b| b.is_cache_rehydration).count();
+    assert_eq!(count, 1, "a 76% rewrite after a long gap is a rehydration");
+    assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(m.compaction_count, 0);
+}
+
+#[test]
+fn first_turn_after_compaction_is_not_flagged_as_rehydration() {
+    // Same shape as the rehydration fixture, but a compaction boundary sits
+    // between the cached turn and the full-rewrite turn — the rewrite is
+    // explained by the compaction, not a cache TTL lapse.
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+        "\n",
+        r#"{"type":"system","subtype":"compact_boundary","timestamp":"2024-06-01T12:00:30Z","content":"Compacted conversation"}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert!(
+        m.buckets.iter().all(|b| !b.is_cache_rehydration),
+        "the first turn after a compaction must not be flagged as a rehydration"
+    );
+}
+
+#[test]
+fn small_contexts_are_not_flagged_as_rehydration() {
+    // Same write/read ratios as the rehydration fixture, but scaled down so
+    // both turns sit well under the 20k-token rehydration floor.
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":5000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":8000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert!(
+        m.buckets.iter().all(|b| !b.is_cache_rehydration),
+        "a small context rewrite must not be flagged as a rehydration"
+    );
+}
+
+#[test]
+fn cache_read_and_write_tokens_are_summed_per_bucket() {
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":200,"cache_read_input_tokens":5000,"cache_creation_input_tokens":500},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","usage":{"input_tokens":200,"output_tokens":50,"cache_read_input_tokens":1000,"cache_creation_input_tokens":300},"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"foo"}}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_read_tokens)
+            .sum::<u64>(),
+        6000
+    );
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_write_tokens)
+            .sum::<u64>(),
+        800
+    );
+}
+
+/// A Codex session carries `cached_input_tokens` (cache reads) but has no
+/// separate cache-write signal in its `token_count` usage payload — Codex
+/// folds any cache write into `input_tokens` with no distinct field. The
+/// bucket's `cache_read_tokens` must still carry the observed reads through;
+/// `cache_write_tokens` stays zero since the format has nothing to report.
+const CODEX_CACHE_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2024-06-01T12:00:00Z","type":"response_item","payload":{"type":"function_call","name":"read_file","arguments":"{}","call_id":"c1"}}"#,
+    "\n",
+    r#"{"timestamp":"2024-06-01T12:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":80},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_read_tokens_are_carried_into_buckets() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_CACHE_FIXTURE)).unwrap();
+    assert!(!session.cache_write_tokens_available);
+    let m = analyze_session(&session);
+
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_read_tokens)
+            .sum::<u64>(),
+        25_000
+    );
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.cache_write_tokens)
+            .sum::<u64>(),
+        0
+    );
+}
+
+/// Codex writes the last `token_count` row again on resume. The third row here
+/// repeats the second exactly. The fourth row repeats `last_token_usage` but
+/// moves `total_token_usage`, so it is a real turn and must stay.
+const CODEX_RESUME_GHOST_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T07:56:39Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":61000,"cached_input_tokens":55000,"output_tokens":200},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":61000,"cached_input_tokens":55000,"output_tokens":200},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":92000,"cached_input_tokens":85000,"output_tokens":300},"last_token_usage":{"input_tokens":31000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_resume_does_not_repeat_the_last_token_count_as_a_turn() {
+    let session = normalize_source(&jsonl_input("codex", CODEX_RESUME_GHOST_FIXTURE)).unwrap();
+    let turns: Vec<i64> = session
+        .events
+        .iter()
+        .filter(|event| event.usage.context_tokens() > 0)
+        .filter_map(|event| event.ts_ms)
+        .collect();
+
+    assert_eq!(
+        turns.len(),
+        3,
+        "the resume copy is dropped, the real repeat stays"
+    );
+    assert!(
+        !turns.contains(&1_787_397_861_000),
+        "the 11:24:21Z ghost row is absent"
+    );
+}
+
+/// These values come from a Codex session after a long idle gap. The miss
+/// replays the old context, and the next turn confirms that the cache returns.
+const CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-22T07:55:39.907Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"cache_write_input_tokens":0,"output_tokens":194},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:21.967Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":577},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:29.777Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"cache_write_input_tokens":0,"output_tokens":271},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_rehydration_is_inferred_from_replay_and_recovery() {
+    let session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .filter(|bucket| bucket.is_cache_rehydration)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn known_zero_cache_writes_do_not_use_rehydration_inference() {
+    let mut session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE,
+    ))
+    .unwrap();
+    session.cache_write_tokens_available = true;
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_large_new_input_is_not_inferred_as_cache_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":25000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":5000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":102000,"cached_input_tokens":100000,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_cache_miss_without_recovery_is_not_a_confirmed_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+#[test]
+fn codex_first_turn_after_compaction_is_not_an_inferred_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:39Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:20Z","type":"compacted","payload":{}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:21Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T11:24:29Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
 }
 
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +
@@ -1201,4 +1686,303 @@ fn skill_descriptions_are_grafted_from_the_listing() {
         skills[0].description.as_deref(),
         Some("Fan-out web research harness.")
     );
+}
+
+/// The detail view summarizes one session. Its context must stay in real
+/// tokens against its own window, not shrink into a fixed reference tier.
+#[test]
+fn single_session_summary_keeps_its_own_window_and_raw_context() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":100,"cache_read_input_tokens":130000,"output_tokens":50},"content":[{"type":"text","text":"hi"}]}}"#;
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+    assert_eq!(summary.context_window, 1_000_000);
+    assert_eq!(summary.peak_context_tokens, 130_100);
+    let peak_bucket = summary
+        .buckets
+        .iter()
+        .map(|b| b.context_tokens)
+        .max()
+        .unwrap_or(0);
+    assert_eq!(peak_bucket, 130_100);
+}
+
+/// A mixed summary lands on the largest contributing window and scales the
+/// smaller-window session up to it, so occupancy stays comparable.
+#[test]
+fn mixed_summary_scales_to_the_largest_window() {
+    let small = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-3-5-haiku","usage":{"input_tokens":100000,"output_tokens":50},"content":[{"type":"text","text":"hi"}]}}"#;
+    let large = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":200000,"output_tokens":50},"content":[{"type":"text","text":"hi"}]}}"#;
+    let summary = analyze_sources(vec![
+        jsonl_input("claude", small),
+        jsonl_input("claude", large),
+    ]);
+    assert_eq!(summary.context_window, 1_000_000);
+    // 100k of a 200k window is 50%, which is 500k of the 1M reference.
+    assert_eq!(summary.peak_context_tokens, 500_000);
+}
+
+/* -------------------------------------------------------------------------
+ * Sub-agent merge — `merge_subagent_events` + `analyze_session` together.
+ * Ordering itself is covered by the unit tests in `analysis::merge`; these
+ * exercise the product rule end to end. Session totals include sub-agent
+ * tokens, while chart buckets keep a separate sub-agent series. Parent turns
+ * govern context occupancy. Every stream contributes to idle-gap timing.
+ * ---------------------------------------------------------------------- */
+
+/// Two parent turns ten minutes apart, with one sub-agent turn at the
+/// halfway point.
+const MERGE_PARENT_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":100},"content":[{"type":"text","text":"start"}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:10:00Z","message":{"role":"assistant","usage":{"input_tokens":2000,"output_tokens":200},"content":[{"type":"text","text":"end"}]}}"#,
+);
+const MERGE_SUBAGENT_FIXTURE: &str = r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":500,"output_tokens":50},"content":[{"type":"text","text":"delegated"}]}}"#;
+
+#[test]
+fn subagent_tokens_use_their_own_bucket_series_time_aligned() {
+    let parent = normalize_source(&jsonl_input("claude", MERGE_PARENT_FIXTURE)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", MERGE_SUBAGENT_FIXTURE)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+
+    // Every event is tagged with the stream it came from.
+    let sources: Vec<EventSource> = merged.events.iter().map(|e| e.source).collect();
+    assert_eq!(
+        sources,
+        vec![
+            EventSource::Parent,
+            EventSource::Subagent,
+            EventSource::Parent
+        ]
+    );
+
+    let m = analyze_session(&merged);
+    // The session total sums every stream: subagents are an implementation
+    // detail of the same session.
+    assert_eq!(m.tokens_in, 1000 + 500 + 2000);
+    assert_eq!(m.tokens_out, 100 + 50 + 200);
+
+    // Both parent turns are 5 minutes apart from the sub-agent turn, well
+    // under the idle threshold, so active time == wall-clock time and the
+    // sub-agent turn lands exactly halfway through the progress grid.
+    assert_eq!(m.buckets[0].tokens_in, 1000, "parent's first turn");
+    assert_eq!(
+        m.buckets[90].subagent_tokens,
+        500 + 50,
+        "sub-agent's turn, time-aligned to the midpoint"
+    );
+    assert_eq!(m.buckets[179].tokens_in, 2000, "parent's last turn");
+    assert_eq!(m.buckets.iter().map(|b| b.tokens_in).sum::<u64>(), 3000);
+    assert_eq!(m.buckets.iter().map(|b| b.tokens_out).sum::<u64>(), 300);
+    assert_eq!(
+        m.buckets.iter().map(|b| b.subagent_tokens).sum::<u64>(),
+        550
+    );
+}
+
+#[test]
+fn peak_context_and_context_window_stay_parent_only_after_merge() {
+    // The sub-agent's own context is far larger than anything the parent
+    // ever sees. If it leaked into the parent's occupancy, the merged
+    // session's peak and window would both jump.
+    let parent_fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50},"content":[{"type":"text","text":"a"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1500,"output_tokens":50},"content":[{"type":"text","text":"b"}]}}"#,
+    );
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:02:30Z","message":{"role":"assistant","usage":{"input_tokens":900000,"output_tokens":50},"content":[{"type":"text","text":"delegated"}]}}"#;
+
+    let parent_only = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let parent_only_metrics = analyze_session(&parent_only);
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    assert_eq!(
+        m.peak_context_tokens,
+        parent_only_metrics.peak_context_tokens
+    );
+    assert_eq!(m.peak_context_tokens, 1500);
+    assert_eq!(m.context_window, parent_only_metrics.context_window);
+    // No bucket's `context_tokens` (the parent-only occupancy reading) ever
+    // reflects the sub-agent's 900k-token turn.
+    assert!(m.buckets.iter().all(|b| b.context_tokens <= 1500));
+    // The session total stays inclusive. Chart buckets record child tokens in
+    // a separate series.
+    assert_eq!(m.tokens_in, 1000 + 900_000 + 1500);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .map(|bucket| bucket.subagent_tokens)
+            .sum::<u64>(),
+        900_000 + 50
+    );
+    assert_eq!(
+        m.buckets.iter().map(|bucket| bucket.tokens_in).sum::<u64>(),
+        1000 + 1500
+    );
+}
+
+#[test]
+fn idle_gap_counts_only_when_every_stream_is_idle() {
+    // Same 8h parent gap as `active_time_excludes_idle_gaps`, but a
+    // sub-agent turn lands in the middle of it. The gap is idle only when
+    // the parent *and* every sub-agent are idle, so one event splits the
+    // single 8h gap into two, each capped independently.
+    let parent = normalize_source(&jsonl_input("claude", IDLE_GAP_FIXTURE)).unwrap();
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T16:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"sub.rs"}}]}}"#;
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    // Wall-clock span is unchanged: 12:00:00 → 20:00:30 = 28830s.
+    assert_eq!(m.duration_secs, 28830);
+    // Active: 30s + capped(≈4h → 300s) + capped(≈4h → 300s) + 30s = 660s,
+    // more than the 360s a lone parent gap gives — the sub-agent turn kept
+    // both halves of the gap "awake" up to the cap on each side.
+    assert_eq!(m.active_secs, 660);
+}
+
+#[test]
+fn subagent_launch_marker_counts_only_parent_task_calls() {
+    // The parent launches one sub-agent (a `Task` tool call) alongside an
+    // ordinary edit; a same-named tool from a sub-agent's own transcript
+    // must not count as a further launch.
+    let parent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Task","input":{"prompt":"go look"}},{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#;
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Task","input":{"prompt":"nested"}}]}}"#;
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    let total_launches: u32 = m.buckets.iter().map(|b| b.subagent_launches).sum();
+    assert_eq!(total_launches, 1, "only the parent's own Task call counts");
+}
+
+#[test]
+fn rehydration_detection_ignores_subagent_turns() {
+    // Same two parent turns as `cache_rehydration_is_detected_after_a_ttl_lapse`,
+    // with a sub-agent turn carrying its own large cache-write in between. If
+    // that turn fed the parent-only rehydration state machine, it would
+    // either wrongly flag itself or reset the state so the real parent
+    // rehydration is missed.
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:02:30Z","message":{"role":"assistant","usage":{"input_tokens":10000,"output_tokens":50,"cache_creation_input_tokens":40000},"content":[{"type":"text","text":"delegated"}]}}"#;
+
+    let parent =
+        normalize_source(&jsonl_input("claude", CLAUDE_CACHE_REHYDRATION_FIXTURE)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    let rehydrated: Vec<usize> = m
+        .buckets
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_cache_rehydration)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        rehydrated.len(),
+        1,
+        "the parent's own rehydration must still be detected, got {rehydrated:?}"
+    );
+}
+
+/* -------------------------------------------------------------------------
+ * Mode signals — Bucket.model / thinking_mode / speed / has_thinking.
+ * ---------------------------------------------------------------------- */
+
+#[test]
+fn mode_signals_land_in_the_bucket_of_the_event_that_carried_them() {
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5,"speed":"standard"},"content":[{"type":"text","text":"a"}]},"effort":"high"}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:10:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":10,"output_tokens":5,"speed":"fast"},"content":[{"type":"thinking","thinking":"hmm"}]},"effort":"low"}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    let first = &m.buckets[0];
+    assert_eq!(first.model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(first.thinking_mode.as_deref(), Some("high"));
+    assert_eq!(first.speed.as_deref(), Some("standard"));
+    assert!(!first.has_thinking);
+
+    let second = &m.buckets[179];
+    assert_eq!(second.model.as_deref(), Some("claude-fable-5"));
+    assert_eq!(second.thinking_mode.as_deref(), Some("low"));
+    assert_eq!(second.speed.as_deref(), Some("fast"));
+    assert!(second.has_thinking);
+}
+
+#[test]
+fn mode_signal_bucket_keeps_the_last_value_seen_in_it() {
+    // The first two events share a timestamp, so both land in bucket 0; the
+    // third gives the session a real active-time span. The bucket must keep
+    // the second event's mode, not the first.
+    let fixture = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"standard"},"content":[{"type":"text","text":"a"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"text","text":"b"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:10:00Z","message":{"role":"assistant","usage":{"input_tokens":10},"content":[{"type":"text","text":"c"}]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    let bucket = &m.buckets[0];
+    assert_eq!(bucket.model.as_deref(), Some("claude-fable-5"));
+    assert_eq!(bucket.speed.as_deref(), Some("fast"));
+}
+
+#[test]
+fn subagent_mode_signals_never_override_the_parent_buckets() {
+    // The sub-agent runs a different model/effort/speed than the parent; none
+    // of it should leak into the parent's own bucket mode signals.
+    let parent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"standard"},"content":[{"type":"text","text":"a"}]},"effort":"high"}"#;
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","model":"claude-haiku","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"delegated"}]},"effort":"low"}"#;
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    for bucket in &m.buckets {
+        assert_ne!(bucket.model.as_deref(), Some("claude-haiku"));
+        assert_ne!(bucket.thinking_mode.as_deref(), Some("low"));
+        assert_ne!(bucket.speed.as_deref(), Some("fast"));
+        assert!(
+            !bucket.has_thinking,
+            "the sub-agent's thinking must not set the parent bucket"
+        );
+    }
+    assert_eq!(m.buckets[0].model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(m.buckets[0].thinking_mode.as_deref(), Some("high"));
+    assert_eq!(m.buckets[0].speed.as_deref(), Some("standard"));
+}
+
+#[test]
+fn buckets_with_no_mode_signal_stay_none() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"no model or usage here"}]}}"#;
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let m = analyze_session(&session);
+
+    assert!(m.buckets.iter().all(|b| b.model.is_none()));
+    assert!(m.buckets.iter().all(|b| b.thinking_mode.is_none()));
+    assert!(m.buckets.iter().all(|b| b.speed.is_none()));
+    assert!(m.buckets.iter().all(|b| !b.has_thinking));
+}
+
+#[test]
+fn aggregate_metrics_leaves_mode_signals_at_default() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"speed":"fast"},"content":[{"type":"thinking","thinking":"x"}]},"effort":"high"}"#;
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+
+    // A multi-session summary cannot carry one session's mode signals, since
+    // each contributing session can run a different agent/model.
+    assert!(summary.buckets.iter().all(|b| b.model.is_none()));
+    assert!(summary.buckets.iter().all(|b| b.thinking_mode.is_none()));
+    assert!(summary.buckets.iter().all(|b| b.speed.is_none()));
+    assert!(summary.buckets.iter().all(|b| !b.has_thinking));
 }

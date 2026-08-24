@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from "react"
+import { lazy, Suspense, useCallback, useRef, useState, useSyncExternalStore } from "react"
 
 import { AlertTriangle, Settings } from "lucide-react"
 
@@ -10,7 +10,7 @@ import {
   LocalActivityList,
   type LocalActivityEntry,
 } from "../components/activity/LocalActivityList"
-import { UsageLimitsSection } from "../components/providerUsage"
+import { UsageLimitsBar } from "../components/providerUsage"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
@@ -124,11 +124,6 @@ function usageEvidence(
  * The activity surface's bottom bar: the app's name, which also carries the
  * surface's focus heading (see the class doc below), and the way to the
  * standalone Settings window.
- *
- * This used to also hold a chip per provider used today. Those moved to the
- * usage-limits section at the top of the surface, collapsed — the same
- * chips, just relocated, so the footer here is name and gear and nothing
- * else.
  */
 function PopoverFooter({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
@@ -176,6 +171,22 @@ export function PopoverView() {
   // ever run once.
   const focusHeading = useCallback((node: HTMLDivElement | null) => {
     node?.querySelector<HTMLElement>("[data-view-heading]")?.focus()
+  }, [])
+
+  // The same surface swap unmounts the activity list, so its viewport comes
+  // back at the top after a session closes. The reader expects to land where
+  // they left. The list's scroll offset lives here, on the component that
+  // outlives the swap: each scroll records it, and the viewport takes it back
+  // the moment the list mounts again.
+  const listScrollTop = useRef(0)
+  const restoreListScroll = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return
+    node.scrollTop = listScrollTop.current
+    const record = () => {
+      listScrollTop.current = node.scrollTop
+    }
+    node.addEventListener("scroll", record, { passive: true })
+    return () => node.removeEventListener("scroll", record)
   }, [])
 
   /* ---------------------------------------------------------------------
@@ -294,17 +305,15 @@ export function PopoverView() {
           </div>
         )}
 
-        <UsageLimitsSection
-          providers={state.usage?.providers ?? []}
+        <UsageLimitsBar
           live={state.liveUsage}
           expanded={limitsExpanded}
           onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
           refreshing={state.usageRefreshing}
           onViewAll={() => {
-            // The chips moved out of the footer and into this section, and the
-            // event moved with them: this is still the one place the reader
-            // asks for the full Usage view from the activity surface. Counts
-            // and a three-value evidence label, never a per-provider list.
+            // A provider pill is the one place the reader asks for the full
+            // Usage view from the activity surface. Counts and a three-value
+            // evidence label, never a per-provider list.
             noteInteraction({
               kind: "usageViewed",
               providers: state.usage?.providers.length ?? 0,
@@ -338,6 +347,7 @@ export function PopoverView() {
                 session.openSession(subjectFor(entry))
               }}
               renderAgentIcon={renderAgentIcon}
+              viewportRef={restoreListScroll}
             />
           )}
         </div>

@@ -21,6 +21,11 @@
 //!   `info.model_context_window` gives the model's real window. (The duplicate
 //!   `user_message` / `agent_message` echoes of `response_item` turns are
 //!   skipped so turns aren't double-counted.)
+//! - `compacted` is a top-level envelope (not an `event_msg`) that newer Codex
+//!   rollouts write when a compaction finishes. Older rollouts instead (or
+//!   also) emit `{"type":"event_msg","payload":{"type":"context_compacted"}}`.
+//!   Both mark the same event; see `compaction_event` for how the parser
+//!   avoids double-counting when a rollout emits both.
 //!
 //! The shared `parse_record` only understands `role`/`content` at the top level
 //! or under `message`, so it drops every Codex line — the data is nested under
@@ -50,6 +55,7 @@ impl VendorAdapter for CodexAdapter {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
+            cache_write_tokens_available: false,
             context_window,
             model,
         })
@@ -72,6 +78,13 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
     let mut model: Option<String> = None;
     let mut current_model: Option<String> = None;
     let mut current_thinking_mode: Option<String> = None;
+    // Dedupe state for compaction boundaries: some rollouts write a
+    // `context_compacted` event_msg and a top-level `compacted` record
+    // back-to-back for the same compaction (see `compaction_event`).
+    let mut previous_event_was_boundary = false;
+    let mut previous_boundary_ts: Option<i64> = None;
+    // Dedupe state for `token_count` rows (see `token_count_key`).
+    let mut previous_token_count_key: Option<TokenCountKey> = None;
     let mut offset = 0;
     for line_with_ending in content.split_inclusive('\n') {
         let line_offset = offset;
@@ -119,16 +132,39 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
                 {
                     current_thinking_mode = Some(next_mode.to_string());
                 }
+                // Codex rollouts carry no speed/fast-mode signal like Claude's
+                // `usage.speed`, so `NormalizedEvent.speed` stays `None` here.
             }
             let inherited_token_count = !usage_is_owned
                 && value.get("type").and_then(Value::as_str) == Some("event_msg")
                 && value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count");
+            if let Some(key) = token_count_key(&value) {
+                let duplicate_token_count = previous_token_count_key.as_ref() == Some(&key);
+                previous_token_count_key = Some(key);
+                if duplicate_token_count {
+                    continue;
+                }
+            }
             if !inherited_token_count && let Some(mut ev) = record_to_event(&value) {
                 if usage_is_owned {
                     ev.model = ev.model.or_else(|| current_model.clone());
                     ev.thinking_mode = current_thinking_mode.clone();
                 }
-                events.push(ev);
+                let duplicate_boundary = ev.is_compaction_boundary
+                    && previous_event_was_boundary
+                    && ev
+                        .ts_ms
+                        .zip(previous_boundary_ts)
+                        .is_none_or(|(cur, prev)| {
+                            (cur - prev).abs() <= COMPACTION_DEDUPE_WINDOW_MS
+                        });
+                if !duplicate_boundary {
+                    previous_event_was_boundary = ev.is_compaction_boundary;
+                    if ev.is_compaction_boundary {
+                        previous_boundary_ts = ev.ts_ms;
+                    }
+                    events.push(ev);
+                }
             }
         }
     }
@@ -222,6 +258,7 @@ fn record_to_event(record: &Value) -> Option<NormalizedEvent> {
         ("response_item", _) if payload.contains_key("name") => function_call_event(payload, ts),
         ("event_msg", "token_count") => token_count_event(payload, ts),
         ("event_msg", "context_compacted") => Some(compaction_event(ts)),
+        ("compacted", _) => Some(compaction_event(ts)),
         _ => None,
     }
 }
@@ -242,6 +279,9 @@ fn message_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<Normal
 fn reasoning_event(_payload: &Map<String, Value>, ts: Option<i64>) -> NormalizedEvent {
     let mut ev = NormalizedEvent::new(Role::Assistant);
     ev.ts_ms = ts;
+    // A `reasoning` response_item is Codex's chain-of-thought turn, the
+    // vendor equivalent of a Claude `thinking` content block.
+    ev.has_thinking = true;
     ev
 }
 
@@ -538,13 +578,44 @@ fn token_count_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<No
     Some(ev)
 }
 
-/// Codex marks a completed compaction with `{"type":"event_msg","payload":
-/// {"type":"context_compacted"}}`. The sibling top-level `{"type":"compacted",
-/// "payload":{...}}` record that precedes it is intentionally not matched
-/// (its `rec_type` is `"compacted"`, not `"event_msg"`) — both fire
-/// back-to-back for the same compaction, and matching only this one avoids
-/// double-counting (mirrors the web backend's `handle_codex_event_msg` in
-/// `crates/analysis/src/note_parser.rs`).
+/// The usage pair that identifies one `token_count` row.
+type TokenCountKey = (Value, Value);
+
+/// Codex writes the last `token_count` row again when it resumes a rollout.
+/// The copy repeats both `last_token_usage` and `total_token_usage` exactly.
+/// A real turn always moves `total_token_usage`, so `parse_codex` drops a row
+/// whose pair equals the previous `token_count` row. This keeps a resume from
+/// adding a ghost turn with a second copy of the same context occupancy.
+fn token_count_key(value: &Value) -> Option<TokenCountKey> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg")
+        || value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count")
+    {
+        return None;
+    }
+    let info = value.pointer("/payload/info")?;
+    Some((
+        info.get("last_token_usage").cloned().unwrap_or(Value::Null),
+        info.get("total_token_usage")
+            .cloned()
+            .unwrap_or(Value::Null),
+    ))
+}
+
+/// The largest gap between two compaction records that `parse_codex` still
+/// treats as one compaction, not two. Real, distinct compactions in the wild
+/// are separated by turns and are minutes to hours apart; the sibling
+/// records for one compaction land in the same instant. Five seconds gives a
+/// wide safety margin without risking a merge of two real compactions.
+const COMPACTION_DEDUPE_WINDOW_MS: i64 = 5_000;
+
+/// Codex marks a completed compaction two different ways, depending on
+/// rollout version: a top-level `{"type":"compacted","payload":{...}}`
+/// record (current rollouts), or `{"type":"event_msg","payload":
+/// {"type":"context_compacted"}}` (older rollouts). Some older rollouts write
+/// both, back-to-back, for the same compaction. `parse_codex` matches both
+/// shapes to this function and drops a second boundary event when the
+/// previous event it emitted was also a compaction boundary at (about) the
+/// same timestamp, so one compaction still produces exactly one boundary.
 fn compaction_event(ts: Option<i64>) -> NormalizedEvent {
     let mut ev = NormalizedEvent::new(Role::System);
     ev.ts_ms = ts;

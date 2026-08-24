@@ -32,20 +32,27 @@
 //! ```
 
 mod engine;
+mod framing;
 mod initial_context;
 mod interface;
+mod merge;
 mod model;
 mod pricing;
 mod vendors;
 
 pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
-    ToolMix, aggregate_metrics,
+    ToolMix, aggregate_metrics, analyze_session,
+};
+pub use framing::{
+    BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
+    SCAN_QUANTUM_BYTES,
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
 pub use interface::{RawSource, SessionInput, VendorAdapter};
+pub use merge::merge_subagent_events;
 pub use model::{
-    ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
+    EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
 pub use vendors::{adapter_for, has_dedicated_adapter};

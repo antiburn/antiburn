@@ -69,7 +69,7 @@ export function windowHasEvidence(window: ProviderUsageWindowPayload): boolean {
 }
 
 /**
- * What a chip or a row leads with: the cost when the models could be priced,
+ * What a usage row leads with: the cost when the models could be priced,
  * the token count when they could not, and an em dash when there is neither.
  *
  * Never a zero-dollar figure standing in for "we could not price this" — an
@@ -141,10 +141,9 @@ export function stalenessNote(provider: ProviderUsagePayload): string | null {
 }
 
 /**
- * The provider's initial, as the chip's glyph.
+ * The provider's initial, as the compact glyph fallback.
  *
- * A letter rather than a logo on purpose: provider artwork is licensed
- * separately from this application, so the app ships none of it.
+ * A letter covers a provider that has no known brand mark.
  */
 export function providerInitial(displayName: string): string {
   const first = Array.from(displayName.trim())[0]
@@ -168,54 +167,6 @@ export function rankByWindow(
     if (cost !== 0) return cost
     return windowTokens(right) - windowTokens(left)
   })
-}
-
-/** Providers with something to show in a window, biggest first. */
-export function providersForWindow(
-  providers: readonly ProviderUsagePayload[],
-  key: UsageWindowKey,
-): ProviderUsagePayload[] {
-  return rankByWindow(
-    providers.filter((provider) => windowHasEvidence(providerWindow(provider, key))),
-    key,
-  )
-}
-
-/**
- * Every provider's window added together.
- *
- * `estimatedUsd` stays null until at least one provider contributed a priced
- * figure, so a total of `$0.00` always means "priced, and it came to nothing"
- * rather than "we could not price any of this".
- */
-export function totalForWindow(
-  providers: readonly ProviderUsagePayload[],
-  key: UsageWindowKey,
-): ProviderUsageWindowPayload {
-  return providers.reduce<ProviderUsageWindowPayload>((total, provider) => {
-    const window = providerWindow(provider, key)
-    return {
-      tokensIn: total.tokensIn + window.tokensIn,
-      tokensOut: total.tokensOut + window.tokensOut,
-      cacheRead: total.cacheRead + window.cacheRead,
-      estimatedUsd:
-        window.estimatedUsd == null
-          ? total.estimatedUsd
-          : (total.estimatedUsd ?? 0) + window.estimatedUsd,
-      sessionCount: total.sessionCount + window.sessionCount,
-    }
-  }, EMPTY_WINDOW)
-}
-
-/** The token rows a detail panel lists, in a fixed order. */
-export function tokenRows(
-  window: ProviderUsageWindowPayload,
-): ReadonlyArray<{ label: string; value: string }> {
-  return [
-    { label: "Input", value: formatCompact(window.tokensIn) },
-    { label: "Output", value: formatCompact(window.tokensOut) },
-    { label: "Cache read", value: formatCompact(window.cacheRead) },
-  ]
 }
 
 /** `"1 session"` / `"4 sessions"`. */

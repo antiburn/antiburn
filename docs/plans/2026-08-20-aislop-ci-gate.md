@@ -39,9 +39,10 @@ Two facts shape the design and were measured, not assumed:
    which is supported and measured below. A low `ci.failBelow` alone yields a
    gate that cannot fail. Promotion and threshold choice pull in opposite
    directions, and Decision 15 states how the plan resolves that.
-3. **Promotion makes 20 existing findings in 10 files error-severity, and the
-   plan accepts that cost.** The gate never scans an unchanged file, so those
-   findings are silent until a pull request touches one of these 10 files:
+3. **Promotion makes 20 existing findings in 10 files error-severity, measured
+   at `609d293`, and the plan accepts that cost.** The gate never scans an
+   unchanged file, so those findings are silent until a pull request touches one
+   of these 10 files, measured at `609d293`:
 
    | File | Promoted findings |
    | --- | --- |
@@ -75,12 +76,14 @@ Clearing the standing findings is issue #90, not this work.
 - Contributor documentation: how to run the gate locally, what it judges, an
   accurate sign-off note beside the existing DCO block, and the named files that
   fail the gate when a pull request touches them.
-- Green at enablement: every open pull request head at enablement time passes the
-  new gate against `main` before the rule is switched on, or its red finding is
-  resolved by a Decision 16 route (the contributor fixes it, or adds the
-  justified `#90` directive), or the pull request merges or closes first. This is
-  a diff-scoped claim about the heads that are open then, not a whole-tree
-  zero-error claim.
+- Gate proven live at enablement: at enablement time every open pull request is
+  read from GitHub's own record, and each head that can merge carries a
+  `ci-required` result produced by a workflow run that also produced the
+  `slop gate` check. A head that is red from slop findings is an expected,
+  acceptable outcome and does not block enablement; its contributor clears it
+  by a Decision 16 route. A head that cannot merge is recorded and skipped.
+  This is a claim about the gate being live and current on the heads that are
+  open then, not a claim that those heads are green.
 
 ## Current State (evidence)
 
@@ -119,10 +122,11 @@ Clearing the standing findings is issue #90, not this work.
 - `gh api repos/antiburn/antiburn/rulesets` → two active rulesets,
   `release-tag-creation` and `release-tag-immutability`, both `"target":"tag"`.
 - `gh api repos/antiburn/antiburn/branches/main/protection` → HTTP 404.
-- `gh api repos/antiburn/antiburn` permissions for this session:
-  `admin:false, maintain:false, push:true`.
+- `gh api repos/antiburn/antiburn` permissions for this session, measured
+  2026-08-20: `admin:false, maintain:false, push:true`. The applying account
+  reads `admin:true` today. No command in this plan depends on the line.
 - The open-pull-request set is **a moving target, so this plan names a command,
-  not a list**. The enablement sweep evaluates every open pull request head at
+  not a list**. The enablement preflight reads every open pull request at
   enablement time, listed by
   `gh pr list --state open --json number,author,isDraft,headRefName`.
   Dated snapshot, **illustrative only, not a claim any seam depends on**
@@ -133,16 +137,20 @@ Clearing the standing findings is issue #90, not this work.
 - **A known red head exists at the snapshot.** #86 adds 6 lines to
   `apps/desktop/src/lib/ipc.ts` (`gh pr diff 86`), and that file carries 10
   `ai-slop/empty-function` findings. The rule is threshold-independent
-  (Decision 15), so no threshold choice clears it. Decision 16 gives the only
-  routes: the contributor fixes the finding, or adds the justified `#90`
-  directive, or the pull request merges or closes before enablement.
+  (Decision 15), so no threshold choice clears it, and Decision 16 gives the
+  contributor's routes to green: fix the finding, or add the justified `#90`
+  directive. An open red head may also remain red through enablement — the
+  preflight classifies its gate `GATE_LIVE` and the rule goes on; that pull
+  request then cannot merge until its own `ci-required` is green, which is the
+  gate working.
 
 ### Measured aislop behavior (my runs, this checkout)
 
 - `aislop scan .` → score 57, 322 files, 0 errors, 33 warnings; engines
   format 0, lint 0, code-quality 28, ai-slop 20, security 0. The 20 `ai-slop`
   findings are 15 `info` and 5 `warning` at default severity, and they are the
-  same 20 findings that the promoted config reports as errors. Format and lint are
+  same 20 findings, measured at `609d293`, that the promoted config reports as
+  errors. Format and lint are
   clean, so the bundled biome/oxlint do not fight the repository's own
   formatters.
 - `aislop scan -d` largest offenders: `opencode.rs` 3516, `cursor.rs` 3197,
@@ -184,7 +192,8 @@ Clearing the standing findings is issue #90, not this work.
   trailing comment and the pre-existing findings at lines 82 and 88 failed the
   run. Editing any line of a file with a promoted finding turns that pull request
   red.
-- **Promoted-set footprint today: 20 error findings in 10 files.** Whole-tree
+- **Promoted-set footprint measured at `609d293`: 20 error findings in 10
+  files.** Whole-tree
   `aislop scan --json` at `609d293` with all Decision 7 rules promoted:
   `ai-slop/empty-function` 15 — 10 in `apps/desktop/src/lib/ipc.ts`, and one each
   in `apps/desktop/src/components/presentation/TruncatedText.tsx`,
@@ -237,9 +246,9 @@ Clearing the standing findings is issue #90, not this work.
 - A repository rule on `main` requires the `ci-required` check, and its
   definition is committed in the repository.
 - `CONTRIBUTING.md` documents the gate, the local command, the diff-scoped
-  semantics, the ratchet policy, the 10 files that fail the gate when a pull
-  request touches them, the escape hatch of Decision 16, and the `git commit -s`
-  sign-off note.
+  semantics, the ratchet policy, the 10 files measured at `609d293` that fail
+  the gate when a pull request touches them, the escape hatch of Decision 16,
+  and the `git commit -s` sign-off note.
 
 ## Locked Decisions
 
@@ -270,7 +279,9 @@ Clearing the standing findings is issue #90, not this work.
    two first-party calls — the release-feed update check and the D-027 / D-28
    anonymised usage-analytics channel — and bans every other telemetry or
    analytics channel. A contributor tool that reports to its vendor is not one of
-   the two permitted calls, so it stays disabled.
+   the two permitted calls, so it stays disabled. aislop 0.14.0 ignores this
+   setting on its `hook` paths, so every committed hook invocation must also set
+   `AISLOP_NO_TELEMETRY=1`. CH-007 closes that gap.
 7. **Teeth come from promoted severities, not from a score floor.** The config
    `rules:` map promotes every slop class GH-89 names to `error`, because
    measured warnings never fail `aislop ci` and one warning in a small diff costs
@@ -310,7 +321,8 @@ Clearing the standing findings is issue #90, not this work.
     `ci-required` is a scope outcome (CH-005), not an assumption and not a
     dependency on another issue. The seam commits the exact ruleset definition
     as a reviewable artifact, plus the apply and verify commands. A repository
-    admin runs the apply step, because the agent session holds `admin:false`.
+    admin runs the apply step, because applying a live merge rule is the
+    human-authorized action at the Tier 3 gate.
     CH-005 is verified only by the live API result, not by the committed file.
     Before CH-005 lands the check is advisory; after it lands the gate is
     required, and GH-89's "required gate" framing is exact.
@@ -340,7 +352,7 @@ Clearing the standing findings is issue #90, not this work.
     contributor has a documented escape hatch.** The alternatives lose more:
     promotion of only the zero-instance rules leaves the gate nearly toothless,
     and cleaning the 20 findings now pulls #90 work into this issue. So the 10
-    files of the Overview table stay red on touch. A contributor unblocks such a
+    files of the Overview table, measured at `609d293`, stay red on touch. A contributor unblocks such a
     pull request in one of two ways: fix the finding, or add an `aislop-ignore`
     directive that carries a justification comment and a `#90` reference. The
     directive token stays verbatim, because it is machine-read; its justification
@@ -414,10 +426,13 @@ Clearing the standing findings is issue #90, not this work.
   fetched.
 - **FR-5:** `ci-required` fails when that job fails on a pull request and
   tolerates its skip on push.
-- **FR-6:** With the committed config, every open pull request head passes
-  `aislop ci --changes --base <main sha>`, and the whole tree reports zero
-  `complexity/*` error findings. The tree is **not** free of promoted `ai-slop`
-  errors: the 20 findings in 10 files listed in the Overview stay, and a pull
+- **FR-6:** With the committed config, every open pull request head **that can
+  merge** carries a `ci-required` result from a run that also produced the
+  `slop gate` check. A head GitHub reports as `mergeable: CONFLICTING` is
+  recorded and skipped, with no check-run claim made about it. The whole tree
+  reports zero `complexity/*` error findings. The tree is **not** free of promoted `ai-slop`
+  errors: the 20 findings in 10 files measured at `609d293` and listed in the
+  Overview stay, and a pull
   request that touches one of those files fails until the finding is fixed or a
   Decision 16 directive suppresses it. A threshold change never clears such a
   finding, because these rules are threshold-independent (Decision 15). The
@@ -452,8 +467,8 @@ Clearing the standing findings is issue #90, not this work.
   `.aislop/config.yml` exists with explicit `engines`, `quality`, `rules`
   severity promotions, `ci.failBelow`, and `telemetry.enabled: false`;
   `aislop scan` at the base commit reports zero `complexity/*` errors under it
-  and the same 20 `ai-slop` errors in the same 10 files that the Overview lists,
-  with no new one; a seeded
+  and the same 20 `ai-slop` errors in the same 10 files that the Overview lists
+  at `609d293`, with no new one; a seeded
   violation of each promoted rule exits 1; each threshold records its measured
   value and its margin over today's worst file or function; ratchet intent, the
   #90 reference, and the advisory-by-threshold rules are recorded in ASD-STE100
@@ -474,11 +489,9 @@ Clearing the standing findings is issue #90, not this work.
   touched; a seeded violation on the branch
   turns the check red, and removing it turns it green; the sweep runs
   `aislop ci --changes --base <main sha>` against **every open pull request head
-  listed by `gh pr list --state open` at sweep time**, and each still-open red
-  head is resolved before CH-005 by one of three routes — the contributor fixes
-  the finding, the contributor adds an `aislop-ignore` directive with a
-  justification and a `#90` reference (Decision 16), or the pull request merges
-  or closes. Threshold choice is not a route for a threshold-independent rule.
+  listed by `gh pr list --state open` at sweep time**, a still-open red head is
+  recorded, and its contributor clears it by a Decision 16 route; it does not
+  gate CH-005. Threshold choice is not a route for a threshold-independent rule.
   Likely touches:
   `.github/workflows/ci.yml`. Provisional tier: 3 — it changes the merge path for
   every contributor. (Refs: FR-4, FR-5, FR-6, FR-9, FR-10)
@@ -486,11 +499,24 @@ Clearing the standing findings is issue #90, not this work.
   explains the gate, the local command, that it judges changed files rather than
   the repository score, which rules fail a build, that thresholds are loose today
   and tighten under #90, which two rules are advisory by threshold, that the gate
-  runs on pull requests only, and which 10 files fail the gate when a pull request
-  touches them. The document states the Decision 16 escape hatch: fix the
-  finding, or add an `aislop-ignore` directive with a justification comment and a
+  runs on pull requests only, and which 10 files, measured at `609d293`, fail
+  the gate when a pull request touches them. The document states the Decision 16
+  escape hatch: fix the finding, or add an `aislop-ignore` directive with a justification comment and a
   `#90` reference, with the directive token verbatim and the justification in
   ASD-STE100. The sign-off note gives `git commit -s` and no other mechanism.
+  It also documents the committed edit-time hooks: feedback that is advisory and
+  blocks nothing; per-runtime coverage — Claude Code after each matched `Edit`,
+  `Write` or `MultiEdit`, Codex after `apply_patch` only, through the committed
+  adapter and only once both trust steps are done; the pinned invocation;
+  whole-edited-file judging and the standing #90 findings it can report;
+  `format` and `lint` disabled, so `pnpm run slop` stays authoritative; the
+  inert state before the trust steps; why `aislop hook install` must not run
+  here; and the per-runtime duplicate-hook removal route — for Claude Code,
+  aislop generates the global hook, so run
+  `aislop hook uninstall --claude --global`; for Codex, aislop generates no
+  hook, because its Codex installer writes rules text only, so a global Codex
+  hook is hand-authored and you remove it from your Codex configuration by hand,
+  and the Claude uninstall command does not remove a Codex hook.
   Likely touches: `CONTRIBUTING.md`. Provisional tier: 1. (Refs: FR-7)
 - [ ] **CH-006 — Automated coverage of the workflow contract.** Acceptance: a
   `node --test` case in `scripts/` fails when any element of FR-11 is removed
@@ -501,26 +527,52 @@ Clearing the standing findings is issue #90, not this work.
   before the check becomes required. Provisional tier: 2. (Refs: FR-11)
 - [ ] **CH-005 — `ci-required` becomes an enforced check on `main`.** This is the
   last outcome. It lands after CH-003 wiring, after CH-006 mutation coverage, and
-  after a fresh sweep of every open pull request head at that moment shows no
-  unresolved red head. Acceptance: no still-open head is red under the committed
-  config, where each red head was cleared by a fix, by a Decision 16 directive,
-  or by the pull request merging or closing; `gh api repos/antiburn/antiburn/rules/branches/main` returns an
+  after a pre-apply check reads every open pull request from GitHub and shows the
+  slop gate live and current on each head that can merge. Acceptance: for every
+  open pull request whose head can merge, GitHub reports a completed
+  `ci-required` check produced by a workflow run that also produced `slop gate`;
+  the conclusion of that check does not gate enablement, so a head red from slop
+  findings is an expected, acceptable outcome; a pull request reported
+  `mergeable: CONFLICTING` is recorded and skipped;
+  `gh api repos/antiburn/antiburn/rules/branches/main` returns an
   active rule of type `required_status_checks` naming `ci-required`; a pull
   request with a failing `ci-required` cannot merge; the ruleset definition is
   committed as a reviewable artifact (a JSON payload file, or a documented
   `gh api` call in repository docs) together with the apply, verify, and
-  rollback commands; the rollback disables or deletes that ruleset. **The agent
-  session holds `admin:false` and `maintain:false`, so the human applies the
-  ruleset as repository admin. The seam is not verified until live
+  rollback commands; the rollback disables or deletes that ruleset. **The human
+  applies the ruleset as repository admin, because that is the Tier 3 authorized
+  action of this plan; the ruleset API answers 404 to a caller without admin.
+  The seam is not verified until live
   `gh api repos/antiburn/antiburn/rules/branches/main` output shows a rule
   requiring the `ci-required` check.** Likely touches: a committed ruleset file
   under `docs/` or `.github/`, plus `CONTRIBUTING.md` if the seam adds a note.
   Provisional tier: 3. (Refs: FR-12, FR-14)
+- [ ] **CH-007 — Pinned edit-time slop feedback for coding agents.** The gate
+  catches slop at the pull request; this item catches it as an agent writes the
+  code. Acceptance: committed `PostToolUse` hooks for Claude Code
+  (`.claude/settings.json`) and Codex (`.codex/hooks.json`, matching
+  `apply_patch` through the committed adapter `scripts/codex-aislop-hook.mjs`)
+  run the exact pinned `aislop`, resolved from the repository rather than
+  through `PATH`, and both set `AISLOP_NO_TELEMETRY=1` per Decision 6 as
+  extended above; the feedback is advisory, so neither hook blocks an edit nor
+  exits 2 over standing findings that #90 owns; a `node --test` guard drives
+  both committed commands against synthetic fixtures and covers the patch
+  parser, the adapter exit contract, and pinned resolution under a shadowed
+  `PATH`; `AGENTS.md` states the agent's rules in the imperative register and
+  length of its neighbours — fix findings your own change caused, leave standing
+  #90 findings, take the Decision 16 suppression route, run the authoritative
+  `pnpm run slop`, and never run `aislop hook install` here — and points to
+  `CONTRIBUTING.md` for the mechanics; `.gitignore` ignores all of `/.claude/*`
+  and all of `/.codex/*` and re-includes exactly two paths,
+  `!/.claude/settings.json` and `!/.codex/hooks.json`, so those two files are
+  the only agent-local files that become repository content and any other file
+  under `.claude/` or `.codex/` stays ignored. Likely touches: `.gitignore`,
+  `.claude/`, `.codex/`, `AGENTS.md`, `scripts/`. Provisional tier: 3. (Refs: FR-2, FR-3)
 
 > Ordering is a dependency hint, and the IDs are append-only, so CH-006 is
 > presented before CH-005. The config precedes the job. The pin precedes CI use.
 > The job precedes its contract test. Enforcement is last: CH-005 follows
-> CH-003, CH-006, and a fresh sweep of every open pull request head.
+> CH-003, CH-006, and a fresh preflight over every open pull request.
 
 ## Out of Scope (Non-Goals)
 
@@ -542,8 +594,8 @@ Clearing the standing findings is issue #90, not this work.
 
 No open questions. Decision 16 settles the promotion and cost question.
 
-- **CH-005 needs a human admin step.** The agent session holds `admin:false` and
-  `maintain:false`, so the seam prepares the ruleset and the human applies it.
+- **CH-005 needs a human admin step.** The seam prepares the ruleset and the
+  human applies it as the Tier 3 authorized action.
   The risk is timing, not ownership: until the human applies it, CH-005 stays
   unverified and the gate stays advisory.
 - **Threshold numbers are language-multiplied**, so any number must be validated
@@ -553,15 +605,16 @@ No open questions. Decision 16 settles the promotion and cost question.
   the config, in `CONTRIBUTING.md`, and in #90, so nobody reads a green build as
   proof that file and function size are policed.
 - **Red-on-touch friction lands mostly on one hot file.**
-  `apps/desktop/src/lib/ipc.ts` carries 10 of the 20 promoted findings, so it is
+  `apps/desktop/src/lib/ipc.ts` carries 10 of the 20 promoted findings measured
+  at `609d293`, so it is
   the file most likely to make an unrelated pull request red. The enablement
-  sweep over open pull request heads (CH-003) measures the real cost before
-  CH-005 switches enforcement on.
+  preflight over open pull requests (CH-005) proves the gate is live and current
+  on each head.
 - **Version drift:** local binary is 0.14.0, npm `latest` is 0.14.1. The seam
   pins the version it verifies with and says which.
 - **Every open pull request gains a new check**, and the set changes daily. The
-  sweep therefore reads `gh pr list --state open` at enablement time; the dated
-  snapshot in Current State is illustrative. A snapshot head is known red: #86
+  preflight therefore reads `gh pr list --state open` at enablement time; the
+  dated snapshot in Current State is illustrative. A snapshot head is known red: #86
   touches `apps/desktop/src/lib/ipc.ts`. That rule is threshold-independent, so
   the remedy is a Decision 16 route or the pull request merging or closing.
 - **Sequencing:** the GH-70 base pull request (#91, draft, one commit) is already
@@ -601,15 +654,16 @@ its own, because a widened scan can also pass.
   URL and `:87` for the hardcoded ID.
 - **CI wiring:** `node --test` over the four control-plane files, including the
   new FR-11 case; demonstrate the new case failing under each mutation.
-- **Enablement sweep:** for every open pull request head listed by
-  `gh pr list --state open` **at sweep time**, run
-  `aislop ci --changes --base <main sha>` locally and record the result. A red
-  result on a threshold-independent rule cannot be cleared by threshold choice,
-  and Decisions 14 and 16 bar these seams from editing product code or writing a
-  directive. So each still-open red head is resolved before CH-005 by one of
-  three routes: the contributor fixes the finding, the contributor adds an
-  `aislop-ignore` directive with a justification and a `#90` reference, or the
-  pull request merges or closes. The seam report records the route per head.
+- **Enablement preflight:** for every open pull request listed by
+  `gh pr list --state open` **at check time**, retrieved without truncation,
+  read the head's check runs from
+  `gh api repos/antiburn/antiburn/commits/<sha>/check-runs` and record one
+  result per head: `CANNOT_MERGE`, `GATE_LIVE` (with the `ci-required`
+  conclusion), `GATE_PENDING`, `GATE_ABSENT`, or `GATE_STALE`. Enablement
+  proceeds only when every head that can merge is `GATE_LIVE` and the pass
+  completes. A red `ci-required` is recorded, never remedied here: Decisions 14
+  and 16 still bar these seams from editing product code or writing a
+  directive, and the contributor owns the fix under `#90`.
 - **Enforcement:** after the human applies the committed ruleset,
   `gh api repos/antiburn/antiburn/rules/branches/main` shows the
   `required_status_checks` rule naming `ci-required`. That live output is the

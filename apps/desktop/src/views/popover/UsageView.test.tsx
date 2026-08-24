@@ -234,6 +234,7 @@ function liveProvider(): LiveProviderUsagePayload {
       }),
     ],
     extraUsage: null,
+    resetCredits: null,
   }
 }
 
@@ -255,7 +256,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(within(limits).getByText("5-hour limit")).toBeInTheDocument()
     expect(within(limits).getByText("81%")).toBeInTheDocument()
     expect(within(limits).getByText("Weekly limit")).toBeInTheDocument()
-    expect(within(limits).getByText(/resets in 2h 30m/)).toBeInTheDocument()
+    expect(within(limits).getByText(/resets 2:30pm/)).toBeInTheDocument()
 
     // The estimate half is still there and unchanged: a reader who connects a
     // source gains the limits, they do not trade one surface for the other.
@@ -267,6 +268,25 @@ describe("UsageView — plan limits layered over local estimates", () => {
       limits.compareDocumentPosition(within(card).getByText("Last 7 days")) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+  })
+
+  it("shows manual reset credits with the Codex command that uses one", () => {
+    const codex = live({
+      providers: [
+        {
+          ...liveProvider(),
+          provider: "openai",
+          displayName: "Codex",
+          resetCredits: { availableCount: 1 },
+        },
+      ],
+    })
+    render(<UsageView summary={summary()} live={codex} now={NOW} onBack={vi.fn()} />)
+
+    const card = screen.getByText("OpenAI").closest("li")!
+    expect(within(card).getByText("1 usage limit reset available.")).toBeInTheDocument()
+    expect(within(card).getByText("/usage")).toBeInTheDocument()
+    expect(within(card).getByText(/in Codex to use one/)).toBeInTheDocument()
   })
 
   it("marks how far through the period the clock has travelled", () => {

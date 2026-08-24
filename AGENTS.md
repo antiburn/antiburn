@@ -47,6 +47,11 @@ Reasons a comment shouldn't exist:
 
 Machine-read directives (`eslint-disable`, `@ts-expect-error`, `#[allow(...)]`, etc.) are not prose; keep them, but write their explanation text in STE.
 
+## Agent slop feedback
+
+Fix every aislop finding your own change caused before you finish the turn. Do not fix a standing finding that issue #90 owns. If you must change a legacy file and cannot fix its standing finding, suppress it with `<comment marker> aislop-ignore-next-line <rule id…> -- <justification naming #90>`. Run `pnpm run slop` before you finish; the hook scan is narrower and is not authoritative.
+Do not run `aislop hook install` in this repository. Read `CONTRIBUTING.md` for the hook mechanics.
+
 ## Commits
 
 Every commit must carry a DCO sign-off: run `git commit -s` (or add `Signed-off-by: Name <email>` to the message by hand).
