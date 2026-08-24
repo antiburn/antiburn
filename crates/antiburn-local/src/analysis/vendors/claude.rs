@@ -10,14 +10,23 @@
 //! and `message.content[]` with `text` / `thinking` / `tool_use` parts, while
 //! user lines carry `tool_result` blocks that flag errors.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Cursor, Read};
 
 use anyhow::Context;
+use serde_json::Value;
 
-use super::jsonl::parse_jsonl;
-use super::read_source;
-use crate::analysis::interface::{SessionInput, VendorAdapter};
-use crate::analysis::model::{NormalizedEvent, NormalizedSession, Usage};
+use super::jsonl::{
+    SKILL_BASE_MARKER, collect_skill_base_names_from_text, command_names_in_text,
+    command_skill_name, parse_record, record_text,
+};
+use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
+use crate::analysis::interface::{
+    NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionSummary,
+    VendorAdapter,
+};
+use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 
 pub struct ClaudeAdapter;
 
@@ -27,63 +36,196 @@ impl VendorAdapter for ClaudeAdapter {
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
-        let content = read_source(&input.source)
-            .with_context(|| format!("reading claude session {}", input.session_id))?;
-        // Single parse pass: `parse_jsonl` already records each turn's model, so
-        // the window + headline model are derived from the events rather than a
-        // second `serde_json` pass over the whole transcript.
-        let mut events = parse_jsonl(&content);
-        let (context_window, model) = detect_window_and_model(&events);
-        dedup_assistant_usage(&mut events);
-        Ok(NormalizedSession {
-            agent: input.agent.clone(),
-            session_id: input.session_id.clone(),
-            events,
-            cache_write_tokens_available: true,
-            context_window,
-            model,
-        })
+        let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+        self.visit(input, &mut collector)?;
+        collector.into_session()
+    }
+
+    fn visit(&self, input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result<()> {
+        (|| -> anyhow::Result<()> {
+            match &input.source {
+                RawSource::File(path) => {
+                    let file = File::open(path)?;
+                    self.visit_reader(BufReader::new(file), sink)
+                }
+                RawSource::Jsonl(content) => {
+                    let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
+                    let source = Cursor::new(content.as_bytes()).chain(suffix);
+                    self.visit_reader(BufReader::new(source), sink)
+                }
+                RawSource::Sqlite(path) => {
+                    anyhow::bail!(
+                        "sqlite source must be handled by the sqlite adapter: {}",
+                        path.display()
+                    )
+                }
+            }
+        })()
+        .with_context(|| format!("reading claude session {}", input.session_id))
     }
 }
 
-/// Collapse Claude's duplicate assistant records before metrics.
-///
-/// Claude Code writes the same assistant message (same `message.id`) to the
-/// transcript more than once — re-emitted on resume/compaction and once per
-/// content block — and every copy carries the *full* `usage`. Summing every line
-/// multiplies token counts (and therefore cost), dominated by the repeated
-/// cache-read figure. Mirror the backend's de-duplication
-/// (`crates/analysis/src/note_parser.rs::record_claude_assistant_usage`): per
-/// `message.id`, keep the running per-field maximum and attribute only the
-/// positive delta to each event, so each message's usage is counted exactly once.
-/// Exact duplicates collapse to zero after the first copy; a streaming message
-/// whose usage grows across copies still sums to its final total. Events with no
-/// `message.id` (user turns, tool results) are left untouched.
-fn dedup_assistant_usage(events: &mut [NormalizedEvent]) {
-    let mut max_by_id: HashMap<String, Usage> = HashMap::new();
-    for ev in events.iter_mut() {
-        let Some(id) = ev.message_id.clone() else {
-            continue;
+impl ClaudeAdapter {
+    fn visit_reader(&self, reader: impl BufRead, sink: &mut dyn RecordSink) -> anyhow::Result<()> {
+        let mut reader = BoundedJsonlReader::new(reader);
+        let mut state = ClaudeStreamState::default();
+
+        // TODO @agent: CH-005 will supply the real cancellation signal
+        while let Some(record) = reader.next_record(&|| false) {
+            match record {
+                FramedRecord::Skipped(skip) => match skip {
+                    RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
+                        sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+                    }
+                    RecordSkip::ReadFailed { index, kind } => {
+                        anyhow::bail!("Claude record {index} read failed: {kind:?}");
+                    }
+                    RecordSkip::Cancelled { index } => {
+                        anyhow::bail!("Claude record {index} read was cancelled");
+                    }
+                },
+                FramedRecord::Complete { bytes, .. } => {
+                    let record = std::str::from_utf8(bytes)
+                        .context("Claude transcript record is not valid UTF-8")?;
+                    let Ok(value) = serde_json::from_str::<Value>(record) else {
+                        sink.record(NormalizedRecord::Unusable(
+                            crate::analysis::framing::PartialReason::MalformedRecord,
+                        ));
+                        continue;
+                    };
+
+                    let has_skill_marker = record.contains(SKILL_BASE_MARKER);
+                    let has_command_name = record.contains("<command-name>");
+                    let text = (has_skill_marker || has_command_name).then(|| record_text(&value));
+                    if has_skill_marker {
+                        collect_skill_base_names_from_text(
+                            text.as_deref().unwrap_or_default(),
+                            &mut state.skill_base_names,
+                        );
+                    }
+
+                    let Some(mut event) = parse_record(&value) else {
+                        sink.record(NormalizedRecord::Unusable(
+                            crate::analysis::framing::PartialReason::UnrecognizedRecordType,
+                        ));
+                        continue;
+                    };
+
+                    state.observe_model(event.model.as_deref());
+                    state.dedup_usage(&mut event);
+                    if has_command_name {
+                        state.pending_commands.push((
+                            state.ordinal,
+                            command_names_in_text(text.as_deref().unwrap_or_default()),
+                        ));
+                    }
+                    sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+                    state.ordinal += 1;
+                }
+            }
+        }
+
+        sink.finish(state.into_summary());
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ClaudeStreamState {
+    max_usage_by_message_id: HashMap<String, Usage>,
+    context_window: Option<u64>,
+    first_model: Option<String>,
+    best_priceable: Option<(String, f64)>,
+    last_seen_model: Option<String>,
+    skill_base_names: HashSet<String>,
+    pending_commands: Vec<(usize, Vec<String>)>,
+    ordinal: usize,
+}
+
+impl ClaudeStreamState {
+    fn dedup_usage(&mut self, event: &mut NormalizedEvent) {
+        let Some(id) = event.message_id.clone() else {
+            return;
         };
-        let cur = ev.usage;
-        let prev = max_by_id.get(&id).copied().unwrap_or_default();
-        ev.usage = Usage {
-            input_tokens: cur.input_tokens.saturating_sub(prev.input_tokens),
-            output_tokens: cur.output_tokens.saturating_sub(prev.output_tokens),
-            cache_read_tokens: cur.cache_read_tokens.saturating_sub(prev.cache_read_tokens),
-            cache_creation_tokens: cur
+        let current = event.usage;
+        let previous = self
+            .max_usage_by_message_id
+            .get(&id)
+            .copied()
+            .unwrap_or_default();
+        event.usage = Usage {
+            input_tokens: current.input_tokens.saturating_sub(previous.input_tokens),
+            output_tokens: current.output_tokens.saturating_sub(previous.output_tokens),
+            cache_read_tokens: current
+                .cache_read_tokens
+                .saturating_sub(previous.cache_read_tokens),
+            cache_creation_tokens: current
                 .cache_creation_tokens
-                .saturating_sub(prev.cache_creation_tokens),
+                .saturating_sub(previous.cache_creation_tokens),
         };
-        max_by_id.insert(
+        self.max_usage_by_message_id.insert(
             id,
             Usage {
-                input_tokens: cur.input_tokens.max(prev.input_tokens),
-                output_tokens: cur.output_tokens.max(prev.output_tokens),
-                cache_read_tokens: cur.cache_read_tokens.max(prev.cache_read_tokens),
-                cache_creation_tokens: cur.cache_creation_tokens.max(prev.cache_creation_tokens),
+                input_tokens: current.input_tokens.max(previous.input_tokens),
+                output_tokens: current.output_tokens.max(previous.output_tokens),
+                cache_read_tokens: current.cache_read_tokens.max(previous.cache_read_tokens),
+                cache_creation_tokens: current
+                    .cache_creation_tokens
+                    .max(previous.cache_creation_tokens),
             },
         );
+    }
+
+    fn observe_model(&mut self, model: Option<&str>) {
+        let Some(model) = model else {
+            return;
+        };
+        if self.last_seen_model.as_deref() == Some(model) {
+            return;
+        }
+        self.last_seen_model = Some(model.to_string());
+        if let Some(window) = model_context_window(model) {
+            self.context_window = Some(
+                self.context_window
+                    .map_or(window, |current| current.max(window)),
+            );
+        }
+        if self.first_model.is_none() {
+            self.first_model = Some(model.to_string());
+        }
+        if let Some(pricing) = crate::analysis::pricing::lookup_pricing(model) {
+            let rank = pricing.input_cost_per_token + pricing.output_cost_per_token;
+            if self
+                .best_priceable
+                .as_ref()
+                .is_none_or(|(_, current_rank)| rank > *current_rank)
+            {
+                self.best_priceable = Some((model.to_string(), rank));
+            }
+        }
+    }
+
+    fn into_summary(self) -> SessionSummary {
+        let model = self
+            .best_priceable
+            .map(|(model, _)| model)
+            .or(self.first_model);
+        let mut late_tools = Vec::new();
+        for (ordinal, commands) in self.pending_commands {
+            for command in commands {
+                if let Some(skill) = command_skill_name(&command, &self.skill_base_names) {
+                    let mut call = ToolCall::new("skill");
+                    call.detail = Some(skill);
+                    late_tools.push((ordinal, call));
+                }
+            }
+        }
+        SessionSummary {
+            cache_write_tokens_available: true,
+            context_window: self.context_window,
+            model,
+            late_tools,
+        }
     }
 }
 
@@ -110,43 +252,4 @@ fn model_context_window(model: &str) -> Option<u64> {
     } else {
         None
     }
-}
-
-/// Infer the session's context window and headline model from the per-turn
-/// models `parse_jsonl` already extracted — no second parse of the transcript.
-/// A session mixes models (e.g. Opus for the main thread, Haiku for background
-/// tasks): the **window** is set by the largest (max across every turn's model),
-/// and the **model** we attribute cost to is the most expensive *priceable* one
-/// seen (else the first model seen, for display). Both are `None` when no model
-/// is recorded; empty / `<synthetic>` models are already filtered out upstream.
-fn detect_window_and_model(events: &[NormalizedEvent]) -> (Option<u64>, Option<String>) {
-    let mut window: Option<u64> = None;
-    let mut first_model: Option<String> = None;
-    let mut best_priceable: Option<(String, f64)> = None;
-    // Consecutive turns almost always repeat the same model; skip the repeats so
-    // the window + pricing lookups run once per distinct run, not once per turn.
-    let mut last_seen_model: Option<&str> = None;
-    for ev in events {
-        let Some(model) = ev.model.as_deref() else {
-            continue;
-        };
-        if last_seen_model == Some(model) {
-            continue; // same model as the previous turn — already accounted for.
-        }
-        last_seen_model = Some(model);
-        if let Some(w) = model_context_window(model) {
-            window = Some(window.map_or(w, |cur| cur.max(w)));
-        }
-        if first_model.is_none() {
-            first_model = Some(model.to_string());
-        }
-        if let Some(p) = crate::analysis::pricing::lookup_pricing(model) {
-            let rank = p.input_cost_per_token + p.output_cost_per_token;
-            if best_priceable.as_ref().is_none_or(|(_, r)| rank > *r) {
-                best_priceable = Some((model.to_string(), rank));
-            }
-        }
-    }
-    let model = best_priceable.map(|(m, _)| m).or(first_model);
-    (window, model)
 }
