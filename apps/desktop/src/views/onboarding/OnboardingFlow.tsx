@@ -95,11 +95,11 @@ export interface OnboardingFlowProps {
   onLaunchAtLoginChange: (enabled: boolean) => void
   /** The consented analytics channel. On by default, and nothing is sent
    *  until this flow finishes — so switching it off here means never. */
-  usageAnalyticsEnabled: boolean
+  analyticsEnabled: boolean
   onAnalyticsEnabledChange: (enabled: boolean) => void
   /** Whether this build can send analytics at all. False in development and
    *  in any build from a clean checkout, where the row says so instead. */
-  usageAnalyticsSupported: boolean
+  analyticsSupported: boolean
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void
   finishing: boolean
@@ -150,7 +150,7 @@ function StepDots({ step }: { step: Step }) {
  */
 const CENTRED_COLUMN = "mx-auto flex max-w-[440px] flex-col items-center"
 
-function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean }) {
+function Welcome({ analyticsSupported }: { analyticsSupported: boolean }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
@@ -187,7 +187,7 @@ function Welcome({ usageAnalyticsSupported }: { usageAnalyticsSupported: boolean
           antiburn reads the coding-agent sessions already on your disk and shows what they
           cost, how they went, and how close your limits are. No account, and nothing from your
           sessions is ever uploaded.{" "}
-          {usageAnalyticsSupported
+          {analyticsSupported
             ? // The opt-out gets its own sentence. Trailing the list, "which you
               // can opt out of" modified all three items — and a reader cannot
               // opt out of a version check. "only" still closes the list; what
@@ -482,17 +482,17 @@ function Ready({
   sessions,
   launchAtLogin,
   onLaunchAtLoginChange,
-  usageAnalyticsEnabled,
+  analyticsEnabled,
   onAnalyticsEnabledChange,
-  usageAnalyticsSupported,
+  analyticsSupported,
   finishError,
 }: {
   sessions: number
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
-  usageAnalyticsEnabled: boolean
+  analyticsEnabled: boolean
   onAnalyticsEnabledChange: (enabled: boolean) => void
-  usageAnalyticsSupported: boolean
+  analyticsSupported: boolean
   finishError: string | null
 }) {
   return (
@@ -530,19 +530,19 @@ function Ready({
             withdrawn. */}
         <Card className="mt-3 w-full text-left">
           <ToggleRow
-            label="Send anonymised usage analytics"
+            label="Send anonymised analytics"
             description={
-              usageAnalyticsSupported
+              analyticsSupported
                 ? // Names no recipient. Settings → Privacy does, and is one click
                   // from here; a first-run switch reads better without a party
                   // the reader has no context for yet.
                   "Only sends which features are used, and what breaks. Never anything to do with your sessions. Change anytime in Settings → Privacy."
                 : "This build has no analytics endpoint, so nothing can be sent from it."
             }
-            checked={usageAnalyticsSupported && usageAnalyticsEnabled}
+            checked={analyticsSupported && analyticsEnabled}
             onChange={onAnalyticsEnabledChange}
-            dimmed={!usageAnalyticsSupported}
-            disabled={!usageAnalyticsSupported}
+            dimmed={!analyticsSupported}
+            disabled={!analyticsSupported}
           />
         </Card>
         {finishError ? (
@@ -576,9 +576,9 @@ export function OnboardingFlow({
   onWindowDaysChange,
   launchAtLogin,
   onLaunchAtLoginChange,
-  usageAnalyticsEnabled,
+  analyticsEnabled,
   onAnalyticsEnabledChange,
-  usageAnalyticsSupported,
+  analyticsSupported,
   onFinish,
   finishing,
   finishError,
@@ -636,7 +636,7 @@ export function OnboardingFlow({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {step === "welcome" && <Welcome usageAnalyticsSupported={usageAnalyticsSupported} />}
+        {step === "welcome" && <Welcome analyticsSupported={analyticsSupported} />}
         {step === "sources" && (
           <Sources
             defaultRoots={defaultRoots}
@@ -670,9 +670,9 @@ export function OnboardingFlow({
             sessions={scanStatus?.sessions ?? 0}
             launchAtLogin={launchAtLogin}
             onLaunchAtLoginChange={onLaunchAtLoginChange}
-            usageAnalyticsEnabled={usageAnalyticsEnabled}
+            analyticsEnabled={analyticsEnabled}
             onAnalyticsEnabledChange={onAnalyticsEnabledChange}
-            usageAnalyticsSupported={usageAnalyticsSupported}
+            analyticsSupported={analyticsSupported}
             finishError={finishError}
           />
         )}

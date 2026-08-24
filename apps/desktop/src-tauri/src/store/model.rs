@@ -448,7 +448,7 @@ pub struct AppSettings {
     /// default for a new install, which meets the control on the Ready
     /// screen before anything is sent; off for a store that finished
     /// onboarding under copy that promised no analytics at all.
-    pub usage_analytics_enabled: bool,
+    pub analytics_enabled: bool,
     /// Whether the popover's usage-limits section is expanded to its
     /// per-provider rows, rather than collapsed to the chip row. Purely a
     /// display preference — it never gates a fetch — so it defaults open and
@@ -494,7 +494,7 @@ impl Default for AppSettings {
             // off there means nothing ever leaves the machine.
             // `settings_from` downgrades this to false for a database that
             // predates the setting.
-            usage_analytics_enabled: true,
+            analytics_enabled: true,
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,

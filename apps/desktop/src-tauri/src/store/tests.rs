@@ -70,18 +70,16 @@ fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
 fn opting_out_destroys_the_queue_and_the_installation_identity() {
     let store = store();
     store
-        .set_usage_analytics_identity("11111111-1111-4111-8111-111111111111")
+        .set_analytics_identity("11111111-1111-4111-8111-111111111111")
         .unwrap();
-    store
-        .queue_usage_analytics_event("app_launched", "{}")
-        .unwrap();
-    assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
-    assert!(store.usage_analytics_identity().unwrap().is_some());
+    store.queue_analytics_event("app_launched", "{}").unwrap();
+    assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
+    assert!(store.analytics_identity().unwrap().is_some());
 
-    store.clear_usage_analytics().unwrap();
+    store.clear_analytics().unwrap();
 
-    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
-    assert!(store.usage_analytics_identity().unwrap().is_none());
+    assert!(store.pending_analytics_events(10).unwrap().is_empty());
+    assert!(store.analytics_identity().unwrap().is_none());
 }
 
 /// An undeliverable event is dropped rather than retried forever: a queue that
@@ -90,22 +88,20 @@ fn opting_out_destroys_the_queue_and_the_installation_identity() {
 #[test]
 fn events_are_given_up_on_after_a_bounded_number_of_attempts() {
     let store = store();
-    store
-        .queue_usage_analytics_event("app_launched", "{}")
-        .unwrap();
+    store.queue_analytics_event("app_launched", "{}").unwrap();
     let ids: Vec<i64> = store
-        .pending_usage_analytics_events(10)
+        .pending_analytics_events(10)
         .unwrap()
         .into_iter()
         .map(|(id, _)| id)
         .collect();
 
     for _ in 0..2 {
-        assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 0);
-        assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+        assert_eq!(store.fail_analytics_events(&ids, 3).unwrap(), 0);
+        assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
     }
-    assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 1);
-    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
+    assert_eq!(store.fail_analytics_events(&ids, 3).unwrap(), 1);
+    assert!(store.pending_analytics_events(10).unwrap().is_empty());
 }
 
 #[test]
@@ -217,7 +213,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
                 at90: false,
             },
             live_usage_enabled: true,
-            usage_analytics_enabled: false,
+            analytics_enabled: false,
             overview_limits_expanded: false,
         })
         .unwrap();
@@ -928,6 +924,57 @@ fn migrating_forward_drops_a_legacy_live_usage_off_row_so_the_new_default_applie
         store.settings().unwrap().live_usage_enabled,
         "with the legacy row gone, the read path falls through to the new default"
     );
+}
+
+#[test]
+fn migrating_forward_renames_the_analytics_tables_and_keeps_their_rows() {
+    // V1 through V8 created and used `usage_analytics_event` and
+    // `usage_analytics_identity`. V9 renames both tables to drop the
+    // "usage_" prefix, to match the renamed Rust module and code. Built by
+    // hand up to V8 so the rename migration actually runs; a fresh
+    // `Store::open_in_memory` would already be past it.
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..8] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO usage_analytics_identity (id, install_id, minted_at)
+             VALUES (1, 'test-install-id', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO usage_analytics_event (name, payload, queued_at)
+             VALUES ('app_launched', '{}', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 8i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
+    )
+    .expect("migrates cleanly to the latest version");
+
+    assert_eq!(
+        store.schema_version().unwrap(),
+        super::schema::MIGRATIONS.len() as i64
+    );
+    let (install_id, event_count): (String, i64) = store
+        .lock()
+        .query_row(
+            "SELECT install_id, (SELECT COUNT(*) FROM analytics_event) FROM analytics_identity",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the renamed tables carry the rows the old names held");
+    assert_eq!(install_id, "test-install-id");
+    assert_eq!(event_count, 1);
 }
 
 #[test]

@@ -53,6 +53,7 @@
 
 mod agents;
 mod analysis;
+mod analytics;
 mod commands;
 mod consent;
 mod disk_monitor;
@@ -75,7 +76,6 @@ mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
-mod usage_analytics;
 mod window_placement;
 
 use std::sync::Mutex;
@@ -250,12 +250,12 @@ pub fn run() {
             // The consented analytics channel (D-027, deviations D-28). Both
             // calls are inert unless this build injected an endpoint AND the
             // reader has finished onboarding with the switch on — see
-            // `usage_analytics::allowed`, which is the single gate both go through.
-            usage_analytics::install(app.handle());
-            usage_analytics::record(
+            // `analytics::allowed`, which is the single gate both go through.
+            analytics::install(app.handle());
+            analytics::record(
                 app.handle(),
-                usage_analytics::event::EventName::AppLaunched,
-                usage_analytics::event::Facts::default(),
+                analytics::event::EventName::AppLaunched,
+                analytics::event::Facts::default(),
             );
 
             // The notification window's manager and the chime player. The

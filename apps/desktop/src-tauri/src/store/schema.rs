@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -205,7 +205,7 @@ ALTER TABLE session ADD COLUMN activity_cursor TEXT NOT NULL DEFAULT '';
 ///
 /// These two tables are the one exception to the rule that nothing derived
 /// from a reader's work leaves this machine. `payload` holds exactly what
-/// `usage_analytics::event::Event` serializes and nothing else; a migration
+/// `analytics::event::Event` serializes and nothing else; a migration
 /// that let a path, a repository name, a title, a credential, or an unbucketed
 /// count in here would break the governance record that permits the table to
 /// exist at all.
@@ -277,4 +277,14 @@ FROM session_analysis;
 
 DROP TABLE session_analysis;
 ALTER TABLE session_analysis_v8 RENAME TO session_analysis;
+"#;
+
+/// v9 — rename the analytics-event tables for the analytics naming change.
+///
+/// The code dropped the "usage_" prefix from the Rust module and its
+/// identifiers. This migration renames the two tables to match, so an
+/// existing database still works with the renamed code.
+const V9: &str = r#"
+ALTER TABLE usage_analytics_event RENAME TO analytics_event;
+ALTER TABLE usage_analytics_identity RENAME TO analytics_identity;
 "#;

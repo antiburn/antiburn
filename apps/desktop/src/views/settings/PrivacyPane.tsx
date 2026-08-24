@@ -44,8 +44,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
   // Derived from the running build, never from a compile-time guess: a build
   // with no injected endpoint cannot send anything, and this pane's whole job
   // is to not overstate what the application does.
-  const usageAnalyticsSupported = info?.usageAnalyticsSupported ?? false
-  const operator = info?.usageAnalyticsOperator ?? null
+  const analyticsSupported = info?.analyticsSupported ?? false
+  const operator = info?.analyticsOperator ?? null
 
   /**
    * Clearing the index is confirmed first, and the confirmation says the two
@@ -79,8 +79,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
           antiburn reads the session files your coding agents already keep on this machine and
           keeps the data it needs locally. Your sessions, prompts, and file paths never leave
           it.{" "}
-          {usageAnalyticsSupported
-            ? "The one thing antiburn reports about itself is anonymised usage analytics, which you can turn off below."
+          {analyticsSupported
+            ? "The one thing antiburn reports about itself is anonymised analytics, which you can turn off below."
             : "This build sends no analytics at all — see below."}{" "}
           Each promise opens into the specifics a reader could reasonably want to check.
         </p>
@@ -116,7 +116,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             a provider back a credential it issued you is not a disclosure — it already has it.
             Those analytics are the one thing that goes to us; they are listed field by field
             below, and they contain none of your work. This build
-            {usageAnalyticsSupported
+            {analyticsSupported
               ? " can send them."
               : " has no analytics endpoint, so it cannot send them at all."}
           </Disclosure>
@@ -142,9 +142,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
       <SectionGroup title="Anonymised analytics">
         <Card>
           <ToggleRow
-            label="Send anonymised usage analytics"
+            label="Send anonymised analytics"
             description={
-              usageAnalyticsSupported
+              analyticsSupported
                 ? `Which features get used and what breaks${
                     operator ? `, sent to ${operator}` : ""
                   }. Helps decide what to build next.`
@@ -155,10 +155,10 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             // paint "on" for an upgraded install whose stored answer is off —
             // and a click in that window would write the default back as
             // though the reader had chosen it.
-            checked={usageAnalyticsSupported && loaded && settings.usageAnalyticsEnabled}
-            onChange={(next) => void update({ usageAnalyticsEnabled: next })}
-            dimmed={!usageAnalyticsSupported || !loaded}
-            disabled={!usageAnalyticsSupported || !loaded}
+            checked={analyticsSupported && loaded && settings.analyticsEnabled}
+            onChange={(next) => void update({ analyticsEnabled: next })}
+            dimmed={!analyticsSupported || !loaded}
+            disabled={!analyticsSupported || !loaded}
           />
         </Card>
         {/* The switch's terms sit below the card rather than inside it, which
@@ -170,7 +170,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             {/* Every field, including the plumbing ones. An enumeration that
                   quietly omits the dull fields is worth less than no
                   enumeration, because it reads as complete.
-                  `usage_analytics::event::Event` is the source of truth; if a
+                  `analytics::event::Event` is the source of truth; if a
                   field is added there, it is named here in the same change or
                   the promise below stops being true.
 
@@ -262,8 +262,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             How long these events are kept, and whether the receiving server records the IP
             address that every internet request carries, are the operator&rsquo;s decisions
             rather than the app&rsquo;s. antiburn can only promise what it sends, which is the
-            list above. The project&rsquo;s docs/usage-analytics.md has the full event catalog
-            and the commands to check any of this yourself.
+            list above. The project&rsquo;s docs/analytics.md has the full event catalog and the
+            commands to check any of this yourself.
           </Disclosure>
         </DisclosureGroup>
       </SectionGroup>

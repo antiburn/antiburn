@@ -259,7 +259,7 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
     // all is an analytics question, and this scheduler runs a pass a minute
     // while the popover is open. `None` is a failure, which travels as a bare
     // category — an error string can hold a path.
-    crate::usage_analytics::record_scan(app, outcome.as_ref().ok().map(|n| *n as u64));
+    crate::analytics::record_scan(app, outcome.as_ref().ok().map(|n| *n as u64));
     crate::notifications::note_scan_outcome(app, &finished);
     finished
 }
