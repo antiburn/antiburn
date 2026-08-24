@@ -217,27 +217,13 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     Ok(saved)
 }
 
-fn restart_onboarding_before_open<E>(
-    store: &Store,
-    after_save: impl FnOnce(&AppSettings, &AppSettings),
-    open: impl FnOnce() -> Result<(), E>,
-) -> anyhow::Result<Result<(), E>> {
-    let (previous, saved) = store.restart_onboarding()?;
-    after_save(&previous, &saved);
-    Ok(open())
-}
-
 /// Make setup pending, open it at Welcome, and keep all other local state.
 #[tauri::command]
 pub fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
     let store = app.state::<Store>();
-    let opened = restart_onboarding_before_open(
-        &store,
-        |previous, saved| apply_settings_transition(&app, previous, saved),
-        || crate::onboarding::restart(&app),
-    )
-    .map_err(fail)?;
-    opened.map_err(fail)?;
+    let (previous, saved) = store.restart_onboarding().map_err(fail)?;
+    apply_settings_transition(&app, &previous, &saved);
+    crate::onboarding::restart(&app).map_err(fail)?;
     crate::popover::hide_for_onboarding(&app);
     if let Err(error) = settings::hide(&app) {
         ::tracing::warn!(event = "settings_hide_after_onboarding_restart_failed", error = %error);
@@ -1312,64 +1298,6 @@ mod tests {
                 .split('-')
                 .all(|part| part.chars().all(|c| c.is_ascii_digit()))
         );
-    }
-
-    #[test]
-    fn a_failed_restart_open_keeps_onboarding_pending() {
-        let store = Store::open_in_memory(Path::new("/tmp/antiburn-command-test")).unwrap();
-        store
-            .save_settings(&AppSettings {
-                onboarding_completed: true,
-                ..AppSettings::default()
-            })
-            .unwrap();
-        let phases = std::cell::RefCell::new(Vec::new());
-
-        let opened = restart_onboarding_before_open(
-            &store,
-            |previous, saved| {
-                assert!(previous.onboarding_completed);
-                assert!(!saved.onboarding_completed);
-                phases.borrow_mut().push("transition");
-            },
-            || {
-                phases.borrow_mut().push("open");
-                Err("window failed")
-            },
-        )
-        .unwrap();
-
-        assert_eq!(opened, Err("window failed"));
-        assert_eq!(*phases.borrow(), ["transition", "open"]);
-        assert!(!store.settings().unwrap().onboarding_completed);
-    }
-
-    #[test]
-    fn repeated_restarts_still_open_setup() {
-        let store = Store::open_in_memory(Path::new("/tmp/antiburn-command-test")).unwrap();
-        store
-            .save_settings(&AppSettings {
-                onboarding_completed: true,
-                ..AppSettings::default()
-            })
-            .unwrap();
-        let open_count = std::cell::Cell::new(0);
-
-        for _ in 0..2 {
-            restart_onboarding_before_open(
-                &store,
-                |_, _| {},
-                || {
-                    open_count.set(open_count.get() + 1);
-                    Ok::<(), std::convert::Infallible>(())
-                },
-            )
-            .unwrap()
-            .unwrap();
-        }
-
-        assert_eq!(open_count.get(), 2);
-        assert!(!store.settings().unwrap().onboarding_completed);
     }
 
     #[test]

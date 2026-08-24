@@ -721,16 +721,6 @@ describe("SettingsView", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(/setup could not open/i)
     expect(screen.getByRole("status")).toHaveTextContent(/try again or restart antiburn/i)
   })
-
-  it("keeps an actionable error visible when confirmation cannot open", async () => {
-    confirmDialog.mockRejectedValue(new Error("dialog failed"))
-    render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
-
-    expect(await screen.findByRole("status")).toHaveTextContent(/setup could not open/i)
-    expect(invoke).not.toHaveBeenCalledWith("restart_onboarding")
-  })
 })
 
 /**

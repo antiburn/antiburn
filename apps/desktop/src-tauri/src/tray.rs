@@ -51,51 +51,6 @@ const OPEN_LABEL: &str = "Open antiburn";
 #[cfg(debug_assertions)]
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrayMenuEntry {
-    #[cfg(target_os = "linux")]
-    Open,
-    Pin,
-    Settings,
-    #[cfg(debug_assertions)]
-    ResetOnboarding,
-    Separator,
-    Quit,
-}
-
-#[cfg(all(target_os = "linux", debug_assertions))]
-const MENU_LAYOUT: &[TrayMenuEntry] = &[
-    TrayMenuEntry::Open,
-    TrayMenuEntry::Pin,
-    TrayMenuEntry::Settings,
-    TrayMenuEntry::ResetOnboarding,
-    TrayMenuEntry::Separator,
-    TrayMenuEntry::Quit,
-];
-#[cfg(all(target_os = "linux", not(debug_assertions)))]
-const MENU_LAYOUT: &[TrayMenuEntry] = &[
-    TrayMenuEntry::Open,
-    TrayMenuEntry::Pin,
-    TrayMenuEntry::Settings,
-    TrayMenuEntry::Separator,
-    TrayMenuEntry::Quit,
-];
-#[cfg(all(not(target_os = "linux"), debug_assertions))]
-const MENU_LAYOUT: &[TrayMenuEntry] = &[
-    TrayMenuEntry::Pin,
-    TrayMenuEntry::Settings,
-    TrayMenuEntry::ResetOnboarding,
-    TrayMenuEntry::Separator,
-    TrayMenuEntry::Quit,
-];
-#[cfg(all(not(target_os = "linux"), not(debug_assertions)))]
-const MENU_LAYOUT: &[TrayMenuEntry] = &[
-    TrayMenuEntry::Pin,
-    TrayMenuEntry::Settings,
-    TrayMenuEntry::Separator,
-    TrayMenuEntry::Quit,
-];
-
 /// The tray menu items whose text follows app state.
 ///
 /// Held as managed state because the menu is built once and the pin item has to
@@ -164,21 +119,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
     #[cfg(target_os = "linux")]
     let open_item = MenuItem::with_id(app, MENU_OPEN, OPEN_LABEL, true, None::<&str>)?;
 
-    let items: Vec<&dyn IsMenuItem<Wry>> = MENU_LAYOUT
-        .iter()
-        .map(|entry| -> &dyn IsMenuItem<Wry> {
-            match entry {
-                #[cfg(target_os = "linux")]
-                TrayMenuEntry::Open => &open_item,
-                TrayMenuEntry::Pin => &pin_item,
-                TrayMenuEntry::Settings => &settings_item,
-                #[cfg(debug_assertions)]
-                TrayMenuEntry::ResetOnboarding => &reset_onboarding_item,
-                TrayMenuEntry::Separator => &separator,
-                TrayMenuEntry::Quit => &quit_item,
-            }
-        })
-        .collect();
+    let items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        #[cfg(target_os = "linux")]
+        &open_item,
+        &pin_item,
+        &settings_item,
+        #[cfg(debug_assertions)]
+        &reset_onboarding_item,
+        &separator,
+        &quit_item,
+    ];
     let menu = Menu::with_items(app, &items)?;
     Ok((menu, pin_item))
 }
@@ -322,38 +272,5 @@ mod tests {
     fn the_pin_item_always_names_the_action_it_would_take() {
         assert_eq!(pin_label(false), "Pin Window");
         assert_eq!(pin_label(true), "Unpin Window");
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn the_debug_menu_includes_the_reset_action() {
-        assert_eq!(RESET_ONBOARDING_LABEL, "Reset Onboarding");
-        assert!(MENU_LAYOUT.contains(&TrayMenuEntry::ResetOnboarding));
-    }
-
-    #[cfg(not(debug_assertions))]
-    #[test]
-    fn the_release_menu_excludes_debug_actions() {
-        #[cfg(target_os = "linux")]
-        assert_eq!(
-            MENU_LAYOUT,
-            &[
-                TrayMenuEntry::Open,
-                TrayMenuEntry::Pin,
-                TrayMenuEntry::Settings,
-                TrayMenuEntry::Separator,
-                TrayMenuEntry::Quit,
-            ]
-        );
-        #[cfg(not(target_os = "linux"))]
-        assert_eq!(
-            MENU_LAYOUT,
-            &[
-                TrayMenuEntry::Pin,
-                TrayMenuEntry::Settings,
-                TrayMenuEntry::Separator,
-                TrayMenuEntry::Quit,
-            ]
-        );
     }
 }

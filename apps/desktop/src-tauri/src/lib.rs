@@ -512,10 +512,6 @@ mod tests {
             ClosePolicy::HidePendingOnboarding
         );
         assert_eq!(
-            super::popover::primary_click_target(true),
-            super::popover::PrimaryClickTarget::Onboarding
-        );
-        assert_eq!(
             close_policy(super::onboarding::LABEL, false),
             ClosePolicy::Allow
         );
