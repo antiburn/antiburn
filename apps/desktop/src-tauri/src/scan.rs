@@ -1474,7 +1474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_empty_session_id_is_still_skipped() {
+    async fn an_empty_session_id_is_skipped() {
         let log = SessionLog {
             agent_type: AgentKind::Claude,
             source: SessionSource::Inline {
