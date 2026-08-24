@@ -456,7 +456,7 @@ describe("PopoverView", () => {
     })
   })
 
-  it("shows the app version beside the title without putting usage in the footer", async () => {
+  it("shows the app version beside the title", async () => {
     render(<PopoverView />)
     await screen.findByTestId("usage-limits-bar")
 
