@@ -130,8 +130,8 @@ mod tests {
     #[test]
     fn sanitize_capitalizes_the_first_letter() {
         assert_eq!(
-            sanitize_generated_title("examine cadence-cli data ingestion").as_deref(),
-            Some("Examine cadence-cli data ingestion")
+            sanitize_generated_title("examine gadget-cli data ingestion").as_deref(),
+            Some("Examine gadget-cli data ingestion")
         );
         // A first letter that is not a lowercase letter stays as it is.
         assert_eq!(
