@@ -653,7 +653,7 @@ source_paths = [
 ]
 path_kind = "file-sections"
 disposition = "adapt"
-destination = "apps/desktop/src/components/activity/LocalActivityList.tsx"
+destination = "apps/desktop/src/components/session/SessionList.tsx"
 provenance = "Cadence company-authored mixed activity feed; D-021 approves only local session presentation"
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
@@ -662,7 +662,7 @@ notes = [
   "Receive entries, titles, range labels, settings intent, and supported local filters through props; do not add extension points solely for private features.",
   "Do not copy RadarPinnedCard, RadarActivityRow, Radar skill/share/feedback behavior, ambience rows, team-update filters, upload status/errors, telemetry, Tauri listeners, targetOrgId, private-store reads, or Cloud organization identity.",
   "Expect prerequisite private-side refactors before extraction: the row primitives, time corner, and list merge/grouping/scroll machinery are shared with Radar and ambience rows, and upload status is currently fused into the time-corner component.",
-  "The active-session and hover-reveal treatment lives in main.css session-row selectors that D-020 excludes; that styling requires its own later feature-source review before LocalActivityList can render faithfully.",
+  "The active-session and hover-reveal treatment lives in main.css session-row selectors that D-020 excludes; that styling requires its own later feature-source review before SessionList can render faithfully.",
   "The current list has no loading state; do not invent one to satisfy the extraction contract wording.",
   "Rewrite tests around public local DTOs and callbacks rather than private-store, Tauri, Radar, ambience, upload, or telemetry mocks.",
 ]

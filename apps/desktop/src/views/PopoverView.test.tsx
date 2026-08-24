@@ -286,7 +286,7 @@ describe("PopoverView", () => {
 
     const viewportOf = () =>
       screen
-        .getByRole("region", { name: "Activity feed" })
+        .getByRole("region", { name: "Sessions" })
         .querySelector<HTMLElement>(".ui-scroll-viewport")
     const viewport = viewportOf()
     expect(viewport).not.toBeNull()
