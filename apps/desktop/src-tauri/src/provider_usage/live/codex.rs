@@ -24,6 +24,9 @@
 //! own root as `plan_type`; older payloads carried it nested inside
 //! `rate_limit` instead, which this parser still reads as a fallback.
 //!
+//! The optional root-level `rate_limit_reset_credits` object states how many
+//! manual resets remain in `available_count`.
+//!
 //! Sibling to `rate_limit`, an optional root-level `additional_rate_limits`
 //! array carries model- or feature-scoped allowances alongside the
 //! account-wide ones — a `limit_name` (its display name) plus a `rate_limit`
@@ -61,7 +64,8 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::model::{
-    ProviderUsageError, SchemaReason, UsageScope, UsageWindow, UsageWindowKind, WindowRole,
+    ProviderUsageError, RateLimitResetCredits, SchemaReason, UsageScope, UsageWindow,
+    UsageWindowKind, WindowRole,
 };
 use super::normalize::{slugify, used_percent};
 
@@ -79,6 +83,7 @@ const FIVE_HOUR_WINDOW_SECONDS: i64 = 18_000;
 pub struct CodexUsage {
     pub windows: Vec<UsageWindow>,
     pub plan: Option<String>,
+    pub reset_credits: Option<RateLimitResetCredits>,
 }
 
 /// Parse a `wham/usage` response body.
@@ -123,7 +128,30 @@ pub fn parse_wham_usage(
         .filter(|plan| !plan.trim().is_empty())
         .map(str::to_owned);
 
-    Ok(CodexUsage { windows, plan })
+    let reset_credits = rate_limit_reset_credits(value.get("rate_limit_reset_credits"))?;
+
+    Ok(CodexUsage {
+        windows,
+        plan,
+        reset_credits,
+    })
+}
+
+fn rate_limit_reset_credits(
+    value: Option<&Value>,
+) -> Result<Option<RateLimitResetCredits>, ProviderUsageError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let count = value
+        .get("available_count")
+        .ok_or(ProviderUsageError::Schema(
+            SchemaReason::MissingRequiredField,
+        ))?;
+    let available_count = count
+        .as_u64()
+        .ok_or(ProviderUsageError::Schema(SchemaReason::InvalidValue))?;
+    Ok(Some(RateLimitResetCredits { available_count }))
 }
 
 /// The account-wide `primary_window` / `secondary_window` shape.
@@ -382,6 +410,46 @@ mod tests {
                 .plan
                 .as_deref(),
             Some("plus")
+        );
+    }
+
+    #[test]
+    fn rate_limit_reset_credits_are_read_from_the_root() {
+        let payload = r#"{
+          "rate_limit": {"primary_window":
+            {"used_percent": 10, "limit_window_seconds": 18000}},
+          "rate_limit_reset_credits": {
+            "available_count": 1,
+            "applicable_available_count": 0
+          }
+        }"#;
+        let usage = parse_wham_usage(payload, at(NOW)).expect("parses");
+        assert_eq!(
+            usage.reset_credits,
+            Some(RateLimitResetCredits { available_count: 1 })
+        );
+    }
+
+    #[test]
+    fn missing_reset_credits_stay_unknown() {
+        assert_eq!(
+            parse_wham_usage(BOTH_WINDOWS, at(NOW))
+                .expect("parses")
+                .reset_credits,
+            None
+        );
+    }
+
+    #[test]
+    fn malformed_reset_credits_reject_the_payload() {
+        let payload = r#"{
+          "rate_limit": {"primary_window":
+            {"used_percent": 10, "limit_window_seconds": 18000}},
+          "rate_limit_reset_credits": {"available_count": -1}
+        }"#;
+        assert_eq!(
+            parse_wham_usage(payload, at(NOW)),
+            Err(ProviderUsageError::Schema(SchemaReason::InvalidValue))
         );
     }
 

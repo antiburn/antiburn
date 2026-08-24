@@ -386,6 +386,7 @@ mod tests {
                 observed_at: "2026-08-20T00:00:00Z".into(),
                 windows: vec![],
                 extra_usage: None,
+                reset_credits: None,
             }],
             errors: vec![LiveUsageSourceError {
                 source: "fixture".into(),

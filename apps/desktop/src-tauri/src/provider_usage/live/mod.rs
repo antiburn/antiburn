@@ -10,8 +10,8 @@
 //! The parent module answers *what was spent*, by pricing tokens the sessions
 //! on this machine recorded. It can never answer *what remains*, because a
 //! transcript has no denominator in it. This module holds the other answer,
-//! and it only ever repeats what a provider itself stated: a percentage of an
-//! allowance, and the moment that allowance resets.
+//! and it only repeats provider facts: allowance use, reset times, and manual
+//! reset credits.
 //!
 //! The two never merge. They travel over separate IPC commands
 //! ([`crate::commands::get_provider_usage`] and
@@ -65,8 +65,9 @@ pub use model::{
 };
 
 use crate::dto::{
-    LiveExtraUsage, LiveProviderUsage, LiveUsageForecast, LiveUsageFreshness, LiveUsageSourceError,
-    LiveUsageSummary, LiveUsageSupport, LiveUsageWindow,
+    LiveExtraUsage, LiveProviderUsage, LiveUsageForecast, LiveUsageFreshness,
+    LiveUsageResetCredits, LiveUsageSourceError, LiveUsageSummary, LiveUsageSupport,
+    LiveUsageWindow,
 };
 
 /// A source of provider-reported usage snapshots.
@@ -231,6 +232,9 @@ pub fn summarize(
                     .balance
                     .as_ref()
                     .and_then(|balance| balance.currency.clone()),
+            }),
+            reset_credits: snapshot.reset_credits.map(|credits| LiveUsageResetCredits {
+                available_count: credits.available_count,
             }),
         })
         .collect();

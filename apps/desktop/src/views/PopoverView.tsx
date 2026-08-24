@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from "react"
+import { lazy, Suspense, useCallback, useRef, useState, useSyncExternalStore } from "react"
 
 import { AlertTriangle, Settings } from "lucide-react"
 
@@ -173,6 +173,22 @@ export function PopoverView() {
     node?.querySelector<HTMLElement>("[data-view-heading]")?.focus()
   }, [])
 
+  // The same surface swap unmounts the activity list, so its viewport comes
+  // back at the top after a session closes. The reader expects to land where
+  // they left. The list's scroll offset lives here, on the component that
+  // outlives the swap: each scroll records it, and the viewport takes it back
+  // the moment the list mounts again.
+  const listScrollTop = useRef(0)
+  const restoreListScroll = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return
+    node.scrollTop = listScrollTop.current
+    const record = () => {
+      listScrollTop.current = node.scrollTop
+    }
+    node.addEventListener("scroll", record, { passive: true })
+    return () => node.removeEventListener("scroll", record)
+  }, [])
+
   /* ---------------------------------------------------------------------
    * Session analytics: derived from the session's tagged load result
    * ------------------------------------------------------------------ */
@@ -331,6 +347,7 @@ export function PopoverView() {
                 session.openSession(subjectFor(entry))
               }}
               renderAgentIcon={renderAgentIcon}
+              viewportRef={restoreListScroll}
             />
           )}
         </div>

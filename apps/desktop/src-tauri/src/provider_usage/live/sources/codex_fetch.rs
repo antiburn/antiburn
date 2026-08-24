@@ -78,12 +78,14 @@ use super::http;
 /// defensively rather than trust that.
 const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
 
+// aislop-ignore-next-line ai-slop/hardcoded-url -- Issue #90 owns this standing finding.
 const WHAM_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN_ENDPOINT: &str = "https://auth.openai.com/oauth/token";
 
 /// Codex CLI's own public OAuth client id. Public in the sense every install
 /// of the CLI carries it; it identifies the client application to the
 /// authorization server, not the reader.
+// aislop-ignore-next-line ai-slop/hardcoded-id -- Issue #90 owns this standing finding.
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /// The unsigned JWT claim that names the account, when `auth.json` did not
@@ -382,6 +384,7 @@ fn build_snapshot(
         },
         windows: usage.windows,
         supplemental: None,
+        reset_credits: usage.reset_credits,
     })
 }
 
