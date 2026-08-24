@@ -682,6 +682,7 @@ fn select_title_pair(
         let source = resolved.source;
         let title = if source == TitleSource::FirstMessage {
             sanitized_title(Some(resolved.text), agent, preview)
+                .and_then(|title| scanner::clean_first_message_title(&title))
         } else {
             Some(resolved.text)
         };
@@ -690,6 +691,13 @@ fn select_title_pair(
     }
 
     let title = sanitized_title(fallback_title, agent, preview);
+    // A first-message fallback is raw prose. Clean it for display; the
+    // provenance stays `firstMessage`.
+    let title = if fallback_source == Some(TitleSource::FirstMessage) {
+        title.and_then(|title| scanner::clean_first_message_title(&title))
+    } else {
+        title
+    };
     let source = title
         .as_ref()
         .and(fallback_source)
@@ -1119,6 +1127,56 @@ mod tests {
                 "WSL {agent} must not query native stores"
             );
         }
+    }
+
+    #[test]
+    fn first_message_titles_are_cleaned_for_display() {
+        // A resolved first-message title loses its attachment marker and
+        // truncates at a word boundary; the provenance stays firstMessage.
+        let resolved = select_title_pair(
+            Some(ResolvedTitle::new(
+                "[Image #1] in this pane, it should be possible to click on the claude/codex/whatever section",
+                TitleSource::FirstMessage,
+            )),
+            None,
+            None,
+            &AgentKind::Codex,
+            None,
+        );
+        let (title, source) = resolved;
+        let title = title.expect("cleaned title");
+        assert!(title.starts_with("in this pane, it should be possible"));
+        assert!(title.ends_with('…'));
+        assert_eq!(source.as_deref(), Some("firstMessage"));
+
+        // The transcript-fallback arm cleans too.
+        let fallback = select_title_pair(
+            None,
+            Some("[Pasted text #2 +12 lines] please review this".into()),
+            Some(TitleSource::FirstMessage),
+            &AgentKind::Codex,
+            None,
+        );
+        assert_eq!(
+            fallback,
+            (
+                Some("please review this".into()),
+                Some("firstMessage".into())
+            )
+        );
+
+        // An explicit-source fallback stays untouched.
+        let explicit = select_title_pair(
+            None,
+            Some("[Image #1] literal explicit title. Second sentence.".into()),
+            Some(TitleSource::Explicit),
+            &AgentKind::Codex,
+            None,
+        );
+        assert_eq!(
+            explicit.0.as_deref(),
+            Some("[Image #1] literal explicit title. Second sentence.")
+        );
     }
 
     #[test]

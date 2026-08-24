@@ -748,6 +748,99 @@ pub(super) fn normalize_title(raw: &str) -> String {
     }
 }
 
+/// Longest cleaned first-message title, in characters. One activity row shows
+/// about this much before the interface ellipsizes.
+const CLEAN_TITLE_MAX_CHARS: usize = 60;
+
+/// Attachment markers that harnesses insert into the user's first message,
+/// for example `[Image #1]` or `[Pasted text #2 +12 lines]`. The comparison is
+/// case-insensitive and matches the start of the bracketed text, so counters
+/// and suffixes do not defeat it.
+const ATTACHMENT_MARKER_PREFIXES: &[&str] = &["image", "pasted text", "screenshot"];
+
+/// Clean a first-message fallback title for display:
+///
+/// 1. Remove attachment markers such as `[Image #1]`.
+/// 2. Keep only the first sentence of the first non-empty line.
+/// 3. Cut at a word boundary near [`CLEAN_TITLE_MAX_CHARS`] and add `…`.
+///
+/// Returns `None` when nothing readable remains, so the caller can fall back
+/// to its path label. This changes presentation only — the stored
+/// `TitleSource` stays `firstMessage`.
+pub fn clean_first_message_title(raw: &str) -> Option<String> {
+    let stripped = strip_attachment_markers(raw);
+    let first_line = stripped
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let sentence = first_sentence(first_line);
+    let collapsed: String = sentence.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim_end_matches('.').trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(truncate_at_word_boundary(trimmed))
+}
+
+/// Remove every bracketed attachment marker from `text`. A bracket segment is
+/// removed only when its inner text starts with a known marker prefix, so
+/// meaningful brackets like `[Bug] login fails` stay.
+fn strip_attachment_markers(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let Some(close_rel) = rest[open..].find(']') else {
+            break;
+        };
+        let inner = rest[open + 1..open + close_rel].trim().to_ascii_lowercase();
+        let is_marker = ATTACHMENT_MARKER_PREFIXES
+            .iter()
+            .any(|prefix| inner.starts_with(prefix));
+        result.push_str(&rest[..open]);
+        if !is_marker {
+            result.push_str(&rest[open..=open + close_rel]);
+        }
+        rest = &rest[open + close_rel + 1..];
+    }
+    result.push_str(rest);
+    result
+}
+
+/// The first sentence of `line`: the text up to the first `.`, `!`, or `?`
+/// that a whitespace character or the end of the line follows. A cut inside
+/// the first 10 characters is ignored, so a terse opener like `ok.` does not
+/// become the whole title.
+fn first_sentence(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if !matches!(byte, b'.' | b'!' | b'?') {
+            continue;
+        }
+        let at_end = index + 1 == bytes.len();
+        let before_space = bytes.get(index + 1).is_some_and(u8::is_ascii_whitespace);
+        if (at_end || before_space) && index >= 10 {
+            return &line[..=index];
+        }
+    }
+    line
+}
+
+/// Cut `text` at the last word boundary at or before
+/// [`CLEAN_TITLE_MAX_CHARS`] characters and append `…`. Text within the limit
+/// passes through unchanged.
+fn truncate_at_word_boundary(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= CLEAN_TITLE_MAX_CHARS {
+        return text.to_string();
+    }
+    let head: String = chars[..CLEAN_TITLE_MAX_CHARS].iter().collect();
+    let cut = match head.rfind(char::is_whitespace) {
+        Some(at) if at > 0 => &head[..at],
+        _ => head.as_str(),
+    };
+    format!("{}…", cut.trim_end())
+}
+
 // Diverged for Desktop: Claude Code (and Codex Desktop) embeds slash-command,
 // bash I/O, and IDE-state metadata in user-role records as XML-ish wrapper tags
 // (e.g. `<command-name>/foo</command-name>` or
@@ -2234,6 +2327,66 @@ also not json {{{{
         let title = metadata.title.expect("title should be set");
         assert!(title.chars().count() <= TITLE_MAX_CHARS);
         assert!(!title.contains("  "));
+    }
+
+    #[test]
+    fn clean_first_message_title_strips_markers_and_truncates() {
+        // The real session from the bug report: a leading image marker and a
+        // long run-on request.
+        let raw = "[Image #1] in this pane, it should be possible to click on the claude/codex/whatever section to drill through to see the sessions for that agent";
+        let cleaned = clean_first_message_title(raw).unwrap();
+        assert!(!cleaned.contains("[Image"));
+        assert!(cleaned.starts_with("in this pane, it should be possible"));
+        assert!(cleaned.ends_with('…'));
+        assert!(cleaned.chars().count() <= CLEAN_TITLE_MAX_CHARS + 1);
+        // The cut lands on a word boundary, not inside a word.
+        assert!(!cleaned.trim_end_matches('…').ends_with(char::is_whitespace));
+    }
+
+    #[test]
+    fn clean_first_message_title_keeps_first_sentence_only() {
+        // The later lines drop; the 62-character first line then truncates at
+        // a word boundary.
+        let raw = "Continueing work on tasks/handoff-2026-03-12.md and README.md\n\nRead those";
+        assert_eq!(
+            clean_first_message_title(raw).as_deref(),
+            Some("Continueing work on tasks/handoff-2026-03-12.md and…")
+        );
+
+        let two_sentences = "Fix the login redirect. Then check the tests again please";
+        assert_eq!(
+            clean_first_message_title(two_sentences).as_deref(),
+            Some("Fix the login redirect")
+        );
+    }
+
+    #[test]
+    fn clean_first_message_title_ignores_early_sentence_cut() {
+        // A terse opener must not become the whole title.
+        assert_eq!(
+            clean_first_message_title("ok. look at the notes for where the project is up to")
+                .as_deref(),
+            Some("ok. look at the notes for where the project is up to")
+        );
+    }
+
+    #[test]
+    fn clean_first_message_title_keeps_meaningful_brackets() {
+        assert_eq!(
+            clean_first_message_title("[Bug] login fails on safari").as_deref(),
+            Some("[Bug] login fails on safari")
+        );
+        assert_eq!(
+            clean_first_message_title("[Pasted text #2 +12 lines] please review this").as_deref(),
+            Some("please review this")
+        );
+    }
+
+    #[test]
+    fn clean_first_message_title_empty_when_only_markers() {
+        assert!(clean_first_message_title("[Image #1]").is_none());
+        assert!(clean_first_message_title("   ").is_none());
+        assert!(clean_first_message_title("[Screenshot #3] [Image #2]").is_none());
     }
 
     #[test]
