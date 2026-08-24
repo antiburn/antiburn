@@ -102,9 +102,9 @@ impl Schedulers {
 /// # Panics
 ///
 /// Panics if the webview runtime, tray item, or local database cannot be
-/// created: none of the three has a meaningful degraded mode. Windows are
-/// created lazily and report their own failures at the interaction that asked
-/// for them.
+/// created. None has a meaningful degraded mode. The shell opens onboarding
+/// when required and prewarms Settings after setup. Other windows load when
+/// the first interaction requests them.
 pub fn run() {
     let log_directory_name = if cfg!(debug_assertions) {
         "antiburn-debug"
