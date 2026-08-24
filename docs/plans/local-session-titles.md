@@ -9,7 +9,7 @@ Approved 2026-08-24 after review. Windows (Phi Silica) and Ollama backends are f
 | Step | Status |
 | --- | --- |
 | 1. Heuristic fallback cleanup | Done (marker strip + first sentence + word-boundary truncation in `clean_first_message_title`, applied in `select_title_pair`) |
-| 2. `TitleSummarizer` trait + storage | Not started |
+| 2. `TitleSummarizer` trait + storage | Done (`TitleSummarizer` trait + `sanitize_generated_title` in the engine; `localSummary` provenance, guarded store writes, candidate collection in the scan, `local_summary_pass` wired after upsert — `platform_summarizer()` returns `None` until step 3) |
 | 3. macOS backend (Apple Foundation Models sidecar) | Not started |
 
 ## Background (investigated 2026-08-24)

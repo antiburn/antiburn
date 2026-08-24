@@ -76,6 +76,7 @@ use antiburn_local::discovery::{
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
+use antiburn_local::titles::TitleInput;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
@@ -85,6 +86,7 @@ use crate::dto::ScanStatus;
 use crate::repositories;
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, Store};
+use crate::titles::LocalSummaryCandidate;
 
 /// How often the scheduler wakes up.
 pub const TICK: Duration = Duration::from_secs(60);
@@ -298,8 +300,11 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
         .await;
 
     let activity_states = store.session_activity_states()?;
-    let Described { records, rejected } =
-        describe_with_states(logs, &home, &ignored, &activity_states).await;
+    let Described {
+        records,
+        rejected,
+        summary_candidates,
+    } = describe_with_states(logs, &home, &ignored, &activity_states).await;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
@@ -322,6 +327,13 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
             "The scan bookkeeping",
             store.record_agent_scan(&agent, cursor, seen),
         )?;
+    }
+
+    // Generate titles on device for sessions stuck on the first-message
+    // fallback. The write is guarded, so a title that arrived after the
+    // upsert above still wins.
+    if let Some(summarizer) = crate::titles::platform_summarizer() {
+        crate::titles::local_summary_pass(&store, summarizer.as_ref(), &summary_candidates).await;
     }
 
     // Everything discovered so far is already persisted, so a cancel here keeps
@@ -362,11 +374,13 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     Ok(records.len())
 }
 
-/// What one scan pass learned: rows for the index, and previously indexable
-/// transcripts the sub-agent gate now refuses.
+/// What one scan pass learned: rows for the index, previously indexable
+/// transcripts the sub-agent gate now refuses, and sessions that qualify for
+/// a locally generated title.
 struct Described {
     records: Vec<SessionRecord>,
     rejected: Vec<SessionKey>,
+    summary_candidates: Vec<LocalSummaryCandidate>,
 }
 
 /// Read metadata for every discovered log, at a bounded concurrency, and drop
@@ -389,6 +403,7 @@ async fn describe_with_states(
     let indexed_titles = indexed_titles_for_logs(&logs).await;
     let mut records = Vec::with_capacity(logs.len());
     let mut rejected = Vec::new();
+    let mut summary_candidates = Vec::new();
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
         let mut set = JoinSet::new();
         for log in chunk {
@@ -408,21 +423,28 @@ async fn describe_with_states(
         }
         while let Some(joined) = set.join_next().await {
             match joined {
-                Ok(DescribeOutcome::Session(record)) => {
+                Ok((DescribeOutcome::Session(record), candidate)) => {
                     let cwd = record.cwd.as_deref();
                     // The engine's opt-out gate, applied once here so every
                     // surface that reads the store inherits it.
                     if cwd.is_some_and(|cwd| ignored_paths::set_contains(ignored, cwd)) {
                         continue;
                     }
+                    if let Some(candidate) = candidate {
+                        summary_candidates.push(candidate);
+                    }
                     records.push(*record);
                 }
-                Ok(DescribeOutcome::Subagent(key)) => rejected.push(key),
-                Ok(DescribeOutcome::Skip) | Err(_) => {}
+                Ok((DescribeOutcome::Subagent(key), _)) => rejected.push(key),
+                Ok((DescribeOutcome::Skip, _)) | Err(_) => {}
             }
         }
     }
-    Described { records, rejected }
+    Described {
+        records,
+        rejected,
+        summary_candidates,
+    }
 }
 
 /// Read each durable vendor title store once for the sessions in this pass.
@@ -560,7 +582,9 @@ async fn describe_one(
     home: &std::path::Path,
     indexed_title: Option<ResolvedTitle>,
 ) -> DescribeOutcome {
-    describe_one_with_activity(log, home, indexed_title, None).await
+    describe_one_with_activity(log, home, indexed_title, None)
+        .await
+        .0
 }
 
 async fn describe_one_with_activity(
@@ -568,17 +592,17 @@ async fn describe_one_with_activity(
     home: &std::path::Path,
     indexed_title: Option<ResolvedTitle>,
     activity_state: Option<SessionActivityState>,
-) -> DescribeOutcome {
+) -> (DescribeOutcome, Option<LocalSummaryCandidate>) {
     let read = session_log_read(&log).await;
     let metadata = read.as_ref().map(|read| &read.metadata);
     let Some(session_id) = metadata
         .and_then(|metadata| metadata.session_id.clone())
         .or_else(|| recovered_id(&log))
     else {
-        return DescribeOutcome::Skip;
+        return (DescribeOutcome::Skip, None);
     };
     if session_id.is_empty() {
-        return DescribeOutcome::Skip;
+        return (DescribeOutcome::Skip, None);
     }
 
     let key = SessionKey::new(
@@ -593,7 +617,7 @@ async fn describe_one_with_activity(
         _ => None,
     };
     if is_subagent_transcript(&log, preview) {
-        return DescribeOutcome::Subagent(key);
+        return (DescribeOutcome::Subagent(key), None);
     }
 
     let resolved_title = if should_lookup_indexed_title(&log) {
@@ -607,6 +631,13 @@ async fn describe_one_with_activity(
         metadata.and_then(|metadata| metadata.title_source),
         &log.agent_type,
         preview,
+    );
+    let summary_candidate = local_summary_candidate(
+        &log,
+        &key,
+        metadata.and_then(|metadata| metadata.cwd.as_deref()),
+        preview,
+        title_source.as_deref(),
     );
 
     // A dir listing per orchestrator-capable session; vendors that record no
@@ -638,7 +669,7 @@ async fn describe_one_with_activity(
         .await
         .map(|version| version.fingerprint);
 
-    DescribeOutcome::Session(Box::new(SessionRecord {
+    let record = DescribeOutcome::Session(Box::new(SessionRecord {
         key,
         source_kind: source_kind(&log.source).to_string(),
         source_label: log.source_label(),
@@ -653,7 +684,48 @@ async fn describe_one_with_activity(
         subagent_count,
         fork_parent_session_id,
         source_fingerprint,
-    }))
+    }));
+    (record, summary_candidate)
+}
+
+/// User messages after the first that travel to the summarizer as context. A
+/// few early prompts improve the title; the whole transcript would not.
+const LOCAL_SUMMARY_CONTEXT_MESSAGES: usize = 3;
+
+/// Collect a candidate for local title generation. Only a native Codex
+/// session stuck on the `firstMessage` fallback qualifies; every other
+/// provenance already carries a better name.
+fn local_summary_candidate(
+    log: &SessionLog,
+    key: &SessionKey,
+    cwd: Option<&str>,
+    preview: Option<&str>,
+    title_source: Option<&str>,
+) -> Option<LocalSummaryCandidate> {
+    if title_source != Some(TitleSource::FirstMessage.as_str()) {
+        return None;
+    }
+    if !matches!(log.agent_type, AgentKind::Codex) || !log.environment.is_native() {
+        return None;
+    }
+    let mut messages = scanner::user_message_titles_from_content(preview?);
+    if messages.is_empty() {
+        return None;
+    }
+    let first_message = messages.remove(0);
+    messages.truncate(LOCAL_SUMMARY_CONTEXT_MESSAGES);
+    let repo = cwd
+        .map(std::path::Path::new)
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned());
+    Some(LocalSummaryCandidate {
+        key: key.clone(),
+        input: TitleInput {
+            repo,
+            first_message,
+            context: messages,
+        },
+    })
 }
 
 /// Native stores with a point-query index are authoritative for session names.
@@ -1176,6 +1248,71 @@ mod tests {
         assert_eq!(
             explicit.0.as_deref(),
             Some("[Image #1] literal explicit title. Second sentence.")
+        );
+    }
+
+    #[test]
+    fn only_native_codex_first_message_sessions_become_summary_candidates() {
+        let codex = log(
+            AgentKind::Codex,
+            std::path::PathBuf::from("/tmp/rollout.jsonl"),
+            1_800_000_000,
+        );
+        let key = SessionKey::new("native", "codex", "session-1");
+        let preview = concat!(
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[Image #1] make the pane clickable"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"also fix the hover state"}]}}"#,
+            "\n",
+        );
+
+        let candidate = local_summary_candidate(
+            &codex,
+            &key,
+            Some("/home/avery/code/gadgets"),
+            Some(preview),
+            Some("firstMessage"),
+        )
+        .expect("a native codex fallback title qualifies");
+        assert_eq!(candidate.key, key);
+        assert_eq!(candidate.input.repo.as_deref(), Some("gadgets"));
+        assert!(
+            candidate
+                .input
+                .first_message
+                .contains("make the pane clickable")
+        );
+        assert_eq!(
+            candidate.input.context,
+            vec!["also fix the hover state".to_string()]
+        );
+
+        // A better provenance never becomes a candidate.
+        assert!(
+            local_summary_candidate(&codex, &key, None, Some(preview), Some("userRename"))
+                .is_none()
+        );
+        // Other agents keep their existing title chain.
+        let claude = log(
+            AgentKind::Claude,
+            std::path::PathBuf::from("/tmp/session.jsonl"),
+            1_800_000_000,
+        );
+        assert!(
+            local_summary_candidate(&claude, &key, None, Some(preview), Some("firstMessage"))
+                .is_none()
+        );
+        // A WSL session must not receive a native-store generated title.
+        let in_wsl = SessionLog {
+            environment: DiscoveryEnvironment::Wsl {
+                distribution: "SyntheticLinux".into(),
+                user: "avery".into(),
+            },
+            ..codex
+        };
+        assert!(
+            local_summary_candidate(&in_wsl, &key, None, Some(preview), Some("firstMessage"))
+                .is_none()
         );
     }
 

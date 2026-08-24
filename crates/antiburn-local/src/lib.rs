@@ -23,3 +23,4 @@ pub mod paths;
 pub mod platform;
 pub mod pricing;
 pub mod repositories;
+pub mod titles;

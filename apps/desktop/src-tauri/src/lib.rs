@@ -72,6 +72,7 @@ mod settings;
 mod startup_registration;
 mod storage_health;
 mod store;
+mod titles;
 mod tray;
 mod tray_title;
 mod updates;

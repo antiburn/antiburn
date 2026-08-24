@@ -491,6 +491,26 @@ impl Store {
         Ok(())
     }
 
+    /// Store a generated title with `localSummary` provenance.
+    ///
+    /// The write is guarded: it lands only while the row still shows a
+    /// `firstMessage` fallback (or an earlier local summary). A vendor title
+    /// or user rename that arrived after the candidate was queued wins, so
+    /// the generation pass cannot race a better source. Returns whether the
+    /// row changed.
+    pub fn set_local_summary_title(&self, key: &SessionKey, title: &str) -> Result<bool> {
+        let connection = self.lock();
+        let changed = connection.execute(
+            "UPDATE session
+                SET title = ?4, title_source = 'localSummary'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND (title_source IS NULL
+                     OR title_source IN ('firstMessage', 'localSummary'))",
+            params![key.environment_key, key.agent, key.session_id, title],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// Sessions whose activity falls at or after `since_epoch`, newest first.
     pub fn recent_sessions(&self, since_epoch: i64, limit: usize) -> Result<Vec<SessionRecord>> {
         let connection = self.lock();
@@ -1172,8 +1192,16 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
              source_kind = excluded.source_kind,
              source_label = excluded.source_label,
              wsl_distro = excluded.wsl_distro,
-             title = COALESCE(excluded.title, session.title),
+             title = CASE
+                 WHEN session.title_source = 'localSummary'
+                      AND excluded.title_source = 'firstMessage'
+                     THEN session.title
+                 ELSE COALESCE(excluded.title, session.title)
+             END,
              title_source = CASE
+                 WHEN session.title_source = 'localSummary'
+                      AND excluded.title_source = 'firstMessage'
+                     THEN session.title_source
                  WHEN excluded.title IS NOT NULL THEN excluded.title_source
                  WHEN session.title IS NOT NULL THEN session.title_source
                  ELSE NULL

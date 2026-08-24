@@ -59,6 +59,10 @@ pub enum TitleSource {
     /// Derived from the first user message in the transcript (fallback
     /// when no explicit field is present).
     FirstMessage,
+    /// Generated on device by antiburn's own summarizer (see
+    /// [`crate::titles`]). Replaces only a `FirstMessage` fallback; every
+    /// vendor or user source outranks it.
+    LocalSummary,
 }
 
 // Diverged for Desktop: priority of the source from which a title was set,
@@ -106,6 +110,7 @@ impl TitleSource {
             Self::AiGenerated => "aiGenerated",
             Self::Explicit => "explicit",
             Self::FirstMessage => "firstMessage",
+            Self::LocalSummary => "localSummary",
         }
     }
 }
