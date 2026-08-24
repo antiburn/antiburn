@@ -86,7 +86,7 @@
         "isCompactionBoundary": false,
         "messageId": null,
         "model": null,
-        "role": "user",
+        "role": "tool",
         "source": "parent",
         "speed": null,
         "thinkingMode": null,
@@ -164,6 +164,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -171,7 +172,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 1
         },
         {
           "cacheReadTokens": 0,
@@ -183,6 +185,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -190,7 +193,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -202,6 +206,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -209,7 +214,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -221,6 +227,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -228,7 +235,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -240,6 +248,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -247,7 +256,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -259,6 +269,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -266,7 +277,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -278,6 +290,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -285,7 +298,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -297,6 +311,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -304,7 +319,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -316,6 +332,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -323,7 +340,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -335,6 +353,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -342,7 +361,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -354,6 +374,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -361,7 +382,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -373,6 +395,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -380,7 +403,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -392,6 +416,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -399,7 +424,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -411,6 +437,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -418,7 +445,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -430,6 +458,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -437,7 +466,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -449,6 +479,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -456,7 +487,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -468,6 +500,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -475,7 +508,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -487,6 +521,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -494,7 +529,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -506,6 +542,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -513,7 +550,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -525,6 +563,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -532,7 +571,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -544,6 +584,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -551,7 +592,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -563,6 +605,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -570,7 +613,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -582,6 +626,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -589,7 +634,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -601,6 +647,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -608,7 +655,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -620,6 +668,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -627,7 +676,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -639,6 +689,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -646,7 +697,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -658,6 +710,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -665,7 +718,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -677,6 +731,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -684,7 +739,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -696,6 +752,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -703,7 +760,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -715,6 +773,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -722,7 +781,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -734,6 +794,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -741,7 +802,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -753,6 +815,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -760,7 +823,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -772,6 +836,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -779,7 +844,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -791,6 +857,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -798,7 +865,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -810,6 +878,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -817,7 +886,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -829,6 +899,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -836,7 +907,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -848,6 +920,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -855,7 +928,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -867,6 +941,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -874,7 +949,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -886,6 +962,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -893,7 +970,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -905,6 +983,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -912,7 +991,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -924,6 +1004,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -931,7 +1012,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -943,6 +1025,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -950,7 +1033,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -962,6 +1046,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -969,7 +1054,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -981,6 +1067,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -988,7 +1075,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1000,6 +1088,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1007,7 +1096,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 3000,
@@ -1019,6 +1109,7 @@
           "hasThinking": true,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": "Read",
           "model": "claude-3-5-haiku-20241022",
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1026,7 +1117,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 2000,
-          "tokensOut": 120
+          "tokensOut": 120,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1038,6 +1130,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1045,7 +1138,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1057,6 +1151,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1064,7 +1159,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1076,6 +1172,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1083,7 +1180,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1095,6 +1193,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1102,7 +1201,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1114,6 +1214,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1121,7 +1222,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1133,6 +1235,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1140,7 +1243,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1152,6 +1256,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1159,7 +1264,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1171,6 +1277,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1178,7 +1285,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1190,6 +1298,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1197,7 +1306,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1209,6 +1319,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1216,7 +1327,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1228,6 +1340,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1235,7 +1348,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1247,6 +1361,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1254,7 +1369,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1266,6 +1382,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1273,7 +1390,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1285,6 +1403,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1292,7 +1411,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1304,6 +1424,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1311,7 +1432,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1323,6 +1445,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1330,7 +1453,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1342,6 +1466,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1349,7 +1474,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1361,6 +1487,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1368,7 +1495,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1380,6 +1508,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1387,7 +1516,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1399,6 +1529,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1406,7 +1537,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1418,6 +1550,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1425,7 +1558,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1437,6 +1571,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1444,7 +1579,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1456,6 +1592,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1463,7 +1600,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1475,6 +1613,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1482,7 +1621,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1494,6 +1634,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1501,7 +1642,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1513,6 +1655,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1520,7 +1663,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1532,6 +1676,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1539,7 +1684,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1551,6 +1697,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1558,7 +1705,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1570,6 +1718,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1577,7 +1726,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1589,6 +1739,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1596,7 +1747,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1608,6 +1760,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1615,7 +1768,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1627,6 +1781,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1634,7 +1789,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1646,6 +1802,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1653,7 +1810,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1665,6 +1823,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1672,7 +1831,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1684,6 +1844,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1691,7 +1852,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1703,6 +1865,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1710,7 +1873,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1722,6 +1886,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1729,7 +1894,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1741,6 +1907,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1748,7 +1915,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1760,6 +1928,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1767,7 +1936,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1779,6 +1949,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1786,7 +1957,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1798,6 +1970,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1805,7 +1978,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1817,6 +1991,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1824,7 +1999,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1836,6 +2012,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1843,7 +2020,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1855,6 +2033,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1862,7 +2041,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 4200,
@@ -1874,6 +2054,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": "Skill",
           "model": "claude-3-5-haiku-20241022",
           "secsSincePriorTurn": 5,
           "speed": null,
@@ -1881,7 +2062,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 100,
-          "tokensOut": 40
+          "tokensOut": 40,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1893,6 +2075,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1900,7 +2083,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1912,6 +2096,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1919,7 +2104,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1931,6 +2117,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1938,7 +2125,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1950,6 +2138,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1957,7 +2146,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1969,6 +2159,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1976,7 +2167,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -1988,6 +2180,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -1995,7 +2188,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2007,6 +2201,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2014,7 +2209,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2026,6 +2222,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2033,7 +2230,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2045,6 +2243,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2052,7 +2251,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2064,6 +2264,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2071,7 +2272,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2083,6 +2285,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2090,7 +2293,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2102,6 +2306,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2109,7 +2314,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2121,6 +2327,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2128,7 +2335,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2140,6 +2348,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2147,7 +2356,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2159,6 +2369,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2166,7 +2377,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2178,6 +2390,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2185,7 +2398,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2197,6 +2411,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2204,7 +2419,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2216,6 +2432,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2223,7 +2440,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2235,6 +2453,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2242,7 +2461,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2254,6 +2474,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2261,7 +2482,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2273,6 +2495,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2280,7 +2503,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2292,6 +2516,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2299,7 +2524,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2311,6 +2537,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2318,7 +2545,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2330,6 +2558,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2337,7 +2566,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2349,6 +2579,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2356,7 +2587,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2368,6 +2600,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2375,7 +2608,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2387,6 +2621,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2394,7 +2629,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2406,6 +2642,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2413,7 +2650,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2425,6 +2663,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2432,7 +2671,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2444,6 +2684,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2451,7 +2692,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2463,6 +2705,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2470,7 +2713,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2482,6 +2726,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2489,7 +2734,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2501,6 +2747,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2508,7 +2755,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2520,6 +2768,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2527,7 +2776,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2539,6 +2789,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2546,7 +2797,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2558,6 +2810,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2565,7 +2818,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2577,6 +2831,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2584,7 +2839,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2596,6 +2852,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2603,7 +2860,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2615,6 +2873,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2622,7 +2881,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2634,6 +2894,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2641,7 +2902,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2653,6 +2915,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2660,7 +2923,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2672,6 +2936,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2679,7 +2944,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2691,6 +2957,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2698,7 +2965,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2710,6 +2978,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2717,7 +2986,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2729,6 +2999,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": true,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2736,7 +3007,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2748,6 +3020,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2755,7 +3028,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2767,6 +3041,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2774,7 +3049,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2786,6 +3062,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2793,7 +3070,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2805,6 +3083,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2812,7 +3091,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2824,6 +3104,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2831,7 +3112,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2843,6 +3125,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2850,7 +3133,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2862,6 +3146,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2869,7 +3154,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2881,6 +3167,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2888,7 +3175,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2900,6 +3188,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2907,7 +3196,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2919,6 +3209,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2926,7 +3217,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2938,6 +3230,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2945,7 +3238,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2957,6 +3251,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2964,7 +3259,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2976,6 +3272,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -2983,7 +3280,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -2995,6 +3293,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3002,7 +3301,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3014,6 +3314,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3021,7 +3322,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3033,6 +3335,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3040,7 +3343,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3052,6 +3356,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3059,7 +3364,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3071,6 +3377,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3078,7 +3385,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3090,6 +3398,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3097,7 +3406,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3109,6 +3419,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3116,7 +3427,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3128,6 +3440,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3135,7 +3448,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3147,6 +3461,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3154,7 +3469,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3166,6 +3482,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3173,7 +3490,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3185,6 +3503,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3192,7 +3511,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3204,6 +3524,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3211,7 +3532,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3223,6 +3545,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3230,7 +3553,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3242,6 +3566,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3249,7 +3574,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3261,6 +3587,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3268,7 +3595,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3280,6 +3608,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3287,7 +3616,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3299,6 +3629,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3306,7 +3637,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3318,6 +3650,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3325,7 +3658,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3337,6 +3671,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3344,7 +3679,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3356,6 +3692,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3363,7 +3700,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3375,6 +3713,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3382,7 +3721,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3394,6 +3734,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3401,7 +3742,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3413,6 +3755,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3420,7 +3763,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3432,6 +3776,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3439,7 +3784,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3451,6 +3797,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3458,7 +3805,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3470,6 +3818,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3477,7 +3826,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3489,6 +3839,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3496,7 +3847,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3508,6 +3860,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3515,7 +3868,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3527,6 +3881,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3534,7 +3889,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 0,
@@ -3546,6 +3902,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": null,
           "secsSincePriorTurn": null,
           "speed": null,
@@ -3553,7 +3910,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 0,
-          "tokensOut": 0
+          "tokensOut": 0,
+          "userPrompts": 0
         },
         {
           "cacheReadTokens": 800,
@@ -3565,6 +3923,7 @@
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCompactionBoundary": false,
+          "lastTool": null,
           "model": "claude-3-5-haiku-20241022",
           "secsSincePriorTurn": 10,
           "speed": null,
@@ -3572,7 +3931,8 @@
           "subagentTokens": 0,
           "thinkingMode": null,
           "tokensIn": 70,
-          "tokensOut": 30
+          "tokensOut": 30,
+          "userPrompts": 0
         }
       ],
       "cacheRehydrationCount": 0,

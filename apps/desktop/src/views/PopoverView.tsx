@@ -211,6 +211,9 @@ export function PopoverView() {
   const sessionPayload = settledAnalytics?.payload ?? null
   const sessionLoading = current != null && settledAnalytics == null
   const sessionError = settledAnalytics?.error ?? false
+  // Only a re-load over a settled result is "refreshing"; a first load shows
+  // the skeleton through `loading` instead.
+  const sessionRefreshing = state.analyticsRefreshing && settledAnalytics != null
 
   /* ---------------------------------------------------------------------
    * Attention banners
@@ -280,6 +283,7 @@ export function PopoverView() {
             subject={displaySubject}
             payload={sessionPayload}
             loading={sessionLoading}
+            refreshing={sessionRefreshing}
             error={sessionError}
             onBack={session.goBack}
             onPrev={neighbour(-1)}

@@ -33,6 +33,8 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     isCacheRehydration: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
+    userPrompts: 0,
+    lastTool: null,
     model: null,
     thinkingMode: null,
     speed: null,
@@ -197,6 +199,12 @@ describe("SessionDetailPresentation — chrome", () => {
     // The screen reader announces the view and the control correctly.
     expect(screen.getByRole("heading", { name: "Session Detail" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy()
+  })
+
+  it("shows a header spinner while a newer analysis is on its way", () => {
+    view({ refreshing: true })
+    expect(screen.getByRole("status")).toHaveTextContent("Refreshing session analytics")
+    expect(screen.getByRole("heading", { name: "Session Detail" })).toBeTruthy()
   })
 
   it("navigates back through the callback", () => {

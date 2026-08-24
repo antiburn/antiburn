@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{
-    CompactionTrigger, EventSource, ModelRun, NormalizedSession, ToolCategory,
+    CompactionTrigger, EventSource, ModelRun, NormalizedSession, Role, ToolCategory,
 };
 
 /// Number of progress buckets each session is resampled onto (0% → 100%).
@@ -278,6 +278,15 @@ pub struct Bucket {
     /// parent session launched at this point. Parent turns only — a
     /// sub-agent does not itself launch sub-agents in this count.
     pub subagent_launches: u32,
+    /// Count of user prompts in this bucket. A gap that ends at a prompt is
+    /// the user away, not a tool that runs.
+    #[serde(default)]
+    pub user_prompts: u32,
+    /// The name of the last parent tool call in this bucket, when any. The
+    /// tooltip names it for the slices that follow, while the tool runs and
+    /// no model call lands.
+    #[serde(default)]
+    pub last_tool: Option<String>,
     /// The model that produced the last parent event in this bucket. Parent
     /// turns only — a sub-agent runs its own model, which says nothing about
     /// the parent session's mode at this point.
@@ -563,8 +572,11 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
                     bucket.is_cache_rehydration = true;
                     cache_rehydration_count += 1;
                 }
-                // Keep the exact rehydration gap if another turn shares the bucket.
-                if is_cache_rehydration || !bucket.is_cache_rehydration {
+                // The bucket keeps the gap of its first turn: the gap that
+                // enters the bucket. A rehydration turn takes priority.
+                if is_cache_rehydration
+                    || (!bucket.is_cache_rehydration && bucket.secs_since_prior_turn.is_none())
+                {
                     bucket.secs_since_prior_turn = secs_since_prior_turn;
                 }
                 prev_turn_ts = ev.ts_ms;
@@ -577,6 +589,9 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
                 .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
                 .count() as u32;
             bucket.subagent_launches = bucket.subagent_launches.saturating_add(launches);
+            if ev.source == EventSource::Parent && ev.role == Role::User {
+                bucket.user_prompts = bucket.user_prompts.saturating_add(1);
+            }
 
             // Mode signals: the last parent event seen in this bucket wins.
             // Sub-agents run their own model/effort/speed, which says nothing
@@ -592,6 +607,9 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
                 bucket.speed = Some(speed.to_string());
             }
             bucket.has_thinking |= ev.has_thinking;
+            if let Some(tool) = ev.tools.last() {
+                bucket.last_tool = Some(tool.name.clone());
+            }
         }
 
         // Collect skill invocations for exports.
@@ -856,11 +874,13 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         let mut is_compaction_boundary = false;
         let mut is_cache_rehydration = false;
         let mut subagent_launches = 0u32;
+        let mut user_prompts = 0u32;
         for m in &metrics {
             let b = &m.buckets[bi];
             is_compaction_boundary |= b.is_compaction_boundary;
             is_cache_rehydration |= b.is_cache_rehydration;
             subagent_launches = subagent_launches.saturating_add(b.subagent_launches);
+            user_prompts = user_prompts.saturating_add(b.user_prompts);
             tin = tin.saturating_add(b.tokens_in);
             tout = tout.saturating_add(b.tokens_out);
             subagent_tokens = subagent_tokens.saturating_add(b.subagent_tokens);
@@ -889,21 +909,26 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
         bucket.is_cache_rehydration = is_cache_rehydration;
-        // A combined summary cannot name one prior-turn gap for several sessions.
-        if count == 1 {
-            bucket.secs_since_prior_turn = metrics[0].buckets[bi].secs_since_prior_turn;
-        }
         bucket.subagent_launches = subagent_launches;
-        // `model`, `thinking_mode`, `speed`, and `has_thinking` stay at their
-        // default (`None`/`false`) here. Each contributing session can be a
-        // different agent with its own model and mode, so one bucket cannot
-        // carry a single true value across a multi-session summary — the
-        // mode-change chart annotation is a single-session feature only.
-        //
-        // `compaction_trigger`, `compaction_pre_tokens`, and
-        // `compaction_post_tokens` stay `None` for the same reason: each
-        // contributing session's compaction is its own event, so one summary
-        // bucket cannot carry a single trigger or size across sessions.
+        bucket.user_prompts = user_prompts;
+        // The per-session signals below name one gap, one model, one mode, and
+        // one compaction. Each contributing session can run a different agent
+        // with its own mode and its own compactions, so a multi-session summary
+        // leaves them at their defaults (`None`/`false`). A single-session
+        // summary carries them through, so the session detail view can show
+        // them.
+        if count == 1 {
+            let own = &metrics[0].buckets[bi];
+            bucket.secs_since_prior_turn = own.secs_since_prior_turn;
+            bucket.model = own.model.clone();
+            bucket.thinking_mode = own.thinking_mode.clone();
+            bucket.speed = own.speed.clone();
+            bucket.has_thinking = own.has_thinking;
+            bucket.last_tool = own.last_tool.clone();
+            bucket.compaction_trigger = own.compaction_trigger;
+            bucket.compaction_pre_tokens = own.compaction_pre_tokens;
+            bucket.compaction_post_tokens = own.compaction_post_tokens;
+        }
     }
 
     ActiveSessionsSummary {

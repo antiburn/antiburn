@@ -21,9 +21,12 @@ import {
   formatDuration,
   formatPct,
   formatTokenBand,
+  IDLE_GAP_SECS,
   timeAxisTicks,
   modeChangeMarkers,
+  sessionModeBaseline,
   type ContextTokenPoint,
+  type SessionModeBaseline,
 } from "../../../lib/presentation/sessionAnalytics"
 import type { SessionBucket } from "../../../lib/types/session"
 import { GLASS_TOOLTIP_STYLE } from "./tooltip"
@@ -51,7 +54,16 @@ export interface ContextTokensTooltipProps {
   contextWindow: number | null
   activeSecs?: number | null
   bucketCount?: number
+  /** The session's starting mode. A mode row that matches it is not shown. */
+  baseline?: SessionModeBaseline
   payload?: Array<{ payload?: ContextTokenPoint }>
+}
+
+const NO_BASELINE: SessionModeBaseline = {
+  model: null,
+  thinkingMode: null,
+  speed: null,
+  hasThinking: false,
 }
 
 /** Row swatches for the token-series lines, matching the chart's fill colors. */
@@ -66,6 +78,32 @@ const TOKEN_ROWS: Array<{
     key: "subagentTokens",
     label: "Subagents",
     colorVar: "var(--color-token-subagent)",
+  },
+]
+
+/**
+ * Cache rows are not drawn on the chart, so they get a hollow swatch in the
+ * input color: the same family as "Parent in", but not a plotted series.
+ * Vendors that report no cache writes (Codex) always show zero, so that row
+ * hides when it has nothing to say.
+ */
+const CACHE_ROWS: Array<{
+  key: "cacheReadTokens" | "cacheWriteTokens"
+  label: string
+  colorVar: string
+  hideWhenZero: boolean
+}> = [
+  {
+    key: "cacheReadTokens",
+    label: "Cache read",
+    colorVar: "var(--color-token-in)",
+    hideWhenZero: false,
+  },
+  {
+    key: "cacheWriteTokens",
+    label: "Cache write",
+    colorVar: "var(--color-token-in)",
+    hideWhenZero: true,
   },
 ]
 
@@ -88,6 +126,36 @@ function compactionLabel(point: ContextTokenPoint): string {
 }
 
 /**
+ * The line for a bucket with no model call: the slice sits inside a gap
+ * between two calls. The label names what the session waited on: a tool
+ * that ran during the gap, or the user when a prompt ended it. A gap at or
+ * past the idle cap also shows how much of it the axis draws.
+ */
+function betweenCallsLabel(gap: NonNullable<ContextTokenPoint["betweenCalls"]>): string {
+  let secs = ""
+  if (gap.secs != null) {
+    secs = ` · ${formatDuration(gap.secs)}`
+    if (gap.secs >= IDLE_GAP_SECS) secs += ` (${formatDuration(IDLE_GAP_SECS)} shown)`
+  }
+  if (gap.tool != null && !gap.userPrompt) return `During ${gap.tool} call${secs}`
+  if (gap.userPrompt) return `Waiting for user${secs}`
+  return `Between model calls${secs}`
+}
+
+/**
+ * The rehydration tooltip line. A vendor that reports cache writes (Claude)
+ * names the tokens written. A vendor that does not (Codex) always reports
+ * zero writes, so the line names the fresh input instead: that is the
+ * context the API had to re-read at full price after the cache expired.
+ */
+function rehydrationLabel(point: ContextTokenPoint): string {
+  if (point.cacheWriteTokens > 0) {
+    return `Cache rehydrated · ${formatCompact(point.cacheWriteTokens)} written`
+  }
+  return `Cache rehydrated · ${formatCompact(point.tokensIn)} re-sent uncached`
+}
+
+/**
  * The custom tooltip shows active time, context depth, token throughput,
  * compaction, and sub-agent launches. Tests can render it with a fixed payload.
  */
@@ -97,6 +165,7 @@ export function ContextTokensTooltip({
   contextWindow,
   activeSecs = null,
   bucketCount = 0,
+  baseline = NO_BASELINE,
 }: ContextTokensTooltipProps) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
@@ -119,40 +188,61 @@ export function ContextTokensTooltip({
         whiteSpace: "nowrap",
       }}
     >
-      <div className="mb-1">{elapsed}</div>
+      <div className="mb-1">{elapsed} into session</div>
       <div className="flex flex-col gap-1 text-label-secondary">
-        {point.secsSincePriorTurn != null && (
-          <span>Since prior turn · {formatDuration(point.secsSincePriorTurn)}</span>
-        )}
         {pct != null && (
           <span>
             Context · {formatCompact(point.contextTokens)} ({formatPct(pct)})
           </span>
         )}
-        {TOKEN_ROWS.map((row) => (
-          <span key={row.key} className="flex items-center gap-1.5">
-            <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: row.colorVar }}
-            />
-            {row.label} · {formatCompact(point[row.key])}
-          </span>
-        ))}
-        <span>Cache read · {formatCompact(point.cacheReadTokens)}</span>
-        <span>Cache write · {formatCompact(point.cacheWriteTokens)}</span>
+        {point.betweenCalls != null && (
+          <span className="mt-1">{betweenCallsLabel(point.betweenCalls)}</span>
+        )}
+        {point.betweenCalls == null && (
+          <span className="mt-1 type-caption text-label-tertiary">Tokens</span>
+        )}
+        {point.betweenCalls == null &&
+          TOKEN_ROWS.map((row) => (
+            <span key={row.key} className="flex items-center gap-1.5">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: row.colorVar }}
+              />
+              {row.label} · {formatCompact(point[row.key])}
+            </span>
+          ))}
+        {point.betweenCalls == null &&
+          CACHE_ROWS.filter((row) => !row.hideWhenZero || point[row.key] > 0).map((row) => (
+            <span key={row.key} className="flex items-center gap-1.5">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full border"
+                style={{ borderColor: row.colorVar }}
+              />
+              {row.label} · {formatCompact(point[row.key])}
+            </span>
+          ))}
         {point.isCacheRehydration && (
           <span style={{ color: "var(--color-context-critical)" }}>
-            Cache rehydrated · {formatCompact(point.cacheWriteTokens)} written
+            {rehydrationLabel(point)}
           </span>
+        )}
+        {point.secsSincePriorTurn != null && (
+          <span>Since prior turn · {formatDuration(point.secsSincePriorTurn)}</span>
         )}
         {point.isCompactionBoundary && <span>{compactionLabel(point)}</span>}
         {point.subagentLaunches > 0 && (
           <span>Subagents launched · {point.subagentLaunches}</span>
         )}
-        {point.model != null && <span>Model · {modelShortName(point.model)}</span>}
-        {point.thinkingMode != null && <span>Effort · {point.thinkingMode}</span>}
-        {point.speed != null && <span>Speed · {point.speed}</span>}
-        {point.hasThinking && <span>Thinking</span>}
+        {point.model != null && point.model !== baseline.model && (
+          <span>Model · {modelShortName(point.model)}</span>
+        )}
+        {point.thinkingMode != null && point.thinkingMode !== baseline.thinkingMode && (
+          <span>Effort · {point.thinkingMode}</span>
+        )}
+        {point.speed != null && point.speed !== baseline.speed && (
+          <span>Speed · {point.speed}</span>
+        )}
+        {point.hasThinking && !baseline.hasThinking && <span>Thinking</span>}
       </div>
     </div>
   )
@@ -308,39 +398,23 @@ export function ContextTokensChart({
               contextWindow={contextWindow}
               activeSecs={activeSecs}
               bucketCount={data.length}
+              baseline={sessionModeBaseline(data)}
             />
           }
         />
-        <Area
-          yAxisId="tokens"
-          type="monotone"
-          dataKey="tokensIn"
-          stackId="t"
-          stroke="none"
-          fill="var(--color-token-in)"
-          fillOpacity={0.22}
-          isAnimationActive={false}
-        />
-        <Area
-          yAxisId="tokens"
-          type="monotone"
-          dataKey="tokensOut"
-          stackId="t"
-          stroke="none"
-          fill="var(--color-token-out)"
-          fillOpacity={0.22}
-          isAnimationActive={false}
-        />
-        <Area
-          yAxisId="tokens"
-          type="monotone"
-          dataKey="subagentTokens"
-          stackId="t"
-          stroke="none"
-          fill="var(--color-token-subagent)"
-          fillOpacity={0.22}
-          isAnimationActive={false}
-        />
+        {TOKEN_ROWS.map((row) => (
+          <Area
+            key={row.key}
+            yAxisId="tokens"
+            type="monotone"
+            dataKey={row.key}
+            stackId="t"
+            stroke="none"
+            fill={row.colorVar}
+            fillOpacity={0.22}
+            isAnimationActive={false}
+          />
+        ))}
         {hasContext && (
           <Area
             yAxisId="context"
