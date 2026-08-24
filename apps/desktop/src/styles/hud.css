@@ -85,6 +85,25 @@ body[data-transparent-window] #root {
   }
 }
 
+/*
+ * The tooltip shadow (`shadow.tooltip` in design.md) as a filter, because
+ * `.bevel` owns `box-shadow` on the same element.
+ */
+.hud-detail-card {
+  filter: drop-shadow(0 2px 8px rgb(0 0 0 / 0.12)) drop-shadow(0 0.5px 2px rgb(0 0 0 / 0.06));
+}
+
+/* The show fade for the detail card. Hide is instant: the shell hides the window. */
+.hud-detail-in {
+  animation: hud-detail-in var(--duration-quick) ease-out;
+}
+
+@keyframes hud-detail-in {
+  from {
+    opacity: 0;
+  }
+}
+
 .bevel {
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.45),

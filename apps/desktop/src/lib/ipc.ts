@@ -44,12 +44,8 @@ export type NudgePlacement = "menuBar" | "topRight"
 /** When the menu bar shows the free-disk-space number. */
 export type DiskSpaceDisplay = "always" | "whenLow" | "never"
 
-/** Which usage-milestone thresholds notify, for one window class. */
-export interface Milestones {
-  at50: boolean
-  at75: boolean
-  at90: boolean
-}
+/** Selected usage-milestone percentages for one window class. */
+export type Milestones = number[]
 
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
@@ -90,8 +86,6 @@ export interface AppSettings {
   diskSpaceThresholdGb: number
   /** Notify once each time free space drops below the threshold. */
   notifyDiskSpaceLow: boolean
-  /** Notify when sustained spend is unusually fast for this machine. */
-  notifyUsageAnomalies: boolean
   /** Five-hour-window milestones. Only fire while live usage is enabled. */
   milestones5h: Milestones
   /** Weekly-window milestones. */
@@ -537,8 +531,8 @@ export type NudgeKind =
   | "updateAvailable"
   | "scanFailure"
   | "diskSpaceLow"
-  | "usageAnomaly"
   | "usageMilestone"
+  | "menuBarLocation"
   | "test"
 
 /** Visual tone — informational, positive, or attention. Mirrors Rust `NudgeTone`. */
@@ -566,17 +560,19 @@ export interface NudgeAction {
  * Payload of the `nudge:show` event. Mirrors Rust `Nudge`.
  *
  * Empty optionals are omitted on the wire (`skip_serializing_if` in Rust), so
- * `recommendations` arrives absent rather than as `[]` — the view defaults it.
+ * `recommendations` arrives absent rather than as `[]`.
  */
 export interface Nudge {
   id: string
   kind: NudgeKind
   tone: NudgeTone
   title: string
+  /** Short summary that stays visible in collapsed and expanded states. */
+  subtitle: string
+  /** Detailed copy revealed when the notification expands. */
+  description: string
   /** Who or what this is about, when it is about one. Never drawn; the shell acts on it. */
   actor?: string
-  /** Why this is being shown. Rendered only when present. */
-  reason?: string
   /** Suggested steps, revealed when the notification expands on hover. */
   recommendations?: string[]
   actions: NudgeAction[]
@@ -610,9 +606,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diskSpaceDisplay: "whenLow",
   diskSpaceThresholdGb: 50,
   notifyDiskSpaceLow: true,
-  notifyUsageAnomalies: true,
-  milestones5h: { at50: true, at75: true, at90: true },
-  milestonesWeekly: { at50: true, at75: true, at90: true },
+  milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+  milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
@@ -697,6 +692,19 @@ export async function quitApp(): Promise<void> {
 export async function postTestNotification(): Promise<void> {
   if (!hasShell()) return
   await invoke("post_test_notification")
+}
+
+/** The notification kinds the shell can post a sample of. */
+export type SampleNotificationKind =
+  "updateAvailable" | "scanFailure" | "diskSpaceLow" | "usageMilestone" | "menuBarHome" | "test"
+
+/**
+ * Posts a sample notification of one kind, with fixed figures, so the copy
+ * can be checked on the real card. The shell refuses outside a debug build.
+ */
+export async function postSampleNotification(kind: SampleNotificationKind): Promise<void> {
+  if (!hasShell()) return
+  await invoke("post_sample_notification", { kind })
 }
 
 /**
@@ -923,6 +931,55 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
 export async function getLatestSessionActivity(): Promise<number | null> {
   if (!hasShell()) return null
   return invoke<number | null>("get_latest_session_activity")
+}
+
+/** One usage bar as the hover detail window renders it. */
+export interface HudDetailBar {
+  key: string
+  label: string
+  percent: number
+  /** ISO timestamp, or null when the reset time is unknown. */
+  resetsAt: string | null
+  color: string
+}
+
+/** The payload the HUD pushes to the hover detail window. */
+export interface HudDetailState {
+  /** "show" restarts the enter animation; "refresh" repaints in place. */
+  reason: "show" | "refresh"
+  bars: HudDetailBar[]
+  /** Epoch milliseconds the reset labels are computed against. */
+  now: number
+}
+
+/** Request the hover detail window with the newest usage payload. */
+export async function showHudDetail(state: HudDetailState): Promise<void> {
+  if (!hasShell()) return
+  await invoke("show_hud_detail", { state })
+}
+
+/** Hide the hover detail window. */
+export async function hideHudDetail(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("hide_hud_detail")
+}
+
+/** Report that the detail card is cleared, so the shell can hide the window. */
+export async function concealHudDetail(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("conceal_hud_detail")
+}
+
+/** The newest detail payload, for a detail webview that mounts late. */
+export async function getHudDetailState(): Promise<HudDetailState | null> {
+  if (!hasShell()) return null
+  return (await invoke<HudDetailState | null>("get_hud_detail_state")) ?? null
+}
+
+/** Report the detail webview's measured height so the shell can show it. */
+export async function setHudDetailSize(height: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("set_hud_detail_size", { height })
 }
 
 /** Run a scan now, unless one is already in flight. */

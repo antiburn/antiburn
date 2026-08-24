@@ -29,14 +29,16 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }))
 
-const usageAnomaly: Nudge = {
-  id: "usage-anomaly-1",
-  kind: "usageAnomaly",
-  tone: "warning",
-  title: "Your usage is rising fast",
-  reason: "Well above your usual pace for this session.",
+const usageMilestone: Nudge = {
+  id: "usage-milestone-1",
+  kind: "usageMilestone",
+  tone: "info",
+  title: "75% of your weekly limit used",
+  subtitle: "The provider reported this usage milestone.",
+  description: "The percentage comes from the provider's current usage reading.",
   recommendations: ["Review recent usage", "Check the provider dashboard"],
   actions: [
+    { id: "notification_settings", label: "Settings", primary: false },
     { id: "dismiss", label: "Dismiss", primary: false },
     { id: "view_session", label: "View session", primary: true },
   ],
@@ -52,11 +54,14 @@ const scanFailureNoRecs = {
   id: "scan-failure-1",
   kind: "scanFailure",
   tone: "warning",
-  title: "A scan could not finish",
-  reason: "The last pass stopped before it reached every agent.",
+  title: "Scan failed",
+  subtitle: "Could not read ~/.claude/projects.",
+  description:
+    "Review scan folders and folder access, then rescan. Everything already indexed is unaffected.",
   actions: [
+    { id: "notification_settings", label: "Settings", primary: false },
     { id: "dismiss", label: "Not now", primary: false },
-    { id: "open_settings", label: "Open", primary: true },
+    { id: "review_sources", label: "Review sources", primary: true },
   ],
   timeoutMs: 10_000,
 } as unknown as Nudge
@@ -67,8 +72,12 @@ const diskSpaceLow: Nudge = {
   kind: "diskSpaceLow",
   tone: "warning",
   title: "Free space is running low",
-  reason: "4 GB left on the startup volume.",
-  actions: [{ id: "dismiss", label: "Got it", primary: true }],
+  subtitle: "4 GB left on the startup volume.",
+  description: "Free space dropped below your warning threshold.",
+  actions: [
+    { id: "notification_settings", label: "Settings", primary: false },
+    { id: "dismiss", label: "Got it", primary: true },
+  ],
   timeoutMs: 10_000,
 }
 
@@ -78,15 +87,26 @@ const testNudge: Nudge = {
   kind: "test",
   tone: "info",
   title: "Notifications are working",
-  reason: "This is a sample notification from your settings.",
-  actions: [],
+  subtitle: "This sample uses your current notification settings.",
+  description: "Future notifications use this same layout.",
+  actions: [
+    { id: "notification_settings", label: "Settings", primary: false },
+    { id: "dismiss", label: "Dismiss", primary: true },
+  ],
   timeoutMs: 10_000,
+}
+
+/** A generic nudge can still ask only to surface the app. */
+const actionlessNudge: Nudge = {
+  ...testNudge,
+  id: "actionless-1",
+  actions: [],
 }
 
 /** A CTA carrying the session it is about, echoed back to the shell on click. */
 const targeted: Nudge = {
-  ...usageAnomaly,
-  id: "usage-anomaly-targeted",
+  ...usageMilestone,
+  id: "usage-milestone-targeted",
   actions: [
     { id: "dismiss", label: "Dismiss", primary: false },
     {
@@ -138,18 +158,18 @@ beforeEach(() => {
 describe("NudgeView", () => {
   it("keeps content rendered while the entrance animation is pending", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     expect(notificationCard(container).className).toContain("animate-nudge-in")
-    expect(screen.getByText(usageAnomaly.title)).toBeInTheDocument()
-    expect(screen.getByText(usageAnomaly.reason!)).toBeInTheDocument()
+    expect(screen.getByText(usageMilestone.title)).toBeInTheDocument()
+    expect(screen.getByText(usageMilestone.subtitle).className).toContain("line-clamp-2")
   })
 
   it("settles a completed entrance and cancels its watchdog", () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<NudgeView />)
-      showNudge(usageAnomaly)
+      showNudge(usageMilestone)
       const card = notificationCard(container)
       const timerCountWhileEntering = vi.getTimerCount()
 
@@ -168,7 +188,7 @@ describe("NudgeView", () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<NudgeView />)
-      showNudge(usageAnomaly)
+      showNudge(usageMilestone)
       const card = notificationCard(container)
 
       act(() => {
@@ -185,7 +205,7 @@ describe("NudgeView", () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<NudgeView />)
-      showNudge(usageAnomaly)
+      showNudge(usageMilestone)
 
       act(() => {
         vi.advanceTimersByTime(300)
@@ -208,44 +228,48 @@ describe("NudgeView", () => {
 
   it("ignores animation events bubbled from notification content", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
     const card = notificationCard(container)
 
     act(() => {
-      finishAnimation(screen.getByText(usageAnomaly.title))
+      finishAnimation(screen.getByText(usageMilestone.title))
     })
 
     expect(card.className).toContain("animate-nudge-in")
   })
 
-  it("renders collapsed: title + reason, but hides recommendations and actions", () => {
+  it("renders the title and subtitle while collapsed, but hides expanded detail and actions", () => {
     render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
-    expect(screen.getByText(usageAnomaly.title)).toBeInTheDocument()
-    expect(screen.getByText(usageAnomaly.reason!)).toBeInTheDocument()
-    // Collapsed by default — the expanded detail is not in the DOM yet.
+    expect(screen.getByText(usageMilestone.title)).toBeInTheDocument()
+    expect(screen.getByText(usageMilestone.subtitle)).toBeInTheDocument()
+    expect(screen.queryByText(usageMilestone.description)).not.toBeInTheDocument()
     expect(screen.queryByText("Review recent usage")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "View session" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument()
   })
 
-  it("expands on hover to reveal recommendations + the action bar, and collapses on leave", () => {
+  it("expands on hover to reveal the description, recommendations, and action bar", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
     const wrapper = container.firstElementChild as HTMLElement
 
     act(() => {
       fireEvent.mouseEnter(wrapper)
     })
+    expect(screen.getByText(usageMilestone.subtitle).className).not.toContain("line-clamp-2")
+    expect(screen.getByText(usageMilestone.description)).toBeInTheDocument()
     expect(screen.getByText("Review recent usage")).toBeInTheDocument()
     expect(screen.getByText("Check the provider dashboard")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "View session" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument()
 
     act(() => {
       fireEvent.mouseLeave(wrapper)
     })
+    expect(screen.queryByText(usageMilestone.description)).not.toBeInTheDocument()
     expect(screen.queryByText("Review recent usage")).not.toBeInTheDocument()
   })
 
@@ -257,14 +281,14 @@ describe("NudgeView", () => {
       fireEvent.mouseEnter(container.firstElementChild as HTMLElement)
     })
 
-    expect(screen.getByText("A scan could not finish")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Open" })).toBeInTheDocument()
+    expect(screen.getByText("Scan failed")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Review sources" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument()
   })
 
   it("reveals on show, then animates a resize on expand so the notification grows in place", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
     // Sized + shown once on first measurement; no resize yet.
     expect(callsTo("nudge_reveal")).toBe(1)
     expect(callsTo("nudge_resize")).toBe(0)
@@ -280,10 +304,10 @@ describe("NudgeView", () => {
 
   it("reveals once, ignoring a re-delivered event with the same id", () => {
     render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
     // Re-delivery of the same id: the crate re-emits its pending payload when
     // the webview reports that its listener is attached.
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     expect(callsTo("nudge_reveal")).toBe(1)
   })
@@ -299,7 +323,7 @@ describe("NudgeView", () => {
 
   it("collapses for the next nudge after an action click, even if the pointer never left", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     act(() => {
       fireEvent.mouseEnter(container.firstElementChild as HTMLElement)
@@ -315,8 +339,8 @@ describe("NudgeView", () => {
     // outgoing nudge's expanded state.
     showNudge(scanFailureNoRecs)
 
-    expect(screen.getByText("A scan could not finish")).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument()
+    expect(screen.getByText("Scan failed")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Review sources" })).not.toBeInTheDocument()
   })
 
   it("sends a CTA target through to the shell", () => {
@@ -332,23 +356,42 @@ describe("NudgeView", () => {
     showNudge(scanFailureNoRecs)
 
     expect(invoke).toHaveBeenCalledWith("nudge_action", {
-      kind: "usageAnomaly",
+      kind: "usageMilestone",
       actionId: "view_session",
       target: { type: "session", agent: "claude", sessionId: "session-9", environment: null },
     })
   })
 
-  it("runs the primary CTA when the notification body is clicked", () => {
-    render(<NudgeView />)
-    showNudge(usageAnomaly)
+  it("sends the notification settings action directly to the shell", () => {
+    const { container } = render(<NudgeView />)
+    showNudge(usageMilestone)
 
     act(() => {
-      fireEvent.click(screen.getByText(usageAnomaly.title))
+      fireEvent.mouseEnter(container.firstElementChild as HTMLElement)
+    })
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }))
     })
     showNudge(scanFailureNoRecs)
 
     expect(invoke).toHaveBeenCalledWith("nudge_action", {
-      kind: "usageAnomaly",
+      kind: "usageMilestone",
+      actionId: "notification_settings",
+      target: undefined,
+    })
+  })
+
+  it("runs the primary CTA when the notification body is clicked", () => {
+    render(<NudgeView />)
+    showNudge(usageMilestone)
+
+    act(() => {
+      fireEvent.click(screen.getByText(usageMilestone.title))
+    })
+    showNudge(scanFailureNoRecs)
+
+    expect(invoke).toHaveBeenCalledWith("nudge_action", {
+      kind: "usageMilestone",
       actionId: "view_session",
       target: undefined,
     })
@@ -360,27 +403,27 @@ describe("NudgeView", () => {
 
     // No `mouseEnter`: the action bar isn't even rendered, yet the body still
     // resolves the nudge's primary CTA.
-    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Review sources" })).not.toBeInTheDocument()
     act(() => {
-      fireEvent.click(screen.getByText("A scan could not finish"))
+      fireEvent.click(screen.getByText("Scan failed"))
     })
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     expect(invoke).toHaveBeenCalledWith("nudge_action", {
       kind: "scanFailure",
-      actionId: "open_settings",
+      actionId: "review_sources",
       target: undefined,
     })
   })
 
   it("just opens the app when the body is clicked on a nudge with no actions", () => {
     render(<NudgeView />)
-    showNudge(testNudge)
+    showNudge(actionlessNudge)
 
     act(() => {
-      fireEvent.click(screen.getByText(testNudge.title))
+      fireEvent.click(screen.getByText(actionlessNudge.title))
     })
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     expect(invoke).toHaveBeenCalledWith("nudge_action", {
       kind: "test",
@@ -389,25 +432,25 @@ describe("NudgeView", () => {
     })
   })
 
-  it("just opens the app when the body is clicked and the only primary CTA is a dismiss", () => {
+  it("opens notification settings from the body when dismiss is primary", () => {
     render(<NudgeView />)
     showNudge(diskSpaceLow)
 
     act(() => {
       fireEvent.click(screen.getByText(diskSpaceLow.title))
     })
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     expect(invoke).toHaveBeenCalledWith("nudge_action", {
       kind: "diskSpaceLow",
-      actionId: "open_app",
+      actionId: "notification_settings",
       target: undefined,
     })
   })
 
   it("does not double-fire when a CTA button is clicked", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     act(() => {
       fireEvent.mouseEnter(container.firstElementChild as HTMLElement)
@@ -423,7 +466,7 @@ describe("NudgeView", () => {
     // never bubbles into it either.
     expect(callsTo("nudge_action")).toBe(1)
     expect(invoke).toHaveBeenCalledWith("nudge_action", {
-      kind: "usageAnomaly",
+      kind: "usageMilestone",
       actionId: "view_session",
       target: undefined,
     })
@@ -431,7 +474,7 @@ describe("NudgeView", () => {
 
   it("does not run an action when the close button is clicked", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     act(() => {
       fireEvent.mouseEnter(container.firstElementChild as HTMLElement)
@@ -451,10 +494,10 @@ describe("NudgeView", () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<NudgeView />)
-      showNudge(usageAnomaly)
+      showNudge(usageMilestone)
 
       act(() => {
-        vi.advanceTimersByTime(usageAnomaly.timeoutMs!)
+        vi.advanceTimersByTime(usageMilestone.timeoutMs!)
       })
       act(() => {
         finishAnimation(notificationCard(container))
@@ -470,7 +513,7 @@ describe("NudgeView", () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<NudgeView />)
-      showNudge(usageAnomaly)
+      showNudge(usageMilestone)
       const wrapper = container.firstElementChild as HTMLElement
 
       // Hover pauses the timer with leftover time, close arms the exit, and the
@@ -483,7 +526,7 @@ describe("NudgeView", () => {
       })
       act(() => {
         fireEvent.mouseLeave(wrapper)
-        vi.advanceTimersByTime(usageAnomaly.timeoutMs! * 2)
+        vi.advanceTimersByTime(usageMilestone.timeoutMs! * 2)
       })
       act(() => {
         finishAnimation(notificationCard(container))
@@ -499,7 +542,7 @@ describe("NudgeView", () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<NudgeView />)
-      showNudge(usageAnomaly)
+      showNudge(usageMilestone)
       const wrapper = container.firstElementChild as HTMLElement
 
       // The timeout fires while the pointer rests on the card, arming the exit.
@@ -510,14 +553,14 @@ describe("NudgeView", () => {
       })
       act(() => {
         fireEvent.mouseLeave(wrapper)
-        vi.advanceTimersByTime(usageAnomaly.timeoutMs!)
+        vi.advanceTimersByTime(usageMilestone.timeoutMs!)
       })
       act(() => {
         fireEvent.mouseEnter(wrapper)
       })
       act(() => {
         fireEvent.mouseLeave(wrapper)
-        vi.advanceTimersByTime(usageAnomaly.timeoutMs! * 2)
+        vi.advanceTimersByTime(usageMilestone.timeoutMs! * 2)
       })
       act(() => {
         finishAnimation(notificationCard(container))
@@ -550,7 +593,7 @@ describe("NudgeView — native hover signal", () => {
     vi.useFakeTimers()
     try {
       render(<NudgeView />)
-      showNudge(usageAnomaly)
+      showNudge(usageMilestone)
 
       nativeHover(true)
       expect(screen.getByText("Review recent usage")).toBeInTheDocument()
@@ -559,7 +602,7 @@ describe("NudgeView — native hover signal", () => {
 
       // Auto-dismiss is paused for as long as the cursor rests on it.
       act(() => {
-        vi.advanceTimersByTime(usageAnomaly.timeoutMs! * 3)
+        vi.advanceTimersByTime(usageMilestone.timeoutMs! * 3)
       })
       expect(callsTo("nudge_dismiss")).toBe(0)
 
@@ -567,7 +610,7 @@ describe("NudgeView — native hover signal", () => {
       expect(screen.queryByText("Review recent usage")).not.toBeInTheDocument()
 
       act(() => {
-        vi.advanceTimersByTime(usageAnomaly.timeoutMs!)
+        vi.advanceTimersByTime(usageMilestone.timeoutMs!)
       })
       expect(callsTo("nudge_dismiss")).toBe(0)
       // The dismiss is deferred to the end of the exit animation.
@@ -579,7 +622,7 @@ describe("NudgeView — native hover signal", () => {
 
   it("does not ask for key-window status, but still releases it on leave", () => {
     render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
 
     nativeHover(true)
     // Acquiring key here would take it from the window the user is actually
@@ -593,7 +636,7 @@ describe("NudgeView — native hover signal", () => {
 
   it("de-duplicates against the pointer, whichever edge lands first", () => {
     const { container } = render(<NudgeView />)
-    showNudge(usageAnomaly)
+    showNudge(usageMilestone)
     const wrapper = container.firstElementChild as HTMLElement
 
     // Native sample first, pointer second: the pointer enter still requests key

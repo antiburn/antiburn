@@ -26,10 +26,9 @@
 //! # Where it lives
 //!
 //! One row in the app's own key-value table, through
-//! [`Store::internal_value`](crate::store::Store::internal_value) — the same
-//! seam the anomaly monitor uses for its last-fired stamp. Not a new file, not
-//! a new table: this is a small bounded cache that a reader clearing their
-//! index should lose along with everything else derived.
+//! [`Store::internal_value`](crate::store::Store::internal_value). This is a
+//! small bounded cache, not a new file or table. Clearing the index removes it
+//! with everything else derived.
 
 use std::collections::BTreeMap;
 

@@ -11,10 +11,11 @@ import { OverlayWindow } from "./OverlayWindow"
 
 const getLiveUsage = vi.hoisted(() => vi.fn())
 const getLatestSessionActivity = vi.hoisted(() => vi.fn())
-const openSettingsWindow = vi.hoisted(() => vi.fn(async () => {}))
+const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
+const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 vi.mock("../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../lib/ipc")
-  return { ...actual, getLiveUsage, getLatestSessionActivity, openSettingsWindow }
+  return { ...actual, getLiveUsage, getLatestSessionActivity, showHudDetail, hideHudDetail }
 })
 
 const invoke = vi.hoisted(() => vi.fn(async () => {}))
@@ -109,9 +110,15 @@ function panel(container: HTMLElement): HTMLElement {
   return container.firstElementChild!.firstElementChild as HTMLElement
 }
 
-async function expand(container: HTMLElement) {
-  fireEvent.mouseEnter(panel(container))
-  await waitFor(() => expect(screen.getByText("5-hour limit")).toBeInTheDocument())
+function closeButton(): HTMLElement {
+  return screen.getByRole("button", { name: "Close overlay" })
+}
+
+/** Advance fake time inside act, so timer work lands in a React batch. */
+async function advance(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
 }
 
 describe("OverlayWindow", () => {
@@ -121,7 +128,8 @@ describe("OverlayWindow", () => {
     getLiveUsage.mockResolvedValue(summary())
     getLatestSessionActivity.mockReset()
     getLatestSessionActivity.mockResolvedValue(null)
-    openSettingsWindow.mockClear()
+    showHudDetail.mockClear()
+    hideHudDetail.mockClear()
     hide.mockClear()
     invoke.mockClear()
     stored.clear()
@@ -134,72 +142,135 @@ describe("OverlayWindow", () => {
     expect(document.body.dataset.transparentWindow).toBeUndefined()
   })
 
-  it("rests with bars and inaccessible chrome", async () => {
+  it("rests with bars only and a hidden close control", async () => {
     render(<OverlayWindow />)
     await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Close overlay" }).closest("div")).toHaveClass(
-      "opacity-0",
-      "pointer-events-none",
-    )
-    expect(document.querySelectorAll(".rounded-full")).toHaveLength(20)
+    expect(screen.queryByText("81%")).not.toBeInTheDocument()
+    expect(closeButton()).toHaveClass("opacity-0", "pointer-events-none")
+    // The descendant selector counts LED segments and not the round close chip.
+    expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
   })
 
-  it("waits 250ms before expansion and collapses immediately", async () => {
-    const { container } = render(<OverlayWindow />)
-    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
-    fireEvent.mouseEnter(panel(container))
-    expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
-    await waitFor(() => expect(screen.getByText("5-hour limit")).toBeInTheDocument())
-    expect(screen.getByText("81%")).toBeInTheDocument()
-    expect(screen.getByText(/^resets in /)).toBeInTheDocument()
-    fireEvent.mouseLeave(panel(container))
-    expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
+  it("shows the close control at once and the detail window after the delay", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(panel(container))
+      expect(closeButton()).toHaveClass("opacity-100")
+      await advance(399)
+      expect(showHudDetail).not.toHaveBeenCalled()
+      await advance(1)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+      expect(showHudDetail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "show",
+          bars: [
+            expect.objectContaining({
+              label: "5-hour limit",
+              percent: 81,
+              resetsAt: expect.any(String),
+            }),
+          ],
+        }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("hides the detail window at once on leave", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(panel(container))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+      fireEvent.mouseLeave(panel(container))
+      expect(hideHudDetail).toHaveBeenCalledTimes(1)
+      expect(closeButton()).toHaveClass("opacity-0")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not touch the detail window when the pointer leaves early", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(panel(container))
+      await advance(200)
+      fireEvent.mouseLeave(panel(container))
+      await advance(1000)
+      expect(showHudDetail).not.toHaveBeenCalled()
+      expect(hideHudDetail).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("accepts native hover edges while the app is in the background", async () => {
-    render(<OverlayWindow />)
-    await waitFor(() => expect(hover.emit).not.toBeNull())
-    act(() => hover.emit!(true))
-    await waitFor(() => expect(screen.getByText("5-hour limit")).toBeInTheDocument())
-    act(() => hover.emit!(false))
-    expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument()
+    vi.useFakeTimers()
+    try {
+      render(<OverlayWindow />)
+      await advance(0)
+      expect(hover.emit).not.toBeNull()
+      act(() => hover.emit!(true))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+      act(() => hover.emit!(false))
+      expect(hideHudDetail).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it("draws collapsed during the full manual drag", async () => {
-    const { container } = render(<OverlayWindow />)
-    await expand(container)
-    fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
-    await waitFor(() => expect(screen.queryByText("5-hour limit")).not.toBeInTheDocument())
-    fireEvent.mouseUp(window)
-    await waitFor(() => expect(screen.getByText("5-hour limit")).toBeInTheDocument())
+  it("cancels the timer for the whole drag and restarts it on mouse up", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(panel(container))
+      await advance(200)
+      fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+      await advance(1000)
+      expect(showHudDetail).not.toHaveBeenCalled()
+      fireEvent.mouseUp(window)
+      await advance(399)
+      expect(showHudDetail).not.toHaveBeenCalled()
+      await advance(1)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("hides a visible detail window when a drag starts", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(panel(container))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+      fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+      expect(hideHudDetail).toHaveBeenCalledTimes(1)
+      fireEvent.mouseUp(window)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("clears the stored preference when its close button hides the HUD", async () => {
-    const { container } = render(<OverlayWindow />)
+    render(<OverlayWindow />)
     localStorage.setItem("antiburn.showFloatingHud", "1")
-    await expand(container)
-    fireEvent.click(screen.getByRole("button", { name: "Close overlay" }))
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    fireEvent.click(closeButton())
     expect(localStorage.getItem("antiburn.showFloatingHud")).toBe("0")
     await waitFor(() => expect(hide).toHaveBeenCalled())
-  })
-
-  it("opens General settings from the wordmark", async () => {
-    const { container } = render(<OverlayWindow />)
-    await expand(container)
-    fireEvent.click(screen.getByRole("button", { name: "Open antiburn settings" }))
-    expect(openSettingsWindow).toHaveBeenCalledWith("general")
-  })
-
-  it("shows the exact empty copy only after expansion", async () => {
-    getLiveUsage.mockResolvedValue({ providers: [], errors: [], generatedAt: "" })
-    const { container } = render(<OverlayWindow />)
-    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
-    expect(screen.queryByText("No usage limits detected yet.")).not.toBeInTheDocument()
-    fireEvent.mouseEnter(panel(container))
-    await waitFor(() =>
-      expect(screen.getByText("No usage limits detected yet.")).toBeInTheDocument(),
-    )
   })
 
   it("reports the visible panel bounds to the native watcher", async () => {

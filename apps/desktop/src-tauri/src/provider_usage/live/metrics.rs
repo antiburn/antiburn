@@ -48,11 +48,10 @@
 //!   the provider, the account, and the window id, so two samples in one
 //!   series cannot differ in either — a field that can only hold one value is
 //!   not a guard, it is furniture.
-//! - **`usage_samples_cross_reset`.** Its only consumer there is the live
-//!   anomaly engine, which this application deliberately does not have: it
-//!   ships its own spend-anomaly rule over local estimates instead
-//!   (`docs/deviations.md`, D-7). The simpler percentage-drop test below is
-//!   what the forecast actually needs.
+//! - **`usage_samples_cross_reset`.** Its only consumer there is a live
+//!   anomaly engine. This application deliberately has no anomaly engine
+//!   because usage rates are not predictable or steady enough. The simpler
+//!   percentage-drop test below is what the forecast actually needs.
 
 use time::{Duration, OffsetDateTime};
 

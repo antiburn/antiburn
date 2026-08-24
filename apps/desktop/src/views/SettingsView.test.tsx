@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { StrictMode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { NOTICE_TEXT } from "../lib/legalNotices"
@@ -67,9 +68,8 @@ const SETTINGS = {
   diskSpaceDisplay: "whenLow" as const,
   diskSpaceThresholdGb: 50,
   notifyDiskSpaceLow: true,
-  notifyUsageAnomalies: true,
-  milestones5h: { at50: true, at75: true, at90: true },
-  milestonesWeekly: { at50: true, at75: true, at90: true },
+  milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+  milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: false,
 }
 
@@ -99,8 +99,9 @@ const SCAN_STATUS = {
 function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
     if (command in overrides) {
-      const result = overrides[command]
-      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+      const override = overrides[command]
+      if (override instanceof Error) return Promise.reject(override)
+      return Promise.resolve(typeof override === "function" ? override(args) : override)
     }
     switch (command) {
       case "get_settings":
@@ -638,8 +639,18 @@ describe("SettingsView", () => {
   })
 
   it("opens on the pane the shell was asked for, when the window is new", async () => {
-    mockCommands({ take_settings_pane: "sources" })
-    render(<SettingsView />)
+    let requests = 0
+    mockCommands({
+      take_settings_pane: () => {
+        requests += 1
+        return requests === 1 ? "sources" : null
+      },
+    })
+    render(
+      <StrictMode>
+        <SettingsView />
+      </StrictMode>,
+    )
 
     await waitFor(() =>
       expect(screen.getByRole("tab", { name: "Sources" })).toHaveAttribute(
@@ -647,6 +658,7 @@ describe("SettingsView", () => {
         "true",
       ),
     )
+    expect(requests).toBe(1)
   })
 
   it("moves an already-open window to a requested pane", async () => {
@@ -827,11 +839,18 @@ describe("SettingsView — notifications", () => {
     expect(
       screen.getByText(/a newer version, a scan that could not finish/i),
     ).toBeInTheDocument()
-    expect(screen.getByRole("switch", { name: "Usage anomalies" })).toBeInTheDocument()
-    // Milestone pills are independent toggles, one group per window class.
-    expect(
-      screen.getByRole("group", { name: "Five-hour milestone thresholds" }),
-    ).toBeInTheDocument()
+    const fiveHour = screen.getByRole("group", {
+      name: "Five-hour milestone thresholds",
+    })
+    expect(within(fiveHour).getAllByRole("checkbox")).toHaveLength(20)
+    const five = within(fiveHour).getByRole("checkbox", { name: "5%" })
+    const ten = within(fiveHour).getByRole("checkbox", { name: "10%" })
+    expect(five).toHaveAttribute("aria-checked", "false")
+    expect(five.querySelector('[aria-hidden="true"]')).toHaveClass("bg-input-fill")
+    expect(five.querySelector('[aria-hidden="true"]')).not.toHaveClass("bg-accent-fill")
+    expect(ten).toHaveAttribute("aria-checked", "true")
+    expect(ten.querySelector('[aria-hidden="true"]')).toHaveClass("bg-accent-fill")
+    expect(ten.querySelector('[aria-hidden="true"]')).not.toHaveClass("bg-input-fill")
     expect(
       screen.getByRole("group", { name: "Weekly milestone thresholds" }),
     ).toBeInTheDocument()
@@ -850,22 +869,68 @@ describe("SettingsView — notifications", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("post_test_notification"))
   })
 
-  it("persists a milestone pill toggle as the settings subset", async () => {
+  it("posts a sample of one kind from the debug row", async () => {
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Notifications" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Milestone" }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("post_sample_notification", {
+        kind: "usageMilestone",
+      }),
+    )
+  })
+
+  it("persists an individual five-percent milestone choice", async () => {
     render(<SettingsView />)
 
     fireEvent.click(screen.getByRole("tab", { name: "Notifications" }))
     const group = await screen.findByRole("group", {
       name: "Five-hour milestone thresholds",
     })
-    const fifty = within(group).getByRole("button", { name: "50%" })
-    expect(fifty).toHaveAttribute("aria-pressed", "true")
+    const five = within(group).getByRole("checkbox", { name: "5%" })
+    expect(five).toHaveAttribute("aria-checked", "false")
 
-    fireEvent.click(fifty)
+    fireEvent.click(five)
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_settings", {
         settings: {
           ...SETTINGS,
-          milestones5h: { at50: false, at75: true, at90: true },
+          milestones5h: [5, ...SETTINGS.milestones5h],
+        },
+      }),
+    )
+    expect(five).toHaveAttribute("aria-checked", "true")
+    expect(five.querySelector('[aria-hidden="true"]')).toHaveClass("bg-accent-fill")
+  })
+
+  it("selects and clears every milestone in one window class", async () => {
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Notifications" }))
+    const group = await screen.findByRole("group", {
+      name: "Weekly milestone thresholds",
+    })
+
+    fireEvent.click(within(group).getByRole("button", { name: "Select all" }))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: {
+          ...SETTINGS,
+          milestonesWeekly: [
+            5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100,
+          ],
+        },
+      }),
+    )
+
+    fireEvent.click(within(group).getByRole("button", { name: "Clear all" }))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: {
+          ...SETTINGS,
+          milestonesWeekly: [],
         },
       }),
     )
@@ -882,31 +947,5 @@ describe("SettingsView — notifications", () => {
         settings: { ...SETTINGS, notificationsEnabled: false },
       }),
     )
-  })
-
-  it("persists a per-kind choice on its own", async () => {
-    render(<SettingsView />)
-
-    fireEvent.click(screen.getByRole("tab", { name: "Notifications" }))
-    fireEvent.click(await screen.findByRole("switch", { name: "Usage anomalies" }))
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: { ...SETTINGS, notifyUsageAnomalies: false },
-      }),
-    )
-  })
-
-  it("leaves the per-kind switches inert, and their choices intact, while the master is off", async () => {
-    mockCommands({ get_settings: { ...SETTINGS, notificationsEnabled: false } })
-    render(<SettingsView />)
-
-    fireEvent.click(screen.getByRole("tab", { name: "Notifications" }))
-
-    const anomalies = await screen.findByRole("switch", { name: "Usage anomalies" })
-    expect(anomalies).toBeDisabled()
-    // Still on: turning the master back on restores what the reader chose
-    // rather than a default.
-    expect(anomalies).toBeChecked()
   })
 })

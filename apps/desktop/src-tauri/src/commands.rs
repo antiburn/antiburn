@@ -99,6 +99,21 @@ pub fn post_test_notification(app: tauri::AppHandle) {
     crate::notifications::note_test(&app);
 }
 
+/// Post a sample notification of one kind, for copy work.
+///
+/// Debug builds only: a release build refuses, so the row that sends this can
+/// never become a way around the preferences.
+#[tauri::command]
+pub fn post_sample_notification(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("sample notifications are for debug builds only".to_string());
+    }
+    let kind = crate::notifications::Kind::from_id(&kind)
+        .ok_or_else(|| format!("unknown notification kind: {kind}"))?;
+    crate::notifications::note_sample(&app, kind);
+    Ok(())
+}
+
 /// Whether the local database is still accepting writes.
 #[tauri::command]
 pub fn get_storage_health(app: tauri::AppHandle) -> crate::storage_health::StorageHealthStatus {
@@ -159,6 +174,39 @@ pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
 #[tauri::command]
 pub fn set_overlay_hover_region(top: f64, bottom: f64) {
     antiburn_hud::set_hover_region(top, bottom);
+}
+
+/// Request the hover detail window with the newest usage payload.
+///
+/// The payload passes through opaque on purpose: the HUD webview produces it
+/// and the detail webview consumes it, so the shell does not model its shape.
+#[tauri::command]
+pub fn show_hud_detail(app: tauri::AppHandle, state: serde_json::Value) {
+    antiburn_hud::show_detail(&app, state);
+}
+
+/// Hide the hover detail window.
+#[tauri::command]
+pub fn hide_hud_detail(app: tauri::AppHandle) {
+    antiburn_hud::hide_detail(&app);
+}
+
+/// Hide the detail window now that its webview cleared the card.
+#[tauri::command]
+pub fn conceal_hud_detail(app: tauri::AppHandle) {
+    antiburn_hud::conceal_detail(&app);
+}
+
+/// Return the newest detail payload for a detail webview that mounts late.
+#[tauri::command]
+pub fn get_hud_detail_state() -> serde_json::Value {
+    antiburn_hud::detail_state()
+}
+
+/// Size and place the detail window from its webview's measured height.
+#[tauri::command]
+pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
+    antiburn_hud::apply_detail_size(&app, height);
 }
 
 /// Return the newest recent transcript write as epoch seconds.
