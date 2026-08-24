@@ -161,6 +161,33 @@ pub fn set_overlay_hover_region(top: f64, bottom: f64) {
     antiburn_hud::set_hover_region(top, bottom);
 }
 
+/// Request the hover detail window with the newest usage payload.
+///
+/// The payload passes through opaque on purpose: the HUD webview produces it
+/// and the detail webview consumes it, so the shell does not model its shape.
+#[tauri::command]
+pub fn show_hud_detail(app: tauri::AppHandle, state: serde_json::Value) {
+    antiburn_hud::show_detail(&app, state);
+}
+
+/// Hide the hover detail window.
+#[tauri::command]
+pub fn hide_hud_detail(app: tauri::AppHandle) {
+    antiburn_hud::hide_detail(&app);
+}
+
+/// Return the newest detail payload for a detail webview that mounts late.
+#[tauri::command]
+pub fn get_hud_detail_state() -> serde_json::Value {
+    antiburn_hud::detail_state()
+}
+
+/// Size and place the detail window from its webview's measured height.
+#[tauri::command]
+pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
+    antiburn_hud::apply_detail_size(&app, height);
+}
+
 /// Return the newest recent transcript write as epoch seconds.
 #[tauri::command]
 pub async fn get_latest_session_activity() -> Option<i64> {
