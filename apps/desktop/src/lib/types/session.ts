@@ -210,7 +210,7 @@ export interface ActiveSessionsSummary {
 export interface SubagentMember {
   /** Orchestrator app slug (for example `claude-code`). */
   agent: string
-  /** The sub-agent's transcript id, used to open its own analytics. */
+  /** The sub-agent's transcript id, used to open its own analysis. */
   subagentId: string
   /** First task prompt (truncated), or a persona/slug fallback. */
   label: string

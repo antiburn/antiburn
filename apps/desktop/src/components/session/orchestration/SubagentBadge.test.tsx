@@ -30,7 +30,7 @@ describe("SubagentBadge", () => {
     expect(screen.getByText("add-ci-workflow")).toBeTruthy()
   })
 
-  it("opens the orchestrator's analytics when its row is clicked", () => {
+  it("opens the orchestrator's analysis when its row is clicked", () => {
     const onOpen = vi.fn()
     render(
       <SubagentBadge

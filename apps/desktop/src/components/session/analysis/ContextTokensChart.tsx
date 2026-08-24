@@ -27,7 +27,7 @@ import {
   sessionModeBaseline,
   type ContextTokenPoint,
   type SessionModeBaseline,
-} from "../../../lib/presentation/sessionAnalytics"
+} from "../../../lib/presentation/sessionAnalysis"
 import type { SessionBucket } from "../../../lib/types/session"
 import { GLASS_TOOLTIP_STYLE } from "./tooltip"
 

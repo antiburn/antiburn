@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { BarChartHorizontalBig, Loader2 } from "lucide-react"
+import { BarChartHorizontalBig, LoaderCircle } from "lucide-react"
 import { useId } from "react"
 
 import { cn } from "../../lib/cn"
@@ -85,7 +85,12 @@ export function UsageLimitsBar({
 
         {refreshing && (
           <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
-            <Loader2 size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
+            <LoaderCircle
+              size={12}
+              strokeWidth={2}
+              aria-hidden="true"
+              className="animate-spin"
+            />
             <span className="sr-only">Refreshing usage limits</span>
           </span>
         )}

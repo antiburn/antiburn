@@ -80,7 +80,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
-use crate::analytics;
+use crate::analysis;
 use crate::dto::ScanStatus;
 use crate::repositories;
 use crate::storage_health::{self, checked};
@@ -612,7 +612,7 @@ async fn describe_one_with_activity(
     let subagent_count = children.len() as u32;
     let fork_parent_session_id = preview
         .as_deref()
-        .and_then(analytics::fork_parent_from_content);
+        .and_then(analysis::fork_parent_from_content);
 
     let (updated_at_epoch, activity_source, activity_cursor) =
         semantic_activity_for_log(&log, activity_state.as_ref(), &children, preview.as_deref())
@@ -867,17 +867,17 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
         let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
             continue;
         };
-        if !analytics::analytics_supported(agent) {
+        if !analysis::analysis_supported(agent) {
             // A generically-parsed transcript would produce a half-confident
             // metric; the view says so instead of showing one.
             continue;
         }
         let Some(source) =
-            analytics::locate(agent, &record.key.session_id, record.wsl_distro.as_deref()).await
+            analysis::locate(agent, &record.key.session_id, record.wsl_distro.as_deref()).await
         else {
             continue;
         };
-        let fingerprint = analytics::fingerprint_with_subagents(
+        let fingerprint = analysis::fingerprint_with_subagents(
             agent,
             &record.key.session_id,
             record.wsl_distro.as_deref(),
@@ -885,13 +885,13 @@ async fn top_up_analysis(app: &AppHandle, now: i64, activity_days: i64) -> anyho
         )
         .await;
         if let Some(cached) = store.analysis(&record.key)?
-            && analytics::cache_is_fresh(&cached, &fingerprint)
+            && analysis::cache_is_fresh(&cached, &fingerprint)
         {
             continue;
         }
 
         let analysis =
-            analytics::analyze(agent, &record.key.session_id, record.wsl_distro.as_deref()).await;
+            analysis::analyze(agent, &record.key.session_id, record.wsl_distro.as_deref()).await;
         if let Some(cache) = analysis.record(&record.key) {
             store.save_analysis(&cache)?;
         }

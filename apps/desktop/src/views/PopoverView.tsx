@@ -25,7 +25,7 @@ import { PopoverSession, sessionKey } from "./popover/PopoverSession"
 import { UsageView } from "./popover/UsageView"
 import type { SessionSubject } from "./popover/SessionPane"
 
-// Session analytics pulls in the charting library and a substantial set of
+// Session analysis pulls in the charting library and a substantial set of
 // presentation components. Keep it out of the activity surface's initial
 // chunk; opening a session is the only action that needs this code.
 const SessionPane = lazy(() =>
@@ -36,7 +36,7 @@ const SessionPane = lazy(() =>
  * The tray popover.
  *
  * Three surfaces share one 380px window: the activity list, one session's
- * analytics, and local provider usage. There is no router — a popover is a
+ * analysis, and local provider usage. There is no router — a popover is a
  * single place, and a stack of "where I came from" is all the navigation it
  * needs.
  *
@@ -203,17 +203,17 @@ export function PopoverView() {
   }, [])
 
   /* ---------------------------------------------------------------------
-   * Session analytics: derived from the session's tagged load result
+   * Session analysis: derived from the session's tagged load result
    * ------------------------------------------------------------------ */
 
   const currentKey = current ? sessionKey(current) : null
-  const settledAnalytics = state.analytics?.key === currentKey ? state.analytics : null
-  const sessionPayload = settledAnalytics?.payload ?? null
-  const sessionLoading = current != null && settledAnalytics == null
-  const sessionError = settledAnalytics?.error ?? false
+  const settledAnalysis = state.analysis?.key === currentKey ? state.analysis : null
+  const sessionPayload = settledAnalysis?.payload ?? null
+  const sessionLoading = current != null && settledAnalysis == null
+  const sessionError = settledAnalysis?.error ?? false
   // Only a re-load over a settled result is "refreshing"; a first load shows
   // the skeleton through `loading` instead.
-  const sessionRefreshing = state.analyticsRefreshing && settledAnalytics != null
+  const sessionRefreshing = state.analysisRefreshing && settledAnalysis != null
 
   /* ---------------------------------------------------------------------
    * Attention banners

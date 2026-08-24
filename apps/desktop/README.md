@@ -4,7 +4,7 @@ The antiburn desktop application: a menu-bar / system-tray shell around the
 local [`antiburn-local`](../../crates/antiburn-local) engine.
 
 The app discovers the coding-agent sessions already on this machine, analyzes
-them with the engine, and shows activity, per-session analytics, and
+them with the engine, and shows activity, per-session analysis, and
 API-equivalent cost estimates. Everything runs on the device, as you: antiburn
 needs no antiburn account, server, or backend of any kind, and nothing about
 your sessions is uploaded. It makes two calls to a service of ours, neither of

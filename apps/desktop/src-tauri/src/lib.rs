@@ -12,7 +12,7 @@
 //! # Modules
 //!
 //! - [`agents`] — translating between the engine's two names for an agent.
-//! - [`analytics`] — turning a located transcript into what the views render.
+//! - [`analysis`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
 //! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
@@ -52,7 +52,7 @@
 //! to the same boundary by a test (`apps/desktop/tests/no-exfiltration.test.ts`).
 
 mod agents;
-mod analytics;
+mod analysis;
 mod commands;
 mod consent;
 mod disk_monitor;
@@ -144,10 +144,10 @@ pub fn run() {
             commands::open_overlay_window,
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
-            commands::get_session_analytics,
+            commands::get_session_analysis,
             commands::get_settings,
             commands::get_storage_health,
-            commands::get_subagent_analytics,
+            commands::get_subagent_analysis,
             commands::hide_popover,
             commands::finish_onboarding,
             commands::note_interaction,

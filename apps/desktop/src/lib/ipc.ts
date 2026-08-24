@@ -189,7 +189,7 @@ export interface ActivityEntryPayload {
   modelRuns: ModelRunPayload[]
 }
 
-/** Identity of one local session, as the analytics view carries it. */
+/** Identity of one local session, as the analysis view carries it. */
 export interface SessionIdentityPayload {
   agent: string
   sessionId: string
@@ -226,10 +226,10 @@ export interface OrchestrationPayload {
   members: SubagentMemberPayload[]
 }
 
-/** Everything the session-analytics surface renders for one session. */
-export interface SessionAnalyticsPayload {
+/** Everything the session-analysis surface renders for one session. */
+export interface SessionAnalysisPayload {
   summary: ActiveSessionsSummary | null
-  supportsAnalytics: boolean
+  supportsAnalysis: boolean
   title: string | null
   wslDistro: string | null
   isActive: boolean
@@ -824,13 +824,13 @@ export async function listRecentSessions(windowDays?: number): Promise<ActivityE
 }
 
 /** One session's analysis, sub-agent roster, and fork relations. */
-export async function getSessionAnalytics(
+export async function getSessionAnalysis(
   agent: string,
   sessionId: string,
   wslDistro?: string | null,
-): Promise<SessionAnalyticsPayload | null> {
+): Promise<SessionAnalysisPayload | null> {
   if (!hasShell()) return null
-  return invoke<SessionAnalyticsPayload>("get_session_analytics", {
+  return invoke<SessionAnalysisPayload>("get_session_analysis", {
     agent,
     sessionId,
     wslDistro: wslDistro ?? null,
@@ -838,14 +838,14 @@ export async function getSessionAnalytics(
 }
 
 /** One sub-agent's own analysis. */
-export async function getSubagentAnalytics(
+export async function getSubagentAnalysis(
   agent: string,
   parentSessionId: string,
   subagentId: string,
   wslDistro?: string | null,
-): Promise<SessionAnalyticsPayload | null> {
+): Promise<SessionAnalysisPayload | null> {
   if (!hasShell()) return null
-  return invoke<SessionAnalyticsPayload>("get_subagent_analytics", {
+  return invoke<SessionAnalysisPayload>("get_subagent_analysis", {
     agent,
     parentSessionId,
     subagentId,

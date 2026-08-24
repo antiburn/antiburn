@@ -3,7 +3,7 @@
 Local-first visibility into your AI coding-agent sessions.
 
 antiburn discovers the coding-agent sessions already on your machine, analyzes the
-transcripts locally, and shows you activity, session analytics, and API-equivalent
+transcripts locally, and shows you activity, session analysis, and API-equivalent
 cost estimates. Everything runs on your device.
 
 **Supported agents.** Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode,

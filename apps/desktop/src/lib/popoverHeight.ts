@@ -7,7 +7,7 @@
  *
  * The window is 380px wide and never resizable, so height is the only degree of
  * freedom a view has. Three numbers rather than one fixed height: the activity
- * list and a session's analytics rest at the contract's height, and the usage
+ * list and a session's analysis rest at the contract's height, and the usage
  * breakdown asks for more.
  *
  * There was a fourth, shorter than all of them, for the first-run flow. That

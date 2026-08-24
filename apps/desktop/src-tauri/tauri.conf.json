@@ -24,7 +24,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Local-first visibility into your AI coding-agent sessions.",
-    "longDescription": "antiburn discovers the coding-agent sessions already on your machine, analyzes the transcripts locally, and shows activity, session analytics, and API-equivalent cost estimates. Everything runs on your device.",
+    "longDescription": "antiburn discovers the coding-agent sessions already on your machine, analyzes the transcripts locally, and shows activity, session analysis, and API-equivalent cost estimates. Everything runs on your device.",
     "copyright": "antiburn contributors",
     "icon": [
       "icons/32x32.png",

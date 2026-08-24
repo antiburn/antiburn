@@ -44,9 +44,9 @@ described in [Network](#network).
 live language-server APIs those two editors expose aren't read, so a session that
 exists only in memory will not appear.
 
-**Session analytics** — the timeline, phases, context, token, and cost views — need a
+**Session analysis** — the timeline, phases, context, token, and cost views — need a
 transcript format antiburn understands in detail. Where it has only a generic parse,
-the session is still listed and the analytics view says so rather than showing an
+the session is still listed and the analysis view says so rather than showing an
 empty chart that looks like an idle session.
 
 ## Cost estimates

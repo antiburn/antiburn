@@ -27,11 +27,11 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::agents::kind_from_slug;
-use crate::analytics;
+use crate::analysis;
 use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, LiveUsageSummary,
-    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics,
+    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
     SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
@@ -410,11 +410,11 @@ fn activity_entry(
     let analysis = store.analysis(&session.key)?;
     let (cost, models) = analysis
         .as_ref()
-        .map(|record| analytics::price_cached_breakdown(&record.model_breakdown_json))
+        .map(|record| analysis::price_cached_breakdown(&record.model_breakdown_json))
         .unwrap_or((None, Vec::new()));
     let model_runs = analysis
         .as_ref()
-        .map(|record| analytics::cached_inclusive_model_runs(&record.inclusive_models_json))
+        .map(|record| analysis::cached_inclusive_model_runs(&record.inclusive_models_json))
         .unwrap_or_default();
 
     Ok(ActivityEntry {
@@ -422,7 +422,7 @@ fn activity_entry(
         session_id: session.key.session_id.clone(),
         repo: repository_label(repositories, session.cwd.as_deref()),
         timestamp: iso_from_epoch(session.updated_at_epoch),
-        is_active: analytics::is_active(session.updated_at_epoch, now),
+        is_active: analysis::is_active(session.updated_at_epoch, now),
         surface: session.surface.clone(),
         wsl_distro: session.wsl_distro.clone(),
         title: session.title.clone(),
@@ -601,26 +601,26 @@ pub async fn refresh_live_usage(
 }
 
 /* -------------------------------------------------------------------------
- * Session analytics
+ * Session analysis
  * ---------------------------------------------------------------------- */
 
-/// Everything the session-analytics surface renders for one session.
+/// Everything the session-analysis surface renders for one session.
 ///
 /// Returns a payload with no summary rather than an error when the transcript
 /// is gone: a deleted conversation is an ordinary state, and the view says so.
 #[tauri::command]
-pub async fn get_session_analytics(
+pub async fn get_session_analysis(
     app: tauri::AppHandle,
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
 
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
     let store = app.state::<Store>();
@@ -649,12 +649,12 @@ pub async fn get_session_analytics(
         None => cached_orchestration(&store, &key),
     };
 
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: stored.as_ref().and_then(|record| record.title.clone()),
         wsl_distro,
-        is_active: analytics::is_active(
+        is_active: analysis::is_active(
             stored.as_ref().and_then(|record| record.updated_at_epoch),
             scan::unix_now(),
         ),
@@ -673,27 +673,27 @@ pub async fn get_session_analytics(
 
 /// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
-pub async fn get_subagent_analytics(
+pub async fn get_subagent_analysis(
     app: tauri::AppHandle,
     agent: String,
     parent_session_id: String,
     subagent_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
     let _ = &app;
-    let analysis = analytics::analyze_subagent(
+    let analysis = analysis::analyze_subagent(
         kind,
         &parent_session_id,
         &subagent_id,
         wsl_distro.as_deref(),
     )
     .await;
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: None,
         wsl_distro,
         is_active: false,
@@ -730,7 +730,7 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
         return None;
     }
     Some(OrchestrationStatus {
-        orchestrating: members.len() as u32 >= analytics::MIN_ORCHESTRATED_SUBAGENTS,
+        orchestrating: members.len() as u32 >= analysis::MIN_ORCHESTRATED_SUBAGENTS,
         orchestrator_agent: key.agent.clone(),
         orchestrator_session_id: key.session_id.clone(),
         subagent_count: members.len() as u32,
@@ -746,8 +746,8 @@ async fn resolve_lineage(
     wsl_distro: Option<&str>,
 ) -> SessionRelations {
     let store = app.state::<Store>();
-    let parent_id = match analytics::locate(kind, &key.session_id, wsl_distro).await {
-        Some(source) => analytics::fork_parent(&source).await,
+    let parent_id = match analysis::locate(kind, &key.session_id, wsl_distro).await {
+        Some(source) => analysis::fork_parent(&source).await,
         None => None,
     };
 
@@ -773,7 +773,7 @@ async fn resolve_lineage(
     };
 
     if let Some(parent_id) = parent_id {
-        let available = analytics::locate(kind, &parent_id, wsl_distro)
+        let available = analysis::locate(kind, &parent_id, wsl_distro)
             .await
             .is_some();
         let title = store
@@ -984,7 +984,7 @@ pub async fn export_session(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
 
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
     let stored = app.state::<Store>().session(&key).ok().flatten();

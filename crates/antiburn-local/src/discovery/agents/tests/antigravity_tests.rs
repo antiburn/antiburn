@@ -729,7 +729,7 @@ async fn test_discover_recent_emits_inline_for_brain_transcript() {
 /// (`task.md.metadata.json`, plan metadata, …) must NOT be emitted as
 /// session File logs. Otherwise they shadow the real transcript when
 /// `locate_session_source` substring-matches the UUID, leaving the session
-/// with no analyzable transcript ("no analytics for this session").
+/// with no analyzable transcript ("no analysis for this session").
 // Mutates the global `HOME`; `#[serial]` prevents the discover_recent
 // sibling tests from clobbering each other's temp home under parallel runs.
 #[tokio::test(flavor = "current_thread")]

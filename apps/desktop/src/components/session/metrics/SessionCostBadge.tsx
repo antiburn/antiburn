@@ -9,7 +9,7 @@ import {
   formatCost,
   HIGH_COST_MEDIAN_MULTIPLE,
   type CostRow,
-} from "../../../lib/presentation/sessionAnalytics"
+} from "../../../lib/presentation/sessionAnalysis"
 import { Tooltip } from "../../presentation/Tooltip"
 import { TextRoll } from "../../ui/TextRoll"
 

@@ -22,7 +22,7 @@ import type {
   ProviderUsageWindowPayload,
 } from "../ipc"
 import { relativeTime } from "./relativeTime"
-import { formatCompact, formatCost } from "./sessionAnalytics"
+import { formatCompact, formatCost } from "./sessionAnalysis"
 
 /** Which window a surface is showing. */
 export type UsageWindowKey = "today" | "week" | "month"

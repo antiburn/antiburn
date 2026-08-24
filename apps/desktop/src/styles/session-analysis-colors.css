@@ -5,10 +5,10 @@
  */
 
 /* ==========================================================================
-   Session-analytics sub-palette.
+   Session-analysis sub-palette.
 
    A small, self-contained set of theme-adaptive presentation tokens for the
-   session-analytics surface, kept out of tokens.css so the core design tokens
+   session-analysis surface, kept out of tokens.css so the core design tokens
    stay the ones every surface uses. Values are deepened in light mode to hold
    contrast on a light surface and kept vivid in dark mode, where saturated
    hues read well on a dark card.
@@ -25,10 +25,10 @@
   /* Categorical band hues, ordered so adjacent bands stay distinguishable:
      deep blue, emerald, mid blue, cyan, orange. The orange is the only warm
      hue in the set, which is what sets it apart from the other four. */
-  --color-analytics-blue-strong: var(--color-analytics-blue-strong-val);
-  --color-analytics-green: var(--color-analytics-green-val);
-  --color-analytics-blue: var(--color-analytics-blue-val);
-  --color-analytics-cyan: var(--color-analytics-cyan-val);
+  --color-analysis-blue-strong: var(--color-analysis-blue-strong-val);
+  --color-analysis-green: var(--color-analysis-green-val);
+  --color-analysis-blue: var(--color-analysis-blue-val);
+  --color-analysis-cyan: var(--color-analysis-cyan-val);
 
   /* Vertical area fill: the same blue as --color-token-in, with the alpha
      baked in per theme so each sets its own contrast, fading out toward the
@@ -64,10 +64,10 @@
 /* --- Light (default and explicit) --- */
 :root,
 :root[data-theme="light"] {
-  --color-analytics-blue-strong-val: hsl(224.2 76.3% 48%); /* blue-700 */
-  --color-analytics-green-val: hsl(161.3 93% 30.4%); /* emerald-600 */
-  --color-analytics-blue-val: hsl(217.2 91% 59.8%); /* blue-500 */
-  --color-analytics-cyan-val: hsl(188.7 94.4% 42.7%); /* cyan-500 */
+  --color-analysis-blue-strong-val: hsl(224.2 76.3% 48%); /* blue-700 */
+  --color-analysis-green-val: hsl(161.3 93% 30.4%); /* emerald-600 */
+  --color-analysis-blue-val: hsl(217.2 91% 59.8%); /* blue-500 */
+  --color-analysis-cyan-val: hsl(188.7 94.4% 42.7%); /* cyan-500 */
   --color-context-fill-top-val: hsl(217.2 91% 59.8% / 0.6); /* blue-500 */
   --color-context-fill-base-val: hsl(217.2 91% 59.8% / 0.2);
   --color-context-fixed-val: hsl(215 16% 46.9%); /* slate-500 */
@@ -85,10 +85,10 @@
    written separately, mirroring how tokens.css duplicates its dark palette. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-analytics-blue-strong-val: hsl(221.2 83% 53.3%); /* blue-600 */
-    --color-analytics-green-val: hsl(158 64% 51.56%); /* emerald-400 */
-    --color-analytics-blue-val: hsl(213 94% 67.8%); /* blue-400 */
-    --color-analytics-cyan-val: hsl(188 86% 53.3%); /* cyan-400 */
+    --color-analysis-blue-strong-val: hsl(221.2 83% 53.3%); /* blue-600 */
+    --color-analysis-green-val: hsl(158 64% 51.56%); /* emerald-400 */
+    --color-analysis-blue-val: hsl(213 94% 67.8%); /* blue-400 */
+    --color-analysis-cyan-val: hsl(188 86% 53.3%); /* cyan-400 */
     --color-context-fill-top-val: hsl(213 94% 67.8% / 0.75); /* blue-400 */
     --color-context-fill-base-val: hsl(213 94% 67.8% / 0.25);
     --color-context-fixed-val: hsl(215 20% 65%); /* slate-400 */
@@ -102,10 +102,10 @@
 }
 
 :root[data-theme="dark"] {
-  --color-analytics-blue-strong-val: hsl(221.2 83% 53.3%);
-  --color-analytics-green-val: hsl(158 64% 51.56%);
-  --color-analytics-blue-val: hsl(213 94% 67.8%);
-  --color-analytics-cyan-val: hsl(188 86% 53.3%);
+  --color-analysis-blue-strong-val: hsl(221.2 83% 53.3%);
+  --color-analysis-green-val: hsl(158 64% 51.56%);
+  --color-analysis-blue-val: hsl(213 94% 67.8%);
+  --color-analysis-cyan-val: hsl(188 86% 53.3%);
   --color-context-fill-top-val: hsl(213 94% 67.8% / 0.75);
   --color-context-fill-base-val: hsl(213 94% 67.8% / 0.25);
   --color-context-fixed-val: hsl(215 20% 65%);
