@@ -255,6 +255,11 @@ impl Store {
         Ok((previous, saved))
     }
 
+    /// Make setup pending without changing the reader's data or choices.
+    pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
+        self.update_settings(|settings| settings.onboarding_completed = false)
+    }
+
     /// Replace every preference, returning what was actually stored (clamped).
     #[cfg(test)]
     pub fn save_settings(&self, settings: &AppSettings) -> Result<AppSettings> {

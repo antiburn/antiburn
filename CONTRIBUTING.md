@@ -86,6 +86,16 @@ cargo test
 All three must be clean before review. Behavior suites live in `tests/`;
 keep inline `#[cfg(test)]` modules small and tightly scoped.
 
+### Desktop onboarding tests
+
+Use **Reset Onboarding** in the debug-build tray menu for a one-step restart.
+Packaged builds provide **Settings → General → Run setup again**. Both paths
+keep indexed sessions, scan folders, repository choices, and preferences. They
+are not factory resets. Setup stays pending if you close it before completion.
+
+See [the desktop development guide](apps/desktop/README.md#restarting-onboarding)
+for clean-profile testing and the bundle-identifier rules that forks must keep.
+
 ## Slop gate
 
 The `slop gate` check runs on pull requests only. A failure also fails

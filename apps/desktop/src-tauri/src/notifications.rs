@@ -385,15 +385,13 @@ pub fn note_usage_milestone(
     true
 }
 
-/// Say where antiburn went, once, as the first-run window closes.
+/// Say where antiburn went as the current setup window closes.
 ///
 /// Ungated (see [`allowed`]) and forced to hang off the menu-bar item whatever
 /// the reader's placement preference says: a notification that answers "where
 /// is it" by appearing in the opposite corner of the screen from the answer
-/// would be worse than none. Called only from [`crate::onboarding::finish`],
-/// which the one onboarding-completed transition in
-/// [`crate::commands::set_settings`] reaches — so "once" is a property of that
-/// transition, not a flag anything has to remember.
+/// would be worse than none. Called only from [`crate::onboarding::finish`], so
+/// it appears after each setup run, including an explicit restart.
 pub fn note_menu_bar_home(app: &AppHandle) {
     let (title, body) = menu_bar_home_message();
     crate::nudges::anchor_next_to_the_tray(app);
