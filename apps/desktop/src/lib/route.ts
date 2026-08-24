@@ -10,7 +10,7 @@ import { useSyncExternalStore } from "react"
  * window owns exactly one route for its whole lifetime, and the fragment is
  * the only thing that distinguishes them.
  */
-export type Route = "popover" | "settings" | "nudge" | "onboarding" | "overlay"
+export type Route = "popover" | "settings" | "nudge" | "onboarding" | "overlay" | "hud-detail"
 
 /** Fragment the Rust shell opens the settings window with. */
 export const SETTINGS_FRAGMENT = "#/settings"
@@ -34,6 +34,7 @@ const ROUTES = new Map<string, Route>([
   ["nudge", "nudge"],
   ["onboarding", "onboarding"],
   ["overlay", "overlay"],
+  ["hud-detail", "hud-detail"],
 ])
 
 export function routeFromHash(hash: string): Route {
