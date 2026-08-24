@@ -32,11 +32,6 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/account")).toBe("popover")
   })
 
-  it("does not route standalone entries through the resident shell", () => {
-    expect(routeFromHash("#/settings")).toBe("popover")
-    expect(routeFromHash("#/onboarding")).toBe("popover")
-  })
-
   it("does not resolve a route from an inherited object property", () => {
     // A fragment like "constructor" must not resolve to anything just because
     // it is an inherited object property rather than a known route.

@@ -32,13 +32,11 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_placement::center_on_active_monitor;
-use crate::window_readiness::{
-    OpenAction, ReadyAction, STALE_LOAD_AFTER, WindowReadiness, renderer_generation_script,
-};
+use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "onboarding";
@@ -77,8 +75,8 @@ const _: () = assert!(HEIGHT - 44.0 - 57.0 > 150.0 + 110.0 + 60.0);
 #[derive(Default)]
 pub struct OnboardingWindowState(Mutex<WindowReadiness>);
 
-impl OnboardingWindowState {
-    fn lock(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
+impl ManagedWindowReadiness for OnboardingWindowState {
+    fn readiness(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -96,7 +94,7 @@ impl OnboardingWindowState {
 pub fn open(app: &AppHandle) -> tauri::Result<()> {
     let state = app.state::<OnboardingWindowState>();
     let Some(existing) = app.get_webview_window(LABEL) else {
-        let mut readiness = state.lock();
+        let mut readiness = state.readiness();
         let action = readiness.request_open(Instant::now());
         let generation = match action {
             OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
@@ -116,18 +114,18 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
     };
 
     let action = {
-        let mut readiness = state.lock();
+        let mut readiness = state.readiness();
         readiness.request_open(Instant::now())
     };
     match action {
         OpenAction::Reveal => show(&existing),
         OpenAction::AwaitReady => Ok(()),
         OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
-            if !state.lock().defer_build_until_destroyed(generation) {
+            if !state.readiness().defer_build_until_destroyed(generation) {
                 return Ok(());
             }
             if let Err(error) = existing.destroy() {
-                cancel_load(app, generation);
+                window_lifecycle::cancel_load::<OnboardingWindowState>(app, generation);
                 return Err(error);
             }
             Ok(())
@@ -137,10 +135,8 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
 
 /// Build a deferred replacement after Tauri removes the old window label.
 pub fn rebuild_after_destroy(app: &AppHandle) {
-    let generation = app
-        .state::<OnboardingWindowState>()
-        .lock()
-        .begin_deferred_build(Instant::now());
+    let generation =
+        window_lifecycle::begin_deferred_build::<OnboardingWindowState>(app, Instant::now());
     let Some(generation) = generation else {
         return;
     };
@@ -155,7 +151,7 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         window = LABEL,
         generation
     );
-    arm_stale_warning(app, generation);
+    window_lifecycle::arm_stale_warning::<OnboardingWindowState>(app, generation, LABEL);
 
     // Built hidden and positioned before the first show, so the window never
     // visibly jumps from a default position to the right one. Deliberately no
@@ -169,7 +165,9 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         .resizable(false)
         .maximizable(false)
         .visible(false)
-        .on_page_load(trace_page_load);
+        .on_page_load(|window, payload| {
+            window_lifecycle::trace_page_load::<OnboardingWindowState>(window, payload, LABEL);
+        });
 
     #[cfg(target_os = "macos")]
     {
@@ -184,7 +182,7 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
     let window = match builder.build() {
         Ok(window) => window,
         Err(error) => {
-            cancel_load(app, generation);
+            window_lifecycle::cancel_load::<OnboardingWindowState>(app, generation);
             return Err(error);
         }
     };
@@ -195,31 +193,14 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
 /// Reveal onboarding after React commits its shell.
 pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
     let app = window.app_handle();
-    let action = app
-        .state::<OnboardingWindowState>()
-        .lock()
-        .renderer_ready(generation, Instant::now());
-    match action {
-        ReadyAction::Reveal { loading_for } => {
-            ::tracing::info!(
-                event = "window_renderer_ready",
-                window = LABEL,
-                loading_ms = loading_for.as_millis() as u64,
-                reveal = true
-            );
-            if let Err(error) = show(window) {
-                ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
-            }
-        }
-        ReadyAction::StayHidden { loading_for } => {
-            ::tracing::info!(
-                event = "window_renderer_ready",
-                window = LABEL,
-                loading_ms = loading_for.as_millis() as u64,
-                reveal = false
-            );
-        }
-        ReadyAction::None => {}
+    if window_lifecycle::renderer_ready::<OnboardingWindowState>(
+        app,
+        LABEL,
+        generation,
+        Instant::now(),
+    ) && let Err(error) = show(window)
+    {
+        ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
     }
 }
 
@@ -232,52 +213,6 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     window.set_focus()?;
     ::tracing::info!(event = "window_revealed", window = LABEL);
     Ok(())
-}
-
-fn trace_page_load(window: tauri::WebviewWindow, payload: tauri::webview::PageLoadPayload<'_>) {
-    let phase = match payload.event() {
-        PageLoadEvent::Started => "started",
-        PageLoadEvent::Finished => "finished",
-    };
-    let loading_ms = window
-        .app_handle()
-        .state::<OnboardingWindowState>()
-        .lock()
-        .loading_duration(Instant::now())
-        .map(|duration| duration.as_millis() as u64);
-    ::tracing::debug!(
-        event = "window_page_load",
-        window = LABEL,
-        phase,
-        loading_ms
-    );
-}
-
-fn arm_stale_warning(app: &AppHandle, generation: u64) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(STALE_LOAD_AFTER).await;
-        if app
-            .state::<OnboardingWindowState>()
-            .lock()
-            .warning_is_current(generation, Instant::now())
-        {
-            ::tracing::warn!(
-                event = "window_renderer_ready_timeout",
-                window = LABEL,
-                generation,
-                timeout_ms = STALE_LOAD_AFTER.as_millis() as u64
-            );
-        }
-    });
-}
-
-fn cancel_load(app: &AppHandle, generation: u64) {
-    let state = app.state::<OnboardingWindowState>();
-    let mut readiness = state.lock();
-    if readiness.loading_generation() == Some(generation) {
-        readiness.reset();
-    }
 }
 
 /// Put the window away and point the reader at where the app now lives.

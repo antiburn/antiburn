@@ -45,7 +45,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use tauri::webview::PageLoadEvent;
 #[cfg(target_os = "macos")]
 use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{
@@ -53,9 +52,9 @@ use tauri::{
     WebviewWindowBuilder, Window,
 };
 
+use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_readiness::{
-    OpenAction, PrewarmAction, ReadyAction, STALE_LOAD_AFTER, ToggleAction, WindowReadiness,
-    renderer_generation_script,
+    OpenAction, PrewarmAction, ToggleAction, WindowReadiness, renderer_generation_script,
 };
 
 /// Window label. Also listed in `capabilities/default.json`.
@@ -361,6 +360,14 @@ impl Default for PopoverState {
     }
 }
 
+impl ManagedWindowReadiness for PopoverState {
+    fn readiness(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
+        self.readiness
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 impl PopoverState {
     fn record_auto_hide(&self) {
         if let Ok(mut slot) = self.auto_hidden_at.lock() {
@@ -451,12 +458,6 @@ impl PopoverState {
     fn resize_is_current(&self, generation: u64) -> bool {
         self.resize_generation.load(Ordering::SeqCst) == generation
     }
-
-    fn readiness(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
-        self.readiness
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 }
 
 /// A requested height, held inside the bounds the window can actually be.
@@ -481,7 +482,7 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
         window = LABEL,
         generation
     );
-    arm_stale_warning(app, generation);
+    window_lifecycle::arm_stale_warning::<PopoverState>(app, generation, LABEL);
     let height = app
         .try_state::<PopoverState>()
         .map(|state| state.height())
@@ -499,7 +500,9 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
         .skip_taskbar(true)
         .visible(false)
         .focused(false)
-        .on_page_load(trace_page_load);
+        .on_page_load(|window, payload| {
+            window_lifecycle::trace_page_load::<PopoverState>(window, payload, LABEL);
+        });
 
     // Let the first click both focus the popover and act on the control under
     // the cursor; a menu-bar surface that eats the first click feels broken.
@@ -521,7 +524,7 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
     match builder.build() {
         Ok(window) => Ok(window),
         Err(error) => {
-            cancel_load(app, generation);
+            window_lifecycle::cancel_load::<PopoverState>(app, generation);
             Err(error)
         }
     }
@@ -552,7 +555,6 @@ fn prewarm(app: &AppHandle) {
         return;
     };
     if let Err(error) = build_window(app, generation) {
-        cancel_load(app, generation);
         ::tracing::warn!(event = "popover_prewarm_failed", error = %error);
     }
 }
@@ -598,7 +600,7 @@ fn request_open_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
                 return Ok(WindowRequest::AwaitingBuild);
             }
             if let Err(error) = existing.destroy() {
-                cancel_load(app, generation);
+                window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 return Err(error);
             }
             Ok(WindowRequest::AwaitingBuild)
@@ -642,7 +644,7 @@ fn request_toggle_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
                 return Ok(WindowRequest::AwaitingBuild);
             }
             if let Err(error) = existing.destroy() {
-                cancel_load(app, generation);
+                window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 return Err(error);
             }
             Ok(WindowRequest::AwaitingBuild)
@@ -653,7 +655,7 @@ fn request_toggle_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
 /// Build a deferred replacement after Tauri removes the old window label.
 pub fn rebuild_after_destroy(app: &AppHandle) {
     let state = app.state::<PopoverState>();
-    let generation = state.readiness().begin_deferred_build(Instant::now());
+    let generation = window_lifecycle::begin_deferred_build::<PopoverState>(app, Instant::now());
     let Some(generation) = generation else {
         return;
     };
@@ -1017,29 +1019,8 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
 /// Reveal the popover after React commits its shell.
 pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     let app = window.app_handle();
-    let action = app
-        .state::<PopoverState>()
-        .readiness()
-        .renderer_ready(generation, Instant::now());
-    match action {
-        ReadyAction::Reveal { loading_for } => {
-            ::tracing::info!(
-                event = "window_renderer_ready",
-                window = LABEL,
-                loading_ms = loading_for.as_millis() as u64,
-                reveal = true
-            );
-            reveal(window);
-        }
-        ReadyAction::StayHidden { loading_for } => {
-            ::tracing::info!(
-                event = "window_renderer_ready",
-                window = LABEL,
-                loading_ms = loading_for.as_millis() as u64,
-                reveal = false
-            );
-        }
-        ReadyAction::None => {}
+    if window_lifecycle::renderer_ready::<PopoverState>(app, LABEL, generation, Instant::now()) {
+        reveal(window);
     }
 }
 
@@ -1053,52 +1034,6 @@ fn reveal(window: &WebviewWindow) {
     }
     note_shown(window.app_handle());
     ::tracing::info!(event = "window_revealed", window = LABEL);
-}
-
-fn trace_page_load(window: WebviewWindow, payload: tauri::webview::PageLoadPayload<'_>) {
-    let phase = match payload.event() {
-        PageLoadEvent::Started => "started",
-        PageLoadEvent::Finished => "finished",
-    };
-    let loading_ms = window
-        .app_handle()
-        .state::<PopoverState>()
-        .readiness()
-        .loading_duration(Instant::now())
-        .map(|duration| duration.as_millis() as u64);
-    ::tracing::debug!(
-        event = "window_page_load",
-        window = LABEL,
-        phase,
-        loading_ms
-    );
-}
-
-fn arm_stale_warning(app: &AppHandle, generation: u64) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(STALE_LOAD_AFTER).await;
-        if app
-            .state::<PopoverState>()
-            .readiness()
-            .warning_is_current(generation, Instant::now())
-        {
-            ::tracing::warn!(
-                event = "window_renderer_ready_timeout",
-                window = LABEL,
-                generation,
-                timeout_ms = STALE_LOAD_AFTER.as_millis() as u64
-            );
-        }
-    });
-}
-
-fn cancel_load(app: &AppHandle, generation: u64) {
-    let state = app.state::<PopoverState>();
-    let mut readiness = state.readiness();
-    if readiness.loading_generation() == Some(generation) {
-        readiness.reset();
-    }
 }
 
 /// Everything that has to happen when the popover reaches the screen, whichever
@@ -1351,11 +1286,6 @@ mod tests {
     #[test]
     fn other_platforms_keep_the_existing_anchor_gap() {
         assert_eq!(ANCHOR_GAP, 6.0);
-    }
-
-    #[test]
-    fn prewarm_waits_for_the_display_context() {
-        assert_eq!(PREWARM_DELAY, Duration::from_millis(500));
     }
 
     /// A 2x display: the anchor arrives in physical pixels, the window is

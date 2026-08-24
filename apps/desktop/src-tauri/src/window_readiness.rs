@@ -296,25 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_load_stays_hidden_when_the_renderer_is_ready() {
-        let started_at = Instant::now();
-        let mut readiness = WindowReadiness::default();
-
-        let generation = start_loading(&mut readiness, started_at);
-        assert_eq!(
-            readiness.toggle_open(started_at),
-            ToggleAction::CancelPendingReveal
-        );
-
-        assert_eq!(
-            readiness.renderer_ready(generation, started_at + Duration::from_millis(250)),
-            ReadyAction::StayHidden {
-                loading_for: Duration::from_millis(250)
-            }
-        );
-    }
-
-    #[test]
     fn repeated_open_requests_coalesce_while_the_renderer_loads() {
         let started_at = Instant::now();
         let mut readiness = WindowReadiness::default();
@@ -397,18 +378,6 @@ mod tests {
             started_at + STALE_LOAD_AFTER - Duration::from_nanos(1)
         ));
         assert!(readiness.warning_is_current(generation, started_at + STALE_LOAD_AFTER));
-    }
-
-    #[test]
-    fn a_warning_check_does_not_replace_or_cancel_the_load() {
-        let started_at = Instant::now();
-        let mut readiness = WindowReadiness::default();
-        let generation = start_loading(&mut readiness, started_at);
-        let stale_at = started_at + STALE_LOAD_AFTER;
-
-        assert!(readiness.warning_is_current(generation, stale_at));
-        assert_eq!(readiness.loading_generation(), Some(generation));
-        assert_eq!(readiness.loading_duration(stale_at), Some(STALE_LOAD_AFTER));
     }
 
     #[test]

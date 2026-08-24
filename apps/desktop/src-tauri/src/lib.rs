@@ -76,6 +76,7 @@ mod tray_title;
 mod updates;
 mod usage_alerts;
 mod usage_analytics;
+mod window_lifecycle;
 mod window_placement;
 mod window_readiness;
 
