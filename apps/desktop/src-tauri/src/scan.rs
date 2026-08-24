@@ -330,9 +330,18 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     }
 
     // Generate titles on device for sessions stuck on the first-message
-    // fallback. The write is guarded, so a title that arrived after the
-    // upsert above still wins.
+    // fallback. Newest sessions first: the pass is capped, and the rows a
+    // reader sees are the ones that deserve a name first. The write is
+    // guarded, so a title that arrived after the upsert above still wins.
     if let Some(summarizer) = crate::titles::platform_summarizer() {
+        let updated_at: std::collections::HashMap<&SessionKey, i64> = records
+            .iter()
+            .map(|record| (&record.key, record.updated_at_epoch.unwrap_or(0)))
+            .collect();
+        let mut summary_candidates = summary_candidates;
+        summary_candidates.sort_by_key(|candidate| {
+            std::cmp::Reverse(updated_at.get(&candidate.key).copied().unwrap_or(0))
+        });
         crate::titles::local_summary_pass(&store, summarizer.as_ref(), &summary_candidates).await;
     }
 

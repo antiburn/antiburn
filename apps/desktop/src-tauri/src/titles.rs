@@ -35,12 +35,18 @@ pub fn platform_summarizer() -> Option<Arc<dyn TitleSummarizer>> {
     None
 }
 
+/// Model calls one pass may spend. A first scan can surface hundreds of
+/// candidates at once; the rest catch up on later passes, newest first.
+const MAX_TITLES_PER_PASS: usize = 15;
+
 /// Generate and store titles for `candidates`. Returns how many rows changed.
 ///
 /// Availability is probed once per pass, not cached across passes — the user
-/// can turn the underlying model off at any time. Failures are silent by
-/// design: the fallback title is already on screen, and a missed candidate is
-/// retried when a later scan sees the session still on `firstMessage`.
+/// can turn the underlying model off at any time. A session already on
+/// `localSummary` is skipped: one generated title per session, then done.
+/// Failures are silent by design: the fallback title is already on screen,
+/// and a missed candidate is retried when a later scan sees the session
+/// still on `firstMessage`.
 pub async fn local_summary_pass(
     store: &Store,
     summarizer: &dyn TitleSummarizer,
@@ -53,7 +59,20 @@ pub async fn local_summary_pass(
         return 0;
     }
     let mut written = 0;
+    let mut generated = 0;
     for candidate in candidates {
+        if generated >= MAX_TITLES_PER_PASS {
+            break;
+        }
+        let already_generated = store
+            .session(&candidate.key)
+            .ok()
+            .flatten()
+            .is_some_and(|session| session.title_source.as_deref() == Some("localSummary"));
+        if already_generated {
+            continue;
+        }
+        generated += 1;
         let Some(raw) = summarizer.title(&candidate.input).await else {
             continue;
         };
@@ -81,6 +100,21 @@ mod tests {
     struct FakeSummarizer {
         available: bool,
         reply: Option<&'static str>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeSummarizer {
+        fn new(available: bool, reply: Option<&'static str>) -> Self {
+            Self {
+                available,
+                reply,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     #[async_trait]
@@ -94,6 +128,7 @@ mod tests {
         }
 
         async fn title(&self, _input: &TitleInput) -> Option<String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.reply.map(str::to_string)
         }
     }
@@ -153,10 +188,7 @@ mod tests {
     #[tokio::test]
     async fn pass_writes_sanitized_title_with_local_summary_provenance() {
         let (store, key) = seeded_store("firstMessage");
-        let summarizer = FakeSummarizer {
-            available: true,
-            reply: Some("\"Make HUD sections clickable.\""),
-        };
+        let summarizer = FakeSummarizer::new(true, Some("\"Make HUD sections clickable.\""));
         let written = local_summary_pass(&store, &summarizer, &[candidate(&key)]).await;
         assert_eq!(written, 1);
         assert_eq!(
@@ -171,19 +203,13 @@ mod tests {
     #[tokio::test]
     async fn pass_skips_unavailable_backend_and_refusals() {
         let (store, key) = seeded_store("firstMessage");
-        let off = FakeSummarizer {
-            available: false,
-            reply: Some("Never used"),
-        };
+        let off = FakeSummarizer::new(false, Some("Never used"));
         assert_eq!(
             local_summary_pass(&store, &off, &[candidate(&key)]).await,
             0
         );
 
-        let refusing = FakeSummarizer {
-            available: true,
-            reply: Some("I'm sorry, I cannot title this"),
-        };
+        let refusing = FakeSummarizer::new(true, Some("I'm sorry, I cannot title this"));
         assert_eq!(
             local_summary_pass(&store, &refusing, &[candidate(&key)]).await,
             0
@@ -193,12 +219,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pass_generates_once_per_session() {
+        let (store, key) = seeded_store("firstMessage");
+        let summarizer = FakeSummarizer::new(true, Some("Make HUD sections clickable"));
+        assert_eq!(
+            local_summary_pass(&store, &summarizer, &[candidate(&key)]).await,
+            1
+        );
+        // The next pass sees the same candidate; the model is not asked again.
+        assert_eq!(
+            local_summary_pass(&store, &summarizer, &[candidate(&key)]).await,
+            0
+        );
+        assert_eq!(summarizer.calls(), 1);
+    }
+
+    #[tokio::test]
     async fn pass_never_overwrites_a_better_source() {
         let (store, key) = seeded_store("userRename");
-        let summarizer = FakeSummarizer {
-            available: true,
-            reply: Some("Generated title"),
-        };
+        let summarizer = FakeSummarizer::new(true, Some("Generated title"));
         assert_eq!(
             local_summary_pass(&store, &summarizer, &[candidate(&key)]).await,
             0
