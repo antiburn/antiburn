@@ -30,22 +30,17 @@ function surfaceOf(payload: ActivityEntryPayload): AgentSurface {
 }
 
 /**
- * Shape one page of activity payloads into list entries.
+ * Shape one activity payload into a list entry.
  *
- * The high-cost flag is computed across the whole page rather than per row:
- * "unusually expensive" only means anything against a cohort, and the cohort is
- * the sessions the reader is looking at.
+ * `highCostThreshold` is the cohort's outlier threshold, from
+ * `costOutlierThreshold`. Pass `null` when there is no cohort to compare
+ * against — the row's high-cost flag then reads as false, never as an error.
  */
-export function toActivityEntries(
-  payloads: readonly ActivityEntryPayload[],
-): SessionListEntry[] {
-  const threshold = costOutlierThreshold(
-    payloads
-      .map((payload) => payload.cost?.totalUsd)
-      .filter((usd): usd is number => typeof usd === "number"),
-  )
-
-  return payloads.map((payload) => ({
+export function toActivityEntry(
+  payload: ActivityEntryPayload,
+  highCostThreshold: number | null = null,
+): SessionListEntry {
+  return {
     agent: payload.agent,
     sessionId: payload.sessionId,
     repo: payload.repo,
@@ -62,11 +57,30 @@ export function toActivityEntries(
           totalUsd: payload.cost.totalUsd,
           figureLabel: costFigureLabel(payload.isActive),
           models: payload.models,
-          isHighCost: threshold != null && payload.cost.totalUsd > threshold,
+          isHighCost: highCostThreshold != null && payload.cost.totalUsd > highCostThreshold,
           breakdownRows: costBreakdownRows(payload.cost),
         }
       : null,
-  }))
+  }
+}
+
+/**
+ * Shape one page of activity payloads into list entries.
+ *
+ * The high-cost flag is computed across the whole page rather than per row:
+ * "unusually expensive" only means anything against a cohort, and the cohort is
+ * the sessions the reader is looking at.
+ */
+export function toActivityEntries(
+  payloads: readonly ActivityEntryPayload[],
+): SessionListEntry[] {
+  const threshold = costOutlierThreshold(
+    payloads
+      .map((payload) => payload.cost?.totalUsd)
+      .filter((usd): usd is number => typeof usd === "number"),
+  )
+
+  return payloads.map((payload) => toActivityEntry(payload, threshold))
 }
 
 export function indexOfSession(
