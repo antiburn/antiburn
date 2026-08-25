@@ -207,6 +207,15 @@ pub struct EvidenceRow {
     pub last_error: Option<String>,
 }
 
+/// The current revisions for both transcript-derived projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectionRevisions {
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub metrics_schema_revision: i64,
+    pub evidence_schema_revision: i64,
+}
+
 /// One session's token evidence, as the provider-usage aggregation reads it.
 ///
 /// A projection rather than a record: the aggregation needs three columns out

@@ -42,9 +42,9 @@ use crate::dto::DeferredPermissionDir;
 
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS,
-    MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, RelationKind, RelationRecord,
-    RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey, SessionRecord,
-    SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions,
+    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState,
+    SessionKey, SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -483,7 +483,10 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         for record in records {
-            upsert_session_in(&tx, record)?;
+            let (previous_generation, source_generation) = upsert_session_in(&tx, record)?;
+            if previous_generation.is_none_or(|previous| source_generation > previous) {
+                mark_evidence_pending_in(&tx, &record.key)?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -608,6 +611,92 @@ impl Store {
                 evidence_from_row,
             )
             .optional()?)
+    }
+
+    /// Enroll missing evidence rows and requeue stale transcript projections.
+    pub fn reconcile_evidence_revisions(
+        &self,
+        agents: &[&str],
+        revisions: ProjectionRevisions,
+    ) -> Result<usize> {
+        if agents.is_empty() {
+            return Ok(0);
+        }
+
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let agent_placeholders = vec!["?"; agents.len()].join(", ");
+        let agent_values: Vec<rusqlite::types::Value> = agents
+            .iter()
+            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
+            .collect();
+        let enrolled = transaction.execute(
+            &format!(
+                "INSERT INTO session_evidence (environment_key, agent, session_id)
+                 SELECT session.environment_key, session.agent, session.session_id
+                   FROM session
+                  WHERE session.agent IN ({agent_placeholders})
+                    AND NOT EXISTS (
+                        SELECT 1 FROM session_evidence
+                         WHERE session_evidence.environment_key = session.environment_key
+                           AND session_evidence.agent = session.agent
+                           AND session_evidence.session_id = session.session_id
+                    )"
+            ),
+            rusqlite::params_from_iter(agent_values.iter()),
+        )?;
+
+        let parser_parameter = agents.len() + 1;
+        let analyzer_parameter = agents.len() + 2;
+        let metrics_parameter = agents.len() + 3;
+        let evidence_parameter = agents.len() + 4;
+        let update_sql = format!(
+            "UPDATE session_evidence AS evidence
+                SET status = 'pending', last_error = NULL,
+                    next_attempt_at_epoch = NULL, retry_count = 0
+              WHERE evidence.agent IN ({agent_placeholders})
+                AND (
+                    evidence.status <> 'pending'
+                    OR evidence.last_error IS NOT NULL
+                    OR evidence.next_attempt_at_epoch IS NOT NULL
+                    OR evidence.retry_count <> 0
+                )
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND (
+                           evidence.analyzed_generation IS NOT session.source_generation
+                           OR evidence.parser_revision IS NOT ?{parser_parameter}
+                           OR evidence.analyzer_revision IS NOT ?{analyzer_parameter}
+                           OR evidence.evidence_schema_revision IS NOT ?{evidence_parameter}
+                           OR NOT EXISTS (
+                               SELECT 1 FROM session_analysis AS analysis
+                                WHERE analysis.environment_key = session.environment_key
+                                  AND analysis.agent = session.agent
+                                  AND analysis.session_id = session.session_id
+                                  AND analysis.analyzed_generation = session.source_generation
+                                  AND analysis.parser_revision = ?{parser_parameter}
+                                  AND analysis.analyzer_revision = ?{analyzer_parameter}
+                                  AND analysis.metrics_schema_revision = ?{metrics_parameter}
+                           )
+                       )
+                )"
+        );
+        let mut update_values = agent_values;
+        update_values.extend([
+            rusqlite::types::Value::Integer(revisions.parser_revision),
+            rusqlite::types::Value::Integer(revisions.analyzer_revision),
+            rusqlite::types::Value::Integer(revisions.metrics_schema_revision),
+            rusqlite::types::Value::Integer(revisions.evidence_schema_revision),
+        ]);
+        let requeued = transaction.execute(
+            &update_sql,
+            rusqlite::params_from_iter(update_values.iter()),
+        )?;
+        transaction.commit()?;
+        Ok(enrolled + requeued)
     }
 
     /// Forget all locally stored session data: every session, its analysis, its
@@ -1206,7 +1295,22 @@ pub fn iso_from_epoch(epoch: Option<i64>) -> String {
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<()> {
+fn upsert_session_in(
+    connection: &Connection,
+    record: &SessionRecord,
+) -> Result<(Option<i64>, i64)> {
+    let previous_generation = connection
+        .query_row(
+            "SELECT source_generation FROM session
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
     let now = now_rfc3339();
     connection.execute(
         "INSERT INTO session (
@@ -1298,6 +1402,28 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
             ],
         )?;
     }
+    let source_generation = connection.query_row(
+        "SELECT source_generation FROM session
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+        params![
+            record.key.environment_key,
+            record.key.agent,
+            record.key.session_id
+        ],
+        |row| row.get(0),
+    )?;
+    Ok((previous_generation, source_generation))
+}
+
+fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result<()> {
+    connection.execute(
+        "INSERT INTO session_evidence (environment_key, agent, session_id)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+             status = 'pending', last_error = NULL,
+             next_attempt_at_epoch = NULL, retry_count = 0",
+        params![key.environment_key, key.agent, key.session_id],
+    )?;
     Ok(())
 }
 

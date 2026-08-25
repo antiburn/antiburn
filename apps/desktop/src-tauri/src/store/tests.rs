@@ -29,6 +29,104 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
     }
 }
 
+fn projection_revisions() -> ProjectionRevisions {
+    ProjectionRevisions {
+        parser_revision: 1,
+        analyzer_revision: 1,
+        metrics_schema_revision: 1,
+        evidence_schema_revision: 1,
+    }
+}
+
+fn seed_current_session_evidence(store: &Store, session_id: &str) -> SessionRecord {
+    let mut record = session(session_id, 1_000);
+    record.source_fingerprint = Some("sv1:current".into());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    store
+        .save_analysis(
+            &AnalysisRecord {
+                key: record.key.clone(),
+                model_breakdown_json: "{}".into(),
+                inclusive_models_json: "[]".into(),
+                source_fingerprint: "sv1:current".into(),
+                pricing_generation: 1,
+                analyzed_generation: 1,
+                parser_revision: 1,
+                analyzer_revision: 1,
+                metrics_schema_revision: 1,
+            },
+            None,
+        )
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET status = 'ready', analyzed_generation = 1,
+                    processed_fingerprint = 'sv1:current', parser_revision = 1,
+                    analyzer_revision = 1, evidence_schema_revision = 1,
+                    evidence_json = '{\"groups\":[]}', diagnostics_json = '[]',
+                    retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    record
+}
+
+fn assert_unchanged_session_evidence(
+    session_id: &str,
+    status: &str,
+    retry_count: i64,
+    claimed_at_epoch: Option<i64>,
+    lease_expires_at_epoch: Option<i64>,
+    next_attempt_at_epoch: Option<i64>,
+    last_error: Option<&str>,
+) {
+    let store = store();
+    let record = seed_current_session_evidence(&store, session_id);
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET status = ?4, retry_count = ?5, claimed_at_epoch = ?6,
+                    lease_expires_at_epoch = ?7, next_attempt_at_epoch = ?8,
+                    last_error = ?9
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id,
+                status,
+                retry_count,
+                claimed_at_epoch,
+                lease_expires_at_epoch,
+                next_attempt_at_epoch,
+                last_error,
+            ],
+        )
+        .unwrap();
+    let before = store.evidence(&record.key).unwrap().unwrap();
+
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        0
+    );
+
+    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
+}
+
 #[test]
 fn a_fresh_database_is_migrated_to_the_latest_version() {
     let store = store();
@@ -1303,6 +1401,232 @@ fn the_generation_increments_only_when_the_fingerprint_changes() {
         .unwrap()
         .expect("source state");
     assert_eq!(unreadable, second);
+}
+
+#[test]
+fn a_new_source_generation_marks_session_evidence_pending() {
+    let store = store();
+    let mut record = seed_current_session_evidence(&store, "new-generation-evidence");
+    record.source_fingerprint = Some("sv1:changed".into());
+
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+
+    assert_eq!(
+        store
+            .session_source_state(&record.key)
+            .unwrap()
+            .unwrap()
+            .source_generation,
+        2
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn marking_session_evidence_pending_keeps_the_last_completed_payload() {
+    let store = store();
+    let mut record = seed_current_session_evidence(&store, "preserved-evidence");
+    let before = store.evidence(&record.key).unwrap().unwrap();
+    record.source_fingerprint = Some("sv1:changed".into());
+
+    store.upsert_sessions(&[record.clone()]).unwrap();
+
+    let after = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(after.status, EvidenceStatus::Pending);
+    assert_eq!(after.evidence_json, before.evidence_json);
+    assert_eq!(after.diagnostics_json, before.diagnostics_json);
+    assert_eq!(after.analyzed_generation, before.analyzed_generation);
+    assert_eq!(after.processed_fingerprint, before.processed_fingerprint);
+    assert_eq!(after.parser_revision, before.parser_revision);
+    assert_eq!(after.analyzer_revision, before.analyzer_revision);
+    assert_eq!(
+        after.evidence_schema_revision,
+        before.evidence_schema_revision
+    );
+    assert_eq!(after.claim_fence, before.claim_fence);
+    assert_eq!(after.retry_count, 0);
+    assert_eq!(after.next_attempt_at_epoch, None);
+    assert_eq!(after.last_error, None);
+}
+
+#[test]
+fn an_unchanged_fingerprint_leaves_a_ready_session_evidence_row_alone() {
+    assert_unchanged_session_evidence("unchanged-ready", "ready", 0, None, None, None, None);
+}
+
+#[test]
+fn an_unchanged_fingerprint_leaves_a_processing_session_evidence_claim_alone() {
+    assert_unchanged_session_evidence(
+        "unchanged-processing",
+        "processing",
+        2,
+        Some(100),
+        Some(200),
+        None,
+        None,
+    );
+}
+
+#[test]
+fn an_unchanged_fingerprint_keeps_session_evidence_retry_backoff() {
+    assert_unchanged_session_evidence(
+        "unchanged-backoff",
+        "pending",
+        3,
+        None,
+        None,
+        Some(300),
+        Some("try later"),
+    );
+}
+
+#[test]
+fn an_unchanged_fingerprint_leaves_a_failed_session_evidence_row_failed() {
+    assert_unchanged_session_evidence(
+        "unchanged-failed",
+        "failed",
+        4,
+        None,
+        None,
+        None,
+        Some("terminal"),
+    );
+}
+
+#[test]
+fn reconciling_enrolls_a_session_evidence_row_for_an_upgraded_session() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..10] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label,
+                 first_seen_at, last_seen_at, source_fingerprint, source_generation)
+             VALUES ('native', 'claude-code', 'upgrade-enrollment', 'file',
+                     '/home/avery/.claude/projects/demo/upgrade-enrollment.jsonl',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                     'sv1:current', 1)",
+            [],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 10).unwrap();
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-evidence-enrollment-test").to_path_buf(),
+    )
+    .unwrap();
+    let mut record = session("upgrade-enrollment", 1_000);
+    record.source_fingerprint = Some("sv1:current".into());
+
+    store.upsert_sessions(&[record.clone()]).unwrap();
+    assert!(store.evidence(&record.key).unwrap().is_none());
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    assert_eq!(
+        store
+            .session_source_state(&record.key)
+            .unwrap()
+            .unwrap()
+            .source_generation,
+        1
+    );
+}
+
+#[test]
+fn a_revision_change_requeues_session_evidence_without_touching_the_generation() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "revision-requeue");
+    let before = store.session_source_state(&record.key).unwrap().unwrap();
+    let revisions = ProjectionRevisions {
+        evidence_schema_revision: 2,
+        ..projection_revisions()
+    };
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Pending);
+    assert_eq!(evidence.evidence_json.as_deref(), Some("{\"groups\":[]}"));
+    assert_eq!(
+        store.session_source_state(&record.key).unwrap().unwrap(),
+        before
+    );
+}
+
+#[test]
+fn a_catalog_change_requeues_no_session_evidence() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "catalog-no-requeue");
+    store
+        .save_analysis(
+            &AnalysisRecord {
+                key: record.key.clone(),
+                model_breakdown_json: "{}".into(),
+                inclusive_models_json: "[]".into(),
+                source_fingerprint: "sv1:current".into(),
+                pricing_generation: 2,
+                analyzed_generation: 1,
+                parser_revision: 1,
+                analyzer_revision: 1,
+                metrics_schema_revision: 1,
+            },
+            None,
+        )
+        .unwrap();
+    let before = store.evidence(&record.key).unwrap().unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        0
+    );
+    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
+}
+
+#[test]
+fn reconciling_session_evidence_skips_a_disabled_agent() {
+    let store = store();
+    let claude = session("enabled-evidence", 1_000);
+    let mut codex = session("disabled-evidence", 1_000);
+    codex.key.agent = "codex".into();
+    store
+        .upsert_sessions(&[claude.clone(), codex.clone()])
+        .unwrap();
+    store
+        .lock()
+        .execute("DELETE FROM session_evidence", [])
+        .unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        1
+    );
+    assert!(store.evidence(&claude.key).unwrap().is_some());
+    assert!(store.evidence(&codex.key).unwrap().is_none());
 }
 
 #[test]
