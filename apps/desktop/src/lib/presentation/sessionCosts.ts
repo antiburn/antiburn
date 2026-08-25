@@ -158,13 +158,18 @@ export function costForSubject(
   return results.find((result) => sameCostSubject(result.subject, subject)) ?? null
 }
 
-/** The four component figures a breakdown renders, plus the total. */
+/** The four component figures a breakdown renders, plus the total, in USD and tokens. */
 export function resultComponentCost(result: LocalSessionCost): {
   totalUsd: number
   inputUsd: number
   outputUsd: number
   cacheReadUsd: number
   cacheWriteUsd: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
 } {
   return {
     totalUsd: result.totalCostUsd,
@@ -172,6 +177,11 @@ export function resultComponentCost(result: LocalSessionCost): {
     outputUsd: result.outputCostUsd,
     cacheReadUsd: result.cacheReadCostUsd,
     cacheWriteUsd: result.cacheWriteCostUsd,
+    totalTokens: result.totalTokens,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+    cacheReadTokens: result.cacheReadTokens,
+    cacheWriteTokens: result.cacheCreationTokens,
   }
 }
 
