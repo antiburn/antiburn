@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { cn } from "../../../lib/cn.ts"
+import { cn } from "../../../lib/cn"
 import { Info } from "lucide-react"
 
 import {
