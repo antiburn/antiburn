@@ -611,27 +611,31 @@ fn session_evidence_survives_an_upgrade_from_the_shipped_head() {
     let key = SessionKey::new("native", "claude-code", "upgrade");
 
     assert_eq!(store.session_count().unwrap(), 1);
-    
+
     // Verify the original session row survives the migration unchanged.
     let session_record = store
         .session(&key)
         .unwrap()
         .expect("session row survives migration");
     assert_eq!(session_record.source_kind, "file");
-    assert_eq!(session_record.source_label, "/home/avery/.claude/projects/demo/upgrade.jsonl");
-    
+    assert_eq!(
+        session_record.source_label,
+        "/home/avery/.claude/projects/demo/upgrade.jsonl"
+    );
+
     // Verify the timestamp fields survive unchanged.
-    let (first_seen, last_seen): (String, String) = store.lock()
+    let (first_seen, last_seen): (String, String) = store
+        .lock()
         .query_row(
             "SELECT first_seen_at, last_seen_at FROM session
              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             rusqlite::params!["native", "claude-code", "upgrade"],
-            |row| Ok((row.get(0)?, row.get(1)?))
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
     assert_eq!(first_seen, "2026-01-01T00:00:00Z");
     assert_eq!(last_seen, "2026-01-01T00:00:00Z");
-    
+
     assert!(store.evidence(&key).unwrap().is_none());
     store
         .lock()
