@@ -3,9 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use antiburn_local::analysis::{
-    MAX_RECORD_BYTES, NormalizedSession, PartialReason, RawSource, RecordCoverage,
-    SessionCollector, SessionInput, SessionMetricsAccumulator, adapter_for, analyze_session,
-    analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
+    ANALYZER_REVISION, CompositeSink, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
+    EvidenceValue, MAX_RECORD_BYTES, NormalizedSession, OrderingObservation, PARSER_REVISION,
+    PartialReason, RawSource, RecordCoverage, SessionCollector, SessionEvidenceAccumulator,
+    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, adapter_for,
+    analyze_session, analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
 };
 use serde_json::{Value, json};
 
@@ -165,6 +167,37 @@ fn stream_claude(input: &SessionInput) -> SessionMetricsAccumulator {
     accumulator
 }
 
+fn stream_composite(input: &SessionInput) -> CompositeSink {
+    let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::claude(),
+    });
+    let mut composite = CompositeSink::new(metrics, evidence);
+    let outcome = adapter_for("claude")
+        .visit(input, &mut composite)
+        .expect("Claude source must be visited");
+    composite.observe_source_outcome(outcome);
+    composite
+}
+
+fn fixture_names() -> [&'static str; 10] {
+    [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+    ]
+}
+
 fn collect_claude(
     input: &SessionInput,
 ) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
@@ -200,6 +233,103 @@ fn oversized_metric_jsonl(payload_bytes: usize) -> String {
     source.push_str(&assistant_record("second-neighbour", 1_761_000_002, 4, 5));
     source.push('\n');
     source
+}
+
+#[test]
+fn composite_metrics_json_equals_the_streaming_metrics_json_for_every_fixture() {
+    for name in fixture_names() {
+        let input = input(name);
+        let composite = stream_composite(&input);
+        let composite_json = serde_json::to_string_pretty(
+            &composite
+                .metrics()
+                .expect("finished source must publish metrics"),
+        )
+        .expect("composite metrics must serialize");
+        let streaming_json = serde_json::to_string_pretty(&stream_claude(&input).metrics())
+            .expect("streaming metrics must serialize");
+        let composite_value: Value =
+            serde_json::from_str(&composite_json).expect("composite JSON must parse");
+        let streaming_value: Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON must parse");
+
+        assert_eq!(composite_value, streaming_value, "fixture {name}");
+    }
+}
+
+#[test]
+fn evidence_context_depth_equals_the_fixture_maximum() {
+    for name in fixture_names() {
+        let input = input(name);
+        let expected = normalize_source(&input)
+            .expect("fixture must normalize")
+            .events
+            .iter()
+            .map(|event| event.usage.context_tokens())
+            .max()
+            .unwrap_or(0);
+        let evidence = stream_composite(&input)
+            .evidence()
+            .expect("finished source must publish evidence");
+        let observed = match evidence.context {
+            EvidenceValue::Complete(context)
+            | EvidenceValue::Partial {
+                observed: context, ..
+            } => context.max_request_context_tokens,
+            EvidenceValue::Unsupported => panic!("Claude context evidence must be supported"),
+            #[cfg(debug_assertions)]
+            EvidenceValue::Unimplemented => panic!("context evidence must be implemented"),
+        };
+
+        assert_eq!(observed, expected, "fixture {name}");
+    }
+}
+
+#[test]
+fn evidence_coverage_is_complete_for_every_clean_fixture() {
+    for name in fixture_names() {
+        let input = input(name);
+        let (coverage, _, _) = collect_claude(&input);
+        if coverage == RecordCoverage::Partial {
+            continue;
+        }
+        let evidence = stream_composite(&input)
+            .evidence()
+            .expect("finished source must publish evidence");
+
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Complete,
+            "fixture {name}"
+        );
+        assert!(matches!(evidence.context, EvidenceValue::Complete(_)));
+    }
+}
+
+#[test]
+fn fixture_provenance_records_the_source_kind_and_ordering() {
+    let monotonic = stream_composite(&input("parent_with_task_spawn"))
+        .evidence()
+        .expect("finished source must publish evidence");
+    assert_eq!(monotonic.provenance.source_kind, SourceKind::Jsonl);
+    assert_eq!(monotonic.provenance.parser_revision, PARSER_REVISION);
+    assert_eq!(monotonic.provenance.analyzer_revision, ANALYZER_REVISION);
+    assert_eq!(
+        monotonic.provenance.evidence_schema_revision,
+        EVIDENCE_SCHEMA_REVISION
+    );
+    assert_eq!(
+        monotonic.provenance.ordering,
+        OrderingObservation::Monotonic
+    );
+
+    let out_of_order = stream_composite(&input("timestamps_repeated_and_out_of_order"))
+        .evidence()
+        .expect("finished source must publish evidence");
+    assert_eq!(
+        out_of_order.provenance.ordering,
+        OrderingObservation::OutOfOrder
+    );
 }
 
 #[test]
