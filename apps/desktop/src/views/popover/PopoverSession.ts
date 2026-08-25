@@ -170,7 +170,7 @@ export const ANALYSIS_POLL_MS = 10_000
  * so the header's relative-time text ("last just now") stays current even
  * when nothing else about the session has changed.
  */
-export const NOW_TICK_MS = 30_000
+const NOW_TICK_MS = 30_000
 
 /** Narrow the shell's status string to the repository list's union. */
 function repositoryStatus(status: string): LocalRepositoryStatus {
