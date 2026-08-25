@@ -91,8 +91,6 @@ pub struct SessionRecord {
     pub source_fingerprint: Option<String>,
 }
 
-// CH-005 and CH-007 add production consumers before this test-only type enters runtime code.
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceVersionState {
     pub source_fingerprint: Option<String>,
@@ -145,6 +143,10 @@ pub struct AnalysisRecord {
     pub source_fingerprint: String,
     /// `antiburn_local::analysis::pricing_generation()` at the time of writing.
     pub pricing_generation: i64,
+    pub analyzed_generation: i64,
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub metrics_schema_revision: i64,
 }
 
 /// One session's token evidence, as the provider-usage aggregation reads it.

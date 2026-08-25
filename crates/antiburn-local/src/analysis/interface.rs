@@ -9,10 +9,11 @@
 //! transcript (JSONL text, a SQLite database, …) into a
 //! [`NormalizedSession`]. The engine never knows which vendor it is looking at.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use crate::analysis::framing::PartialReason;
+use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall};
 
 /// Where a session's raw bytes come from. Adapters choose how to read it.
@@ -43,6 +44,7 @@ pub enum NormalizedRecord {
 }
 
 /// Session facts that an adapter can state only after the last record.
+#[derive(Default)]
 pub struct SessionSummary {
     /// True when this adapter can observe cache-write tokens.
     pub cache_write_tokens_available: bool,
@@ -50,6 +52,8 @@ pub struct SessionSummary {
     pub model: Option<String>,
     /// Tool calls resolved at the end of the stream, keyed by event ordinal.
     pub late_tools: Vec<(usize, ToolCall)>,
+    pub initial_context: Option<InitialContextBreakdown>,
+    pub skill_descriptions: HashMap<String, String>,
 }
 
 pub trait RecordSink {
@@ -193,6 +197,8 @@ pub trait VendorAdapter: Sync {
             context_window,
             model,
             late_tools: Vec::new(),
+            initial_context: None,
+            skill_descriptions: HashMap::new(),
         });
         Ok(VisitOutcome::Unvalidated)
     }

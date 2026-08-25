@@ -720,16 +720,37 @@ pub async fn get_session_analysis(
         return Err(format!("unknown agent {agent}"));
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
+    let store = app.state::<Store>();
+    let claimed = store
+        .session_source_state(&key)
+        .ok()
+        .flatten()
+        .map(|state| analysis::ClaimedSource {
+            fingerprint: state.source_fingerprint,
+            generation: state.source_generation,
+        })
+        .unwrap_or(analysis::ClaimedSource {
+            fingerprint: None,
+            generation: 0,
+        });
 
-    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(
+        kind,
+        &session_id,
+        wsl_distro.as_deref(),
+        claimed,
+        analysis::CancelFlag::never(),
+    )
+    .await;
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
-    let store = app.state::<Store>();
     let stored = store.session(&key).ok().flatten();
 
     if let Some(record) = analysis.record(&key) {
         let previous = store.analysis(&key).ok().flatten();
-        if store.save_analysis(&record).is_ok()
+        if store
+            .save_analysis(&record, analysis.started_at_epoch)
+            .is_ok()
             && analysis_changed(previous.as_ref(), &record)
             && let Some(session_record) = stored.clone()
         {
@@ -824,6 +845,7 @@ pub async fn get_subagent_analysis(
         &parent_session_id,
         &subagent_id,
         wsl_distro.as_deref(),
+        analysis::CancelFlag::never(),
     )
     .await;
     Ok(SessionAnalysis {
@@ -1125,10 +1147,30 @@ pub async fn export_session(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
-
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let stored = app.state::<Store>().session(&key).ok().flatten();
+    let store = app.state::<Store>();
+    let claimed = store
+        .session_source_state(&key)
+        .ok()
+        .flatten()
+        .map(|state| analysis::ClaimedSource {
+            fingerprint: state.source_fingerprint,
+            generation: state.source_generation,
+        })
+        .unwrap_or(analysis::ClaimedSource {
+            fingerprint: None,
+            generation: 0,
+        });
+    let analysis = analysis::analyze(
+        kind,
+        &session_id,
+        wsl_distro.as_deref(),
+        claimed,
+        analysis::CancelFlag::never(),
+    )
+    .await;
+
+    let stored = store.session(&key).ok().flatten();
 
     let document = SessionExport::new(
         app.package_info().version.to_string(),
@@ -1496,6 +1538,10 @@ mod tests {
             inclusive_models_json: inclusive_models_json.into(),
             source_fingerprint: "fingerprint".into(),
             pricing_generation: 1,
+            analyzed_generation: 1,
+            parser_revision: 1,
+            analyzer_revision: 1,
+            metrics_schema_revision: 1,
         }
     }
 

@@ -40,13 +40,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::dto::DeferredPermissionDir;
 
-#[cfg(test)]
-pub use model::SourceVersionState;
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
     MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord,
-    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, ThemePreference,
-    UsageEvidenceRecord,
+    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, SourceVersionState,
+    ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -574,8 +572,6 @@ impl Store {
     }
 
     /// One session's persisted source version and optional start time.
-    // CH-005 and CH-007 add production consumers before this test-only accessor enters runtime code.
-    #[cfg(test)]
     pub fn session_source_state(&self, key: &SessionKey) -> Result<Option<SourceVersionState>> {
         let connection = self.lock();
         Ok(connection
@@ -641,17 +637,29 @@ impl Store {
      * ----------------------------------------------------------------- */
 
     /// Cache one session's derived analysis.
-    pub fn save_analysis(&self, record: &AnalysisRecord) -> Result<()> {
-        self.lock().execute(
+    pub fn save_analysis(
+        &self,
+        record: &AnalysisRecord,
+        started_at_epoch: Option<i64>,
+    ) -> Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 inclusive_models_json, source_fingerprint, pricing_generation,
+                 analyzed_generation, parser_revision, analyzer_revision,
+                 metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  source_fingerprint = excluded.source_fingerprint,
-                 pricing_generation = excluded.pricing_generation",
+                 pricing_generation = excluded.pricing_generation,
+                 analyzed_generation = excluded.analyzed_generation,
+                 parser_revision = excluded.parser_revision,
+                 analyzer_revision = excluded.analyzer_revision,
+                 metrics_schema_revision = excluded.metrics_schema_revision",
             params![
                 record.key.environment_key,
                 record.key.agent,
@@ -660,8 +668,25 @@ impl Store {
                 record.inclusive_models_json,
                 record.source_fingerprint,
                 record.pricing_generation,
+                record.analyzed_generation,
+                record.parser_revision,
+                record.analyzer_revision,
+                record.metrics_schema_revision,
             ],
         )?;
+        if let Some(started_at_epoch) = started_at_epoch {
+            transaction.execute(
+                "UPDATE session SET started_at_epoch = ?4
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id,
+                    started_at_epoch,
+                ],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -670,7 +695,9 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, model_breakdown_json,
-                    inclusive_models_json, source_fingerprint, pricing_generation
+                    inclusive_models_json, source_fingerprint, pricing_generation,
+                    analyzed_generation, parser_revision, analyzer_revision,
+                    metrics_schema_revision
                FROM session_analysis
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -688,6 +715,10 @@ impl Store {
                         inclusive_models_json: row.get(4)?,
                         source_fingerprint: row.get(5)?,
                         pricing_generation: row.get(6)?,
+                        analyzed_generation: row.get(7)?,
+                        parser_revision: row.get(8)?,
+                        analyzer_revision: row.get(9)?,
+                        metrics_schema_revision: row.get(10)?,
                     })
                 },
             )
