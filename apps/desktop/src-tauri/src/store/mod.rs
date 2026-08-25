@@ -41,11 +41,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::dto::DeferredPermissionDir;
 
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceFailure, EvidenceRow,
-    EvidenceStatus, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones,
-    NudgePlacement, ProjectionRevisions, RelationKind, RelationRecord, RepositoryRecord,
-    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, SourceVersionState,
-    ThemePreference, UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceCompletion,
+    EvidenceFailure, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
+    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions, RelationKind,
+    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey,
+    SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -890,6 +890,7 @@ impl Store {
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
+        tx.execute("DELETE FROM session_evidence", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM scan_state", [])?;
         tx.execute("UPDATE repository SET session_count = 0", [])?;
@@ -912,6 +913,99 @@ impl Store {
     /* --------------------------------------------------------------------
      * Derived analysis
      * ----------------------------------------------------------------- */
+
+    /// Publish metrics, evidence, and the optional start time as one pass.
+    pub fn publish_projections(
+        &self,
+        record: &AnalysisRecord,
+        started_at_epoch: Option<i64>,
+        completion: &EvidenceCompletion,
+    ) -> Result<bool> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO session_analysis (
+                 environment_key, agent, session_id, model_breakdown_json,
+                 inclusive_models_json, source_fingerprint, pricing_generation,
+                 analyzed_generation, parser_revision, analyzer_revision,
+                 metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+                 model_breakdown_json = excluded.model_breakdown_json,
+                 inclusive_models_json = excluded.inclusive_models_json,
+                 source_fingerprint = excluded.source_fingerprint,
+                 pricing_generation = excluded.pricing_generation,
+                 analyzed_generation = excluded.analyzed_generation,
+                 parser_revision = excluded.parser_revision,
+                 analyzer_revision = excluded.analyzer_revision,
+                 metrics_schema_revision = excluded.metrics_schema_revision",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id,
+                record.model_breakdown_json,
+                record.inclusive_models_json,
+                record.source_fingerprint,
+                record.pricing_generation,
+                record.analyzed_generation,
+                record.parser_revision,
+                record.analyzer_revision,
+                record.metrics_schema_revision,
+            ],
+        )?;
+        if let Some(started_at_epoch) = started_at_epoch {
+            transaction.execute(
+                "UPDATE session SET started_at_epoch = ?4
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id,
+                    started_at_epoch,
+                ],
+            )?;
+        }
+        let updated = transaction.execute(
+            "UPDATE session_evidence AS evidence
+                SET status = ?4, analyzed_generation = ?5,
+                    processed_fingerprint = ?6, parser_revision = ?7,
+                    analyzer_revision = ?8, evidence_schema_revision = ?9,
+                    evidence_json = ?10, diagnostics_json = ?11,
+                    analyzed_at_epoch = ?12, retry_count = 0, last_error = NULL,
+                    claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
+                    next_attempt_at_epoch = NULL
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3
+                AND evidence.status = 'processing' AND evidence.claim_fence = ?13
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND session.source_generation = ?5
+                )",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id,
+                completion.status.as_str(),
+                record.analyzed_generation,
+                record.source_fingerprint,
+                record.parser_revision,
+                record.analyzer_revision,
+                completion.evidence_schema_revision,
+                completion.evidence_json,
+                completion.diagnostics_json,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+                completion.claim_fence,
+            ],
+        )?;
+        if updated == 0 {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
 
     /// Cache one session's derived analysis.
     pub fn save_analysis(

@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use super::model::PublishedEvidence;
 use super::*;
 
 fn store() -> Store {
@@ -35,6 +36,56 @@ fn projection_revisions() -> ProjectionRevisions {
         analyzer_revision: 1,
         metrics_schema_revision: 1,
         evidence_schema_revision: 1,
+    }
+}
+
+fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> AnalysisRecord {
+    AnalysisRecord {
+        key,
+        model_breakdown_json: "{}".into(),
+        inclusive_models_json: "[]".into(),
+        source_fingerprint: fingerprint.into(),
+        pricing_generation: 1,
+        analyzed_generation: generation,
+        parser_revision: 1,
+        analyzer_revision: 1,
+        metrics_schema_revision: 1,
+    }
+}
+
+fn claimed_projection(
+    store: &Store,
+    session_id: &str,
+    now_epoch: i64,
+    lease_secs: i64,
+) -> (AnalysisRecord, EvidenceClaim) {
+    let mut session = session(session_id, 1_000);
+    let fingerprint = format!("sv1:{session_id}");
+    session.source_fingerprint = Some(fingerprint.clone());
+    store
+        .upsert_sessions(std::slice::from_ref(&session))
+        .unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], now_epoch, lease_secs)
+        .unwrap()
+        .unwrap();
+    (
+        projection_record(session.key, &fingerprint, claim.source_generation),
+        claim,
+    )
+}
+
+fn evidence_completion(
+    claim: &EvidenceClaim,
+    status: PublishedEvidence,
+    evidence_json: String,
+) -> EvidenceCompletion {
+    EvidenceCompletion {
+        claim_fence: claim.claim_fence,
+        status,
+        evidence_schema_revision: 1,
+        evidence_json,
+        diagnostics_json: Some("[]".into()),
     }
 }
 
@@ -560,6 +611,27 @@ fn session_evidence_survives_an_upgrade_from_the_shipped_head() {
     let key = SessionKey::new("native", "claude-code", "upgrade");
 
     assert_eq!(store.session_count().unwrap(), 1);
+    
+    // Verify the original session row survives the migration unchanged.
+    let session_record = store
+        .session(&key)
+        .unwrap()
+        .expect("session row survives migration");
+    assert_eq!(session_record.source_kind, "file");
+    assert_eq!(session_record.source_label, "/home/avery/.claude/projects/demo/upgrade.jsonl");
+    
+    // Verify the timestamp fields survive unchanged.
+    let (first_seen, last_seen): (String, String) = store.lock()
+        .query_row(
+            "SELECT first_seen_at, last_seen_at FROM session
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            rusqlite::params!["native", "claude-code", "upgrade"],
+            |row| Ok((row.get(0)?, row.get(1)?))
+        )
+        .unwrap();
+    assert_eq!(first_seen, "2026-01-01T00:00:00Z");
+    assert_eq!(last_seen, "2026-01-01T00:00:00Z");
+    
     assert!(store.evidence(&key).unwrap().is_none());
     store
         .lock()
@@ -1858,6 +1930,226 @@ fn failing_session_evidence_terminally_marks_it_failed() {
     assert_eq!(evidence.last_error.as_deref(), Some("terminal"));
     assert_ne!(evidence.status, EvidenceStatus::Ready);
     assert_ne!(evidence.status, EvidenceStatus::Unsupported);
+}
+
+#[test]
+fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "publish-both", 100, 60);
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Unsupported,
+        "{\"unsupported\":true}".into(),
+    );
+
+    assert!(
+        store
+            .publish_projections(&record, Some(50), &completion)
+            .unwrap()
+    );
+
+    assert_eq!(store.analysis(&record.key).unwrap(), Some(record.clone()));
+    assert_eq!(
+        store
+            .session_source_state(&record.key)
+            .unwrap()
+            .unwrap()
+            .started_at_epoch,
+        Some(50)
+    );
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Unsupported);
+    assert_eq!(
+        evidence.analyzed_generation,
+        Some(record.analyzed_generation)
+    );
+    assert_eq!(
+        evidence.processed_fingerprint.as_deref(),
+        Some(record.source_fingerprint.as_str())
+    );
+    assert_eq!(evidence.parser_revision, Some(record.parser_revision));
+    assert_eq!(evidence.analyzer_revision, Some(record.analyzer_revision));
+    assert_eq!(evidence.evidence_schema_revision, Some(1));
+    assert_eq!(evidence.retry_count, 0);
+    assert_eq!(evidence.last_error, None);
+    assert_eq!(evidence.claimed_at_epoch, None);
+    assert_eq!(evidence.lease_expires_at_epoch, None);
+    assert_eq!(evidence.next_attempt_at_epoch, None);
+    assert!(evidence.analyzed_at_epoch.is_some());
+}
+
+#[test]
+fn published_session_evidence_and_analysis_describe_the_same_pass() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "same-pass", 100, 60);
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion)
+            .unwrap()
+    );
+
+    let analysis = store.analysis(&record.key).unwrap().unwrap();
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(
+        evidence.analyzed_generation,
+        Some(analysis.analyzed_generation)
+    );
+    assert_eq!(
+        evidence.processed_fingerprint,
+        Some(analysis.source_fingerprint)
+    );
+    assert_eq!(evidence.parser_revision, Some(analysis.parser_revision));
+    assert_eq!(evidence.analyzer_revision, Some(analysis.analyzer_revision));
+}
+
+#[test]
+fn a_stale_generation_publishes_no_session_evidence_and_no_analysis() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "stale-publish-generation", 100, 60);
+    let sentinel = projection_record(record.key.clone(), "sv1:sentinel", 0);
+    store.save_analysis(&sentinel, Some(77)).unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET source_generation = source_generation + 1
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let source_before = store.session_source_state(&record.key).unwrap().unwrap();
+    let analysis_before = store.analysis(&record.key).unwrap().unwrap();
+    let evidence_before = store.evidence(&record.key).unwrap().unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        !store
+            .publish_projections(&record, Some(88), &completion)
+            .unwrap()
+    );
+
+    assert_eq!(
+        store.session_source_state(&record.key).unwrap().unwrap(),
+        source_before
+    );
+    assert_eq!(
+        store.analysis(&record.key).unwrap().unwrap(),
+        analysis_before
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap(),
+        evidence_before
+    );
+}
+
+#[test]
+fn a_stale_fence_publishes_no_session_evidence_and_no_analysis() {
+    let store = store();
+    let (record, first_claim) = claimed_projection(&store, "stale-publish-fence", 100, 10);
+    let current_claim = store
+        .claim_next_evidence(&["claude-code"], 110, 60)
+        .unwrap()
+        .unwrap();
+    assert!(current_claim.claim_fence > first_claim.claim_fence);
+    let sentinel = projection_record(record.key.clone(), "sv1:sentinel", 0);
+    store.save_analysis(&sentinel, Some(77)).unwrap();
+    let source_before = store.session_source_state(&record.key).unwrap().unwrap();
+    let analysis_before = store.analysis(&record.key).unwrap().unwrap();
+    let evidence_before = store.evidence(&record.key).unwrap().unwrap();
+    let completion = evidence_completion(&first_claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        !store
+            .publish_projections(&record, Some(88), &completion)
+            .unwrap()
+    );
+
+    assert_eq!(
+        store.session_source_state(&record.key).unwrap().unwrap(),
+        source_before
+    );
+    assert_eq!(
+        store.analysis(&record.key).unwrap().unwrap(),
+        analysis_before
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap(),
+        evidence_before
+    );
+}
+
+#[test]
+fn deleting_a_session_removes_its_session_evidence() {
+    let store = store();
+    let mut record = session("delete-evidence", 1_000);
+    record.source_fingerprint = Some("sv1:delete".into());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    assert!(store.evidence(&record.key).unwrap().is_some());
+
+    assert!(store.delete_session(&record.key).unwrap());
+
+    assert!(store.evidence(&record.key).unwrap().is_none());
+}
+
+#[test]
+fn clearing_local_session_data_removes_every_session_evidence_row() {
+    let store = store();
+    let mut first = session("clear-evidence-one", 1_000);
+    first.source_fingerprint = Some("sv1:clear-one".into());
+    let mut second = session("clear-evidence-two", 1_000);
+    second.source_fingerprint = Some("sv1:clear-two".into());
+    store.upsert_sessions(&[first, second]).unwrap();
+
+    assert_eq!(store.clear_local_session_data().unwrap(), 2);
+
+    let count: i64 = store
+        .lock()
+        .query_row("SELECT COUNT(*) FROM session_evidence", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn a_session_evidence_payload_round_trips_through_the_store() {
+    use antiburn_local::analysis::{
+        EvidenceSource, SessionEvidence, SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
+    };
+
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "payload-round-trip", 100, 60);
+    let payload = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "claude-code".into(),
+        session_id: "payload-round-trip".into(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::claude(),
+    })
+    .evidence();
+    let payload_json = serde_json::to_string(&payload).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, payload_json);
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion)
+            .unwrap()
+    );
+
+    let stored_json = store
+        .evidence(&record.key)
+        .unwrap()
+        .unwrap()
+        .evidence_json
+        .unwrap();
+    let restored: SessionEvidence = serde_json::from_str(&stored_json).unwrap();
+    assert_eq!(restored, payload);
 }
 
 #[test]

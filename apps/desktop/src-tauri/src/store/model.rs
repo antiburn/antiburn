@@ -232,6 +232,32 @@ pub enum EvidenceFailure {
     Failed,
 }
 
+/// The two successful publication states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishedEvidence {
+    Ready,
+    Unsupported,
+}
+
+impl PublishedEvidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PublishedEvidence::Ready => "ready",
+            PublishedEvidence::Unsupported => "unsupported",
+        }
+    }
+}
+
+/// The evidence values produced by one analyzed pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceCompletion {
+    pub claim_fence: i64,
+    pub status: PublishedEvidence,
+    pub evidence_schema_revision: i64,
+    pub evidence_json: String,
+    pub diagnostics_json: Option<String>,
+}
+
 /// One session's token evidence, as the provider-usage aggregation reads it.
 ///
 /// A projection rather than a record: the aggregation needs three columns out
