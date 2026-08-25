@@ -110,8 +110,13 @@ body {
 `;
 
 /** The popover window copies `rounded.popover` into a Rust constant. */
-const RUST = `#[cfg(target_os = "macos")]
+const POPOVER_RUST = `#[cfg(target_os = "macos")]
 const CORNER_RADIUS: f64 = 10.0;
+`;
+
+/** The nudge window copies `rounded.popover` into a Rust constant. */
+const NUDGE_RUST = `#[cfg(target_os = "macos")]
+const NUDGE_CORNER_RADIUS: f64 = 10.0;
 `;
 
 /** An in-memory desktop app. Keys are paths relative to apps/desktop. */
@@ -127,11 +132,18 @@ function io(files) {
 }
 
 /** The green fixture, with optional edits to either side of the contract. */
-function fixture({ contract = CONTRACT, css = CSS, rust = RUST, extra = {} } = {}) {
+function fixture({
+  contract = CONTRACT,
+  css = CSS,
+  popoverRust = POPOVER_RUST,
+  nudgeRust = NUDGE_RUST,
+  extra = {},
+} = {}) {
   return io({
     'design.md': contract,
     'src/styles/tokens.css': css,
-    'src-tauri/src/popover.rs': rust,
+    'src-tauri/src/popover.rs': popoverRust,
+    'src-tauri/crates/nudge/src/window.rs': nudgeRust,
     ...extra,
   });
 }
@@ -395,8 +407,19 @@ test('keeps the reduced-transparency dark block out of the system palette', () =
 // --- the popover window corner ----------------------------------------------
 
 test('reports a window corner constant that differs from the token', () => {
-  const rust = RUST.replace('10.0', '12.0');
-  assertFails(checkDesignDrift(fixture({ rust })), 'rounded.popover 10px != CORNER_RADIUS 12.0');
+  const popoverRust = POPOVER_RUST.replace('10.0', '12.0');
+  assertFails(
+    checkDesignDrift(fixture({ popoverRust })),
+    'rounded.popover 10px != CORNER_RADIUS 12.0',
+  );
+});
+
+test('reports a nudge corner constant that differs from the token', () => {
+  const nudgeRust = NUDGE_RUST.replace('10.0', '12.0');
+  assertFails(
+    checkDesignDrift(fixture({ nudgeRust })),
+    'rounded.popover 10px != NUDGE_CORNER_RADIUS 12.0',
+  );
 });
 
 test('reports a token change the window corner constant did not follow', () => {
@@ -409,10 +432,18 @@ test('reports a token change the window corner constant did not follow', () => {
 });
 
 test('reports a window source that declares no corner constant', () => {
-  assertFails(checkDesignDrift(fixture({ rust: '// nothing here\n' })), 'declares no CORNER_RADIUS');
+  assertFails(
+    checkDesignDrift(fixture({ popoverRust: '// nothing here\n' })),
+    'declares no CORNER_RADIUS',
+  );
+  assertFails(
+    checkDesignDrift(fixture({ nudgeRust: '// nothing here\n' })),
+    'declares no NUDGE_CORNER_RADIUS',
+  );
 });
 
 test('reports a window source that is missing', () => {
   const files = io({ 'design.md': CONTRACT, 'src/styles/tokens.css': CSS });
   assertFails(checkDesignDrift(files), 'src-tauri/src/popover.rs not found');
+  assertFails(checkDesignDrift(files), 'src-tauri/crates/nudge/src/window.rs not found');
 });

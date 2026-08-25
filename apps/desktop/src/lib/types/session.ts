@@ -53,6 +53,10 @@ export interface SessionBucket {
   secsSincePriorTurn: number | null
   /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
   subagentLaunches: number
+  /** Count of user prompts in this bucket. */
+  userPrompts: number
+  /** The name of the last parent tool call in this bucket, when any. */
+  lastTool: string | null
   /** The model that produced the last parent event in this bucket, when known. */
   model: string | null
   /** The thinking-effort mode of the last parent event in this bucket, when known. */
@@ -206,7 +210,7 @@ export interface ActiveSessionsSummary {
 export interface SubagentMember {
   /** Orchestrator app slug (for example `claude-code`). */
   agent: string
-  /** The sub-agent's transcript id, used to open its own analytics. */
+  /** The sub-agent's transcript id, used to open its own analysis. */
   subagentId: string
   /** First task prompt (truncated), or a persona/slug fallback. */
   label: string

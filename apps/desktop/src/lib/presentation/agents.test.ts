@@ -8,7 +8,7 @@ import {
   AGENT_SLUGS,
   agentDisplayName,
   agentIconName,
-  agentSupportsAnalytics,
+  agentSupportsAnalysis,
   defaultAgentSurface,
   GENERIC_AGENT_ICON,
 } from "./agents"
@@ -58,19 +58,19 @@ describe("agentDisplayName / agentIconName", () => {
   })
 })
 
-describe("agentSupportsAnalytics", () => {
+describe("agentSupportsAnalysis", () => {
   it("is true only for agents with a dedicated analysis adapter", () => {
-    expect(agentSupportsAnalytics("claude-code")).toBe(true)
-    expect(agentSupportsAnalytics("codex")).toBe(true)
-    expect(agentSupportsAnalytics("cursor")).toBe(true)
-    expect(agentSupportsAnalytics("opencode")).toBe(true)
-    expect(agentSupportsAnalytics("antigravity")).toBe(true)
+    expect(agentSupportsAnalysis("claude-code")).toBe(true)
+    expect(agentSupportsAnalysis("codex")).toBe(true)
+    expect(agentSupportsAnalysis("cursor")).toBe(true)
+    expect(agentSupportsAnalysis("opencode")).toBe(true)
+    expect(agentSupportsAnalysis("antigravity")).toBe(true)
   })
 
   it("is false for generic-fallback agents and unknown slugs", () => {
-    expect(agentSupportsAnalytics("copilot")).toBe(false)
-    expect(agentSupportsAnalytics("kiro")).toBe(false)
-    expect(agentSupportsAnalytics("totally-made-up")).toBe(false)
+    expect(agentSupportsAnalysis("copilot")).toBe(false)
+    expect(agentSupportsAnalysis("kiro")).toBe(false)
+    expect(agentSupportsAnalysis("totally-made-up")).toBe(false)
   })
 })
 

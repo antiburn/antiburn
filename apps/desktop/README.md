@@ -4,13 +4,13 @@ The antiburn desktop application: a menu-bar / system-tray shell around the
 local [`antiburn-local`](../../crates/antiburn-local) engine.
 
 The app discovers the coding-agent sessions already on this machine, analyzes
-them with the engine, and shows activity, per-session analytics, and
+them with the engine, and shows activity, per-session analysis, and
 API-equivalent cost estimates. Everything runs on the device, as you: antiburn
 needs no antiburn account, server, or backend of any kind, and nothing about
 your sessions is uploaded. It makes two calls to a service of ours, neither of
 which it depends on: the updater plugin, registered in release builds only,
-asking whether a newer version exists; and the anonymised usage-analytics
-channel in [`src-tauri/src/usage_analytics`](src-tauri/src/usage_analytics),
+asking whether a newer version exists; and the anonymised analytics
+channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
 which reports on the application itself behind a control the reader meets on
 the first-run Ready screen. A build with no endpoint injected — which is every
 build from a clean checkout — sends nothing at all.
@@ -112,6 +112,26 @@ the app from (the frontend would have to be served separately), and `cargo
 fmt`/`clippy`/`test` never launch the app. Reach for `pnpm dev` rather than
 `pnpm tauri dev`, which bypasses the flag.
 
+## Restarting onboarding
+
+A debug build has **Reset Onboarding** in its tray menu. Packaged builds use
+**Settings → General → Run setup again**. Both actions change only the stored
+`onboardingCompleted` value to `false`, recreate the setup window at Welcome,
+and keep all indexed sessions and preferences. Closing setup before completion
+keeps it pending, so the window returns on the next launch or tray interaction.
+
+Do not edit the SQLite database while antiburn runs. For a true fresh-install
+test, open **Settings → About → Data folder**, reveal the active directory, and
+quit antiburn. Move that exact directory aside instead of deleting it. The move
+keeps the previous profile recoverable and avoids touching the other build's
+data.
+
+Forks must keep different bundle identifiers for debug and release builds. The
+identifier separates app data and platform privacy grants, so sharing it can
+make a development reset affect an installed build. Keep the debug override in
+the documented package scripts. A bare Tauri command that omits
+`tauri.debug.conf.json` can target the release identity.
+
 ## What keeps the app local
 
 Three independent checks, none of which relies on review:
@@ -126,7 +146,7 @@ Three independent checks, none of which relies on review:
    `src/` and fails on any imported telemetry, analytics, or crash-reporting
    SDK, and on any hardcoded reporting host. Browser networking APIs are
    permitted — the renderer may call a provider with the reader's own
-   credentials — and the usage-analytics channel is Rust-side, so the renderer
+   credentials — and the analytics channel is Rust-side, so the renderer
    still imports no reporting client. It lives outside `src/` on purpose: it
    names every API it bans, so a guard inside the tree it checks would trip
    its own check.
@@ -180,14 +200,18 @@ Three independent checks, none of which relies on review:
   feature requires. See the policy at the top of `src-tauri/src/scan.rs`.
 - **Notifications.** Six kinds, all posted by the shell and never by the webview
   (which is granted no notification permission): an available update, a failed
-  scan, low disk space, a spend anomaly, a crossed usage milestone, and the
-  settings pane's own test. Each is gated by the master preference _and_ its own
-  — the test alone bypasses the master switch, because pressing it is the reader
-  asking to see one — and nothing repeats. See the policy at the top of
+  scan, low disk space, a crossed usage milestone, the first-run menu-bar
+  location, and the settings pane's own test. The test and first-run location
+  bypass the master switch because both follow a direct reader action. Other
+  kinds use the master preference and their own gate, and nothing repeats. See
+  the policy at the top of
   `src-tauri/src/notifications.rs`. Delivery is antiburn's own always-on-top
   window rather than the platform's notification centre: the `antiburn-nudge`
   crate under `src-tauri/crates/nudge/`, applied at the seam in
   `src-tauri/src/nudges.rs`. Nothing about a notification leaves the machine.
+  Usage milestones default to every 10% and compare quota consumed with the
+  share of the current limit window that has elapsed. Settings offers every 5%
+  step when a reader wants different milestones.
 - **Attention.** The popover shows a banner above the activity list when a
   repository cannot be read (which opens Settings at Sources) or when the local
   database rejects a write (which retries with a scan). Both are derived from

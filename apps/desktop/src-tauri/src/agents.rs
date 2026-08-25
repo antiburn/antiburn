@@ -36,9 +36,9 @@ pub fn vendor_label(kind: AgentKind) -> &'static str {
 /// Whether the engine has a dedicated adapter for this agent's transcript
 /// format, as opposed to the generic JSONL fallback.
 ///
-/// Mirrors the webview's `agentSupportsAnalytics`, but asks the engine rather
+/// Mirrors the webview's `agentSupportsAnalysis`, but asks the engine rather
 /// than a second hand-maintained list.
-pub fn supports_analytics(kind: AgentKind) -> bool {
+pub fn supports_analysis(kind: AgentKind) -> bool {
     has_dedicated_adapter(vendor_label(kind))
 }
 
@@ -65,7 +65,7 @@ mod tests {
         ];
         for kind in dedicated {
             assert!(
-                supports_analytics(kind),
+                supports_analysis(kind),
                 "{kind:?} should reach its dedicated adapter via {:?}",
                 vendor_label(kind)
             );
@@ -92,7 +92,7 @@ mod tests {
             AgentKind::Windsurf,
             AgentKind::Pi,
         ] {
-            assert!(!supports_analytics(kind), "{kind:?}");
+            assert!(!supports_analysis(kind), "{kind:?}");
         }
     }
 

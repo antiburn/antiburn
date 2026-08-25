@@ -33,6 +33,7 @@
 pub mod agents;
 pub mod fork;
 pub mod scanner;
+pub mod source_version;
 
 use crate::model::AgentKind;
 use crate::platform::environment::{DiscoveryEnvironment, WslEnvironmentInfo};
@@ -43,6 +44,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 pub use fork::{DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation};
+pub use source_version::{
+    FingerprintInputs, SourceDescriptor, SourceStat, SourceVersion, Streamability,
+};
 
 /// How many session logs may have their metadata read concurrently. Bounds the
 /// open-file and blocking-pool pressure of a whole-machine scan.
@@ -1001,7 +1005,11 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
             agent: AgentKind::OpenCode,
             db_path,
             session_id,
-        } => agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await,
+        } => {
+            #[cfg(any(test, debug_assertions))]
+            record_tracked_provider_db_render(db_path);
+            agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await
+        }
         SessionSource::ProviderDb {
             agent,
             db_path,
@@ -1026,12 +1034,16 @@ pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
         return session_source_content(source).await;
     };
     use tokio::io::AsyncReadExt;
-    let file = tokio::fs::File::open(path).await.ok()?;
+    let file = open_file_for_head_read(path).await?;
     let mut bytes = Vec::new();
     file.take(SOURCE_PREVIEW_BYTES)
         .read_to_end(&mut bytes)
         .await
         .ok()?;
+    preview_from_owned(bytes)
+}
+
+fn preview_from_owned(bytes: Vec<u8>) -> Option<String> {
     match String::from_utf8(bytes) {
         Ok(content) => Some(content),
         Err(error) if error.utf8_error().error_len().is_none() => {
@@ -1078,49 +1090,113 @@ pub async fn session_source_tail(source: &SessionSource) -> Option<String> {
     }
 }
 
-pub async fn session_log_metadata(log: &SessionLog) -> Option<scanner::SessionMetadata> {
-    let mut metadata = session_source_metadata(&log.source, Some(log.agent_type)).await?;
+#[derive(Debug, Clone)]
+pub struct SourceRead {
+    pub metadata: scanner::SessionMetadata,
+    pub stat: Option<SourceStat>,
+    pub head_hash: Option<u64>,
+    pub content: Option<String>,
+}
+
+pub async fn session_log_read(log: &SessionLog) -> Option<SourceRead> {
+    let mut read = session_source_read(&log.source, Some(log.agent_type)).await?;
     if log.agent_type == AgentKind::Codex
         && !log.environment().is_native()
         && let SessionSource::File(path) = &log.source
-        && let Some(session_id) = metadata.session_id.as_deref()
+        && let Some(session_id) = read.metadata.session_id.as_deref()
         && let Some(title) = agents::codex::index_title_for_rollout(path, session_id).await
     {
-        metadata.title = Some(title);
-        metadata.title_source = Some(TitleSource::AiGenerated);
+        read.metadata.title = Some(title);
+        read.metadata.title_source = Some(TitleSource::AiGenerated);
     }
     if let DiscoveryEnvironment::Wsl { distribution, .. } = log.environment()
-        && let Some(cwd) = metadata.cwd.as_deref().filter(|cwd| cwd.starts_with('/'))
+        && let Some(cwd) = read
+            .metadata
+            .cwd
+            .as_deref()
+            .filter(|cwd| cwd.starts_with('/'))
     {
-        metadata.cwd = Some(
+        read.metadata.cwd = Some(
             crate::platform::environment::wsl_to_windows_path(&distribution, cwd)
                 .ok()?
                 .to_string_lossy()
                 .to_string(),
         );
     }
-    Some(metadata)
+    Some(read)
+}
+
+pub async fn session_log_metadata(log: &SessionLog) -> Option<scanner::SessionMetadata> {
+    session_log_read(log).await.map(|read| read.metadata)
 }
 
 async fn session_source_metadata(
     source: &SessionSource,
     agent_type: Option<AgentKind>,
 ) -> Option<scanner::SessionMetadata> {
+    session_source_read(source, agent_type)
+        .await
+        .map(|read| read.metadata)
+}
+
+async fn session_source_read(
+    source: &SessionSource,
+    agent_type: Option<AgentKind>,
+) -> Option<SourceRead> {
     match source {
         SessionSource::File(path) => {
-            let content = session_source_preview(source).await.unwrap_or_default();
-            Some(scanner::parse_session_metadata_with_agent(path, &content, agent_type).await)
+            let (stat, head_hash, content) = read_file_source(path)
+                .await
+                .map_or((None, None, None), |(stat, head_hash, content)| {
+                    (stat, Some(head_hash), content)
+                });
+            let metadata = scanner::parse_session_metadata_with_agent(
+                path,
+                content.as_deref().unwrap_or_default(),
+                agent_type,
+            )
+            .await;
+            Some(SourceRead {
+                metadata,
+                stat,
+                head_hash,
+                content,
+            })
         }
         SessionSource::Inline { content, .. } => {
             let mut metadata = scanner::parse_session_metadata_str(content);
             metadata.agent_type = agent_type;
-            Some(metadata)
+            let content = if matches!(agent_type, Some(AgentKind::Claude | AgentKind::Codex)) {
+                Some(content.clone())
+            } else {
+                None
+            };
+            Some(SourceRead {
+                metadata,
+                stat: None,
+                head_hash: None,
+                content,
+            })
         }
         SessionSource::ProviderDb {
             agent: AgentKind::OpenCode,
             db_path,
             session_id,
-        } => agents::opencode::db_session_metadata(db_path.clone(), session_id.clone()).await,
+        } => {
+            let metadata =
+                agents::opencode::db_session_metadata(db_path.clone(), session_id.clone()).await?;
+            let content = if matches!(agent_type, Some(AgentKind::Claude | AgentKind::Codex)) {
+                session_source_content(source).await
+            } else {
+                None
+            };
+            Some(SourceRead {
+                metadata,
+                stat: None,
+                head_hash: None,
+                content,
+            })
+        }
         SessionSource::ProviderDb {
             agent,
             db_path,
@@ -1135,6 +1211,95 @@ async fn session_source_metadata(
             None
         }
     }
+}
+
+async fn read_file_source(path: &Path) -> Option<(Option<SourceStat>, u64, Option<String>)> {
+    use tokio::io::AsyncReadExt;
+
+    let file = open_file_for_head_read(path).await?;
+    let stat = SourceStat::from_open_file(&file).await;
+    let mut bytes = Vec::new();
+    file.take(SOURCE_PREVIEW_BYTES)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    let head_hash = source_version::head_hash_of(&bytes);
+    let content = preview_from_owned(bytes);
+    Some((stat, head_hash, content))
+}
+
+async fn open_file_for_head_read(path: &Path) -> Option<tokio::fs::File> {
+    #[cfg(any(test, debug_assertions))]
+    record_tracked_head_read(path);
+    tokio::fs::File::open(path).await.ok()
+}
+
+#[cfg(any(test, debug_assertions))]
+static TRACKED_PROVIDER_DB_RENDERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn track_provider_db_renders(path: &Path) {
+    TRACKED_PROVIDER_DB_RENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf(), 0);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn record_tracked_provider_db_render(path: &Path) {
+    let mut renders = TRACKED_PROVIDER_DB_RENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(count) = renders.get_mut(path) {
+        *count += 1;
+    }
+}
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn take_tracked_provider_db_renders(path: &Path) -> usize {
+    TRACKED_PROVIDER_DB_RENDERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(path)
+        .unwrap_or(0)
+}
+
+#[cfg(any(test, debug_assertions))]
+static TRACKED_HEAD_READS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn track_head_reads(path: &Path) {
+    TRACKED_HEAD_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf(), 0);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn record_tracked_head_read(path: &Path) {
+    let mut reads = TRACKED_HEAD_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(count) = reads.get_mut(path) {
+        *count += 1;
+    }
+}
+
+#[doc(hidden)]
+#[cfg(any(test, debug_assertions))]
+pub fn take_tracked_head_reads(path: &Path) -> usize {
+    TRACKED_HEAD_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(path)
+        .unwrap_or(0)
 }
 
 /// Extract a JSON string value (`"field":"value"`) from a single line, as a

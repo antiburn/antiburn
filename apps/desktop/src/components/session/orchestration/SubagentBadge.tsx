@@ -12,16 +12,16 @@ export interface SubagentBadgeProps {
   parentAgent: string
   /** Title of the orchestrator session that launched this sub-agent, if known. */
   parentTitle?: string
-  /** Open the launching orchestrator's analytics. */
+  /** Open the launching orchestrator's analysis. */
   onOpenOrchestrator: () => void
   renderAgentIcon?: AgentIconRenderer | undefined
 }
 
 /**
- * The banner at the top of a sub-agent's analytics, mirroring the orchestrator
+ * The banner at the top of a sub-agent's analysis, mirroring the orchestrator
  * card. Collapsed it marks the view as a worker that something else launched,
  * not a session the user drove; expanding it reveals the launching orchestrator
- * as a row that links up to its analytics.
+ * as a row that links up to its analysis.
  */
 export function SubagentBadge({
   parentAgent,

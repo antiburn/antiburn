@@ -124,16 +124,16 @@ pub struct BillableTokens {
     pub cache_creation_tokens: u64,
 }
 
-/// Everything the session-analytics surface needs for one session.
+/// Everything the session-analysis surface needs for one session.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionAnalytics {
+pub struct SessionAnalysis {
     /// The engine's analysis, shaped as a one-session summary. `None` when the
     /// transcript could not be read at all.
     pub summary: Option<ActiveSessionsSummary>,
     /// False when the engine has only its generic adapter for this agent, which
     /// changes the empty state from "nothing happened" to "we cannot read this".
-    pub supports_analytics: bool,
+    pub supports_analysis: bool,
     pub title: Option<String>,
     pub wsl_distro: Option<String>,
     pub is_active: bool,
@@ -385,11 +385,11 @@ pub struct AppInfo {
     /// endpoint is injected and this tree has none — so the Privacy pane
     /// offers a disabled row that says why, rather than a live switch over
     /// nothing.
-    pub usage_analytics_supported: bool,
+    pub analytics_supported: bool,
     /// Who receives those events, in the reader's own words. `None` when the
     /// build has no endpoint. Injected with the endpoint, never a literal in
     /// this repository (D-027).
-    pub usage_analytics_operator: Option<String>,
+    pub analytics_operator: Option<String>,
 }
 
 /* -------------------------------------------------------------------------

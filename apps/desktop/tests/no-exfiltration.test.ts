@@ -23,7 +23,7 @@
  * There are two deliberate exceptions, and both live in the shell rather than
  * here. The updater plugin is registered in release builds only and talks to
  * antiburn's own release feed — a feed that carries no reader data. The
- * anonymised usage-analytics channel (`src-tauri/src/usage_analytics`, recorded
+ * anonymised analytics channel (`src-tauri/src/analytics`, recorded
  * as D-027 and deviations D-28) reports on the application itself, behind a
  * control the reader meets before anything is sent. Neither is reachable from
  * the renderer: both are Rust-side and invoked over IPC, so they need no browser

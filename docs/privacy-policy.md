@@ -30,7 +30,7 @@ when the analytics control is switched on.
 
 For the complete, field-by-field account of what those events contain — and the
 commands you can run to verify it yourself — see
-[docs/usage-analytics.md](usage-analytics.md). The list there is the whole list,
+[docs/analytics.md](analytics.md). The list there is the whole list,
 enforced by a closed type in the source rather than by a promise in a document.
 
 ## What is sent, in summary
@@ -134,7 +134,7 @@ your machine is discarded and the installation identifier is destroyed, so
 switching it back on later starts a new identifier that cannot be linked to the
 old one. You can confirm both by reading the application's own database
 directly; the commands are in
-[docs/usage-analytics.md](usage-analytics.md#verifying-this-yourself).
+[docs/analytics.md](analytics.md#verifying-this-yourself).
 
 Every build made from a clean checkout of this repository has no endpoint
 configured and transmits nothing at all, whatever the switch says.

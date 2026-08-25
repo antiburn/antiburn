@@ -22,7 +22,7 @@ import {
   initialContextTotal,
   median,
   modeChangeMarkers,
-} from "./sessionAnalytics"
+} from "./sessionAnalysis"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
@@ -36,6 +36,8 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     isCacheRehydration: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
+    userPrompts: 0,
+    lastTool: null,
     model: null,
     thinkingMode: null,
     speed: null,
@@ -122,6 +124,32 @@ describe("contextTokenSeries", () => {
     ])
 
     expect(series.map((point) => point.secsSincePriorTurn)).toEqual([null, 9_300, null])
+  })
+
+  it("describes the gap a call-less bucket sits in", () => {
+    const series = contextTokenSeries([
+      bucket({ contextTokens: 20_000, tokensIn: 100, lastTool: "Bash" }),
+      bucket({ contextTokens: 0 }),
+      bucket({ contextTokens: 0 }),
+      bucket({ contextTokens: 25_000, tokensIn: 100, secsSincePriorTurn: 130 }),
+    ])
+
+    expect(series.map((point) => point.betweenCalls)).toEqual([
+      null,
+      { secs: 130, tool: "Bash", userPrompt: false },
+      { secs: 130, tool: "Bash", userPrompt: false },
+      null,
+    ])
+  })
+
+  it("marks a gap that a user prompt ends", () => {
+    const series = contextTokenSeries([
+      bucket({ contextTokens: 20_000, tokensIn: 100, lastTool: "Bash" }),
+      bucket({ contextTokens: 0 }),
+      bucket({ contextTokens: 25_000, tokensIn: 100, secsSincePriorTurn: 600, userPrompts: 1 }),
+    ])
+
+    expect(series[1]!.betweenCalls).toEqual({ secs: 600, tool: "Bash", userPrompt: true })
   })
 
   it("forward-fills model, thinking mode, and speed across buckets with no value", () => {

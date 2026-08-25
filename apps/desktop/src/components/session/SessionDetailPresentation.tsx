@@ -10,6 +10,7 @@ import {
   GitBranchPlus,
   GitFork,
   Info,
+  LoaderCircle,
   Moon,
   Share,
   Trash2,
@@ -32,7 +33,7 @@ import {
   formatCompact,
   formatDuration,
   isEmptySummary,
-} from "../../lib/presentation/sessionAnalytics"
+} from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import type {
   ActiveSessionsSummary,
@@ -45,10 +46,10 @@ import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { Skeleton } from "../ui/Skeleton"
-import { CostBreakdown } from "./analytics/CostBreakdown"
-import { ContextTokensChart } from "./analytics/ContextTokensChart"
-import { InitialContextChart } from "./analytics/InitialContextChart"
-import { ToolMixChart } from "./analytics/ToolMixChart"
+import { CostBreakdown } from "./analysis/CostBreakdown"
+import { ContextTokensChart } from "./analysis/ContextTokensChart"
+import { InitialContextChart } from "./analysis/InitialContextChart"
+import { ToolMixChart } from "./analysis/ToolMixChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import { OrchestratedBadge } from "./orchestration/OrchestratedBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
@@ -87,6 +88,8 @@ export interface SessionDetailPresentationProps {
   summary: ActiveSessionsSummary | null
   /** Whether the analysis is still being produced. */
   loading: boolean
+  /** Whether a newer analysis is on its way while `summary` stays on screen. */
+  refreshing?: boolean
   /** Whether producing it failed. */
   error: boolean
   /** The session this view describes. */
@@ -95,7 +98,7 @@ export interface SessionDetailPresentationProps {
    * False when the engine has no adapter for this agent, which changes the
    * empty state from "nothing happened" to "we cannot read this yet".
    */
-  supportsAnalytics: boolean
+  supportsAnalysis: boolean
 
   /** The cost result the breakdown describes, when one was priced. */
   cost: LocalSessionCost | null
@@ -112,9 +115,9 @@ export interface SessionDetailPresentationProps {
   onPrev?: () => void
   /** Navigate to the older adjacent session; omit when none exists. */
   onNext?: () => void
-  /** Open one sub-agent's analytics from the roster. */
+  /** Open one sub-agent's analysis from the roster. */
   onOpenSubagent: (subagentId: string, label: string) => void
-  /** From a sub-agent view, open the launching orchestrator's analytics. */
+  /** From a sub-agent view, open the launching orchestrator's analysis. */
   onOpenOrchestrator: () => void
   /** Open a fork parent or child. */
   onOpenRelatedSession: (target: LocalSessionRelation, title: string) => void
@@ -282,7 +285,7 @@ function SkeletonCardShell({ children }: { children: ReactNode }) {
  */
 function SessionDetailSkeleton() {
   return (
-    <div aria-hidden data-testid="session-analytics-skeleton">
+    <div aria-hidden data-testid="session-analysis-skeleton">
       <div className="flex items-start gap-3 px-4 pb-3">
         <Skeleton className="mt-0.5 h-5 w-5 shrink-0" />
         <div className="min-w-0 flex-1 space-y-2">
@@ -406,9 +409,10 @@ function useSkeletonVisible(loading: boolean): boolean {
 export function SessionDetailPresentation({
   summary,
   loading,
+  refreshing = false,
   error,
   session,
-  supportsAnalytics,
+  supportsAnalysis,
   cost,
   costSplit,
   orchestration,
@@ -449,7 +453,7 @@ export function SessionDetailPresentation({
     }
   })
 
-  const showSkeleton = useSkeletonVisible(loading && supportsAnalytics)
+  const showSkeleton = useSkeletonVisible(loading && supportsAnalysis)
   // The settled gate the real content, error, and empty states all key off:
   // true only once loading is done *and* the skeleton's minimum-visible
   // window, if any, has elapsed.
@@ -517,6 +521,20 @@ export function SessionDetailPresentation({
               Sub-agent
             </span>
           )}
+          {refreshing && (
+            <span
+              role="status"
+              className="inline-flex shrink-0 items-center text-label-tertiary"
+            >
+              <LoaderCircle
+                size={12}
+                strokeWidth={2}
+                aria-hidden="true"
+                className="animate-spin"
+              />
+              <span className="sr-only">Refreshing session analysis</span>
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {hasRelations && relations && (
@@ -567,7 +585,7 @@ export function SessionDetailPresentation({
         {showEmptyState && (
           <div className="flex flex-col items-center justify-center px-8 py-12 text-center">
             <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
-            {!supportsAnalytics ? (
+            {!supportsAnalysis ? (
               <p className="type-body text-label">
                 Session analysis for {agentDisplayName(session.agent)} sessions isn&apos;t
                 available yet

@@ -25,6 +25,7 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         activity_source: "mtime".into(),
         subagent_count: 0,
         fork_parent_session_id: None,
+        source_fingerprint: None,
     }
 }
 
@@ -38,7 +39,18 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
 }
 
 #[test]
-fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
+fn a_fresh_database_selects_every_ten_percent_milestone() {
+    let settings = store().settings().unwrap();
+
+    for threshold in MILESTONE_OPTIONS {
+        let expected = threshold % 10 == 0;
+        assert_eq!(settings.milestones_5h.contains(threshold), expected);
+        assert_eq!(settings.milestones_weekly.contains(threshold), expected);
+    }
+}
+
+#[test]
+fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
     let store = store();
     let connection = store.lock();
     let mut statement = connection
@@ -60,6 +72,10 @@ fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
             "inclusive_models_json",
             "source_fingerprint",
             "pricing_generation",
+            "analyzed_generation",
+            "parser_revision",
+            "analyzer_revision",
+            "metrics_schema_revision",
         ]
     );
 }
@@ -70,18 +86,16 @@ fn session_analysis_keeps_only_the_cache_values_the_app_reads() {
 fn opting_out_destroys_the_queue_and_the_installation_identity() {
     let store = store();
     store
-        .set_usage_analytics_identity("11111111-1111-4111-8111-111111111111")
+        .set_analytics_identity("11111111-1111-4111-8111-111111111111")
         .unwrap();
-    store
-        .queue_usage_analytics_event("app_launched", "{}")
-        .unwrap();
-    assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
-    assert!(store.usage_analytics_identity().unwrap().is_some());
+    store.queue_analytics_event("app_launched", "{}").unwrap();
+    assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
+    assert!(store.analytics_identity().unwrap().is_some());
 
-    store.clear_usage_analytics().unwrap();
+    store.clear_analytics().unwrap();
 
-    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
-    assert!(store.usage_analytics_identity().unwrap().is_none());
+    assert!(store.pending_analytics_events(10).unwrap().is_empty());
+    assert!(store.analytics_identity().unwrap().is_none());
 }
 
 /// An undeliverable event is dropped rather than retried forever: a queue that
@@ -90,22 +104,20 @@ fn opting_out_destroys_the_queue_and_the_installation_identity() {
 #[test]
 fn events_are_given_up_on_after_a_bounded_number_of_attempts() {
     let store = store();
-    store
-        .queue_usage_analytics_event("app_launched", "{}")
-        .unwrap();
+    store.queue_analytics_event("app_launched", "{}").unwrap();
     let ids: Vec<i64> = store
-        .pending_usage_analytics_events(10)
+        .pending_analytics_events(10)
         .unwrap()
         .into_iter()
         .map(|(id, _)| id)
         .collect();
 
     for _ in 0..2 {
-        assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 0);
-        assert_eq!(store.pending_usage_analytics_events(10).unwrap().len(), 1);
+        assert_eq!(store.fail_analytics_events(&ids, 3).unwrap(), 0);
+        assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
     }
-    assert_eq!(store.fail_usage_analytics_events(&ids, 3).unwrap(), 1);
-    assert!(store.pending_usage_analytics_events(10).unwrap().is_empty());
+    assert_eq!(store.fail_analytics_events(&ids, 3).unwrap(), 1);
+    assert!(store.pending_analytics_events(10).unwrap().is_empty());
 }
 
 #[test]
@@ -205,19 +217,10 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             disk_space_display: DiskSpaceDisplay::Always,
             disk_space_threshold_gb: 100,
             notify_disk_space_low: false,
-            notify_usage_anomalies: false,
-            milestones_5h: Milestones {
-                at50: false,
-                at75: true,
-                at90: true,
-            },
-            milestones_weekly: Milestones {
-                at50: false,
-                at75: false,
-                at90: false,
-            },
+            milestones_5h: Milestones::selected([75, 90]),
+            milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
-            usage_analytics_enabled: false,
+            analytics_enabled: false,
             overview_limits_expanded: false,
         })
         .unwrap();
@@ -231,7 +234,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // The empty milestone subset survives a round trip as "none selected",
     // not as a reset back to the defaults.
     assert!(!saved.milestones_weekly.any());
-    assert!(saved.milestones_5h.at75 && !saved.milestones_5h.at50);
+    assert!(saved.milestones_5h.contains(75) && !saved.milestones_5h.contains(50));
     assert!(saved.live_usage_enabled);
     assert!(!saved.overview_limits_expanded);
     assert!(saved.onboarding_completed);
@@ -287,6 +290,39 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert_eq!(store.settings().unwrap(), saved);
 }
 
+#[test]
+fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
+    let store = store();
+    let before = store
+        .save_settings(&AppSettings {
+            theme: ThemePreference::Dark,
+            activity_window_days: 14,
+            onboarding_completed: true,
+            launch_at_login: false,
+            analytics_enabled: true,
+            ..AppSettings::default()
+        })
+        .unwrap();
+    store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
+    store.add_scan_root("/home/avery/work").unwrap();
+    store.queue_analytics_event("app_launched", "{}").unwrap();
+
+    let (previous, restarted) = store.restart_onboarding().unwrap();
+
+    let mut expected = before.clone();
+    expected.onboarding_completed = false;
+    assert_eq!(previous, before);
+    assert_eq!(restarted, expected);
+    assert_eq!(store.settings().unwrap(), expected);
+    assert_eq!(store.session_count().unwrap(), 1);
+    assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
+    assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
+
+    let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
+    assert_eq!(previous_again, expected);
+    assert_eq!(restarted_again, expected);
+}
+
 /// Pin the current session shape so migrations remain deliberate. This is not
 /// a restriction on what a future local visibility feature may store.
 #[test]
@@ -321,6 +357,9 @@ fn the_session_table_shape_is_stable() {
             "last_seen_at",
             "activity_source",
             "activity_cursor",
+            "source_fingerprint",
+            "source_generation",
+            "started_at_epoch",
         ]
     );
 }
@@ -928,6 +967,158 @@ fn migrating_forward_drops_a_legacy_live_usage_off_row_so_the_new_default_applie
         store.settings().unwrap().live_usage_enabled,
         "with the legacy row gone, the read path falls through to the new default"
     );
+}
+
+#[test]
+fn migrating_forward_renames_the_analytics_tables_and_keeps_their_rows() {
+    // V1 through V8 created and used `usage_analytics_event` and
+    // `usage_analytics_identity`. V9 (source generations) does not touch
+    // them. V10 renames both tables to drop the "usage_" prefix, to match
+    // the renamed Rust module and code. Built by hand up to V9 so only the
+    // rename migration runs; a fresh `Store::open_in_memory` would already
+    // be past it.
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..9] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO usage_analytics_identity (id, install_id, minted_at)
+             VALUES (1, 'test-install-id', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO usage_analytics_event (name, payload, queued_at)
+             VALUES ('app_launched', '{}', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 9i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
+    )
+    .expect("migrates cleanly to the latest version");
+
+    assert_eq!(
+        store.schema_version().unwrap(),
+        super::schema::MIGRATIONS.len() as i64
+    );
+    let (install_id, event_count): (String, i64) = store
+        .lock()
+        .query_row(
+            "SELECT install_id, (SELECT COUNT(*) FROM analytics_event) FROM analytics_identity",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the renamed tables carry the rows the old names held");
+    assert_eq!(install_id, "test-install-id");
+    assert_eq!(event_count, 1);
+}
+
+#[test]
+fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
+    for start in 0..super::schema::MIGRATIONS.len() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        for &sql in &super::schema::MIGRATIONS[..start] {
+            connection.execute_batch(sql).unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", start as i64)
+            .unwrap();
+
+        let store = Store::from_connection(
+            connection,
+            Path::new("/tmp/antiburn-all-migrations-test").to_path_buf(),
+        )
+        .expect("migration reaches the head");
+        assert_eq!(
+            store.schema_version().unwrap(),
+            super::schema::MIGRATIONS.len() as i64
+        );
+        let connection = store.lock();
+        let added_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session')
+                   WHERE name IN ('source_fingerprint', 'source_generation', 'started_at_epoch')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let projection_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_analysis')
+                   WHERE name IN ('analyzed_generation', 'parser_revision',
+                                  'analyzer_revision', 'metrics_schema_revision')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(added_columns, 3, "start version {start}");
+        assert_eq!(projection_columns, 4, "start version {start}");
+    }
+}
+
+#[test]
+fn the_generation_increments_only_when_the_fingerprint_changes() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "generation");
+    let mut record = session("generation", 1_000);
+    record.source_fingerprint = Some("sv1:first".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    let first = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(first.source_generation, 1);
+
+    record.source_fingerprint = Some("sv1:second".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    let second = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(second.source_generation, 2);
+    assert_eq!(second.source_fingerprint.as_deref(), Some("sv1:second"));
+
+    record.source_fingerprint = None;
+    store.upsert_sessions(&[record]).unwrap();
+    let unreadable = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(unreadable, second);
+}
+
+#[test]
+fn started_at_epoch_stays_null_through_scan_upserts() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "no-start");
+    let mut record = session("no-start", 1_000);
+    record.source_fingerprint = Some("sv1:first".to_string());
+    store
+        .upsert_sessions(std::slice::from_ref(&record))
+        .unwrap();
+    record.source_fingerprint = Some("sv1:second".to_string());
+    store.upsert_sessions(&[record]).unwrap();
+
+    let state = store
+        .session_source_state(&key)
+        .unwrap()
+        .expect("source state");
+    assert_eq!(state.started_at_epoch, None);
 }
 
 #[test]

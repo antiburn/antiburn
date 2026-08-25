@@ -13,8 +13,8 @@ import { NudgeSession } from "./nudge/NudgeSession"
  * The notification surface, styled to read like a native macOS notification
  * (HIG): the app icon on the left (identity — not tinted by severity, per HIG),
  * a bold title with a timestamp that swaps to a hover-revealed close, a
- * secondary body line, and the actionable extension (recommendations + CTAs)
- * below. Theme tokens make it adapt to light/dark.
+ * two-line summary, and expanded detail with actions below. Theme tokens make
+ * it adapt to light/dark.
  *
  * Rendered only in the window the nudge crate opens at `#/nudge` (see
  * `lib/route`). On a new nudge it slides in; on dismiss/CTA/timeout it slides
@@ -81,10 +81,8 @@ export function NudgeView() {
         key={nudge.id}
         ref={cardRef}
         // The card fills the window edge to edge and paints its own surface.
-        // This build does not enable tauri's `macos-private-api`, so the
-        // notification window is opaque and undecorated — the same chrome as the
-        // popover — and a rounded card would only reveal the window's square
-        // corners behind it.
+        // On macOS, the transparent window material and the route root clip it
+        // to `rounded.popover`. Other platforms keep their opaque window shell.
         //
         // Hover-revealed chrome below is driven by `expanded` (which is exactly
         // the hover state) rather than CSS `:hover`/`group-hover`: the pointer
@@ -102,7 +100,7 @@ export function NudgeView() {
         <div className="px-4 py-3.5" onClick={session.handleBodyClick}>
           <div className="flex items-center gap-3">
             {/* The app icon — the native "sender" slot. Vertically centered
-                against the title + reason, sized to match the native macOS
+                against the title + subtitle, sized to match the native macOS
                 notification icon. */}
             <img
               src={appIcon}
@@ -127,33 +125,35 @@ export function NudgeView() {
                   {elapsedLabel}
                 </span>
               </div>
-              {nudge.reason && (
-                <p
-                  className={cn(
-                    "type-body mt-0.5 leading-snug text-label-secondary",
-                    !expanded && "line-clamp-2",
-                  )}
-                >
-                  {nudge.reason}
-                </p>
-              )}
+              <p
+                className={cn(
+                  "type-body mt-0.5 leading-snug text-label-secondary",
+                  !expanded && "line-clamp-2",
+                )}
+              >
+                {nudge.subtitle}
+              </p>
             </div>
           </div>
 
-          {/* Recommendations are the expanded detail — revealed as the native
-              window animates open on hover. Indented (icon w-12 + gap-3) so they
-              align under the copy while the icon stays centered on the header. */}
-          {expanded && recommendations.length > 0 && (
-            <ul className="mt-2 space-y-1 pl-[3.75rem]">
-              {recommendations.map((rec, i) => (
-                <li key={i} className="type-footnote flex gap-1.5 text-label-secondary">
-                  <span aria-hidden className="text-label-tertiary">
-                    •
-                  </span>
-                  <span className="min-w-0">{rec}</span>
-                </li>
-              ))}
-            </ul>
+          {/* Expanded detail aligns under the copy while the icon stays centered
+              on the header. */}
+          {expanded && (
+            <div className="mt-2 pl-[3.75rem]">
+              <p className="type-body text-label-secondary">{nudge.description}</p>
+              {recommendations.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {recommendations.map((rec, i) => (
+                    <li key={i} className="type-footnote flex gap-1.5 text-label-secondary">
+                      <span aria-hidden className="text-label-tertiary">
+                        •
+                      </span>
+                      <span className="min-w-0">{rec}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
 

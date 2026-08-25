@@ -69,8 +69,8 @@ export type NudgeSnapshot = {
   nudge: Nudge | null
   entering: boolean
   exiting: boolean
-  // Collapsed by default (icon + title + reason); hovering expands to reveal the
-  // recommendations and the action bar, like a native macOS notification.
+  // Collapsed by default (icon, title, and subtitle). Hovering reveals the
+  // description, recommendations, and action bar.
   expanded: boolean
   elapsedLabel: string
 }

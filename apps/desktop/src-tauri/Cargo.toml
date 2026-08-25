@@ -91,10 +91,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `tray-icon` gives the menu-bar item; `image-png` lets the tray glyph be
 # decoded from the generated PNG.
-# Two windows need `macos-private-api`. The HUD crate builds a transparent macOS
-# window, and the popover uses the window-effect builder for its rounded
-# material. Tauri's configuration check requires the shell manifest to declare
-# the feature.
+# Three windows need `macos-private-api`. The HUD and nudge crates build
+# transparent macOS windows, and the popover uses the window-effect builder for
+# its rounded material. Tauri's configuration check requires the shell manifest
+# to declare the feature.
 tauri = { version = "2", features = ["image-png", "tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

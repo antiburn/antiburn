@@ -10,7 +10,8 @@ _Behavior reference for the floating HUD. Source-governance D-026 authorizes
 the port, and deviations-register D-30 records its platform and resource costs._
 
 The HUD is a small always-on-top window that shows usage bars outside the menu.
-It has three visible states. Hovering the HUD must never move its visible panel.
+Its native frame follows the visible bar panel and does not change on hover. A
+hover shows the detail in a second window, like a large tooltip.
 
 ## The states
 
@@ -18,85 +19,112 @@ It has three visible states. Hovering the HUD must never move its visible panel.
 stateDiagram-v2
     [*] --> Hidden
     Hidden --> Collapsed: Usage pop-out button<br/>or Settings toggle
-    Collapsed --> Hidden: ✕ in the HUD<br/>or Usage pop-out button
+    Collapsed --> Hidden: ✕ on the HUD<br/>or Usage pop-out button
 
-    Collapsed --> Expanded: pointer rests on it 250ms
-    Expanded --> Collapsed: pointer leaves
+    Collapsed --> DetailShown: pointer rests on it 400ms
+    DetailShown --> Collapsed: pointer leaves
 
     Collapsed --> Dragging: mouse down
-    Expanded --> Dragging: mouse down
-    Dragging --> Collapsed: mouse up (pointer away)
-    Dragging --> Expanded: mouse up (pointer still on it)
+    DetailShown --> Dragging: mouse down
+    Dragging --> Collapsed: mouse up
 
     note right of Collapsed
         Bars only. No panel, no
-        background, no chrome.
+        background, no chrome. A small
+        ✕ fades in while the pointer
+        rests on the bars.
     end note
-    note right of Expanded
-        Panel: wordmark, ✕, and for
-        each limit a label, a bar and
-        its reset time.
+    note right of DetailShown
+        A separate display-only window
+        next to the HUD: wordmark, and
+        for each limit a label, a
+        percentage, a bar and its
+        reset time.
     end note
     note right of Dragging
-        Always drawn collapsed, so you
-        can see the place you are
-        putting it.
+        The detail window hides and the
+        show timer stops until mouse up.
     end note
 ```
 
-| State         | What you see                                                 | Purpose                                                    |
-| ------------- | ------------------------------------------------------------ | ---------------------------------------------------------- |
-| **Hidden**    | Nothing                                                      | The HUD is opt-in.                                         |
-| **Collapsed** | Bare LED bars on a transparent background                    | It stays ambient.                                          |
-| **Expanded**  | Labels, percentages, reset times, wordmark, and close button | It shows detail on request.                                |
-| **Dragging**  | The collapsed bars                                           | It does not cover the place where the reader positions it. |
+| State            | What you see                                                | Purpose                              |
+| ---------------- | ----------------------------------------------------------- | ------------------------------------ |
+| **Hidden**       | Nothing                                                     | The HUD is opt-in.                   |
+| **Collapsed**    | Bare LED bars on a transparent background                   | It stays ambient.                    |
+| **Detail shown** | The bars, plus a separate window with the spelled-out stats | It shows detail on request.          |
+| **Dragging**     | The collapsed bars only                                     | It does not cover the drop position. |
 
 ### Transition details
 
-- Expansion waits 250ms. Collapse is immediate.
+- The detail window waits for a 400ms hover intent. It hides at once when the
+  pointer leaves the HUD frame.
+- The ✕ sits at the HUD's top right. It fades in as soon as the pointer enters
+  the frame and adds no height.
 - DOM mouse edges provide the focused path. The Rust crate polls the global
   cursor every 100ms for the background path and emits `overlay_hover`.
-- Dragging starts on the panel except on its two buttons. Only mouse release or
-  window blur ends the drag.
-- The drag moves the window manually at most once per animation frame.
-- The HUD always renders collapsed for the complete drag.
-- Renderer transitions use 150ms. Native frame resizing uses the popover's
-  140ms ease and stops immediately when a drag starts.
+- A mouse down clears the pending show timer and hides a visible detail window.
+  The timer stays suppressed until mouse up. After mouse up, a fresh 400ms count
+  starts only when the pointer still rests on the HUD.
+- Dragging starts on the panel except on the ✕. Only mouse release or window
+  blur ends the drag. The drag moves the window manually at most once per
+  animation frame.
+- The detail window fades in over 100ms (`--duration-quick`). It hides with no
+  transition. Reduced motion disables the fade.
+
+## The detail window
+
+The detail window (`antiburn-hud-detail`) is pure display. It ignores cursor
+events, never takes focus, and holds no controls. Settings stays reachable
+through the tray.
+
+The first hover creates the window hidden. After that it stays warm and only
+shows and hides, like the popover. The HUD session owns the data: it pushes the
+derived bars with the show call and again on every usage refresh while the
+window is visible. The webview measures its rendered content and reports the
+height. The shell sizes, places, and shows the window in one step, so it appears
+at its final size.
+
+A hide runs through the webview as well. The webview clears the card while it
+can still paint, reports back, and only then does the shell hide the window. A
+short fallback handles a missing report. An empty last frame keeps the next show
+clean.
+
+### Placement
+
+- The anchor is the content-sized HUD frame.
+- The window is 176 logical pixels wide and left-aligned with the HUD. It
+  prefers the space below the HUD.
+- It flips above the HUD when the space below would cross the screen's bottom
+  margin.
+- It clamps to the monitor that holds the HUD, with an 8px margin.
+- The webview's transparent padding carries the drop shadow and forms the
+  visible gap to the HUD.
 
 ## Positioning
 
-The native frame is 176 logical pixels wide and exactly as tall as the rendered
-panel, up to the original 500px ceiling. The default position is centered under
-the primary macOS menu bar, with a 24px menu-bar allowance and an 8px gap.
-Reopening a live window keeps the reader's position and measured height.
+The HUD's native frame is 176 logical pixels wide and exactly as tall as the
+rendered bar panel, up to a 500px safety ceiling. The default position is
+centered under the primary macOS menu bar, with a 24px menu-bar allowance and an
+8px gap. Reopening a live window keeps the reader's position and measured
+height.
 
-The renderer measures the collapsed panel before the native window first
-appears. Turning the HUD off cancels that pending reveal, even if the measurement
-arrives later. Reopening uses the completed measurement. Later measurements
-resize the visible window. The panel normally keeps its top edge and opens down.
-A HUD that is too low keeps its bottom edge and opens up. Collapse uses the same
-anchor, so the collapsed HUD returns to the position the reader chose.
+The renderer measures the panel before the native window first appears.
+Turning the HUD off cancels that pending reveal, even if the measurement arrives
+later. Reopening uses the completed measurement. A later bar-count or font
+change resizes the visible frame from its top edge. The 140ms native animation
+uses the reduced-motion preference. Drag setup first snaps to the measured
+height without animation, so the pointer origin matches the frame. A visible
+detail window follows each animation frame, so a bar-count change keeps the two
+windows joined.
 
-The direction calculation keeps an 8px screen margin. Before the expanded panel
-has a measured height, it estimates 48px of chrome plus 50px for each bar. It
-uses the largest measured expanded height after the first expansion. It decides
-again after a drag and before each expansion. Content changes during one hover
-recalculate the direction with the new bar count before the frame resizes.
-
-| Event                     | Result                                                   |
-| ------------------------- | -------------------------------------------------------- |
-| The reader drops the HUD  | The panel stays at the drop position.                    |
-| The reader hovers the HUD | The panel opens down or up without visible movement.     |
-| The reader leaves the HUD | The panel collapses without visible movement.            |
-| A new limit appears       | The frame recalculates its anchor and follows the panel. |
-
-The native frame no longer reserves transparent expansion space. Desktop clicks
+The native frame reserves no transparent expansion space. Desktop clicks
 outside the visible HUD reach the application underneath it.
 
 ## Data and timing
 
 - Each LED bar has 20 segments.
-- Only the first bar blinks during a live session.
+- Only the first bar blinks during a live session, and only on the HUD. The
+  detail window does not blink.
 - A transcript write stays live for 90 seconds.
 - The renderer polls session liveness every 5 seconds.
 - The shell memoizes session discovery for 60 seconds.
@@ -111,7 +139,7 @@ outside the visible HUD reach the application underneath it.
 The preference key is `antiburn.showFloatingHud` in localStorage. Settings →
 Usage writes it. The Usage header pop-out button writes it. The popover session
 restores the HUD at startup when it reads `1`. The HUD close button writes `0`
-before it hides the window.
+before it calls the native hide command.
 
 Each webview can hold a different localStorage copy. The pop-out button asks the
 native window for current visibility when it mounts and whenever the popover
@@ -129,9 +157,9 @@ always-on-top behavior.
 | Design                                      | Failure                                                  |
 | ------------------------------------------- | -------------------------------------------------------- |
 | Keep a fixed 500px transparent frame        | Invisible space blocks clicks in other applications.     |
-| Make the complete window ignore mouse input | The visible HUD cannot expand, drag, or answer controls. |
-| Never move and never flip                   | The expanded panel clips at the bottom.                  |
-| Move the collapsed anchor to make room      | The HUD leaves the position the reader chose.            |
-| Resize before collapsing for a drag         | The first drag movement uses the expanded origin.        |
+| Expand the HUD panel in place               | Content shifts under the pointer and complicates drag.   |
+| Make the complete window ignore mouse input | The visible HUD cannot drag or answer its close control. |
+| Move the HUD to make room for detail        | The HUD leaves the position the reader chose.            |
 
-The panel direction is the correct lever. The visible HUD position is not.
+The separate detail window and content-sized HUD frame close this list. The HUD
+does not expand, and the detail window is sized before it appears.

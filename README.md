@@ -3,7 +3,7 @@
 Local-first visibility into your AI coding-agent sessions.
 
 antiburn discovers the coding-agent sessions already on your machine, analyzes the
-transcripts locally, and shows you activity, session analytics, and API-equivalent
+transcripts locally, and shows you activity, session analysis, and API-equivalent
 cost estimates. Everything runs on your device.
 
 **Supported agents.** Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode,
@@ -27,10 +27,10 @@ connections it makes beyond that are yours: it can read your provider's own curr
 usage figures with your own credentials — traffic between this machine and a provider
 you already use, never us. The one call antiburn makes to a service of ours is the update check, against
 GitHub Releases, and the app never depends on it. Released builds also send
-anonymised usage analytics about the application itself — on by default,
+anonymised analytics about the application itself — on by default,
 switchable off in Settings → Privacy, and never carrying your sessions, prompts,
 file paths, or repository names. Every field and every event is listed in
-[docs/usage-analytics.md](docs/usage-analytics.md), along with the commands to
+[docs/analytics.md](docs/analytics.md), along with the commands to
 verify it on your own machine. The endpoint is
 injected at build time, so a build from a clean checkout of this repository sends
 nothing at all. Beyond that, antiburn hands your data to no one who doesn't

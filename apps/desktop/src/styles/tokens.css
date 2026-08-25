@@ -92,8 +92,8 @@
      see lib/agentIcon.tsx. */
   --color-agent-mark: var(--color-agent-mark-val);
 
-  /* Session-analytics chart tokens are theme-adaptive too and live in
-   * ./session-analytics-colors.css. */
+  /* Session-analysis chart tokens are theme-adaptive too and live in
+   * ./session-analysis-colors.css. */
 
   /* Corner radii */
   --radius-control: 5px;

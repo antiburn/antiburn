@@ -9,7 +9,7 @@ import {
   formatCost,
   HIGH_COST_MEDIAN_MULTIPLE,
   type CostRow,
-} from "../../../lib/presentation/sessionAnalytics"
+} from "../../../lib/presentation/sessionAnalysis"
 import { Tooltip } from "../../presentation/Tooltip"
 import { TextRoll } from "../../ui/TextRoll"
 
@@ -27,7 +27,7 @@ export interface SessionCostBadgeProps {
   figureLabel: string
   /** Every model that contributed billable tokens, as a muted subtitle. */
   models?: string[]
-  /** Unusually expensive against comparable sessions. Paints the pill red with a flame. */
+  /** Unusually expensive against comparable sessions. Paints the pill solid brand orange with a flame. */
   isHighCost?: boolean
   /** Billable component rows (input / output / cache read / cache write). */
   breakdownRows?: CostRow[]
@@ -63,7 +63,7 @@ export function SessionCostBadge({
       label={
         <div className="space-y-1.5 text-left">
           <div>
-            <div className="flex justify-between gap-4 type-caption font-medium text-system-gold-text">
+            <div className="flex justify-between gap-4 type-caption font-medium text-label">
               <span>{figureLabel}</span>
               <span className="tabular-nums">{formatCost(totalUsd)}</span>
             </div>
@@ -75,7 +75,7 @@ export function SessionCostBadge({
               </div>
             )}
             {isHighCost && (
-              <div className="type-caption font-medium text-system-red-text">
+              <div className="type-caption font-medium text-brand">
                 Higher than usual — over {HIGH_COST_MEDIAN_MULTIPLE}× your typical session
               </div>
             )}
@@ -94,9 +94,9 @@ export function SessionCostBadge({
       }
     >
       <span
-        // High-cost status is also red plus a flame, but color and glyph alone
-        // fail WCAG 1.4.1 and the flame is aria-hidden — so carry the "higher
-        // than usual" meaning in the accessible name too.
+        // High-cost status is also a solid orange fill plus a flame, but color
+        // and glyph alone fail WCAG 1.4.1 and the flame is aria-hidden — so
+        // the accessible name also carries the "higher than usual" meaning.
         aria-label={
           isHighCost
             ? `${figureLabel} ${formatCost(totalUsd)}, higher than usual`
@@ -104,9 +104,7 @@ export function SessionCostBadge({
         }
         className={cn(
           COST_PILL_CLASS,
-          isHighCost
-            ? "bg-system-red/15 text-system-red-text"
-            : "bg-system-gold/15 text-system-gold-text",
+          isHighCost ? "bg-brand-tint text-white" : "bg-label-tertiary/15 text-label-secondary",
           className,
         )}
       >

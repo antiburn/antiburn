@@ -12,7 +12,7 @@
 //! # Modules
 //!
 //! - [`agents`] — translating between the engine's two names for an agent.
-//! - [`analytics`] — turning a located transcript into what the views render.
+//! - [`analysis`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
 //! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
@@ -32,7 +32,7 @@
 //! - [`tray`] — the menu-bar item and its click and menu handling.
 //! - [`tray_title`] — the attributed-string text beside the tray glyph.
 //! - [`updates`] — whether, and when, the release feed may be contacted.
-//! - [`usage_alerts`] — the spend-anomaly and milestone monitor.
+//! - [`usage_alerts`] — the usage milestone monitor.
 //! - [`window_placement`] — where the app's ordinary windows open.
 //!
 //! # Local by construction
@@ -52,6 +52,7 @@
 //! to the same boundary by a test (`apps/desktop/tests/no-exfiltration.test.ts`).
 
 mod agents;
+mod analysis;
 mod analytics;
 mod commands;
 mod consent;
@@ -75,7 +76,6 @@ mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
-mod usage_analytics;
 mod window_placement;
 
 use std::sync::Mutex;
@@ -140,15 +140,22 @@ pub fn run() {
             commands::get_scan_status,
             commands::get_folder_permissions,
             commands::request_folder_access,
+            commands::restart_onboarding,
             commands::open_folder_access_settings,
+            commands::open_github_repo,
             commands::open_overlay_window,
             commands::hide_overlay_window,
+            commands::show_hud_detail,
+            commands::hide_hud_detail,
+            commands::conceal_hud_detail,
+            commands::get_hud_detail_state,
+            commands::set_hud_detail_size,
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
-            commands::get_session_analytics,
+            commands::get_session_analysis,
             commands::get_settings,
             commands::get_storage_health,
-            commands::get_subagent_analytics,
+            commands::get_subagent_analysis,
             commands::hide_popover,
             commands::finish_onboarding,
             commands::note_interaction,
@@ -157,6 +164,7 @@ pub fn run() {
             commands::list_scan_roots,
             commands::open_settings_window,
             commands::post_test_notification,
+            commands::post_sample_notification,
             commands::quit_app,
             commands::refresh_repositories,
             commands::remove_scan_root,
@@ -251,12 +259,12 @@ pub fn run() {
             // The consented analytics channel (D-027, deviations D-28). Both
             // calls are inert unless this build injected an endpoint AND the
             // reader has finished onboarding with the switch on — see
-            // `usage_analytics::allowed`, which is the single gate both go through.
-            usage_analytics::install(app.handle());
-            usage_analytics::record(
+            // `analytics::allowed`, which is the single gate both go through.
+            analytics::install(app.handle());
+            analytics::record(
                 app.handle(),
-                usage_analytics::event::EventName::AppLaunched,
-                usage_analytics::event::Facts::default(),
+                analytics::event::EventName::AppLaunched,
+                analytics::event::Facts::default(),
             );
 
             // The notification window's manager and the chime player. The

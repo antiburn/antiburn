@@ -34,10 +34,12 @@ const CONTRACT = 'design.md';
 // It declares no tokens, so the contract does not list it as a source.
 const ENTRY_STYLESHEET = 'src/styles.css';
 
-// The window that draws its own corner from `rounded.popover`. The value is a
-// Rust constant there, because the corner comes from the window material and
-// not from a stylesheet.
-const WINDOW_CORNER_SOURCE = 'src-tauri/src/popover.rs';
+// These macOS windows draw their corners from `rounded.popover`. Each value is
+// a Rust constant because the corner comes from the window material, not CSS.
+const WINDOW_CORNER_SOURCES = [
+  { path: 'src-tauri/src/popover.rs', constant: 'CORNER_RADIUS' },
+  { path: 'src-tauri/crates/nudge/src/window.rs', constant: 'NUDGE_CORNER_RADIUS' },
+];
 
 // Each shadow token names one selector that must carry that exact box-shadow.
 const SHADOW_SELECTORS = {
@@ -511,21 +513,23 @@ export function checkDesignDrift(io = fileSystemIo()) {
     }
   }
 
-  // The macOS popover corner. The window material draws it, so the radius is
-  // a Rust constant as well as a token, and the two must agree — a window
-  // corner that differs from the surface corner inside it is visible. Rust is
-  // the one place a token value is copied rather than referenced, so it is the
-  // one place this check has to leave the stylesheets.
-  if (!io.exists(WINDOW_CORNER_SOURCE)) {
-    fail(`rounded.popover: ${WINDOW_CORNER_SOURCE} not found`);
-  } else {
-    const rust = /const\s+CORNER_RADIUS:\s*f64\s*=\s*([\d.]+)\s*;/.exec(io.read(WINDOW_CORNER_SOURCE));
+  // The macOS floating-window corners. The material draws each one, so every
+  // radius is a Rust constant as well as a token. A mismatched surface corner
+  // is visible. Rust is the one place a token value is copied, so this check
+  // must leave the stylesheets here.
+  for (const source of WINDOW_CORNER_SOURCES) {
+    if (!io.exists(source.path)) {
+      fail(`rounded.popover: ${source.path} not found`);
+      continue;
+    }
+    const pattern = new RegExp(`const\\s+${source.constant}:\\s*f64\\s*=\\s*([\\d.]+)\\s*;`);
+    const rust = pattern.exec(io.read(source.path));
     if (!rust) {
-      fail(`rounded.popover: ${WINDOW_CORNER_SOURCE} declares no CORNER_RADIUS`);
+      fail(`rounded.popover: ${source.path} declares no ${source.constant}`);
     } else if (parseFloat(rust[1]) !== parseFloat(rounded.popover)) {
       fail(
-        `rounded.popover ${rounded.popover} != CORNER_RADIUS ${rust[1]} ` +
-          `in ${WINDOW_CORNER_SOURCE}`,
+        `rounded.popover ${rounded.popover} != ${source.constant} ${rust[1]} ` +
+          `in ${source.path}`,
       );
     }
   }

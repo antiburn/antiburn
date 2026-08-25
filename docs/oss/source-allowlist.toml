@@ -802,7 +802,7 @@ provenance = "Cadence company-authored milestone selection; D-023 maintainer dec
 current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
-  "Extract the milestone selection engine only: threshold filtering, delivery-key scheme (provider, account, window, reset-epoch), silent priming of already-crossed thresholds, and highest-crossing-wins selection.",
+  "Extract the milestone selection engine only: threshold filtering, delivery-key scheme (provider, account, window, reset-epoch), silent priming of already-crossed thresholds, highest-crossing selection within one limit, and one-limit-at-a-time delivery.",
   "SATISFIED: the engine is now fed by the public LiveUsageSource in apps/desktop/src-tauri/src/provider_usage/live/. Its registered sources fetch a provider's usage endpoint directly with the credential the reader's own CLI already holds, falling back to that CLI's own app-server process when the direct call cannot get through; every one of them is per-feature opt-in, default off, and talks only to a provider endpoint or the reader's own local process — never a private-app endpoint.",
   "Do not copy the private snapshot collectors, pi_api client, loopback/local-API probes, credential capture, persistence contracts, or telemetry.",
   "Strip Cadence names; add MPL-2.0 headers.",
@@ -833,7 +833,7 @@ notes = [
   "From providers/mod.rs take only parse_transport_error and the small JSON accessors it shares. Do not take SnapshotContext's account plumbing or any sibling provider module.",
   "Do not copy probe.rs's ProviderUsageProbe trait or ProviderAccountContext: those are Cadence-authored provenance, not a capability the public app is barred from — it fetches through its own LiveUsageSource seam instead.",
   "Do not copy metrics.rs's callers, only the arithmetic; the public app has no upload, account-proving, or telemetry inputs to gate a forecast on.",
-  "Do not copy anomaly.rs: the public app already ships its own spend-anomaly rule in usage_alerts.rs, recorded in the deviations register as D-7.",
+  "Do not copy anomaly.rs: the public app deliberately excludes rate-based usage alerts because usage rates are not predictable or steady enough; D-7 records the decision.",
   "Do not copy identity.rs: the public app uploads nothing, so no opaque account key is needed and the provider's own local account id may key the milestone ledger.",
   "Strip Cadence names; add MPL-2.0 headers; keep every fail-closed branch as an error rather than a clamp.",
 ]

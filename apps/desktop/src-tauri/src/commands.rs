@@ -27,11 +27,11 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::agents::kind_from_slug;
-use crate::analytics;
+use crate::analysis;
 use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, LiveUsageSummary,
-    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics,
+    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
     SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
@@ -97,6 +97,21 @@ pub fn quit_app(app: tauri::AppHandle) {
 #[tauri::command]
 pub fn post_test_notification(app: tauri::AppHandle) {
     crate::notifications::note_test(&app);
+}
+
+/// Post a sample notification of one kind, for copy work.
+///
+/// Debug builds only: a release build refuses, so the row that sends this can
+/// never become a way around the preferences.
+#[tauri::command]
+pub fn post_sample_notification(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("sample notifications are for debug builds only".to_string());
+    }
+    let kind = crate::notifications::Kind::from_id(&kind)
+        .ok_or_else(|| format!("unknown notification kind: {kind}"))?;
+    crate::notifications::note_sample(&app, kind);
+    Ok(())
 }
 
 /// Whether the local database is still accepting writes.
@@ -172,6 +187,39 @@ pub fn resize_overlay_window(
     antiburn_hud::resize(&app, height, anchor_bottom, animate).map_err(fail)
 }
 
+/// Request the hover detail window with the newest usage payload.
+///
+/// The payload passes through opaque on purpose: the HUD webview produces it
+/// and the detail webview consumes it, so the shell does not model its shape.
+#[tauri::command]
+pub fn show_hud_detail(app: tauri::AppHandle, state: serde_json::Value) {
+    antiburn_hud::show_detail(&app, state);
+}
+
+/// Hide the hover detail window.
+#[tauri::command]
+pub fn hide_hud_detail(app: tauri::AppHandle) {
+    antiburn_hud::hide_detail(&app);
+}
+
+/// Hide the detail window now that its webview cleared the card.
+#[tauri::command]
+pub fn conceal_hud_detail(app: tauri::AppHandle) {
+    antiburn_hud::conceal_detail(&app);
+}
+
+/// Return the newest detail payload for a detail webview that mounts late.
+#[tauri::command]
+pub fn get_hud_detail_state() -> serde_json::Value {
+    antiburn_hud::detail_state()
+}
+
+/// Size and place the detail window from its webview's measured height.
+#[tauri::command]
+pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
+    antiburn_hud::apply_detail_size(&app, height);
+}
+
 /// Return the newest recent transcript write as epoch seconds.
 #[tauri::command]
 pub async fn get_latest_session_activity() -> Option<i64> {
@@ -198,8 +246,8 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         // Same rule, same reason: derived from the build that is actually
         // running rather than from a `cfg!`, so no copy downstream can offer
         // a control this binary cannot honour.
-        usage_analytics_supported: crate::usage_analytics::available(),
-        usage_analytics_operator: crate::usage_analytics::operator().map(str::to_string),
+        analytics_supported: crate::analytics::available(),
+        analytics_operator: crate::analytics::operator().map(str::to_string),
     })
 }
 
@@ -228,6 +276,20 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
     Ok(saved)
 }
 
+/// Make setup pending, open it at Welcome, and keep all other local state.
+#[tauri::command]
+pub fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
+    let store = app.state::<Store>();
+    let (previous, saved) = store.restart_onboarding().map_err(fail)?;
+    apply_settings_transition(&app, &previous, &saved);
+    crate::onboarding::restart(&app).map_err(fail)?;
+    crate::popover::hide_for_onboarding(&app);
+    if let Err(error) = settings::hide(&app) {
+        ::tracing::warn!(event = "settings_hide_after_onboarding_restart_failed", error = %error);
+    }
+    Ok(())
+}
+
 /// Commit the first-run choices and finish onboarding as one transition.
 ///
 /// The webview treats these values as a draft until the final button. Keeping
@@ -238,7 +300,7 @@ pub fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
-    usage_analytics_enabled: bool,
+    analytics_enabled: bool,
 ) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved) = store
@@ -247,20 +309,21 @@ pub fn finish_onboarding(
             settings.launch_at_login = launch_at_login;
             // Written here and nowhere earlier. The draft the Ready screen
             // holds is the reader's answer *before* anything can be sent —
-            // `usage_analytics::allowed` also requires the flag set on the next
+            // `analytics::allowed` also requires the flag set on the next
             // line, so switching analytics off on that screen means no event
             // is ever recorded, rather than recorded and then withdrawn.
-            settings.usage_analytics_enabled = usage_analytics_enabled;
+            settings.analytics_enabled = analytics_enabled;
             settings.onboarding_completed = true;
         })
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
     // After the transition, so the gate this event reads sees the saved flags.
-    // A reader who declined on the Ready screen records nothing at all.
-    crate::usage_analytics::record(
+    // A reader who declined on the Ready screen records nothing at all. An
+    // explicit restart records a new completion because it is a new setup run.
+    crate::analytics::record(
         &app,
-        crate::usage_analytics::event::EventName::OnboardingFinished,
-        crate::usage_analytics::event::Facts::default(),
+        crate::analytics::event::EventName::OnboardingFinished,
+        crate::analytics::event::Facts::default(),
     );
     Ok(saved)
 }
@@ -270,20 +333,16 @@ pub fn finish_onboarding(
 /// Infallible and silent: analytics that could fail an action the reader
 /// actually asked for would have their priorities inverted. The parameter is a
 /// closed enum rather than a name and a property map — see
-/// [`usage_analytics::event::Interaction`](crate::usage_analytics::event::Interaction).
+/// [`analytics::event::Interaction`](crate::analytics::event::Interaction).
 #[tauri::command]
-pub fn note_interaction(
-    app: tauri::AppHandle,
-    interaction: crate::usage_analytics::event::Interaction,
-) {
-    crate::usage_analytics::record_interaction(&app, interaction);
+pub fn note_interaction(app: tauri::AppHandle, interaction: crate::analytics::event::Interaction) {
+    crate::analytics::record_interaction(&app, interaction);
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
-    // The one transition that means the first run is over. Named rather than
-    // inlined because two things now hang off it, and because it is the app's
-    // only "exactly once, ever" event: nothing writes this flag back to false,
-    // so neither consequence below needs a marker of its own to avoid repeating.
+    // This transition means the current setup run is over. It can repeat only
+    // after an explicit restart. Each completion refreshes data and explains
+    // where the menu-bar app went.
     let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
 
     if crate::startup_registration::should_reconcile_after_save(previous, saved) {
@@ -334,7 +393,7 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // the installation identifier so a later opt-in cannot be joined to this
     // one. Routed through the same hub as every other consequence so the two
     // can never drift apart.
-    crate::usage_analytics::handle_settings_transition(app, previous, saved);
+    crate::analytics::handle_settings_transition(app, previous, saved);
 
     // Which switch moved, never what it moved to, and only from this closed
     // list. A key alone answers "is this control being found at all"; the
@@ -358,10 +417,10 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         ),
     ] {
         if changed {
-            crate::usage_analytics::record(
+            crate::analytics::record(
                 app,
-                crate::usage_analytics::event::EventName::SettingToggled,
-                crate::usage_analytics::event::Facts {
+                crate::analytics::event::EventName::SettingToggled,
+                crate::analytics::event::Facts {
                     label: Some(key),
                     ..Default::default()
                 },
@@ -421,11 +480,11 @@ fn activity_entry(
     let analysis = store.analysis(&session.key)?;
     let (cost, models) = analysis
         .as_ref()
-        .map(|record| analytics::price_cached_breakdown(&record.model_breakdown_json))
+        .map(|record| analysis::price_cached_breakdown(&record.model_breakdown_json))
         .unwrap_or((None, Vec::new()));
     let model_runs = analysis
         .as_ref()
-        .map(|record| analytics::cached_inclusive_model_runs(&record.inclusive_models_json))
+        .map(|record| analysis::cached_inclusive_model_runs(&record.inclusive_models_json))
         .unwrap_or_default();
 
     Ok(ActivityEntry {
@@ -433,7 +492,7 @@ fn activity_entry(
         session_id: session.key.session_id.clone(),
         repo: repository_label(repositories, session.cwd.as_deref()),
         timestamp: iso_from_epoch(session.updated_at_epoch),
-        is_active: analytics::is_active(session.updated_at_epoch, now),
+        is_active: analysis::is_active(session.updated_at_epoch, now),
         surface: session.surface.clone(),
         wsl_distro: session.wsl_distro.clone(),
         title: session.title.clone(),
@@ -612,26 +671,26 @@ pub async fn refresh_live_usage(
 }
 
 /* -------------------------------------------------------------------------
- * Session analytics
+ * Session analysis
  * ---------------------------------------------------------------------- */
 
-/// Everything the session-analytics surface renders for one session.
+/// Everything the session-analysis surface renders for one session.
 ///
 /// Returns a payload with no summary rather than an error when the transcript
 /// is gone: a deleted conversation is an ordinary state, and the view says so.
 #[tauri::command]
-pub async fn get_session_analytics(
+pub async fn get_session_analysis(
     app: tauri::AppHandle,
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
 
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
     let store = app.state::<Store>();
@@ -660,12 +719,12 @@ pub async fn get_session_analytics(
         None => cached_orchestration(&store, &key),
     };
 
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: stored.as_ref().and_then(|record| record.title.clone()),
         wsl_distro,
-        is_active: analytics::is_active(
+        is_active: analysis::is_active(
             stored.as_ref().and_then(|record| record.updated_at_epoch),
             scan::unix_now(),
         ),
@@ -684,27 +743,27 @@ pub async fn get_session_analytics(
 
 /// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
-pub async fn get_subagent_analytics(
+pub async fn get_subagent_analysis(
     app: tauri::AppHandle,
     agent: String,
     parent_session_id: String,
     subagent_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
     let _ = &app;
-    let analysis = analytics::analyze_subagent(
+    let analysis = analysis::analyze_subagent(
         kind,
         &parent_session_id,
         &subagent_id,
         wsl_distro.as_deref(),
     )
     .await;
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: None,
         wsl_distro,
         is_active: false,
@@ -741,7 +800,7 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
         return None;
     }
     Some(OrchestrationStatus {
-        orchestrating: members.len() as u32 >= analytics::MIN_ORCHESTRATED_SUBAGENTS,
+        orchestrating: members.len() as u32 >= analysis::MIN_ORCHESTRATED_SUBAGENTS,
         orchestrator_agent: key.agent.clone(),
         orchestrator_session_id: key.session_id.clone(),
         subagent_count: members.len() as u32,
@@ -757,8 +816,8 @@ async fn resolve_lineage(
     wsl_distro: Option<&str>,
 ) -> SessionRelations {
     let store = app.state::<Store>();
-    let parent_id = match analytics::locate(kind, &key.session_id, wsl_distro).await {
-        Some(source) => analytics::fork_parent(&source).await,
+    let parent_id = match analysis::locate(kind, &key.session_id, wsl_distro).await {
+        Some(source) => analysis::fork_parent(&source).await,
         None => None,
     };
 
@@ -784,7 +843,7 @@ async fn resolve_lineage(
     };
 
     if let Some(parent_id) = parent_id {
-        let available = analytics::locate(kind, &parent_id, wsl_distro)
+        let available = analysis::locate(kind, &parent_id, wsl_distro)
             .await
             .is_some();
         let title = store
@@ -995,7 +1054,7 @@ pub async fn export_session(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
 
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
     let stored = app.state::<Store>().session(&key).ok().flatten();
@@ -1175,6 +1234,14 @@ pub fn open_folder_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
     let url = repositories_engine::permission_settings_url()
         .ok_or_else(|| "no permission settings on this platform".to_string())?;
     app.opener().open_url(url, None::<&str>).map_err(fail)
+}
+
+/// Open the antiburn GitHub repository in the system browser.
+#[tauri::command]
+pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url("https://github.com/antiburn/antiburn", None::<&str>)
+        .map_err(fail)
 }
 
 /// Probe outcomes from this run, for the reader to copy into a bug report.

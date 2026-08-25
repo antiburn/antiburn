@@ -573,10 +573,20 @@ pub fn hide(app: &AppHandle) {
     if is_pinned(app) {
         return;
     }
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
-    let _ = window.hide();
+    hide_window(app);
+}
+
+/// Hides the popover when setup must own the application surface.
+///
+/// This operation keeps the pin choice. The pin applies again after setup.
+pub fn hide_for_onboarding(app: &AppHandle) {
+    hide_window(app);
+}
+
+fn hide_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.hide();
+    }
     note_hidden(app);
 }
 
@@ -751,16 +761,11 @@ pub fn is_pinned(app: &AppHandle) -> bool {
 /// menu was up, so without this there is no focus left to lose and the next
 /// click on another application would dismiss nothing.
 ///
-/// Refused outright while the first run is unfinished. Re-showing is the whole
-/// point of a pin, and this is the one period where the popover must not be
-/// shown at all — [`toggle`] sends the menu-bar click to the first-run window
-/// for the same reason, and a pin that reached around that gate would put an
-/// empty activity list on screen (the scan scheduler is gated on the same flag)
-/// while the flow it belongs behind is still open. The tray reads the pin state
-/// back after asking rather than trusting the request, so refusing here leaves
-/// its menu item correctly reading "Pin Window".
+/// Pinning is refused while the first run is unfinished. Re-showing is the
+/// point of a pin, and the popover must stay hidden during this period.
+/// Unpinning remains available so the tray action always does what it says.
 pub fn set_pinned(app: &AppHandle, pinned: bool) {
-    if crate::onboarding::is_pending(app) {
+    if pinned && crate::onboarding::is_pending(app) {
         return;
     }
     let Some(state) = app.try_state::<PopoverState>() else {

@@ -31,10 +31,10 @@ interface AgentInfo {
   /**
    * Whether the analysis engine has a dedicated adapter for this agent's
    * transcript format. Agents on the generic fallback report `false`, and the
-   * UI uses that to explain an empty analytics view instead of implying the
+   * UI uses that to explain an empty analysis view instead of implying the
    * session was uninteresting.
    */
-  supportsAnalytics: boolean
+  supportsAnalysis: boolean
 }
 
 /** Fallback icon slot name for a slug the registry does not know. */
@@ -45,67 +45,67 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "Claude Code",
     icon: "claude",
     defaultSurface: "unknown",
-    supportsAnalytics: true,
+    supportsAnalysis: true,
   },
   codex: {
     displayName: "Codex",
     icon: "codex",
     defaultSurface: "unknown",
-    supportsAnalytics: true,
+    supportsAnalysis: true,
   },
   cursor: {
     displayName: "Cursor",
     icon: "cursor",
     defaultSurface: "unknown",
-    supportsAnalytics: true,
+    supportsAnalysis: true,
   },
   copilot: {
     displayName: "GitHub Copilot",
     icon: "copilot",
     defaultSurface: "unknown",
-    supportsAnalytics: false,
+    supportsAnalysis: false,
   },
   cline: {
     displayName: "Cline",
     icon: "cline",
     defaultSurface: "unknown",
-    supportsAnalytics: false,
+    supportsAnalysis: false,
   },
   opencode: {
     displayName: "OpenCode",
     icon: "opencode",
     defaultSurface: "cli",
-    supportsAnalytics: true,
+    supportsAnalysis: true,
   },
   kiro: {
     displayName: "Kiro",
     icon: "kiro",
     defaultSurface: "ide_desktop",
-    supportsAnalytics: false,
+    supportsAnalysis: false,
   },
   "amp-code": {
     displayName: "Amp",
     icon: "amp",
     defaultSurface: "cli",
-    supportsAnalytics: false,
+    supportsAnalysis: false,
   },
   antigravity: {
     displayName: "Antigravity",
     icon: "antigravity",
     defaultSurface: "unknown",
-    supportsAnalytics: true,
+    supportsAnalysis: true,
   },
   windsurf: {
     displayName: "Windsurf",
     icon: "windsurf",
     defaultSurface: "ide_desktop",
-    supportsAnalytics: false,
+    supportsAnalysis: false,
   },
   pi: {
     displayName: "Pi",
     icon: "pi",
     defaultSurface: "cli",
-    supportsAnalytics: false,
+    supportsAnalysis: false,
   },
 }
 
@@ -142,6 +142,6 @@ export function defaultAgentSurface(slug: string): AgentSurface {
  * Whether the analysis engine has a dedicated adapter for this agent. Agents
  * on the generic fallback (and unknown slugs) return false.
  */
-export function agentSupportsAnalytics(slug: string): boolean {
-  return AGENTS[slug]?.supportsAnalytics ?? false
+export function agentSupportsAnalysis(slug: string): boolean {
+  return AGENTS[slug]?.supportsAnalysis ?? false
 }

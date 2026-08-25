@@ -40,10 +40,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::dto::DeferredPermissionDir;
 
+#[cfg(test)]
+pub use model::SourceVersionState;
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MIN_ACTIVITY_DAYS,
-    Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey,
-    SessionActivityState, SessionKey, SessionRecord, ThemePreference, UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
+    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord,
+    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, ThemePreference,
+    UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -54,7 +57,7 @@ pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs"
 /// dropped. At the flusher's 50-per-15-minutes this is several hours of
 /// backlog, which is more than an ordinary outage needs and far less than an
 /// unbounded table on a reader's disk.
-const USAGE_ANALYTICS_QUEUE_LIMIT: u32 = 500;
+const ANALYTICS_QUEUE_LIMIT: u32 = 500;
 
 /// File name of the database inside the app data directory.
 ///
@@ -253,6 +256,11 @@ impl Store {
         Ok((previous, saved))
     }
 
+    /// Make setup pending without changing the reader's data or choices.
+    pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
+        self.update_settings(|settings| settings.onboarding_completed = false)
+    }
+
     /// Replace every preference, returning what was actually stored (clamped).
     #[cfg(test)]
     pub fn save_settings(&self, settings: &AppSettings) -> Result<AppSettings> {
@@ -345,25 +353,25 @@ impl Store {
     /// them without limit in the reader's own database. The oldest go first —
     /// the newest events are the ones still worth having, and a queue that
     /// dropped the newest would report a machine's distant past forever.
-    pub fn queue_usage_analytics_event(&self, name: &str, payload: &str) -> Result<()> {
+    pub fn queue_analytics_event(&self, name: &str, payload: &str) -> Result<()> {
         let connection = self.lock();
         connection.execute(
-            "INSERT INTO usage_analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
             params![name, payload, now_rfc3339()],
         )?;
         connection.execute(
-            "DELETE FROM usage_analytics_event WHERE id NOT IN
-                 (SELECT id FROM usage_analytics_event ORDER BY id DESC LIMIT ?1)",
-            params![USAGE_ANALYTICS_QUEUE_LIMIT],
+            "DELETE FROM analytics_event WHERE id NOT IN
+                 (SELECT id FROM analytics_event ORDER BY id DESC LIMIT ?1)",
+            params![ANALYTICS_QUEUE_LIMIT],
         )?;
         Ok(())
     }
 
     /// The next batch to attempt, oldest first, as `(id, payload)`.
-    pub fn pending_usage_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
+    pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
-        let mut statement = connection
-            .prepare("SELECT id, payload FROM usage_analytics_event ORDER BY id LIMIT ?1")?;
+        let mut statement =
+            connection.prepare("SELECT id, payload FROM analytics_event ORDER BY id LIMIT ?1")?;
         let rows = statement.query_map(params![limit], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -371,14 +379,11 @@ impl Store {
     }
 
     /// Forget events that were delivered.
-    pub fn drop_usage_analytics_events(&self, ids: &[i64]) -> Result<()> {
+    pub fn drop_analytics_events(&self, ids: &[i64]) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         for id in ids {
-            tx.execute(
-                "DELETE FROM usage_analytics_event WHERE id = ?1",
-                params![id],
-            )?;
+            tx.execute("DELETE FROM analytics_event WHERE id = ?1", params![id])?;
         }
         tx.commit()?;
         Ok(())
@@ -391,17 +396,17 @@ impl Store {
     /// that reported their own failures would have their priorities inverted.
     /// It is returned so the give-up threshold is assertable from a test,
     /// which is the only way that arm is exercised at all.
-    pub fn fail_usage_analytics_events(&self, ids: &[i64], max_attempts: u32) -> Result<usize> {
+    pub fn fail_analytics_events(&self, ids: &[i64], max_attempts: u32) -> Result<usize> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         for id in ids {
             tx.execute(
-                "UPDATE usage_analytics_event SET attempts = attempts + 1 WHERE id = ?1",
+                "UPDATE analytics_event SET attempts = attempts + 1 WHERE id = ?1",
                 params![id],
             )?;
         }
         let dropped = tx.execute(
-            "DELETE FROM usage_analytics_event WHERE attempts >= ?1",
+            "DELETE FROM analytics_event WHERE attempts >= ?1",
             params![max_attempts],
         )?;
         tx.commit()?;
@@ -410,10 +415,10 @@ impl Store {
 
     /// The current installation identifier and when it was minted, if one has
     /// been created. Absent until the reader's first consented event.
-    pub fn usage_analytics_identity(&self) -> Result<Option<(String, String)>> {
+    pub fn analytics_identity(&self) -> Result<Option<(String, String)>> {
         let connection = self.lock();
         let mut statement = connection
-            .prepare("SELECT install_id, minted_at FROM usage_analytics_identity WHERE id = 1")?;
+            .prepare("SELECT install_id, minted_at FROM analytics_identity WHERE id = 1")?;
         let mut rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -421,9 +426,9 @@ impl Store {
     }
 
     /// Mint or rotate the installation identifier.
-    pub fn set_usage_analytics_identity(&self, install_id: &str) -> Result<()> {
+    pub fn set_analytics_identity(&self, install_id: &str) -> Result<()> {
         self.lock().execute(
-            "INSERT INTO usage_analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
+            "INSERT INTO analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET install_id = excluded.install_id,
                                            minted_at  = excluded.minted_at",
             params![install_id, now_rfc3339()],
@@ -437,11 +442,11 @@ impl Store {
     /// events the reader withdrew consent for; leaving the identity would let
     /// a later opt-in be joined to the earlier one, which is the whole thing
     /// the rotation exists to prevent.
-    pub fn clear_usage_analytics(&self) -> Result<()> {
+    pub fn clear_analytics(&self) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        tx.execute("DELETE FROM usage_analytics_event", [])?;
-        tx.execute("DELETE FROM usage_analytics_identity", [])?;
+        tx.execute("DELETE FROM analytics_event", [])?;
+        tx.execute("DELETE FROM analytics_identity", [])?;
         tx.commit()?;
         Ok(())
     }
@@ -498,7 +503,8 @@ impl Store {
                          AND r.agent = s.agent
                          AND r.session_id = s.session_id
                          AND r.kind = 'forkParent'
-                       LIMIT 1)
+                       LIMIT 1),
+                    s.source_fingerprint
                FROM session s
               WHERE COALESCE(updated_at_epoch, 0) >= ?1
               ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
@@ -554,7 +560,8 @@ impl Store {
                          AND r.agent = s.agent
                          AND r.session_id = s.session_id
                          AND r.kind = 'forkParent'
-                       LIMIT 1)
+                       LIMIT 1),
+                    s.source_fingerprint
                FROM session s
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -562,6 +569,28 @@ impl Store {
             .query_row(
                 params![key.environment_key, key.agent, key.session_id],
                 session_from_row,
+            )
+            .optional()?)
+    }
+
+    /// One session's persisted source version and optional start time.
+    // CH-005 and CH-007 add production consumers before this test-only accessor enters runtime code.
+    #[cfg(test)]
+    pub fn session_source_state(&self, key: &SessionKey) -> Result<Option<SourceVersionState>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT source_fingerprint, source_generation, started_at_epoch
+                   FROM session
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| {
+                    Ok(SourceVersionState {
+                        source_fingerprint: row.get(0)?,
+                        source_generation: row.get(1)?,
+                        started_at_epoch: row.get(2)?,
+                    })
+                },
             )
             .optional()?)
     }
@@ -983,16 +1012,12 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("notifyDiskSpaceLow")
             .map(|value| value == "true")
             .unwrap_or(defaults.notify_disk_space_low),
-        notify_usage_anomalies: stored
-            .get("notifyUsageAnomalies")
-            .map(|value| value == "true")
-            .unwrap_or(defaults.notify_usage_anomalies),
         milestones_5h: stored
-            .get("milestones5h")
+            .get("milestonePercentages5h")
             .map(|value| Milestones::parse(value))
             .unwrap_or(defaults.milestones_5h),
         milestones_weekly: stored
-            .get("milestonesWeekly")
+            .get("milestonePercentagesWeekly")
             .map(|value| Milestones::parse(value))
             .unwrap_or(defaults.milestones_weekly),
         live_usage_enabled: stored
@@ -1004,15 +1029,15 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
         // one that already finished onboarding was told analytics did not
         // exist, so it stays off until the reader says otherwise. Upgrading
         // must never start sending on somebody's behalf.
-        usage_analytics_enabled: stored
-            .get("usageAnalyticsEnabled")
+        analytics_enabled: stored
+            .get("analyticsEnabled")
             .map(|value| value == "true")
             .unwrap_or_else(|| {
                 let finished = stored
                     .get("onboardingCompleted")
                     .map(|value| value == "true")
                     .unwrap_or(false);
-                !finished && defaults.usage_analytics_enabled
+                !finished && defaults.analytics_enabled
             }),
         overview_limits_expanded: stored
             .get("overviewLimitsExpanded")
@@ -1080,12 +1105,11 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         bool_text(settings.notify_disk_space_low)
     ])?;
     put.execute(params![
-        "notifyUsageAnomalies",
-        bool_text(settings.notify_usage_anomalies)
+        "milestonePercentages5h",
+        settings.milestones_5h.as_str()
     ])?;
-    put.execute(params!["milestones5h", settings.milestones_5h.as_str()])?;
     put.execute(params![
-        "milestonesWeekly",
+        "milestonePercentagesWeekly",
         settings.milestones_weekly.as_str()
     ])?;
     put.execute(params![
@@ -1093,8 +1117,8 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         bool_text(settings.live_usage_enabled)
     ])?;
     put.execute(params![
-        "usageAnalyticsEnabled",
-        bool_text(settings.usage_analytics_enabled)
+        "analyticsEnabled",
+        bool_text(settings.analytics_enabled)
     ])?;
     put.execute(params![
         "overviewLimitsExpanded",
@@ -1139,10 +1163,11 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
              environment_key, agent, session_id, source_kind, source_label, wsl_distro,
              title, title_source, cwd, surface, updated_at_epoch,
              activity_cursor, activity_source, subagent_count,
-             first_seen_at, last_seen_at)
+             first_seen_at, last_seen_at, source_fingerprint, source_generation)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                  CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END,
-                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
+                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16,
+                 CASE WHEN ?16 IS NOT NULL THEN 1 ELSE 0 END)
          ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
              source_kind = excluded.source_kind,
              source_label = excluded.source_label,
@@ -1177,6 +1202,13 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
                  ELSE excluded.activity_source
              END,
              subagent_count = excluded.subagent_count,
+             source_fingerprint = COALESCE(excluded.source_fingerprint, session.source_fingerprint),
+             source_generation = CASE
+                 WHEN excluded.source_fingerprint IS NULL THEN session.source_generation
+                 WHEN session.source_fingerprint = excluded.source_fingerprint
+                     THEN session.source_generation
+                 ELSE session.source_generation + 1
+             END,
              last_seen_at = excluded.last_seen_at",
         params![
             record.key.environment_key,
@@ -1194,6 +1226,7 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
             record.activity_source,
             record.subagent_count,
             now,
+            record.source_fingerprint,
         ],
     )?;
 
@@ -1256,5 +1289,6 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
         activity_source: row.get(12)?,
         subagent_count: row.get(13)?,
         fork_parent_session_id: row.get(14)?,
+        source_fingerprint: row.get(15)?,
     })
 }
