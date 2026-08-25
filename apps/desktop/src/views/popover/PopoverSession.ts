@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import type { SessionListEntry } from "../../components/session/SessionList"
-import { toActivityEntries } from "../../lib/activityEntries"
+import { indexOfSession, toActivityEntries, toActivityEntry } from "../../lib/activityEntries"
 import { applyTheme } from "../../lib/appearance"
 import type { AttentionKind } from "../../lib/attention"
 import {
@@ -24,6 +24,7 @@ import {
   onPopoverShown,
   onLiveUsageChanged,
   onScanEvent,
+  onSessionEntryChanged,
   onSessionsInvalidated,
   onSettingsChanged,
   onStorageHealth,
@@ -44,6 +45,7 @@ import {
   type PopoverSurface,
 } from "../../lib/popoverHeight"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { isFloatingHudEnabled, openOverlayWindow } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
@@ -168,6 +170,7 @@ export class PopoverSession {
 
   private stopSettingsListening: (() => void) | null = null
   private stopSessionsInvalidatedListening: (() => void) | null = null
+  private stopSessionEntryChangedListening: (() => void) | null = null
   private stopStorageHealthListening: (() => void) | null = null
   private stopScanListening: (() => void) | null = null
   private stopPopoverShownListening: (() => void) | null = null
@@ -277,6 +280,7 @@ export class PopoverSession {
     void this.loadInitial(generation)
     void this.listenSettings(generation)
     void this.listenSessionsInvalidated(generation)
+    void this.listenSessionEntryChanged(generation)
     void this.listenStorageHealth(generation)
     void this.listenScanEvent(generation)
     void this.listenPopoverShown(generation)
@@ -297,6 +301,8 @@ export class PopoverSession {
     this.stopSettingsListening = null
     this.stopSessionsInvalidatedListening?.()
     this.stopSessionsInvalidatedListening = null
+    this.stopSessionEntryChangedListening?.()
+    this.stopSessionEntryChangedListening = null
     this.stopStorageHealthListening?.()
     this.stopStorageHealthListening = null
     this.stopScanListening?.()
@@ -376,6 +382,38 @@ export class PopoverSession {
       return
     }
     this.stopSessionsInvalidatedListening = unlisten
+  }
+
+  // Opening a session computes its analysis and the shell caches it, but a
+  // cache write alone does not change what a scan already put in the list.
+  // The shell pushes the one changed row here so the pills stay current
+  // without a full re-query.
+  private listenSessionEntryChanged = async (generation: number): Promise<void> => {
+    const unlisten = await onSessionEntryChanged((entry) => {
+      if (generation !== this.generation) return
+      const entries = this.snapshot.entries
+      if (!entries) return
+      const index = indexOfSession(entries, entry.agent, entry.sessionId, entry.wslDistro)
+      // A session outside the current window is the next scan's business, so
+      // an entry with no match here is not inserted.
+      if (index === -1) return
+      // The cohort for the high-cost flag is the list on screen, with the
+      // replaced row's own cost swapped in — the same set `toActivityEntries`
+      // would see on a full re-list.
+      const threshold = costOutlierThreshold(
+        entries
+          .map((row, i) => (i === index ? entry.cost?.totalUsd : row.cost?.totalUsd))
+          .filter((usd): usd is number => typeof usd === "number"),
+      )
+      const next = [...entries]
+      next[index] = toActivityEntry(entry, threshold)
+      this.update({ entries: next })
+    })
+    if (generation !== this.generation) {
+      unlisten()
+      return
+    }
+    this.stopSessionEntryChangedListening = unlisten
   }
 
   // Storage health changes rarely and matters immediately, so it is pushed
