@@ -34,6 +34,7 @@
 mod efficiency;
 mod engine;
 mod evidence;
+mod evidence_sink;
 mod framing;
 mod initial_context;
 mod interface;
@@ -56,6 +57,7 @@ pub use evidence::{
     EvidenceValue, OrderingObservation, ParseDiagnostics, SessionEvidence, SessionEvidenceIdentity,
     SessionProvenance, SourceAcceptance, SourceCapabilities, SourceKind,
 };
+pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
