@@ -35,7 +35,7 @@ import {
   isEmptySummary,
 } from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
-import { efficiencyMetrics, unpricedTurnsHint } from "../../lib/presentation/sessionEfficiency"
+import { efficiencyMetrics } from "../../lib/presentation/sessionEfficiency"
 import type {
   ActiveSessionsSummary,
   SessionEfficiency,
@@ -239,20 +239,23 @@ function RelationControl({
 
 function Card({
   title,
+  subtitle,
   info,
   hint,
   children,
 }: {
   title: string
+  subtitle?: string
   info?: string
   hint?: string
   children: ReactNode
 }) {
   return (
-    <div className="mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
-      <div className="mb-2 flex items-baseline justify-between">
+    <div className="flex flex-col gap-y-2 mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
+      <div className="flex items-baseline justify-between">
         <div className="flex items-center gap-1">
           <h3 className="type-headline text-label">{title}</h3>
+
           {info && (
             <Tooltip label={info} side="top" interactive delayMs={150}>
               <button
@@ -265,8 +268,12 @@ function Card({
             </Tooltip>
           )}
         </div>
+
         {hint && <span className="type-caption text-label-tertiary">{hint}</span>}
       </div>
+
+      {subtitle && <span className="-mt-1 type-caption text-label-tertiary">{subtitle}</span>}
+
       {children}
     </div>
   )
@@ -481,7 +488,6 @@ export function SessionDetailPresentation({
     : null
 
   const efficiencyCard = efficiency ? efficiencyMetrics(efficiency, session.agent) : null
-  const efficiencyHint = efficiencyCard ? unpricedTurnsHint(efficiencyCard.unpricedTurns) : null
 
   const firstSession = summary?.sessions[0]
 
@@ -793,7 +799,10 @@ export function SessionDetailPresentation({
             )}
 
             {cost && tokensCard && efficiencyCard && (
-              <Card title="Efficiency" {...(efficiencyHint ? { hint: efficiencyHint } : {})}>
+              <Card
+                title="Efficiency"
+                subtitle="Relative to real work: context growth and output tokens."
+              >
                 <EfficiencyBreakdown metrics={efficiencyCard} />
               </Card>
             )}

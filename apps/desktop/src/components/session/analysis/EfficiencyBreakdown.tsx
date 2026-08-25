@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { cn } from "../../../lib/cn"
 import { Info } from "lucide-react"
 
+import { cn } from "../../../lib/cn"
 import {
   efficiencyBandWord,
   efficiencyMetricDescription,
@@ -35,63 +35,61 @@ const BAND_SEGMENT_CLASS: Record<EfficiencyBand, string> = {
   bad: "bg-system-orange/50",
 }
 
-const BAND_MARK_CLASS: Record<EfficiencyBand, string> = {
-  good: "bg-system-green",
-  ok: "bg-label",
-  bad: "bg-system-orange",
-}
-
-type MetricKey = "costPerMTok" | "newWorkShare" | "rewriteShare"
+type MetricKey = "costPerMTok" | "realWorkShare" | "rewriteShare"
 
 const ROWS: { key: MetricKey; label: string; format: (value: number) => string }[] = [
   { key: "costPerMTok", label: "$/MTok", format: formatCostPerMTok },
-  { key: "newWorkShare", label: "New Work %", format: formatSharePercent },
-  { key: "rewriteShare", label: "Rewrite %", format: formatSharePercent },
+  { key: "realWorkShare", label: "Real Work %", format: formatSharePercent },
+  { key: "rewriteShare", label: "Rewrite Waste %", format: formatSharePercent },
 ]
 
 function Thermometer({
   value,
-  band,
   metricKey,
   profile,
+  title,
 }: {
   value: number
-  band: EfficiencyBand
   metricKey: MetricKey
   profile: EfficiencyProfile
+  title: string
 }) {
   const scale = efficiencyThermometer(value, metricKey, profile)
   return (
     <div
-      className="relative flex h-1.5 overflow-hidden rounded-full"
+      className="relative flex h-full items-center"
+      title={title}
       data-testid={`thermometer-${metricKey}`}
       data-position={scale.position.toFixed(3)}
       aria-hidden
     >
       {scale.segments.map((segment, index) => (
-        <span key={index} className={`flex-1 ${BAND_SEGMENT_CLASS[segment]}`} />
+        <span
+          key={index}
+          className={cn(
+            "h-1.5 flex-1",
+            index === 0 && "rounded-s-full",
+            index === scale.segments.length - 1 && "rounded-e-full",
+            BAND_SEGMENT_CLASS[segment],
+          )}
+        />
       ))}
       <span
-        className={`absolute inset-y-0 w-0.5 -translate-x-1/2 ${BAND_MARK_CLASS[band]}`}
+        className="absolute inset-y-1 w-1.5 -translate-x-1/2 rounded-full border border-label bg-surface opacity-80 dark:bg-separator"
         style={{ left: `${scale.position * 100}%` }}
       />
     </div>
   )
 }
 
-/** The info mark after a row label. Its tooltip explains the metric and its bands. */
-function RowInfo({
-  label,
-  metricKey,
-  profile,
-}: {
-  label: string
-  metricKey: MetricKey
-  profile: EfficiencyProfile
-}) {
-  const text = `${efficiencyMetricDescription(metricKey)} ${efficiencyThresholdsText(metricKey, profile)}`
+function RowInfo({ label, metricKey }: { label: string; metricKey: MetricKey }) {
   return (
-    <Tooltip label={text} side="top" interactive delayMs={150}>
+    <Tooltip
+      label={efficiencyMetricDescription(metricKey)}
+      side="top"
+      interactive
+      delayMs={150}
+    >
       <button
         type="button"
         aria-label={`About ${label}`}
@@ -120,14 +118,14 @@ function EfficiencyRowLine({
     <div className="col-span-4 grid grid-cols-subgrid items-center gap-x-3 -mx-1 px-1 py-1 rounded-control type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
       <span className="flex items-center gap-1 text-label-tertiary">
         {label}
-        <RowInfo label={label} metricKey={metricKey} profile={profile} />
+        <RowInfo label={label} metricKey={metricKey} />
       </span>
       {metric ? (
         <Thermometer
           value={metric.value}
-          band={metric.band}
           metricKey={metricKey}
           profile={profile}
+          title={efficiencyThresholdsText(metricKey, profile)}
         />
       ) : (
         <span />

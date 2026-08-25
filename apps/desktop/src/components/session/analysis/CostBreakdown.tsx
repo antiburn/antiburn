@@ -98,7 +98,7 @@ export function CostBreakdown({ cost, split }: CostBreakdownProps) {
   const totalUsd = cost.totalCostUsd
 
   return (
-    <div className="mt-2 space-y-1 border-t border-separator pt-2">
+    <div className="space-y-1 border-t border-separator pt-2">
       {split && (
         <div className="mb-1 space-y-1 border-b border-separator pb-1">
           <CostRowLine

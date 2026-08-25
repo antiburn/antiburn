@@ -28,8 +28,8 @@ export interface EfficiencyMetric {
 export interface EfficiencyMetrics {
   /** Dollars per million tokens of context growth plus output. */
   costPerMTok: EfficiencyMetric | null
-  /** Share of the spend that was new work, in the range 0 to 1. */
-  newWorkShare: EfficiencyMetric | null
+  /** Share of the spend that was real work, in the range 0 to 1. */
+  realWorkShare: EfficiencyMetric | null
   /** Share of the spend that was rewrite, in the range 0 to 1. */
   rewriteShare: EfficiencyMetric | null
   unpricedTurns: number
@@ -50,19 +50,19 @@ interface BandEdges {
 interface ProfileEdges {
   costPerMTok: BandEdges
   rewriteShare: BandEdges
-  newWorkShare: BandEdges
+  realWorkShare: BandEdges
 }
 
 const EDGES: Record<EfficiencyProfile, ProfileEdges> = {
   claude: {
     costPerMTok: { good: 33, bad: 80, higherIsBetter: false },
     rewriteShare: { good: 0.1, bad: 0.25, higherIsBetter: false },
-    newWorkShare: { good: 0.36, bad: 0.18, higherIsBetter: true },
+    realWorkShare: { good: 0.36, bad: 0.18, higherIsBetter: true },
   },
   codex: {
     costPerMTok: { good: 20, bad: 46, higherIsBetter: false },
     rewriteShare: { good: 0.08, bad: 0.14, higherIsBetter: false },
-    newWorkShare: { good: 0.33, bad: 0.17, higherIsBetter: true },
+    realWorkShare: { good: 0.33, bad: 0.17, higherIsBetter: true },
   },
 }
 
@@ -136,8 +136,8 @@ export function efficiencyMetrics(totals: SessionEfficiency, agent: string): Eff
       hasSpend && denominatorTokens > 0
         ? metric((totals.totalUsd / denominatorTokens) * 1e6, edges.costPerMTok)
         : null,
-    newWorkShare: hasSpend
-      ? metric(totals.newWorkUsd / totals.totalUsd, edges.newWorkShare)
+    realWorkShare: hasSpend
+      ? metric(totals.newWorkUsd / totals.totalUsd, edges.realWorkShare)
       : null,
     rewriteShare: hasSpend
       ? metric(totals.rewriteUsd / totals.totalUsd, edges.rewriteShare)
@@ -166,7 +166,7 @@ function formatEdge(metricKey: keyof ProfileEdges, value: number): string {
 
 /**
  * The band word after a value. A bad reading names its direction: a high
- * cost or rewrite share, a low new-work share.
+ * cost or rewrite share, or a low real-work share.
  */
 export function efficiencyBandWord(
   band: EfficiencyBand,
@@ -180,11 +180,11 @@ export function efficiencyBandWord(
 export function efficiencyMetricDescription(metricKey: keyof ProfileEdges): string {
   switch (metricKey) {
     case "costPerMTok":
-      return "The all-in spend per million tokens of context growth plus output. A lower figure means each token of progress cost less."
-    case "newWorkShare":
-      return "The share of the spend that went to output and to fresh context that grew the window. The rest re-read or re-sent context."
+      return "Cost for real work. Waste increases this cost, so high efficiency is a low number here."
+    case "realWorkShare":
+      return "How much you spent on real work. The rest of your spend was just re-reading or re-sending context."
     case "rewriteShare":
-      return "The share of the spend that re-sent context without growing it, after a compaction, a cache miss, or a model switch."
+      return "How much you spent rewriting the cache: usually after compaction, a cache miss, or a model switch."
   }
 }
 
@@ -196,13 +196,7 @@ export function efficiencyThresholdsText(
   const edges = EDGES[profile][metricKey]
   const fmt = (value: number) => formatEdge(metricKey, value)
   if (edges.higherIsBetter) {
-    return `Good above ${fmt(edges.good)}, ok ${fmt(edges.bad)}–${fmt(edges.good)}, low below ${fmt(edges.bad)}.`
+    return `[Good = over ${fmt(edges.good)}; Low = below ${fmt(edges.bad)}; otherwise OK]`
   }
-  return `Good below ${fmt(edges.good)}, ok ${fmt(edges.good)}–${fmt(edges.bad)}, high above ${fmt(edges.bad)}.`
-}
-
-/** `3 turns unpriced` — the card hint when some turns had no price. */
-export function unpricedTurnsHint(count: number): string | null {
-  if (count <= 0) return null
-  return `${count} turn${count === 1 ? "" : "s"} unpriced`
+  return `[Good = below ${fmt(edges.good)}; High = over ${fmt(edges.bad)}; otherwise OK]`
 }
