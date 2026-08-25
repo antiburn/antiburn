@@ -285,38 +285,36 @@ describe("PopoverView", () => {
     expect(screen.queryByRole("heading", { name: "Session Detail" })).not.toBeInTheDocument()
   })
 
-  it("refreshes the list after session analysis adds model runs", async () => {
-    let analysisLoaded = false
-    const baseInvoke = invoke.getMockImplementation()!
-    invoke.mockImplementation((command: string, args?: unknown) => {
-      if (command === "list_recent_sessions") {
-        const modelRuns = analysisLoaded
-          ? [{ model: "claude-fable-5", thinkingMode: "high" }]
-          : []
-        return Promise.resolve([activityEntry({ modelRuns })])
-      }
-      if (command === "get_session_analysis") {
-        analysisLoaded = true
-        return Promise.resolve({
-          ...ANALYTICS,
-          models: ["claude-fable-5"],
-          modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
-        })
-      }
-      return baseInvoke(command, args)
+  it("updates the one row a sessions:entry-changed event names, without re-listing", async () => {
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    const listCallsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "list_recent_sessions",
+    ).length
+
+    emit("sessions:entry-changed", {
+      ...activityEntry(),
+      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
     })
 
-    render(<PopoverView />)
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    await waitFor(() =>
-      expect(
-        invoke.mock.calls.filter(([command]) => command === "list_recent_sessions"),
-      ).toHaveLength(2),
-    )
-    fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
-
     expect(await screen.findByText("fable-5/high")).toBeInTheDocument()
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "list_recent_sessions"),
+    ).toHaveLength(listCallsBefore)
+  })
+
+  it("leaves the list unchanged when a sessions:entry-changed event names an unknown session", async () => {
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    emit("sessions:entry-changed", {
+      ...activityEntry({ sessionId: "session-unknown" }),
+      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+    })
+
+    expect(screen.queryByText("fable-5/high")).not.toBeInTheDocument()
+    expect(screen.getByText("Wire the tray popover")).toBeInTheDocument()
   })
 
   it("brings the list back at the offset it was scrolled to before a session opened", async () => {

@@ -41,8 +41,8 @@ use crate::repositories;
 use crate::scan::{self, ScanController};
 use crate::settings;
 use crate::store::{
-    AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey, SessionRecord, Store,
-    iso_from_epoch,
+    AnalysisRecord, AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
+    SessionRecord, Store, iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -522,6 +522,23 @@ fn repository_label(repositories: &[RepositoryRecord], cwd: Option<&str>) -> Str
     }
 }
 
+/// Whether `next` carries model data the popover list would render
+/// differently from `previous`.
+///
+/// Compares only the two fields the list reads (`model_breakdown_json` for
+/// cost, `inclusive_models_json` for the model pills). The fingerprint and
+/// pricing generation can change on every re-analysis without moving either
+/// figure, and an event for that would be noise the popover cannot show.
+fn analysis_changed(previous: Option<&AnalysisRecord>, next: &AnalysisRecord) -> bool {
+    match previous {
+        None => true,
+        Some(previous) => {
+            previous.model_breakdown_json != next.model_breakdown_json
+                || previous.inclusive_models_json != next.inclusive_models_json
+        }
+    }
+}
+
 fn path_is_under(path: &str, root: &str) -> bool {
     let path = path.replace('\\', "/");
     let path = path.trim_end_matches('/');
@@ -686,7 +703,17 @@ pub async fn get_session_analysis(
     let stored = store.session(&key).ok().flatten();
 
     if let Some(record) = analysis.record(&key) {
-        let _ = store.save_analysis(&record);
+        let previous = store.analysis(&key).ok().flatten();
+        if store.save_analysis(&record).is_ok()
+            && analysis_changed(previous.as_ref(), &record)
+            && let Some(session_record) = stored.clone()
+        {
+            let repositories = store.repositories().unwrap_or_default();
+            let now = scan::unix_now();
+            if let Ok(entry) = activity_entry(&store, &repositories, session_record, now) {
+                let _ = app.emit(SESSION_ENTRY_CHANGED_EVENT, &entry);
+            }
+        }
     }
     let orchestration = match &analysis.orchestration {
         Some(orchestration) => {
@@ -955,6 +982,11 @@ pub async fn set_repository_enabled(
 /// Event the shell emits when stored sessions were removed outside a scan
 /// (repository opt-out, index clearing). The popover re-queries on it.
 pub const SESSIONS_INVALIDATED_EVENT: &str = "sessions:invalidated";
+
+/// Event the shell emits when one session's cached analysis changes outside a
+/// scan. The payload is the fresh [`ActivityEntry`] for that session, so the
+/// popover can update the one row without a re-query.
+pub const SESSION_ENTRY_CHANGED_EVENT: &str = "sessions:entry-changed";
 
 /// Re-derive the repository list from what is on disk right now.
 #[tauri::command]
@@ -1405,6 +1437,44 @@ mod tests {
         // A session with no activity still yields a parseable stamp rather
         // than an empty string the list would drop.
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
+    }
+
+    fn analysis_record(model_breakdown_json: &str, inclusive_models_json: &str) -> AnalysisRecord {
+        AnalysisRecord {
+            key: SessionKey::new("env", "claude-code", "session-1"),
+            model_breakdown_json: model_breakdown_json.into(),
+            inclusive_models_json: inclusive_models_json.into(),
+            source_fingerprint: "fingerprint".into(),
+            pricing_generation: 1,
+        }
+    }
+
+    #[test]
+    fn a_first_analysis_always_counts_as_changed() {
+        let next = analysis_record("{}", "[]");
+        assert!(analysis_changed(None, &next));
+    }
+
+    #[test]
+    fn identical_model_data_is_not_a_change() {
+        let previous = analysis_record(
+            r#"{"claude-fable-5":{}}"#,
+            r#"[{"model":"claude-fable-5"}]"#,
+        );
+        let next = analysis_record(
+            r#"{"claude-fable-5":{}}"#,
+            r#"[{"model":"claude-fable-5"}]"#,
+        );
+        assert!(!analysis_changed(Some(&previous), &next));
+    }
+
+    #[test]
+    fn a_new_model_in_either_field_counts_as_changed() {
+        let previous = analysis_record("{}", "[]");
+        let breakdown_changed = analysis_record(r#"{"claude-fable-5":{}}"#, "[]");
+        let models_changed = analysis_record("{}", r#"[{"model":"claude-fable-5"}]"#);
+        assert!(analysis_changed(Some(&previous), &breakdown_changed));
+        assert!(analysis_changed(Some(&previous), &models_changed));
     }
 
     #[test]
