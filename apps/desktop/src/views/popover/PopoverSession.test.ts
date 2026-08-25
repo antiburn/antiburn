@@ -10,14 +10,13 @@ import type { SessionSubject } from "./SessionPane"
 
 const getSessionAnalysis = vi.hoisted(() => vi.fn())
 const getSessionAnalysisFingerprint = vi.hoisted(() => vi.fn())
+const getSubagentAnalysis = vi.hoisted(() => vi.fn())
 
-// Only the two commands the live poll touches are overridden; every other
-// wrapper keeps its real "no shell" fallback (`hasShell()` is false outside
-// Tauri), which is exactly the degraded-but-safe behavior the store should
-// see in this environment.
+// The analysis commands are overridden. All other wrappers keep their real
+// no-shell fallback because `hasShell()` is false outside Tauri.
 vi.mock("../../lib/ipc", async (importOriginal) => {
   const actual = await importOriginal<typeof Ipc>()
-  return { ...actual, getSessionAnalysis, getSessionAnalysisFingerprint }
+  return { ...actual, getSessionAnalysis, getSessionAnalysisFingerprint, getSubagentAnalysis }
 })
 
 /**
@@ -106,12 +105,53 @@ describe("PopoverSession live analysis poll", () => {
     wslDistro: null,
   }
 
+  const analysisPayload = (
+    overrides: Partial<Ipc.SessionAnalysisPayload> = {},
+  ): Ipc.SessionAnalysisPayload => ({
+    summary: null,
+    supportsAnalysis: true,
+    title: null,
+    wslDistro: null,
+    isActive: false,
+    cost: null,
+    topLevelCost: null,
+    subagentsCost: null,
+    inclusiveTokens: null,
+    subagentsTokens: null,
+    efficiency: null,
+    models: [],
+    modelRuns: [],
+    orchestration: null,
+    relations: null,
+    sourcePath: null,
+    ...overrides,
+  })
+
+  const usableAnalysis = (): Ipc.SessionAnalysisPayload =>
+    analysisPayload({
+      summary: {
+        sessionCount: 1,
+        avgDurationSecs: 1,
+        avgActiveSecs: 1,
+        toolMix: { edit: 0, read: 0, search: 0, test: 0, bash: 0, other: 0 },
+        grepTotal: 0,
+        tokensInTotal: 0,
+        tokensOutTotal: 0,
+        peakContextTokens: 0,
+        contextWindow: 0,
+        buckets: [],
+        sessions: [],
+      },
+    })
+
   beforeEach(() => {
     vi.useFakeTimers()
     getSessionAnalysis.mockReset()
     getSessionAnalysis.mockResolvedValue(null)
     getSessionAnalysisFingerprint.mockReset()
     getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-1")
+    getSubagentAnalysis.mockReset()
+    getSubagentAnalysis.mockResolvedValue(null)
   })
 
   afterEach(() => {
@@ -146,6 +186,115 @@ describe("PopoverSession live analysis poll", () => {
     await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
 
     expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+
+  it("re-loads on the next tick after an unavailable read, fingerprint unchanged", async () => {
+    getSessionAnalysis.mockResolvedValue(analysisPayload())
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("stops retrying once a usable analysis lands", async () => {
+    getSessionAnalysis
+      .mockResolvedValueOnce(analysisPayload())
+      .mockResolvedValue(usableAnalysis())
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 4)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("latches after three unavailable retries", async () => {
+    getSessionAnalysis.mockResolvedValue(analysisPayload())
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 12)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(4)
+    unsubscribe()
+  })
+
+  it("re-arms the budget after a usable analysis settles", async () => {
+    getSessionAnalysis
+      .mockResolvedValueOnce(analysisPayload())
+      .mockResolvedValueOnce(usableAnalysis())
+      .mockResolvedValueOnce(analysisPayload())
+      .mockResolvedValue(usableAnalysis())
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-2")
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(4)
+    unsubscribe()
+  })
+
+  it("does not retry a sub-agent subject", async () => {
+    getSubagentAnalysis.mockResolvedValue(analysisPayload())
+    const subagent: SessionSubject = {
+      ...subject,
+      subagent: { parentSessionId: subject.sessionId, subagentId: "subagent-1" },
+    }
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subagent)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 3)
+    expect(getSubagentAnalysis).toHaveBeenCalledTimes(1)
+
+    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-2")
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+
+    expect(getSubagentAnalysis).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("does not retry when the agent does not support analysis", async () => {
+    getSessionAnalysis.mockResolvedValue(analysisPayload({ supportsAnalysis: false }))
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 2)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+
+  it("retries a rejected read", async () => {
+    getSessionAnalysis.mockRejectedValueOnce(new Error("read failed"))
+    getSessionAnalysis.mockResolvedValue(usableAnalysis())
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
     unsubscribe()
   })
 
