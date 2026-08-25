@@ -21,18 +21,19 @@ describe("SessionCostBadge", () => {
     expect(badge.className).toContain("text-brand")
   })
 
-  it("drops the pill for the outlier state", () => {
+  it("weights the outlier figure, and paints no pill in either state", () => {
     render(<SessionCostBadge totalUsd={19.5} figureLabel="Estimated cost" isHighCost />)
     const badge = screen.getByLabelText(/higher than usual/)
-    expect(badge.className).not.toContain("rounded-full")
     expect(badge.className).toContain("font-semibold!")
+    expect(badge.className).not.toContain("rounded-full")
   })
 
-  it("uses the calm pill when the session is not an outlier", () => {
+  it("stays plain text when the session is not an outlier", () => {
     render(<SessionCostBadge totalUsd={0.4} figureLabel="Projected cost" />)
     const badge = screen.getByLabelText("Projected cost $0.40")
-    expect(badge.className).toContain("bg-label-tertiary/15")
-    expect(badge.className).toContain("rounded-full")
+    expect(badge.className).toContain("text-label-secondary")
+    expect(badge.className).not.toContain("rounded-full")
+    expect(badge.className).not.toContain("bg-")
   })
 
   it("shows the component rows and models in the tooltip", () => {
@@ -60,7 +61,7 @@ describe("SessionCostBadge", () => {
     expect(screen.getAllByText(/over 3× your typical session/).length).toBeGreaterThan(0)
   })
 
-  it("appends caller classes to the pill geometry", () => {
+  it("appends caller classes to the figure geometry", () => {
     render(
       <SessionCostBadge
         totalUsd={1}
@@ -68,7 +69,7 @@ describe("SessionCostBadge", () => {
         className="relative top-px"
       />,
     )
-    const pill = screen.getByLabelText("Estimated cost $1.00")
-    expect(pill.className).toContain("relative top-px")
+    const figure = screen.getByLabelText("Estimated cost $1.00")
+    expect(figure.className).toContain("relative top-px")
   })
 })

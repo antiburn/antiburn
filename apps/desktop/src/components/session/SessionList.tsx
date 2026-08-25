@@ -56,7 +56,7 @@ export interface SessionListEntry {
   hasForkParent?: boolean | undefined
   /** How many sessions were forked from this one. */
   forkChildCount?: number | undefined
-  /** Display values for the cost pill; omit when nothing priced the session. */
+  /** Display values for the cost figure; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns?: PresentableModelRun[] | undefined

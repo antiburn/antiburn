@@ -15,12 +15,12 @@ import { TextRoll } from "../../ui/TextRoll"
 
 const COST_BADGE_CLASS = "flex items-center shrink-0 type-caption tabular-nums leading-[13px]"
 
-/** The usual state: a grey pill that stays quiet beside the model names. */
-const COST_CALM_CLASS =
-  "gap-0.5 px-1.5 py-px rounded-full font-medium bg-label-tertiary/15 text-label-secondary"
+/* The usual state: plain text, one step louder than the model names beside it.
+   The weight comes from `.type-caption`, which keeps it quiet. */
+const COST_CALM_CLASS = "gap-0.5 text-label-secondary"
 
-/* The outlier state drops the pill. The flame and the weight carry it instead.
-   `.type-caption` sets its own weight, so the utility needs `!` to win. */
+/* The outlier state: the flame and the weight carry it. `.type-caption` sets
+   its own weight, so the utility needs `!` to win. */
 const COST_HIGH_CLASS = "gap-1 font-semibold! text-brand"
 
 export interface SessionCostBadgeProps {
@@ -34,23 +34,23 @@ export interface SessionCostBadgeProps {
   figureLabel: string
   /** Every model that contributed billable tokens, as a muted subtitle. */
   models?: string[]
-  /** Unusually expensive against comparable sessions. Drops the pill for a flame and heavy orange type. */
+  /** Unusually expensive against comparable sessions. Adds a flame and heavy orange type. */
   isHighCost?: boolean
   /** Billable component rows (input / output / cache read / cache write). */
   breakdownRows?: CostRow[]
   /**
-   * Extra classes for the badge — a `relative top-px` nudge to optically align
+   * Extra classes for the figure — a `relative top-px` nudge to optically align
    * with adjacent baseline text in a row, say. Omit on a centered flex line.
    */
   className?: string
 }
 
 /**
- * The cost badge and its tooltip, driven entirely by the values it is given.
+ * The cost figure and its tooltip, driven entirely by the values it is given.
  *
  * Every figure is an on-device estimate from the model's per-token rates. The
- * badge leads with the number because that is the answer the reader came for;
- * the component rows underneath explain how it was reached.
+ * figure leads because that is the answer the reader came for; the component
+ * rows underneath explain how it was reached.
  */
 export function SessionCostBadge({
   totalUsd,
@@ -62,7 +62,7 @@ export function SessionCostBadge({
 }: SessionCostBadgeProps) {
   return (
     <Tooltip
-      // Wide card: drop it below the badge rather than to the side, where it
+      // Wide card: drop it below the figure rather than to the side, where it
       // can run off the window. Radix collision handling then shifts it
       // horizontally to stay in view.
       side="bottom"

@@ -100,10 +100,11 @@ Keith reviewed the running app and asked for four changes. All are in this chang
 3. **Cost moves down to the models line**, right-aligned. **Time moves up to the repo
    line**, top right. Together these land points 1-3 of the chosen layout in
    `session-list-chosen-layout`, apart from the branch line, which still has no data.
-4. **The hot cost loses its pill** — a flame glyph on the left plus semibold `brand`
-   orange type. `.type-caption` sets its own weight, so the weight utility needs `!`.
-   The calm cost keeps the grey pill, which now reads as the quiet state against the
-   loud one.
+4. **The cost loses its pill in both states.** An outlier gets a flame glyph on the left
+   plus semibold `brand` orange type; `.type-caption` sets its own weight, so the weight
+   utility needs `!`. A usual cost is plain `label-secondary` text at the type step's own
+   weight, one step louder than the model names beside it. Keith asked for the outlier
+   pill first, then for the grey one as well.
 
 ## Out of scope
 
