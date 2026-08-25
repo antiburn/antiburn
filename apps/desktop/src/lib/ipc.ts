@@ -29,6 +29,7 @@ import type {
   ActiveSessionsSummary,
   BillableTokens,
   SessionCostComponents,
+  SessionEfficiency,
 } from "./types/session"
 
 /* -------------------------------------------------------------------------
@@ -241,6 +242,8 @@ export interface SessionAnalysisPayload {
   /** Billable tokens that back `subagentsCost`. The count sums every
    * sub-agent. The value is `null` when the session has no sub-agent. */
   subagentsTokens: BillableTokens | null
+  /** Where the spend behind `cost` went. The same subject as `cost`. */
+  efficiency: SessionEfficiency | null
   models: string[]
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns: ModelRunPayload[]

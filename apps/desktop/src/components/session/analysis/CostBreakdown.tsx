@@ -6,6 +6,7 @@ import {
   costBreakdownRows,
   costFigureLabel,
   formatCost,
+  formatTokensShort,
 } from "../../../lib/presentation/sessionAnalysis"
 import {
   resultComponentCost,
@@ -34,46 +35,107 @@ export interface CostBreakdownProps {
 }
 
 /**
+ * Grid columns shared by every row: the label takes the rest of the width,
+ * then tokens, USD, and percent each hold a fixed track. Fixed tracks (not
+ * `auto`) keep every row's columns at the same screen position, since an
+ * `auto` track's width would otherwise follow that one row's own content.
+ */
+const ROW_GRID = "grid grid-cols-[1fr_2.5rem_3.5rem_2.25rem] items-center gap-x-3"
+
+const DATA_ROW_CLASS = `${ROW_GRID} rounded-control -mx-1 px-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover`
+
+/**
+ * Percent of `totalUsd` that `usd` accounts for, as a whole percent. A
+ * positive share under half a percent reads `"<1%"` rather than rounding away
+ * to `"0%"`. `"—"` stands in when the total itself is zero, where a percent
+ * is undefined.
+ */
+function formatSharePct(usd: number, totalUsd: number): string {
+  if (!(totalUsd > 0)) return "—"
+  const pct = (usd / totalUsd) * 100
+  if (pct <= 0) return "0%"
+  if (pct < 0.5) return "<1%"
+  return `${Math.round(pct)}%`
+}
+
+/** One hoverable row: a label, its token count, its USD cost, and its share of the total. */
+function CostRowLine({
+  label,
+  usd,
+  tokens,
+  totalUsd,
+}: {
+  label: string
+  usd: number
+  tokens: number
+  totalUsd: number
+}) {
+  return (
+    <div className={DATA_ROW_CLASS}>
+      <span className="text-label-tertiary">{label}</span>
+      <span className="text-right text-label-tertiary tabular-nums">
+        {formatTokensShort(tokens)}
+      </span>
+      <span className="pr-1.5 text-right text-label tabular-nums">{formatCost(usd)}</span>
+      <span className="text-right text-label-tertiary tabular-nums">
+        {formatSharePct(usd, totalUsd)}
+      </span>
+    </div>
+  )
+}
+
+/**
  * The billable-component breakdown beneath the tokens chart.
  *
  * Every figure here is the on-device estimate for one exact subject: a split
  * only appears when the caller has parent and sub-agent results drawn from the
  * same computation as the headline, because mixing sources would produce rows
- * that do not add up.
+ * that do not add up. The token and percent columns share that same subject,
+ * so every row's percent reads as a share of the one total shown in the footer.
  */
 export function CostBreakdown({ cost, split }: CostBreakdownProps) {
   const rows = costBreakdownRows(resultComponentCost(cost))
+  const totalUsd = cost.totalCostUsd
 
   return (
     <div className="mt-2 space-y-1 border-t border-separator pt-2">
       {split && (
         <div className="mb-1 space-y-1 border-b border-separator pb-1">
-          <div className="flex items-center justify-between type-caption">
-            <span className="text-label-tertiary">Parent agent</span>
-            <span className="pr-1.5 text-label tabular-nums">
-              {formatCost(split.parent.totalCostUsd)}
-            </span>
-          </div>
-          <div className="flex items-center justify-between type-caption">
-            <span className="text-label-tertiary">
-              {split.subagentCount} sub-agent{split.subagentCount === 1 ? "" : "s"}
-            </span>
-            <span className="pr-1.5 text-label tabular-nums">
-              {formatCost(split.subagents.totalCostUsd)}
-            </span>
-          </div>
+          <CostRowLine
+            label="Parent agent"
+            usd={split.parent.totalCostUsd}
+            tokens={split.parent.totalTokens}
+            totalUsd={totalUsd}
+          />
+          <CostRowLine
+            label={`${split.subagentCount} sub-agent${split.subagentCount === 1 ? "" : "s"}`}
+            usd={split.subagents.totalCostUsd}
+            tokens={split.subagents.totalTokens}
+            totalUsd={totalUsd}
+          />
         </div>
       )}
       {rows.map((row) => (
-        <div key={row.label} className="flex items-center justify-between type-caption">
-          <span className="text-label-tertiary">{row.label}</span>
-          <span className="pr-1.5 text-label tabular-nums">{formatCost(row.usd)}</span>
-        </div>
+        <CostRowLine
+          key={row.label}
+          label={row.label}
+          usd={row.usd}
+          tokens={row.tokens ?? 0}
+          totalUsd={totalUsd}
+        />
       ))}
-      <div className="mt-1 flex items-center justify-between border-t border-separator pt-1 type-caption">
+      <div className={`${ROW_GRID} mt-1 border-t border-separator pt-1 type-caption`}>
         <span className="text-label-tertiary">{costFigureLabel(cost.isActive)}</span>
-        <span className="flex shrink-0 items-center rounded-full bg-system-gold/15 px-1.5 py-px type-caption font-medium leading-[13px] text-system-gold-text tabular-nums">
-          {formatCost(cost.totalCostUsd)}
+        <span className="text-right text-label-tertiary tabular-nums">
+          {formatTokensShort(cost.totalTokens)}
+        </span>
+        <span className="flex justify-end">
+          <span className="flex shrink-0 items-center rounded-full bg-system-gold/15 px-1.5 py-px type-caption font-medium leading-[13px] text-system-gold-text tabular-nums">
+            {formatCost(cost.totalCostUsd)}
+          </span>
+        </span>
+        <span className="text-right text-label-tertiary tabular-nums">
+          {formatSharePct(cost.totalCostUsd, totalUsd)}
         </span>
       </div>
     </div>

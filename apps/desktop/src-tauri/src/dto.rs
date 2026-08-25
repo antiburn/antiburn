@@ -14,7 +14,7 @@
 //! around them belongs to the views — so these payloads carry values and facts,
 //! never labels.
 
-use antiburn_local::analysis::{ActiveSessionsSummary, ModelRun, SessionCost};
+use antiburn_local::analysis::{ActiveSessionsSummary, EfficiencyTotals, ModelRun, SessionCost};
 use serde::{Deserialize, Serialize};
 
 /// One row of the popover's activity list.
@@ -159,6 +159,10 @@ pub struct SessionAnalysis {
     /// sums every sub-agent. The value is `None` when the session has no
     /// sub-agent.
     pub subagents_tokens: Option<BillableTokens>,
+    /// Where the spend went: new work, carry, or rewrite. The totals sum the
+    /// parent thread and every sub-agent thread, the same subject as
+    /// [`Self::cost`]. `None` when the transcript could not be read.
+    pub efficiency: Option<EfficiencyTotals>,
     /// Every model that contributed billable tokens. The list covers the
     /// parent transcript and every sub-agent. It matches [`Self::cost`].
     pub models: Vec<String>,

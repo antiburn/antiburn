@@ -117,6 +117,7 @@ function presentationProps(
     supportsAnalysis: true,
     cost: null,
     costSplit: null,
+    efficiency: null,
     orchestration: null,
     modelRuns: [],
     relations: null,
@@ -147,6 +148,30 @@ describe("SessionDetailPresentation — chrome", () => {
     view({ cost: null })
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.queryByText("Cost")).toBeNull()
+  })
+
+  it("shows the Efficiency card under the Cost card, with an unpriced hint", () => {
+    view({
+      cost: cost(),
+      efficiency: {
+        totalUsd: 10,
+        newWorkUsd: 3.4,
+        carryUsd: 5.4,
+        rewriteUsd: 1.2,
+        growthTokens: 200_000,
+        outputTokens: 50_000,
+        pricedTurns: 12,
+        unpricedTurns: 3,
+      },
+    })
+    expect(screen.getByText("Efficiency")).toBeTruthy()
+    expect(screen.getByText("$/MTok")).toBeTruthy()
+    expect(screen.getByText("3 turns unpriced")).toBeTruthy()
+  })
+
+  it("omits the Efficiency card when the session is unpriced", () => {
+    view({ cost: null, efficiency: null })
+    expect(screen.queryByText("Efficiency")).toBeNull()
   })
 
   it("shows the session title on no more than three lines", () => {

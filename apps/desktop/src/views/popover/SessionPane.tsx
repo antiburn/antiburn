@@ -344,6 +344,7 @@ export function SessionPane({
       supportsAnalysis={payload?.supportsAnalysis ?? agentSupportsAnalysis(subject.agent)}
       cost={cost}
       costSplit={costSplit}
+      efficiency={payload?.efficiency ?? null}
       orchestration={orchestration}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
