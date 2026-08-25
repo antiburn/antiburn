@@ -129,26 +129,40 @@ describe("SessionList — rows", () => {
     expect(screen.getByText(/ ago$/)).toBeTruthy()
   })
 
-  it("shows six deterministic mock hygiene checks", () => {
+  it("states the deterministic mock hygiene result over the six checks", () => {
     const first = list({ entries: [entry({ sessionId: "mock-0" })] })
-    const labels = [
-      /session overdepth/i,
-      /model overthinking/i,
-      /overpowered subagents/i,
-      /obsolete model/i,
-      /fast mode overuse/i,
-      /excess cache rehydration/i,
-    ]
-    // The glyph color names the state: brand orange fails, tertiary passes.
-    const stateOf = (label: RegExp) =>
-      screen.getByLabelText(label).className.includes("text-brand-tint") ? "fail" : "pass"
-    const firstResults = labels.map(stateOf)
-    expect(firstResults).toContain("pass")
-    expect(firstResults).toContain("fail")
+    const statusOf = () => screen.getByLabelText(/checks (passed|failed)$|checks failed:/)
+    const firstLabel = statusOf().getAttribute("aria-label")
+    expect(firstLabel).toMatch(/ of 6 checks (passed|failed)/)
 
     first.unmount()
     list({ entries: [entry({ sessionId: "mock-0" })] })
-    expect(labels.map(stateOf)).toEqual(firstResults)
+    expect(statusOf().getAttribute("aria-label")).toBe(firstLabel)
+  })
+
+  it("shows a green pass count and a red failure count", () => {
+    // The mock hash gives "mock-6" a clean row and fails two checks on
+    // "mock-0". A change to the hash or the check set moves these seeds.
+    const { container } = list({
+      entries: [
+        entry({ sessionId: "mock-6", title: "Clean" }),
+        entry({ sessionId: "mock-0", title: "Dirty" }),
+      ],
+    })
+
+    const passing = screen.getByLabelText("6 of 6 checks passed")
+    expect(passing.className).toContain("text-system-green")
+
+    const failing = screen.getByLabelText(
+      "2 of 6 checks failed: Session overdepth, Model overthinking",
+    )
+    expect(failing.className).toContain("text-system-red")
+    expect(failing.textContent).toBe("2/6checks failed")
+
+    // The names line belongs to the failing row alone.
+    const lines = container.querySelectorAll(".session-hygiene-failures")
+    expect(lines).toHaveLength(1)
+    expect(lines[0]?.textContent).toBe("Session overdepth, Model overthinking")
   })
 
   it("states the last-activity time", () => {

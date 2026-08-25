@@ -18,7 +18,7 @@ import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
-import { SessionHygieneBadges } from "./SessionHygieneBadges"
+import { SessionHygieneFailureLine, SessionHygieneStatus } from "./SessionHygieneStatus"
 import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
@@ -188,7 +188,6 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
           </div>
 
           <div className="relative flex shrink-0 items-center gap-1.5">
-            <SessionHygieneBadges checks={hygieneChecks} />
             {entry.cost && <SessionCostBadge {...entry.cost} />}
           </div>
         </div>
@@ -226,21 +225,31 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
           )}
         </div>
 
-        <div className="flex w-full justify-between min-w-0 items-center gap-x-1.5">
-          <div
-            className="min-w-0 type-footnote text-label-tertiary"
-            {...(modelNames.length > 0 ? { title: modelRunNames(modelRuns).join("\n") } : {})}
-          >
-            {modelNames.length > 0 ? <TruncatedText text={modelNames.join(" · ")} /> : "\u00A0"}
+        <div className="min-w-0">
+          <div className="flex w-full justify-between min-w-0 items-center gap-x-1.5">
+            <SessionHygieneStatus checks={hygieneChecks} />
+
+            <div
+              className="min-w-0 flex-1 type-footnote text-label-tertiary"
+              {...(modelNames.length > 0 ? { title: modelRunNames(modelRuns).join("\n") } : {})}
+            >
+              {modelNames.length > 0 ? (
+                <TruncatedText text={modelNames.join(" · ")} />
+              ) : (
+                "\u00A0"
+              )}
+            </div>
+
+            <time
+              dateTime={entry.timestamp}
+              aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+              className="text-sm text-label-secondary"
+            >
+              {relativeTime(entry.timestamp)}
+            </time>
           </div>
 
-          <time
-            dateTime={entry.timestamp}
-            aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-            className="text-sm text-label-secondary"
-          >
-            {relativeTime(entry.timestamp)}
-          </time>
+          <SessionHygieneFailureLine checks={hygieneChecks} />
         </div>
       </div>
     </div>

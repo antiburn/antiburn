@@ -18,6 +18,13 @@ describe("mockSessionHygiene", () => {
     ])
   })
 
+  it("gives every check a short title with no state wording", () => {
+    for (const check of mockSessionHygiene("session-1")) {
+      expect(check.shortTitle).not.toMatch(/detected/i)
+      expect(check.title.toLowerCase()).toContain(check.shortTitle.toLowerCase())
+    }
+  })
+
   it("returns the same mock results for the same session", () => {
     expect(mockSessionHygiene("session-1")).toEqual(mockSessionHygiene("session-1"))
   })

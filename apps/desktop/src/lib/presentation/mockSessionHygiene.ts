@@ -12,10 +12,13 @@ export interface MockSessionHygieneCheck {
     | "excessCacheRehydration"
   passed: boolean
   title: string
+  /** The check name alone. A row lists these when it has no space for titles. */
+  shortTitle: string
 }
 
 interface HygieneCheckDefinition {
   id: MockSessionHygieneCheck["id"]
+  shortTitle: string
   passedTitle: string
   failedTitle: string
 }
@@ -23,31 +26,37 @@ interface HygieneCheckDefinition {
 const CHECKS: readonly HygieneCheckDefinition[] = [
   {
     id: "sessionOverdepth",
+    shortTitle: "Session overdepth",
     passedTitle: "No session overdepth detected",
     failedTitle: "Session overdepth detected",
   },
   {
     id: "modelOverthinking",
+    shortTitle: "Model overthinking",
     passedTitle: "No model overthinking detected",
     failedTitle: "Model overthinking detected",
   },
   {
     id: "overpoweredSubagents",
+    shortTitle: "Overpowered subagents",
     passedTitle: "No overpowered subagents detected",
     failedTitle: "Overpowered subagents detected",
   },
   {
     id: "obsoleteModel",
+    shortTitle: "Obsolete model",
     passedTitle: "No obsolete model detected",
     failedTitle: "Obsolete model detected",
   },
   {
     id: "fastModeOveruse",
+    shortTitle: "Fast mode overuse",
     passedTitle: "No fast mode overuse detected",
     failedTitle: "Fast mode overuse detected",
   },
   {
     id: "excessCacheRehydration",
+    shortTitle: "Excess cache rehydration",
     passedTitle: "No excess cache rehydration detected",
     failedTitle: "Excess cache rehydration detected",
   },
@@ -71,6 +80,7 @@ export function mockSessionHygiene(seed: string): MockSessionHygieneCheck[] {
       id: check.id,
       passed,
       title: passed ? check.passedTitle : check.failedTitle,
+      shortTitle: check.shortTitle,
     }
   })
 }

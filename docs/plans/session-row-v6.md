@@ -7,7 +7,7 @@ Implements the design settled in the HTML proto (session-row-proto.html, iterate
 | Phase | Status |
 | --- | --- |
 | 1. Icon availability check | Done — all six exports verified in installed `lucide-react@1.33.0` |
-| 2. `SessionHygieneBadges` component | Done — `SessionHygieneBadges.tsx` + fan CSS in `session-rows.css` + `design.md` recipe |
+| 2. `SessionHygieneBadges` component | Superseded 2026-08-25 — the glyph fan is replaced by the counted check status in `docs/plans/session-row-check-status.md` |
 | 3. Row layout restructure | Done — models top, `type-title-3` title, repo line, right rail, hover time |
 | 4. Cost pill goes brand orange | Done — solid `bg-brand-tint text-white` (Keith picked solid over tint) |
 | 5. Tests + checks + screenshot | Done — tests updated/added, all checks green, Keith supplied a demo recording for the PR |

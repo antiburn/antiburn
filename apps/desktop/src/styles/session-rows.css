@@ -79,134 +79,52 @@
   -webkit-line-clamp: var(--truncated-text-lines);
 }
 
-/* --- Hygiene glyph fan --- */
+/* --- Hygiene check status --- */
 
-/* The passing checks sit outside the flow. The rail is the positioned
-   ancestor, so `right: calc(100% + gap)` pins this box to the left edge of
-   the leftmost failed glyph, or of the cost pill when every check passes. */
-.session-hygiene-pass {
-  position: absolute;
-  top: 50%;
-  right: calc(100% + var(--space-xs));
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  transform: translateY(-50%);
+/* Two parts of the status open on row hover: the label after the green check,
+   and the line of failed check names below the models. Both animate a grid
+   track from 0fr to 1fr, which the browser can interpolate. The label opens
+   sideways, so the model names move to the right as it grows. The names line
+   opens downward, so the row gets taller.
+
+   The gap before the label, and the space above the names line, sit on the
+   inner span. Thus they collapse with the track. On the track itself they
+   would stay as a stub of blank space at rest. */
+.session-hygiene-reveal,
+.session-hygiene-failures {
+  display: grid;
 }
 
-/* At rest the glyphs are invisible and stacked at the anchor. The transform
-   snap-back waits for the fade to end: a pointer that leaves the row sees
-   the glyphs fade in place, never slide back in. */
-.session-hygiene-pass .session-hygiene-glyph {
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 200ms ease-out,
-    transform 0s 200ms;
+.session-hygiene-reveal {
+  grid-template-columns: 0fr;
+  transition: grid-template-columns var(--duration-fast) ease-out;
 }
 
-/* The state mark floats above its glyph and never covers it. It is hidden at
-   rest. On a hover held for two seconds the marks rise in one at a time,
-   left to right, 200ms apart — about one second across a full row. The
-   component sets each mark's place with --hygiene-mark-index. Off hover
-   they drop and fade right away. */
-.session-hygiene-mark {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  margin-bottom: 1px;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-50%) translateY(4px) scale(0.5);
-  transition:
-    opacity var(--duration-quick) ease-out,
-    transform var(--duration-quick) ease-out;
+.session-hygiene-failures {
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--duration-fast) ease-out;
 }
 
-.session-row:hover .session-hygiene-mark {
-  --hygiene-mark-delay: calc(400ms + var(--hygiene-mark-index, 0) * 50ms);
-  opacity: 1;
-  transform: translateX(-50%);
-  transition:
-    opacity var(--duration-slow) var(--ease-out-quart) var(--hygiene-mark-delay),
-    transform var(--duration-slow) var(--ease-out-quart) var(--hygiene-mark-delay);
+/* A grid item does not go below its content width unless min-width says so. */
+.session-hygiene-reveal > *,
+.session-hygiene-failures > * {
+  min-width: 0;
+  overflow: hidden;
 }
 
-.session-row:has(.session-hygiene-pass) .session-repo-names {
-  transition: opacity 200ms ease-out;
+.session-row:hover .session-hygiene-reveal {
+  grid-template-columns: 1fr;
 }
 
-.session-row:has(.session-hygiene-pass):hover .session-repo-names {
-  opacity: 0.2;
-}
-
-/* Stack offsets: one glyph pitch (20px glyph + 4px gap) per position. */
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(2) {
-  transform: translateX(24px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(3) {
-  transform: translateX(48px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(4) {
-  transform: translateX(72px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(5) {
-  transform: translateX(96px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(6) {
-  transform: translateX(120px);
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateX(0);
-  transition:
-    transform 240ms var(--ease-out-quart),
-    opacity var(--duration-quick) ease-out;
-}
-
-/* The delay grows with the distance, so the fan opens outward. */
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(2) {
-  transition-delay: 15ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(3) {
-  transition-delay: 30ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(4) {
-  transition-delay: 45ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(5) {
-  transition-delay: 60ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(6) {
-  transition-delay: 75ms;
+.session-row:hover .session-hygiene-failures {
+  grid-template-rows: 1fr;
 }
 
 /* --- Reduced motion --- */
 
-/* The fan is an interaction response, not an ambient loop, but the slide is
-   decorative: with reduced motion the glyphs only fade, in both directions. */
-@media (prefers-reduced-motion: reduce) {
-  .session-hygiene-pass .session-hygiene-glyph {
-    transform: none !important;
-    transition: opacity var(--duration-quick) ease-out;
-  }
-
-  .session-hygiene-mark {
-    transform: translateX(-50%) !important;
-    transition: opacity var(--duration-quick) ease-out;
-  }
-}
+/* The status reveal needs no rule of its own here. The global clamp in
+   motion.css makes both tracks snap open, which is the correct result: the
+   movement is the reveal, and there is nothing left to fade. */
 
 /* The global clamp in motion.css shortens transitions; the shimmer is an
    *ambient loop*, which no duration makes acceptable, so it stops outright.

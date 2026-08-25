@@ -232,8 +232,7 @@ motion:
   progress-pulse: "1.5s loop"
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
-  session-hygiene-fan: "hover fan-out 240ms ease-out-quart + quick fade-in, 15ms outward stagger; hover-out fades 200ms in place (transform snap-back waits for the fade); the row's repository names crossfade to 20% opacity over 200ms; reduced motion fades only"
-  session-hygiene-mark: "check/cross marks rise in above their glyphs after a hover held 400ms, left to right at 50ms apart, each a 300ms ease-out-quart rise + scale + fade; off hover they drop and fade quick; reduced motion fades only"
+  session-hygiene-status: "row hover opens the check-status label sideways and the failed-check names downward, each a 0fr -> 1fr grid track over --duration-fast ease-out; reduced motion snaps both open, because the movement is the reveal"
 components:
   button-secondary:
     className: ui-push-button
