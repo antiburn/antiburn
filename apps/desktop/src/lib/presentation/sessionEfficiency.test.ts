@@ -14,7 +14,6 @@ import {
   efficiencyThermometer,
   formatCostPerMTok,
   formatSharePercent,
-  unpricedTurnsHint,
 } from "./sessionEfficiency"
 
 function totals(over: Partial<SessionEfficiency> = {}): SessionEfficiency {
@@ -35,7 +34,7 @@ describe("efficiencyMetrics", () => {
   it("derives the three ratios from the totals", () => {
     const m = efficiencyMetrics(totals(), "claude-code")
     expect(m.costPerMTok?.value).toBeCloseTo(40)
-    expect(m.newWorkShare?.value).toBeCloseTo(0.34)
+    expect(m.realWorkShare?.value).toBeCloseTo(0.34)
     expect(m.rewriteShare?.value).toBeCloseTo(0.12)
     expect(m.unpricedTurns).toBe(0)
     expect(m.profile).toBe("claude")
@@ -44,17 +43,17 @@ describe("efficiencyMetrics", () => {
   it("bands a ok Claude session as ok on every metric", () => {
     const m = efficiencyMetrics(totals(), "claude-code")
     expect(m.costPerMTok?.band).toBe("ok")
-    expect(m.newWorkShare?.band).toBe("ok")
+    expect(m.realWorkShare?.band).toBe("ok")
     expect(m.rewriteShare?.band).toBe("ok")
   })
 
-  it("bands the Claude edges: cost, rewrite, and new work", () => {
+  it("bands the Claude edges: cost, rewrite, and real work", () => {
     const cheap = efficiencyMetrics(
       totals({ totalUsd: 5, newWorkUsd: 4, rewriteUsd: 0.2 }),
       "claude-code",
     )
     expect(cheap.costPerMTok?.band).toBe("good")
-    expect(cheap.newWorkShare?.band).toBe("good")
+    expect(cheap.realWorkShare?.band).toBe("good")
     expect(cheap.rewriteShare?.band).toBe("good")
 
     const dear = efficiencyMetrics(
@@ -62,7 +61,7 @@ describe("efficiencyMetrics", () => {
       "claude-code",
     )
     expect(dear.costPerMTok?.band).toBe("bad")
-    expect(dear.newWorkShare?.band).toBe("bad")
+    expect(dear.realWorkShare?.band).toBe("bad")
     expect(dear.rewriteShare?.band).toBe("bad")
   })
 
@@ -70,9 +69,9 @@ describe("efficiencyMetrics", () => {
     // Rewrite 22% sits between the 20% ok top and the 25% bad edge.
     const rewrite = efficiencyMetrics(totals({ rewriteUsd: 2.2 }), "claude-code")
     expect(rewrite.rewriteShare?.band).toBe("ok")
-    // New work 19% sits between the 18% bad edge and the 20% ok floor.
-    const newWork = efficiencyMetrics(totals({ newWorkUsd: 1.9 }), "claude-code")
-    expect(newWork.newWorkShare?.band).toBe("ok")
+    // Real work at 19% sits between the bad edge and the good edge.
+    const realWork = efficiencyMetrics(totals({ newWorkUsd: 1.9 }), "claude-code")
+    expect(realWork.realWorkShare?.band).toBe("ok")
   })
 
   it("reads a Codex session against the Codex bands", () => {
@@ -88,20 +87,20 @@ describe("efficiencyMetrics", () => {
       "codex",
     )
     expect(good.costPerMTok?.band).toBe("good")
-    expect(good.newWorkShare?.band).toBe("good")
+    expect(good.realWorkShare?.band).toBe("good")
   })
 
   it("returns null metrics when there is no spend", () => {
     const m = efficiencyMetrics(totals({ totalUsd: 0, newWorkUsd: 0, rewriteUsd: 0 }), "codex")
     expect(m.costPerMTok).toBeNull()
-    expect(m.newWorkShare).toBeNull()
+    expect(m.realWorkShare).toBeNull()
     expect(m.rewriteShare).toBeNull()
   })
 
   it("returns a null cost per MTok when the token denominator is zero", () => {
     const m = efficiencyMetrics(totals({ growthTokens: 0, outputTokens: 0 }), "claude-code")
     expect(m.costPerMTok).toBeNull()
-    expect(m.newWorkShare).not.toBeNull()
+    expect(m.realWorkShare).not.toBeNull()
   })
 
   it("carries the unpriced turn count through", () => {
@@ -139,15 +138,15 @@ describe("formatting", () => {
     expect(efficiencyThermometer(120, "costPerMTok", "claude").position).toBeCloseTo(5 / 6)
     expect(efficiencyThermometer(999, "costPerMTok", "claude").position).toBe(1)
     // Higher is better: bad | ok | good, edges at 18% and 36%.
-    const newWork = efficiencyThermometer(0.27, "newWorkShare", "claude")
-    expect(newWork.segments).toEqual(["bad", "ok", "good"])
-    expect(newWork.position).toBeCloseTo(0.5)
+    const realWork = efficiencyThermometer(0.27, "realWorkShare", "claude")
+    expect(realWork.segments).toEqual(["bad", "ok", "good"])
+    expect(realWork.position).toBeCloseTo(0.5)
   })
 
   it("describes each metric in a sentence", () => {
-    expect(efficiencyMetricDescription("costPerMTok")).toMatch(/per million tokens/)
-    expect(efficiencyMetricDescription("newWorkShare")).toMatch(/fresh context/)
-    expect(efficiencyMetricDescription("rewriteShare")).toMatch(/compaction/)
+    expect(efficiencyMetricDescription("costPerMTok")).toMatch(/Cost for real work/)
+    expect(efficiencyMetricDescription("realWorkShare")).toMatch(/spent on real work/)
+    expect(efficiencyMetricDescription("rewriteShare")).toMatch(/rewriting the cache/)
   })
 
   it("names the direction of a bad reading", () => {
@@ -155,24 +154,18 @@ describe("formatting", () => {
     expect(efficiencyBandWord("ok", "rewriteShare")).toBe("ok")
     expect(efficiencyBandWord("bad", "costPerMTok")).toBe("high")
     expect(efficiencyBandWord("bad", "rewriteShare")).toBe("high")
-    expect(efficiencyBandWord("bad", "newWorkShare")).toBe("low")
+    expect(efficiencyBandWord("bad", "realWorkShare")).toBe("low")
   })
 
   it("spells the thresholds for the agent's profile", () => {
     expect(efficiencyThresholdsText("costPerMTok", "claude")).toBe(
-      "Good below $33, ok $33–$80, high above $80.",
+      "[Good = below $33; High = over $80; otherwise OK]",
     )
-    expect(efficiencyThresholdsText("newWorkShare", "codex")).toBe(
-      "Good above 33%, ok 17%–33%, low below 17%.",
+    expect(efficiencyThresholdsText("realWorkShare", "codex")).toBe(
+      "[Good = over 33%; Low = below 17%; otherwise OK]",
     )
     expect(efficiencyThresholdsText("rewriteShare", "codex")).toBe(
-      "Good below 8%, ok 8%–14%, high above 14%.",
+      "[Good = below 8%; High = over 14%; otherwise OK]",
     )
-  })
-
-  it("hints about unpriced turns only when there are some", () => {
-    expect(unpricedTurnsHint(0)).toBeNull()
-    expect(unpricedTurnsHint(1)).toBe("1 turn unpriced")
-    expect(unpricedTurnsHint(3)).toBe("3 turns unpriced")
   })
 })
