@@ -69,10 +69,10 @@ event order. `flushSync` commits layout state before the session measures the
 panel, following the established `NudgeSession` pattern. Added HUD code contains
 no `useEffect` or `useLayoutEffect`.
 
-`HudVisibilitySession` owns the Usage pop-out button's native visibility read
-and focus listener. `PopoverSession` restores the preference when its external
-session starts. The Settings toggle reads localStorage once when the pane
-instance starts, as the reference does.
+`HudVisibilitySession` owns each HUD control's native visibility read, focus
+listener, and native visibility-event subscription. `PopoverSession` restores
+the preference when its external session starts. Settings and the Usage pop-out
+button treat the native window as the live source of truth.
 
 ### Data adaptation
 

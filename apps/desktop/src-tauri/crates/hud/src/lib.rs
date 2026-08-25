@@ -41,6 +41,8 @@ const OVERLAY_TOP_INSET: f64 = 24.0 + 8.0;
 const RESIZE_DURATION: Duration = Duration::from_millis(140);
 #[cfg(target_os = "macos")]
 const RESIZE_STEPS: u32 = 12;
+#[cfg(target_os = "macos")]
+const OVERLAY_VISIBILITY_EVENT: &str = "overlay_visibility_changed";
 
 #[cfg(any(target_os = "macos", test))]
 struct ResizeState {
@@ -210,6 +212,7 @@ pub fn hide(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         window.hide()?;
     }
+    let _ = app.emit(OVERLAY_VISIBILITY_EVENT, false);
     Ok(())
 }
 
@@ -298,6 +301,7 @@ pub fn resize(
 #[cfg(target_os = "macos")]
 fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
     let native_window = window.clone();
+    let app = window.app_handle().clone();
     window.run_on_main_thread(move || {
         if !RESIZE_STATE.wants_visible() {
             return;
@@ -307,6 +311,7 @@ fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
             unsafe {
                 (&*pointer.cast::<NSWindow>()).orderFrontRegardless();
             }
+            let _ = app.emit(OVERLAY_VISIBILITY_EVENT, true);
         }
     })
 }

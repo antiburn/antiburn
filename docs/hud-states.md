@@ -141,9 +141,11 @@ Usage writes it. The Usage header pop-out button writes it. The popover session
 restores the HUD at startup when it reads `1`. The HUD close button writes `0`
 before it calls the native hide command.
 
-Each webview can hold a different localStorage copy. The pop-out button asks the
-native window for current visibility when it mounts and whenever the popover
-receives focus. This known drift remains part of the port.
+Each webview can hold a different localStorage copy. The native window therefore
+broadcasts each visibility change. Settings and the pop-out button use that live
+state, refresh it when they receive focus, and update their cached preference.
+Closing the HUD with its ✕ turns both controls off. The cached value only restores
+the HUD at startup.
 
 ## Platform boundary
 
