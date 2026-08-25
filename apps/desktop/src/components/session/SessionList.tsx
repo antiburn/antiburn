@@ -130,7 +130,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
   return (
     <div
       className={cn(
-        "session-row group relative flex items-start gap-3 py-3 px-2 w-full text-left rounded-md",
+        "session-row group relative flex items-start gap-3 py-4 px-2 w-full text-left rounded-md",
         "transition-colors duration-[var(--duration-fast)] ease-out",
         entry.isActive && "activity-row-active",
         clickable &&
@@ -157,17 +157,40 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      {/* The margin sets the icon on the title line, past the model line above it. */}
       <div className="mt-5 shrink-0">{renderAgentIcon?.(entry.agent, 18, entry.surface)}</div>
 
       <div className="min-w-0 flex-1 space-y-1">
-        {/* The line renders even with no model names, so every row keeps the
-            same vertical rhythm. */}
-        <div
-          className="session-model-names min-w-0 type-footnote text-label-tertiary"
-          {...(modelNames.length > 0 ? { title: modelRunNames(modelRuns).join("\n") } : {})}
-        >
-          {modelNames.length > 0 ? <TruncatedText text={modelNames.join(" · ")} /> : "\u00A0"}
+        <div className="flex items-end justify-between gap-x-1">
+          <div className="session-repo-names flex gap-x-2">
+            {hasRepo && (
+              <Tooltip
+                label={
+                  entry.additionalRepos?.length
+                    ? `Also observed: ${entry.additionalRepos.join(", ")}`
+                    : entry.repo
+                }
+              >
+                <span className="min-w-0 truncate text-sm text-label-secondary">
+                  {entry.repo}
+                  {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
+                </span>
+              </Tooltip>
+            )}
+
+            <WslOriginBadge distro={entry.wslDistro} {...(wslIcon ? { icon: wslIcon } : {})} />
+
+            {entry.branch && (
+              <TruncatedText
+                className="min-w-0 truncate type-footnote leading-[13px] tracking-wide text-label-secondary"
+                text={entry.branch}
+              />
+            )}
+          </div>
+
+          <div className="relative flex shrink-0 items-center gap-1.5">
+            <SessionHygieneBadges checks={hygieneChecks} />
+            {entry.cost && <SessionCostBadge {...entry.cost} />}
+          </div>
         </div>
 
         <div className="flex min-w-0 items-center gap-1">
@@ -177,6 +200,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
             lines={2}
             shimmer={entry.isActive}
           />
+
           {entry.hasForkParent && (
             <Tooltip label="Forked from another session" delayMs={500}>
               <span
@@ -202,49 +226,23 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
           )}
         </div>
 
-        {(hasRepo || entry.wslDistro || entry.branch) && (
-          <div className="flex w-full min-w-0 items-center gap-1.5">
-            {hasRepo && (
-              <Tooltip
-                label={
-                  entry.additionalRepos?.length
-                    ? `Also observed: ${entry.additionalRepos.join(", ")}`
-                    : entry.repo
-                }
-              >
-                <span className="min-w-0 truncate text-sm text-label-secondary">
-                  {entry.repo}
-                  {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
-                </span>
-              </Tooltip>
-            )}
-
-            <WslOriginBadge distro={entry.wslDistro} {...(wslIcon ? { icon: wslIcon } : {})} />
-
-            {entry.branch && (
-              <TruncatedText
-                className="min-w-0 truncate type-footnote leading-[13px] tracking-wide text-label-secondary"
-                text={entry.branch}
-              />
-            )}
+        <div className="flex w-full justify-between min-w-0 items-center gap-x-1.5">
+          <div
+            className="min-w-0 type-footnote text-label-tertiary"
+            {...(modelNames.length > 0 ? { title: modelRunNames(modelRuns).join("\n") } : {})}
+          >
+            {modelNames.length > 0 ? <TruncatedText text={modelNames.join(" · ")} /> : "\u00A0"}
           </div>
-        )}
-      </div>
 
-      {/* The rail is the positioned anchor for the hygiene fan. */}
-      <div className="relative mt-0.5 flex shrink-0 items-center gap-1.5">
-        <SessionHygieneBadges checks={hygieneChecks} />
-        {entry.cost && <SessionCostBadge {...entry.cost} />}
+          <time
+            dateTime={entry.timestamp}
+            aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+            className="text-sm text-label-secondary"
+          >
+            {relativeTime(entry.timestamp)}
+          </time>
+        </div>
       </div>
-
-      {/* The timestamp shows on hover only; assistive tech reads it at all times. */}
-      <time
-        dateTime={entry.timestamp}
-        aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-        className="absolute bottom-3 right-2 shrink-0 text-sm text-label-secondary opacity-0 transition-opacity duration-[var(--duration-fast)] ease-out group-hover:opacity-100"
-      >
-        {relativeTime(entry.timestamp)}
-      </time>
     </div>
   )
 }
