@@ -2,10 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::BTreeSet;
+
 use crate::analysis::engine::analyze_session;
 use crate::analysis::merge::merge_subagent_events;
-use crate::analysis::model::{CompactionTrigger, EventSource, ModelRun, Role, ToolCategory};
-use crate::analysis::{RawSource, SessionInput, analyze_sources, normalize_source};
+use crate::analysis::model::{
+    CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCategory,
+};
+use crate::analysis::{
+    NormalizedRecord, PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector,
+    SessionInput, adapter_for, analyze_sources, normalize_source,
+};
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
     SessionInput {
@@ -13,6 +20,129 @@ fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
         session_id: "s".into(),
         source: RawSource::Jsonl(jsonl.into()),
     }
+}
+
+fn claude_characterization_fixture(name: &str) -> &'static str {
+    match name {
+        "records_all_kinds" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/records_all_kinds.jsonl"
+        )),
+        "timestamps_repeated_and_out_of_order" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/timestamps_repeated_and_out_of_order.jsonl"
+        )),
+        "malformed_between_valid" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/malformed_between_valid.jsonl"
+        )),
+        "incomplete_final_record" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/incomplete_final_record.jsonl"
+        )),
+        "unrecognized_type" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/unrecognized_type.jsonl"
+        )),
+        "parent_with_task_spawn" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/parent_with_task_spawn.jsonl"
+        )),
+        "subagent_child" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/subagent_child.jsonl"
+        )),
+        "multi_model_session" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/multi_model_session.jsonl"
+        )),
+        "compaction_with_cache_rehydration" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/compaction_with_cache_rehydration.jsonl"
+        )),
+        "inferred_cache_rehydration" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/inferred_cache_rehydration.jsonl"
+        )),
+        _ => panic!("unknown characterization fixture: {name}"),
+    }
+}
+
+#[test]
+fn the_ten_characterization_fixtures_report_their_expected_coverage() {
+    let expected = vec![
+        (
+            "records_all_kinds".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::UnrecognizedRecordType]),
+        ),
+        (
+            "timestamps_repeated_and_out_of_order".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "malformed_between_valid".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::MalformedRecord]),
+        ),
+        (
+            "incomplete_final_record".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::MalformedRecord]),
+        ),
+        (
+            "unrecognized_type".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::UnrecognizedRecordType]),
+        ),
+        (
+            "parent_with_task_spawn".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "subagent_child".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "multi_model_session".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "compaction_with_cache_rehydration".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "inferred_cache_rehydration".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+    ];
+    let actual: Vec<_> = expected
+        .iter()
+        .map(|(name, _, _)| {
+            let input = SessionInput {
+                agent: "claude".to_string(),
+                session_id: name.clone(),
+                source: RawSource::Jsonl(claude_characterization_fixture(name).to_string()),
+            };
+            let mut collector = SessionCollector::new("claude", name);
+            adapter_for("claude")
+                .visit(&input, &mut collector)
+                .expect("fixture must be visited");
+            (
+                name.clone(),
+                collector.coverage(),
+                collector.partial_reasons().clone(),
+            )
+        })
+        .collect();
+
+    assert_eq!(actual, expected);
 }
 
 /// A small but representative Claude transcript: one edit turn, one error
@@ -244,6 +374,51 @@ const CODEX_FIXTURE: &str = concat!(
     "\n",
     r#"{"timestamp":"2024-06-01T12:00:35Z","type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
 );
+
+#[test]
+fn a_non_claude_adapter_visits_through_the_default_implementation() {
+    let source = concat!(
+        r#"{"timestamp":"2024-06-01T12:00:00Z","type":"session_meta","payload":{"model":"gpt-5.4"}}"#,
+        "\n",
+        r#"{"timestamp":"2024-06-01T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}}}"#,
+    );
+    let input = jsonl_input("codex", source);
+    let adapter = adapter_for("codex");
+    let expected = adapter
+        .normalize(&input)
+        .expect("Codex source must normalize");
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    adapter
+        .visit(&input, &mut collector)
+        .expect("default visit must complete");
+    let actual = collector.into_session().ok();
+    let completed_assertions = (
+        actual.as_ref() == Some(&expected),
+        actual
+            .as_ref()
+            .and_then(|session| session.context_window)
+            .is_some(),
+        actual
+            .as_ref()
+            .and_then(|session| session.model.as_ref())
+            .is_some(),
+        actual
+            .as_ref()
+            .is_some_and(|session| !session.cache_write_tokens_available),
+    );
+    assert_eq!(completed_assertions, (true, true, true, true));
+
+    let mut unfinished = SessionCollector::new("codex", "unfinished");
+    RecordSink::record(
+        &mut unfinished,
+        NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent::new(Role::User))),
+    );
+    RecordSink::record(
+        &mut unfinished,
+        NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent::new(Role::Assistant))),
+    );
+    assert!(unfinished.into_session().is_err());
+}
 
 #[test]
 fn codex_rollout_envelope_is_normalized() {
