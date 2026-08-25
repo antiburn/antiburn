@@ -681,15 +681,34 @@ pub async fn get_session_analytics(
         return Err(format!("unknown agent {agent}"));
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
+    let store = app.state::<Store>();
+    let claimed = store
+        .session_source_state(&key)
+        .ok()
+        .flatten()
+        .map(|state| analytics::ClaimedSource {
+            fingerprint: state.source_fingerprint,
+            generation: state.source_generation,
+        })
+        .unwrap_or(analytics::ClaimedSource {
+            fingerprint: None,
+            generation: 0,
+        });
 
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analytics::analyze(
+        kind,
+        &session_id,
+        wsl_distro.as_deref(),
+        claimed,
+        analytics::CancelFlag::never(),
+    )
+    .await;
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
-    let store = app.state::<Store>();
     let stored = store.session(&key).ok().flatten();
 
     if let Some(record) = analysis.record(&key) {
-        let _ = store.save_analysis(&record);
+        let _ = store.save_analysis(&record, analysis.started_at_epoch);
     }
     let orchestration = match &analysis.orchestration {
         Some(orchestration) => {
@@ -751,6 +770,7 @@ pub async fn get_subagent_analytics(
         &parent_session_id,
         &subagent_id,
         wsl_distro.as_deref(),
+        analytics::CancelFlag::never(),
     )
     .await;
     Ok(SessionAnalytics {
@@ -1046,10 +1066,30 @@ pub async fn export_session(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let analysis = analytics::analyze(kind, &session_id, wsl_distro.as_deref()).await;
-
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let stored = app.state::<Store>().session(&key).ok().flatten();
+    let store = app.state::<Store>();
+    let claimed = store
+        .session_source_state(&key)
+        .ok()
+        .flatten()
+        .map(|state| analytics::ClaimedSource {
+            fingerprint: state.source_fingerprint,
+            generation: state.source_generation,
+        })
+        .unwrap_or(analytics::ClaimedSource {
+            fingerprint: None,
+            generation: 0,
+        });
+    let analysis = analytics::analyze(
+        kind,
+        &session_id,
+        wsl_distro.as_deref(),
+        claimed,
+        analytics::CancelFlag::never(),
+    )
+    .await;
+
+    let stored = store.session(&key).ok().flatten();
 
     let document = SessionExport::new(
         app.package_info().version.to_string(),

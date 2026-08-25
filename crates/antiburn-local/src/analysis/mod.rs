@@ -67,6 +67,10 @@ pub use source_validity::{
 pub use vendors::claude::ClaudeAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
+pub const PARSER_REVISION: i64 = 1;
+pub const ANALYZER_REVISION: i64 = 1;
+pub const METRICS_SCHEMA_REVISION: i64 = 1;
+
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
 /// Sources that fail to read (missing file, unopenable DB) are skipped so one
