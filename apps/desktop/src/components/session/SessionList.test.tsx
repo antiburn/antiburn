@@ -157,7 +157,7 @@ describe("SessionList — rows", () => {
       "2 of 6 checks failed: Session overdepth, Model overthinking",
     )
     expect(failing.className).toContain("text-system-red")
-    expect(failing.textContent).toBe("2/6checks failed")
+    expect(failing.textContent).toBe("2/6failed")
 
     // The names line belongs to the failing row alone.
     const lines = container.querySelectorAll(".session-hygiene-failures")
@@ -165,9 +165,12 @@ describe("SessionList — rows", () => {
     expect(lines[0]?.textContent).toBe("Session overdepth, Model overthinking")
   })
 
-  it("states the last-activity time", () => {
+  it("states the last-activity time, and shows it on hover alone", () => {
     list({ entries: [entry({ timestamp: at(0, 9) })] })
-    expect(screen.getByLabelText(/^Last activity /)).toBeTruthy()
+    const time = screen.getByLabelText(/^Last activity /)
+    // The time stays in the accessibility tree; only the paint is conditional.
+    expect(time.className).toContain("opacity-0")
+    expect(time.className).toContain("group-hover:opacity-100")
   })
 })
 

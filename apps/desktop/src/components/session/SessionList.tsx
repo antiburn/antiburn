@@ -187,9 +187,15 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
             )}
           </div>
 
-          <div className="relative flex shrink-0 items-center gap-1.5">
-            {entry.cost && <SessionCostBadge {...entry.cost} />}
-          </div>
+          <time
+            dateTime={entry.timestamp}
+            aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+            // Hidden until the row is hovered. This is a visual change only:
+            // the element stays in the accessibility tree at all times.
+            className="shrink-0 text-sm text-label-secondary opacity-0 transition-opacity duration-[var(--duration-fast)] ease-out group-hover:opacity-100"
+          >
+            {relativeTime(entry.timestamp)}
+          </time>
         </div>
 
         <div className="flex min-w-0 items-center gap-1">
@@ -240,13 +246,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
               )}
             </div>
 
-            <time
-              dateTime={entry.timestamp}
-              aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-              className="text-sm text-label-secondary"
-            >
-              {relativeTime(entry.timestamp)}
-            </time>
+            {entry.cost && <SessionCostBadge {...entry.cost} />}
           </div>
 
           <SessionHygieneFailureLine checks={hygieneChecks} />

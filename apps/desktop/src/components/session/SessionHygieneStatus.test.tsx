@@ -40,14 +40,14 @@ describe("SessionHygieneStatus", () => {
     render(<SessionHygieneStatus checks={ALL_PASSED} />)
     const status = screen.getByLabelText("3 of 3 checks passed")
     expect(status.className).toContain("text-system-green")
-    expect(status.textContent).toBe("3/3 checks passed")
+    expect(status.textContent).toBe("3/3passed")
   })
 
   it("counts the failures, not the passes, when a check failed", () => {
     render(<SessionHygieneStatus checks={TWO_FAILED} />)
     const status = screen.getByLabelText(/^2 of 3 checks failed/)
     expect(status.className).toContain("text-system-red")
-    expect(status.textContent).toBe("2/3checks failed")
+    expect(status.textContent).toBe("2/3failed")
   })
 
   it("names the failed checks in the accessible label", () => {

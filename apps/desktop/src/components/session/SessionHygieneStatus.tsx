@@ -12,7 +12,11 @@ function failedShortTitles(checks: MockSessionHygieneCheck[]): string[] {
   return checks.filter((check) => !check.passed).map((check) => check.shortTitle)
 }
 
-/** The whole result as one sentence, for assistive tech. */
+/**
+ * The whole result as one sentence, for assistive tech. The visible label
+ * omits the word "checks", because the row gives it no space. The sentence
+ * keeps the word, because a listener has no row to read it from.
+ */
 function statusSentence(checks: MockSessionHygieneCheck[]): string {
   const failed = failedShortTitles(checks)
   if (failed.length === 0) {
@@ -50,8 +54,11 @@ export function SessionHygieneStatus({ checks }: { checks: MockSessionHygieneChe
           <span aria-hidden="true" className="session-hygiene-reveal">
             <span>
               {/* The gap sits inside the track, so it collapses with it. */}
-              <span className="block pl-[5px] font-medium whitespace-nowrap">
-                {checks.length}/{checks.length} checks passed
+              <span className="flex items-center gap-x-[5px] pl-[5px] whitespace-nowrap">
+                <span className="font-semibold tabular-nums">
+                  {checks.length}/{checks.length}
+                </span>
+                <span className="font-medium">passed</span>
               </span>
             </span>
           </span>
@@ -61,7 +68,7 @@ export function SessionHygieneStatus({ checks }: { checks: MockSessionHygieneChe
           <span className="font-semibold tabular-nums">
             {failedCount}/{checks.length}
           </span>
-          <span className="font-medium">checks failed</span>
+          <span className="font-medium">failed</span>
         </span>
       )}
     </span>

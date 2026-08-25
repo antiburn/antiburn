@@ -13,8 +13,15 @@ import {
 import { Tooltip } from "../../presentation/Tooltip"
 import { TextRoll } from "../../ui/TextRoll"
 
-const COST_PILL_CLASS =
-  "flex items-center gap-0.5 shrink-0 px-1.5 py-px rounded-full type-caption tabular-nums font-medium leading-[13px]"
+const COST_BADGE_CLASS = "flex items-center shrink-0 type-caption tabular-nums leading-[13px]"
+
+/** The usual state: a grey pill that stays quiet beside the model names. */
+const COST_CALM_CLASS =
+  "gap-0.5 px-1.5 py-px rounded-full font-medium bg-label-tertiary/15 text-label-secondary"
+
+/* The outlier state drops the pill. The flame and the weight carry it instead.
+   `.type-caption` sets its own weight, so the utility needs `!` to win. */
+const COST_HIGH_CLASS = "gap-1 font-semibold! text-brand"
 
 export interface SessionCostBadgeProps {
   /** The headline figure, in USD. */
@@ -27,22 +34,22 @@ export interface SessionCostBadgeProps {
   figureLabel: string
   /** Every model that contributed billable tokens, as a muted subtitle. */
   models?: string[]
-  /** Unusually expensive against comparable sessions. Paints the pill solid brand orange with a flame. */
+  /** Unusually expensive against comparable sessions. Drops the pill for a flame and heavy orange type. */
   isHighCost?: boolean
   /** Billable component rows (input / output / cache read / cache write). */
   breakdownRows?: CostRow[]
   /**
-   * Extra classes for the pill — a `relative top-px` nudge to optically align
+   * Extra classes for the badge — a `relative top-px` nudge to optically align
    * with adjacent baseline text in a row, say. Omit on a centered flex line.
    */
   className?: string
 }
 
 /**
- * The cost pill and its tooltip, driven entirely by the values it is given.
+ * The cost badge and its tooltip, driven entirely by the values it is given.
  *
  * Every figure is an on-device estimate from the model's per-token rates. The
- * pill leads with the number because that is the answer the reader came for;
+ * badge leads with the number because that is the answer the reader came for;
  * the component rows underneath explain how it was reached.
  */
 export function SessionCostBadge({
@@ -55,7 +62,7 @@ export function SessionCostBadge({
 }: SessionCostBadgeProps) {
   return (
     <Tooltip
-      // Wide card: drop it below the pill rather than to the side, where it
+      // Wide card: drop it below the badge rather than to the side, where it
       // can run off the window. Radix collision handling then shifts it
       // horizontally to stay in view.
       side="bottom"
@@ -94,21 +101,23 @@ export function SessionCostBadge({
       }
     >
       <span
-        // High-cost status is also a solid orange fill plus a flame, but color
-        // and glyph alone fail WCAG 1.4.1 and the flame is aria-hidden — so
-        // the accessible name also carries the "higher than usual" meaning.
+        // High-cost status is also orange type plus a flame, but color and
+        // glyph alone fail WCAG 1.4.1 and the flame is aria-hidden — so the
+        // accessible name also carries the "higher than usual" meaning.
         aria-label={
           isHighCost
             ? `${figureLabel} ${formatCost(totalUsd)}, higher than usual`
             : `${figureLabel} ${formatCost(totalUsd)}`
         }
         className={cn(
-          COST_PILL_CLASS,
-          isHighCost ? "bg-brand-tint text-white" : "bg-label-tertiary/15 text-label-secondary",
+          COST_BADGE_CLASS,
+          isHighCost ? COST_HIGH_CLASS : COST_CALM_CLASS,
           className,
         )}
       >
-        {isHighCost && <Flame size={11} className="shrink-0" aria-hidden="true" />}
+        {isHighCost && (
+          <Flame size={12} strokeWidth={2.5} className="shrink-0" aria-hidden="true" />
+        )}
         <TextRoll text={formatCost(totalUsd)} />
       </span>
     </Tooltip>
