@@ -33,6 +33,7 @@
 
 mod efficiency;
 mod engine;
+mod evidence;
 mod framing;
 mod initial_context;
 mod interface;
@@ -47,6 +48,13 @@ pub use efficiency::{EfficiencyTotals, thread_efficiency};
 pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
     ToolMix, aggregate_metrics, analyze_session,
+};
+#[cfg(debug_assertions)]
+pub use evidence::UnfinishedGroup;
+pub use evidence::{
+    ContextEvidence, CoverageReason, EVIDENCE_STRING_CAP, EvidenceCoverage, EvidenceSource,
+    EvidenceValue, OrderingObservation, ParseDiagnostics, SessionEvidence, SessionEvidenceIdentity,
+    SessionProvenance, SourceAcceptance, SourceCapabilities, SourceKind,
 };
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
@@ -72,6 +80,7 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 pub const PARSER_REVISION: i64 = 1;
 pub const ANALYZER_REVISION: i64 = 1;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 1;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
