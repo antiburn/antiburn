@@ -543,6 +543,9 @@ export class PopoverSession {
       .then((payload) => {
         if (generation !== this.generation || token !== this.analysisToken) return
         this.update({ analysis: { key, payload, error: false } })
+        if (!subject.subagent) {
+          void this.refreshEntries(this.windowDays()).catch(() => {})
+        }
       })
       .catch(() => {
         if (generation !== this.generation || token !== this.analysisToken) return
