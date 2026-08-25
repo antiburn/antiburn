@@ -41,10 +41,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::dto::DeferredPermissionDir;
 
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
-    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord,
-    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, SourceVersionState,
-    ThemePreference, UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS,
+    MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, RelationKind, RelationRecord,
+    RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey, SessionRecord,
+    SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -587,6 +587,25 @@ impl Store {
                         started_at_epoch: row.get(2)?,
                     })
                 },
+            )
+            .optional()?)
+    }
+
+    /// One session's persisted evidence and queue state.
+    pub fn evidence(&self, key: &SessionKey) -> Result<Option<EvidenceRow>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT environment_key, agent, session_id, status,
+                        analyzed_generation, processed_fingerprint,
+                        parser_revision, analyzer_revision, evidence_schema_revision,
+                        evidence_json, diagnostics_json, retry_count, claim_fence,
+                        claimed_at_epoch, lease_expires_at_epoch,
+                        next_attempt_at_epoch, analyzed_at_epoch, last_error
+                   FROM session_evidence
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
             )
             .optional()?)
     }
@@ -1299,6 +1318,35 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
         parameters,
     )?;
     Ok(removed > 0)
+}
+
+fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
+    let status: EvidenceStatus = row
+        .get::<_, String>(3)?
+        .parse()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(EvidenceRow {
+        key: SessionKey::new(
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ),
+        status,
+        analyzed_generation: row.get(4)?,
+        processed_fingerprint: row.get(5)?,
+        parser_revision: row.get(6)?,
+        analyzer_revision: row.get(7)?,
+        evidence_schema_revision: row.get(8)?,
+        evidence_json: row.get(9)?,
+        diagnostics_json: row.get(10)?,
+        retry_count: row.get(11)?,
+        claim_fence: row.get(12)?,
+        claimed_at_epoch: row.get(13)?,
+        lease_expires_at_epoch: row.get(14)?,
+        next_attempt_at_epoch: row.get(15)?,
+        analyzed_at_epoch: row.get(16)?,
+        last_error: row.get(17)?,
+    })
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {

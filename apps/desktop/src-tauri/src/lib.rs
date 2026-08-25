@@ -72,6 +72,9 @@ mod settings;
 mod startup_registration;
 mod storage_health;
 mod store;
+// The queue has no in-tree caller until CH-008 adds the worker.
+// TODO @agent: CH-008 will remove this re-export.
+pub use store::Store;
 mod tray;
 mod tray_title;
 mod updates;

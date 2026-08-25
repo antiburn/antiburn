@@ -365,6 +365,119 @@ fn the_session_table_shape_is_stable() {
 }
 
 #[test]
+fn session_evidence_table_shape_is_stable() {
+    let store = store();
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('session_evidence')")
+        .unwrap();
+    let columns: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        columns,
+        vec![
+            "environment_key",
+            "agent",
+            "session_id",
+            "status",
+            "analyzed_generation",
+            "processed_fingerprint",
+            "parser_revision",
+            "analyzer_revision",
+            "evidence_schema_revision",
+            "evidence_json",
+            "diagnostics_json",
+            "retry_count",
+            "claim_fence",
+            "claimed_at_epoch",
+            "lease_expires_at_epoch",
+            "next_attempt_at_epoch",
+            "analyzed_at_epoch",
+            "last_error",
+        ]
+    );
+}
+
+#[test]
+fn session_evidence_status_index_exists() {
+    let store = store();
+    let connection = store.lock();
+    let columns: Vec<String> = connection
+        .prepare("SELECT name FROM pragma_index_info('session_evidence_status') ORDER BY seqno")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        columns,
+        vec!["status", "next_attempt_at_epoch", "lease_expires_at_epoch"]
+    );
+}
+
+#[test]
+fn session_evidence_rejects_an_unknown_status() {
+    let store = store();
+    store
+        .upsert_sessions(&[session("bad-status", 1_000)])
+        .unwrap();
+    let result = store.lock().execute(
+        "INSERT INTO session_evidence (environment_key, agent, session_id, status)
+         VALUES ('native', 'claude-code', 'bad-status', 'unknown')",
+        [],
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn session_evidence_survives_an_upgrade_from_the_shipped_head() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..10] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label,
+                 first_seen_at, last_seen_at)
+             VALUES ('native', 'claude-code', 'upgrade', 'file',
+                     '/home/avery/.claude/projects/demo/upgrade.jsonl',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 10).unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-evidence-migration-test").to_path_buf(),
+    )
+    .expect("V11 migrates the shipped schema");
+    let key = SessionKey::new("native", "claude-code", "upgrade");
+
+    assert_eq!(store.session_count().unwrap(), 1);
+    assert!(store.evidence(&key).unwrap().is_none());
+    store
+        .lock()
+        .execute(
+            "INSERT INTO session_evidence (environment_key, agent, session_id)
+             VALUES ('native', 'claude-code', 'upgrade')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
 fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     let store = store();
     store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
