@@ -84,33 +84,6 @@ type PlacementProvider = Arc<dyn Fn() -> NudgePlacement + Send + Sync + 'static>
 /// the webview that sent it. A replacement nudge cancels the task.
 const TEARDOWN_DELAY: Duration = Duration::from_secs(1);
 
-/// How soon a deferred notification checks for an active display again.
-const DISPLAY_RETRY_DELAY: Duration = Duration::from_secs(1);
-
-#[derive(Clone)]
-struct PendingNudge {
-    payload: Nudge,
-    emitted: bool,
-}
-
-impl PendingNudge {
-    fn new(payload: Nudge) -> PendingNudge {
-        PendingNudge {
-            payload,
-            emitted: false,
-        }
-    }
-
-    fn emit(&mut self) -> Nudge {
-        self.emitted = true;
-        self.payload.clone()
-    }
-
-    fn ready_payload(&self) -> Option<Nudge> {
-        self.emitted.then(|| self.payload.clone())
-    }
-}
-
 #[derive(Default)]
 struct TeardownGeneration(AtomicU64);
 
@@ -148,7 +121,7 @@ pub struct NudgeManager {
     /// re-delivered when the notification webview signals it is ready (its
     /// `listen()` may not have been attached when [`Self::show`] first emitted).
     /// Cleared on [`Self::dismiss`].
-    pending: Mutex<Option<PendingNudge>>,
+    pending: Mutex<Option<Nudge>>,
     /// Serializes window creation/reuse with the final teardown check and
     /// destruction. The generation remains the cheap stale-task filter; this
     /// gate closes the check-then-destroy race with a replacement `show`.
@@ -197,61 +170,22 @@ impl NudgeManager {
         };
         // Invalidate a dismiss task before it can retire the window this show
         // is about to reuse (or the new one it is about to create).
-        let generation = self.teardown_generation.advance();
+        self.teardown_generation.advance();
+        let Ok(window) = window::get_or_create_nudge_window(&self.app) else {
+            return;
+        };
+        // Hide first so the whole size/position/reveal cycle is invisible — even
+        // when a new nudge replaces one that's still on screen. This is what keeps
+        // the notification from visibly resizing (wobbling) on show. The
+        // notification is *revealed* via [`Self::reveal`] only after the frontend
+        // sizes it.
+        window::hide(&window);
         // Retain the payload so it can be re-delivered if the notification
         // webview's listener wasn't attached yet (see [`Self::on_nudge_ready`]).
         if let Ok(mut pending) = self.pending.lock() {
-            *pending = Some(PendingNudge::new(nudge));
+            *pending = Some(nudge.clone());
         }
-        self.present_or_defer(generation, true);
-    }
-
-    fn present_or_defer(&self, generation: u64, report_deferred: bool) {
-        if !window::display_available() {
-            if report_deferred {
-                tracing::info!(
-                    target: "nudge",
-                    "no active displays; deferring the notification"
-                );
-            }
-            Self::schedule_display_retry(self.app.clone(), generation);
-            return;
-        }
-        let Ok(window) = window::get_or_create_nudge_window(&self.app) else {
-            Self::schedule_display_retry(self.app.clone(), generation);
-            return;
-        };
-        window::hide(&window);
-        let payload = self.pending.lock().ok().and_then(|mut pending| {
-            pending.as_mut().and_then(|value| {
-                if value.emitted {
-                    None
-                } else {
-                    Some(value.emit())
-                }
-            })
-        });
-        if let Some(payload) = payload {
-            let _ = self.app.emit_to(NUDGE_LABEL, NUDGE_SHOW_EVENT, &payload);
-        }
-    }
-
-    fn schedule_display_retry(app: AppHandle, generation: u64) {
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(DISPLAY_RETRY_DELAY).await;
-            let _ = tauri::async_runtime::spawn_blocking(move || {
-                let Some(manager) = app.try_state::<NudgeManager>() else {
-                    return;
-                };
-                let Ok(_lifecycle) = manager.lifecycle.lock() else {
-                    return;
-                };
-                if manager.teardown_generation.is_current(generation) {
-                    manager.present_or_defer(generation, false);
-                }
-            })
-            .await;
-        });
+        let _ = self.app.emit_to(NUDGE_LABEL, NUDGE_SHOW_EVENT, &nudge);
     }
 
     /// Re-emit the pending nudge, if one is still meant to be on screen. Called
@@ -264,7 +198,7 @@ impl NudgeManager {
             .pending
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().and_then(PendingNudge::ready_payload));
+            .and_then(|guard| guard.as_ref().cloned());
         if let Some(nudge) = pending {
             let _ = self.app.emit_to(NUDGE_LABEL, NUDGE_SHOW_EVENT, &nudge);
         }
@@ -455,18 +389,7 @@ impl NudgeManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{Nudge, NudgeKind, NudgeTone, PendingNudge, TeardownGeneration};
-
-    fn nudge() -> Nudge {
-        Nudge::new(
-            "test",
-            NudgeKind::Test,
-            NudgeTone::Info,
-            "Test",
-            "Test notification",
-            "Test notification description",
-        )
-    }
+    use super::TeardownGeneration;
 
     #[test]
     fn a_replacement_nudge_invalidates_the_pending_teardown() {
@@ -477,17 +400,5 @@ mod tests {
         let shown = generation.advance();
         assert!(generation.is_current(shown));
         assert!(!generation.is_current(dismissed));
-    }
-
-    #[test]
-    fn a_deferred_nudge_is_not_ready_for_the_webview() {
-        let mut pending = PendingNudge::new(nudge());
-
-        assert!(pending.ready_payload().is_none());
-        pending.emit();
-        assert_eq!(
-            pending.ready_payload().map(|value| value.id),
-            Some("test".into())
-        );
     }
 }

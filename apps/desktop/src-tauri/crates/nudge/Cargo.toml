@@ -28,9 +28,6 @@ serde = { version = "1", features = ["derive"] }
 # which signal picked the screen, so a misplaced notification is diagnosable from
 # a user's log rather than guessed at.
 tracing = "0.1"
-# Defers notification delivery without occupying a blocking worker while all
-# displays are asleep.
-tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Subclasses the notification window into a non-activating floating NSPanel so

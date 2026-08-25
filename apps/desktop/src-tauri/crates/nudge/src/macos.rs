@@ -398,11 +398,6 @@ pub(crate) fn active_display() -> Option<Rect> {
     }
 }
 
-/// Whether Core Graphics currently reports a display for a notification.
-pub(crate) fn active_display_available() -> bool {
-    CGDisplay::active_displays().is_ok_and(|ids| !ids.is_empty())
-}
-
 /// Every active display as a logical rect, plus the index of the main display.
 fn cg_displays() -> (Vec<Rect>, Option<usize>) {
     let Ok(ids) = CGDisplay::active_displays() else {
