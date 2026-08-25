@@ -62,6 +62,7 @@ pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
 };
+pub use vendors::claude::ClaudeAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.

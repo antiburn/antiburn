@@ -27,6 +27,7 @@ use crate::analysis::interface::{
     VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
+use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
 pub struct ClaudeAdapter;
 
@@ -47,15 +48,15 @@ impl VendorAdapter for ClaudeAdapter {
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         (|| -> anyhow::Result<VisitOutcome> {
-            match &input.source {
+            let summary = match &input.source {
                 RawSource::File(path) => {
                     let file = File::open(path)?;
-                    self.visit_reader(BufReader::new(file), sink)?;
+                    self.visit_reader(BufReader::new(file), sink)?
                 }
                 RawSource::Jsonl(content) => {
                     let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
                     let source = Cursor::new(content.as_bytes()).chain(suffix);
-                    self.visit_reader(BufReader::new(source), sink)?;
+                    self.visit_reader(BufReader::new(source), sink)?
                 }
                 RawSource::Sqlite(path) => {
                     anyhow::bail!(
@@ -63,7 +64,8 @@ impl VendorAdapter for ClaudeAdapter {
                         path.display()
                     )
                 }
-            }
+            };
+            sink.finish(summary);
             Ok(VisitOutcome::Unvalidated)
         })()
         .with_context(|| format!("reading claude session {}", input.session_id))
@@ -71,7 +73,52 @@ impl VendorAdapter for ClaudeAdapter {
 }
 
 impl ClaudeAdapter {
-    fn visit_reader(&self, reader: impl BufRead, sink: &mut dyn RecordSink) -> anyhow::Result<()> {
+    pub fn visit_claimed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        guarantee: AppendOnlyGuarantee,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        (|| -> anyhow::Result<VisitOutcome> {
+            let RawSource::File(path) = &input.source else {
+                anyhow::bail!("a claimed Claude source must be a file");
+            };
+            let mut pinned = match PinnedSource::open(path, claim.clone())? {
+                Ok(pinned) => pinned,
+                Err(reason) => return Ok(VisitOutcome::SourceChanged(reason)),
+            };
+            let limit = match guarantee {
+                AppendOnlyGuarantee::Evidenced => claim.boundary,
+                AppendOnlyGuarantee::Absent => u64::MAX,
+            };
+            let summary = self.visit_reader(BufReader::new(pinned.reader(limit)), sink)?;
+            let outcome = match guarantee {
+                AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
+                    Some(reason) => VisitOutcome::SourceChanged(reason),
+                    None => VisitOutcome::AcceptedPrefix {
+                        boundary: claim.boundary,
+                    },
+                },
+                AppendOnlyGuarantee::Absent => match pinned.recheck_full()? {
+                    Some(reason) => VisitOutcome::SourceChanged(reason),
+                    None => VisitOutcome::AcceptedFull,
+                },
+            };
+            if matches!(outcome, VisitOutcome::SourceChanged(_)) {
+                return Ok(outcome);
+            }
+            sink.finish(summary);
+            Ok(outcome)
+        })()
+        .with_context(|| format!("reading claimed Claude session {}", input.session_id))
+    }
+
+    fn visit_reader(
+        &self,
+        reader: impl BufRead,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<SessionSummary> {
         let mut reader = BoundedJsonlReader::new(reader);
         let mut state = ClaudeStreamState::default();
 
@@ -130,8 +177,7 @@ impl ClaudeAdapter {
             }
         }
 
-        sink.finish(state.into_summary());
-        Ok(())
+        Ok(state.into_summary())
     }
 }
 
@@ -261,9 +307,164 @@ fn model_context_window(model: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, BufReader, Error, Read};
+    use std::fs::OpenOptions;
+    use std::io::{self, BufReader, Error, Read, Seek, SeekFrom, Write};
+    use std::path::Path;
 
     use super::*;
+    use crate::analysis::{PartialReason, RecordCoverage};
+    use crate::discovery::source_version::head_hash_of;
+    use crate::discovery::{FingerprintInputs, SourceStat};
+    use tempfile::TempDir;
+
+    const FIRST_RECORD: &str = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}"#,
+        "\n",
+    );
+    const SECOND_RECORD: &str = concat!(
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"second"}]}}"#,
+        "\n",
+    );
+
+    fn file_input(path: &Path) -> SessionInput {
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: "claimed-session".to_string(),
+            source: RawSource::File(path.to_path_buf()),
+        }
+    }
+
+    fn claim_for_path(path: &Path) -> SourceClaim {
+        let file = File::open(path).expect("open source for claim");
+        let stat = SourceStat::from_open_std_file(&file).expect("stat source for claim");
+        let bytes = std::fs::read(path).expect("read source for claim");
+        SourceClaim::from_fingerprint_inputs(&FingerprintInputs {
+            stat,
+            head_hash: Some(head_hash_of(&bytes)),
+        })
+    }
+
+    fn write_source(directory: &TempDir, bytes: &[u8]) -> std::path::PathBuf {
+        let path = directory.path().join("session.jsonl");
+        std::fs::write(&path, bytes).expect("write source");
+        path
+    }
+
+    #[test]
+    fn a_record_whose_newline_is_past_the_boundary_is_not_committed() {
+        let directory = TempDir::new().expect("tempdir");
+        let split = SECOND_RECORD.len() / 2;
+        let generation = [FIRST_RECORD.as_bytes(), &SECOND_RECORD.as_bytes()[..split]].concat();
+        let path = write_source(&directory, &generation);
+        let claim = claim_for_path(&path);
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open source for append")
+            .write_all(&SECOND_RECORD.as_bytes()[split..])
+            .expect("complete second record");
+        let input = file_input(&path);
+        let mut collector = SessionCollector::new("claude", "claimed-session");
+
+        let outcome = ClaudeAdapter
+            .visit_claimed(
+                &input,
+                &claim,
+                AppendOnlyGuarantee::Evidenced,
+                &mut collector,
+            )
+            .expect("visit claimed prefix");
+
+        assert_eq!(
+            outcome,
+            VisitOutcome::AcceptedPrefix {
+                boundary: claim.boundary,
+            }
+        );
+        assert_eq!(collector.coverage(), RecordCoverage::Partial);
+        assert_eq!(
+            collector.partial_reasons(),
+            &std::collections::BTreeSet::from([PartialReason::IncompleteTail])
+        );
+        assert_eq!(
+            collector
+                .into_session()
+                .expect("accepted prefix must publish")
+                .events
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_source_changed_read_cannot_publish() {
+        let directory = TempDir::new().expect("tempdir");
+        let source = [FIRST_RECORD.as_bytes(), SECOND_RECORD.as_bytes()].concat();
+        let path = write_source(&directory, &source);
+        let claim = claim_for_path(&path);
+        let input = file_input(&path);
+        let mut sink = HeadMutatingSink::new(&path);
+
+        let outcome = ClaudeAdapter
+            .visit_claimed(&input, &claim, AppendOnlyGuarantee::Evidenced, &mut sink)
+            .expect("visit changed source");
+
+        assert_eq!(
+            outcome,
+            VisitOutcome::SourceChanged(crate::analysis::SourceChangedReason::HeadRegionMismatch)
+        );
+        assert!(sink.collector.into_session().is_err());
+    }
+
+    #[test]
+    fn an_accepted_prefix_publishes_its_records() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let claim = claim_for_path(&path);
+        let input = file_input(&path);
+        let mut collector = SessionCollector::new("claude", "claimed-session");
+
+        let outcome = ClaudeAdapter
+            .visit_claimed(
+                &input,
+                &claim,
+                AppendOnlyGuarantee::Evidenced,
+                &mut collector,
+            )
+            .expect("visit stable prefix");
+
+        assert_eq!(
+            outcome,
+            VisitOutcome::AcceptedPrefix {
+                boundary: claim.boundary,
+            }
+        );
+        assert_eq!(
+            collector
+                .into_session()
+                .expect("accepted prefix must publish")
+                .events
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_plain_claude_read_reports_unvalidated() {
+        let input = SessionInput {
+            agent: "claude".to_string(),
+            session_id: "plain-session".to_string(),
+            source: RawSource::Jsonl(FIRST_RECORD.to_string()),
+        };
+        let mut sink = CountingSink::default();
+
+        let outcome = ClaudeAdapter
+            .visit(&input, &mut sink)
+            .expect("visit plain source");
+
+        assert_eq!(outcome, VisitOutcome::Unvalidated);
+        assert_eq!(sink.finishes, 1);
+    }
 
     #[test]
     fn a_mid_stream_read_failure_omits_the_whole_session() {
@@ -272,6 +473,55 @@ mod tests {
         let mut collector = SessionCollector::new("claude", "read-failure");
         let result = ClaudeAdapter.visit_reader(reader, &mut collector);
         assert!(result.is_err());
+    }
+
+    struct HeadMutatingSink {
+        collector: SessionCollector,
+        path: std::path::PathBuf,
+        mutated: bool,
+    }
+
+    impl HeadMutatingSink {
+        fn new(path: &Path) -> Self {
+            Self {
+                collector: SessionCollector::new("claude", "claimed-session"),
+                path: path.to_path_buf(),
+                mutated: false,
+            }
+        }
+    }
+
+    impl RecordSink for HeadMutatingSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            if !self.mutated {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .open(&self.path)
+                    .expect("open source for mutation");
+                file.seek(SeekFrom::Start(0)).expect("seek source head");
+                file.write_all(b"[").expect("rewrite source head");
+                file.sync_all().expect("sync source mutation");
+                self.mutated = true;
+            }
+            self.collector.record(record);
+        }
+
+        fn finish(&mut self, summary: SessionSummary) {
+            self.collector.finish(summary);
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingSink {
+        finishes: usize,
+    }
+
+    impl RecordSink for CountingSink {
+        fn record(&mut self, _record: NormalizedRecord) {}
+
+        fn finish(&mut self, _summary: SessionSummary) {
+            self.finishes += 1;
+        }
     }
 
     struct DataThenError {

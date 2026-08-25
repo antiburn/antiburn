@@ -9,7 +9,7 @@
 //! vendor is ever silently dropped from analysis.
 
 mod antigravity;
-mod claude;
+pub mod claude;
 mod codex;
 mod cursor;
 mod generic_jsonl;
