@@ -49,7 +49,10 @@ pub use framing::{
     SCAN_QUANTUM_BYTES,
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
-pub use interface::{RawSource, SessionInput, VendorAdapter};
+pub use interface::{
+    NormalizedRecord, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionInput,
+    SessionSummary, VendorAdapter,
+};
 pub use merge::merge_subagent_events;
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,

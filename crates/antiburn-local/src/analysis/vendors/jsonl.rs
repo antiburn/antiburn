@@ -60,12 +60,12 @@ pub fn parse_jsonl(content: &str) -> Vec<NormalizedEvent> {
     events
 }
 
-const SKILL_BASE_MARKER: &str = "Base directory for this skill:";
+pub(super) const SKILL_BASE_MARKER: &str = "Base directory for this skill:";
 
 /// Flatten a record's message text — string content, or the `text` of its content
 /// blocks — for scanning `<command-name>` tags and skill base-directory markers.
 /// Only Claude transcripts carry these conventions, so it's inert for other vendors.
-fn record_text(value: &Value) -> String {
+pub(super) fn record_text(value: &Value) -> String {
     let Some(obj) = value.as_object() else {
         return String::new();
     };
@@ -92,7 +92,7 @@ fn record_text(value: &Value) -> String {
 
 /// Record the skill name from every "Base directory for this skill: <path>" marker
 /// in `text` — the set of skills that actually loaded this session.
-fn collect_skill_base_names_from_text(text: &str, out: &mut HashSet<String>) {
+pub(super) fn collect_skill_base_names_from_text(text: &str, out: &mut HashSet<String>) {
     for line in text.lines() {
         if let Some((_, rest)) = line.split_once(SKILL_BASE_MARKER)
             && let Some(name) = skill_base_name_from_path(rest)
@@ -105,7 +105,7 @@ fn collect_skill_base_names_from_text(text: &str, out: &mut HashSet<String>) {
 /// Skill name from a base-directory marker path: the final path segment, or its
 /// parent when the path points straight at the `SKILL.md` file. Cross-platform
 /// (splits on `/` and `\`).
-fn skill_base_name_from_path(path: &str) -> Option<String> {
+pub(super) fn skill_base_name_from_path(path: &str) -> Option<String> {
     let mut segments: Vec<&str> = path
         .trim()
         .trim_matches(['`', '"', '\''])
@@ -139,7 +139,7 @@ fn synthesize_command_skills(
 
 /// The `<command-name>` values in `text`, leading `/` stripped:
 /// `<command-name>/code-review</command-name>` → `"code-review"`.
-fn command_names_in_text(text: &str) -> Vec<String> {
+pub(super) fn command_names_in_text(text: &str) -> Vec<String> {
     const OPEN: &str = "<command-name>";
     const CLOSE: &str = "</command-name>";
     let mut out = Vec::new();
@@ -160,7 +160,10 @@ fn command_names_in_text(text: &str) -> Vec<String> {
 
 /// The skill base name a command resolves to, if any: a direct hit, or a
 /// `plugin:skill` whose bare segment ran. `None` for non-skill commands.
-fn command_skill_name(command: &str, skill_base_names: &HashSet<String>) -> Option<String> {
+pub(super) fn command_skill_name(
+    command: &str,
+    skill_base_names: &HashSet<String>,
+) -> Option<String> {
     if skill_base_names.contains(command) {
         return Some(command.to_string());
     }

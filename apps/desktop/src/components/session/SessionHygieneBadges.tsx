@@ -46,6 +46,7 @@ function HygieneGlyph({
         className={cn(
           "session-hygiene-glyph relative flex h-5 w-5 shrink-0 items-center justify-center",
           check.passed ? "text-label-tertiary" : "text-brand-tint",
+          !check.passed && "mt-[1.5px]",
         )}
       >
         <Icon size={14} strokeWidth={1.75} aria-hidden="true" />

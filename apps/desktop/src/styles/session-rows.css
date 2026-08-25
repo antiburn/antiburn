@@ -125,7 +125,7 @@
 }
 
 .session-row:hover .session-hygiene-mark {
-  --hygiene-mark-delay: calc(2000ms + var(--hygiene-mark-index, 0) * 200ms);
+  --hygiene-mark-delay: calc(400ms + var(--hygiene-mark-index, 0) * 50ms);
   opacity: 1;
   transform: translateX(-50%);
   transition:
@@ -133,14 +133,12 @@
     transform var(--duration-slow) var(--ease-out-quart) var(--hygiene-mark-delay);
 }
 
-/* The open fan can reach over the model names. The names step aside: they
-   fade out while the fan is open, only in a row that has a fan to open. */
-.session-row:has(.session-hygiene-pass) .session-model-names {
+.session-row:has(.session-hygiene-pass) .session-repo-names {
   transition: opacity 200ms ease-out;
 }
 
-.session-row:has(.session-hygiene-pass):hover .session-model-names {
-  opacity: 0;
+.session-row:has(.session-hygiene-pass):hover .session-repo-names {
+  opacity: 0.2;
 }
 
 /* Stack offsets: one glyph pitch (20px glyph + 4px gap) per position. */

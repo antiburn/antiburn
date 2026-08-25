@@ -1275,6 +1275,23 @@ export async function onSessionsInvalidated(handler: () => void): Promise<Unlist
 }
 
 /**
+ * Event the shell emits when one session's cached analysis changes outside a
+ * scan. Mirrors `SESSION_ENTRY_CHANGED_EVENT` in `src-tauri/src/commands.rs`.
+ * The payload is the fresh entry for that session.
+ */
+export const SESSION_ENTRY_CHANGED_EVENT = "sessions:entry-changed"
+
+/** Subscribe to one session's entry changing. The result unsubscribes. */
+export async function onSessionEntryChanged(
+  handler: (entry: ActivityEntryPayload) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/**
  * Event the shell emits the instant the popover reaches the screen. Mirrors
  * `popover::EVENT_SHOWN` in `src-tauri/src/popover.rs`.
  *
