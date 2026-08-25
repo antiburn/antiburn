@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
+import type { SessionAnalysisPayload } from "../../lib/ipc"
 import { ANALYSIS_POLL_MS, PopoverSession, sessionKey } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
 
@@ -106,8 +107,8 @@ describe("PopoverSession live analysis poll", () => {
   }
 
   const analysisPayload = (
-    overrides: Partial<Ipc.SessionAnalysisPayload> = {},
-  ): Ipc.SessionAnalysisPayload => ({
+    overrides: Partial<SessionAnalysisPayload> = {},
+  ): SessionAnalysisPayload => ({
     summary: null,
     supportsAnalysis: true,
     title: null,
@@ -127,7 +128,7 @@ describe("PopoverSession live analysis poll", () => {
     ...overrides,
   })
 
-  const usableAnalysis = (): Ipc.SessionAnalysisPayload =>
+  const usableAnalysis = (): SessionAnalysisPayload =>
     analysisPayload({
       summary: {
         sessionCount: 1,
