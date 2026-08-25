@@ -194,6 +194,20 @@ pub fn summarize(
         .and_then(|store| store.settings().ok())
         .is_some_and(|settings| settings.live_usage_active());
     let collected = sources::collect(sources, online, max_age);
+    summarize_collected(collected, store, now, utc_offset_minutes)
+}
+
+/// Shape one completed collection for the views and record its history.
+///
+/// The background milestone monitor uses this entry point so its provider read
+/// also advances the cached view. It keeps the raw snapshots long enough to
+/// evaluate crossings before this function consumes them.
+pub fn summarize_collected(
+    collected: sources::Collected,
+    store: Option<&crate::store::Store>,
+    now: i64,
+    utc_offset_minutes: i32,
+) -> LiveUsageSummary {
     let history = store
         .map(|store| history::record(store, &collected.snapshots))
         .unwrap_or_default();

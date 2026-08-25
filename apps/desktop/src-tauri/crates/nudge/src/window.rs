@@ -63,6 +63,18 @@ const NUDGE_ANCHOR_MENU_BAR_GAP: f64 = NUDGE_MENU_BAR_GAP / 2.0;
 #[cfg(target_os = "macos")]
 const NUDGE_TOP_INSET: f64 = MACOS_MENU_BAR_HEIGHT + NUDGE_MENU_BAR_GAP;
 
+/// Whether the platform currently has a display that can hold a notification.
+pub(crate) fn display_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::active_display_available()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 /// Return the notification window, building it (hidden) on first call.
 pub(crate) fn get_or_create_nudge_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     if let Some(window) = app.get_webview_window(crate::NUDGE_LABEL) {

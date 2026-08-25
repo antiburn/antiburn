@@ -570,7 +570,7 @@ pub fn get_provider_usage(
 /// or a background task. The aggressive freshness is bounded by someone
 /// actually looking — once the popover closes, nothing here keeps polling on
 /// its behalf, and the background monitor's own, much longer, `max_age`
-/// takes back over (see `usage_alerts::MILESTONE_MAX_AGE`).
+/// takes back over (see `usage_alerts::BACKGROUND_MAX_AGE`).
 const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
 
 /// Return the last provider limit snapshot without reading a provider.
@@ -644,6 +644,7 @@ pub async fn refresh_live_usage(
         // Held for the whole pass: two of these can now genuinely overlap,
         // and the reading history they append to is not written atomically.
         let _summarizing = live.summarizing();
+        live.set_utc_offset_minutes(utc_offset_minutes, store.as_deref());
         let summary = provider_usage::live::summarize(
             &live.sources,
             store.as_deref(),
