@@ -3,18 +3,19 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { invoke } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
 const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
+const OVERLAY_VISIBILITY_EVENT = "overlay_visibility_changed"
 
 export function openOverlayWindow(): Promise<void> {
   return invoke("open_overlay_window")
 }
 
 export async function hideOverlayWindow(): Promise<void> {
-  const overlay = await WebviewWindow.getByLabel(OVERLAY_WINDOW_LABEL)
-  await overlay?.hide()
+  await invoke("hide_overlay_window")
 }
 
 const HUD_PREF_KEY = "antiburn.showFloatingHud"
@@ -52,12 +53,14 @@ export async function isOverlayWindowVisible(): Promise<boolean> {
   }
 }
 
-/** Keep a pop-out button synchronized with the native HUD window. */
+/** Keep HUD controls synchronized with the native window visibility. */
 export class HudVisibilitySession {
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
-  private visible = false
+  private revision = 0
+  private visible = isFloatingHudEnabled()
+  private stopVisibilityListening: (() => void) | null = null
 
   getSnapshot = (): boolean => this.visible
 
@@ -70,22 +73,42 @@ export class HudVisibilitySession {
     }
   }
 
-  toggle = (): void => {
-    const next = !this.visible
-    this.setVisible(next)
-    setFloatingHudEnabled(next)
-    void (next ? openOverlayWindow() : hideOverlayWindow()).catch(() => {})
+  set = (visible: boolean): void => {
+    this.revision += 1
+    this.setVisible(visible)
+    setFloatingHudEnabled(visible)
+    void (visible ? openOverlayWindow() : hideOverlayWindow()).catch(() => {})
   }
+
+  toggle = (): void => this.set(!this.visible)
 
   private start(): void {
     this.started = true
     const generation = ++this.generation
     const read = () => {
+      const revision = ++this.revision
       void isOverlayWindowVisible().then((visible) => {
-        if (this.started && this.generation === generation) this.setVisible(visible)
+        if (this.started && this.generation === generation && this.revision === revision) {
+          this.setVisible(visible)
+        }
       })
     }
     this.read = read
+    void listen<boolean>(OVERLAY_VISIBILITY_EVENT, (event) => {
+      if (!this.started || this.generation !== generation) return
+      const visible = Boolean(event.payload)
+      this.revision += 1
+      setFloatingHudEnabled(visible)
+      this.setVisible(visible)
+    })
+      .then((dispose) => {
+        if (this.started && this.generation === generation) {
+          this.stopVisibilityListening = dispose
+        } else {
+          dispose()
+        }
+      })
+      .catch(() => {})
     read()
     window.addEventListener("focus", read)
   }
@@ -95,8 +118,11 @@ export class HudVisibilitySession {
   private stop(): void {
     this.started = false
     this.generation += 1
+    this.revision += 1
     if (this.read) window.removeEventListener("focus", this.read)
     this.read = null
+    this.stopVisibilityListening?.()
+    this.stopVisibilityListening = null
   }
 
   private setVisible(visible: boolean): void {
