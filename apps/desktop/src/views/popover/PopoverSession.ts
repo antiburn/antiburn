@@ -45,6 +45,7 @@ import {
   type PopoverSurface,
 } from "../../lib/popoverHeight"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { isFloatingHudEnabled, openOverlayWindow } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
@@ -396,8 +397,16 @@ export class PopoverSession {
       // A session outside the current window is the next scan's business, so
       // an entry with no match here is not inserted.
       if (index === -1) return
+      // The cohort for the high-cost flag is the list on screen, with the
+      // replaced row's own cost swapped in — the same set `toActivityEntries`
+      // would see on a full re-list.
+      const threshold = costOutlierThreshold(
+        entries
+          .map((row, i) => (i === index ? entry.cost?.totalUsd : row.cost?.totalUsd))
+          .filter((usd): usd is number => typeof usd === "number"),
+      )
       const next = [...entries]
-      next[index] = toActivityEntry(entry)
+      next[index] = toActivityEntry(entry, threshold)
       this.update({ entries: next })
     })
     if (generation !== this.generation) {

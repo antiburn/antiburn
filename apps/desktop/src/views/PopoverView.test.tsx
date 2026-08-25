@@ -304,6 +304,40 @@ describe("PopoverView", () => {
     ).toHaveLength(listCallsBefore)
   })
 
+  it("keeps a row's high-cost flag after a sessions:entry-changed event replaces it", async () => {
+    const cheapEntries = Array.from({ length: 7 }, (_, i) =>
+      activityEntry({
+        sessionId: `session-cheap-${i}`,
+        title: `Cheap session ${i}`,
+        cost: {
+          totalUsd: 0.1,
+          inputUsd: 0.05,
+          outputUsd: 0.03,
+          cacheReadUsd: 0.01,
+          cacheWriteUsd: 0.01,
+        },
+      }),
+    )
+    const expensiveEntry = activityEntry({
+      cost: { totalUsd: 10, inputUsd: 5, outputUsd: 3, cacheReadUsd: 1, cacheWriteUsd: 1 },
+    })
+    mockCommands({ list_recent_sessions: [expensiveEntry, ...cheapEntries] })
+
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+    expect(await screen.findByLabelText(/higher than usual/i)).toBeInTheDocument()
+
+    emit("sessions:entry-changed", {
+      ...expensiveEntry,
+      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+    })
+
+    expect(await screen.findByText("fable-5/high")).toBeInTheDocument()
+    // The row is rebuilt from the pushed payload alone, so its high-cost flag
+    // must be recomputed against the cohort rather than defaulting to false.
+    expect(screen.getByLabelText(/higher than usual/i)).toBeInTheDocument()
+  })
+
   it("leaves the list unchanged when a sessions:entry-changed event names an unknown session", async () => {
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
