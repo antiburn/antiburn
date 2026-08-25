@@ -4,7 +4,7 @@
 
 [package]
 name = "antiburn-local"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "Self-contained, network-free local engine for antiburn: discovery, session analysis, repository identity, pricing, and versioned local persistence/export contracts."
 license = "MPL-2.0"
