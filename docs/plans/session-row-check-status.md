@@ -12,6 +12,7 @@ Replaces the V6 hygiene glyph fan (`docs/plans/session-row-v6.md`, phase 2) with
 | 4. Stylesheet + `design.md` | Done |
 | 5. Tests, slop, screenshot, PR | Done — screenshot captured from the running popover |
 | 6. Review pass 1 (Keith, 2026-08-25) | Done — copy trimmed, meta line re-ordered, hot cost de-pilled |
+| 7. Review pass 2 (Keith, 2026-08-26) | Done — usual cost de-pilled, row separators added |
 
 ## The design
 
@@ -105,6 +106,19 @@ Keith reviewed the running app and asked for four changes. All are in this chang
    utility needs `!`. A usual cost is plain `label-secondary` text at the type step's own
    weight, one step louder than the model names beside it. Keith asked for the outlier
    pill first, then for the grey one as well.
+
+## Review pass 2 — 2026-08-26
+
+A hairline now divides the rows of a group. It is a `::after` on
+`.session-row:not(:last-child)`, so the last row of a group carries none — a group
+label or the end of the list already divides there.
+
+The line goes edge to edge. The row and the scroll viewport each add 8px of side
+padding, and the row sits inside the viewport, so one `-8px` inset clears both. It sits
+in the 4px gap between two rows rather than on a row edge, so the rounded hover fill
+never touches it. The color is the system `separator` token at `0.45` opacity: that
+token is made to divide solid panes, and these rows sit on a translucent popover with
+their own hover fill, where the full-strength line reads as a rule.
 
 ## Out of scope
 

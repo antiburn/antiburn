@@ -79,6 +79,32 @@
   -webkit-line-clamp: var(--truncated-text-lines);
 }
 
+/* --- Row separators --- */
+
+/* A hairline divides the rows of one group. The last row of a group gets none,
+   because a group label or the end of the list follows it.
+
+   The line goes edge to edge, so it must escape the row padding and the scroll
+   viewport padding. Both are 8px, and the row sits inside the viewport, so one
+   -8px inset clears them together.
+
+   The line sits in the gap between two rows, not on the edge of a row. Thus the
+   rounded hover fill of a row never touches it. The gap is 4px, so -2px puts
+   the line at its center. */
+.session-row:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  right: -8px;
+  bottom: -2px;
+  left: -8px;
+  height: 1px;
+  background: var(--color-separator);
+  /* The system separator is made to divide solid panes. These rows carry their
+     own hover fill and sit on a translucent popover, so the full-strength line
+     reads as a rule. This keeps it at the edge of legibility. */
+  opacity: 0.45;
+}
+
 /* --- Hygiene check status --- */
 
 /* Two parts of the status open on row hover: the label after the green check,
