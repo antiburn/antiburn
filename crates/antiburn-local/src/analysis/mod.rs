@@ -36,6 +36,7 @@ mod framing;
 mod initial_context;
 mod interface;
 mod merge;
+mod metrics_sink;
 mod model;
 mod pricing;
 mod source_validity;
@@ -55,6 +56,7 @@ pub use interface::{
     SessionSummary, SourceChangedReason, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
+pub use metrics_sink::{SessionMetricsAccumulator, merge_metrics};
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };

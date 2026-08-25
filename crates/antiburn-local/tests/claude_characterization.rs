@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use antiburn_local::analysis::{
     MAX_RECORD_BYTES, NormalizedSession, PartialReason, RawSource, RecordCoverage,
-    SessionCollector, SessionInput, adapter_for, analyze_session, analyze_sources_with,
-    normalize_source,
+    SessionCollector, SessionInput, SessionMetricsAccumulator, adapter_for, analyze_session,
+    analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
 };
 use serde_json::{Value, json};
 
@@ -156,6 +156,15 @@ fn three_record_source() -> String {
     .join("\n")
 }
 
+fn stream_claude(input: &SessionInput) -> SessionMetricsAccumulator {
+    let mut accumulator =
+        SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    adapter_for("claude")
+        .visit(input, &mut accumulator)
+        .expect("Claude source must be visited");
+    accumulator
+}
+
 fn collect_claude(
     input: &SessionInput,
 ) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
@@ -191,6 +200,50 @@ fn oversized_metric_jsonl(payload_bytes: usize) -> String {
     source.push_str(&assistant_record("second-neighbour", 1_761_000_002, 4, 5));
     source.push('\n');
     source
+}
+
+#[test]
+fn streaming_metrics_equal_the_batch_engine_for_every_fixture() {
+    for name in [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+    ] {
+        let input = input(name);
+        let expected = analyze_session(&normalize_source(&input).expect("fixture must normalize"));
+        assert_eq!(stream_claude(&input).metrics(), expected, "fixture {name}");
+    }
+}
+
+#[test]
+fn merged_streaming_metrics_equal_the_merged_batch() {
+    let parent_input = input("parent_with_task_spawn");
+    let child_input = input("subagent_child");
+    let parent = stream_claude(&parent_input);
+    let child = stream_claude(&child_input);
+    let expected = analyze_session(&merge_subagent_events(
+        normalize_source(&parent_input).expect("parent fixture must normalize"),
+        vec![normalize_source(&child_input).expect("child fixture must normalize")],
+    ));
+    assert_eq!(merge_metrics(&parent, &[child]), expected);
+}
+
+#[test]
+fn a_compaction_boundary_bucket_reports_zero_context_tokens() {
+    let metrics = stream_claude(&input("compaction_with_cache_rehydration")).metrics();
+    let boundary = metrics
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_compaction_boundary)
+        .expect("fixture must contain a compaction boundary");
+    assert_eq!(boundary.context_tokens, 0);
 }
 
 #[test]
