@@ -30,7 +30,9 @@ pub const OVERLAY_LABEL: &str = "antiburn-overlay";
 /// The hover detail window label. Also listed in `capabilities/default.json`.
 pub const DETAIL_LABEL: &str = "antiburn-hud-detail";
 
+#[cfg(any(target_os = "macos", test))]
 const OVERLAY_SEED_HEIGHT: f64 = 1.0;
+#[cfg(any(target_os = "macos", test))]
 const OVERLAY_MAX_HEIGHT: f64 = 500.0;
 
 #[cfg(target_os = "macos")]
@@ -70,10 +72,12 @@ impl ResizeState {
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
+    #[cfg(target_os = "macos")]
     fn height(&self) -> f64 {
         f64::from_bits(self.height_bits.load(Ordering::SeqCst))
     }
 
+    #[cfg(target_os = "macos")]
     fn set_height(&self, height: f64) {
         self.height_bits.store(height.to_bits(), Ordering::SeqCst);
     }
@@ -133,7 +137,7 @@ fn anchored_y(current_y: f64, target_height: f64, bottom_edge: Option<f64>) -> f
     bottom_edge.map_or(current_y, |edge| edge - target_height)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn ease_out(progress: f64) -> f64 {
     let remaining = 1.0 - progress.clamp(0.0, 1.0);
     1.0 - remaining * remaining * remaining
