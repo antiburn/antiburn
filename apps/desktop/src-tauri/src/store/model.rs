@@ -149,6 +149,115 @@ pub struct AnalysisRecord {
     pub metrics_schema_revision: i64,
 }
 
+/// The persisted lifecycle state for one session's evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceStatus {
+    Pending,
+    Processing,
+    Ready,
+    Unsupported,
+    Failed,
+}
+
+impl EvidenceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EvidenceStatus::Pending => "pending",
+            EvidenceStatus::Processing => "processing",
+            EvidenceStatus::Ready => "ready",
+            EvidenceStatus::Unsupported => "unsupported",
+            EvidenceStatus::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for EvidenceStatus {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(EvidenceStatus::Pending),
+            "processing" => Ok(EvidenceStatus::Processing),
+            "ready" => Ok(EvidenceStatus::Ready),
+            "unsupported" => Ok(EvidenceStatus::Unsupported),
+            "failed" => Ok(EvidenceStatus::Failed),
+            _ => Err("unknown evidence status"),
+        }
+    }
+}
+
+/// A persisted evidence row and its queue state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceRow {
+    pub key: SessionKey,
+    pub status: EvidenceStatus,
+    pub analyzed_generation: Option<i64>,
+    pub processed_fingerprint: Option<String>,
+    pub parser_revision: Option<i64>,
+    pub analyzer_revision: Option<i64>,
+    pub evidence_schema_revision: Option<i64>,
+    pub evidence_json: Option<String>,
+    pub diagnostics_json: Option<String>,
+    pub retry_count: i64,
+    pub claim_fence: i64,
+    pub claimed_at_epoch: Option<i64>,
+    pub lease_expires_at_epoch: Option<i64>,
+    pub next_attempt_at_epoch: Option<i64>,
+    pub analyzed_at_epoch: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+/// The current revisions for both transcript-derived projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectionRevisions {
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub metrics_schema_revision: i64,
+    pub evidence_schema_revision: i64,
+}
+
+/// A claimed evidence row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceClaim {
+    pub key: SessionKey,
+    pub source_generation: i64,
+    pub claim_fence: i64,
+    pub retry_count: i64,
+}
+
+/// The two failure outcomes available after a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceFailure {
+    Retry { next_attempt_at_epoch: i64 },
+    Failed,
+}
+
+/// The two successful publication states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishedEvidence {
+    Ready,
+    Unsupported,
+}
+
+impl PublishedEvidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PublishedEvidence::Ready => "ready",
+            PublishedEvidence::Unsupported => "unsupported",
+        }
+    }
+}
+
+/// The evidence values produced by one analyzed pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceCompletion {
+    pub claim_fence: i64,
+    pub status: PublishedEvidence,
+    pub evidence_schema_revision: i64,
+    pub evidence_json: String,
+    pub diagnostics_json: Option<String>,
+}
+
 /// One session's token evidence, as the provider-usage aggregation reads it.
 ///
 /// A projection rather than a record: the aggregation needs three columns out
