@@ -21,7 +21,49 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
-## [0.1.5] - 2026-08-25
+## [0.1.6] - 2026-08-25
+
+### Changed
+
+- **Breaking:** `VendorAdapter::visit` returns `VisitOutcome` rather than `()`.
+  The default implementation returns `VisitOutcome::Unvalidated`, so an adapter
+  that does not check source validity only needs its signature updated. Callers
+  that discarded the unit result must now handle the outcome, because a
+  successful return no longer means the records describe a single coherent
+  source.
+- **rusqlite moves back to the 0.32 line** from 0.40. `libsqlite3-sys` sets
+  `links = "sqlite3"`, so a dependency graph may contain exactly one version of
+  it — a constraint on resolution, not on the build, which therefore binds even
+  when the conflicting dependency's features are off. An embedder that also uses
+  SQLx 0.8 needs `libsqlite3-sys ^0.30.1`, which only rusqlite 0.31 and 0.32
+  satisfy; against 0.40 such a graph simply fails to resolve, and the failure
+  lands downstream rather than here. The engine used no API newer than 0.32, so
+  the newer line bought nothing. `.github/dependabot.yml` now ignores `rusqlite`
+  and `libsqlite3-sys` so an automated bump cannot silently reintroduce this.
+- Per-agent discovery completion now logs at `debug` rather than `info`. It
+  reported once per agent per scan, which is scan bookkeeping rather than
+  something an embedder's default log level should carry.
+
+### Added
+
+- `analysis::source_validity` decides whether a transcript that was read still
+  describes the source it claimed to: `SourceClaim`, `PinnedSource`,
+  `PinnedOpen`, `PinnedReader`, `AppendOnlyGuarantee`, and
+  `append_only_guarantee`. `PinnedSource::open` pins a claimed source,
+  `recheck_prefix` and `recheck_full` re-verify it after reading, and each
+  returns the specific way it diverged rather than a bare failure.
+- `analysis::VisitOutcome` and `analysis::SourceChangedReason` report that
+  verdict to a caller. `AcceptedFull`, `AcceptedPrefix { boundary }`, and
+  `Unvalidated` distinguish a fully verified read from a verified prefix and
+  from no check at all, so a partial result is usable instead of merely
+  suspect. `SourceChangedReason` names the divergence — identity mismatch, a
+  short file at open, a head-region mismatch, a short read, truncation after
+  reading, or a fingerprint mismatch.
+- `ClaudeAdapter` is exported, and `ClaudeAdapter::visit_claimed` streams a
+  Claude transcript against a `SourceClaim`, validating the read rather than
+  trusting it.
+- `discovery::SourceStat::from_open_std_file` stats an already-open
+  `std::fs::File`, which is what the pinned-read path holds.
 
 ### Added
 
