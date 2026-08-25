@@ -81,7 +81,10 @@ base64 = "0.23"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 # The app-owned local database. `bundled` compiles SQLite from source, so the
 # app never depends on a system library and CI needs no extra packages.
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Held at 0.32 to match `antiburn-local`: `libsqlite3-sys` sets
+# `links = "sqlite3"`, so the app and the engine it path-depends on must agree
+# on one version. The engine's own pin carries the full reasoning.
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 # Only to install the process-wide crypto provider `reqwest`'s
 # `rustls-no-provider` feature leaves unset — `ring`, matching what
 # `tauri-plugin-updater`'s own rustls dependency already resolves to.
