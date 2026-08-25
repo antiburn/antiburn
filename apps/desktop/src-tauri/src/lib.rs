@@ -73,11 +73,17 @@ mod startup_registration;
 mod storage_health;
 mod store;
 mod titles;
+// The queue has no in-tree caller until CH-008 adds the worker.
+// TODO @agent: CH-008 will remove this re-export.
+pub use store::Store;
 mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
+mod webview_defaults;
+mod window_lifecycle;
 mod window_placement;
+mod window_readiness;
 
 use std::sync::Mutex;
 
@@ -101,9 +107,9 @@ impl Schedulers {
 /// # Panics
 ///
 /// Panics if the webview runtime, tray item, or local database cannot be
-/// created: none of the three has a meaningful degraded mode. Windows are
-/// created lazily and report their own failures at the interaction that asked
-/// for them.
+/// created. None has a meaningful degraded mode. The shell opens onboarding
+/// when required and prewarms Settings after setup. Other windows load when
+/// the first interaction requests them.
 pub fn run() {
     let log_directory_name = if cfg!(debug_assertions) {
         "antiburn-debug"
@@ -123,6 +129,7 @@ pub fn run() {
     let builder = antiburn_nudge::register(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(webview_defaults::plugin())
         .invoke_handler(tauri::generate_handler![
             commands::add_scan_root,
             commands::app_info,
@@ -145,6 +152,7 @@ pub fn run() {
             commands::open_folder_access_settings,
             commands::open_github_repo,
             commands::open_overlay_window,
+            commands::hide_overlay_window,
             commands::show_hud_detail,
             commands::hide_hud_detail,
             commands::conceal_hud_detail,
@@ -153,6 +161,7 @@ pub fn run() {
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
             commands::get_session_analysis,
+            commands::get_session_analysis_fingerprint,
             commands::get_settings,
             commands::get_storage_health,
             commands::get_subagent_analysis,
@@ -171,10 +180,11 @@ pub fn run() {
             commands::reveal_source,
             commands::scan_now,
             commands::set_popover_height,
-            commands::set_overlay_hover_region,
+            commands::resize_overlay_window,
             commands::set_repository_enabled,
             commands::set_settings,
             commands::take_settings_pane,
+            commands::window_ready,
             antiburn_nudge::commands::nudge_action,
             antiburn_nudge::commands::nudge_dismiss,
             antiburn_nudge::commands::nudge_ready,
@@ -221,6 +231,8 @@ pub fn run() {
             app.manage(notifications::NotificationState::default());
             app.manage(storage_health::StorageHealth::default());
             app.manage(settings::PendingPane::default());
+            app.manage(settings::SettingsWindowState::default());
+            app.manage(onboarding::OnboardingWindowState::default());
             app.manage(nudges::AnchorOverride::default());
 
             tray::create(app.handle())?;
@@ -250,6 +262,8 @@ pub fn run() {
                         error = %error
                     );
                 }
+            } else {
+                settings::schedule_prewarm(app.handle());
             }
 
             // Registered before the update scheduler starts, so the first
@@ -381,6 +395,7 @@ fn finish_retention_cleanup(handle: &mut Option<tauri::async_runtime::JoinHandle
 enum ClosePolicy {
     Allow,
     HidePopover,
+    HideSettings,
     HidePendingOnboarding,
     HideNudge,
 }
@@ -388,6 +403,8 @@ enum ClosePolicy {
 fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
     if label == popover::LABEL {
         ClosePolicy::HidePopover
+    } else if label == settings::LABEL {
+        ClosePolicy::HideSettings
     } else if label == antiburn_nudge::NUDGE_LABEL {
         ClosePolicy::HideNudge
     } else if label == onboarding::LABEL && onboarding_pending {
@@ -414,6 +431,16 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     // this path answers to the pin like every dismissal does.
                     popover::hide(window.app_handle());
                 }
+                ClosePolicy::HideSettings => {
+                    if let Err(error) = window.hide() {
+                        ::tracing::error!(
+                            event = "settings_window_hide_on_close_failed",
+                            error = %error
+                        );
+                    } else {
+                        api.prevent_close();
+                    }
+                }
                 ClosePolicy::HidePendingOnboarding => {
                     api.prevent_close();
                     // Preserve first-run progress until it is completed. The
@@ -431,6 +458,12 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                 }
             }
         }
+        WindowEvent::Destroyed => match window.label() {
+            popover::LABEL => popover::rebuild_after_destroy(window.app_handle()),
+            settings::LABEL => settings::rebuild_after_destroy(window.app_handle()),
+            onboarding::LABEL => onboarding::rebuild_after_destroy(window.app_handle()),
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -525,7 +558,7 @@ mod tests {
         );
         assert_eq!(
             close_policy(super::settings::LABEL, false),
-            ClosePolicy::Allow
+            ClosePolicy::HideSettings
         );
         assert_eq!(
             close_policy(antiburn_nudge::NUDGE_LABEL, false),

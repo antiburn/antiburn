@@ -24,6 +24,51 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.1.0-rc.8] - 2026-08-25
+
+A release-candidate rehearsal build, not a supported release. The macOS and
+Windows binaries are **unsigned** — your operating system will warn you, and it
+is right to. Install it only if you are testing the release pipeline itself.
+
+On macOS, open the app for the first time with right-click → Open rather than a
+double-click. The build is sealed but has no Developer ID signature, so macOS
+shows its unidentified-developer warning.
+
+### Added
+
+- **A floating usage HUD keeps provider limits on screen on macOS.** Turn it on
+  from Settings → Usage, drag it to an edge, and hover for the detailed limit
+  windows. The HUD sizes itself to visible content, stays out of the way of
+  desktop clicks, and keeps its Settings control in sync when closed directly.
+
+- **Session detail explains how the work used context and money.** The Context
+  chart now combines token flow with cache activity, compactions, sub-agent
+  work, model and effort changes, and meaningful labels for gaps between model
+  calls. Cost rows show token and spend shares, while the new Efficiency card
+  separates spend on new work from cached carry and rewritten input.
+
+- **First-run setup can be run again.** Settings → General now restarts setup
+  without deleting indexed sessions, repositories, permissions, or preferences.
+
+### Changed
+
+- **Provider limits take less space in the popover.** Each provider gets a
+  compact ring for its fullest live window; expand the bar for every reported
+  window, its elapsed-time marker, and its reset time.
+
+- **Recent Activity carries more useful session context.** Rows lead with the
+  repository and title, show the models used, and include the current prototype
+  hygiene indicators. The detail pane stays current while an active session is
+  open instead of requiring a close and reopen.
+
+- **Desktop windows open ready instead of flashing unfinished content.**
+  Settings is prepared after setup, and the popover is created on demand behind
+  a renderer-readiness gate. The popover footer now shows the running version
+  and links the antiburn name to the project.
+
+- Browser-only context menus and navigation shortcuts no longer appear inside
+  release webviews. Normal keyboard focus traversal remains available.
+
 ### Fixed
 
 - **Codex forks now show their relationship in Recent Activity.** antiburn
@@ -33,6 +78,23 @@ CI changes, and documentation that no user acts on stay out — see
 - **Codex sessions show their short task names again.** Recent Activity now
   prefers Codex's generated title instead of displaying the full opening
   request when both are present.
+
+- **Provider readings survive temporary failures and stay fresh in the
+  background.** A provider that fails on cold start remains visible with a
+  useful status, the last good reading remains available during later failures,
+  and HUD and popover data no longer wait for the popover to open before they
+  refresh. A reported Claude value of 1% is no longer rounded away.
+
+- **Session totals and labels stay consistent after analysis.** Sub-agent spend
+  and token series roll into the parent where appropriate, model labels refresh
+  after analysis, and Codex resume records no longer count the same usage twice.
+
+- Settings no longer opens as a blank window, recent-session scroll position is
+  restored after returning from detail, and the running-session indicator is
+  visible in dark mode.
+
+- Notification windows, the macOS popover, and the floating HUD now keep the
+  correct shape, position, and visibility across repeated opens and closes.
 
 ## [0.1.0-rc.7] - 2026-08-21
 

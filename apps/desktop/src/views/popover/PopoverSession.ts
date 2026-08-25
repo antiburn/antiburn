@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import type { SessionListEntry } from "../../components/session/SessionList"
-import { toActivityEntries } from "../../lib/activityEntries"
+import { indexOfSession, toActivityEntries, toActivityEntry } from "../../lib/activityEntries"
 import { applyTheme } from "../../lib/appearance"
 import type { AttentionKind } from "../../lib/attention"
 import {
@@ -14,6 +14,7 @@ import {
   getLiveUsage,
   getProviderUsage,
   getSessionAnalysis,
+  getSessionAnalysisFingerprint,
   getSettings,
   getStorageHealth,
   getSubagentAnalysis,
@@ -24,6 +25,7 @@ import {
   onPopoverShown,
   onLiveUsageChanged,
   onScanEvent,
+  onSessionEntryChanged,
   onSessionsInvalidated,
   onSettingsChanged,
   onStorageHealth,
@@ -44,7 +46,13 @@ import {
   type PopoverSurface,
 } from "../../lib/popoverHeight"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
-import { isFloatingHudEnabled, openOverlayWindow } from "../../lib/overlayWindow"
+import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
+import {
+  isCurrentWindowVisible,
+  isFloatingHudEnabled,
+  isOverlayWindowVisible,
+  openOverlayWindow,
+} from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
 import type { SessionSubject } from "./SessionPane"
@@ -65,6 +73,18 @@ type PopoverAnalysisState = {
   payload: SessionAnalysisPayload | null
   error: boolean
 } | null
+
+/** Whether the settled analysis for `key` has nothing usable. */
+function isUnavailableAnalysis(state: PopoverAnalysisState, key: string): boolean {
+  if (state === null || state.key !== key) return false
+  if (state.error) return true
+  return (
+    state.payload !== null &&
+    state.payload.supportsAnalysis &&
+    state.payload.summary === null &&
+    state.payload.cost === null
+  )
+}
 
 export interface PopoverSnapshot {
   appVersion: string | null
@@ -99,6 +119,14 @@ export interface PopoverSnapshot {
    * earlier result is still on screen. Drives the detail header's spinner.
    */
   analysisRefreshing: boolean
+  /**
+   * A timestamp bumped every `NOW_TICK_MS` while a detail pane is open.
+   *
+   * The value itself has no reader: its purpose is to change the snapshot
+   * reference so the header's relative-time text ("last just now") re-renders
+   * on its own clock, not the arrival of new data.
+   */
+  now: number
 }
 
 /**
@@ -135,6 +163,30 @@ async function loadAnalysis(subject: SessionSubject): Promise<SessionAnalysisPay
   return getSessionAnalysis(subject.agent, subject.sessionId, subject.wslDistro)
 }
 
+/**
+ * Fetch one subject's transcript fingerprint, for the live-detail poll.
+ *
+ * The parent fingerprint covers the parent transcript and every sub-agent
+ * transcript, so a sub-agent subject fingerprints its parent session.
+ */
+async function loadAnalysisFingerprint(subject: SessionSubject): Promise<string> {
+  const sessionId = subject.subagent?.parentSessionId ?? subject.sessionId
+  return getSessionAnalysisFingerprint(subject.agent, sessionId, subject.wslDistro)
+}
+
+/** How often the open detail pane checks its transcript for new activity. */
+export const ANALYSIS_POLL_MS = 10_000
+
+/** How many times a subject can re-read an unavailable analysis. */
+const MAX_UNAVAILABLE_ANALYSIS_RETRIES = 3
+
+/**
+ * How often the store forces a snapshot change while a detail pane is open,
+ * so the header's relative-time text ("last just now") stays current even
+ * when nothing else about the session has changed.
+ */
+const NOW_TICK_MS = 30_000
+
 /** Narrow the shell's status string to the repository list's union. */
 function repositoryStatus(status: string): LocalRepositoryStatus {
   switch (status) {
@@ -166,8 +218,23 @@ export class PopoverSession {
   private analysisRefreshCount = 0
   private liveUsageRevision = 0
 
+  /**
+   * The key of the subject the poll's fingerprint belongs to, and the last
+   * fingerprint fetched for it. `null` fingerprint means no baseline has
+   * landed yet, so a poll tick must not treat it as a change.
+   */
+  private analysisFingerprintKey: string | null = null
+  private analysisFingerprint: string | null = null
+  private analysisRetryKey: string | null = null
+  private analysisRetryCount = 0
+  /** Set while a poll tick's fetch is in flight, so ticks never overlap. */
+  private analysisPollInFlight = false
+  private analysisPollTimer: ReturnType<typeof setInterval> | null = null
+  private nowTickTimer: ReturnType<typeof setInterval> | null = null
+
   private stopSettingsListening: (() => void) | null = null
   private stopSessionsInvalidatedListening: (() => void) | null = null
+  private stopSessionEntryChangedListening: (() => void) | null = null
   private stopStorageHealthListening: (() => void) | null = null
   private stopScanListening: (() => void) | null = null
   private stopPopoverShownListening: (() => void) | null = null
@@ -188,6 +255,7 @@ export class PopoverSession {
     stack: [],
     analysis: null,
     analysisRefreshing: false,
+    now: Date.now(),
   }
 
   getSnapshot = (): PopoverSnapshot => this.snapshot
@@ -208,21 +276,27 @@ export class PopoverSession {
   openSession = (subject: SessionSubject): void => {
     this.update({ stack: [...this.snapshot.stack, subject] })
     this.syncHeight()
-    this.loadAnalysisFor(subject)
+    this.openAnalysis(subject)
   }
 
   goBack = (): void => {
     this.update({ stack: this.snapshot.stack.slice(0, -1) })
     this.syncHeight()
     const top = this.snapshot.stack.at(-1)
-    if (top) this.loadAnalysisFor(top)
+    if (top) {
+      this.openAnalysis(top)
+    } else {
+      this.analysisFingerprintKey = null
+      this.analysisFingerprint = null
+      this.syncDetailTimers()
+    }
   }
 
   /** Replace the top of the stack, for the newer/older traversal. */
   replaceTop = (subject: SessionSubject): void => {
     this.update({ stack: [...this.snapshot.stack.slice(0, -1), subject] })
     this.syncHeight()
-    this.loadAnalysisFor(subject)
+    this.openAnalysis(subject)
   }
 
   /** The shown session's local records were deleted: go back and re-list. */
@@ -272,11 +346,10 @@ export class PopoverSession {
     this.started = true
     const generation = ++this.generation
 
-    if (isMacOS() && isFloatingHudEnabled()) void openOverlayWindow().catch(() => {})
-
     void this.loadInitial(generation)
     void this.listenSettings(generation)
     void this.listenSessionsInvalidated(generation)
+    void this.listenSessionEntryChanged(generation)
     void this.listenStorageHealth(generation)
     void this.listenScanEvent(generation)
     void this.listenPopoverShown(generation)
@@ -288,6 +361,18 @@ export class PopoverSession {
     // event's propagation path, so every surface listening on `document` has
     // already had its chance to claim the key first.
     window.addEventListener("keydown", this.onWindowKeyDown)
+
+    // A stack carried over from a previous start (the window never really
+    // unmounts, but the listener count can still hit zero and come back)
+    // needs a fresh fingerprint baseline before the poll resumes on it.
+    const top = this.snapshot.stack.at(-1)
+    if (top) {
+      const key = sessionKey(top)
+      this.analysisFingerprintKey = key
+      this.analysisFingerprint = null
+      this.seedAnalysisFingerprint(top, generation, key)
+    }
+    this.syncDetailTimers()
   }
 
   private stop(): void {
@@ -297,6 +382,8 @@ export class PopoverSession {
     this.stopSettingsListening = null
     this.stopSessionsInvalidatedListening?.()
     this.stopSessionsInvalidatedListening = null
+    this.stopSessionEntryChangedListening?.()
+    this.stopSessionEntryChangedListening = null
     this.stopStorageHealthListening?.()
     this.stopStorageHealthListening = null
     this.stopScanListening?.()
@@ -305,6 +392,12 @@ export class PopoverSession {
     this.stopPopoverShownListening = null
     this.stopLiveUsageListening?.()
     this.stopLiveUsageListening = null
+    this.stopAnalysisPolling()
+    this.stopNowTicking()
+    this.analysisFingerprintKey = null
+    this.analysisFingerprint = null
+    this.analysisRetryKey = null
+    this.analysisRetryCount = 0
     window.removeEventListener("keydown", this.onWindowKeyDown)
   }
 
@@ -378,6 +471,38 @@ export class PopoverSession {
     this.stopSessionsInvalidatedListening = unlisten
   }
 
+  // Opening a session computes its analysis and the shell caches it, but a
+  // cache write alone does not change what a scan already put in the list.
+  // The shell pushes the one changed row here so the pills stay current
+  // without a full re-query.
+  private listenSessionEntryChanged = async (generation: number): Promise<void> => {
+    const unlisten = await onSessionEntryChanged((entry) => {
+      if (generation !== this.generation) return
+      const entries = this.snapshot.entries
+      if (!entries) return
+      const index = indexOfSession(entries, entry.agent, entry.sessionId, entry.wslDistro)
+      // A session outside the current window is the next scan's business, so
+      // an entry with no match here is not inserted.
+      if (index === -1) return
+      // The cohort for the high-cost flag is the list on screen, with the
+      // replaced row's own cost swapped in — the same set `toActivityEntries`
+      // would see on a full re-list.
+      const threshold = costOutlierThreshold(
+        entries
+          .map((row, i) => (i === index ? entry.cost?.totalUsd : row.cost?.totalUsd))
+          .filter((usd): usd is number => typeof usd === "number"),
+      )
+      const next = [...entries]
+      next[index] = toActivityEntry(entry, threshold)
+      this.update({ entries: next })
+    })
+    if (generation !== this.generation) {
+      unlisten()
+      return
+    }
+    this.stopSessionEntryChangedListening = unlisten
+  }
+
   // Storage health changes rarely and matters immediately, so it is pushed
   // rather than polled. Only changes are emitted, so this is not a per-tick
   // event.
@@ -430,6 +555,7 @@ export class PopoverSession {
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
+      void this.restoreFloatingHud(generation)
       void this.refreshUsage()
       void this.refreshAnalysis()
     })
@@ -438,6 +564,16 @@ export class PopoverSession {
       return
     }
     this.stopPopoverShownListening = unlisten
+    void this.restoreFloatingHud(generation)
+  }
+
+  private restoreFloatingHud = async (generation: number): Promise<void> => {
+    if (!isMacOS() || !isFloatingHudEnabled()) return
+    const visible = await isCurrentWindowVisible()
+    if (generation !== this.generation || !visible) return
+    const overlayVisible = await isOverlayWindowVisible()
+    if (generation !== this.generation || overlayVisible) return
+    await openOverlayWindow().catch(() => {})
   }
 
   // aislop-ignore-next-line ai-slop/narrative-comment -- Issue #90 owns this standing finding.
@@ -535,6 +671,117 @@ export class PopoverSession {
     })
   }
 
+  /**
+   * Load a subject's analysis, then seed the live poll's fingerprint baseline
+   * from the freshly-loaded transcript, and make sure the poll and the
+   * relative-time ticker are running — a detail pane is now open.
+   *
+   * The baseline is fetched only after `loadAnalysisFor` settles, not next to
+   * it: that way the poll's first tick compares against a transcript state at
+   * least as new as what is already on screen, and never fires a refresh on
+   * data the reader has not even seen yet.
+   */
+  private openAnalysis(subject: SessionSubject): void {
+    const generation = this.generation
+    const key = sessionKey(subject)
+    this.analysisFingerprintKey = key
+    this.analysisFingerprint = null
+    this.analysisRetryKey = key
+    this.analysisRetryCount = 0
+    void this.loadAnalysisFor(subject).then(() => {
+      if (generation !== this.generation || key !== this.analysisFingerprintKey) return
+      this.seedAnalysisFingerprint(subject, generation, key)
+    })
+    this.syncDetailTimers()
+  }
+
+  private seedAnalysisFingerprint(
+    subject: SessionSubject,
+    generation: number,
+    key: string,
+  ): void {
+    void loadAnalysisFingerprint(subject)
+      .then((fingerprint) => {
+        if (generation !== this.generation || key !== this.analysisFingerprintKey) return
+        this.analysisFingerprint = fingerprint
+      })
+      .catch(() => {})
+  }
+
+  /**
+   * One poll tick: fetch the open subject's fingerprint and, if it moved
+   * since the last tick (or the seed), re-load the analysis. Overlapping
+   * ticks are dropped rather than queued — a slow fetch is left to finish on
+   * its own, and the next interval simply tries again.
+   */
+  private tickAnalysisPoll = (): void => {
+    if (this.analysisPollInFlight) return
+    const subject = this.snapshot.stack.at(-1)
+    if (!subject) return
+    const generation = this.generation
+    const key = sessionKey(subject)
+    this.analysisPollInFlight = true
+    void loadAnalysisFingerprint(subject)
+      .then((fingerprint) => {
+        if (generation !== this.generation || key !== this.analysisFingerprintKey) return
+        const previous = this.analysisFingerprint
+        this.analysisFingerprint = fingerprint
+        if (previous !== null && fingerprint !== previous) {
+          void this.refreshAnalysis()
+          return
+        }
+        if (subject.subagent) return
+        if (key !== this.analysisRetryKey) {
+          this.analysisRetryKey = key
+          this.analysisRetryCount = 0
+        }
+        if (
+          isUnavailableAnalysis(this.snapshot.analysis, key) &&
+          this.analysisRetryCount < MAX_UNAVAILABLE_ANALYSIS_RETRIES
+        ) {
+          this.analysisRetryCount += 1
+          void this.refreshAnalysis()
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.analysisPollInFlight = false
+      })
+  }
+
+  /** Start or stop the poll and the relative-time ticker to match whether a detail pane is open. */
+  private syncDetailTimers(): void {
+    if (this.snapshot.stack.length > 0) {
+      this.startAnalysisPolling()
+      this.startNowTicking()
+    } else {
+      this.stopAnalysisPolling()
+      this.stopNowTicking()
+    }
+  }
+
+  private startAnalysisPolling(): void {
+    if (this.analysisPollTimer !== null) return
+    this.analysisPollTimer = setInterval(this.tickAnalysisPoll, ANALYSIS_POLL_MS)
+  }
+
+  private stopAnalysisPolling(): void {
+    if (this.analysisPollTimer === null) return
+    clearInterval(this.analysisPollTimer)
+    this.analysisPollTimer = null
+  }
+
+  private startNowTicking(): void {
+    if (this.nowTickTimer !== null) return
+    this.nowTickTimer = setInterval(() => this.update({ now: Date.now() }), NOW_TICK_MS)
+  }
+
+  private stopNowTicking(): void {
+    if (this.nowTickTimer === null) return
+    clearInterval(this.nowTickTimer)
+    this.nowTickTimer = null
+  }
+
   private loadAnalysisFor = (subject: SessionSubject): Promise<void> => {
     const key = sessionKey(subject)
     const generation = this.generation
@@ -543,6 +790,10 @@ export class PopoverSession {
       .then((payload) => {
         if (generation !== this.generation || token !== this.analysisToken) return
         this.update({ analysis: { key, payload, error: false } })
+        if (!isUnavailableAnalysis(this.snapshot.analysis, key)) {
+          this.analysisRetryKey = key
+          this.analysisRetryCount = 0
+        }
       })
       .catch(() => {
         if (generation !== this.generation || token !== this.analysisToken) return

@@ -166,13 +166,14 @@ pub enum RecordSkip {
     ReadFailed { index: u64, kind: io::ErrorKind },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PartialReason {
     Oversized,
     MalformedRecord,
     IncompleteTail,
     Cancelled,
     ReadFailed,
+    UnrecognizedRecordType,
 }
 
 impl RecordSkip {

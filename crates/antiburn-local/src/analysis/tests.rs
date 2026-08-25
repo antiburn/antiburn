@@ -2,10 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::BTreeSet;
+
 use crate::analysis::engine::analyze_session;
 use crate::analysis::merge::merge_subagent_events;
-use crate::analysis::model::{CompactionTrigger, EventSource, ModelRun, Role, ToolCategory};
-use crate::analysis::{RawSource, SessionInput, analyze_sources, normalize_source};
+use crate::analysis::model::{
+    CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCategory,
+};
+use crate::analysis::{
+    NormalizedRecord, PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector,
+    SessionInput, SessionSummary, VisitOutcome, adapter_for, analyze_sources, normalize_source,
+};
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
     SessionInput {
@@ -13,6 +20,145 @@ fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
         session_id: "s".into(),
         source: RawSource::Jsonl(jsonl.into()),
     }
+}
+
+#[derive(Default)]
+struct CountingSink {
+    records: usize,
+    finishes: usize,
+}
+
+impl RecordSink for CountingSink {
+    fn record(&mut self, _record: NormalizedRecord) {
+        self.records += 1;
+    }
+
+    fn finish(&mut self, _summary: SessionSummary) {
+        self.finishes += 1;
+    }
+}
+
+fn claude_characterization_fixture(name: &str) -> &'static str {
+    match name {
+        "records_all_kinds" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/records_all_kinds.jsonl"
+        )),
+        "timestamps_repeated_and_out_of_order" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/timestamps_repeated_and_out_of_order.jsonl"
+        )),
+        "malformed_between_valid" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/malformed_between_valid.jsonl"
+        )),
+        "incomplete_final_record" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/incomplete_final_record.jsonl"
+        )),
+        "unrecognized_type" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/unrecognized_type.jsonl"
+        )),
+        "parent_with_task_spawn" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/parent_with_task_spawn.jsonl"
+        )),
+        "subagent_child" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/subagent_child.jsonl"
+        )),
+        "multi_model_session" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/multi_model_session.jsonl"
+        )),
+        "compaction_with_cache_rehydration" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/compaction_with_cache_rehydration.jsonl"
+        )),
+        "inferred_cache_rehydration" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/inferred_cache_rehydration.jsonl"
+        )),
+        _ => panic!("unknown characterization fixture: {name}"),
+    }
+}
+
+#[test]
+fn the_ten_characterization_fixtures_report_their_expected_coverage() {
+    let expected = vec![
+        (
+            "records_all_kinds".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::UnrecognizedRecordType]),
+        ),
+        (
+            "timestamps_repeated_and_out_of_order".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "malformed_between_valid".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::MalformedRecord]),
+        ),
+        (
+            "incomplete_final_record".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::MalformedRecord]),
+        ),
+        (
+            "unrecognized_type".to_string(),
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::UnrecognizedRecordType]),
+        ),
+        (
+            "parent_with_task_spawn".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "subagent_child".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "multi_model_session".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "compaction_with_cache_rehydration".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "inferred_cache_rehydration".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+    ];
+    let actual: Vec<_> = expected
+        .iter()
+        .map(|(name, _, _)| {
+            let input = SessionInput {
+                agent: "claude".to_string(),
+                session_id: name.clone(),
+                source: RawSource::Jsonl(claude_characterization_fixture(name).to_string()),
+            };
+            let mut collector = SessionCollector::new("claude", name);
+            adapter_for("claude")
+                .visit(&input, &mut collector)
+                .expect("fixture must be visited");
+            (
+                name.clone(),
+                collector.coverage(),
+                collector.partial_reasons().clone(),
+            )
+        })
+        .collect();
+
+    assert_eq!(actual, expected);
 }
 
 /// A small but representative Claude transcript: one edit turn, one error
@@ -244,6 +390,97 @@ const CODEX_FIXTURE: &str = concat!(
     "\n",
     r#"{"timestamp":"2024-06-01T12:00:35Z","type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
 );
+
+#[test]
+fn a_legacy_adapter_read_reports_unvalidated() {
+    let input = jsonl_input(
+        "cursor",
+        r#"{"role":"assistant","content":"done","model":"claude-sonnet-4"}"#,
+    );
+    let mut sink = CountingSink::default();
+
+    let outcome = adapter_for("cursor")
+        .visit(&input, &mut sink)
+        .expect("legacy visit must complete");
+
+    assert_eq!(outcome, VisitOutcome::Unvalidated);
+    assert_eq!(sink.finishes, 1);
+}
+
+#[test]
+fn a_legacy_adapter_stream_is_unchanged() {
+    let source = concat!(
+        r#"{"timestamp":"2024-06-01T12:00:00Z","type":"session_meta","payload":{"model":"gpt-5.4"}}"#,
+        "\n",
+        r#"{"timestamp":"2024-06-01T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}}}"#,
+    );
+    let input = jsonl_input("codex", source);
+    let adapter = adapter_for("codex");
+    let expected = adapter
+        .normalize(&input)
+        .expect("Codex source must normalize");
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    let outcome = adapter
+        .visit(&input, &mut collector)
+        .expect("default visit must complete");
+    let actual = collector
+        .into_session()
+        .expect("visited session must finish");
+    let mut counter = CountingSink::default();
+    adapter
+        .visit(&input, &mut counter)
+        .expect("counted visit must complete");
+
+    assert_eq!(outcome, VisitOutcome::Unvalidated);
+    assert_eq!(actual, expected);
+    assert_eq!(counter.records, expected.events.len());
+    assert_eq!(counter.finishes, 1);
+}
+
+#[test]
+fn a_non_claude_adapter_visits_through_the_default_implementation() {
+    let source = concat!(
+        r#"{"timestamp":"2024-06-01T12:00:00Z","type":"session_meta","payload":{"model":"gpt-5.4"}}"#,
+        "\n",
+        r#"{"timestamp":"2024-06-01T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}}}"#,
+    );
+    let input = jsonl_input("codex", source);
+    let adapter = adapter_for("codex");
+    let expected = adapter
+        .normalize(&input)
+        .expect("Codex source must normalize");
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    adapter
+        .visit(&input, &mut collector)
+        .expect("default visit must complete");
+    let actual = collector.into_session().ok();
+    let completed_assertions = (
+        actual.as_ref() == Some(&expected),
+        actual
+            .as_ref()
+            .and_then(|session| session.context_window)
+            .is_some(),
+        actual
+            .as_ref()
+            .and_then(|session| session.model.as_ref())
+            .is_some(),
+        actual
+            .as_ref()
+            .is_some_and(|session| !session.cache_write_tokens_available),
+    );
+    assert_eq!(completed_assertions, (true, true, true, true));
+
+    let mut unfinished = SessionCollector::new("codex", "unfinished");
+    RecordSink::record(
+        &mut unfinished,
+        NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent::new(Role::User))),
+    );
+    RecordSink::record(
+        &mut unfinished,
+        NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent::new(Role::Assistant))),
+    );
+    assert!(unfinished.into_session().is_err());
+}
 
 #[test]
 fn codex_rollout_envelope_is_normalized() {
@@ -827,6 +1064,39 @@ fn cache_rehydration_is_detected_after_a_ttl_lapse() {
         .map(|(i, _)| i)
         .collect();
     assert_eq!(rehydrated.len(), 1, "got {rehydrated:?}");
+    assert_eq!(m.cache_routing_miss_count, 0);
+}
+
+/// Same shape as CLAUDE_CACHE_REHYDRATION_FIXTURE, but the second turn comes
+/// 5 seconds after the first. No provider TTL is that short, so the gap gate
+/// must block the rehydration flag even though the read and write ratios
+/// still match. The engine reports the turn as a routing miss instead.
+const CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:05Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn cache_miss_inside_a_fast_burst_is_a_routing_miss() {
+    let session = normalize_source(&jsonl_input(
+        "claude",
+        CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert!(
+        m.buckets.iter().all(|b| !b.is_cache_rehydration),
+        "a 5-second gap is a routing miss, not a TTL lapse"
+    );
+    assert_eq!(m.cache_rehydration_count, 0);
+    assert_eq!(
+        m.buckets.iter().filter(|b| b.is_cache_routing_miss).count(),
+        1,
+        "exactly one bucket must carry the routing-miss flag"
+    );
+    assert_eq!(m.cache_routing_miss_count, 1);
 }
 
 /// Real numbers from a Claude session after a 155-minute idle gap. The
@@ -892,6 +1162,7 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
         .expect("the rehydration bucket");
     assert_eq!(bucket.secs_since_prior_turn, Some(155 * 60));
     assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(m.cache_routing_miss_count, 0);
     assert_eq!(m.compaction_count, 0);
 
     let summary = crate::analysis::aggregate_metrics(vec![m]);
@@ -901,6 +1172,34 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
         .find(|bucket| bucket.is_cache_rehydration)
         .expect("the summary rehydration bucket");
     assert_eq!(summary_bucket.secs_since_prior_turn, Some(155 * 60));
+}
+
+/// A multi-session summary bucket must OR each contributing session's flag
+/// independently: one session's rehydration must not hide another session's
+/// routing miss, and vice versa.
+#[test]
+fn summary_buckets_or_rehydration_and_routing_miss_across_sessions() {
+    let rehydrated_session =
+        normalize_source(&jsonl_input("claude", CLAUDE_CACHE_REHYDRATION_FIXTURE)).unwrap();
+    let routing_miss_session = normalize_source(&jsonl_input(
+        "claude",
+        CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
+    ))
+    .unwrap();
+    let rehydrated_metrics = analyze_session(&rehydrated_session);
+    let routing_miss_metrics = analyze_session(&routing_miss_session);
+
+    let summary =
+        crate::analysis::aggregate_metrics(vec![rehydrated_metrics, routing_miss_metrics]);
+
+    assert!(
+        summary.buckets.iter().any(|b| b.is_cache_rehydration),
+        "the rehydration session's flag must survive the merge"
+    );
+    assert!(
+        summary.buckets.iter().any(|b| b.is_cache_routing_miss),
+        "the routing-miss session's flag must survive the merge"
+    );
 }
 
 #[test]
@@ -1055,6 +1354,7 @@ fn codex_cache_rehydration_is_inferred_from_replay_and_recovery() {
     let m = analyze_session(&session);
 
     assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(m.cache_routing_miss_count, 0);
     assert_eq!(
         m.buckets
             .iter()
@@ -1122,6 +1422,56 @@ fn codex_first_turn_after_compaction_is_not_an_inferred_rehydration() {
     let m = analyze_session(&session);
 
     assert_eq!(m.cache_rehydration_count, 0);
+}
+
+/// Real numbers from a Codex rollout. The miss comes 6 seconds after the
+/// prior turn, so the gap gate must block the inferred rehydration flag even
+/// though the replay and recovery ratios match the pattern. The engine
+/// reports the turn as a routing miss instead.
+const CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"cache_write_input_tokens":0,"output_tokens":168},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:10:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":177},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:10:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"cache_write_input_tokens":0,"output_tokens":166},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_miss_inside_a_fast_burst_is_a_routing_miss() {
+    let session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+    assert_eq!(m.cache_routing_miss_count, 1);
+}
+
+/// The same values as CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE, but the
+/// second and third turns move 5 minutes later. The gap now clears the TTL
+/// gate, so the inferred rehydration flag fires — the gap is the only thing
+/// that changed between this test and the one above.
+const CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"cache_write_input_tokens":0,"output_tokens":168},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:15:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":177},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:15:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"cache_write_input_tokens":0,"output_tokens":166},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_miss_after_a_ttl_lapse_is_inferred_as_rehydration() {
+    let session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(m.cache_routing_miss_count, 0);
 }
 
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +
@@ -1942,6 +2292,7 @@ fn rehydration_detection_ignores_subagent_turns() {
         Some(5 * 60),
         "the sub-agent turn must not reset the parent turn gap"
     );
+    assert_eq!(m.cache_routing_miss_count, 0);
 }
 
 /* -------------------------------------------------------------------------

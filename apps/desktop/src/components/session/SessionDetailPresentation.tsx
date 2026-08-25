@@ -35,8 +35,10 @@ import {
   isEmptySummary,
 } from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
+import { efficiencyMetrics, unpricedTurnsHint } from "../../lib/presentation/sessionEfficiency"
 import type {
   ActiveSessionsSummary,
+  SessionEfficiency,
   LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
@@ -48,6 +50,7 @@ import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { Skeleton } from "../ui/Skeleton"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart } from "./analysis/ContextTokensChart"
+import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { InitialContextChart } from "./analysis/InitialContextChart"
 import { ToolMixChart } from "./analysis/ToolMixChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
@@ -104,6 +107,8 @@ export interface SessionDetailPresentationProps {
   cost: LocalSessionCost | null
   /** Parent/sub-agents split for an orchestration total. */
   costSplit: TokensCostSplit | null
+  /** Where the spend behind `cost` went. The same subject as `cost`. */
+  efficiency: SessionEfficiency | null
   /** Sub-agents this session launched. */
   orchestration: LocalOrchestrationStatus | null
   /** Parent model runs followed by runs used only by sub-agents. */
@@ -415,6 +420,7 @@ export function SessionDetailPresentation({
   supportsAnalysis,
   cost,
   costSplit,
+  efficiency,
   orchestration,
   modelRuns,
   relations,
@@ -474,6 +480,11 @@ export function SessionDetailPresentation({
       }
     : null
 
+  const efficiencyCard = efficiency ? efficiencyMetrics(efficiency, session.agent) : null
+  const efficiencyHint = efficiencyCard ? unpricedTurnsHint(efficiencyCard.unpricedTurns) : null
+
+  const firstSession = summary?.sessions[0]
+
   const tokensCard = summary
     ? tokensCardModel({
         costScope: cost?.subject.scope ?? null,
@@ -487,10 +498,12 @@ export function SessionDetailPresentation({
         tokensOutTotal: summary.tokensOutTotal,
         compactionCount: summary.compactionCount ?? 0,
         cacheRehydrationCount: summary.cacheRehydrationCount ?? 0,
+        // Only `SessionMetrics` carries this count, not the aggregate
+        // summary, so it comes from the first (and, for this view, only)
+        // session rather than from `summary` itself.
+        cacheRoutingMissCount: firstSession?.cacheRoutingMissCount ?? 0,
       })
     : null
-
-  const firstSession = summary?.sessions[0]
   const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
 
   return (
@@ -776,6 +789,12 @@ export function SessionDetailPresentation({
             {cost && tokensCard && (
               <Card title="Cost">
                 <CostBreakdown cost={cost} split={tokensCard.split} />
+              </Card>
+            )}
+
+            {cost && tokensCard && efficiencyCard && (
+              <Card title="Efficiency" {...(efficiencyHint ? { hint: efficiencyHint } : {})}>
+                <EfficiencyBreakdown metrics={efficiencyCard} />
               </Card>
             )}
 

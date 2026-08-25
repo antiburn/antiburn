@@ -14,7 +14,7 @@ exclude = ["crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
 
 [package]
 name = "antiburn"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
@@ -81,7 +81,10 @@ base64 = "0.23"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 # The app-owned local database. `bundled` compiles SQLite from source, so the
 # app never depends on a system library and CI needs no extra packages.
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Held at 0.32 to match `antiburn-local`: `libsqlite3-sys` sets
+# `links = "sqlite3"`, so the app and the engine it path-depends on must agree
+# on one version. The engine's own pin carries the full reasoning.
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 # Only to install the process-wide crypto provider `reqwest`'s
 # `rustls-no-provider` feature leaves unset — `ring`, matching what
 # `tauri-plugin-updater`'s own rustls dependency already resolves to.
@@ -98,6 +101,9 @@ serde_json = "1"
 tauri = { version = "2", features = ["image-png", "tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# The plugin prevents browser-only menus and shortcuts in application webviews.
+# The explicit policy in `src/webview_defaults.rs` keeps focus traversal intact.
+tauri-plugin-prevent-default = "5"
 # Emits structured shell events through the process subscriber.
 tracing = "0.1"
 # RFC 3339 stamps for the store's own timestamps.

@@ -16,12 +16,7 @@ import {
   onLiveUsageChanged,
   refreshLiveUsage,
 } from "../../lib/ipc"
-import {
-  hideOverlayWindow,
-  isFloatingHudEnabled,
-  openOverlayWindow,
-  setFloatingHudEnabled,
-} from "../../lib/overlayWindow"
+import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import { liveErrorNote, liveSourceNote } from "../../lib/presentation/liveUsage"
 import type { AppSettingsController } from "./useAppSettings"
@@ -48,7 +43,12 @@ import type { AppSettingsController } from "./useAppSettings"
 export type UsagePaneProps = AppSettingsController
 
 export function UsagePane({ settings, update }: UsagePaneProps) {
-  const [hudShown, setHudShown] = useState(() => isFloatingHudEnabled())
+  const [hudVisibility] = useState(() => new HudVisibilitySession())
+  const hudShown = useSyncExternalStore(
+    hudVisibility.subscribe,
+    hudVisibility.getSnapshot,
+    hudVisibility.getSnapshot,
+  )
   // Show the cached value on open. Then refresh through the shell and accept
   // updates from this window or the popover.
   const [store] = useState(() =>
@@ -67,9 +67,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   const on = settings?.liveUsageEnabled ?? false
 
   function handleHudChange(next: boolean) {
-    setHudShown(next)
-    setFloatingHudEnabled(next)
-    void (next ? openOverlayWindow() : hideOverlayWindow()).catch(() => {})
+    hudVisibility.set(next)
   }
 
   return (

@@ -223,9 +223,9 @@ Three independent checks, none of which relies on review:
   makes the bundled app an agent; the shell applies the equivalent accessory
   activation policy at runtime so unbundled development runs match.
 
-Every window loads the same bundle and selects its view from the URL fragment —
-`#/settings`, `#/onboarding`, `#/nudge`, and the popover as the default. There
-is no router: each window owns one route for its whole lifetime.
+Settings and onboarding have dedicated HTML and TypeScript entries. The
+resident shell uses URL fragments for the nudge and overlay, with the popover
+as its default. Each window owns one surface for its whole lifetime.
 
 ## Known gaps
 

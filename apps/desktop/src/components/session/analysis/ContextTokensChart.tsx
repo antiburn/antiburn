@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts"
 
+import { prefersReducedMotion, slowAnimationDurationMs } from "../../../lib/popoverHeight"
 import { modelShortName } from "../../../lib/presentation/models"
 import {
   axisScale,
@@ -45,9 +46,13 @@ const WARM_FLOOR_TOKENS = 400_000
 const CRITICAL_TOKENS = 1_000_000
 /** Band label text, drawn inside the plot. */
 const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
-// A rehydration bar is a few pixels wide on each side of its bucket so it
+// A cache-miss bar is a few pixels wide on each side of its bucket so it
 // reads as a block of cost, not a hairline.
-const REHYDRATION_BAR_WIDTH = 6
+const CACHE_MISS_BAR_WIDTH = 6
+/** Bar opacity for a real rehydration: a TTL lapse the user can act on. */
+const REHYDRATION_BAR_OPACITY = 0.6
+/** Bar opacity for a routing miss: the same cost, but not avoidable, so the mark draws lighter. */
+const ROUTING_MISS_BAR_OPACITY = 0.2
 
 export interface ContextTokensTooltipProps {
   active?: boolean
@@ -156,6 +161,56 @@ function rehydrationLabel(point: ContextTokenPoint): string {
 }
 
 /**
+ * The routing-miss tooltip line. Same event as a rehydration — the whole
+ * context re-sent uncached — but it lands too soon after the prior turn for
+ * a TTL lapse, so a provider-side routing miss causes it, not the session.
+ */
+function routingMissLabel(point: ContextTokenPoint): string {
+  if (point.cacheWriteTokens > 0) {
+    return `Cache routing miss · ${formatCompact(point.cacheWriteTokens)} written`
+  }
+  return `Cache routing miss · ${formatCompact(point.tokensIn)} re-sent uncached`
+}
+
+/**
+ * One vertical bar for a cache-miss bucket (a rehydration or a routing
+ * miss): from the baseline up to the context level, on the context axis when
+ * one renders, or spanning the plot on the tokens axis otherwise. `opacity`
+ * carries the two kinds' relative weight; the shape and color stay the same.
+ */
+function cacheMissBar(
+  point: ContextTokenPoint,
+  keyPrefix: string,
+  hasContextAxis: boolean,
+  opacity: number,
+): ReactElement {
+  return hasContextAxis ? (
+    <ReferenceLine
+      key={`${keyPrefix}-${point.index}`}
+      yAxisId="context"
+      segment={[
+        { x: point.index, y: 0 },
+        { x: point.index, y: point.contextTokens },
+      ]}
+      stroke="var(--color-context-critical)"
+      strokeWidth={CACHE_MISS_BAR_WIDTH}
+      strokeOpacity={opacity}
+      label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
+    />
+  ) : (
+    <ReferenceLine
+      key={`${keyPrefix}-${point.index}`}
+      yAxisId="tokens"
+      x={point.index}
+      stroke="var(--color-context-critical)"
+      strokeWidth={CACHE_MISS_BAR_WIDTH}
+      strokeOpacity={opacity}
+      label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
+    />
+  )
+}
+
+/**
  * The custom tooltip shows active time, context depth, token throughput,
  * compaction, and sub-agent launches. Tests can render it with a fixed payload.
  */
@@ -226,6 +281,11 @@ export function ContextTokensTooltip({
             {rehydrationLabel(point)}
           </span>
         )}
+        {point.isCacheRoutingMiss && (
+          <span style={{ color: "var(--color-context-critical)", opacity: 0.6 }}>
+            {routingMissLabel(point)}
+          </span>
+        )}
         {point.secsSincePriorTurn != null && (
           <span>Since prior turn · {formatDuration(point.secsSincePriorTurn)}</span>
         )}
@@ -261,6 +321,11 @@ export function ContextTokensChart({
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
   const hasContext = contextWindow != null
+  // A live poll can grow this chart's data mid-session, unlike the other
+  // analysis charts, which only ever draw once. The transition makes that
+  // arrival readable instead of a silent jump cut.
+  const animate = !prefersReducedMotion()
+  const animationDurationMs = slowAnimationDurationMs()
 
   const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
   const tokenPeak = data.reduce(
@@ -349,34 +414,18 @@ export function ContextTokensChart({
             and the tooltip names it. A cache rehydration draws a wide red bar
             from the baseline up to the context level at that time, because
             the area shows no change for it. The bar height scales its weight:
-            a rehydration of a small context costs little and shows little. */}
+            a rehydration of a small context costs little and shows little. A
+            cache routing miss draws the same bar at lower opacity: the same
+            cost, but a provider-side miss the user cannot avoid. */}
         {data
           .filter((point) => point.isCacheRehydration)
           .map((point) =>
-            contextAxis ? (
-              <ReferenceLine
-                key={`cache-rehydration-${point.index}`}
-                yAxisId="context"
-                segment={[
-                  { x: point.index, y: 0 },
-                  { x: point.index, y: point.contextTokens },
-                ]}
-                stroke="var(--color-context-critical)"
-                strokeWidth={REHYDRATION_BAR_WIDTH}
-                strokeOpacity={0.6}
-                label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
-              />
-            ) : (
-              <ReferenceLine
-                key={`cache-rehydration-${point.index}`}
-                yAxisId="tokens"
-                x={point.index}
-                stroke="var(--color-context-critical)"
-                strokeWidth={REHYDRATION_BAR_WIDTH}
-                strokeOpacity={0.6}
-                label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
-              />
-            ),
+            cacheMissBar(point, "cache-rehydration", !!contextAxis, REHYDRATION_BAR_OPACITY),
+          )}
+        {data
+          .filter((point) => point.isCacheRoutingMiss)
+          .map((point) =>
+            cacheMissBar(point, "cache-routing-miss", !!contextAxis, ROUTING_MISS_BAR_OPACITY),
           )}
         {/* A mode change (model, thinking effort, or speed) draws no line at
             all — only its label, at the top of the plot — so it stays a
@@ -412,7 +461,9 @@ export function ContextTokensChart({
             stroke="none"
             fill={row.colorVar}
             fillOpacity={0.22}
-            isAnimationActive={false}
+            isAnimationActive={animate}
+            animationDuration={animationDurationMs}
+            animationEasing="ease-out"
           />
         ))}
         {hasContext && (
@@ -423,7 +474,9 @@ export function ContextTokensChart({
             stroke="var(--color-token-in)"
             strokeWidth={1.5}
             fill={`url(#${fillId})`}
-            isAnimationActive={false}
+            isAnimationActive={animate}
+            animationDuration={animationDurationMs}
+            animationEasing="ease-out"
           />
         )}
       </AreaChart>

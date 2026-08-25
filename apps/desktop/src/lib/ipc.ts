@@ -29,6 +29,7 @@ import type {
   ActiveSessionsSummary,
   BillableTokens,
   SessionCostComponents,
+  SessionEfficiency,
 } from "./types/session"
 
 /* -------------------------------------------------------------------------
@@ -248,6 +249,8 @@ export interface SessionAnalysisPayload {
   /** Billable tokens that back `subagentsCost`. The count sums every
    * sub-agent. The value is `null` when the session has no sub-agent. */
   subagentsTokens: BillableTokens | null
+  /** Where the spend behind `cost` went. The same subject as `cost`. */
+  efficiency: SessionEfficiency | null
   models: string[]
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns: ModelRunPayload[]
@@ -625,6 +628,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * Commands
  * ---------------------------------------------------------------------- */
 
+/** Tell the shell that React committed this renderer generation. */
+export async function windowReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("window_ready", { generation })
+}
+
 /**
  * Version stamp of the engine's bundled pricing catalog.
  *
@@ -757,6 +766,16 @@ export async function setPopoverHeight(height: number, animate: boolean): Promis
   await invoke("set_popover_height", { height, animate })
 }
 
+/** Resize the floating HUD around its measured panel. */
+export async function resizeOverlayWindow(
+  height: number,
+  anchorBottom: boolean,
+  animate: boolean,
+): Promise<void> {
+  if (!hasShell()) return
+  await invoke("resize_overlay_window", { height, anchorBottom, animate })
+}
+
 /** Where the app came from and what it is running against. */
 export async function appInfo(): Promise<AppInfo | null> {
   if (!hasShell()) return null
@@ -853,6 +872,27 @@ export async function getSessionAnalysis(
 ): Promise<SessionAnalysisPayload | null> {
   if (!hasShell()) return null
   return invoke<SessionAnalysisPayload>("get_session_analysis", {
+    agent,
+    sessionId,
+    wslDistro: wslDistro ?? null,
+  })
+}
+
+/**
+ * A cheap fingerprint of one session's transcript.
+ *
+ * A poll compares this value tick to tick instead of re-running the full
+ * analysis: the fingerprint changes only when the transcript itself changes,
+ * so an unchanged value proves a re-analysis would find nothing new. `"-"`
+ * means the transcript is missing.
+ */
+export async function getSessionAnalysisFingerprint(
+  agent: string,
+  sessionId: string,
+  wslDistro?: string | null,
+): Promise<string> {
+  if (!hasShell()) return "-"
+  return invoke<string>("get_session_analysis_fingerprint", {
     agent,
     sessionId,
     wslDistro: wslDistro ?? null,
@@ -1270,6 +1310,23 @@ export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
 export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
+}
+
+/**
+ * Event the shell emits when one session's cached analysis changes outside a
+ * scan. Mirrors `SESSION_ENTRY_CHANGED_EVENT` in `src-tauri/src/commands.rs`.
+ * The payload is the fresh entry for that session.
+ */
+export const SESSION_ENTRY_CHANGED_EVENT = "sessions:entry-changed"
+
+/** Subscribe to one session's entry changing. The result unsubscribes. */
+export async function onSessionEntryChanged(
+  handler: (entry: ActivityEntryPayload) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
 }
 
 /**

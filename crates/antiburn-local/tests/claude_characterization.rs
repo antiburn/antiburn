@@ -2,7 +2,13 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use antiburn_local::analysis::{RawSource, SessionInput, analyze_sources_with, normalize_source};
+use antiburn_local::analysis::{
+    ANALYZER_REVISION, CompositeSink, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
+    EvidenceValue, MAX_RECORD_BYTES, NormalizedSession, OrderingObservation, PARSER_REVISION,
+    PartialReason, RawSource, RecordCoverage, SessionCollector, SessionEvidenceAccumulator,
+    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, adapter_for,
+    analyze_session, analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
+};
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> &'static str {
@@ -26,6 +32,15 @@ fn fixture(name: &str) -> &'static str {
             include_str!("fixtures/claude_characterization/parent_with_task_spawn.jsonl")
         }
         "subagent_child" => include_str!("fixtures/claude_characterization/subagent_child.jsonl"),
+        "multi_model_session" => {
+            include_str!("fixtures/claude_characterization/multi_model_session.jsonl")
+        }
+        "compaction_with_cache_rehydration" => {
+            include_str!("fixtures/claude_characterization/compaction_with_cache_rehydration.jsonl")
+        }
+        "inferred_cache_rehydration" => {
+            include_str!("fixtures/claude_characterization/inferred_cache_rehydration.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -115,6 +130,10 @@ fn oversized_line_jsonl(payload_bytes: usize) -> String {
 }
 
 fn file_input(name: &str, source: &str, directory: &tempfile::TempDir) -> SessionInput {
+    file_input_bytes(name, source.as_bytes(), directory)
+}
+
+fn file_input_bytes(name: &str, source: &[u8], directory: &tempfile::TempDir) -> SessionInput {
     let path = directory.path().join(format!("{name}.jsonl"));
     fs::write(&path, source).expect("generated source must be written");
     SessionInput {
@@ -122,6 +141,275 @@ fn file_input(name: &str, source: &str, directory: &tempfile::TempDir) -> Sessio
         session_id: name.to_string(),
         source: RawSource::File(path),
     }
+}
+
+fn assistant_record(id: &str, timestamp: u64, input: u64, output: u64) -> String {
+    format!(
+        r#"{{"type":"assistant","timestamp":{timestamp},"message":{{"id":"{id}","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{{"input_tokens":{input},"output_tokens":{output}}},"content":[{{"type":"text","text":"{id}"}}]}}}}"#
+    )
+}
+
+fn three_record_source() -> String {
+    [
+        assistant_record("first", 1_761_000_000, 2, 3),
+        assistant_record("second", 1_761_000_001, 4, 5),
+        assistant_record("third", 1_761_000_002, 6, 7),
+    ]
+    .join("\n")
+}
+
+fn stream_claude(input: &SessionInput) -> SessionMetricsAccumulator {
+    let mut accumulator =
+        SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    adapter_for("claude")
+        .visit(input, &mut accumulator)
+        .expect("Claude source must be visited");
+    accumulator
+}
+
+fn stream_composite(input: &SessionInput) -> CompositeSink {
+    let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::claude(),
+    });
+    let mut composite = CompositeSink::new(metrics, evidence);
+    let outcome = adapter_for("claude")
+        .visit(input, &mut composite)
+        .expect("Claude source must be visited");
+    composite.observe_source_outcome(outcome);
+    composite
+}
+
+fn fixture_names() -> [&'static str; 10] {
+    [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+    ]
+}
+
+fn collect_claude(
+    input: &SessionInput,
+) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    adapter_for("claude")
+        .visit(input, &mut collector)
+        .expect("Claude source must be visited");
+    let coverage = collector.coverage();
+    let reasons = collector.partial_reasons().clone();
+    let session = collector
+        .into_session()
+        .expect("visited source must produce a session");
+    (coverage, reasons, session)
+}
+
+fn late_skill_source(marker_has_role: bool) -> String {
+    let command = r#"{"type":"user","message":{"role":"user","content":"<command-name>/orbit-tracker</command-name>"}}"#;
+    let marker = if marker_has_role {
+        r#"{"type":"user","message":{"role":"user","content":"Base directory for this skill: /tmp/orbit-tracker/SKILL.md"}}"#
+    } else {
+        r#"{"type":"attachment","message":{"content":"Base directory for this skill: /tmp/orbit-tracker/SKILL.md"}}"#
+    };
+    format!("{command}\n{marker}\n")
+}
+
+fn oversized_metric_jsonl(payload_bytes: usize) -> String {
+    let mut source = String::with_capacity(payload_bytes + 1_000);
+    source.push_str(&assistant_record("first-neighbour", 1_761_000_000, 2, 3));
+    source.push('\n');
+    source.push_str("{\"type\":\"assistant\",\"padding\":\"");
+    source.push_str(&"x".repeat(payload_bytes));
+    source.push_str("\",\"timestamp\":1761000001,\"message\":{\"id\":\"oversized\",\"role\":\"assistant\",\"model\":\"claude-3-5-haiku-20241022\",\"usage\":{\"input_tokens\":999999,\"output_tokens\":888888},\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"echo oversized\"}}]}}\n");
+    source.push_str(&assistant_record("second-neighbour", 1_761_000_002, 4, 5));
+    source.push('\n');
+    source
+}
+
+#[test]
+fn composite_metrics_json_equals_the_streaming_metrics_json_for_every_fixture() {
+    for name in fixture_names() {
+        let input = input(name);
+        let composite = stream_composite(&input);
+        let composite_json = serde_json::to_string_pretty(
+            &composite
+                .metrics()
+                .expect("finished source must publish metrics"),
+        )
+        .expect("composite metrics must serialize");
+        let streaming_json = serde_json::to_string_pretty(&stream_claude(&input).metrics())
+            .expect("streaming metrics must serialize");
+        let composite_value: Value =
+            serde_json::from_str(&composite_json).expect("composite JSON must parse");
+        let streaming_value: Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON must parse");
+
+        assert_eq!(composite_value, streaming_value, "fixture {name}");
+    }
+}
+
+#[test]
+fn evidence_context_depth_equals_the_fixture_maximum() {
+    for name in fixture_names() {
+        let input = input(name);
+        let expected = normalize_source(&input)
+            .expect("fixture must normalize")
+            .events
+            .iter()
+            .map(|event| event.usage.context_tokens())
+            .max()
+            .unwrap_or(0);
+        let evidence = stream_composite(&input)
+            .evidence()
+            .expect("finished source must publish evidence");
+        let observed = match evidence.context {
+            EvidenceValue::Complete(context)
+            | EvidenceValue::Partial {
+                observed: context, ..
+            } => context.max_request_context_tokens,
+            EvidenceValue::Unsupported => panic!("Claude context evidence must be supported"),
+            #[cfg(debug_assertions)]
+            EvidenceValue::Unimplemented => panic!("context evidence must be implemented"),
+        };
+
+        assert_eq!(observed, expected, "fixture {name}");
+    }
+}
+
+#[test]
+fn evidence_coverage_is_complete_for_every_clean_fixture() {
+    for name in fixture_names() {
+        let input = input(name);
+        let (coverage, _, _) = collect_claude(&input);
+        if coverage == RecordCoverage::Partial {
+            continue;
+        }
+        let evidence = stream_composite(&input)
+            .evidence()
+            .expect("finished source must publish evidence");
+
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Complete,
+            "fixture {name}"
+        );
+        assert!(matches!(evidence.context, EvidenceValue::Complete(_)));
+    }
+}
+
+#[test]
+fn fixture_provenance_records_the_source_kind_and_ordering() {
+    let monotonic = stream_composite(&input("parent_with_task_spawn"))
+        .evidence()
+        .expect("finished source must publish evidence");
+    assert_eq!(monotonic.provenance.source_kind, SourceKind::Jsonl);
+    assert_eq!(monotonic.provenance.parser_revision, PARSER_REVISION);
+    assert_eq!(monotonic.provenance.analyzer_revision, ANALYZER_REVISION);
+    assert_eq!(
+        monotonic.provenance.evidence_schema_revision,
+        EVIDENCE_SCHEMA_REVISION
+    );
+    assert_eq!(
+        monotonic.provenance.ordering,
+        OrderingObservation::Monotonic
+    );
+
+    let out_of_order = stream_composite(&input("timestamps_repeated_and_out_of_order"))
+        .evidence()
+        .expect("finished source must publish evidence");
+    assert_eq!(
+        out_of_order.provenance.ordering,
+        OrderingObservation::OutOfOrder
+    );
+}
+
+#[test]
+fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
+    for name in [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+    ] {
+        let input = input(name);
+        let expected = analyze_sources_with(vec![input.clone()], true)
+            .sessions
+            .remove(0);
+        assert_eq!(stream_claude(&input).metrics(), expected, "fixture {name}");
+    }
+}
+
+#[test]
+fn streaming_metrics_match_every_golden() {
+    for name in [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+    ] {
+        let expected_text = fs::read_to_string(golden_path(name)).expect("golden must exist");
+        let expected: Value = serde_json::from_str(&expected_text).expect("golden must be valid");
+        let rendered = serde_json::to_string_pretty(&stream_claude(&input(name)).metrics())
+            .expect("metrics must serialize");
+        let actual: Value =
+            serde_json::from_str(&rendered).expect("rendered metrics must be valid JSON");
+        assert_eq!(actual, expected["sessions"][0], "fixture {name}");
+    }
+}
+
+#[test]
+fn golden_cost_values_compare_after_a_text_round_trip() {
+    let value = 0.0009119999999999999_f64;
+    let rendered = serde_json::to_string(&value).expect("cost must serialize");
+    let parsed: f64 = serde_json::from_str(&rendered).expect("cost must parse");
+
+    // The golden contract compares serialized text, not in-memory f64 bits.
+    assert_ne!(parsed.to_bits(), value.to_bits());
+}
+
+#[test]
+fn merged_streaming_metrics_equal_the_merged_batch() {
+    let parent_input = input("parent_with_task_spawn");
+    let child_input = input("subagent_child");
+    let parent = stream_claude(&parent_input);
+    let child = stream_claude(&child_input);
+    let expected = analyze_session(&merge_subagent_events(
+        normalize_source(&parent_input).expect("parent fixture must normalize"),
+        vec![normalize_source(&child_input).expect("child fixture must normalize")],
+    ));
+    assert_eq!(merge_metrics(&parent, &[child]), expected);
+}
+
+#[test]
+fn a_compaction_boundary_bucket_reports_zero_context_tokens() {
+    let metrics = stream_claude(&input("compaction_with_cache_rehydration")).metrics();
+    let boundary = metrics
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_compaction_boundary)
+        .expect("fixture must contain a compaction boundary");
+    assert_eq!(boundary.context_tokens, 0);
 }
 
 #[test]
@@ -157,6 +445,21 @@ fn golden_parent_with_task_spawn() {
 #[test]
 fn golden_subagent_child() {
     check_fixture_golden("subagent_child");
+}
+
+#[test]
+fn golden_multi_model_session() {
+    check_fixture_golden("multi_model_session");
+}
+
+#[test]
+fn golden_compaction_with_cache_rehydration() {
+    check_fixture_golden("compaction_with_cache_rehydration");
+}
+
+#[test]
+fn golden_inferred_cache_rehydration() {
+    check_fixture_golden("inferred_cache_rehydration");
 }
 
 #[test]
@@ -199,12 +502,20 @@ fn golden_parent_and_subagent_are_independent() {
 }
 
 #[test]
-fn malformed_line_does_not_discard_neighbours() {
-    let normalized =
-        normalize_source(&input("malformed_between_valid")).expect("fixture must normalize");
-    assert_eq!(normalized.events.len(), 2);
-    assert_eq!(normalized.events[0].ts_ms, Some(1_772_352_000_000));
-    assert_eq!(normalized.events[1].ts_ms, Some(1_772_352_002_000));
+fn a_malformed_record_keeps_both_neighbour_events() {
+    let actual = normalize_source(&input("malformed_between_valid"))
+        .ok()
+        .map(|session| {
+            (
+                session.events.len(),
+                session.events[0].ts_ms,
+                session.events[1].ts_ms,
+            )
+        });
+    assert_eq!(
+        actual,
+        Some((2, Some(1_772_352_000_000), Some(1_772_352_002_000)))
+    );
 }
 
 #[test]
@@ -252,4 +563,205 @@ fn many_record_source_analyzes_to_completion() {
     assert_eq!(sessions[0].event_count, 10_000);
     assert_eq!(sessions[0].tokens_in, 70_000);
     assert_eq!(sessions[0].tokens_out, 30_000);
+}
+
+#[test]
+fn a_file_source_does_not_commit_an_unterminated_final_record() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let input = file_input("unterminated-file", &three_record_source(), &directory);
+    let session = normalize_source(&input).expect("file source must normalize");
+    assert_eq!(session.events.len(), 2);
+}
+
+#[test]
+fn an_in_memory_source_commits_an_unterminated_final_record() {
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "unterminated-memory".to_string(),
+        source: RawSource::Jsonl(three_record_source()),
+    };
+    let session = normalize_source(&input).expect("in-memory source must normalize");
+    assert_eq!(session.events.len(), 3);
+}
+
+#[test]
+fn a_slash_command_skill_resolves_when_its_marker_arrives_later() {
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "late-skill-marker".to_string(),
+        source: RawSource::Jsonl(late_skill_source(true)),
+    };
+    let session = normalize_source(&input).expect("skill source must normalize");
+    let detail = session.events[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "skill")
+        .and_then(|tool| tool.detail.as_deref());
+    assert_eq!(detail, Some("orbit-tracker"));
+}
+
+#[test]
+fn a_skill_marker_in_a_record_with_no_role_is_still_collected() {
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "roleless-skill-marker".to_string(),
+        source: RawSource::Jsonl(late_skill_source(false)),
+    };
+    let session = normalize_source(&input).expect("skill source must normalize");
+    let detail = session.events[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "skill")
+        .and_then(|tool| tool.detail.as_deref());
+    assert_eq!(detail, Some("orbit-tracker"));
+}
+
+#[test]
+fn two_priceable_models_of_equal_rank_keep_the_first_seen() {
+    let source = [
+        assistant_record("opus-47", 1_761_000_000, 2, 3)
+            .replace("claude-3-5-haiku-20241022", "claude-opus-4-7-20260115"),
+        assistant_record("opus-46", 1_761_000_001, 4, 5)
+            .replace("claude-3-5-haiku-20241022", "claude-opus-4-6-20260115"),
+    ]
+    .join("\n");
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "equal-rank-models".to_string(),
+        source: RawSource::Jsonl(source),
+    };
+    let session = normalize_source(&input).expect("model source must normalize");
+    assert_eq!(session.model.as_deref(), Some("claude-opus-4-7-20260115"));
+}
+
+#[test]
+fn an_unopenable_file_source_omits_the_whole_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "unopenable".to_string(),
+        source: RawSource::File(directory.path().join("missing.jsonl")),
+    };
+    let normalize_failed = normalize_source(&input).is_err();
+    let session_was_omitted = analyze_sources_with(vec![input], false).sessions.is_empty();
+    assert_eq!((normalize_failed, session_was_omitted), (true, true));
+}
+
+#[test]
+fn invalid_utf8_between_valid_records_omits_the_whole_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let mut source = assistant_record("first", 1_761_000_000, 2, 3).into_bytes();
+    source.push(b'\n');
+    source.extend_from_slice(b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"");
+    source.extend_from_slice(&[0xff, 0xfe]);
+    source.extend_from_slice(b"\"}}\n");
+    source.extend_from_slice(assistant_record("second", 1_761_000_002, 4, 5).as_bytes());
+    source.push(b'\n');
+    let input = file_input_bytes("invalid-middle", &source, &directory);
+    assert!(normalize_source(&input).is_err());
+}
+
+#[test]
+fn an_oversized_metric_bearing_record_is_dropped_for_both_source_variants() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let source = oversized_metric_jsonl(MAX_RECORD_BYTES + 1);
+    let inputs = [
+        file_input("oversized-metrics-file", &source, &directory),
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: "oversized-metrics-memory".to_string(),
+            source: RawSource::Jsonl(source),
+        },
+    ];
+
+    let actual: Vec<_> = inputs
+        .iter()
+        .map(|input| {
+            let (coverage, reasons, session) = collect_claude(input);
+            let metrics = analyze_session(&session);
+            (
+                coverage,
+                reasons,
+                session.events.len(),
+                metrics.tokens_in,
+                metrics.tokens_out,
+                metrics.tool_mix.bash,
+            )
+        })
+        .collect();
+    let expected = vec![
+        (
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::Oversized]),
+            2,
+            6,
+            8,
+            0,
+        );
+        2
+    ];
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn invalid_utf8_inside_an_oversized_record_does_not_omit_the_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let mut source = assistant_record("first", 1_761_000_000, 2, 3).into_bytes();
+    source.push(b'\n');
+    source.extend(std::iter::repeat_n(b'x', MAX_RECORD_BYTES + 1));
+    source.push(0xff);
+    source.push(b'\n');
+    source.extend_from_slice(assistant_record("second", 1_761_000_002, 4, 5).as_bytes());
+    source.push(b'\n');
+    let input = file_input_bytes("invalid-oversized", &source, &directory);
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    let visit_succeeded = adapter_for("claude").visit(&input, &mut collector).is_ok();
+    let actual = (
+        visit_succeeded,
+        collector.coverage(),
+        collector.partial_reasons().clone(),
+        collector
+            .into_session()
+            .ok()
+            .map(|session| session.events.len()),
+    );
+    assert_eq!(
+        actual,
+        (
+            true,
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::Oversized]),
+            Some(2),
+        )
+    );
+}
+
+#[test]
+fn invalid_utf8_inside_an_unterminated_tail_does_not_omit_the_session() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let mut source = assistant_record("first", 1_761_000_000, 2, 3).into_bytes();
+    source.push(b'\n');
+    source.extend_from_slice(b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"");
+    source.push(0xff);
+    let input = file_input_bytes("invalid-tail", &source, &directory);
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    let visit_succeeded = adapter_for("claude").visit(&input, &mut collector).is_ok();
+    let actual = (
+        visit_succeeded,
+        collector.coverage(),
+        collector.partial_reasons().clone(),
+        collector
+            .into_session()
+            .ok()
+            .map(|session| session.events.len()),
+    );
+    assert_eq!(
+        actual,
+        (
+            true,
+            RecordCoverage::Partial,
+            BTreeSet::from([PartialReason::IncompleteTail]),
+            Some(1),
+        )
+    );
 }

@@ -35,6 +35,7 @@ export interface ContextTokenPoint {
   cacheReadTokens: number
   cacheWriteTokens: number
   isCacheRehydration: boolean
+  isCacheRoutingMiss: boolean
   secsSincePriorTurn: number | null
   subagentLaunches: number
   /** The name of the last parent tool call in this bucket, when any. */
@@ -109,6 +110,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     cacheReadTokens: bucket.cacheReadTokens,
     cacheWriteTokens: bucket.cacheWriteTokens,
     isCacheRehydration: bucket.isCacheRehydration,
+    isCacheRoutingMiss: bucket.isCacheRoutingMiss,
     secsSincePriorTurn: bucket.secsSincePriorTurn,
     subagentLaunches: bucket.subagentLaunches,
     lastTool: bucket.lastTool,
@@ -532,6 +534,42 @@ export function formatTokenBand(n: number): string {
 }
 
 /**
+ * Compact token count capped at three significant digits, for a column too
+ * narrow for a full number — `"950"`, `"1.2k"`, `"14k"`, `"143M"`, `"2.1B"`.
+ * Below 1000 tokens shows the plain count. At or above 1000, the count shows
+ * in the largest unit (k/M/B) that keeps it under three digits: one decimal
+ * while the scaled value reads under 10, a whole number from 10 up, and never
+ * a bare ".0". Rounding that would push a value to 1000 in its own unit (for
+ * example 999.6k) instead rolls over to the next unit up (1M).
+ */
+export function formatTokensShort(n: number): string {
+  const value = Number.isFinite(n) ? n : 0
+  const abs = Math.abs(value)
+  if (abs < 1000) return `${Math.round(value)}`
+
+  const tiers = [
+    { factor: 1_000, suffix: "k" },
+    { factor: 1_000_000, suffix: "M" },
+    { factor: 1_000_000_000, suffix: "B" },
+  ] as const
+
+  let tier = tiers.length - 1
+  while (tier > 0 && abs < tiers[tier]!.factor) tier--
+
+  for (; tier < tiers.length; tier++) {
+    const { factor, suffix } = tiers[tier]!
+    const scaled = value / factor
+    const text =
+      Math.abs(scaled) < 10 ? scaled.toFixed(1).replace(/\.0$/, "") : `${Math.round(scaled)}`
+    const isLastTier = tier === tiers.length - 1
+    if (Math.abs(Number.parseFloat(text)) < 1000 || isLastTier) return `${text}${suffix}`
+    // Rounding filled this tier (e.g. 999.6k rounded to "1000"); the next
+    // iteration retries one unit up, where it reads under 10 with a decimal.
+  }
+  return `${Math.round(value)}`
+}
+
+/**
  * USD cost, always to two decimals (`$XX.XX`) so a trailing zero never drops
  * (`$20.70`, not `$20.7`). Every figure is an on-device estimate; surrounding
  * labels say so. A real `$0` — and any non-finite or negative input, which
@@ -552,20 +590,30 @@ export function formatCost(usd: number): string {
 export interface CostRow {
   label: string
   usd: number
+  /** Billable tokens behind this row, when the caller has them. */
+  tokens?: number | undefined
 }
 
-/** The four billable components, in display order. */
+/**
+ * The four billable components, in display order. Token counts are optional:
+ * a caller pricing from `resultComponentCost` has them, but the activity
+ * list's `SessionCostComponents` payload carries USD only.
+ */
 export function costBreakdownRows(cost: {
   inputUsd: number
   outputUsd: number
   cacheReadUsd: number
   cacheWriteUsd: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
 }): CostRow[] {
   return [
-    { label: "Input", usd: cost.inputUsd },
-    { label: "Output", usd: cost.outputUsd },
-    { label: "Cache read", usd: cost.cacheReadUsd },
-    { label: "Cache write", usd: cost.cacheWriteUsd },
+    { label: "Input", usd: cost.inputUsd, tokens: cost.inputTokens },
+    { label: "Output", usd: cost.outputUsd, tokens: cost.outputTokens },
+    { label: "Cache read", usd: cost.cacheReadUsd, tokens: cost.cacheReadTokens },
+    { label: "Cache write", usd: cost.cacheWriteUsd, tokens: cost.cacheWriteTokens },
   ]
 }
 

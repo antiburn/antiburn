@@ -65,8 +65,8 @@
 //! expiry policy. The scheduler is a single task whose handle the app aborts on
 //! exit, so nothing outlives the process.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::discovery::scanner::{self, TitleSource};
@@ -115,7 +115,7 @@ pub const EVENT_FINISHED: &str = "scan:finished";
 pub struct ScanController {
     running: AtomicBool,
     popover_visible: AtomicBool,
-    cancel: AtomicBool,
+    cancel: Arc<AtomicBool>,
     status: Mutex<ScanStatus>,
     kick: Notify,
 }
@@ -149,6 +149,10 @@ impl ScanController {
         self.cancel.load(Ordering::SeqCst)
     }
 
+    pub fn cancel_flag(&self) -> analysis::CancelFlag {
+        analysis::CancelFlag::from_flag(Arc::clone(&self.cancel))
+    }
+
     /// The current or last pass.
     pub fn status(&self) -> ScanStatus {
         self.status
@@ -167,28 +171,47 @@ impl ScanController {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Wake {
+    Launch,
+    Tick,
+    Kick,
+}
+
+pub(crate) fn should_run_scheduled_pass(wake: Wake, popover_visible: bool, allowed: bool) -> bool {
+    allowed && (!matches!(wake, Wake::Tick) || popover_visible)
+}
+
+pub(crate) fn on_demand_start(controller: &ScanController) -> bool {
+    if controller.running.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    controller.cancel.store(false, Ordering::SeqCst);
+    true
+}
+
 /// Start the scheduler. The returned handle is aborted when the app exits.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // A fresh install has nothing to scan until the reader picks sources.
-        if scheduled_scanning_allowed(&app) {
+        if should_run_scheduled_pass(Wake::Launch, false, scheduled_scanning_allowed(&app)) {
             run_pass(&app, None).await;
         }
         loop {
             let controller = app.state::<ScanController>();
-            tokio::select! {
-                () = controller.kick.notified() => {}
-                () = tokio::time::sleep(TICK) => {
-                    if !controller.popover_visible() {
-                        continue;
-                    }
-                }
-            }
+            let wake = tokio::select! {
+                () = controller.kick.notified() => Wake::Kick,
+                () = tokio::time::sleep(TICK) => Wake::Tick,
+            };
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
-            if !scheduled_scanning_allowed(&app) {
+            if !should_run_scheduled_pass(
+                wake,
+                controller.popover_visible(),
+                scheduled_scanning_allowed(&app),
+            ) {
                 continue;
             }
             run_pass(&app, None).await;
@@ -212,11 +235,9 @@ fn scheduled_scanning_allowed(app: &AppHandle) -> bool {
 pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> ScanStatus {
     {
         let controller = app.state::<ScanController>();
-        if controller.running.swap(true, Ordering::SeqCst) {
+        if !on_demand_start(&controller) {
             return controller.status();
         }
-        // A cancel request only ever applies to the pass it was made during.
-        controller.cancel.store(false, Ordering::SeqCst);
         let started = controller.update(|status| {
             status.running = true;
             status.completed_agents = 0;
@@ -370,8 +391,8 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
         |agent, session_id, wsl_distro| async move {
             analysis::locate(agent, &session_id, wsl_distro.as_deref()).await
         },
-        |agent, session_id, wsl_distro| async move {
-            analysis::analyze(agent, &session_id, wsl_distro.as_deref()).await
+        |agent, session_id, wsl_distro, claimed, cancel| async move {
+            analysis::analyze(agent, &session_id, wsl_distro.as_deref(), claimed, cancel).await
         },
     )
     .await?;
@@ -988,7 +1009,13 @@ async fn top_up_analysis<F, Fut, A, AFut>(
 where
     F: FnMut(AgentKind, String, Option<String>) -> Fut,
     Fut: std::future::Future<Output = Option<SessionSource>>,
-    A: FnMut(AgentKind, String, Option<String>) -> AFut,
+    A: FnMut(
+        AgentKind,
+        String,
+        Option<String>,
+        analysis::ClaimedSource,
+        analysis::CancelFlag,
+    ) -> AFut,
     AFut: std::future::Future<Output = analysis::SessionAnalysis>,
 {
     let since = now - activity_days.max(1) * 86_400;
@@ -1030,14 +1057,26 @@ where
             continue;
         }
 
+        let source_state = store.session_source_state(&record.key)?;
+        let claimed = source_state
+            .map(|state| analysis::ClaimedSource {
+                fingerprint: state.source_fingerprint,
+                generation: state.source_generation,
+            })
+            .unwrap_or(analysis::ClaimedSource {
+                fingerprint: None,
+                generation: 0,
+            });
         let analysis = analyze(
             agent,
             record.key.session_id.clone(),
             record.wsl_distro.clone(),
+            claimed,
+            controller.cancel_flag(),
         )
         .await;
         if let Some(cache) = analysis.record(&record.key) {
-            store.save_analysis(&cache)?;
+            store.save_analysis(&cache, analysis.started_at_epoch)?;
         }
         if let Some(orchestration) = &analysis.orchestration {
             let relations: Vec<_> = orchestration
@@ -1861,8 +1900,12 @@ mod tests {
             inclusive_models_json: "[]".to_string(),
             source_fingerprint: legacy_fingerprint.clone(),
             pricing_generation: antiburn_local::analysis::pricing_generation() as i64,
+            analyzed_generation: 0,
+            parser_revision: 0,
+            analyzer_revision: 0,
+            metrics_schema_revision: 0,
         };
-        store.save_analysis(&cached).unwrap();
+        store.save_analysis(&cached, None).unwrap();
 
         let persisted_session = store
             .session(&session.key)
@@ -1899,7 +1942,7 @@ mod tests {
                     && wsl_distro.is_none();
                 async move { matches.then_some(source) }
             },
-            move |_, _, _| {
+            move |_, _, _, _, _| {
                 observed_analyses.fetch_add(1, Ordering::SeqCst);
                 async { analysis::SessionAnalysis::unavailable() }
             },
@@ -1913,6 +1956,38 @@ mod tests {
             store.analysis(&session.key).unwrap().as_ref(),
             Some(&cached)
         );
+    }
+
+    #[tokio::test]
+    async fn top_up_analysis_analyzes_a_candidate_whose_source_changed_one_second_ago() {
+        let home = tempfile::TempDir::new().unwrap();
+        let store = Store::open_in_memory(home.path()).unwrap();
+        let mut session = record("claude-code", "recent-change", Some(100));
+        session.source_fingerprint = Some("sv1:recent".to_string());
+        store.upsert_sessions(&[session]).unwrap();
+        let analysis_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&analysis_calls);
+
+        top_up_analysis(
+            &store,
+            &ScanController::default(),
+            101,
+            1,
+            |_, _, _| async {
+                Some(SessionSource::Inline {
+                    label: "recent-change".to_string(),
+                    content: String::new(),
+                })
+            },
+            move |_, _, _, _, _| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                async { analysis::SessionAnalysis::unavailable() }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(analysis_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -2481,6 +2556,40 @@ mod tests {
         };
 
         assert_eq!(recovered_id(&log).as_deref(), Some(session_id));
+    }
+
+    #[test]
+    fn the_scheduled_trigger_set_is_unchanged() {
+        for wake in [Wake::Launch, Wake::Kick] {
+            assert!(should_run_scheduled_pass(wake, false, true));
+            assert!(should_run_scheduled_pass(wake, true, true));
+            assert!(!should_run_scheduled_pass(wake, true, false));
+        }
+        assert!(should_run_scheduled_pass(Wake::Tick, true, true));
+        assert!(!should_run_scheduled_pass(Wake::Tick, false, true));
+        assert!(!should_run_scheduled_pass(Wake::Tick, true, false));
+    }
+
+    #[test]
+    fn an_on_demand_pass_starts_without_the_scheduler_gate() {
+        let controller = ScanController::default();
+        assert!(on_demand_start(&controller));
+        assert!(!on_demand_start(&controller));
+        controller.running.store(false, Ordering::SeqCst);
+        assert!(on_demand_start(&controller));
+    }
+
+    #[test]
+    fn a_cloned_cancel_flag_observes_request_cancel_and_the_pass_reset() {
+        let controller = ScanController::default();
+        let flag = controller.cancel_flag();
+        controller.running.store(true, Ordering::SeqCst);
+        controller.request_cancel();
+        controller.running.store(false, Ordering::SeqCst);
+        assert!(flag.cancelled());
+
+        assert!(on_demand_start(&controller));
+        assert!(!flag.cancelled());
     }
 
     #[test]

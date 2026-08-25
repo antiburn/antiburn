@@ -8,14 +8,19 @@
 
 _Plan. Branch `claude/hud-hover-tooltip-0214cd`. 2026-08-24._
 
+> **Post-plan change:** issue #108 replaces the fixed HUD frame and reported
+> hover region with a content-sized frame. The separate detail-window design
+> stays unchanged; historical frame references below describe its starting
+> point.
+
 ## Status
 
-| Step | State |
-| --- | --- |
-| 1. Rust: detail window + placement + commands | done |
-| 2. Frontend: HudDetailView + route | done |
-| 3. Frontend: strip expansion from HUD, ✕ on HUD | done |
-| 4. Docs + tests + slop pass | done — PR waits on a screenshot |
+| Step                                            | State                           |
+| ----------------------------------------------- | ------------------------------- |
+| 1. Rust: detail window + placement + commands   | done                            |
+| 2. Frontend: HudDetailView + route              | done                            |
+| 3. Frontend: strip expansion from HUD, ✕ on HUD | done                            |
+| 4. Docs + tests + slop pass                     | done — PR waits on a screenshot |
 
 Reviewed with Keith via discuss 2026-08-24; all three open questions decided
 (see Decisions).
@@ -23,7 +28,7 @@ Reviewed with Keith via discuss 2026-08-24; all three open questions decided
 ## The problem
 
 The HUD today is one fixed 176×500 transparent frame. Hover doesn't resize the
-window — it expands the panel *inside* the frame, and a pile of machinery keeps
+window — it expands the panel _inside_ the frame, and a pile of machinery keeps
 that expansion from misbehaving at screen edges:
 
 - `reserveAbove` / `flipUp` / `swapping` in `OverlaySession.ts` — when the HUD
@@ -46,7 +51,7 @@ the HUD, showing what the expanded panel shows today: the wordmark (plain
 text), and per-limit label, percentage, bar, and reset time.
 
 The HUD never changes size, layout, or position on hover. The tooltip window is
-sized to its content *before* it is shown, so it never resizes on screen either.
+sized to its content _before_ it is shown, so it never resizes on screen either.
 All the reserve/flip/swap machinery is deleted.
 
 The tooltip is **pure display** — no controls, and the cursor never needs to
@@ -59,12 +64,12 @@ reachable through the tray (the tooltip wordmark is no longer a button).
 
 ### Windows
 
-| | HUD (`antiburn-overlay`) | Detail (`antiburn-hud-detail`, new) |
-| --- | --- | --- |
-| Size | unchanged 176×500 transparent frame for v1 | 176 wide, sized to content before each show |
-| Focus | never focused | `focused(false)`, cursor events ignored — the tooltip is display only |
-| Lifecycle | unchanged | created lazily on first hover, then kept warm hidden (popover pattern) |
-| Chrome | unchanged | transparent window; content card paints `bg-hud`, `rounded-xl`, `bevel`, border, plus a tooltip treatment: soft CSS drop shadow (a few px of transparent padding carries it) and a 120–150ms fade-in on show, instant hide; reduced-motion disables the fade |
+|           | HUD (`antiburn-overlay`)                   | Detail (`antiburn-hud-detail`, new)                                                                                                                                                                                                                          |
+| --------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Size      | unchanged 176×500 transparent frame for v1 | 176 wide, sized to content before each show                                                                                                                                                                                                                  |
+| Focus     | never focused                              | `focused(false)`, cursor events ignored — the tooltip is display only                                                                                                                                                                                        |
+| Lifecycle | unchanged                                  | created lazily on first hover, then kept warm hidden (popover pattern)                                                                                                                                                                                       |
+| Chrome    | unchanged                                  | transparent window; content card paints `bg-hud`, `rounded-xl`, `bevel`, border, plus a tooltip treatment: soft CSS drop shadow (a few px of transparent padding carries it) and a 120–150ms fade-in on show, instant hide; reduced-motion disables the fade |
 
 Keeping the HUD's oversized transparent frame for v1 limits scope: the hover
 region reporting (`set_overlay_hover_region`) already tells Rust where the
@@ -119,10 +124,10 @@ One data owner (the HUD session), no second polling loop.
 
 ### New commands
 
-| Command | Does |
-| --- | --- |
+| Command                          | Does                                                                   |
+| -------------------------------- | ---------------------------------------------------------------------- |
 | `show_hud_detail(width, height)` | create-or-reuse, size, place against the HUD panel, show without focus |
-| `hide_hud_detail` | hide |
+| `hide_hud_detail`                | hide                                                                   |
 
 The detail webview measures its content and passes the size with the show call,
 so the window appears at final size. `capabilities/default.json` lists the new

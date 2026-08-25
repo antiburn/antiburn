@@ -41,8 +41,8 @@ use crate::repositories;
 use crate::scan::{self, ScanController};
 use crate::settings;
 use crate::store::{
-    AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey, SessionRecord, Store,
-    iso_from_epoch,
+    AnalysisRecord, AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
+    SessionRecord, Store, iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -59,6 +59,19 @@ fn fail(error: impl std::fmt::Display) -> String {
 #[tauri::command]
 pub fn engine_catalog_version() -> &'static str {
     antiburn_local::pricing::PRICING_CATALOG_VERSION
+}
+
+/// Reveal a native window after its invoking renderer commits its shell.
+#[tauri::command]
+pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
+    match window.label() {
+        crate::popover::LABEL => crate::popover::renderer_ready(&window, generation),
+        crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
+        crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
+        label => {
+            ::tracing::debug!(event = "window_ready_ignored", window = label);
+        }
+    }
 }
 
 /// Opens, or refocuses, the standalone settings window.
@@ -170,10 +183,21 @@ pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
     antiburn_hud::open(&app).map_err(fail)
 }
 
-/// Record the drawn panel edges for the native hover watcher.
+/// Hide the usage HUD and cancel any pending reveal.
 #[tauri::command]
-pub fn set_overlay_hover_region(top: f64, bottom: f64) {
-    antiburn_hud::set_hover_region(top, bottom);
+pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    antiburn_hud::hide(&app).map_err(fail)
+}
+
+/// Match the native HUD frame to the rendered panel.
+#[tauri::command]
+pub fn resize_overlay_window(
+    app: tauri::AppHandle,
+    height: f64,
+    anchor_bottom: bool,
+    animate: bool,
+) -> CommandResult<()> {
+    antiburn_hud::resize(&app, height, anchor_bottom, animate).map_err(fail)
 }
 
 /// Request the hover detail window with the newest usage payload.
@@ -522,6 +546,23 @@ fn repository_label(repositories: &[RepositoryRecord], cwd: Option<&str>) -> Str
     }
 }
 
+/// Whether `next` carries model data the popover list would render
+/// differently from `previous`.
+///
+/// Compares only the two fields the list reads (`model_breakdown_json` for
+/// cost, `inclusive_models_json` for the model pills). The fingerprint and
+/// pricing generation can change on every re-analysis without moving either
+/// figure, and an event for that would be noise the popover cannot show.
+fn analysis_changed(previous: Option<&AnalysisRecord>, next: &AnalysisRecord) -> bool {
+    match previous {
+        None => true,
+        Some(previous) => {
+            previous.model_breakdown_json != next.model_breakdown_json
+                || previous.inclusive_models_json != next.inclusive_models_json
+        }
+    }
+}
+
 fn path_is_under(path: &str, root: &str) -> bool {
     let path = path.replace('\\', "/");
     let path = path.trim_end_matches('/');
@@ -570,7 +611,7 @@ pub fn get_provider_usage(
 /// or a background task. The aggressive freshness is bounded by someone
 /// actually looking — once the popover closes, nothing here keeps polling on
 /// its behalf, and the background monitor's own, much longer, `max_age`
-/// takes back over (see `usage_alerts::MILESTONE_MAX_AGE`).
+/// takes back over (see `usage_alerts::BACKGROUND_MAX_AGE`).
 const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
 
 /// Return the last provider limit snapshot without reading a provider.
@@ -644,6 +685,7 @@ pub async fn refresh_live_usage(
         // Held for the whole pass: two of these can now genuinely overlap,
         // and the reading history they append to is not written atomically.
         let _summarizing = live.summarizing();
+        live.set_utc_offset_minutes(utc_offset_minutes, store.as_deref());
         let summary = provider_usage::live::summarize(
             &live.sources,
             store.as_deref(),
@@ -678,15 +720,46 @@ pub async fn get_session_analysis(
         return Err(format!("unknown agent {agent}"));
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
+    let store = app.state::<Store>();
+    let claimed = store
+        .session_source_state(&key)
+        .ok()
+        .flatten()
+        .map(|state| analysis::ClaimedSource {
+            fingerprint: state.source_fingerprint,
+            generation: state.source_generation,
+        })
+        .unwrap_or(analysis::ClaimedSource {
+            fingerprint: None,
+            generation: 0,
+        });
 
-    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
+    let analysis = analysis::analyze(
+        kind,
+        &session_id,
+        wsl_distro.as_deref(),
+        claimed,
+        analysis::CancelFlag::never(),
+    )
+    .await;
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
-    let store = app.state::<Store>();
     let stored = store.session(&key).ok().flatten();
 
     if let Some(record) = analysis.record(&key) {
-        let _ = store.save_analysis(&record);
+        let previous = store.analysis(&key).ok().flatten();
+        if store
+            .save_analysis(&record, analysis.started_at_epoch)
+            .is_ok()
+            && analysis_changed(previous.as_ref(), &record)
+            && let Some(session_record) = stored.clone()
+        {
+            let repositories = store.repositories().unwrap_or_default();
+            let now = scan::unix_now();
+            if let Ok(entry) = activity_entry(&store, &repositories, session_record, now) {
+                let _ = app.emit(SESSION_ENTRY_CHANGED_EVENT, &entry);
+            }
+        }
     }
     let orchestration = match &analysis.orchestration {
         Some(orchestration) => {
@@ -722,12 +795,36 @@ pub async fn get_session_analysis(
         subagents_cost: analysis.subagents_cost,
         inclusive_tokens: analysis.inclusive_tokens,
         subagents_tokens: analysis.subagents_tokens,
+        efficiency: analysis.efficiency,
         models: analysis.models.clone(),
         model_runs: analysis.model_runs.clone(),
         orchestration,
         relations: (!relations.is_empty()).then_some(relations),
         source_path: analysis.source_path.clone(),
     })
+}
+
+/// The cheap fingerprint of one session's analysis inputs.
+///
+/// The session-detail popover polls this while it is open, and re-runs the
+/// full analysis only when the value changes. This command reads file
+/// metadata alone, never a transcript, so a poll costs almost nothing.
+#[tauri::command]
+pub async fn get_session_analysis_fingerprint(
+    agent: String,
+    session_id: String,
+    wsl_distro: Option<String>,
+) -> CommandResult<String> {
+    let Some(kind) = kind_from_slug(&agent) else {
+        return Err(format!("unknown agent {agent}"));
+    };
+    let Some(source) = analysis::locate(kind, &session_id, wsl_distro.as_deref()).await else {
+        return Ok(analysis::MISSING_FINGERPRINT.to_string());
+    };
+    Ok(
+        analysis::fingerprint_with_subagents(kind, &session_id, wsl_distro.as_deref(), &source)
+            .await,
+    )
 }
 
 /// One sub-agent's own analysis, opened from the roster.
@@ -748,6 +845,7 @@ pub async fn get_subagent_analysis(
         &parent_session_id,
         &subagent_id,
         wsl_distro.as_deref(),
+        analysis::CancelFlag::never(),
     )
     .await;
     Ok(SessionAnalysis {
@@ -761,6 +859,7 @@ pub async fn get_subagent_analysis(
         subagents_cost: analysis.subagents_cost,
         inclusive_tokens: analysis.inclusive_tokens,
         subagents_tokens: analysis.subagents_tokens,
+        efficiency: analysis.efficiency,
         models: analysis.models.clone(),
         model_runs: analysis.model_runs.clone(),
         orchestration: None,
@@ -956,6 +1055,11 @@ pub async fn set_repository_enabled(
 /// (repository opt-out, index clearing). The popover re-queries on it.
 pub const SESSIONS_INVALIDATED_EVENT: &str = "sessions:invalidated";
 
+/// Event the shell emits when one session's cached analysis changes outside a
+/// scan. The payload is the fresh [`ActivityEntry`] for that session, so the
+/// popover can update the one row without a re-query.
+pub const SESSION_ENTRY_CHANGED_EVENT: &str = "sessions:entry-changed";
+
 /// Re-derive the repository list from what is on disk right now.
 #[tauri::command]
 pub async fn refresh_repositories(app: tauri::AppHandle) -> CommandResult<Vec<RepositoryItem>> {
@@ -1043,10 +1147,30 @@ pub async fn export_session(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let analysis = analysis::analyze(kind, &session_id, wsl_distro.as_deref()).await;
-
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let stored = app.state::<Store>().session(&key).ok().flatten();
+    let store = app.state::<Store>();
+    let claimed = store
+        .session_source_state(&key)
+        .ok()
+        .flatten()
+        .map(|state| analysis::ClaimedSource {
+            fingerprint: state.source_fingerprint,
+            generation: state.source_generation,
+        })
+        .unwrap_or(analysis::ClaimedSource {
+            fingerprint: None,
+            generation: 0,
+        });
+    let analysis = analysis::analyze(
+        kind,
+        &session_id,
+        wsl_distro.as_deref(),
+        claimed,
+        analysis::CancelFlag::never(),
+    )
+    .await;
+
+    let stored = store.session(&key).ok().flatten();
 
     let document = SessionExport::new(
         app.package_info().version.to_string(),
@@ -1405,6 +1529,48 @@ mod tests {
         // A session with no activity still yields a parseable stamp rather
         // than an empty string the list would drop.
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
+    }
+
+    fn analysis_record(model_breakdown_json: &str, inclusive_models_json: &str) -> AnalysisRecord {
+        AnalysisRecord {
+            key: SessionKey::new("env", "claude-code", "session-1"),
+            model_breakdown_json: model_breakdown_json.into(),
+            inclusive_models_json: inclusive_models_json.into(),
+            source_fingerprint: "fingerprint".into(),
+            pricing_generation: 1,
+            analyzed_generation: 1,
+            parser_revision: 1,
+            analyzer_revision: 1,
+            metrics_schema_revision: 1,
+        }
+    }
+
+    #[test]
+    fn a_first_analysis_always_counts_as_changed() {
+        let next = analysis_record("{}", "[]");
+        assert!(analysis_changed(None, &next));
+    }
+
+    #[test]
+    fn identical_model_data_is_not_a_change() {
+        let previous = analysis_record(
+            r#"{"claude-fable-5":{}}"#,
+            r#"[{"model":"claude-fable-5"}]"#,
+        );
+        let next = analysis_record(
+            r#"{"claude-fable-5":{}}"#,
+            r#"[{"model":"claude-fable-5"}]"#,
+        );
+        assert!(!analysis_changed(Some(&previous), &next));
+    }
+
+    #[test]
+    fn a_new_model_in_either_field_counts_as_changed() {
+        let previous = analysis_record("{}", "[]");
+        let breakdown_changed = analysis_record(r#"{"claude-fable-5":{}}"#, "[]");
+        let models_changed = analysis_record("{}", r#"[{"model":"claude-fable-5"}]"#);
+        assert!(analysis_changed(Some(&previous), &breakdown_changed));
+        assert!(analysis_changed(Some(&previous), &models_changed));
     }
 
     #[test]

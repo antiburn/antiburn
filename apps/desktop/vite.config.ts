@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { fileURLToPath, URL } from "node:url"
+
 import tailwindcss from "@tailwindcss/vite"
 import babel from "@rolldown/plugin-babel"
 import react, { reactCompilerPreset } from "@vitejs/plugin-react"
@@ -44,6 +46,13 @@ export default defineConfig(({ command, mode }) => ({
   envPrefix: ["VITE_", "TAURI_ENV_"],
 
   build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        onboarding: fileURLToPath(new URL("./onboarding.html", import.meta.url)),
+        settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
+      },
+    },
     // The shell is the only consumer, so target the bundled webviews rather
     // than the browser matrix Vite defaults to.
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome110" : "safari15",

@@ -49,6 +49,8 @@ export interface SessionBucket {
   cacheWriteTokens: number
   /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
   isCacheRehydration: boolean
+  /** True when a turn in this bucket is a cache routing miss: a fast re-send too soon for a TTL lapse. */
+  isCacheRoutingMiss: boolean
   /** Wall-clock seconds since the prior parent turn, when this bucket contains a timed turn. */
   secsSincePriorTurn: number | null
   /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
@@ -132,6 +134,27 @@ export interface BillableTokens {
   cacheCreationTokens: number
 }
 
+/**
+ * Where a subject's spend went. Mirrors Rust `EfficiencyTotals`.
+ *
+ * Every field sums over priced turns only. A turn whose model has no price
+ * counts in `unpricedTurns` and in nothing else, so any ratio of two fields
+ * describes the same set of turns.
+ */
+export interface SessionEfficiency {
+  totalUsd: number
+  /** Output plus the fresh input that grew the context. */
+  newWorkUsd: number
+  /** Cache reads. */
+  carryUsd: number
+  /** Fresh input beyond the context growth. */
+  rewriteUsd: number
+  growthTokens: number
+  outputTokens: number
+  pricedTurns: number
+  unpricedTurns: number
+}
+
 /** Billable token counts retained per normalized model key. */
 interface ModelTokens {
   inputTokens?: number
@@ -159,6 +182,8 @@ export interface SessionMetrics {
   compactionCount?: number
   /** Turns the engine flagged as a cache rehydration. */
   cacheRehydrationCount?: number
+  /** Turns the engine flagged as a cache routing miss. Not aggregated onto `ActiveSessionsSummary`. */
+  cacheRoutingMissCount?: number
   /** False when the model's context window is unknown. */
   contextAvailable?: boolean
   contextWindow: number
@@ -173,6 +198,7 @@ export interface SessionMetrics {
   billableCacheCreationTokens?: number
   modelBreakdown?: Record<string, ModelTokens>
   cost?: SessionCostComponents | null
+  efficiency?: SessionEfficiency
 }
 
 /**

@@ -29,16 +29,20 @@
 //! floating title hidden, so the frontend paints its own
 //! `data-tauri-drag-region` strip (`src/views/onboarding/OnboardingFlow.tsx`).
 
+use std::sync::Mutex;
+use std::time::Instant;
+
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_placement::center_on_active_monitor;
+use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "onboarding";
 
-/// Fragment the onboarding window loads. The frontend serves one bundle and
-/// selects its view from this fragment (see `src/lib/route.ts`).
-const URL: &str = "index.html#/onboarding";
+/// Dedicated frontend entry for the onboarding window.
+const URL: &str = "onboarding.html";
 
 /// Fixed geometry. 480 tall leaves ~379pt of body under the 44pt header and
 /// over the 57pt footer, which is more than the tallest step needs; 680 wide is
@@ -67,13 +71,41 @@ const _: () = assert!(WIDTH < 1280.0 && HEIGHT < 800.0);
 // nothing visible in it.
 const _: () = assert!(HEIGHT - 44.0 - 57.0 > 150.0 + 110.0 + 60.0);
 
+/// Renderer lifecycle for the onboarding window.
+#[derive(Default)]
+pub struct OnboardingWindowState(Mutex<WindowReadiness>);
+
+impl ManagedWindowReadiness for OnboardingWindowState {
+    fn readiness(&self) -> std::sync::MutexGuard<'_, WindowReadiness> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// Start setup again at Welcome and give it the first-run app presence.
 pub fn restart(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window(LABEL) {
-        existing.destroy()?;
-    }
     apply_activation_policy(app, true);
-    open(app)
+    let Some(existing) = app.get_webview_window(LABEL) else {
+        return open(app);
+    };
+
+    let generation = {
+        let state = app.state::<OnboardingWindowState>();
+        let mut readiness = state.readiness();
+        readiness.reset();
+        let OpenAction::StartLoading { generation } = readiness.request_open(Instant::now()) else {
+            unreachable!("an idle lifecycle starts loading")
+        };
+        let deferred = readiness.defer_build_until_destroyed(generation);
+        debug_assert!(deferred, "the replacement generation must remain active");
+        generation
+    };
+    if let Err(error) = existing.destroy() {
+        window_lifecycle::cancel_load::<OnboardingWindowState>(app, generation);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Shows the onboarding window, creating it if this is the first request.
@@ -85,17 +117,66 @@ pub fn restart(app: &AppHandle) -> tauri::Result<()> {
 /// than destroys (see `crate::on_window_event`), so the flow comes back with
 /// the steps the reader already walked still behind it.
 pub fn open(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window(LABEL) {
-        // Re-centered on every open for the same reason Settings is: the window
-        // hides rather than being destroyed, so without this a reader who
-        // works across monitors gets it back on whichever display they last
-        // dismissed it on.
-        center_on_active_monitor(&existing, WIDTH, HEIGHT);
-        existing.show()?;
-        existing.unminimize()?;
-        existing.set_focus()?;
-        return Ok(());
+    let state = app.state::<OnboardingWindowState>();
+    let Some(existing) = app.get_webview_window(LABEL) else {
+        let mut readiness = state.readiness();
+        let action = readiness.request_open(Instant::now());
+        let generation = match action {
+            OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
+                generation
+            }
+            OpenAction::AwaitReady => return Ok(()),
+            OpenAction::Reveal => {
+                readiness.reset();
+                match readiness.request_open(Instant::now()) {
+                    OpenAction::StartLoading { generation } => generation,
+                    _ => unreachable!("an idle lifecycle starts loading"),
+                }
+            }
+        };
+        drop(readiness);
+        return build(app, generation);
+    };
+
+    let action = {
+        let mut readiness = state.readiness();
+        readiness.request_open(Instant::now())
+    };
+    match action {
+        OpenAction::Reveal => show(&existing),
+        OpenAction::AwaitReady => Ok(()),
+        OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
+            if !state.readiness().defer_build_until_destroyed(generation) {
+                return Ok(());
+            }
+            if let Err(error) = existing.destroy() {
+                window_lifecycle::cancel_load::<OnboardingWindowState>(app, generation);
+                return Err(error);
+            }
+            Ok(())
+        }
     }
+}
+
+/// Build a deferred replacement after Tauri removes the old window label.
+pub fn rebuild_after_destroy(app: &AppHandle) {
+    let generation =
+        window_lifecycle::begin_deferred_build::<OnboardingWindowState>(app, Instant::now());
+    let Some(generation) = generation else {
+        return;
+    };
+    if let Err(error) = build(app, generation) {
+        ::tracing::error!(event = "window_rebuild_failed", window = LABEL, error = %error);
+    }
+}
+
+fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
+    ::tracing::info!(
+        event = "window_renderer_load_started",
+        window = LABEL,
+        generation
+    );
+    window_lifecycle::arm_stale_warning::<OnboardingWindowState>(app, generation, LABEL);
 
     // Built hidden and positioned before the first show, so the window never
     // visibly jumps from a default position to the right one. Deliberately no
@@ -103,11 +184,15 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
     // monitor before the window has a screen.
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(URL.into()))
+        .initialization_script(renderer_generation_script(generation))
         .title("Set up antiburn")
         .inner_size(WIDTH, HEIGHT)
         .resizable(false)
         .maximizable(false)
-        .visible(false);
+        .visible(false)
+        .on_page_load(|window, payload| {
+            window_lifecycle::trace_page_load::<OnboardingWindowState>(window, payload, LABEL);
+        });
 
     #[cfg(target_os = "macos")]
     {
@@ -119,17 +204,39 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
             .hidden_title(true);
     }
 
-    let window = builder.build()?;
+    let window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            window_lifecycle::cancel_load::<OnboardingWindowState>(app, generation);
+            return Err(error);
+        }
+    };
     center_on_active_monitor(&window, WIDTH, HEIGHT);
-    window.show()?;
-    // This is the one window that opens without a click behind it, so nothing
-    // else is going to bring it forward. On macOS `set_focus` activates the
-    // application as well as ordering the window front — and by here the app is
-    // already `Regular` (see [`apply_activation_policy`], applied before this
-    // is called), so activating it means a Dock icon and a ⌘-Tab entry, not
-    // just a window that happens to be on top.
-    window.set_focus()?;
+    Ok(())
+}
 
+/// Reveal onboarding after React commits its shell.
+pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
+    let app = window.app_handle();
+    if window_lifecycle::renderer_ready::<OnboardingWindowState>(
+        app,
+        LABEL,
+        generation,
+        Instant::now(),
+    ) && let Err(error) = show(window)
+    {
+        ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
+    }
+}
+
+fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    center_on_active_monitor(window, WIDTH, HEIGHT);
+    window.show()?;
+    window.unminimize()?;
+    // This window opens without a click behind it. Focus activates the regular
+    // macOS application and keeps the flow reachable from the Dock.
+    window.set_focus()?;
+    ::tracing::info!(event = "window_revealed", window = LABEL);
     Ok(())
 }
 
@@ -151,6 +258,7 @@ pub fn finish(app: &AppHandle) {
     // ordered out by it — hence this line before that one, not after.
     apply_activation_policy(app, false);
     crate::notifications::note_menu_bar_home(app);
+    crate::settings::schedule_prewarm(app);
 
     // `finish` runs inside the onboarding webview's final `set_settings` IPC.
     // Destroying that webview synchronously can cut off the command response;
@@ -229,15 +337,10 @@ pub fn is_pending(app: &AppHandle) -> bool {
 mod tests {
     use super::*;
 
-    /// The frontend has to be opened with the fragment its router recognizes,
-    /// and the two live in different languages — a rename on either side is
-    /// silent until a window renders the wrong view.
+    /// The shell must open the entry that mounts the first-run view.
     #[test]
-    fn the_url_carries_the_fragment_the_frontend_routes_on() {
-        assert!(
-            URL.ends_with("#/onboarding"),
-            "`src/lib/route.ts` maps this fragment to the first-run view"
-        );
+    fn the_url_uses_the_onboarding_entry() {
+        assert_eq!(URL, "onboarding.html");
         assert_eq!(
             LABEL, "onboarding",
             "also listed in capabilities/default.json"

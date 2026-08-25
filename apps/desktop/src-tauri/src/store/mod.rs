@@ -40,13 +40,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::dto::DeferredPermissionDir;
 
-#[cfg(test)]
-pub use model::SourceVersionState;
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
-    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, RelationKind, RelationRecord, RepositoryRecord,
-    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, ThemePreference,
-    UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceCompletion,
+    EvidenceFailure, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
+    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions, RelationKind,
+    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey,
+    SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -485,7 +484,10 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         for record in records {
-            upsert_session_in(&tx, record)?;
+            let (previous_generation, source_generation) = upsert_session_in(&tx, record)?;
+            if previous_generation.is_none_or(|previous| source_generation > previous) {
+                mark_evidence_pending_in(&tx, &record.key)?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -594,8 +596,6 @@ impl Store {
     }
 
     /// One session's persisted source version and optional start time.
-    // CH-005 and CH-007 add production consumers before this test-only accessor enters runtime code.
-    #[cfg(test)]
     pub fn session_source_state(&self, key: &SessionKey) -> Result<Option<SourceVersionState>> {
         let connection = self.lock();
         Ok(connection
@@ -613,6 +613,279 @@ impl Store {
                 },
             )
             .optional()?)
+    }
+
+    /// One session's persisted evidence and queue state.
+    pub fn evidence(&self, key: &SessionKey) -> Result<Option<EvidenceRow>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT environment_key, agent, session_id, status,
+                        analyzed_generation, processed_fingerprint,
+                        parser_revision, analyzer_revision, evidence_schema_revision,
+                        evidence_json, diagnostics_json, retry_count, claim_fence,
+                        claimed_at_epoch, lease_expires_at_epoch,
+                        next_attempt_at_epoch, analyzed_at_epoch, last_error
+                   FROM session_evidence
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Enroll missing evidence rows and requeue stale transcript projections.
+    pub fn reconcile_evidence_revisions(
+        &self,
+        agents: &[&str],
+        revisions: ProjectionRevisions,
+    ) -> Result<usize> {
+        if agents.is_empty() {
+            return Ok(0);
+        }
+
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let agent_placeholders = vec!["?"; agents.len()].join(", ");
+        let agent_values: Vec<rusqlite::types::Value> = agents
+            .iter()
+            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
+            .collect();
+        let enrolled = transaction.execute(
+            &format!(
+                "INSERT INTO session_evidence (environment_key, agent, session_id)
+                 SELECT session.environment_key, session.agent, session.session_id
+                   FROM session
+                  WHERE session.agent IN ({agent_placeholders})
+                    AND NOT EXISTS (
+                        SELECT 1 FROM session_evidence
+                         WHERE session_evidence.environment_key = session.environment_key
+                           AND session_evidence.agent = session.agent
+                           AND session_evidence.session_id = session.session_id
+                    )"
+            ),
+            rusqlite::params_from_iter(agent_values.iter()),
+        )?;
+
+        let parser_parameter = agents.len() + 1;
+        let analyzer_parameter = agents.len() + 2;
+        let metrics_parameter = agents.len() + 3;
+        let evidence_parameter = agents.len() + 4;
+        let update_sql = format!(
+            "UPDATE session_evidence AS evidence
+                SET status = 'pending', last_error = NULL,
+                    next_attempt_at_epoch = NULL, retry_count = 0
+              WHERE evidence.agent IN ({agent_placeholders})
+                AND (
+                    evidence.status <> 'pending'
+                    OR evidence.last_error IS NOT NULL
+                    OR evidence.next_attempt_at_epoch IS NOT NULL
+                    OR evidence.retry_count <> 0
+                )
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND (
+                           evidence.analyzed_generation IS NOT session.source_generation
+                           OR evidence.parser_revision IS NOT ?{parser_parameter}
+                           OR evidence.analyzer_revision IS NOT ?{analyzer_parameter}
+                           OR evidence.evidence_schema_revision IS NOT ?{evidence_parameter}
+                           OR NOT EXISTS (
+                               SELECT 1 FROM session_analysis AS analysis
+                                WHERE analysis.environment_key = session.environment_key
+                                  AND analysis.agent = session.agent
+                                  AND analysis.session_id = session.session_id
+                                  AND analysis.analyzed_generation = session.source_generation
+                                  AND analysis.parser_revision = ?{parser_parameter}
+                                  AND analysis.analyzer_revision = ?{analyzer_parameter}
+                                  AND analysis.metrics_schema_revision = ?{metrics_parameter}
+                           )
+                       )
+                )"
+        );
+        let mut update_values = agent_values;
+        update_values.extend([
+            rusqlite::types::Value::Integer(revisions.parser_revision),
+            rusqlite::types::Value::Integer(revisions.analyzer_revision),
+            rusqlite::types::Value::Integer(revisions.metrics_schema_revision),
+            rusqlite::types::Value::Integer(revisions.evidence_schema_revision),
+        ]);
+        let requeued = transaction.execute(
+            &update_sql,
+            rusqlite::params_from_iter(update_values.iter()),
+        )?;
+        transaction.commit()?;
+        Ok(enrolled + requeued)
+    }
+
+    /// Claim the next eligible evidence row for an enabled agent.
+    pub fn claim_next_evidence(
+        &self,
+        agents: &[&str],
+        now_epoch: i64,
+        lease_secs: i64,
+    ) -> Result<Option<EvidenceClaim>> {
+        if agents.is_empty() {
+            return Ok(None);
+        }
+
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let agent_placeholders = vec!["?"; agents.len()].join(", ");
+        let mut values: Vec<rusqlite::types::Value> = agents
+            .iter()
+            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
+            .collect();
+        values.push(rusqlite::types::Value::Integer(now_epoch));
+        let now_parameter = values.len();
+        let candidate = transaction
+            .query_row(
+                &format!(
+                    "SELECT evidence.environment_key, evidence.agent, evidence.session_id
+                       FROM session_evidence AS evidence
+                       JOIN session
+                         ON session.environment_key = evidence.environment_key
+                        AND session.agent = evidence.agent
+                        AND session.session_id = evidence.session_id
+                      WHERE evidence.agent IN ({agent_placeholders})
+                        AND (
+                            evidence.status = 'pending'
+                            OR (evidence.status = 'processing'
+                                AND evidence.lease_expires_at_epoch <= ?{now_parameter})
+                        )
+                        AND (evidence.next_attempt_at_epoch IS NULL
+                             OR evidence.next_attempt_at_epoch <= ?{now_parameter})
+                      ORDER BY evidence.next_attempt_at_epoch,
+                               evidence.claimed_at_epoch,
+                               evidence.environment_key, evidence.agent, evidence.session_id
+                      LIMIT 1"
+                ),
+                rusqlite::params_from_iter(values.iter()),
+                |row| {
+                    Ok(SessionKey::new(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some(key) = candidate else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+
+        transaction.execute(
+            "UPDATE session_evidence
+                SET status = 'processing', claim_fence = claim_fence + 1,
+                    claimed_at_epoch = ?4, lease_expires_at_epoch = ?5
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                now_epoch,
+                now_epoch + lease_secs,
+            ],
+        )?;
+        let (source_generation, claim_fence, retry_count) = transaction.query_row(
+            "SELECT session.source_generation, evidence.claim_fence, evidence.retry_count
+               FROM session_evidence AS evidence
+               JOIN session
+                 ON session.environment_key = evidence.environment_key
+                AND session.agent = evidence.agent
+                AND session.session_id = evidence.session_id
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        transaction.commit()?;
+        Ok(Some(EvidenceClaim {
+            key,
+            source_generation,
+            claim_fence,
+            retry_count,
+        }))
+    }
+
+    /// Extend a claim when its fence and source generation remain current.
+    pub fn renew_evidence_lease(
+        &self,
+        claim: &EvidenceClaim,
+        now_epoch: i64,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        let connection = self.lock();
+        let updated = connection.execute(
+            "UPDATE session_evidence AS evidence
+                SET claimed_at_epoch = ?6, lease_expires_at_epoch = ?7
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3
+                AND evidence.status = 'processing' AND evidence.claim_fence = ?4
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND session.source_generation = ?5
+                )",
+            params![
+                claim.key.environment_key,
+                claim.key.agent,
+                claim.key.session_id,
+                claim.claim_fence,
+                claim.source_generation,
+                now_epoch,
+                now_epoch + lease_secs,
+            ],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Record a retry or terminal failure for a current claim.
+    pub fn fail_evidence(
+        &self,
+        claim: &EvidenceClaim,
+        failure: EvidenceFailure,
+        last_error: &str,
+    ) -> Result<bool> {
+        let (status, next_attempt_at_epoch) = match failure {
+            EvidenceFailure::Retry {
+                next_attempt_at_epoch,
+            } => ("pending", Some(next_attempt_at_epoch)),
+            EvidenceFailure::Failed => ("failed", None),
+        };
+        let connection = self.lock();
+        let updated = connection.execute(
+            "UPDATE session_evidence AS evidence
+                SET status = ?6, retry_count = retry_count + 1,
+                    last_error = ?7, claimed_at_epoch = NULL,
+                    lease_expires_at_epoch = NULL, next_attempt_at_epoch = ?8
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3
+                AND evidence.status = 'processing' AND evidence.claim_fence = ?4
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND session.source_generation = ?5
+                )",
+            params![
+                claim.key.environment_key,
+                claim.key.agent,
+                claim.key.session_id,
+                claim.claim_fence,
+                claim.source_generation,
+                status,
+                last_error,
+                next_attempt_at_epoch,
+            ],
+        )?;
+        Ok(updated > 0)
     }
 
     /// Forget all locally stored session data: every session, its analysis, its
@@ -637,6 +910,7 @@ impl Store {
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
+        tx.execute("DELETE FROM session_evidence", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM scan_state", [])?;
         tx.execute("UPDATE repository SET session_count = 0", [])?;
@@ -660,18 +934,31 @@ impl Store {
      * Derived analysis
      * ----------------------------------------------------------------- */
 
-    /// Cache one session's derived analysis.
-    pub fn save_analysis(&self, record: &AnalysisRecord) -> Result<()> {
-        self.lock().execute(
+    /// Publish metrics, evidence, and the optional start time as one pass.
+    pub fn publish_projections(
+        &self,
+        record: &AnalysisRecord,
+        started_at_epoch: Option<i64>,
+        completion: &EvidenceCompletion,
+    ) -> Result<bool> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 inclusive_models_json, source_fingerprint, pricing_generation,
+                 analyzed_generation, parser_revision, analyzer_revision,
+                 metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  source_fingerprint = excluded.source_fingerprint,
-                 pricing_generation = excluded.pricing_generation",
+                 pricing_generation = excluded.pricing_generation,
+                 analyzed_generation = excluded.analyzed_generation,
+                 parser_revision = excluded.parser_revision,
+                 analyzer_revision = excluded.analyzer_revision,
+                 metrics_schema_revision = excluded.metrics_schema_revision",
             params![
                 record.key.environment_key,
                 record.key.agent,
@@ -680,8 +967,117 @@ impl Store {
                 record.inclusive_models_json,
                 record.source_fingerprint,
                 record.pricing_generation,
+                record.analyzed_generation,
+                record.parser_revision,
+                record.analyzer_revision,
+                record.metrics_schema_revision,
             ],
         )?;
+        if let Some(started_at_epoch) = started_at_epoch {
+            transaction.execute(
+                "UPDATE session SET started_at_epoch = ?4
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id,
+                    started_at_epoch,
+                ],
+            )?;
+        }
+        let updated = transaction.execute(
+            "UPDATE session_evidence AS evidence
+                SET status = ?4, analyzed_generation = ?5,
+                    processed_fingerprint = ?6, parser_revision = ?7,
+                    analyzer_revision = ?8, evidence_schema_revision = ?9,
+                    evidence_json = ?10, diagnostics_json = ?11,
+                    analyzed_at_epoch = ?12, retry_count = 0, last_error = NULL,
+                    claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
+                    next_attempt_at_epoch = NULL
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3
+                AND evidence.status = 'processing' AND evidence.claim_fence = ?13
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND session.source_generation = ?5
+                )",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id,
+                completion.status.as_str(),
+                record.analyzed_generation,
+                record.source_fingerprint,
+                record.parser_revision,
+                record.analyzer_revision,
+                completion.evidence_schema_revision,
+                completion.evidence_json,
+                completion.diagnostics_json,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+                completion.claim_fence,
+            ],
+        )?;
+        if updated == 0 {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Cache one session's derived analysis.
+    pub fn save_analysis(
+        &self,
+        record: &AnalysisRecord,
+        started_at_epoch: Option<i64>,
+    ) -> Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO session_analysis (
+                 environment_key, agent, session_id, model_breakdown_json,
+                 inclusive_models_json, source_fingerprint, pricing_generation,
+                 analyzed_generation, parser_revision, analyzer_revision,
+                 metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+                 model_breakdown_json = excluded.model_breakdown_json,
+                 inclusive_models_json = excluded.inclusive_models_json,
+                 source_fingerprint = excluded.source_fingerprint,
+                 pricing_generation = excluded.pricing_generation,
+                 analyzed_generation = excluded.analyzed_generation,
+                 parser_revision = excluded.parser_revision,
+                 analyzer_revision = excluded.analyzer_revision,
+                 metrics_schema_revision = excluded.metrics_schema_revision",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id,
+                record.model_breakdown_json,
+                record.inclusive_models_json,
+                record.source_fingerprint,
+                record.pricing_generation,
+                record.analyzed_generation,
+                record.parser_revision,
+                record.analyzer_revision,
+                record.metrics_schema_revision,
+            ],
+        )?;
+        if let Some(started_at_epoch) = started_at_epoch {
+            transaction.execute(
+                "UPDATE session SET started_at_epoch = ?4
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id,
+                    started_at_epoch,
+                ],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -690,7 +1086,9 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, model_breakdown_json,
-                    inclusive_models_json, source_fingerprint, pricing_generation
+                    inclusive_models_json, source_fingerprint, pricing_generation,
+                    analyzed_generation, parser_revision, analyzer_revision,
+                    metrics_schema_revision
                FROM session_analysis
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -708,6 +1106,10 @@ impl Store {
                         inclusive_models_json: row.get(4)?,
                         source_fingerprint: row.get(5)?,
                         pricing_generation: row.get(6)?,
+                        analyzed_generation: row.get(7)?,
+                        parser_revision: row.get(8)?,
+                        analyzer_revision: row.get(9)?,
+                        metrics_schema_revision: row.get(10)?,
                     })
                 },
             )
@@ -1184,7 +1586,22 @@ pub fn iso_from_epoch(epoch: Option<i64>) -> String {
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<()> {
+fn upsert_session_in(
+    connection: &Connection,
+    record: &SessionRecord,
+) -> Result<(Option<i64>, i64)> {
+    let previous_generation = connection
+        .query_row(
+            "SELECT source_generation FROM session
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
     let now = now_rfc3339();
     connection.execute(
         "INSERT INTO session (
@@ -1284,6 +1701,28 @@ fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<
             ],
         )?;
     }
+    let source_generation = connection.query_row(
+        "SELECT source_generation FROM session
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+        params![
+            record.key.environment_key,
+            record.key.agent,
+            record.key.session_id
+        ],
+        |row| row.get(0),
+    )?;
+    Ok((previous_generation, source_generation))
+}
+
+fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result<()> {
+    connection.execute(
+        "INSERT INTO session_evidence (environment_key, agent, session_id)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+             status = 'pending', last_error = NULL,
+             next_attempt_at_epoch = NULL, retry_count = 0",
+        params![key.environment_key, key.agent, key.session_id],
+    )?;
     Ok(())
 }
 
@@ -1304,6 +1743,35 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
         parameters,
     )?;
     Ok(removed > 0)
+}
+
+fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
+    let status: EvidenceStatus = row
+        .get::<_, String>(3)?
+        .parse()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(EvidenceRow {
+        key: SessionKey::new(
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ),
+        status,
+        analyzed_generation: row.get(4)?,
+        processed_fingerprint: row.get(5)?,
+        parser_revision: row.get(6)?,
+        analyzer_revision: row.get(7)?,
+        evidence_schema_revision: row.get(8)?,
+        evidence_json: row.get(9)?,
+        diagnostics_json: row.get(10)?,
+        retry_count: row.get(11)?,
+        claim_fence: row.get(12)?,
+        claimed_at_epoch: row.get(13)?,
+        lease_expires_at_epoch: row.get(14)?,
+        next_attempt_at_epoch: row.get(15)?,
+        analyzed_at_epoch: row.get(16)?,
+        last_error: row.get(17)?,
+    })
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {

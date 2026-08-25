@@ -46,6 +46,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    isCacheRoutingMiss: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
     userPrompts: 0,
@@ -133,6 +134,21 @@ describe("ContextTokensChart", () => {
     expect(screen.queryAllByText(/→|effort |^fast$/)).toEqual([])
   })
 
+  it("draws a lighter bar up to the context level for a cache-routing-miss bucket", () => {
+    const buckets = [
+      bucket({ contextTokens: 200_000 }),
+      bucket({ contextTokens: 50_000, cacheWriteTokens: 40_000, isCacheRoutingMiss: true }),
+      bucket({ contextTokens: 200_000 }),
+    ]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+    )
+
+    const bar = container.querySelector('line[stroke="var(--color-context-critical)"]')
+    expect(bar).not.toBeNull()
+    expect(bar?.getAttribute("stroke-opacity")).toBe("0.2")
+  })
+
   it("draws sub-agent tokens as a third series on the token axis", () => {
     const buckets = [bucket({ tokensIn: 100, tokensOut: 20 }), bucket({ subagentTokens: 500 })]
     const { container } = render(
@@ -155,6 +171,7 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    isCacheRoutingMiss: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
     lastTool: null,
@@ -286,6 +303,38 @@ describe("ContextTokensTooltip", () => {
 
     expect(screen.getByText("30m into session")).toBeInTheDocument()
     expect(screen.queryByText("25% through")).not.toBeInTheDocument()
+  })
+
+  it("names a cache rehydration by its cache write", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[{ payload: point({ isCacheRehydration: true, cacheWriteTokens: 40_000 }) }]}
+      />,
+    )
+
+    expect(screen.getByText("Cache rehydrated · 40.0k written")).toBeInTheDocument()
+  })
+
+  it("names a cache routing miss by its re-sent input when no write is reported", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              isCacheRoutingMiss: true,
+              cacheWriteTokens: 0,
+              tokensIn: 12_000,
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Cache routing miss · 12.0k re-sent uncached")).toBeInTheDocument()
   })
 
   it("shows the wall-clock gap since the prior parent turn", () => {

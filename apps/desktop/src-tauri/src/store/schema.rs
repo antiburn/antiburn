@@ -14,7 +14,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -302,4 +302,30 @@ ALTER TABLE session_analysis ADD COLUMN metrics_schema_revision INTEGER NOT NULL
 const V10: &str = r#"
 ALTER TABLE usage_analytics_event RENAME TO analytics_event;
 ALTER TABLE usage_analytics_identity RENAME TO analytics_identity;
+"#;
+
+/// v11 — durable session evidence and its work lifecycle.
+///
+/// # Data policy (schema-level contract)
+///
+/// This table stores derived facts and never stores transcript text.
+/// Session deletion and clear-local-session-data remove these facts.
+/// Transcript file removal does not remove these facts.
+const V11: &str = r#"
+CREATE TABLE session_evidence (
+    environment_key TEXT NOT NULL, agent TEXT NOT NULL, session_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    analyzed_generation INTEGER, processed_fingerprint TEXT,
+    parser_revision INTEGER, analyzer_revision INTEGER, evidence_schema_revision INTEGER,
+    evidence_json TEXT, diagnostics_json TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0, claim_fence INTEGER NOT NULL DEFAULT 0,
+    claimed_at_epoch INTEGER, lease_expires_at_epoch INTEGER,
+    next_attempt_at_epoch INTEGER, analyzed_at_epoch INTEGER, last_error TEXT,
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE,
+    CHECK (status IN ('pending','processing','ready','unsupported','failed'))
+) STRICT;
+CREATE INDEX session_evidence_status
+    ON session_evidence (status, next_attempt_at_epoch, lease_expires_at_epoch);
 "#;

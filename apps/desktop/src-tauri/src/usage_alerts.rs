@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The usage milestone monitor.
+//! The background live-usage and milestone monitor.
 //!
 //! The milestone engine ([`crate::provider_usage::live::milestones`])
 //! evaluates whatever the registered sources report — and those now report
@@ -22,7 +22,7 @@
 
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
 use crate::provider_usage;
@@ -34,13 +34,16 @@ pub const EVENT_CHANGED: &str = "live-usage:changed";
 /// Where the last complete view payload survives an application restart.
 const SNAPSHOT_KEY: &str = "internal:liveUsageSnapshot";
 
-/// How often the monitor looks for new milestone crossings.
+/// The last webview-reported UTC offset used to derive local-day metrics.
+const UTC_OFFSET_KEY: &str = "internal:liveUsageUtcOffsetMinutes";
+
+/// How often the monitor refreshes its snapshot and checks milestones.
 const TICK: Duration = Duration::from_secs(300);
 
 /// Let the first scans land before judging anything.
 const STARTUP_DELAY: Duration = Duration::from_secs(120);
 
-/// How fresh a reading the milestone pass asks each source's cooldown for.
+/// How fresh a reading the background pass asks each source's cooldown for.
 ///
 /// This pass is not shown to anyone — it runs on [`TICK`], whether or not the
 /// popover is even open — so there is no reason to pay for a fetch more
@@ -50,7 +53,7 @@ const STARTUP_DELAY: Duration = Duration::from_secs(120);
 /// every source's cooldown fixed unconditionally before `max_age` existed,
 /// so this pass's background traffic is unchanged by the popover's own,
 /// much shorter, `max_age` — see `crate::commands::POPOVER_LIVE_USAGE_MAX_AGE`.
-const MILESTONE_MAX_AGE: Duration = Duration::from_secs(600);
+const BACKGROUND_MAX_AGE: Duration = Duration::from_secs(600);
 
 /// Spawn the monitor loop; the handle joins the shell's scheduler registry.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
@@ -112,6 +115,7 @@ pub struct LiveUsage {
     ledger: std::sync::Mutex<provider_usage::live::MilestoneLedger>,
     summarizing: std::sync::Mutex<()>,
     snapshot: std::sync::Mutex<LiveUsageSummary>,
+    utc_offset_minutes: std::sync::Mutex<i32>,
 }
 
 impl LiveUsage {
@@ -121,6 +125,7 @@ impl LiveUsage {
             ledger: std::sync::Mutex::default(),
             summarizing: std::sync::Mutex::default(),
             snapshot: std::sync::Mutex::default(),
+            utc_offset_minutes: std::sync::Mutex::default(),
         }
     }
 
@@ -135,6 +140,13 @@ impl LiveUsage {
             provider.freshness = LiveUsageFreshness::Stale;
         }
         live.replace_snapshot(snapshot, None);
+        *live
+            .utc_offset_minutes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = store
+            .internal_value(UTC_OFFSET_KEY)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
         live
     }
 
@@ -156,6 +168,29 @@ impl LiveUsage {
             && let Ok(raw) = serde_json::to_string(&snapshot)
         {
             store.set_internal_value(SNAPSHOT_KEY, &raw);
+        }
+    }
+
+    /// Return the last offset reported by a webview.
+    pub fn utc_offset_minutes(&self) -> i32 {
+        *self
+            .utc_offset_minutes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Remember the offset that local-day metrics must use.
+    pub fn set_utc_offset_minutes(&self, value: i32, store: Option<&Store>) {
+        let mut current = self
+            .utc_offset_minutes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *current == value {
+            return;
+        }
+        *current = value;
+        if let Some(store) = store {
+            store.set_internal_value(UTC_OFFSET_KEY, &value.to_string());
         }
     }
 
@@ -192,34 +227,40 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
     let Ok(settings) = store.settings() else {
         return;
     };
-    milestone_pass(app, &settings);
+    background_pass(app, &settings);
 }
 
-fn milestone_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
-    // Gate *before* evaluating: selection is destructive (a chosen crossing
-    // is recorded as delivered), so a crossing selected while notifications
-    // were off would be silently consumed. `live_usage_active` folds in both
-    // the reader's switch and onboarding having finished, so this can never
-    // fire — and never even collect, which is what would read a credential —
-    // before onboarding is done, whatever the switch's default is.
-    if !settings.live_usage_active()
-        || !crate::notifications::allowed(settings, crate::notifications::Kind::UsageMilestone)
-    {
+fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
+    // `live_usage_active` protects every credential read and provider request.
+    if !settings.live_usage_active() {
         return;
     }
     let Some(live) = app.try_state::<LiveUsage>() else {
         return;
     };
+    let _summarizing = live.summarizing();
+    let now = crate::scan::unix_now();
+    let collected = provider_usage::live::sources::collect(
+        &live.sources,
+        settings.live_usage_active(),
+        BACKGROUND_MAX_AGE,
+    );
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
-        provider_usage::live::sources::collect(
-            &live.sources,
-            settings.live_usage_active(),
-            MILESTONE_MAX_AGE,
-        )
-        .snapshots
-        .iter()
-        .map(milestone_snapshot)
-        .collect();
+        collected.snapshots.iter().map(milestone_snapshot).collect();
+    let store = app.try_state::<Store>();
+    let summary = provider_usage::live::summarize_collected(
+        collected,
+        store.as_deref(),
+        now,
+        live.utc_offset_minutes(),
+    );
+    live.replace_snapshot(summary.clone(), store.as_deref());
+    let _ = app.emit(EVENT_CHANGED, &summary);
+    // Gate before evaluation because selection records a crossing as delivered.
+    // A disabled notification must remain available if the reader enables it.
+    if !crate::notifications::allowed(settings, crate::notifications::Kind::UsageMilestone) {
+        return;
+    }
     let mut ledger = live
         .ledger
         .lock()
@@ -378,6 +419,17 @@ mod tests {
         let mut expected = stored;
         expected.providers[0].freshness = LiveUsageFreshness::Stale;
         assert_eq!(LiveUsage::from_store(&store).snapshot(), expected);
+    }
+
+    #[test]
+    fn the_latest_utc_offset_survives_a_restart() {
+        let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-live-usage-offset"))
+            .expect("in-memory store");
+        let live = LiveUsage::new();
+
+        live.set_utc_offset_minutes(630, Some(&store));
+
+        assert_eq!(LiveUsage::from_store(&store).utc_offset_minutes(), 630);
     }
 
     #[test]

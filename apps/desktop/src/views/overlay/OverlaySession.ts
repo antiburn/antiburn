@@ -2,27 +2,28 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { invoke } from "@tauri-apps/api/core"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { listen } from "@tauri-apps/api/event"
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window"
 import type { MouseEvent as ReactMouseEvent } from "react"
+import { flushSync } from "react-dom"
 
 import {
   getLatestSessionActivity,
   getLiveUsage,
   hideHudDetail,
+  resizeOverlayWindow,
   showHudDetail,
   type HudDetailState,
 } from "../../lib/ipc"
-import { setFloatingHudEnabled } from "../../lib/overlayWindow"
+import { hideOverlayWindow, setFloatingHudEnabled } from "../../lib/overlayWindow"
+import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { deriveUsageBars, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
 const LIVE_WINDOW_SECS = 90
 const LIVENESS_POLL_MS = 5_000
 const RESET_CLOCK_MS = 30_000
-/** The tooltip delay before the detail window shows. */
 const SHOW_DELAY_MS = 400
 
 export type OverlaySnapshot = {
@@ -87,7 +88,6 @@ export class OverlaySession {
   requestHover = (hovered: boolean): void => {
     if (hovered) {
       if (!this.snapshot.hovered) this.update({ hovered: true })
-      // A drag suppresses the timer until mouse up.
       if (!this.snapshot.dragging) this.armShowTimer()
       return
     }
@@ -98,14 +98,15 @@ export class OverlaySession {
   }
 
   startDrag = (event: ReactMouseEvent): void => {
-    if ((event.target as HTMLElement).closest("button")) return
+    if ((event.target as HTMLElement).closest("button") || this.snapshot.dragging) return
     const { screenX, screenY } = event
     void this.beginDrag(screenX, screenY)
   }
 
   close = (): void => {
+    this.requestHover(false)
     setFloatingHudEnabled(false)
-    void getCurrentWindow().hide()
+    void hideOverlayWindow().catch(() => {})
   }
 
   private start(): void {
@@ -118,8 +119,8 @@ export class OverlaySession {
       void getLiveUsage()
         .then((response) => {
           if (!this.isCurrent(generation)) return
-          this.update({ bars: deriveUsageBars(response) })
-          // A visible detail window repaints with the fresh bars.
+          this.commitLayout({ bars: deriveUsageBars(response) })
+          void this.syncWindow(true)
           if (this.detailShown) {
             void showHudDetail(this.detailState("refresh")).catch(() => {})
           }
@@ -219,33 +220,46 @@ export class OverlaySession {
     for (const listener of this.listeners) listener()
   }
 
+  private commitLayout(change: Partial<OverlaySnapshot>): void {
+    flushSync(() => this.update(change))
+  }
+
   private connectPanel(): void {
     if (!this.panel) return
-    this.reportHoverRegion()
+    void this.syncWindow(false)
     if (typeof ResizeObserver === "undefined") return
-    // The panel height moves with the bar count and fonts. The shell needs
-    // the fresh edges for its cursor watcher and for detail placement.
-    this.observer = new ResizeObserver(() => this.reportHoverRegion())
+    this.observer = new ResizeObserver(() => void this.syncWindow(true))
     this.observer.observe(this.panel)
   }
 
-  private reportHoverRegion = (): void => {
-    if (!this.panel || this.snapshot.dragging) return
-    const rect = this.panel.getBoundingClientRect()
-    void invoke("set_overlay_hover_region", { top: rect.top, bottom: rect.bottom }).catch(
+  private syncWindow(animate: boolean): Promise<void> {
+    if (!this.panel) return Promise.resolve()
+    const height = Math.ceil(this.panel.getBoundingClientRect().height)
+    return resizeOverlayWindow(height, false, animate && !prefersReducedMotion()).catch(
       () => {},
     )
   }
 
   private async beginDrag(screenX: number, screenY: number): Promise<void> {
-    // A drag cancels the show timer and hides the detail window at once.
     this.clearShowTimer()
     this.hideDetail()
-    const [monitor, position] = await Promise.all([
-      currentMonitor(),
-      getCurrentWindow().outerPosition(),
-    ])
-    if (!this.started) return
+    this.update({ dragging: true })
+    this.dragOrigin = null
+    this.addDragListeners()
+    await this.syncWindow(false)
+    if (!this.started || !this.snapshot.dragging) return
+
+    let monitor
+    let position
+    try {
+      const result = await Promise.all([currentMonitor(), getCurrentWindow().outerPosition()])
+      monitor = result[0]
+      position = result[1]
+    } catch {
+      this.settleDrag()
+      return
+    }
+    if (!this.started || !this.snapshot.dragging) return
     const scale = monitor?.scaleFactor ?? 1
     this.dragOrigin = {
       pointerX: screenX,
@@ -253,8 +267,6 @@ export class OverlaySession {
       windowX: position.x / scale,
       windowY: position.y / scale,
     }
-    this.update({ dragging: true })
-    this.addDragListeners()
   }
 
   private addDragListeners(): void {
@@ -281,8 +293,8 @@ export class OverlaySession {
     this.moveFrame = 0
     const origin = this.dragOrigin
     const event = this.pendingMove
-    if (!event || !origin) return
     this.pendingMove = null
+    if (!event || !origin) return
     void getCurrentWindow().setPosition(
       new LogicalPosition(
         origin.windowX + (event.screenX - origin.pointerX),
@@ -293,11 +305,13 @@ export class OverlaySession {
 
   private stopDrag = (): void => {
     if (!this.snapshot.dragging) return
+    this.settleDrag()
+  }
+
+  private settleDrag(): void {
     this.removeDragListeners()
     this.dragOrigin = null
     this.update({ dragging: false })
-    this.reportHoverRegion()
-    // The timer restarts from zero when the pointer is still on the HUD.
     if (this.snapshot.hovered) this.armShowTimer()
   }
 }

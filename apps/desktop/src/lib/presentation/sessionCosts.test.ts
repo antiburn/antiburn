@@ -126,6 +126,11 @@ describe("resultComponentCost", () => {
       outputUsd: 1,
       cacheReadUsd: 1,
       cacheWriteUsd: 1,
+      totalTokens: 10,
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
     })
   })
 })
