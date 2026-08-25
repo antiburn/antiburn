@@ -24,7 +24,7 @@ use super::jsonl::{
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
 use crate::analysis::interface::{
     NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionSummary,
-    VendorAdapter,
+    VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 
@@ -41,17 +41,21 @@ impl VendorAdapter for ClaudeAdapter {
         collector.into_session()
     }
 
-    fn visit(&self, input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result<()> {
-        (|| -> anyhow::Result<()> {
+    fn visit(
+        &self,
+        input: &SessionInput,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        (|| -> anyhow::Result<VisitOutcome> {
             match &input.source {
                 RawSource::File(path) => {
                     let file = File::open(path)?;
-                    self.visit_reader(BufReader::new(file), sink)
+                    self.visit_reader(BufReader::new(file), sink)?;
                 }
                 RawSource::Jsonl(content) => {
                     let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
                     let source = Cursor::new(content.as_bytes()).chain(suffix);
-                    self.visit_reader(BufReader::new(source), sink)
+                    self.visit_reader(BufReader::new(source), sink)?;
                 }
                 RawSource::Sqlite(path) => {
                     anyhow::bail!(
@@ -60,6 +64,7 @@ impl VendorAdapter for ClaudeAdapter {
                     )
                 }
             }
+            Ok(VisitOutcome::Unvalidated)
         })()
         .with_context(|| format!("reading claude session {}", input.session_id))
     }

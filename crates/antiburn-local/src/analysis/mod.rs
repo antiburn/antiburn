@@ -38,6 +38,7 @@ mod interface;
 mod merge;
 mod model;
 mod pricing;
+mod source_validity;
 mod vendors;
 
 pub use engine::{
@@ -51,13 +52,16 @@ pub use framing::{
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
 pub use interface::{
     NormalizedRecord, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionInput,
-    SessionSummary, VendorAdapter,
+    SessionSummary, SourceChangedReason, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
+pub use source_validity::{
+    AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
+};
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
