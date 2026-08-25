@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts"
 
+import { prefersReducedMotion, slowAnimationDurationMs } from "../../../lib/popoverHeight"
 import { modelShortName } from "../../../lib/presentation/models"
 import {
   axisScale,
@@ -261,6 +262,11 @@ export function ContextTokensChart({
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
   const hasContext = contextWindow != null
+  // A live poll can grow this chart's data mid-session, unlike the other
+  // analysis charts, which only ever draw once. The transition makes that
+  // arrival readable instead of a silent jump cut.
+  const animate = !prefersReducedMotion()
+  const animationDurationMs = slowAnimationDurationMs()
 
   const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
   const tokenPeak = data.reduce(
@@ -412,7 +418,9 @@ export function ContextTokensChart({
             stroke="none"
             fill={row.colorVar}
             fillOpacity={0.22}
-            isAnimationActive={false}
+            isAnimationActive={animate}
+            animationDuration={animationDurationMs}
+            animationEasing="ease-out"
           />
         ))}
         {hasContext && (
@@ -423,7 +431,9 @@ export function ContextTokensChart({
             stroke="var(--color-token-in)"
             strokeWidth={1.5}
             fill={`url(#${fillId})`}
-            isAnimationActive={false}
+            isAnimationActive={animate}
+            animationDuration={animationDurationMs}
+            animationEasing="ease-out"
           />
         )}
       </AreaChart>

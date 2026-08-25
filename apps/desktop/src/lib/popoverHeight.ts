@@ -70,3 +70,27 @@ export function prefersReducedMotion(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches
 }
+
+/**
+ * The design system's slow duration (`--duration-slow`, `design.md`), in
+ * milliseconds, for a JS-driven animation that cannot consume the CSS custom
+ * property directly (a Recharts `animationDuration`, say).
+ *
+ * Read from the live custom property rather than a copied number, so the
+ * token stays the one source of truth. Falls back to the token's documented
+ * value where the property is unset, such as a test environment with no
+ * stylesheet loaded.
+ */
+export function slowAnimationDurationMs(): number {
+  const fallback = 300
+  if (typeof window === "undefined" || typeof getComputedStyle !== "function") return fallback
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--duration-slow")
+    .trim()
+  const ms = raw.endsWith("ms")
+    ? Number.parseFloat(raw)
+    : raw.endsWith("s")
+      ? Number.parseFloat(raw) * 1000
+      : NaN
+  return Number.isFinite(ms) ? ms : fallback
+}

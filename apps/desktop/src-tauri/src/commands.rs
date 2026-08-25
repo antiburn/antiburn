@@ -772,6 +772,29 @@ pub async fn get_session_analysis(
     })
 }
 
+/// The cheap fingerprint of one session's analysis inputs.
+///
+/// The session-detail popover polls this while it is open, and re-runs the
+/// full analysis only when the value changes. This command reads file
+/// metadata alone, never a transcript, so a poll costs almost nothing.
+#[tauri::command]
+pub async fn get_session_analysis_fingerprint(
+    agent: String,
+    session_id: String,
+    wsl_distro: Option<String>,
+) -> CommandResult<String> {
+    let Some(kind) = kind_from_slug(&agent) else {
+        return Err(format!("unknown agent {agent}"));
+    };
+    let Some(source) = analysis::locate(kind, &session_id, wsl_distro.as_deref()).await else {
+        return Ok(analysis::MISSING_FINGERPRINT.to_string());
+    };
+    Ok(
+        analysis::fingerprint_with_subagents(kind, &session_id, wsl_distro.as_deref(), &source)
+            .await,
+    )
+}
+
 /// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
 pub async fn get_subagent_analysis(

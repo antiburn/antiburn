@@ -14,6 +14,7 @@ import {
   getLiveUsage,
   getProviderUsage,
   getSessionAnalysis,
+  getSessionAnalysisFingerprint,
   getSettings,
   getStorageHealth,
   getSubagentAnalysis,
@@ -106,6 +107,14 @@ export interface PopoverSnapshot {
    * earlier result is still on screen. Drives the detail header's spinner.
    */
   analysisRefreshing: boolean
+  /**
+   * A timestamp bumped every `NOW_TICK_MS` while a detail pane is open.
+   *
+   * The value itself has no reader: its purpose is to change the snapshot
+   * reference so the header's relative-time text ("last just now") re-renders
+   * on its own clock, not the arrival of new data.
+   */
+  now: number
 }
 
 /**
@@ -142,6 +151,27 @@ async function loadAnalysis(subject: SessionSubject): Promise<SessionAnalysisPay
   return getSessionAnalysis(subject.agent, subject.sessionId, subject.wslDistro)
 }
 
+/**
+ * Fetch one subject's transcript fingerprint, for the live-detail poll.
+ *
+ * The parent fingerprint covers the parent transcript and every sub-agent
+ * transcript, so a sub-agent subject fingerprints its parent session.
+ */
+async function loadAnalysisFingerprint(subject: SessionSubject): Promise<string> {
+  const sessionId = subject.subagent?.parentSessionId ?? subject.sessionId
+  return getSessionAnalysisFingerprint(subject.agent, sessionId, subject.wslDistro)
+}
+
+/** How often the open detail pane checks its transcript for new activity. */
+export const ANALYSIS_POLL_MS = 10_000
+
+/**
+ * How often the store forces a snapshot change while a detail pane is open,
+ * so the header's relative-time text ("last just now") stays current even
+ * when nothing else about the session has changed.
+ */
+export const NOW_TICK_MS = 30_000
+
 /** Narrow the shell's status string to the repository list's union. */
 function repositoryStatus(status: string): LocalRepositoryStatus {
   switch (status) {
@@ -173,6 +203,18 @@ export class PopoverSession {
   private analysisRefreshCount = 0
   private liveUsageRevision = 0
 
+  /**
+   * The key of the subject the poll's fingerprint belongs to, and the last
+   * fingerprint fetched for it. `null` fingerprint means no baseline has
+   * landed yet, so a poll tick must not treat it as a change.
+   */
+  private analysisFingerprintKey: string | null = null
+  private analysisFingerprint: string | null = null
+  /** Set while a poll tick's fetch is in flight, so ticks never overlap. */
+  private analysisPollInFlight = false
+  private analysisPollTimer: ReturnType<typeof setInterval> | null = null
+  private nowTickTimer: ReturnType<typeof setInterval> | null = null
+
   private stopSettingsListening: (() => void) | null = null
   private stopSessionsInvalidatedListening: (() => void) | null = null
   private stopSessionEntryChangedListening: (() => void) | null = null
@@ -196,6 +238,7 @@ export class PopoverSession {
     stack: [],
     analysis: null,
     analysisRefreshing: false,
+    now: Date.now(),
   }
 
   getSnapshot = (): PopoverSnapshot => this.snapshot
@@ -216,21 +259,27 @@ export class PopoverSession {
   openSession = (subject: SessionSubject): void => {
     this.update({ stack: [...this.snapshot.stack, subject] })
     this.syncHeight()
-    this.loadAnalysisFor(subject)
+    this.openAnalysis(subject)
   }
 
   goBack = (): void => {
     this.update({ stack: this.snapshot.stack.slice(0, -1) })
     this.syncHeight()
     const top = this.snapshot.stack.at(-1)
-    if (top) this.loadAnalysisFor(top)
+    if (top) {
+      this.openAnalysis(top)
+    } else {
+      this.analysisFingerprintKey = null
+      this.analysisFingerprint = null
+      this.syncDetailTimers()
+    }
   }
 
   /** Replace the top of the stack, for the newer/older traversal. */
   replaceTop = (subject: SessionSubject): void => {
     this.update({ stack: [...this.snapshot.stack.slice(0, -1), subject] })
     this.syncHeight()
-    this.loadAnalysisFor(subject)
+    this.openAnalysis(subject)
   }
 
   /** The shown session's local records were deleted: go back and re-list. */
@@ -295,6 +344,18 @@ export class PopoverSession {
     // event's propagation path, so every surface listening on `document` has
     // already had its chance to claim the key first.
     window.addEventListener("keydown", this.onWindowKeyDown)
+
+    // A stack carried over from a previous start (the window never really
+    // unmounts, but the listener count can still hit zero and come back)
+    // needs a fresh fingerprint baseline before the poll resumes on it.
+    const top = this.snapshot.stack.at(-1)
+    if (top) {
+      const key = sessionKey(top)
+      this.analysisFingerprintKey = key
+      this.analysisFingerprint = null
+      this.seedAnalysisFingerprint(top, generation, key)
+    }
+    this.syncDetailTimers()
   }
 
   private stop(): void {
@@ -314,6 +375,10 @@ export class PopoverSession {
     this.stopPopoverShownListening = null
     this.stopLiveUsageListening?.()
     this.stopLiveUsageListening = null
+    this.stopAnalysisPolling()
+    this.stopNowTicking()
+    this.analysisFingerprintKey = null
+    this.analysisFingerprint = null
     window.removeEventListener("keydown", this.onWindowKeyDown)
   }
 
@@ -585,6 +650,102 @@ export class PopoverSession {
         status: repositoryStatus(payload.status),
       })),
     })
+  }
+
+  /**
+   * Load a subject's analysis, then seed the live poll's fingerprint baseline
+   * from the freshly-loaded transcript, and make sure the poll and the
+   * relative-time ticker are running — a detail pane is now open.
+   *
+   * The baseline is fetched only after `loadAnalysisFor` settles, not next to
+   * it: that way the poll's first tick compares against a transcript state at
+   * least as new as what is already on screen, and never fires a refresh on
+   * data the reader has not even seen yet.
+   */
+  private openAnalysis(subject: SessionSubject): void {
+    const generation = this.generation
+    const key = sessionKey(subject)
+    this.analysisFingerprintKey = key
+    this.analysisFingerprint = null
+    void this.loadAnalysisFor(subject).then(() => {
+      if (generation !== this.generation || key !== this.analysisFingerprintKey) return
+      this.seedAnalysisFingerprint(subject, generation, key)
+    })
+    this.syncDetailTimers()
+  }
+
+  private seedAnalysisFingerprint(
+    subject: SessionSubject,
+    generation: number,
+    key: string,
+  ): void {
+    void loadAnalysisFingerprint(subject)
+      .then((fingerprint) => {
+        if (generation !== this.generation || key !== this.analysisFingerprintKey) return
+        this.analysisFingerprint = fingerprint
+      })
+      .catch(() => {})
+  }
+
+  /**
+   * One poll tick: fetch the open subject's fingerprint and, if it moved
+   * since the last tick (or the seed), re-load the analysis. Overlapping
+   * ticks are dropped rather than queued — a slow fetch is left to finish on
+   * its own, and the next interval simply tries again.
+   */
+  private tickAnalysisPoll = (): void => {
+    if (this.analysisPollInFlight) return
+    const subject = this.snapshot.stack.at(-1)
+    if (!subject) return
+    const generation = this.generation
+    const key = sessionKey(subject)
+    this.analysisPollInFlight = true
+    void loadAnalysisFingerprint(subject)
+      .then((fingerprint) => {
+        if (generation !== this.generation || key !== this.analysisFingerprintKey) return
+        const previous = this.analysisFingerprint
+        this.analysisFingerprint = fingerprint
+        if (previous !== null && fingerprint !== previous) {
+          void this.refreshAnalysis()
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.analysisPollInFlight = false
+      })
+  }
+
+  /** Start or stop the poll and the relative-time ticker to match whether a detail pane is open. */
+  private syncDetailTimers(): void {
+    if (this.snapshot.stack.length > 0) {
+      this.startAnalysisPolling()
+      this.startNowTicking()
+    } else {
+      this.stopAnalysisPolling()
+      this.stopNowTicking()
+    }
+  }
+
+  private startAnalysisPolling(): void {
+    if (this.analysisPollTimer !== null) return
+    this.analysisPollTimer = setInterval(this.tickAnalysisPoll, ANALYSIS_POLL_MS)
+  }
+
+  private stopAnalysisPolling(): void {
+    if (this.analysisPollTimer === null) return
+    clearInterval(this.analysisPollTimer)
+    this.analysisPollTimer = null
+  }
+
+  private startNowTicking(): void {
+    if (this.nowTickTimer !== null) return
+    this.nowTickTimer = setInterval(() => this.update({ now: Date.now() }), NOW_TICK_MS)
+  }
+
+  private stopNowTicking(): void {
+    if (this.nowTickTimer === null) return
+    clearInterval(this.nowTickTimer)
+    this.nowTickTimer = null
   }
 
   private loadAnalysisFor = (subject: SessionSubject): Promise<void> => {
