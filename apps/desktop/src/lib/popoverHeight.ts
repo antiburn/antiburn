@@ -7,7 +7,7 @@
  *
  * The window is 380px wide and never resizable, so height is the only degree of
  * freedom a view has. Three numbers rather than one fixed height: the activity
- * list and a session's analytics rest at the contract's height, and the usage
+ * list and a session's analysis rest at the contract's height, and the usage
  * breakdown asks for more.
  *
  * There was a fourth, shorter than all of them, for the first-run flow. That
@@ -69,4 +69,28 @@ export function popoverHeightFor(surface: PopoverSurface): number {
 export function prefersReducedMotion(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches
+}
+
+/**
+ * The design system's slow duration (`--duration-slow`, `design.md`), in
+ * milliseconds, for a JS-driven animation that cannot consume the CSS custom
+ * property directly (a Recharts `animationDuration`, say).
+ *
+ * Read from the live custom property rather than a copied number, so the
+ * token stays the one source of truth. Falls back to the token's documented
+ * value where the property is unset, such as a test environment with no
+ * stylesheet loaded.
+ */
+export function slowAnimationDurationMs(): number {
+  const fallback = 300
+  if (typeof window === "undefined" || typeof getComputedStyle !== "function") return fallback
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--duration-slow")
+    .trim()
+  const ms = raw.endsWith("ms")
+    ? Number.parseFloat(raw)
+    : raw.endsWith("s")
+      ? Number.parseFloat(raw) * 1000
+      : NaN
+  return Number.isFinite(ms) ? ms : fallback
 }

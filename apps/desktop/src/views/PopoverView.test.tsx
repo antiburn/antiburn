@@ -46,10 +46,20 @@ vi.mock("../lib/platform", async (importOriginal) => {
   return { ...actual, isMacOS: () => platform.mac }
 })
 
-const hudPreference = vi.hoisted(() => ({ enabled: false }))
+const hudPreference = vi.hoisted(() => ({
+  enabled: false,
+  overlayVisible: false,
+  popoverVisible: false,
+}))
+const overlayVisibilityRead = vi.hoisted(() => vi.fn())
 vi.mock("../lib/overlayWindow", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
-  return { ...actual, isFloatingHudEnabled: () => hudPreference.enabled }
+  return {
+    ...actual,
+    isCurrentWindowVisible: async () => hudPreference.popoverVisible,
+    isFloatingHudEnabled: () => hudPreference.enabled,
+    isOverlayWindowVisible: overlayVisibilityRead,
+  }
 })
 
 /** Push a shell event at whatever subscribed to it. */
@@ -108,7 +118,7 @@ const ANALYTICS = {
   // A session with nothing analyzable is enough to exercise the flow: the view
   // still renders its chrome, which is what these tests navigate through.
   summary: null,
-  supportsAnalytics: true,
+  supportsAnalysis: true,
   title: "Wire the tray popover",
   wslDistro: null,
   isActive: false,
@@ -216,7 +226,7 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(SETTINGS)
       case "list_recent_sessions":
         return Promise.resolve([activityEntry()])
-      case "get_session_analytics":
+      case "get_session_analysis":
         return Promise.resolve(ANALYTICS)
       case "get_provider_usage":
         return Promise.resolve(PROVIDER_USAGE)
@@ -262,14 +272,14 @@ describe("PopoverView", () => {
     expect(screen.getByLabelText("Estimated cost $1.25")).toBeInTheDocument()
   })
 
-  it("opens a session, loads its analytics, and comes back to the list", async () => {
+  it("opens a session, loads its analysis, and comes back to the list", async () => {
     render(<PopoverView />)
 
     fireEvent.click(await screen.findByText("Wire the tray popover"))
 
     expect(await screen.findByRole("heading", { name: "Session Detail" })).toBeInTheDocument()
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("get_session_analytics", {
+      expect(invoke).toHaveBeenCalledWith("get_session_analysis", {
         agent: "claude-code",
         sessionId: "session-abc-123",
         wslDistro: null,
@@ -283,6 +293,72 @@ describe("PopoverView", () => {
 
     expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
     expect(screen.queryByRole("heading", { name: "Session Detail" })).not.toBeInTheDocument()
+  })
+
+  it("updates the one row a sessions:entry-changed event names, without re-listing", async () => {
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    const listCallsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "list_recent_sessions",
+    ).length
+
+    emit("sessions:entry-changed", {
+      ...activityEntry(),
+      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+    })
+
+    expect(await screen.findByText("fable-5/high")).toBeInTheDocument()
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "list_recent_sessions"),
+    ).toHaveLength(listCallsBefore)
+  })
+
+  it("keeps a row's high-cost flag after a sessions:entry-changed event replaces it", async () => {
+    const cheapEntries = Array.from({ length: 7 }, (_, i) =>
+      activityEntry({
+        sessionId: `session-cheap-${i}`,
+        title: `Cheap session ${i}`,
+        cost: {
+          totalUsd: 0.1,
+          inputUsd: 0.05,
+          outputUsd: 0.03,
+          cacheReadUsd: 0.01,
+          cacheWriteUsd: 0.01,
+        },
+      }),
+    )
+    const expensiveEntry = activityEntry({
+      cost: { totalUsd: 10, inputUsd: 5, outputUsd: 3, cacheReadUsd: 1, cacheWriteUsd: 1 },
+    })
+    mockCommands({ list_recent_sessions: [expensiveEntry, ...cheapEntries] })
+
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+    expect(await screen.findByLabelText(/higher than usual/i)).toBeInTheDocument()
+
+    emit("sessions:entry-changed", {
+      ...expensiveEntry,
+      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+    })
+
+    expect(await screen.findByText("fable-5/high")).toBeInTheDocument()
+    // The row is rebuilt from the pushed payload alone, so its high-cost flag
+    // must be recomputed against the cohort rather than defaulting to false.
+    expect(screen.getByLabelText(/higher than usual/i)).toBeInTheDocument()
+  })
+
+  it("leaves the list unchanged when a sessions:entry-changed event names an unknown session", async () => {
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    emit("sessions:entry-changed", {
+      ...activityEntry({ sessionId: "session-unknown" }),
+      modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
+    })
+
+    expect(screen.queryByText("fable-5/high")).not.toBeInTheDocument()
+    expect(screen.getByText("Wire the tray popover")).toBeInTheDocument()
   })
 
   it("brings the list back at the offset it was scrolled to before a session opened", async () => {
@@ -619,20 +695,20 @@ describe("PopoverView", () => {
     expect(invoke).not.toHaveBeenCalledWith("scan_now", expect.anything())
   })
 
-  it("re-loads the open session’s analytics on the popover-shown signal and shows a spinner meanwhile", async () => {
+  it("re-loads the open session’s analysis on the popover-shown signal and shows a spinner meanwhile", async () => {
     render(<PopoverView />)
     fireEvent.click(await screen.findByText("Wire the tray popover"))
     await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 })
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
 
     const loadsBeforeShown = invoke.mock.calls.filter(
-      ([command]) => command === "get_session_analytics",
+      ([command]) => command === "get_session_analysis",
     ).length
 
     let finishLoad: (() => void) | null = null
     const baseInvoke = invoke.getMockImplementation()!
     invoke.mockImplementation((command: string, args?: unknown) => {
-      if (command !== "get_session_analytics") return baseInvoke(command, args)
+      if (command !== "get_session_analysis") return baseInvoke(command, args)
       return new Promise((resolve) => {
         finishLoad = () => resolve(ANALYTICS)
       })
@@ -642,13 +718,13 @@ describe("PopoverView", () => {
 
     await waitFor(() =>
       expect(
-        invoke.mock.calls.filter(([command]) => command === "get_session_analytics").length,
+        invoke.mock.calls.filter(([command]) => command === "get_session_analysis").length,
       ).toBe(loadsBeforeShown + 1),
     )
     // The settled analysis stays on screen; only the header spinner says a
     // newer one is on its way.
     expect(screen.getByRole("status")).toBeInTheDocument()
-    expect(screen.queryByTestId("session-analytics-skeleton")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("session-analysis-skeleton")).not.toBeInTheDocument()
 
     await act(async () => {
       finishLoad?.()
@@ -889,13 +965,51 @@ describe("PopoverView — floating HUD restore", () => {
     mockCommands()
     platform.mac = false
     hudPreference.enabled = false
+    hudPreference.overlayVisible = false
+    hudPreference.popoverVisible = false
+    overlayVisibilityRead.mockReset()
+    overlayVisibilityRead.mockImplementation(async () => hudPreference.overlayVisible)
   })
 
-  it("reopens the stored HUD at popover startup", async () => {
+  it("keeps the stored HUD hidden before the popover is shown", async () => {
     platform.mac = true
     hudPreference.enabled = true
     render(<PopoverView />)
+
+    await screen.findByText("Wire the tray popover")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+  })
+
+  it("reopens the stored HUD when the hidden popover appears", async () => {
+    platform.mac = true
+    hudPreference.enabled = true
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    hudPreference.popoverVisible = true
+    emit("popover:shown", null)
+
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+  })
+
+  it("restores the stored HUD when the popover opened before its listener attached", async () => {
+    platform.mac = true
+    hudPreference.enabled = true
+    hudPreference.popoverVisible = true
+    render(<PopoverView />)
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+  })
+
+  it("does not show a stored HUD that is already visible", async () => {
+    platform.mac = true
+    hudPreference.enabled = true
+    hudPreference.overlayVisible = true
+    hudPreference.popoverVisible = true
+    render(<PopoverView />)
+
+    await waitFor(() => expect(overlayVisibilityRead).toHaveBeenCalled())
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
   })
 
   it("does not restore an off preference", async () => {

@@ -55,7 +55,7 @@ pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs"
 /// dropped. At the flusher's 50-per-15-minutes this is several hours of
 /// backlog, which is more than an ordinary outage needs and far less than an
 /// unbounded table on a reader's disk.
-const USAGE_ANALYTICS_QUEUE_LIMIT: u32 = 500;
+const ANALYTICS_QUEUE_LIMIT: u32 = 500;
 
 /// File name of the database inside the app data directory.
 ///
@@ -351,25 +351,25 @@ impl Store {
     /// them without limit in the reader's own database. The oldest go first —
     /// the newest events are the ones still worth having, and a queue that
     /// dropped the newest would report a machine's distant past forever.
-    pub fn queue_usage_analytics_event(&self, name: &str, payload: &str) -> Result<()> {
+    pub fn queue_analytics_event(&self, name: &str, payload: &str) -> Result<()> {
         let connection = self.lock();
         connection.execute(
-            "INSERT INTO usage_analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
             params![name, payload, now_rfc3339()],
         )?;
         connection.execute(
-            "DELETE FROM usage_analytics_event WHERE id NOT IN
-                 (SELECT id FROM usage_analytics_event ORDER BY id DESC LIMIT ?1)",
-            params![USAGE_ANALYTICS_QUEUE_LIMIT],
+            "DELETE FROM analytics_event WHERE id NOT IN
+                 (SELECT id FROM analytics_event ORDER BY id DESC LIMIT ?1)",
+            params![ANALYTICS_QUEUE_LIMIT],
         )?;
         Ok(())
     }
 
     /// The next batch to attempt, oldest first, as `(id, payload)`.
-    pub fn pending_usage_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
+    pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
-        let mut statement = connection
-            .prepare("SELECT id, payload FROM usage_analytics_event ORDER BY id LIMIT ?1")?;
+        let mut statement =
+            connection.prepare("SELECT id, payload FROM analytics_event ORDER BY id LIMIT ?1")?;
         let rows = statement.query_map(params![limit], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -377,14 +377,11 @@ impl Store {
     }
 
     /// Forget events that were delivered.
-    pub fn drop_usage_analytics_events(&self, ids: &[i64]) -> Result<()> {
+    pub fn drop_analytics_events(&self, ids: &[i64]) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         for id in ids {
-            tx.execute(
-                "DELETE FROM usage_analytics_event WHERE id = ?1",
-                params![id],
-            )?;
+            tx.execute("DELETE FROM analytics_event WHERE id = ?1", params![id])?;
         }
         tx.commit()?;
         Ok(())
@@ -397,17 +394,17 @@ impl Store {
     /// that reported their own failures would have their priorities inverted.
     /// It is returned so the give-up threshold is assertable from a test,
     /// which is the only way that arm is exercised at all.
-    pub fn fail_usage_analytics_events(&self, ids: &[i64], max_attempts: u32) -> Result<usize> {
+    pub fn fail_analytics_events(&self, ids: &[i64], max_attempts: u32) -> Result<usize> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         for id in ids {
             tx.execute(
-                "UPDATE usage_analytics_event SET attempts = attempts + 1 WHERE id = ?1",
+                "UPDATE analytics_event SET attempts = attempts + 1 WHERE id = ?1",
                 params![id],
             )?;
         }
         let dropped = tx.execute(
-            "DELETE FROM usage_analytics_event WHERE attempts >= ?1",
+            "DELETE FROM analytics_event WHERE attempts >= ?1",
             params![max_attempts],
         )?;
         tx.commit()?;
@@ -416,10 +413,10 @@ impl Store {
 
     /// The current installation identifier and when it was minted, if one has
     /// been created. Absent until the reader's first consented event.
-    pub fn usage_analytics_identity(&self) -> Result<Option<(String, String)>> {
+    pub fn analytics_identity(&self) -> Result<Option<(String, String)>> {
         let connection = self.lock();
         let mut statement = connection
-            .prepare("SELECT install_id, minted_at FROM usage_analytics_identity WHERE id = 1")?;
+            .prepare("SELECT install_id, minted_at FROM analytics_identity WHERE id = 1")?;
         let mut rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -427,9 +424,9 @@ impl Store {
     }
 
     /// Mint or rotate the installation identifier.
-    pub fn set_usage_analytics_identity(&self, install_id: &str) -> Result<()> {
+    pub fn set_analytics_identity(&self, install_id: &str) -> Result<()> {
         self.lock().execute(
-            "INSERT INTO usage_analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
+            "INSERT INTO analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET install_id = excluded.install_id,
                                            minted_at  = excluded.minted_at",
             params![install_id, now_rfc3339()],
@@ -443,11 +440,11 @@ impl Store {
     /// events the reader withdrew consent for; leaving the identity would let
     /// a later opt-in be joined to the earlier one, which is the whole thing
     /// the rotation exists to prevent.
-    pub fn clear_usage_analytics(&self) -> Result<()> {
+    pub fn clear_analytics(&self) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        tx.execute("DELETE FROM usage_analytics_event", [])?;
-        tx.execute("DELETE FROM usage_analytics_identity", [])?;
+        tx.execute("DELETE FROM analytics_event", [])?;
+        tx.execute("DELETE FROM analytics_identity", [])?;
         tx.commit()?;
         Ok(())
     }
@@ -1063,15 +1060,15 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
         // one that already finished onboarding was told analytics did not
         // exist, so it stays off until the reader says otherwise. Upgrading
         // must never start sending on somebody's behalf.
-        usage_analytics_enabled: stored
-            .get("usageAnalyticsEnabled")
+        analytics_enabled: stored
+            .get("analyticsEnabled")
             .map(|value| value == "true")
             .unwrap_or_else(|| {
                 let finished = stored
                     .get("onboardingCompleted")
                     .map(|value| value == "true")
                     .unwrap_or(false);
-                !finished && defaults.usage_analytics_enabled
+                !finished && defaults.analytics_enabled
             }),
         overview_limits_expanded: stored
             .get("overviewLimitsExpanded")
@@ -1151,8 +1148,8 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         bool_text(settings.live_usage_enabled)
     ])?;
     put.execute(params![
-        "usageAnalyticsEnabled",
-        bool_text(settings.usage_analytics_enabled)
+        "analyticsEnabled",
+        bool_text(settings.analytics_enabled)
     ])?;
     put.execute(params![
         "overviewLimitsExpanded",

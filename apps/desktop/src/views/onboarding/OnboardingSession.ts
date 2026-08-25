@@ -52,13 +52,13 @@ export type OnboardingSnapshot = {
   launchAtLogin: boolean
   /** The consent draft. Written only by `finish`, so a reader who abandons
    *  the flow — or turns this off on the Ready screen — is never counted. */
-  usageAnalyticsEnabled: boolean
+  analyticsEnabled: boolean
   /** Whether this build can transmit at all. Read from the shell rather than
    *  assumed: a clean checkout has no endpoint, and the Ready screen says so
    *  instead of offering a switch over nothing. */
-  usageAnalyticsSupported: boolean
+  analyticsSupported: boolean
   /** Who receives the events, named rather than implied. */
-  usageAnalyticsOperator: string | null
+  analyticsOperator: string | null
   scanRoots: string[]
   defaultRoots: string[]
   permissions: FolderPermissions
@@ -113,9 +113,9 @@ export class OnboardingSession {
       // On by default, except where it has to be opted into rather than out
       // of — see `analyticsDefaultsOff`. The control sits in the same place
       // either way; only its starting position moves.
-      usageAnalyticsEnabled: !analyticsDefaultsOff(),
-      usageAnalyticsSupported: false,
-      usageAnalyticsOperator: null,
+      analyticsEnabled: !analyticsDefaultsOff(),
+      analyticsSupported: false,
+      analyticsOperator: null,
       scanRoots: [],
       defaultRoots: [],
       permissions: EMPTY_PERMISSIONS,
@@ -154,7 +154,7 @@ export class OnboardingSession {
   }
 
   setAnalyticsEnabled = (enabled: boolean): void => {
-    this.update({ usageAnalyticsEnabled: enabled, finishError: null })
+    this.update({ analyticsEnabled: enabled, finishError: null })
   }
 
   addScanRoot = async (): Promise<void> => {
@@ -204,7 +204,7 @@ export class OnboardingSession {
       await finishOnboarding(
         this.snapshot.activityWindowDays,
         this.snapshot.launchAtLogin,
-        this.snapshot.usageAnalyticsEnabled,
+        this.snapshot.analyticsEnabled,
       )
     } catch (error) {
       this.update({
@@ -258,11 +258,11 @@ export class OnboardingSession {
         // default, which is unconditional `true` — so the jurisdiction-aware
         // default is applied here, where the reader's locale is visible, and
         // only while onboarding has not yet committed an answer.
-        usageAnalyticsEnabled: settings.onboardingCompleted
-          ? settings.usageAnalyticsEnabled
-          : settings.usageAnalyticsEnabled && !analyticsDefaultsOff(),
-        usageAnalyticsSupported: info?.usageAnalyticsSupported ?? false,
-        usageAnalyticsOperator: info?.usageAnalyticsOperator ?? null,
+        analyticsEnabled: settings.onboardingCompleted
+          ? settings.analyticsEnabled
+          : settings.analyticsEnabled && !analyticsDefaultsOff(),
+        analyticsSupported: info?.analyticsSupported ?? false,
+        analyticsOperator: info?.analyticsOperator ?? null,
         scanRoots,
         defaultRoots,
         permissions,

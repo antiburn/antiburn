@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
+use crate::analysis::efficiency::{EfficiencyInput, thread_efficiency_from_inputs};
 use crate::analysis::engine::{
     BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionMetrics, SkillUse, ToolMix,
 };
@@ -31,6 +32,7 @@ pub(crate) struct MetricsIdentity {
 pub(crate) struct MetricTurn {
     ts_ms: Option<i64>,
     role: Role,
+    message_id: Option<String>,
     source: EventSource,
     usage: Usage,
     tools: Vec<ToolCall>,
@@ -49,6 +51,7 @@ impl From<NormalizedEvent> for MetricTurn {
         Self {
             ts_ms: event.ts_ms,
             role: event.role,
+            message_id: event.message_id,
             source: event.source,
             usage: event.usage,
             tools: event.tools,
@@ -172,6 +175,7 @@ impl SessionMetricsAccumulator {
             total
                 .saturating_add(size_of::<MetricTurn>())
                 .saturating_add(turn.tools.capacity() * size_of::<ToolCall>())
+                .saturating_add(turn.message_id.as_ref().map_or(0, String::capacity))
                 .saturating_add(turn.model.as_ref().map_or(0, String::capacity))
                 .saturating_add(turn.thinking_mode.as_ref().map_or(0, String::capacity))
                 .saturating_add(turn.speed.as_ref().map_or(0, String::capacity))
@@ -616,6 +620,16 @@ pub(crate) fn finalize_metrics(
         tallies.peak_context_tokens,
     );
     let cost = crate::analysis::pricing::price_breakdown(&model_breakdown);
+    let efficiency = thread_efficiency_from_inputs(
+        turns.iter().map(|(_, turn)| EfficiencyInput {
+            ts_ms: turn.ts_ms,
+            role: turn.role,
+            message_id: turn.message_id.as_deref(),
+            model: turn.model.as_deref(),
+            usage: turn.usage,
+        }),
+        summary.model.as_deref(),
+    );
 
     SessionMetrics {
         agent: identity.agent,
@@ -642,6 +656,7 @@ pub(crate) fn finalize_metrics(
         billable_cache_creation_tokens: tallies.billable_cache_creation_tokens,
         model_breakdown,
         cost,
+        efficiency,
         skill_uses,
     }
 }

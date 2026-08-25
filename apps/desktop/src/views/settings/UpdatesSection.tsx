@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { check } from "@tauri-apps/plugin-updater"
-import { AlertTriangle, Check as CheckGlyph, Download, Loader2 } from "lucide-react"
+import { AlertTriangle, Check as CheckGlyph, Download, LoaderCircle } from "lucide-react"
 import { useCallback, useSyncExternalStore } from "react"
 
 import { Card } from "../../components/ui/Card"
@@ -69,7 +69,7 @@ function CheckStatus({ state }: { state: CheckState }) {
   switch (state.kind) {
     case "checking":
       return (
-        <StatusText icon={Loader2} iconClassName="animate-spin" tone="secondary">
+        <StatusText icon={LoaderCircle} iconClassName="animate-spin" tone="secondary">
           Checking…
         </StatusText>
       )

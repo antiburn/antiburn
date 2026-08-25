@@ -21,11 +21,11 @@ use std::sync::{
 };
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, ActiveSessionsSummary, ClaudeAdapter, METRICS_SCHEMA_REVISION, ModelRun,
-    NormalizedSession, PARSER_REVISION, RawSource, SessionCost, SessionInput, SessionMetrics,
-    SessionMetricsAccumulator, SkillUse, SourceClaim, VendorAdapter, VisitOutcome,
-    aggregate_metrics, analyze_session, analyze_sources_with, append_only_guarantee, merge_metrics,
-    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
+    ANALYZER_REVISION, ActiveSessionsSummary, ClaudeAdapter, EfficiencyTotals,
+    METRICS_SCHEMA_REVISION, ModelRun, NormalizedSession, PARSER_REVISION, RawSource, SessionCost,
+    SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse, SourceClaim, VendorAdapter,
+    VisitOutcome, aggregate_metrics, analyze_session, analyze_sources_with, append_only_guarantee,
+    merge_metrics, merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -34,7 +34,7 @@ use antiburn_local::discovery::{
 use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
 
-use crate::agents::{supports_analytics, vendor_label};
+use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
 use crate::store::{AnalysisRecord, SessionKey};
 
@@ -160,6 +160,9 @@ pub struct SessionAnalysis {
     /// sums every sub-agent. The value is `None` when the session has no
     /// sub-agent.
     pub subagents_tokens: Option<BillableTokens>,
+    /// Where the spend went, summed over the parent thread and every
+    /// sub-agent thread. `None` when the transcript could not be read.
+    pub efficiency: Option<EfficiencyTotals>,
     /// Every model that contributed billable tokens.
     pub models: Vec<String>,
     /// Parent model runs followed by runs used only by sub-agents.
@@ -192,6 +195,7 @@ impl SessionAnalysis {
             subagents_cost: None,
             inclusive_tokens: None,
             subagents_tokens: None,
+            efficiency: None,
             models: Vec::new(),
             model_runs: Vec::new(),
             inclusive_model_breakdown: HashMap::new(),
@@ -723,6 +727,14 @@ pub async fn analyze(
     let mut metrics = merged;
     metrics.initial_context = parent_metrics.initial_context.clone();
     metrics.skill_uses = parent_metrics.skill_uses.clone();
+    // Each sub-agent runs its own context window, so its spend split comes
+    // from its own thread and is added to the parent's, not read off the
+    // merged stream.
+    let mut efficiency = parent_metrics.efficiency;
+    for child in by_id.values() {
+        efficiency.add(child.efficiency);
+    }
+    metrics.efficiency = efficiency;
 
     // The views key icons and copy off the discovery slug, so the vendor label
     // the adapter registry dispatches on never leaves this module.
@@ -769,6 +781,7 @@ pub async fn analyze(
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
     SessionAnalysis {
+        efficiency: Some(metrics.efficiency),
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
@@ -791,7 +804,7 @@ pub async fn analyze(
 
 /// Analyze one sub-agent transcript on its own.
 ///
-/// A sub-agent is a session in its own right. The analytics surface opens its
+/// A sub-agent is a session in its own right. The analysis surface opens its
 /// transcript like any other session. Vendors do not nest orchestration, so
 /// this path analyzes one input.
 pub async fn analyze_subagent(
@@ -858,6 +871,7 @@ pub async fn analyze_subagent(
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
     SessionAnalysis {
+        efficiency: Some(metrics.efficiency),
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
@@ -917,8 +931,8 @@ fn subagent_test_override() -> &'static std::sync::Mutex<Option<SubagentTestOver
 }
 
 /// Whether analysis of this agent's transcripts is more than a generic parse.
-pub fn analytics_supported(agent: AgentKind) -> bool {
-    supports_analytics(agent)
+pub fn analysis_supported(agent: AgentKind) -> bool {
+    supports_analysis(agent)
 }
 
 /// How many leading transcript lines are searched for fork evidence.

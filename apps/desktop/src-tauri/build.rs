@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 fn main() {
-    // `usage_analytics::config` reads these with `option_env!`, which is
+    // `analytics::config` reads these with `option_env!`, which is
     // resolved at compile time. Cargo does not track an environment variable
     // as an input unless it is told to, so without these two lines changing
     // the endpoint would leave a stale binary behind and the change would

@@ -86,4 +86,63 @@ describe("CostBreakdown", () => {
     render(<CostBreakdown cost={result()} />)
     expect(screen.queryByText("Parent agent")).toBeNull()
   })
+
+  it("shows each row's abbreviated token count and its percent share of the total", () => {
+    render(
+      <CostBreakdown
+        cost={result(2.4, {
+          inputTokens: 950,
+          outputTokens: 1_200,
+          cacheReadTokens: 14_000,
+          cacheCreationTokens: 2_100_000,
+          totalTokens: 2_116_150,
+        })}
+      />,
+    )
+    expect(screen.getByText("950")).toBeTruthy()
+    expect(screen.getByText("1.2k")).toBeTruthy()
+    expect(screen.getByText("14k")).toBeTruthy()
+    // Cache write tokens and the footer's total both round to the same "2.1M".
+    expect(screen.getAllByText("2.1M")).toHaveLength(2)
+    // Input is $0.30 of a $2.40 total.
+    expect(screen.getByText("13%")).toBeTruthy()
+    // The footer always reads the full share.
+    expect(screen.getByText("100%")).toBeTruthy()
+  })
+
+  it("shows each split row's own token count", () => {
+    render(
+      <CostBreakdown
+        cost={result(41.45, { totalTokens: 500_000 })}
+        split={{
+          parent: result(32.95, {
+            subject: topLevelCostSubject("claude-code", "parent"),
+            totalTokens: 400_000,
+          }),
+          subagents: result(8.5, {
+            subject: subagentsCostSubject("claude-code", "parent"),
+            totalTokens: 100_000,
+          }),
+          subagentCount: 3,
+        }}
+      />,
+    )
+    expect(screen.getByText("400k")).toBeTruthy()
+    expect(screen.getByText("100k")).toBeTruthy()
+  })
+
+  it("reads the percent share as a dash when the total is zero", () => {
+    render(
+      <CostBreakdown
+        cost={result(0, {
+          inputCostUsd: 0,
+          outputCostUsd: 0,
+          cacheReadCostUsd: 0,
+          cacheWriteCostUsd: 0,
+        })}
+      />,
+    )
+    // Four component rows plus the footer, all sharing an undefined percent.
+    expect(screen.getAllByText("—")).toHaveLength(5)
+  })
 })

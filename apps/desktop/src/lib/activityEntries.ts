@@ -8,7 +8,7 @@
  * The shell sends values such as a cost estimate and a model list. The
  * *wording* around them ("Projected cost", the breakdown row labels) and the
  * cohort judgement ("this one is unusually expensive") are presentation, and
- * they already exist in `lib/presentation/sessionAnalytics`. This module is the
+ * they already exist in `lib/presentation/sessionAnalysis`. This module is the
  * one place the two meet, kept pure so it can be tested without a shell.
  */
 
@@ -19,7 +19,7 @@ import {
   costBreakdownRows,
   costFigureLabel,
   costOutlierThreshold,
-} from "./presentation/sessionAnalytics"
+} from "./presentation/sessionAnalysis"
 
 /** Narrow the shell's surface string to the presentation layer's union. */
 function surfaceOf(payload: ActivityEntryPayload): AgentSurface {
@@ -27,6 +27,41 @@ function surfaceOf(payload: ActivityEntryPayload): AgentSurface {
   // `unknown` from the shell means "not classified", which is exactly what the
   // registry's slug-only fallback answers.
   return defaultAgentSurface(payload.agent)
+}
+
+/**
+ * Shape one activity payload into a list entry.
+ *
+ * `highCostThreshold` is the cohort's outlier threshold, from
+ * `costOutlierThreshold`. Pass `null` when there is no cohort to compare
+ * against — the row's high-cost flag then reads as false, never as an error.
+ */
+export function toActivityEntry(
+  payload: ActivityEntryPayload,
+  highCostThreshold: number | null = null,
+): SessionListEntry {
+  return {
+    agent: payload.agent,
+    sessionId: payload.sessionId,
+    repo: payload.repo,
+    timestamp: payload.timestamp,
+    isActive: payload.isActive,
+    surface: surfaceOf(payload),
+    wslDistro: payload.wslDistro,
+    ...(payload.title ? { title: payload.title } : {}),
+    hasForkParent: payload.hasForkParent,
+    forkChildCount: payload.forkChildCount,
+    modelRuns: payload.modelRuns,
+    cost: payload.cost
+      ? {
+          totalUsd: payload.cost.totalUsd,
+          figureLabel: costFigureLabel(payload.isActive),
+          models: payload.models,
+          isHighCost: highCostThreshold != null && payload.cost.totalUsd > highCostThreshold,
+          breakdownRows: costBreakdownRows(payload.cost),
+        }
+      : null,
+  }
 }
 
 /**
@@ -45,28 +80,7 @@ export function toActivityEntries(
       .filter((usd): usd is number => typeof usd === "number"),
   )
 
-  return payloads.map((payload) => ({
-    agent: payload.agent,
-    sessionId: payload.sessionId,
-    repo: payload.repo,
-    timestamp: payload.timestamp,
-    isActive: payload.isActive,
-    surface: surfaceOf(payload),
-    wslDistro: payload.wslDistro,
-    ...(payload.title ? { title: payload.title } : {}),
-    hasForkParent: payload.hasForkParent,
-    forkChildCount: payload.forkChildCount,
-    modelRuns: payload.modelRuns,
-    cost: payload.cost
-      ? {
-          totalUsd: payload.cost.totalUsd,
-          figureLabel: costFigureLabel(payload.isActive),
-          models: payload.models,
-          isHighCost: threshold != null && payload.cost.totalUsd > threshold,
-          breakdownRows: costBreakdownRows(payload.cost),
-        }
-      : null,
-  }))
+  return payloads.map((payload) => toActivityEntry(payload, threshold))
 }
 
 export function indexOfSession(

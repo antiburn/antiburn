@@ -31,6 +31,7 @@
 //! println!("{} live sessions", summary.session_count);
 //! ```
 
+mod efficiency;
 mod engine;
 mod framing;
 mod initial_context;
@@ -42,6 +43,7 @@ mod pricing;
 mod source_validity;
 mod vendors;
 
+pub use efficiency::{EfficiencyTotals, thread_efficiency};
 pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
     ToolMix, aggregate_metrics, analyze_session,

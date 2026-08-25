@@ -91,7 +91,7 @@ fn allowed(app: &tauri::AppHandle) -> bool {
     }
     app.try_state::<Store>()
         .and_then(|store| store.settings().ok())
-        .is_some_and(|settings| settings.usage_analytics_enabled && settings.onboarding_completed)
+        .is_some_and(|settings| settings.analytics_enabled && settings.onboarding_completed)
 }
 
 /// Record one event, if the reader has allowed it.
@@ -131,7 +131,7 @@ pub fn record(app: &tauri::AppHandle, name: EventName, facts: Facts) {
         },
     };
     if let Ok(json) = serde_json::to_string(&payload) {
-        let _ = store.queue_usage_analytics_event(name.as_str(), &json);
+        let _ = store.queue_analytics_event(name.as_str(), &json);
     }
 }
 
@@ -212,14 +212,14 @@ fn scan_outcome_is_new(outcome: Option<&'static str>) -> bool {
 
 /// The identifier to stamp on an event, minting or rotating it as needed.
 fn current_install_id(store: &Store) -> Option<String> {
-    let existing = store.usage_analytics_identity().ok()?;
+    let existing = store.analytics_identity().ok()?;
     if let Some((id, minted_at)) = existing
         && !older_than_lifetime(&minted_at)
     {
         return Some(id);
     }
     let fresh = random_identifier();
-    store.set_usage_analytics_identity(&fresh).ok()?;
+    store.set_analytics_identity(&fresh).ok()?;
     Some(fresh)
 }
 
@@ -315,7 +315,7 @@ pub fn handle_settings_transition(
     previous: &AppSettings,
     saved: &AppSettings,
 ) {
-    if saved.usage_analytics_enabled || !previous.usage_analytics_enabled {
+    if saved.analytics_enabled || !previous.analytics_enabled {
         return;
     }
     let Some(store) = app.try_state::<Store>() else {
@@ -326,7 +326,7 @@ pub fn handle_settings_transition(
     // lives in memory rather than in the store, so it has to be dropped
     // separately or opting out and back in inside the same launch would resume
     // the session that was just withdrawn.
-    let _ = store.clear_usage_analytics();
+    let _ = store.clear_analytics();
     reset_session();
     // Withdrawal leaves no in-memory residue of the consented period either,
     // so opting back in starts from a clean comparison rather than silently
@@ -382,7 +382,7 @@ async fn flush_once(app: &tauri::AppHandle) {
     let Some(store) = app.try_state::<Store>() else {
         return;
     };
-    let Ok(pending) = store.pending_usage_analytics_events(BATCH_SIZE) else {
+    let Ok(pending) = store.pending_analytics_events(BATCH_SIZE) else {
         return;
     };
     if pending.is_empty() {
@@ -432,10 +432,10 @@ async fn flush_once(app: &tauri::AppHandle) {
     }
 
     if !delivered.is_empty() {
-        let _ = store.drop_usage_analytics_events(&delivered);
+        let _ = store.drop_analytics_events(&delivered);
     }
     if !failed.is_empty() {
-        let _ = store.fail_usage_analytics_events(&failed, MAX_ATTEMPTS);
+        let _ = store.fail_analytics_events(&failed, MAX_ATTEMPTS);
     }
 }
 

@@ -2,15 +2,29 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { sessionKey } from "./PopoverSession"
+import type * as Ipc from "../../lib/ipc"
+import { ANALYSIS_POLL_MS, PopoverSession, sessionKey } from "./PopoverSession"
+import type { SessionSubject } from "./SessionPane"
+
+const getSessionAnalysis = vi.hoisted(() => vi.fn())
+const getSessionAnalysisFingerprint = vi.hoisted(() => vi.fn())
+
+// Only the two commands the live poll touches are overridden; every other
+// wrapper keeps its real "no shell" fallback (`hasShell()` is false outside
+// Tauri), which is exactly the degraded-but-safe behavior the store should
+// see in this environment.
+vi.mock("../../lib/ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof Ipc>()
+  return { ...actual, getSessionAnalysis, getSessionAnalysisFingerprint }
+})
 
 /**
- * `sessionKey` tags the analytics load a subject's payload belongs to. Get it
+ * `sessionKey` tags the analysis load a subject's payload belongs to. Get it
  * wrong and a subject that moves between environments — or a sub-agent whose
  * id happens to collide with one from a different parent — shows another
- * session's cached (or in-flight) analytics instead of its own.
+ * session's cached (or in-flight) analysis instead of its own.
  */
 
 describe("sessionKey", () => {
@@ -77,5 +91,75 @@ describe("sessionKey", () => {
     })
 
     expect(topLevel).not.toBe(subagent)
+  })
+})
+
+/**
+ * The live poll behind an open detail pane: it re-loads the analysis only
+ * when the transcript's fingerprint actually moves, and it never runs
+ * against an empty stack.
+ */
+describe("PopoverSession live analysis poll", () => {
+  const subject: SessionSubject = {
+    agent: "claude-code",
+    sessionId: "session-1",
+    wslDistro: null,
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    getSessionAnalysis.mockReset()
+    getSessionAnalysis.mockResolvedValue(null)
+    getSessionAnalysisFingerprint.mockReset()
+    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-1")
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("re-loads the analysis when the fingerprint changes on a tick", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    // Let `loadAnalysisFor` and the fingerprint seed that follows it settle,
+    // so the poll's own baseline is in place before the first tick.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
+
+    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-2")
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("does not re-load the analysis when the fingerprint is unchanged", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
+
+    // The mock keeps returning "fingerprint-1" from the seed above.
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+
+  it("stops polling once the detail pane closes", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+    getSessionAnalysisFingerprint.mockClear()
+
+    session.goBack()
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 3)
+
+    expect(getSessionAnalysisFingerprint).not.toHaveBeenCalled()
+    unsubscribe()
   })
 })

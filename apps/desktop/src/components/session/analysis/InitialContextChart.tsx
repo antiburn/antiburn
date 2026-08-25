@@ -10,7 +10,7 @@ import {
   initialContextNamedRows,
   initialContextSlices,
   initialContextTotal,
-} from "../../../lib/presentation/sessionAnalytics"
+} from "../../../lib/presentation/sessionAnalysis"
 import type { InitialContextBreakdown } from "../../../lib/types/session"
 import { Tooltip } from "../../presentation/Tooltip"
 

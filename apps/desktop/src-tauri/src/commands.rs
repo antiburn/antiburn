@@ -27,11 +27,11 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::agents::kind_from_slug;
-use crate::analytics;
+use crate::analysis;
 use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, LiveUsageSummary,
-    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalytics,
+    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
     SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
@@ -41,8 +41,8 @@ use crate::repositories;
 use crate::scan::{self, ScanController};
 use crate::settings;
 use crate::store::{
-    AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey, SessionRecord, Store,
-    iso_from_epoch,
+    AnalysisRecord, AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
+    SessionRecord, Store, iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -59,6 +59,19 @@ fn fail(error: impl std::fmt::Display) -> String {
 #[tauri::command]
 pub fn engine_catalog_version() -> &'static str {
     antiburn_local::pricing::PRICING_CATALOG_VERSION
+}
+
+/// Reveal a native window after its invoking renderer commits its shell.
+#[tauri::command]
+pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
+    match window.label() {
+        crate::popover::LABEL => crate::popover::renderer_ready(&window, generation),
+        crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
+        crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
+        label => {
+            ::tracing::debug!(event = "window_ready_ignored", window = label);
+        }
+    }
 }
 
 /// Opens, or refocuses, the standalone settings window.
@@ -170,10 +183,21 @@ pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
     antiburn_hud::open(&app).map_err(fail)
 }
 
-/// Record the drawn panel edges for the native hover watcher.
+/// Hide the usage HUD and cancel any pending reveal.
 #[tauri::command]
-pub fn set_overlay_hover_region(top: f64, bottom: f64) {
-    antiburn_hud::set_hover_region(top, bottom);
+pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    antiburn_hud::hide(&app).map_err(fail)
+}
+
+/// Match the native HUD frame to the rendered panel.
+#[tauri::command]
+pub fn resize_overlay_window(
+    app: tauri::AppHandle,
+    height: f64,
+    anchor_bottom: bool,
+    animate: bool,
+) -> CommandResult<()> {
+    antiburn_hud::resize(&app, height, anchor_bottom, animate).map_err(fail)
 }
 
 /// Request the hover detail window with the newest usage payload.
@@ -235,8 +259,8 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         // Same rule, same reason: derived from the build that is actually
         // running rather than from a `cfg!`, so no copy downstream can offer
         // a control this binary cannot honour.
-        usage_analytics_supported: crate::usage_analytics::available(),
-        usage_analytics_operator: crate::usage_analytics::operator().map(str::to_string),
+        analytics_supported: crate::analytics::available(),
+        analytics_operator: crate::analytics::operator().map(str::to_string),
     })
 }
 
@@ -289,7 +313,7 @@ pub fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
-    usage_analytics_enabled: bool,
+    analytics_enabled: bool,
 ) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved) = store
@@ -298,10 +322,10 @@ pub fn finish_onboarding(
             settings.launch_at_login = launch_at_login;
             // Written here and nowhere earlier. The draft the Ready screen
             // holds is the reader's answer *before* anything can be sent —
-            // `usage_analytics::allowed` also requires the flag set on the next
+            // `analytics::allowed` also requires the flag set on the next
             // line, so switching analytics off on that screen means no event
             // is ever recorded, rather than recorded and then withdrawn.
-            settings.usage_analytics_enabled = usage_analytics_enabled;
+            settings.analytics_enabled = analytics_enabled;
             settings.onboarding_completed = true;
         })
         .map_err(fail)?;
@@ -309,10 +333,10 @@ pub fn finish_onboarding(
     // After the transition, so the gate this event reads sees the saved flags.
     // A reader who declined on the Ready screen records nothing at all. An
     // explicit restart records a new completion because it is a new setup run.
-    crate::usage_analytics::record(
+    crate::analytics::record(
         &app,
-        crate::usage_analytics::event::EventName::OnboardingFinished,
-        crate::usage_analytics::event::Facts::default(),
+        crate::analytics::event::EventName::OnboardingFinished,
+        crate::analytics::event::Facts::default(),
     );
     Ok(saved)
 }
@@ -322,13 +346,10 @@ pub fn finish_onboarding(
 /// Infallible and silent: analytics that could fail an action the reader
 /// actually asked for would have their priorities inverted. The parameter is a
 /// closed enum rather than a name and a property map — see
-/// [`usage_analytics::event::Interaction`](crate::usage_analytics::event::Interaction).
+/// [`analytics::event::Interaction`](crate::analytics::event::Interaction).
 #[tauri::command]
-pub fn note_interaction(
-    app: tauri::AppHandle,
-    interaction: crate::usage_analytics::event::Interaction,
-) {
-    crate::usage_analytics::record_interaction(&app, interaction);
+pub fn note_interaction(app: tauri::AppHandle, interaction: crate::analytics::event::Interaction) {
+    crate::analytics::record_interaction(&app, interaction);
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
@@ -385,7 +406,7 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // the installation identifier so a later opt-in cannot be joined to this
     // one. Routed through the same hub as every other consequence so the two
     // can never drift apart.
-    crate::usage_analytics::handle_settings_transition(app, previous, saved);
+    crate::analytics::handle_settings_transition(app, previous, saved);
 
     // Which switch moved, never what it moved to, and only from this closed
     // list. A key alone answers "is this control being found at all"; the
@@ -409,10 +430,10 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         ),
     ] {
         if changed {
-            crate::usage_analytics::record(
+            crate::analytics::record(
                 app,
-                crate::usage_analytics::event::EventName::SettingToggled,
-                crate::usage_analytics::event::Facts {
+                crate::analytics::event::EventName::SettingToggled,
+                crate::analytics::event::Facts {
                     label: Some(key),
                     ..Default::default()
                 },
@@ -472,11 +493,11 @@ fn activity_entry(
     let analysis = store.analysis(&session.key)?;
     let (cost, models) = analysis
         .as_ref()
-        .map(|record| analytics::price_cached_breakdown(&record.model_breakdown_json))
+        .map(|record| analysis::price_cached_breakdown(&record.model_breakdown_json))
         .unwrap_or((None, Vec::new()));
     let model_runs = analysis
         .as_ref()
-        .map(|record| analytics::cached_inclusive_model_runs(&record.inclusive_models_json))
+        .map(|record| analysis::cached_inclusive_model_runs(&record.inclusive_models_json))
         .unwrap_or_default();
 
     Ok(ActivityEntry {
@@ -484,7 +505,7 @@ fn activity_entry(
         session_id: session.key.session_id.clone(),
         repo: repository_label(repositories, session.cwd.as_deref()),
         timestamp: iso_from_epoch(session.updated_at_epoch),
-        is_active: analytics::is_active(session.updated_at_epoch, now),
+        is_active: analysis::is_active(session.updated_at_epoch, now),
         surface: session.surface.clone(),
         wsl_distro: session.wsl_distro.clone(),
         title: session.title.clone(),
@@ -522,6 +543,23 @@ fn repository_label(repositories: &[RepositoryRecord], cwd: Option<&str>) -> Str
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default(),
+    }
+}
+
+/// Whether `next` carries model data the popover list would render
+/// differently from `previous`.
+///
+/// Compares only the two fields the list reads (`model_breakdown_json` for
+/// cost, `inclusive_models_json` for the model pills). The fingerprint and
+/// pricing generation can change on every re-analysis without moving either
+/// figure, and an event for that would be noise the popover cannot show.
+fn analysis_changed(previous: Option<&AnalysisRecord>, next: &AnalysisRecord) -> bool {
+    match previous {
+        None => true,
+        Some(previous) => {
+            previous.model_breakdown_json != next.model_breakdown_json
+                || previous.inclusive_models_json != next.inclusive_models_json
+        }
     }
 }
 
@@ -573,7 +611,7 @@ pub fn get_provider_usage(
 /// or a background task. The aggressive freshness is bounded by someone
 /// actually looking — once the popover closes, nothing here keeps polling on
 /// its behalf, and the background monitor's own, much longer, `max_age`
-/// takes back over (see `usage_alerts::MILESTONE_MAX_AGE`).
+/// takes back over (see `usage_alerts::BACKGROUND_MAX_AGE`).
 const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
 
 /// Return the last provider limit snapshot without reading a provider.
@@ -647,6 +685,7 @@ pub async fn refresh_live_usage(
         // Held for the whole pass: two of these can now genuinely overlap,
         // and the reading history they append to is not written atomically.
         let _summarizing = live.summarizing();
+        live.set_utc_offset_minutes(utc_offset_minutes, store.as_deref());
         let summary = provider_usage::live::summarize(
             &live.sources,
             store.as_deref(),
@@ -663,20 +702,20 @@ pub async fn refresh_live_usage(
 }
 
 /* -------------------------------------------------------------------------
- * Session analytics
+ * Session analysis
  * ---------------------------------------------------------------------- */
 
-/// Everything the session-analytics surface renders for one session.
+/// Everything the session-analysis surface renders for one session.
 ///
 /// Returns a payload with no summary rather than an error when the transcript
 /// is gone: a deleted conversation is an ordinary state, and the view says so.
 #[tauri::command]
-pub async fn get_session_analytics(
+pub async fn get_session_analysis(
     app: tauri::AppHandle,
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
@@ -686,21 +725,21 @@ pub async fn get_session_analytics(
         .session_source_state(&key)
         .ok()
         .flatten()
-        .map(|state| analytics::ClaimedSource {
+        .map(|state| analysis::ClaimedSource {
             fingerprint: state.source_fingerprint,
             generation: state.source_generation,
         })
-        .unwrap_or(analytics::ClaimedSource {
+        .unwrap_or(analysis::ClaimedSource {
             fingerprint: None,
             generation: 0,
         });
 
-    let analysis = analytics::analyze(
+    let analysis = analysis::analyze(
         kind,
         &session_id,
         wsl_distro.as_deref(),
         claimed,
-        analytics::CancelFlag::never(),
+        analysis::CancelFlag::never(),
     )
     .await;
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
@@ -708,7 +747,19 @@ pub async fn get_session_analytics(
     let stored = store.session(&key).ok().flatten();
 
     if let Some(record) = analysis.record(&key) {
-        let _ = store.save_analysis(&record, analysis.started_at_epoch);
+        let previous = store.analysis(&key).ok().flatten();
+        if store
+            .save_analysis(&record, analysis.started_at_epoch)
+            .is_ok()
+            && analysis_changed(previous.as_ref(), &record)
+            && let Some(session_record) = stored.clone()
+        {
+            let repositories = store.repositories().unwrap_or_default();
+            let now = scan::unix_now();
+            if let Ok(entry) = activity_entry(&store, &repositories, session_record, now) {
+                let _ = app.emit(SESSION_ENTRY_CHANGED_EVENT, &entry);
+            }
+        }
     }
     let orchestration = match &analysis.orchestration {
         Some(orchestration) => {
@@ -730,12 +781,12 @@ pub async fn get_session_analytics(
         None => cached_orchestration(&store, &key),
     };
 
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: stored.as_ref().and_then(|record| record.title.clone()),
         wsl_distro,
-        is_active: analytics::is_active(
+        is_active: analysis::is_active(
             stored.as_ref().and_then(|record| record.updated_at_epoch),
             scan::unix_now(),
         ),
@@ -744,6 +795,7 @@ pub async fn get_session_analytics(
         subagents_cost: analysis.subagents_cost,
         inclusive_tokens: analysis.inclusive_tokens,
         subagents_tokens: analysis.subagents_tokens,
+        efficiency: analysis.efficiency,
         models: analysis.models.clone(),
         model_runs: analysis.model_runs.clone(),
         orchestration,
@@ -752,30 +804,53 @@ pub async fn get_session_analytics(
     })
 }
 
+/// The cheap fingerprint of one session's analysis inputs.
+///
+/// The session-detail popover polls this while it is open, and re-runs the
+/// full analysis only when the value changes. This command reads file
+/// metadata alone, never a transcript, so a poll costs almost nothing.
+#[tauri::command]
+pub async fn get_session_analysis_fingerprint(
+    agent: String,
+    session_id: String,
+    wsl_distro: Option<String>,
+) -> CommandResult<String> {
+    let Some(kind) = kind_from_slug(&agent) else {
+        return Err(format!("unknown agent {agent}"));
+    };
+    let Some(source) = analysis::locate(kind, &session_id, wsl_distro.as_deref()).await else {
+        return Ok(analysis::MISSING_FINGERPRINT.to_string());
+    };
+    Ok(
+        analysis::fingerprint_with_subagents(kind, &session_id, wsl_distro.as_deref(), &source)
+            .await,
+    )
+}
+
 /// One sub-agent's own analysis, opened from the roster.
 #[tauri::command]
-pub async fn get_subagent_analytics(
+pub async fn get_subagent_analysis(
     app: tauri::AppHandle,
     agent: String,
     parent_session_id: String,
     subagent_id: String,
     wsl_distro: Option<String>,
-) -> CommandResult<SessionAnalytics> {
+) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
     let _ = &app;
-    let analysis = analytics::analyze_subagent(
+    let analysis = analysis::analyze_subagent(
         kind,
         &parent_session_id,
         &subagent_id,
         wsl_distro.as_deref(),
-        analytics::CancelFlag::never(),
+        analysis::CancelFlag::never(),
     )
     .await;
-    Ok(SessionAnalytics {
+    Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
-        supports_analytics: analytics::analytics_supported(kind),
+        supports_analysis: analysis::analysis_supported(kind),
         title: None,
         wsl_distro,
         is_active: false,
@@ -784,6 +859,7 @@ pub async fn get_subagent_analytics(
         subagents_cost: analysis.subagents_cost,
         inclusive_tokens: analysis.inclusive_tokens,
         subagents_tokens: analysis.subagents_tokens,
+        efficiency: analysis.efficiency,
         models: analysis.models.clone(),
         model_runs: analysis.model_runs.clone(),
         orchestration: None,
@@ -812,7 +888,7 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
         return None;
     }
     Some(OrchestrationStatus {
-        orchestrating: members.len() as u32 >= analytics::MIN_ORCHESTRATED_SUBAGENTS,
+        orchestrating: members.len() as u32 >= analysis::MIN_ORCHESTRATED_SUBAGENTS,
         orchestrator_agent: key.agent.clone(),
         orchestrator_session_id: key.session_id.clone(),
         subagent_count: members.len() as u32,
@@ -828,8 +904,8 @@ async fn resolve_lineage(
     wsl_distro: Option<&str>,
 ) -> SessionRelations {
     let store = app.state::<Store>();
-    let parent_id = match analytics::locate(kind, &key.session_id, wsl_distro).await {
-        Some(source) => analytics::fork_parent(&source).await,
+    let parent_id = match analysis::locate(kind, &key.session_id, wsl_distro).await {
+        Some(source) => analysis::fork_parent(&source).await,
         None => None,
     };
 
@@ -855,7 +931,7 @@ async fn resolve_lineage(
     };
 
     if let Some(parent_id) = parent_id {
-        let available = analytics::locate(kind, &parent_id, wsl_distro)
+        let available = analysis::locate(kind, &parent_id, wsl_distro)
             .await
             .is_some();
         let title = store
@@ -979,6 +1055,11 @@ pub async fn set_repository_enabled(
 /// (repository opt-out, index clearing). The popover re-queries on it.
 pub const SESSIONS_INVALIDATED_EVENT: &str = "sessions:invalidated";
 
+/// Event the shell emits when one session's cached analysis changes outside a
+/// scan. The payload is the fresh [`ActivityEntry`] for that session, so the
+/// popover can update the one row without a re-query.
+pub const SESSION_ENTRY_CHANGED_EVENT: &str = "sessions:entry-changed";
+
 /// Re-derive the repository list from what is on disk right now.
 #[tauri::command]
 pub async fn refresh_repositories(app: tauri::AppHandle) -> CommandResult<Vec<RepositoryItem>> {
@@ -1072,20 +1153,20 @@ pub async fn export_session(
         .session_source_state(&key)
         .ok()
         .flatten()
-        .map(|state| analytics::ClaimedSource {
+        .map(|state| analysis::ClaimedSource {
             fingerprint: state.source_fingerprint,
             generation: state.source_generation,
         })
-        .unwrap_or(analytics::ClaimedSource {
+        .unwrap_or(analysis::ClaimedSource {
             fingerprint: None,
             generation: 0,
         });
-    let analysis = analytics::analyze(
+    let analysis = analysis::analyze(
         kind,
         &session_id,
         wsl_distro.as_deref(),
         claimed,
-        analytics::CancelFlag::never(),
+        analysis::CancelFlag::never(),
     )
     .await;
 
@@ -1448,6 +1529,48 @@ mod tests {
         // A session with no activity still yields a parseable stamp rather
         // than an empty string the list would drop.
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
+    }
+
+    fn analysis_record(model_breakdown_json: &str, inclusive_models_json: &str) -> AnalysisRecord {
+        AnalysisRecord {
+            key: SessionKey::new("env", "claude-code", "session-1"),
+            model_breakdown_json: model_breakdown_json.into(),
+            inclusive_models_json: inclusive_models_json.into(),
+            source_fingerprint: "fingerprint".into(),
+            pricing_generation: 1,
+            analyzed_generation: 1,
+            parser_revision: 1,
+            analyzer_revision: 1,
+            metrics_schema_revision: 1,
+        }
+    }
+
+    #[test]
+    fn a_first_analysis_always_counts_as_changed() {
+        let next = analysis_record("{}", "[]");
+        assert!(analysis_changed(None, &next));
+    }
+
+    #[test]
+    fn identical_model_data_is_not_a_change() {
+        let previous = analysis_record(
+            r#"{"claude-fable-5":{}}"#,
+            r#"[{"model":"claude-fable-5"}]"#,
+        );
+        let next = analysis_record(
+            r#"{"claude-fable-5":{}}"#,
+            r#"[{"model":"claude-fable-5"}]"#,
+        );
+        assert!(!analysis_changed(Some(&previous), &next));
+    }
+
+    #[test]
+    fn a_new_model_in_either_field_counts_as_changed() {
+        let previous = analysis_record("{}", "[]");
+        let breakdown_changed = analysis_record(r#"{"claude-fable-5":{}}"#, "[]");
+        let models_changed = analysis_record("{}", r#"[{"model":"claude-fable-5"}]"#);
+        assert!(analysis_changed(Some(&previous), &breakdown_changed));
+        assert!(analysis_changed(Some(&previous), &models_changed));
     }
 
     #[test]

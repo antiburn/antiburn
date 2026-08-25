@@ -18,6 +18,7 @@ use crate::pricing::ModelTokens;
 pub use crate::model::skill::SkillUse;
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::efficiency::EfficiencyTotals;
 use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{CompactionTrigger, ModelRun, NormalizedSession, ToolCategory};
 
@@ -211,6 +212,12 @@ pub struct SessionMetrics {
     /// On-device cost estimate (`~$`), or `None` when `model` is unknown/unpriceable.
     #[serde(default)]
     pub cost: Option<SessionCost>,
+    /// Where the spend went: new work, carry, or rewrite. Computed over this
+    /// session's own events as one thread. For a merged parent-plus-sub-agent
+    /// stream the caller replaces this with the sum of the per-thread totals,
+    /// because the merge collapses the sub-agents' separate contexts.
+    #[serde(default)]
+    pub efficiency: EfficiencyTotals,
     /// Skill invocations detected in this session — one entry per `Skill` tool
     /// call, in event order. Each carries its active-time position, the invoking
     /// turn's token figures, and an idle-capped duration;

@@ -13,9 +13,9 @@ import {
   exportSession,
   revealSource,
   withPopoverHold,
-  type SessionAnalyticsPayload,
+  type SessionAnalysisPayload,
 } from "../../lib/ipc"
-import { agentSupportsAnalytics } from "../../lib/presentation/agents"
+import { agentSupportsAnalysis } from "../../lib/presentation/agents"
 import {
   inclusiveCostSubject,
   subagentsCostSubject,
@@ -30,7 +30,7 @@ import type {
 } from "../../lib/types/session"
 
 /**
- * One session's analytics, loaded and wired to the actions a reader can take.
+ * One session's analysis, loaded and wired to the actions a reader can take.
  *
  * The presentation component owns every pixel; this owns the data it renders,
  * the navigation between sessions, and the three destructive-ish actions —
@@ -56,8 +56,8 @@ export interface SessionSubject {
 
 export interface SessionPaneProps {
   subject: SessionSubject
-  /** The subject's loaded analytics, or null while loading or on failure. */
-  payload: SessionAnalyticsPayload | null
+  /** The subject's loaded analysis, or null while loading or on failure. */
+  payload: SessionAnalysisPayload | null
   /** Whether `payload` belongs to a load still in flight for this subject. */
   loading: boolean
   /** Whether a re-load is in flight while `payload` is still on screen. */
@@ -95,7 +95,7 @@ const ZERO_TOKENS: BillableTokens = {
 /** One priced result for a cost subject. The function returns null when nothing priced the subject. */
 function localCost(
   subject: LocalSessionCost["subject"],
-  cost: SessionAnalyticsPayload["cost"],
+  cost: SessionAnalysisPayload["cost"],
   tokens: BillableTokens,
   model: string | null,
   isActive: boolean,
@@ -137,7 +137,7 @@ function localCost(
  */
 function toLocalCost(
   subject: SessionSubject,
-  payload: SessionAnalyticsPayload,
+  payload: SessionAnalysisPayload,
 ): { cost: LocalSessionCost | null; costSplit: TokensCostSplit | null } {
   const metrics = payload.summary?.sessions[0]
   const parentTokens: BillableTokens = {
@@ -341,9 +341,10 @@ export function SessionPane({
             }
           : {}),
       }}
-      supportsAnalytics={payload?.supportsAnalytics ?? agentSupportsAnalytics(subject.agent)}
+      supportsAnalysis={payload?.supportsAnalysis ?? agentSupportsAnalysis(subject.agent)}
       cost={cost}
       costSplit={costSplit}
+      efficiency={payload?.efficiency ?? null}
       orchestration={orchestration}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}

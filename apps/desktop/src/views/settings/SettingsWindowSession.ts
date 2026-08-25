@@ -23,8 +23,8 @@ export class SettingsWindowSession {
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
+  private paneEventRevision = 0
   private stopPaneListening: (() => void) | null = null
-  private initialPaneRequest: Promise<string | null> | null = null
 
   private snapshot: SettingsWindowSnapshot = { info: null, pane: "general" }
 
@@ -58,26 +58,26 @@ export class SettingsWindowSession {
         this.update({ info: null })
       })
 
-    // A pane somebody asked for. Taken once on start (the window may have been
-    // created *by* that request), and listened for afterwards (a window that was
-    // already open never mounts again). Unknown ids are ignored rather than
-    // rendering nothing. `takeSettingsPane` is called before `onSettingsPaneRequest`
-    // is awaited below, matching the relative ordering the original effects ran in.
-    this.initialPaneRequest ??= takeSettingsPane().catch(() => null)
-    void this.initialPaneRequest.then((requested) => {
-      if (generation !== this.generation) return
-      if (isSettingsPane(requested)) this.update({ pane: requested })
-    })
-
     const stop = await onSettingsPaneRequest((requested) => {
       if (generation !== this.generation) return
+      this.paneEventRevision += 1
+      void takeSettingsPane().catch(() => {})
       if (isSettingsPane(requested)) this.update({ pane: requested })
-    })
+    }).catch(() => null)
     if (generation !== this.generation) {
-      stop()
+      stop?.()
       return
     }
     this.stopPaneListening = stop
+
+    const paneEventRevision = this.paneEventRevision
+    void takeSettingsPane()
+      .then((requested) => {
+        if (generation !== this.generation) return
+        if (paneEventRevision !== this.paneEventRevision) return
+        if (isSettingsPane(requested)) this.update({ pane: requested })
+      })
+      .catch(() => {})
   }
 
   private stop(): void {

@@ -42,7 +42,7 @@ pub fn adapter_for(agent: &str) -> &'static dyn VendorAdapter {
 /// resolves to one of the bespoke arms of [`adapter_for`] rather than the
 /// generic JSONL fallback. Derived from `adapter_for` itself so there's no
 /// second vendor list to keep in sync: adding a bespoke adapter there
-/// automatically extends this. Mirrors the frontend's `agentSupportsAnalytics`
+/// automatically extends this. Mirrors the frontend's `agentSupportsAnalysis`
 /// allowlist. Case-insensitive (via `adapter_for`).
 ///
 /// Used to scope features that should only run for vendors we model precisely

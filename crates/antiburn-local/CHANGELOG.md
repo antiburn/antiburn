@@ -21,16 +21,112 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-25
+
+### Changed
+
+- **Breaking:** `VendorAdapter::visit` returns `VisitOutcome` rather than `()`.
+  The default implementation returns `VisitOutcome::Unvalidated`, so an adapter
+  that does not check source validity only needs its signature updated. Callers
+  that discarded the unit result must now handle the outcome, because a
+  successful return no longer means the records describe a single coherent
+  source.
+- **rusqlite moves back to the 0.32 line** from 0.40. `libsqlite3-sys` sets
+  `links = "sqlite3"`, so a dependency graph may contain exactly one version of
+  it — a constraint on resolution, not on the build, which therefore binds even
+  when the conflicting dependency's features are off. An embedder that also uses
+  SQLx 0.8 needs `libsqlite3-sys ^0.30.1`, which only rusqlite 0.31 and 0.32
+  satisfy; against 0.40 such a graph simply fails to resolve, and the failure
+  lands downstream rather than here. The engine used no API newer than 0.32, so
+  the newer line bought nothing. `.github/dependabot.yml` now ignores `rusqlite`
+  and `libsqlite3-sys` so an automated bump cannot silently reintroduce this.
+- Per-agent discovery completion now logs at `debug` rather than `info`. It
+  reported once per agent per scan, which is scan bookkeeping rather than
+  something an embedder's default log level should carry.
+
+### Added
+
+- `analysis::EfficiencyTotals` and `analysis::thread_efficiency` split the cost
+  of priced assistant turns into new work, cached carry, and rewritten input.
+  The calculation merges records for one message, orders turns by timestamp,
+  and reports unpriced turns separately. Callers calculate each parent or
+  sub-agent event stream on its own, then combine totals with
+  `EfficiencyTotals::add`.
+- `analysis::source_validity` decides whether a transcript that was read still
+  describes the source it claimed to: `SourceClaim`, `PinnedSource`,
+  `PinnedOpen`, `PinnedReader`, `AppendOnlyGuarantee`, and
+  `append_only_guarantee`. `PinnedSource::open` pins a claimed source,
+  `recheck_prefix` and `recheck_full` re-verify it after reading, and each
+  returns the specific way it diverged rather than a bare failure.
+- `analysis::VisitOutcome` and `analysis::SourceChangedReason` report that
+  verdict to a caller. `AcceptedFull`, `AcceptedPrefix { boundary }`, and
+  `Unvalidated` distinguish a fully verified read from a verified prefix and
+  from no check at all, so a partial result is usable instead of merely
+  suspect. `SourceChangedReason` names the divergence — identity mismatch, a
+  short file at open, a head-region mismatch, a short read, truncation after
+  reading, or a fingerprint mismatch.
+- `ClaudeAdapter` is exported, and `ClaudeAdapter::visit_claimed` streams a
+  Claude transcript against a `SourceClaim`, validating the read rather than
+  trusting it.
+- `discovery::SourceStat::from_open_std_file` stats an already-open
+  `std::fs::File`, which is what the pinned-read path holds.
+
+### Added
+
+- `analysis::framing` frames a JSONL transcript one record at a time.
+  `BoundedJsonlReader` and `FramedRecord` hold each record under
+  `MAX_RECORD_BYTES`, so a single oversized or malformed line cannot make a scan
+  allocate without bound, and the caller can cancel between records.
+- `analysis::interface` adds a streaming seam for transcript records:
+  `RecordSink`, `NormalizedRecord`, `RecordSkip`, `RecordCoverage`,
+  `PartialReason`, `SessionSummary`, and `SessionCollector`. An adapter reports
+  one record at a time and finishes with a `SessionSummary`. `SessionCollector`
+  accumulates the same `NormalizedSession` the whole-document path produces and
+  reports the coverage and the partial reasons for it.
+- `discovery::source_version` gives a session source a storage-neutral identity
+  and version: `SourceDescriptor`, `SourceVersion`, `SourceStat`,
+  `FingerprintInputs`, `Streamability`, `head_hash_of`, and
+  `FINGERPRINT_HEAD_BYTES`, with `SourceRead` in `discovery`.
+  `Explorers::source_version` builds the value, and a scan keeps the
+  fingerprint, so a caller can tell an unchanged source from a grown one without
+  reading the transcript again.
+- `analysis::merge::merge_subagent_events` folds a sub-agent transcript into its
+  parent session, and `EventSource` records which transcript an event came from.
+- `SessionMetrics` carries `model_runs: Vec<ModelRun>`, `compaction_count`, and
+  `cache_rehydration_count`. A `Bucket` carries `cache_read_tokens`,
+  `cache_write_tokens`, `is_cache_rehydration`, `subagent_tokens`,
+  `secs_since_prior_turn`, `subagent_launches`, `user_prompts`, `last_tool`,
+  `model`, `thinking_mode`, `speed`, `has_thinking`, `compaction_trigger`
+  (`CompactionTrigger`), `compaction_pre_tokens`, and `compaction_post_tokens`.
+
 ### Changed
 
 - Analysis and discovery now emit structured local diagnostic events at silent
   recovery seams. This change does not alter analysis results or public APIs.
+- The bundled TOML integration now uses `toml` 1.1.4.
+
+### Removed
+
+- The session pattern analytics surface: `Phase`, `PhaseSegment`,
+  `PhaseDistribution`, `MIN_PHASE_WEIGHT`, and `active_time_fraction`. What they
+  reported did not describe the sessions they claimed to describe.
+- The local skill detail surface: `SkillDetail`, `LocalSkillDetails`, and
+  `SkillScope`.
+
 ### Fixed
 
 - Codex title discovery now distinguishes user-set names and generated titles
   from raw first-message fallbacks in the current state database. Generated
   session-index names can replace raw prompts, while legacy title-only state
   databases keep their existing rename behavior.
+- Codex cache rehydration is now inferred when the cached prefix stays cached,
+  and the `token_count` row Codex repeats on resume no longer counts twice.
+- A Codex compaction is now detected from a top-level compacted record.
+- A session keeps its own context window in its summary rather than the
+  reference window.
+- A multi-model session now reports stable cost totals across repeated analysis.
+- Codex task titles are restored.
+- The spawn-edges sidecar is flushed before its rename.
 
 ## [0.1.4] - 2026-08-21
 

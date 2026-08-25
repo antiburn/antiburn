@@ -1,4 +1,4 @@
-# Anonymised usage analytics
+# Anonymised analytics
 
 antiburn sends anonymised events about **the application itself** — which
 features get used, and what breaks. This document is the complete account of
@@ -32,7 +32,7 @@ rather than left implicit. The channel itself is permitted by **D-027** in
 ## Exactly what every event carries
 
 Thirteen fields, and this is the whole list. The payload is a closed Rust struct
-([`usage_analytics/event.rs`](../apps/desktop/src-tauri/src/usage_analytics/event.rs))
+([`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs))
 with no map and no free-form string, so there is nowhere for anything else to
 be put.
 
@@ -148,7 +148,7 @@ Everything above is checkable on your own machine.
 
 **Confirm a development build sends nothing.** Run `pnpm dev` from
 `apps/desktop`. Settings → Privacy shows the control disabled, with the reason.
-No endpoint was injected, so `usage_analytics::config::configured()` is false
+No endpoint was injected, so `analytics::config::configured()` is false
 and nothing is queued or sent.
 
 **Watch what a configured build actually sends.** Start a collector that prints
@@ -178,7 +178,7 @@ The first delivery is a minute after launch, then every fifteen minutes.
 app's own database:
 
 ```bash
-sqlite3 ~/Library/Application\ Support/ai.antiburn.desktop/antiburn-debug.sqlite3 "SELECT id, name, attempts, payload FROM usage_analytics_event; SELECT install_id, minted_at FROM usage_analytics_identity;"
+sqlite3 ~/Library/Application\ Support/ai.antiburn.desktop/antiburn-debug.sqlite3 "SELECT id, name, attempts, payload FROM analytics_event; SELECT install_id, minted_at FROM analytics_identity;"
 ```
 
 **Confirm opting out is a withdrawal, not a pause.** Turn the control off in
@@ -190,8 +190,8 @@ identity that cannot be linked to the old one.
 
 | Concern | File |
 |---|---|
-| Consent gate, queue, delivery | [`usage_analytics/mod.rs`](../apps/desktop/src-tauri/src/usage_analytics/mod.rs) |
-| The payload, and the closed field set | [`usage_analytics/event.rs`](../apps/desktop/src-tauri/src/usage_analytics/event.rs) |
-| Endpoint configuration, and why a clean checkout is inert | [`usage_analytics/config.rs`](../apps/desktop/src-tauri/src/usage_analytics/config.rs) |
+| Consent gate, queue, delivery | [`analytics/mod.rs`](../apps/desktop/src-tauri/src/analytics/mod.rs) |
+| The payload, and the closed field set | [`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs) |
+| Endpoint configuration, and why a clean checkout is inert | [`analytics/config.rs`](../apps/desktop/src-tauri/src/analytics/config.rs) |
 | The setting, and the upgrade rule for existing installs | [`store/mod.rs`](../apps/desktop/src-tauri/src/store/mod.rs) |
 | The reader-facing copy | [`PrivacyPane.tsx`](../apps/desktop/src/views/settings/PrivacyPane.tsx) |

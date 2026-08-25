@@ -80,7 +80,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
-use crate::analytics;
+use crate::analysis;
 use crate::dto::ScanStatus;
 use crate::repositories;
 use crate::storage_health::{self, checked};
@@ -147,8 +147,8 @@ impl ScanController {
         self.cancel.load(Ordering::SeqCst)
     }
 
-    pub fn cancel_flag(&self) -> analytics::CancelFlag {
-        analytics::CancelFlag::from_flag(Arc::clone(&self.cancel))
+    pub fn cancel_flag(&self) -> analysis::CancelFlag {
+        analysis::CancelFlag::from_flag(Arc::clone(&self.cancel))
     }
 
     /// The current or last pass.
@@ -280,7 +280,7 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
     // all is an analytics question, and this scheduler runs a pass a minute
     // while the popover is open. `None` is a failure, which travels as a bare
     // category — an error string can hold a path.
-    crate::usage_analytics::record_scan(app, outcome.as_ref().ok().map(|n| *n as u64));
+    crate::analytics::record_scan(app, outcome.as_ref().ok().map(|n| *n as u64));
     crate::notifications::note_scan_outcome(app, &finished);
     finished
 }
@@ -366,10 +366,10 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
         now,
         i64::from(activity_window_days),
         |agent, session_id, wsl_distro| async move {
-            analytics::locate(agent, &session_id, wsl_distro.as_deref()).await
+            analysis::locate(agent, &session_id, wsl_distro.as_deref()).await
         },
         |agent, session_id, wsl_distro, claimed, cancel| async move {
-            analytics::analyze(agent, &session_id, wsl_distro.as_deref(), claimed, cancel).await
+            analysis::analyze(agent, &session_id, wsl_distro.as_deref(), claimed, cancel).await
         },
     )
     .await?;
@@ -643,7 +643,7 @@ async fn describe_one_with_activity(
         _ => Vec::new(),
     };
     let subagent_count = children.len() as u32;
-    let fork_parent_session_id = preview.and_then(analytics::fork_parent_from_content);
+    let fork_parent_session_id = preview.and_then(analysis::fork_parent_from_content);
 
     let (updated_at_epoch, activity_source, activity_cursor) =
         semantic_activity_for_log(&log, activity_state.as_ref(), &children, preview).await;
@@ -910,10 +910,10 @@ where
         AgentKind,
         String,
         Option<String>,
-        analytics::ClaimedSource,
-        analytics::CancelFlag,
+        analysis::ClaimedSource,
+        analysis::CancelFlag,
     ) -> AFut,
-    AFut: std::future::Future<Output = analytics::SessionAnalysis>,
+    AFut: std::future::Future<Output = analysis::SessionAnalysis>,
 {
     let since = now - activity_days.max(1) * 86_400;
     let candidates = store.recent_sessions(since, MAX_ANALYSES_PER_PASS)?;
@@ -927,7 +927,7 @@ where
         let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
             continue;
         };
-        if !analytics::analytics_supported(agent) {
+        if !analysis::analysis_supported(agent) {
             // A generically-parsed transcript would produce a half-confident
             // metric; the view says so instead of showing one.
             continue;
@@ -941,7 +941,7 @@ where
         else {
             continue;
         };
-        let fingerprint = analytics::fingerprint_with_subagents(
+        let fingerprint = analysis::fingerprint_with_subagents(
             agent,
             &record.key.session_id,
             record.wsl_distro.as_deref(),
@@ -949,18 +949,18 @@ where
         )
         .await;
         if let Some(cached) = store.analysis(&record.key)?
-            && analytics::cache_is_fresh(&cached, &fingerprint)
+            && analysis::cache_is_fresh(&cached, &fingerprint)
         {
             continue;
         }
 
         let source_state = store.session_source_state(&record.key)?;
         let claimed = source_state
-            .map(|state| analytics::ClaimedSource {
+            .map(|state| analysis::ClaimedSource {
                 fingerprint: state.source_fingerprint,
                 generation: state.source_generation,
             })
-            .unwrap_or(analytics::ClaimedSource {
+            .unwrap_or(analysis::ClaimedSource {
                 fingerprint: None,
                 generation: 0,
             });
@@ -1622,7 +1622,7 @@ mod tests {
             .unwrap();
 
         let legacy_fingerprint =
-            analytics::fingerprint_with_subagents(AgentKind::Claude, session_id, None, &source)
+            analysis::fingerprint_with_subagents(AgentKind::Claude, session_id, None, &source)
                 .await;
         let cached = crate::store::AnalysisRecord {
             key: session.key.clone(),
@@ -1645,7 +1645,7 @@ mod tests {
             persisted_session.source_fingerprint.as_deref(),
             Some("sv1:session-source")
         );
-        assert!(analytics::cache_is_fresh(
+        assert!(analysis::cache_is_fresh(
             &store
                 .analysis(&session.key)
                 .unwrap()
@@ -1674,7 +1674,7 @@ mod tests {
             },
             move |_, _, _, _, _| {
                 observed_analyses.fetch_add(1, Ordering::SeqCst);
-                async { analytics::SessionAnalysis::unavailable() }
+                async { analysis::SessionAnalysis::unavailable() }
             },
         )
         .await
@@ -1711,7 +1711,7 @@ mod tests {
             },
             move |_, _, _, _, _| {
                 observed.fetch_add(1, Ordering::SeqCst);
-                async { analytics::SessionAnalysis::unavailable() }
+                async { analysis::SessionAnalysis::unavailable() }
             },
         )
         .await

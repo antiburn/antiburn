@@ -29,6 +29,7 @@ import type {
   ActiveSessionsSummary,
   BillableTokens,
   SessionCostComponents,
+  SessionEfficiency,
 } from "./types/session"
 
 /* -------------------------------------------------------------------------
@@ -110,9 +111,9 @@ export interface AppSettings {
    * Ready screen before anything can be sent; off for a store that finished
    * onboarding under copy promising no analytics at all. Nothing is
    * transmitted until onboarding completes, and no build without an injected
-   * endpoint transmits at all — see `AppInfo.usageAnalyticsSupported`.
+   * endpoint transmits at all — see `AppInfo.analyticsSupported`.
    */
-  usageAnalyticsEnabled: boolean
+  analyticsEnabled: boolean
   /**
    * Whether the popover's usage-limits bar shows its per-provider rows.
    * This display preference never gates a fetch. It defaults open and stays
@@ -152,10 +153,10 @@ export interface AppInfo {
    * this repository, because the endpoint is injected at build time and this
    * tree carries none.
    */
-  usageAnalyticsSupported: boolean
+  analyticsSupported: boolean
   /** Who receives those events, in the reader's own words. Null when this
    *  build has no endpoint. */
-  usageAnalyticsOperator: string | null
+  analyticsOperator: string | null
 }
 
 /** One row of the activity list, before it is shaped for presentation. */
@@ -183,7 +184,7 @@ export interface ActivityEntryPayload {
   modelRuns: ModelRunPayload[]
 }
 
-/** Identity of one local session, as the analytics view carries it. */
+/** Identity of one local session, as the analysis view carries it. */
 export interface SessionIdentityPayload {
   agent: string
   sessionId: string
@@ -220,10 +221,10 @@ export interface OrchestrationPayload {
   members: SubagentMemberPayload[]
 }
 
-/** Everything the session-analytics surface renders for one session. */
-export interface SessionAnalyticsPayload {
+/** Everything the session-analysis surface renders for one session. */
+export interface SessionAnalysisPayload {
   summary: ActiveSessionsSummary | null
-  supportsAnalytics: boolean
+  supportsAnalysis: boolean
   title: string | null
   wslDistro: string | null
   isActive: boolean
@@ -241,6 +242,8 @@ export interface SessionAnalyticsPayload {
   /** Billable tokens that back `subagentsCost`. The count sums every
    * sub-agent. The value is `null` when the session has no sub-agent. */
   subagentsTokens: BillableTokens | null
+  /** Where the spend behind `cost` went. The same subject as `cost`. */
+  efficiency: SessionEfficiency | null
   models: string[]
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns: ModelRunPayload[]
@@ -609,13 +612,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
-  usageAnalyticsEnabled: true,
+  analyticsEnabled: true,
   overviewLimitsExpanded: true,
 }
 
 /* -------------------------------------------------------------------------
  * Commands
  * ---------------------------------------------------------------------- */
+
+/** Tell the shell that React committed this renderer generation. */
+export async function windowReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("window_ready", { generation })
+}
 
 /**
  * Version stamp of the engine's bundled pricing catalog.
@@ -749,6 +758,16 @@ export async function setPopoverHeight(height: number, animate: boolean): Promis
   await invoke("set_popover_height", { height, animate })
 }
 
+/** Resize the floating HUD around its measured panel. */
+export async function resizeOverlayWindow(
+  height: number,
+  anchorBottom: boolean,
+  animate: boolean,
+): Promise<void> {
+  if (!hasShell()) return
+  await invoke("resize_overlay_window", { height, anchorBottom, animate })
+}
+
 /** Where the app came from and what it is running against. */
 export async function appInfo(): Promise<AppInfo | null> {
   if (!hasShell()) return null
@@ -781,7 +800,7 @@ export async function restartOnboarding(): Promise<void> {
  * it, so the set of things that can ever be reported is fixed there rather
  * than here — no call site in this webview can widen it, and none can put a
  * path, a title, or a repository name into a payload. See
- * `src-tauri/src/usage_analytics/event.rs`.
+ * `src-tauri/src/analytics/event.rs`.
  */
 export type Interaction =
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
@@ -811,21 +830,21 @@ export function noteInteraction(interaction: Interaction): void {
 export async function finishOnboarding(
   activityWindowDays: number,
   launchAtLogin: boolean,
-  usageAnalyticsEnabled: boolean,
+  analyticsEnabled: boolean,
 ): Promise<AppSettings> {
   if (!hasShell()) {
     return {
       ...DEFAULT_SETTINGS,
       activityWindowDays,
       launchAtLogin,
-      usageAnalyticsEnabled,
+      analyticsEnabled,
       onboardingCompleted: true,
     }
   }
   return invoke<AppSettings>("finish_onboarding", {
     activityWindowDays,
     launchAtLogin,
-    usageAnalyticsEnabled,
+    analyticsEnabled,
   })
 }
 
@@ -838,13 +857,34 @@ export async function listRecentSessions(windowDays?: number): Promise<ActivityE
 }
 
 /** One session's analysis, sub-agent roster, and fork relations. */
-export async function getSessionAnalytics(
+export async function getSessionAnalysis(
   agent: string,
   sessionId: string,
   wslDistro?: string | null,
-): Promise<SessionAnalyticsPayload | null> {
+): Promise<SessionAnalysisPayload | null> {
   if (!hasShell()) return null
-  return invoke<SessionAnalyticsPayload>("get_session_analytics", {
+  return invoke<SessionAnalysisPayload>("get_session_analysis", {
+    agent,
+    sessionId,
+    wslDistro: wslDistro ?? null,
+  })
+}
+
+/**
+ * A cheap fingerprint of one session's transcript.
+ *
+ * A poll compares this value tick to tick instead of re-running the full
+ * analysis: the fingerprint changes only when the transcript itself changes,
+ * so an unchanged value proves a re-analysis would find nothing new. `"-"`
+ * means the transcript is missing.
+ */
+export async function getSessionAnalysisFingerprint(
+  agent: string,
+  sessionId: string,
+  wslDistro?: string | null,
+): Promise<string> {
+  if (!hasShell()) return "-"
+  return invoke<string>("get_session_analysis_fingerprint", {
     agent,
     sessionId,
     wslDistro: wslDistro ?? null,
@@ -852,14 +892,14 @@ export async function getSessionAnalytics(
 }
 
 /** One sub-agent's own analysis. */
-export async function getSubagentAnalytics(
+export async function getSubagentAnalysis(
   agent: string,
   parentSessionId: string,
   subagentId: string,
   wslDistro?: string | null,
-): Promise<SessionAnalyticsPayload | null> {
+): Promise<SessionAnalysisPayload | null> {
   if (!hasShell()) return null
-  return invoke<SessionAnalyticsPayload>("get_subagent_analytics", {
+  return invoke<SessionAnalysisPayload>("get_subagent_analysis", {
     agent,
     parentSessionId,
     subagentId,
@@ -1262,6 +1302,23 @@ export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"
 export async function onSessionsInvalidated(handler: () => void): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen(SESSIONS_INVALIDATED_EVENT, () => handler())
+}
+
+/**
+ * Event the shell emits when one session's cached analysis changes outside a
+ * scan. Mirrors `SESSION_ENTRY_CHANGED_EVENT` in `src-tauri/src/commands.rs`.
+ * The payload is the fresh entry for that session.
+ */
+export const SESSION_ENTRY_CHANGED_EVENT = "sessions:entry-changed"
+
+/** Subscribe to one session's entry changing. The result unsubscribes. */
+export async function onSessionEntryChanged(
+  handler: (entry: ActivityEntryPayload) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
 }
 
 /**

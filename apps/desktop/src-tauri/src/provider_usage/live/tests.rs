@@ -18,7 +18,7 @@ use super::model::{
     Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageScope,
     UsageSource, UsageWindowKind, WindowRole,
 };
-use super::{LiveUsageSource, SourceOutcome, sources, summarize};
+use super::{LiveUsageSource, SourceOutcome, sources, summarize, summarize_collected};
 
 const NOW: i64 = 1_800_000_000;
 
@@ -376,6 +376,25 @@ fn no_sources_is_an_empty_summary_and_not_an_error() {
     assert!(summary.providers.is_empty());
     assert!(summary.errors.is_empty());
     assert_eq!(summary.generated_at, "2027-01-15T08:00:00Z");
+}
+
+#[test]
+fn a_completed_background_collection_records_history_and_shapes_the_view() {
+    let store = crate::store::Store::open_in_memory(std::path::Path::new(
+        "/tmp/antiburn-live-usage-background-collection",
+    ))
+    .expect("in-memory store");
+    let reading = snapshot(Freshness::Fresh, NOW, 44.0);
+    let key = super::history::window_key(&reading, "five-hour");
+    let collected = sources::Collected {
+        snapshots: vec![reading],
+        errors: Vec::new(),
+    };
+
+    let summary = summarize_collected(collected, Some(&store), NOW, 0);
+
+    assert_eq!(summary.providers[0].windows[0].used_percent, Some(44.0));
+    assert_eq!(super::history::load(&store).samples(&key).len(), 1);
 }
 
 /* -------------------------------------------------------------------------

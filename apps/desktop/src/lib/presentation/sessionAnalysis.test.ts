@@ -15,6 +15,7 @@ import {
   formatCost,
   formatDuration,
   formatTokenBand,
+  formatTokensShort,
   HIGH_COST_FLOOR_USD,
   HIGH_COST_MEDIAN_MULTIPLE,
   HIGH_COST_MIN_SAMPLE,
@@ -22,7 +23,7 @@ import {
   initialContextTotal,
   median,
   modeChangeMarkers,
-} from "./sessionAnalytics"
+} from "./sessionAnalysis"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
@@ -299,6 +300,44 @@ describe("formatTokenBand", () => {
   })
 })
 
+describe("formatTokensShort", () => {
+  it("shows a plain integer under 1000", () => {
+    expect(formatTokensShort(0)).toBe("0")
+    expect(formatTokensShort(950)).toBe("950")
+    expect(formatTokensShort(999)).toBe("999")
+  })
+
+  it("shows one decimal in the thousands and millions when the scaled value is under 10", () => {
+    expect(formatTokensShort(1_200)).toBe("1.2k")
+    expect(formatTokensShort(2_100_000)).toBe("2.1M")
+    expect(formatTokensShort(2_100_000_000)).toBe("2.1B")
+  })
+
+  it("drops the decimal at or above 10 in the chosen unit", () => {
+    expect(formatTokensShort(14_000)).toBe("14k")
+    expect(formatTokensShort(143_000)).toBe("143k")
+    expect(formatTokensShort(143_000_000)).toBe("143M")
+  })
+
+  it("drops a trailing .0", () => {
+    expect(formatTokensShort(1_000)).toBe("1k")
+    expect(formatTokensShort(1_000_000)).toBe("1M")
+    expect(formatTokensShort(1_000_000_000)).toBe("1B")
+  })
+
+  it("rolls a value that would round to 1000 in its unit over to the next unit", () => {
+    expect(formatTokensShort(999_600)).toBe("1M")
+    expect(formatTokensShort(999_600_000)).toBe("1B")
+  })
+
+  it("never exceeds three digits before the unit suffix", () => {
+    for (const n of [950, 1_200, 14_000, 143_000, 2_100_000, 143_000_000, 2_100_000_000]) {
+      const text = formatTokensShort(n).replace(/[kMB]$/, "")
+      expect(text.replace(".", "").length).toBeLessThanOrEqual(3)
+    }
+  })
+})
+
 describe("formatDuration", () => {
   it("carries the minute remainder into the hour instead of printing 60m", () => {
     expect(formatDuration(7170)).toBe("2h")
@@ -351,6 +390,22 @@ describe("costBreakdownRows", () => {
     })
     expect(rows.map((r) => r.label)).toEqual(["Input", "Output", "Cache read", "Cache write"])
     expect(rows.map((r) => r.usd)).toEqual([0.3, 0.8, 1.1, 0.2])
+    // A caller with USD only (the activity list's payload) leaves tokens unset.
+    expect(rows.map((r) => r.tokens)).toEqual([undefined, undefined, undefined, undefined])
+  })
+
+  it("carries each component's token count alongside its USD, when given one", () => {
+    const rows = costBreakdownRows({
+      inputUsd: 0.3,
+      outputUsd: 0.8,
+      cacheReadUsd: 1.1,
+      cacheWriteUsd: 0.2,
+      inputTokens: 1_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 3_000,
+      cacheWriteTokens: 4_000,
+    })
+    expect(rows.map((r) => r.tokens)).toEqual([1_000, 2_000, 3_000, 4_000])
   })
 })
 
