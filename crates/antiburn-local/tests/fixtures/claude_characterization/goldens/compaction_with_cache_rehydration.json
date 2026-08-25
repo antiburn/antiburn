@@ -3957,6 +3957,16 @@
         "totalUsd": 0.18807999999999997
       },
       "durationSecs": 25,
+      "efficiency": {
+        "carryUsd": 0.007600000000000002,
+        "growthTokens": 56700,
+        "newWorkUsd": 0.035526726644323915,
+        "outputTokens": 60,
+        "pricedTurns": 6,
+        "rewriteUsd": 0.14495327335567607,
+        "totalUsd": 0.18807999999999997,
+        "unpricedTurns": 0
+      },
       "eventCount": 7,
       "grepCount": 0,
       "initialContext": {

@@ -35,8 +35,10 @@ import {
   isEmptySummary,
 } from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
+import { efficiencyMetrics, unpricedTurnsHint } from "../../lib/presentation/sessionEfficiency"
 import type {
   ActiveSessionsSummary,
+  SessionEfficiency,
   LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
@@ -48,6 +50,7 @@ import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { Skeleton } from "../ui/Skeleton"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart } from "./analysis/ContextTokensChart"
+import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { InitialContextChart } from "./analysis/InitialContextChart"
 import { ToolMixChart } from "./analysis/ToolMixChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
@@ -104,6 +107,8 @@ export interface SessionDetailPresentationProps {
   cost: LocalSessionCost | null
   /** Parent/sub-agents split for an orchestration total. */
   costSplit: TokensCostSplit | null
+  /** Where the spend behind `cost` went. The same subject as `cost`. */
+  efficiency: SessionEfficiency | null
   /** Sub-agents this session launched. */
   orchestration: LocalOrchestrationStatus | null
   /** Parent model runs followed by runs used only by sub-agents. */
@@ -415,6 +420,7 @@ export function SessionDetailPresentation({
   supportsAnalysis,
   cost,
   costSplit,
+  efficiency,
   orchestration,
   modelRuns,
   relations,
@@ -473,6 +479,9 @@ export function SessionDetailPresentation({
         breakdownRows: costBreakdownRows(resultComponentCost(cost)),
       }
     : null
+
+  const efficiencyCard = efficiency ? efficiencyMetrics(efficiency, session.agent) : null
+  const efficiencyHint = efficiencyCard ? unpricedTurnsHint(efficiencyCard.unpricedTurns) : null
 
   const tokensCard = summary
     ? tokensCardModel({
@@ -776,6 +785,12 @@ export function SessionDetailPresentation({
             {cost && tokensCard && (
               <Card title="Cost">
                 <CostBreakdown cost={cost} split={tokensCard.split} />
+              </Card>
+            )}
+
+            {cost && tokensCard && efficiencyCard && (
+              <Card title="Efficiency" {...(efficiencyHint ? { hint: efficiencyHint } : {})}>
+                <EfficiencyBreakdown metrics={efficiencyCard} />
               </Card>
             )}
 

@@ -16,9 +16,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, ModelRun, NormalizedSession, RawSource, SessionCost, SessionInput,
-    SessionMetrics, SkillUse, aggregate_metrics, analyze_session, analyze_sources_with,
-    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
+    ActiveSessionsSummary, EfficiencyTotals, ModelRun, NormalizedSession, RawSource, SessionCost,
+    SessionInput, SessionMetrics, SkillUse, aggregate_metrics, analyze_session,
+    analyze_sources_with, merge_subagent_events, normalize_source, price_breakdown,
+    pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, ForkObservation, SessionSource,
@@ -103,6 +104,9 @@ pub struct SessionAnalysis {
     /// sums every sub-agent. The value is `None` when the session has no
     /// sub-agent.
     pub subagents_tokens: Option<BillableTokens>,
+    /// Where the spend went, summed over the parent thread and every
+    /// sub-agent thread. `None` when the transcript could not be read.
+    pub efficiency: Option<EfficiencyTotals>,
     /// Every model that contributed billable tokens.
     pub models: Vec<String>,
     /// Parent model runs followed by runs used only by sub-agents.
@@ -132,6 +136,7 @@ impl SessionAnalysis {
             subagents_cost: None,
             inclusive_tokens: None,
             subagents_tokens: None,
+            efficiency: None,
             models: Vec::new(),
             model_runs: Vec::new(),
             inclusive_model_breakdown: HashMap::new(),
@@ -438,6 +443,14 @@ pub async fn analyze(
     let mut metrics = merged.unwrap_or_else(|| parent_metrics.clone());
     metrics.initial_context = parent_metrics.initial_context.clone();
     metrics.skill_uses = parent_metrics.skill_uses.clone();
+    // Each sub-agent runs its own context window, so its spend split comes
+    // from its own thread and is added to the parent's, not read off the
+    // merged stream.
+    let mut efficiency = parent_metrics.efficiency;
+    for child in by_id.values() {
+        efficiency.add(child.efficiency);
+    }
+    metrics.efficiency = efficiency;
 
     // The views key icons and copy off the discovery slug, so the vendor label
     // the adapter registry dispatches on never leaves this module.
@@ -484,6 +497,7 @@ pub async fn analyze(
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
     SessionAnalysis {
+        efficiency: Some(metrics.efficiency),
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
@@ -559,6 +573,7 @@ pub async fn analyze_subagent(
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
     SessionAnalysis {
+        efficiency: Some(metrics.efficiency),
         metrics: Some(metrics),
         summary: Some(summary),
         cost,
