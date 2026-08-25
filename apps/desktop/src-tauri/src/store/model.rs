@@ -216,6 +216,22 @@ pub struct ProjectionRevisions {
     pub evidence_schema_revision: i64,
 }
 
+/// A claimed evidence row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceClaim {
+    pub key: SessionKey,
+    pub source_generation: i64,
+    pub claim_fence: i64,
+    pub retry_count: i64,
+}
+
+/// The two failure outcomes available after a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceFailure {
+    Retry { next_attempt_at_epoch: i64 },
+    Failed,
+}
+
 /// One session's token evidence, as the provider-usage aggregation reads it.
 ///
 /// A projection rather than a record: the aggregation needs three columns out

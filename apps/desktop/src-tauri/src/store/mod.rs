@@ -41,10 +41,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::dto::DeferredPermissionDir;
 
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS,
-    MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions,
-    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState,
-    SessionKey, SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceFailure, EvidenceRow,
+    EvidenceStatus, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones,
+    NudgePlacement, ProjectionRevisions, RelationKind, RelationRecord, RepositoryRecord,
+    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, SourceVersionState,
+    ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -697,6 +698,174 @@ impl Store {
         )?;
         transaction.commit()?;
         Ok(enrolled + requeued)
+    }
+
+    /// Claim the next eligible evidence row for an enabled agent.
+    pub fn claim_next_evidence(
+        &self,
+        agents: &[&str],
+        now_epoch: i64,
+        lease_secs: i64,
+    ) -> Result<Option<EvidenceClaim>> {
+        if agents.is_empty() {
+            return Ok(None);
+        }
+
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let agent_placeholders = vec!["?"; agents.len()].join(", ");
+        let mut values: Vec<rusqlite::types::Value> = agents
+            .iter()
+            .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
+            .collect();
+        values.push(rusqlite::types::Value::Integer(now_epoch));
+        let now_parameter = values.len();
+        let candidate = transaction
+            .query_row(
+                &format!(
+                    "SELECT evidence.environment_key, evidence.agent, evidence.session_id
+                       FROM session_evidence AS evidence
+                       JOIN session
+                         ON session.environment_key = evidence.environment_key
+                        AND session.agent = evidence.agent
+                        AND session.session_id = evidence.session_id
+                      WHERE evidence.agent IN ({agent_placeholders})
+                        AND (
+                            evidence.status = 'pending'
+                            OR (evidence.status = 'processing'
+                                AND evidence.lease_expires_at_epoch <= ?{now_parameter})
+                        )
+                        AND (evidence.next_attempt_at_epoch IS NULL
+                             OR evidence.next_attempt_at_epoch <= ?{now_parameter})
+                      ORDER BY evidence.next_attempt_at_epoch,
+                               evidence.claimed_at_epoch,
+                               evidence.environment_key, evidence.agent, evidence.session_id
+                      LIMIT 1"
+                ),
+                rusqlite::params_from_iter(values.iter()),
+                |row| {
+                    Ok(SessionKey::new(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some(key) = candidate else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+
+        transaction.execute(
+            "UPDATE session_evidence
+                SET status = 'processing', claim_fence = claim_fence + 1,
+                    claimed_at_epoch = ?4, lease_expires_at_epoch = ?5
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                now_epoch,
+                now_epoch + lease_secs,
+            ],
+        )?;
+        let (source_generation, claim_fence, retry_count) = transaction.query_row(
+            "SELECT session.source_generation, evidence.claim_fence, evidence.retry_count
+               FROM session_evidence AS evidence
+               JOIN session
+                 ON session.environment_key = evidence.environment_key
+                AND session.agent = evidence.agent
+                AND session.session_id = evidence.session_id
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        transaction.commit()?;
+        Ok(Some(EvidenceClaim {
+            key,
+            source_generation,
+            claim_fence,
+            retry_count,
+        }))
+    }
+
+    /// Extend a claim when its fence and source generation remain current.
+    pub fn renew_evidence_lease(
+        &self,
+        claim: &EvidenceClaim,
+        now_epoch: i64,
+        lease_secs: i64,
+    ) -> Result<bool> {
+        let connection = self.lock();
+        let updated = connection.execute(
+            "UPDATE session_evidence AS evidence
+                SET claimed_at_epoch = ?6, lease_expires_at_epoch = ?7
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3
+                AND evidence.status = 'processing' AND evidence.claim_fence = ?4
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND session.source_generation = ?5
+                )",
+            params![
+                claim.key.environment_key,
+                claim.key.agent,
+                claim.key.session_id,
+                claim.claim_fence,
+                claim.source_generation,
+                now_epoch,
+                now_epoch + lease_secs,
+            ],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Record a retry or terminal failure for a current claim.
+    pub fn fail_evidence(
+        &self,
+        claim: &EvidenceClaim,
+        failure: EvidenceFailure,
+        last_error: &str,
+    ) -> Result<bool> {
+        let (status, next_attempt_at_epoch) = match failure {
+            EvidenceFailure::Retry {
+                next_attempt_at_epoch,
+            } => ("pending", Some(next_attempt_at_epoch)),
+            EvidenceFailure::Failed => ("failed", None),
+        };
+        let connection = self.lock();
+        let updated = connection.execute(
+            "UPDATE session_evidence AS evidence
+                SET status = ?6, retry_count = retry_count + 1,
+                    last_error = ?7, claimed_at_epoch = NULL,
+                    lease_expires_at_epoch = NULL, next_attempt_at_epoch = ?8
+              WHERE evidence.environment_key = ?1
+                AND evidence.agent = ?2 AND evidence.session_id = ?3
+                AND evidence.status = 'processing' AND evidence.claim_fence = ?4
+                AND EXISTS (
+                    SELECT 1 FROM session
+                     WHERE session.environment_key = evidence.environment_key
+                       AND session.agent = evidence.agent
+                       AND session.session_id = evidence.session_id
+                       AND session.source_generation = ?5
+                )",
+            params![
+                claim.key.environment_key,
+                claim.key.agent,
+                claim.key.session_id,
+                claim.claim_fence,
+                claim.source_generation,
+                status,
+                last_error,
+                next_attempt_at_epoch,
+            ],
+        )?;
+        Ok(updated > 0)
     }
 
     /// Forget all locally stored session data: every session, its analysis, its

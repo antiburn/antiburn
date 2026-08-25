@@ -1546,6 +1546,14 @@ fn reconciling_enrolls_a_session_evidence_row_for_an_upgraded_session() {
             .source_generation,
         1
     );
+    assert_eq!(
+        store
+            .claim_next_evidence(&["claude-code"], 100, 60)
+            .unwrap()
+            .unwrap()
+            .key,
+        record.key
+    );
 }
 
 #[test]
@@ -1627,6 +1635,229 @@ fn reconciling_session_evidence_skips_a_disabled_agent() {
     );
     assert!(store.evidence(&claude.key).unwrap().is_some());
     assert!(store.evidence(&codex.key).unwrap().is_none());
+}
+
+#[test]
+fn the_first_session_evidence_claim_excludes_a_second_claim() {
+    let store = store();
+    let mut record = session("exclusive-claim", 1_000);
+    record.source_fingerprint = Some("sv1:exclusive".into());
+    store.upsert_sessions(&[record]).unwrap();
+
+    let first = store
+        .claim_next_evidence(&["claude-code"], 100, 60)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(first.claim_fence, 1);
+    assert!(
+        store
+            .claim_next_evidence(&["claude-code"], 100, 60)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn reclaiming_an_abandoned_session_evidence_row_raises_the_fence() {
+    let store = store();
+    let mut record = session("reclaimed-claim", 1_000);
+    record.source_fingerprint = Some("sv1:reclaim".into());
+    store.upsert_sessions(&[record]).unwrap();
+    let first = store
+        .claim_next_evidence(&["claude-code"], 100, 10)
+        .unwrap()
+        .unwrap();
+
+    let reclaimed = store
+        .claim_next_evidence(&["claude-code"], 110, 10)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(reclaimed.key, first.key);
+    assert_eq!(reclaimed.source_generation, first.source_generation);
+    assert_eq!(reclaimed.claim_fence, first.claim_fence + 1);
+}
+
+#[test]
+fn a_late_session_evidence_transition_is_rejected() {
+    let store = store();
+    let mut record = session("late-transition", 1_000);
+    record.source_fingerprint = Some("sv1:late".into());
+    store.upsert_sessions(&[record]).unwrap();
+    let first = store
+        .claim_next_evidence(&["claude-code"], 100, 10)
+        .unwrap()
+        .unwrap();
+    let current = store
+        .claim_next_evidence(&["claude-code"], 110, 10)
+        .unwrap()
+        .unwrap();
+    let before = store.evidence(&current.key).unwrap().unwrap();
+
+    assert!(
+        !store
+            .fail_evidence(&first, EvidenceFailure::Failed, "late")
+            .unwrap()
+    );
+    assert_eq!(store.evidence(&current.key).unwrap().unwrap(), before);
+}
+
+#[test]
+fn a_stale_generation_rejects_a_session_evidence_lease_renewal() {
+    let store = store();
+    let mut record = session("stale-renewal", 1_000);
+    record.source_fingerprint = Some("sv1:renewal".into());
+    store.upsert_sessions(&[record.clone()]).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 100, 60)
+        .unwrap()
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET source_generation = source_generation + 1
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let before = store.evidence(&record.key).unwrap().unwrap();
+
+    assert!(!store.renew_evidence_lease(&claim, 110, 60).unwrap());
+    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
+}
+
+#[test]
+fn a_stale_generation_rejects_a_session_evidence_failure() {
+    let store = store();
+    let mut record = session("stale-failure", 1_000);
+    record.source_fingerprint = Some("sv1:failure".into());
+    store.upsert_sessions(&[record.clone()]).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 100, 60)
+        .unwrap()
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET source_generation = source_generation + 1
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let before = store.evidence(&record.key).unwrap().unwrap();
+
+    assert!(
+        !store
+            .fail_evidence(&claim, EvidenceFailure::Failed, "stale")
+            .unwrap()
+    );
+    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
+}
+
+#[test]
+fn a_session_evidence_claim_is_not_eligible_before_its_next_attempt() {
+    let store = store();
+    let mut record = session("delayed-claim", 1_000);
+    record.source_fingerprint = Some("sv1:delayed".into());
+    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET next_attempt_at_epoch = 200
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+
+    assert!(
+        store
+            .claim_next_evidence(&["claude-code"], 199, 60)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .claim_next_evidence(&["claude-code"], 200, 60)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn failing_session_evidence_with_retry_returns_it_to_pending_with_backoff() {
+    let store = store();
+    let mut record = session("retry-failure", 1_000);
+    record.source_fingerprint = Some("sv1:retry".into());
+    store.upsert_sessions(&[record.clone()]).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 100, 60)
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        store
+            .fail_evidence(
+                &claim,
+                EvidenceFailure::Retry {
+                    next_attempt_at_epoch: 300,
+                },
+                "try later",
+            )
+            .unwrap()
+    );
+
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Pending);
+    assert_eq!(evidence.retry_count, 1);
+    assert_eq!(evidence.next_attempt_at_epoch, Some(300));
+    assert_eq!(evidence.last_error.as_deref(), Some("try later"));
+    assert_eq!(evidence.claimed_at_epoch, None);
+    assert_eq!(evidence.lease_expires_at_epoch, None);
+    assert!(
+        store
+            .claim_next_evidence(&["claude-code"], 299, 60)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn failing_session_evidence_terminally_marks_it_failed() {
+    let store = store();
+    let mut record = session("terminal-failure", 1_000);
+    record.source_fingerprint = Some("sv1:terminal".into());
+    store.upsert_sessions(&[record.clone()]).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 100, 60)
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        store
+            .fail_evidence(&claim, EvidenceFailure::Failed, "terminal")
+            .unwrap()
+    );
+
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Failed);
+    assert_eq!(evidence.retry_count, 1);
+    assert_eq!(evidence.next_attempt_at_epoch, None);
+    assert_eq!(evidence.last_error.as_deref(), Some("terminal"));
+    assert_ne!(evidence.status, EvidenceStatus::Ready);
+    assert_ne!(evidence.status, EvidenceStatus::Unsupported);
 }
 
 #[test]
