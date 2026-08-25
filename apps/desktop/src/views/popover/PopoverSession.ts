@@ -46,7 +46,12 @@ import {
 } from "../../lib/popoverHeight"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
-import { isFloatingHudEnabled, openOverlayWindow } from "../../lib/overlayWindow"
+import {
+  isCurrentWindowVisible,
+  isFloatingHudEnabled,
+  isOverlayWindowVisible,
+  openOverlayWindow,
+} from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
 import type { SessionSubject } from "./SessionPane"
@@ -275,8 +280,6 @@ export class PopoverSession {
     this.started = true
     const generation = ++this.generation
 
-    if (isMacOS() && isFloatingHudEnabled()) void openOverlayWindow().catch(() => {})
-
     void this.loadInitial(generation)
     void this.listenSettings(generation)
     void this.listenSessionsInvalidated(generation)
@@ -468,6 +471,7 @@ export class PopoverSession {
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
+      void this.restoreFloatingHud(generation)
       void this.refreshUsage()
       void this.refreshAnalysis()
     })
@@ -476,6 +480,16 @@ export class PopoverSession {
       return
     }
     this.stopPopoverShownListening = unlisten
+    void this.restoreFloatingHud(generation)
+  }
+
+  private restoreFloatingHud = async (generation: number): Promise<void> => {
+    if (!isMacOS() || !isFloatingHudEnabled()) return
+    const visible = await isCurrentWindowVisible()
+    if (generation !== this.generation || !visible) return
+    const overlayVisible = await isOverlayWindowVisible()
+    if (generation !== this.generation || overlayVisible) return
+    await openOverlayWindow().catch(() => {})
   }
 
   // aislop-ignore-next-line ai-slop/narrative-comment -- Issue #90 owns this standing finding.

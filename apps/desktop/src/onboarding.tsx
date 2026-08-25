@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { App } from "./App"
 import { mountWindow } from "./bootstrap"
+import { OnboardingView } from "./views/OnboardingView"
 
-mountWindow(<App />)
+mountWindow(<OnboardingView />, "onboarding")

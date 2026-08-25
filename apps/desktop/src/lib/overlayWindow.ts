@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 
 const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
 
@@ -34,7 +35,15 @@ export function setFloatingHudEnabled(enabled: boolean): void {
   }
 }
 
-async function isOverlayWindowVisible(): Promise<boolean> {
+export async function isCurrentWindowVisible(): Promise<boolean> {
+  try {
+    return await getCurrentWindow().isVisible()
+  } catch {
+    return false
+  }
+}
+
+export async function isOverlayWindowVisible(): Promise<boolean> {
   try {
     const overlay = await WebviewWindow.getByLabel(OVERLAY_WINDOW_LABEL)
     return (await overlay?.isVisible()) ?? false

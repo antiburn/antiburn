@@ -617,6 +617,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * Commands
  * ---------------------------------------------------------------------- */
 
+/** Tell the shell that React committed this renderer generation. */
+export async function windowReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("window_ready", { generation })
+}
+
 /**
  * Version stamp of the engine's bundled pricing catalog.
  *

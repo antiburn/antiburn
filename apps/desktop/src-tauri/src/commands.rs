@@ -61,6 +61,19 @@ pub fn engine_catalog_version() -> &'static str {
     antiburn_local::pricing::PRICING_CATALOG_VERSION
 }
 
+/// Reveal a native window after its invoking renderer commits its shell.
+#[tauri::command]
+pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
+    match window.label() {
+        crate::popover::LABEL => crate::popover::renderer_ready(&window, generation),
+        crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
+        crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
+        label => {
+            ::tracing::debug!(event = "window_ready_ignored", window = label);
+        }
+    }
+}
+
 /// Opens, or refocuses, the standalone settings window.
 ///
 /// `pane` is optional and is a *request*: the frontend owns the pane list, so

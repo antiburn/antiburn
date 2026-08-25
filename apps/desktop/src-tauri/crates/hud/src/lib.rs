@@ -63,6 +63,7 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
     .resizable(false)
     .visible(false)
     .focused(false)
+    .focusable(false)
     .shadow(false)
     .skip_taskbar(true)
     .always_on_top(true)
