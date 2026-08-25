@@ -357,11 +357,27 @@ describe("OverlayWindow", () => {
     }
   })
 
-  it("clears the stored preference through the native hide command", async () => {
-    render(<OverlayWindow />)
-    localStorage.setItem("antiburn.showFloatingHud", "1")
-    fireEvent.click(closeButton())
-    expect(localStorage.getItem("antiburn.showFloatingHud")).toBe("0")
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("hide_overlay_window"))
+  it("closes the visible detail window with the HUD", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      localStorage.setItem("antiburn.showFloatingHud", "1")
+      await advance(0)
+      fireEvent.mouseEnter(frame(container))
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+
+      fireEvent.click(closeButton())
+
+      expect(hideHudDetail).toHaveBeenCalledTimes(1)
+      expect(closeButton()).toHaveClass("opacity-0")
+      expect(localStorage.getItem("antiburn.showFloatingHud")).toBe("0")
+      await act(async () => {})
+      expect(invoke).toHaveBeenCalledWith("hide_overlay_window")
+      await advance(400)
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

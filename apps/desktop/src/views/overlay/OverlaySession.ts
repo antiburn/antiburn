@@ -104,6 +104,7 @@ export class OverlaySession {
   }
 
   close = (): void => {
+    this.requestHover(false)
     setFloatingHudEnabled(false)
     void hideOverlayWindow().catch(() => {})
   }

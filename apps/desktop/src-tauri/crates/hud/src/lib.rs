@@ -206,6 +206,7 @@ pub fn open(_app: &AppHandle) -> tauri::Result<()> {
 pub fn hide(app: &AppHandle) -> tauri::Result<()> {
     let _guard = resize_apply_guard();
     RESIZE_STATE.request_hide();
+    hide_detail(app);
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         window.hide()?;
     }
