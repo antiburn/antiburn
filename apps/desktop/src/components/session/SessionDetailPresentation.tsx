@@ -483,6 +483,8 @@ export function SessionDetailPresentation({
   const efficiencyCard = efficiency ? efficiencyMetrics(efficiency, session.agent) : null
   const efficiencyHint = efficiencyCard ? unpricedTurnsHint(efficiencyCard.unpricedTurns) : null
 
+  const firstSession = summary?.sessions[0]
+
   const tokensCard = summary
     ? tokensCardModel({
         costScope: cost?.subject.scope ?? null,
@@ -496,10 +498,12 @@ export function SessionDetailPresentation({
         tokensOutTotal: summary.tokensOutTotal,
         compactionCount: summary.compactionCount ?? 0,
         cacheRehydrationCount: summary.cacheRehydrationCount ?? 0,
+        // Only `SessionMetrics` carries this count, not the aggregate
+        // summary, so it comes from the first (and, for this view, only)
+        // session rather than from `summary` itself.
+        cacheRoutingMissCount: firstSession?.cacheRoutingMissCount ?? 0,
       })
     : null
-
-  const firstSession = summary?.sessions[0]
   const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
 
   return (

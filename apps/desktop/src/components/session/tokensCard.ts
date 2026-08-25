@@ -35,9 +35,10 @@ export interface TokensCardModel {
   hint: string
 }
 
-/** "3 compactions", "1 compaction". */
+/** "3 compactions", "1 compaction", "2 routing misses". */
 function countLabel(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`
+  if (count === 1) return `${count} ${noun}`
+  return `${count} ${noun}${noun.endsWith("s") ? "es" : "s"}`
 }
 
 /** Decide what the Tokens card says, given the already-selected cost figures. */
@@ -63,6 +64,8 @@ export function tokensCardModel(input: {
   tokensOutTotal: number
   compactionCount?: number
   cacheRehydrationCount?: number
+  /** Only carried on `SessionMetrics`, not on the aggregate summary. */
+  cacheRoutingMissCount?: number
 }): TokensCardModel {
   const {
     costScope,
@@ -75,6 +78,7 @@ export function tokensCardModel(input: {
     tokensOutTotal,
     compactionCount = 0,
     cacheRehydrationCount = 0,
+    cacheRoutingMissCount = 0,
   } = input
 
   const costTotal = selectedCost?.totalCostUsd ?? input.summaryCostTotalUsd ?? null
@@ -90,6 +94,7 @@ export function tokensCardModel(input: {
   const parts = [`${formatCompact(tokensInTotal)} in`, `${formatCompact(tokensOutTotal)} out`]
   if (compactionCount > 0) parts.push(countLabel(compactionCount, "compaction"))
   if (cacheRehydrationCount > 0) parts.push(countLabel(cacheRehydrationCount, "rehydration"))
+  if (cacheRoutingMissCount > 0) parts.push(countLabel(cacheRoutingMissCount, "routing miss"))
 
   return { costTotal, split, hint: parts.join(" · ") }
 }

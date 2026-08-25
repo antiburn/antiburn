@@ -53,8 +53,9 @@ pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
 /// - enough wall-clock time passed since the prior parent turn for a TTL to
 ///   lapse. Providers also miss the cache inside a fast tool burst, when the
 ///   prefix has not yet reached the machine that serves the next request.
-///   That miss costs the same, but it is not a lapse and it is not something
-///   the user can avoid, so the engine does not flag it.
+///   That miss costs the same, but it is not a lapse and the user cannot
+///   avoid it. The engine reports it as a "routing miss" instead, so the
+///   chart can show it with less weight.
 ///
 /// Some providers do not report cache writes. For them, the engine finds a
 /// large replay after a cache-read collapse. The next cached turn confirms it.
@@ -64,7 +65,7 @@ pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
 const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
 /// The gap since the prior parent turn must reach this many seconds. No
 /// provider TTL is shorter than five minutes, so a faster miss is a routing
-/// miss and not a lapse. A turn with no timestamp passes this check.
+/// miss and not a lapse. A turn with no timestamp counts as a rehydration.
 const CACHE_REHYDRATION_MIN_GAP_SECS: u64 = 60;
 /// A turn's cache write must reach this share of its context to count as a
 /// full rewrite rather than an incremental cache write. The share is not
@@ -92,12 +93,10 @@ fn is_cache_rehydration_turn(
     prev_context_tokens: u64,
     prev_cache_read_tokens: u64,
     first_turn_after_compaction: bool,
-    secs_since_prior_turn: Option<u64>,
 ) -> bool {
     if first_turn_after_compaction
         || context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
         || prev_context_tokens == 0
-        || !gap_allows_rehydration(secs_since_prior_turn)
     {
         return false;
     }
@@ -118,8 +117,29 @@ struct CacheTurn<'a> {
     model: Option<&'a str>,
 }
 
+/// A candidate turn is a rehydration when its gap can hold a TTL lapse.
+/// Otherwise it is a routing miss.
 fn gap_allows_rehydration(secs_since_prior_turn: Option<u64>) -> bool {
     secs_since_prior_turn.is_none_or(|secs| secs >= CACHE_REHYDRATION_MIN_GAP_SECS)
+}
+
+/// The turns that re-sent their context uncached, split by cause.
+#[derive(Default)]
+struct CacheMissEvents {
+    /// Event indices of turns that follow a TTL lapse.
+    rehydrations: HashSet<usize>,
+    /// Event indices of turns that miss the cache inside a fast burst.
+    routing_misses: HashSet<usize>,
+}
+
+impl CacheMissEvents {
+    fn insert(&mut self, turn: CacheTurn<'_>) {
+        if gap_allows_rehydration(turn.secs_since_prior_turn) {
+            self.rehydrations.insert(turn.event_index);
+        } else {
+            self.routing_misses.insert(turn.event_index);
+        }
+    }
 }
 
 fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
@@ -139,7 +159,6 @@ fn same_known_model(left: Option<&str>, right: Option<&str>) -> bool {
 fn inferred_cache_rehydration_turn(previous: CacheTurn<'_>, current: CacheTurn<'_>) -> bool {
     if current.first_turn_after_compaction
         || current.context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
-        || !gap_allows_rehydration(current.secs_since_prior_turn)
         || cache_ratio(previous.cache_read_tokens, previous.context_tokens)
             < CACHE_REHYDRATION_PRIOR_READ_RATIO
         || cache_ratio(current.cache_read_tokens, current.context_tokens)
@@ -161,8 +180,8 @@ fn inferred_cache_rehydration_turn(previous: CacheTurn<'_>, current: CacheTurn<'
     cache_ratio(replayed_input, current.context_tokens) >= CACHE_REHYDRATION_REPLAY_RATIO
 }
 
-fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize> {
-    let mut indices = HashSet::new();
+fn cache_miss_events(session: &NormalizedSession) -> CacheMissEvents {
+    let mut events = CacheMissEvents::default();
     let mut turns = Vec::new();
     let mut previous_context = 0u64;
     let mut previous_cache_read = 0u64;
@@ -189,19 +208,7 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
             .ts_ms
             .zip(previous_turn_ts)
             .map(|(current, prior)| u64::try_from((current - prior).max(0) / 1000).unwrap_or(0));
-        if session.cache_write_tokens_available
-            && is_cache_rehydration_turn(
-                context_tokens,
-                event.usage.cache_creation_tokens,
-                previous_context,
-                previous_cache_read,
-                first_turn_after_compaction,
-                secs_since_prior_turn,
-            )
-        {
-            indices.insert(event_index);
-        }
-        turns.push(CacheTurn {
+        let turn = CacheTurn {
             event_index,
             context_tokens,
             fresh_input_tokens: event.usage.input_tokens,
@@ -209,7 +216,19 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
             first_turn_after_compaction,
             secs_since_prior_turn,
             model: active_model,
-        });
+        };
+        if session.cache_write_tokens_available
+            && is_cache_rehydration_turn(
+                context_tokens,
+                event.usage.cache_creation_tokens,
+                previous_context,
+                previous_cache_read,
+                first_turn_after_compaction,
+            )
+        {
+            events.insert(turn);
+        }
+        turns.push(turn);
         previous_context = context_tokens;
         previous_cache_read = event.usage.cache_read_tokens;
         first_turn_after_compaction = false;
@@ -219,7 +238,7 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
     }
 
     if session.cache_write_tokens_available {
-        return indices;
+        return events;
     }
 
     for window in turns.windows(3) {
@@ -234,10 +253,10 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
             && recovery_retention >= CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO
             && same_known_model(current.model, next.model)
         {
-            indices.insert(current.event_index);
+            events.insert(*current);
         }
     }
-    indices
+    events
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -296,8 +315,12 @@ pub struct Bucket {
     /// already includes cache writes as effective input.
     pub cache_write_tokens: u64,
     /// True when a turn landing in this bucket is a detected cache
-    /// rehydration (see `cache_rehydration_event_indices`).
+    /// rehydration (see `cache_miss_events`).
     pub is_cache_rehydration: bool,
+    /// True when a turn landing in this bucket re-sent its context uncached
+    /// inside a fast burst, too soon for a TTL lapse (see `cache_miss_events`).
+    #[serde(default)]
+    pub is_cache_routing_miss: bool,
     /// Wall-clock seconds since the prior parent turn. A rehydration turn takes
     /// priority when multiple turns land in this bucket.
     #[serde(default)]
@@ -374,6 +397,9 @@ pub struct SessionMetrics {
     /// Compaction boundaries in the parent transcript.
     #[serde(default)]
     pub compaction_count: u64,
+    /// Turns the engine flags as a cache routing miss.
+    #[serde(default)]
+    pub cache_routing_miss_count: u64,
     /// Turns the engine flags as a cache rehydration.
     #[serde(default)]
     pub cache_rehydration_count: u64,
@@ -541,12 +567,13 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
     let mut skill_event_idx: Vec<usize> = Vec::new();
     let mut buckets = vec![Bucket::default(); BUCKETS];
     let n = session.events.len();
-    let cache_rehydration_events = cache_rehydration_event_indices(session);
+    let cache_miss_events = cache_miss_events(session);
     // Timestamp-less events use the position of the preceding timestamped event.
     let mut last_progress = 0.0f32;
     let mut prev_turn_ts: Option<i64> = None;
     let mut compaction_count = 0u64;
     let mut cache_rehydration_count = 0u64;
+    let mut cache_routing_miss_count = 0u64;
     for (idx, ev) in session.events.iter().enumerate() {
         if active_ms > 0
             && let Some(ts) = ev.ts_ms
@@ -601,10 +628,14 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
                 let secs_since_prior_turn = ev.ts_ms.zip(prev_turn_ts).map(|(current, prior)| {
                     u64::try_from((current - prior).max(0) / 1000).unwrap_or(0)
                 });
-                let is_cache_rehydration = cache_rehydration_events.contains(&idx);
+                let is_cache_rehydration = cache_miss_events.rehydrations.contains(&idx);
                 if is_cache_rehydration {
                     bucket.is_cache_rehydration = true;
                     cache_rehydration_count += 1;
+                }
+                if cache_miss_events.routing_misses.contains(&idx) {
+                    bucket.is_cache_routing_miss = true;
+                    cache_routing_miss_count += 1;
                 }
                 // The bucket keeps the gap of its first turn: the gap that
                 // enters the bucket. A rehydration turn takes priority.
@@ -778,6 +809,7 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         tokens_out,
         peak_context_tokens: peak_context,
         compaction_count,
+        cache_routing_miss_count,
         cache_rehydration_count,
         context_available,
         context_window,
@@ -909,12 +941,14 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         // the summary bucket.
         let mut is_compaction_boundary = false;
         let mut is_cache_rehydration = false;
+        let mut is_cache_routing_miss = false;
         let mut subagent_launches = 0u32;
         let mut user_prompts = 0u32;
         for m in &metrics {
             let b = &m.buckets[bi];
             is_compaction_boundary |= b.is_compaction_boundary;
             is_cache_rehydration |= b.is_cache_rehydration;
+            is_cache_routing_miss |= b.is_cache_routing_miss;
             subagent_launches = subagent_launches.saturating_add(b.subagent_launches);
             user_prompts = user_prompts.saturating_add(b.user_prompts);
             tin = tin.saturating_add(b.tokens_in);
@@ -945,6 +979,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
         bucket.is_cache_rehydration = is_cache_rehydration;
+        bucket.is_cache_routing_miss = is_cache_routing_miss;
         bucket.subagent_launches = subagent_launches;
         bucket.user_prompts = user_prompts;
         // The per-session signals below name one gap, one model, one mode, and
