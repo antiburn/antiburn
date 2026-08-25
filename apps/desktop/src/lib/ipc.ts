@@ -870,6 +870,27 @@ export async function getSessionAnalysis(
   })
 }
 
+/**
+ * A cheap fingerprint of one session's transcript.
+ *
+ * A poll compares this value tick to tick instead of re-running the full
+ * analysis: the fingerprint changes only when the transcript itself changes,
+ * so an unchanged value proves a re-analysis would find nothing new. `"-"`
+ * means the transcript is missing.
+ */
+export async function getSessionAnalysisFingerprint(
+  agent: string,
+  sessionId: string,
+  wslDistro?: string | null,
+): Promise<string> {
+  if (!hasShell()) return "-"
+  return invoke<string>("get_session_analysis_fingerprint", {
+    agent,
+    sessionId,
+    wslDistro: wslDistro ?? null,
+  })
+}
+
 /** One sub-agent's own analysis. */
 export async function getSubagentAnalysis(
   agent: string,

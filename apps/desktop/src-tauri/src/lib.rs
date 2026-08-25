@@ -157,6 +157,7 @@ pub fn run() {
             commands::get_consent_diagnostics,
             commands::recheck_folder_permissions,
             commands::get_session_analysis,
+            commands::get_session_analysis_fingerprint,
             commands::get_settings,
             commands::get_storage_health,
             commands::get_subagent_analysis,
