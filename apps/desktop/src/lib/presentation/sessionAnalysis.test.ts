@@ -35,6 +35,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    isCacheRoutingMiss: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
     userPrompts: 0,
@@ -115,6 +116,15 @@ describe("contextTokenSeries", () => {
       [5_000, 200, false],
       [0, 25_000, true],
     ])
+  })
+
+  it("carries the routing-miss flag onto each point", () => {
+    const buckets = [
+      bucket({ isCacheRoutingMiss: false }),
+      bucket({ cacheWriteTokens: 25_000, isCacheRoutingMiss: true }),
+    ]
+    const series = contextTokenSeries(buckets)
+    expect(series.map((p) => p.isCacheRoutingMiss)).toEqual([false, true])
   })
 
   it("carries the prior-turn gap only on its own bucket", () => {

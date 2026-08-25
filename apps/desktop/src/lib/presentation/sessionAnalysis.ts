@@ -35,6 +35,7 @@ export interface ContextTokenPoint {
   cacheReadTokens: number
   cacheWriteTokens: number
   isCacheRehydration: boolean
+  isCacheRoutingMiss: boolean
   secsSincePriorTurn: number | null
   subagentLaunches: number
   /** The name of the last parent tool call in this bucket, when any. */
@@ -109,6 +110,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     cacheReadTokens: bucket.cacheReadTokens,
     cacheWriteTokens: bucket.cacheWriteTokens,
     isCacheRehydration: bucket.isCacheRehydration,
+    isCacheRoutingMiss: bucket.isCacheRoutingMiss,
     secsSincePriorTurn: bucket.secsSincePriorTurn,
     subagentLaunches: bucket.subagentLaunches,
     lastTool: bucket.lastTool,

@@ -87,8 +87,12 @@ pub struct Bucket {
     /// already includes cache writes as effective input.
     pub cache_write_tokens: u64,
     /// True when a turn landing in this bucket is a detected cache
-    /// rehydration (see `cache_rehydration_event_indices`).
+    /// rehydration (see `cache_miss_events` in `metrics_sink`).
     pub is_cache_rehydration: bool,
+    /// True when a turn landing in this bucket re-sent its context uncached
+    /// inside a fast burst, too soon for a TTL lapse (see `cache_miss_events`).
+    #[serde(default)]
+    pub is_cache_routing_miss: bool,
     /// Wall-clock seconds since the prior parent turn. A rehydration turn takes
     /// priority when multiple turns land in this bucket.
     #[serde(default)]
@@ -165,6 +169,9 @@ pub struct SessionMetrics {
     /// Compaction boundaries in the parent transcript.
     #[serde(default)]
     pub compaction_count: u64,
+    /// Turns the engine flags as a cache routing miss.
+    #[serde(default)]
+    pub cache_routing_miss_count: u64,
     /// Turns the engine flags as a cache rehydration.
     #[serde(default)]
     pub cache_rehydration_count: u64,
@@ -399,12 +406,14 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         // the summary bucket.
         let mut is_compaction_boundary = false;
         let mut is_cache_rehydration = false;
+        let mut is_cache_routing_miss = false;
         let mut subagent_launches = 0u32;
         let mut user_prompts = 0u32;
         for m in &metrics {
             let b = &m.buckets[bi];
             is_compaction_boundary |= b.is_compaction_boundary;
             is_cache_rehydration |= b.is_cache_rehydration;
+            is_cache_routing_miss |= b.is_cache_routing_miss;
             subagent_launches = subagent_launches.saturating_add(b.subagent_launches);
             user_prompts = user_prompts.saturating_add(b.user_prompts);
             tin = tin.saturating_add(b.tokens_in);
@@ -435,6 +444,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
         bucket.is_cache_rehydration = is_cache_rehydration;
+        bucket.is_cache_routing_miss = is_cache_routing_miss;
         bucket.subagent_launches = subagent_launches;
         bucket.user_prompts = user_prompts;
         // The per-session signals below name one gap, one model, one mode, and

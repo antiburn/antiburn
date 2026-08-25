@@ -31,6 +31,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     isCacheRehydration: false,
+    isCacheRoutingMiss: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
     userPrompts: 0,
@@ -142,6 +143,14 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.getByText("Cost")).toBeTruthy()
     expect(screen.getByText("Tools")).toBeTruthy()
+  })
+
+  it("adds the routing-miss count from the session metrics to the Context hint", () => {
+    view({
+      cost: cost(),
+      summary: summary({ sessions: [metrics({ cacheRoutingMissCount: 2 })] }),
+    })
+    expect(screen.getByText(/2 routing misses/)).toBeTruthy()
   })
 
   it("omits the Cost card when nothing priced the session", () => {
