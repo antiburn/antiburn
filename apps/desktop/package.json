@@ -51,7 +51,7 @@
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitejs/plugin-react": "6.1.0",
     "babel-plugin-react-compiler": "1.0.0",
-    "eslint": "10.8.1",
+    "eslint": "10.9.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.11.0",
     "jsdom": "30.0.1",
