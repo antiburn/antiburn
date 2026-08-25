@@ -484,7 +484,7 @@ pub fn list_recent_sessions(
 /// popover's first paint unbounded.
 const MAX_ACTIVITY_ROWS: usize = 500;
 
-fn activity_entry(
+pub(crate) fn activity_entry(
     store: &Store,
     repositories: &[RepositoryRecord],
     session: SessionRecord,

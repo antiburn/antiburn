@@ -61,6 +61,7 @@ mod dto;
 mod export;
 mod global_click;
 mod hud;
+mod insights_worker;
 mod notifications;
 mod nudges;
 mod onboarding;
@@ -91,7 +92,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 /// Handles of the app's background tasks, kept so it can abort them on exit
 /// rather than leaving them running against a store that is going away.
 #[derive(Default)]
-struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
+pub(crate) struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
 
 impl Schedulers {
     fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
@@ -209,6 +210,13 @@ pub fn run() {
             // engine's state helpers as an explicit argument.
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
+            app.manage(insights_worker::WorkerHandle::default());
+            if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
+                &agents::evidence_cohort(),
+                analysis::projection_revisions(),
+            ) {
+                ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
+            }
 
             // Apply the persisted theme before any window shows, so the first
             // paint is already in the reader's chosen appearance. "system" and
@@ -294,6 +302,7 @@ pub fn run() {
             app.manage(live_usage);
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
+                schedulers.push(insights_worker::spawn(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
                 schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
                 schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
@@ -373,6 +382,10 @@ fn abort_schedulers(app: &tauri::AppHandle) {
     let Some(schedulers) = app.try_state::<Schedulers>() else {
         return;
     };
+    stop_schedulers(&schedulers);
+}
+
+pub(crate) fn stop_schedulers(schedulers: &Schedulers) {
     let Ok(mut handles) = schedulers.0.lock() else {
         return;
     };
@@ -505,7 +518,10 @@ fn install_updater(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClosePolicy, close_policy, finish_retention_cleanup, should_prevent_exit};
+    use super::{
+        ClosePolicy, Schedulers, close_policy, finish_retention_cleanup, should_prevent_exit,
+        stop_schedulers,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -539,6 +555,89 @@ mod tests {
 
         assert!(completed.load(Ordering::Acquire));
         assert!(handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_scheduler_stop_leaves_the_claim_reclaimable() {
+        use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
+        use crate::insights_worker::{PassFuture, WorkerHandle, worker_loop};
+        use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
+
+        let store = Arc::new(
+            Store::open_in_memory(std::path::Path::new("/tmp/antiburn-stop-test")).unwrap(),
+        );
+        let key = SessionKey::new("native", "claude-code", "shutdown");
+        store
+            .upsert_sessions(
+                &[SessionRecord {
+                    key: key.clone(),
+                    source_kind: "file".into(),
+                    source_label: "/tmp/shutdown.jsonl".into(),
+                    wsl_distro: None,
+                    title: None,
+                    title_source: None,
+                    cwd: None,
+                    surface: "cli".into(),
+                    updated_at_epoch: Some(100),
+                    activity_cursor: String::new(),
+                    activity_source: "event".into(),
+                    subagent_count: 0,
+                    fork_parent_session_id: None,
+                    source_fingerprint: Some("sv1:shutdown".into()),
+                }],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let handle = Arc::new(WorkerHandle::default());
+        let blocker = Arc::new(tokio::sync::Notify::new());
+        let pass_blocker = Arc::clone(&blocker);
+        let runner = move |_: &SessionRecord, _: PassSignal| {
+            let blocker = Arc::clone(&pass_blocker);
+            Box::pin(async move {
+                blocker.notified().await;
+                EvidencePass {
+                    analysis: SessionAnalysis::unavailable(),
+                    evidence: None,
+                    outcome: PassOutcome::SourceMissing,
+                }
+            }) as PassFuture
+        };
+        let task_store = Arc::clone(&store);
+        let task_handle = Arc::clone(&handle);
+        let task = tauri::async_runtime::spawn(async move {
+            worker_loop(&task_store, &task_handle, &|| 100, &runner, &|_| {}).await;
+        });
+        for _ in 0..20 {
+            if store
+                .evidence(&key)
+                .unwrap()
+                .is_some_and(|row| row.status == EvidenceStatus::Processing)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let schedulers = Schedulers::default();
+        schedulers.push(task);
+
+        stop_schedulers(&schedulers);
+        assert_eq!(
+            store.evidence(&key).unwrap().unwrap().status,
+            EvidenceStatus::Processing
+        );
+        blocker.notify_waiters();
+        tokio::task::yield_now().await;
+        assert!(store.analysis(&key).unwrap().is_none());
+        store
+            .reconcile_evidence_revisions(
+                &crate::agents::evidence_cohort(),
+                crate::analysis::projection_revisions(),
+            )
+            .unwrap();
+        assert_eq!(
+            store.evidence(&key).unwrap().unwrap().status,
+            EvidenceStatus::Pending
+        );
     }
 
     #[test]

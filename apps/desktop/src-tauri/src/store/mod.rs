@@ -43,9 +43,9 @@ use crate::dto::DeferredPermissionDir;
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceCompletion,
     EvidenceFailure, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
-    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions, RelationKind,
-    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey,
-    SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions, PublishedEvidence,
+    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState,
+    SessionKey, SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
