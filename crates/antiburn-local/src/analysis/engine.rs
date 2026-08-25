@@ -49,7 +49,12 @@ pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
 ///   full rewrite is a real TTL lapse and not just the session's first turn;
 /// - the turn is not the first turn after a compaction boundary, since a
 ///   compaction always rewrites the (now smaller) context and that is not a
-///   TTL lapse.
+///   TTL lapse;
+/// - enough wall-clock time passed since the prior parent turn for a TTL to
+///   lapse. Providers also miss the cache inside a fast tool burst, when the
+///   prefix has not yet reached the machine that serves the next request.
+///   That miss costs the same, but it is not a lapse and it is not something
+///   the user can avoid, so the engine does not flag it.
 ///
 /// Some providers do not report cache writes. For them, the engine finds a
 /// large replay after a cache-read collapse. The next cached turn confirms it.
@@ -57,6 +62,10 @@ pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
 /// Ignore contexts under this size; a full rewrite of a small context is
 /// cheap and not worth flagging as a rehydration event.
 const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
+/// The gap since the prior parent turn must reach this many seconds. No
+/// provider TTL is shorter than five minutes, so a faster miss is a routing
+/// miss and not a lapse. A turn with no timestamp passes this check.
+const CACHE_REHYDRATION_MIN_GAP_SECS: u64 = 60;
 /// A turn's cache write must reach this share of its context to count as a
 /// full rewrite rather than an incremental cache write. The share is not
 /// near 1.0: the system prompt and tool definitions stay cached across
@@ -83,10 +92,12 @@ fn is_cache_rehydration_turn(
     prev_context_tokens: u64,
     prev_cache_read_tokens: u64,
     first_turn_after_compaction: bool,
+    secs_since_prior_turn: Option<u64>,
 ) -> bool {
     if first_turn_after_compaction
         || context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
         || prev_context_tokens == 0
+        || !gap_allows_rehydration(secs_since_prior_turn)
     {
         return false;
     }
@@ -103,7 +114,12 @@ struct CacheTurn<'a> {
     fresh_input_tokens: u64,
     cache_read_tokens: u64,
     first_turn_after_compaction: bool,
+    secs_since_prior_turn: Option<u64>,
     model: Option<&'a str>,
+}
+
+fn gap_allows_rehydration(secs_since_prior_turn: Option<u64>) -> bool {
+    secs_since_prior_turn.is_none_or(|secs| secs >= CACHE_REHYDRATION_MIN_GAP_SECS)
 }
 
 fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
@@ -123,6 +139,7 @@ fn same_known_model(left: Option<&str>, right: Option<&str>) -> bool {
 fn inferred_cache_rehydration_turn(previous: CacheTurn<'_>, current: CacheTurn<'_>) -> bool {
     if current.first_turn_after_compaction
         || current.context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+        || !gap_allows_rehydration(current.secs_since_prior_turn)
         || cache_ratio(previous.cache_read_tokens, previous.context_tokens)
             < CACHE_REHYDRATION_PRIOR_READ_RATIO
         || cache_ratio(current.cache_read_tokens, current.context_tokens)
@@ -150,6 +167,7 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
     let mut previous_context = 0u64;
     let mut previous_cache_read = 0u64;
     let mut first_turn_after_compaction = false;
+    let mut previous_turn_ts: Option<i64> = None;
     let mut active_model = session.model.as_deref();
 
     for (event_index, event) in session.events.iter().enumerate() {
@@ -167,6 +185,10 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
             continue;
         }
 
+        let secs_since_prior_turn = event
+            .ts_ms
+            .zip(previous_turn_ts)
+            .map(|(current, prior)| u64::try_from((current - prior).max(0) / 1000).unwrap_or(0));
         if session.cache_write_tokens_available
             && is_cache_rehydration_turn(
                 context_tokens,
@@ -174,6 +196,7 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
                 previous_context,
                 previous_cache_read,
                 first_turn_after_compaction,
+                secs_since_prior_turn,
             )
         {
             indices.insert(event_index);
@@ -184,11 +207,15 @@ fn cache_rehydration_event_indices(session: &NormalizedSession) -> HashSet<usize
             fresh_input_tokens: event.usage.input_tokens,
             cache_read_tokens: event.usage.cache_read_tokens,
             first_turn_after_compaction,
+            secs_since_prior_turn,
             model: active_model,
         });
         previous_context = context_tokens;
         previous_cache_read = event.usage.cache_read_tokens;
         first_turn_after_compaction = false;
+        if event.ts_ms.is_some() {
+            previous_turn_ts = event.ts_ms;
+        }
     }
 
     if session.cache_write_tokens_available {

@@ -1066,6 +1066,31 @@ fn cache_rehydration_is_detected_after_a_ttl_lapse() {
     assert_eq!(rehydrated.len(), 1, "got {rehydrated:?}");
 }
 
+/// Same shape as CLAUDE_CACHE_REHYDRATION_FIXTURE, but the second turn comes
+/// 5 seconds after the first. No provider TTL is that short, so the gap gate
+/// must block the flag even though the read and write ratios still match.
+const CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T12:00:05Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+);
+
+#[test]
+fn cache_miss_inside_a_fast_burst_is_not_a_rehydration() {
+    let session = normalize_source(&jsonl_input(
+        "claude",
+        CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert!(
+        m.buckets.iter().all(|b| !b.is_cache_rehydration),
+        "a 5-second gap is a routing miss, not a TTL lapse"
+    );
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
 /// Real numbers from a Claude session after a 155-minute idle gap. The
 /// system prompt and tools (24,682 tokens) stay cached; only the conversation
 /// re-writes, so the write share is 76%, not close to 100%.
@@ -1359,6 +1384,53 @@ fn codex_first_turn_after_compaction_is_not_an_inferred_rehydration() {
     let m = analyze_session(&session);
 
     assert_eq!(m.cache_rehydration_count, 0);
+}
+
+/// Real numbers from a Codex rollout. The miss comes 6 seconds after the
+/// prior turn, so the gap gate must block the inferred rehydration flag even
+/// though the replay and recovery ratios match the pattern.
+const CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"cache_write_input_tokens":0,"output_tokens":168},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:10:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":177},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:10:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"cache_write_input_tokens":0,"output_tokens":166},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_miss_inside_a_fast_burst_is_not_inferred_as_rehydration() {
+    let session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 0);
+}
+
+/// The same values as CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE, but the
+/// second and third turns move 5 minutes later. The gap now clears the TTL
+/// gate, so the inferred rehydration flag fires — the gap is the only thing
+/// that changed between this test and the one above.
+const CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE: &str = concat!(
+    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"cache_write_input_tokens":0,"output_tokens":168},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:15:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":177},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:15:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"cache_write_input_tokens":0,"output_tokens":166},"model_context_window":258400}}}"#,
+);
+
+#[test]
+fn codex_cache_miss_after_a_ttl_lapse_is_inferred_as_rehydration() {
+    let session = normalize_source(&jsonl_input(
+        "codex",
+        CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE,
+    ))
+    .unwrap();
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 1);
 }
 
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +

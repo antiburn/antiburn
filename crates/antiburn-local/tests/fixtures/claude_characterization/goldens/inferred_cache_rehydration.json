@@ -38,7 +38,7 @@
         "speed": null,
         "thinkingMode": null,
         "tools": [],
-        "tsMs": 1783072805000,
+        "tsMs": 1783073100000,
         "usage": {
           "cacheCreationTokens": 0,
           "cacheReadTokens": 2000,
@@ -59,7 +59,7 @@
         "speed": null,
         "thinkingMode": null,
         "tools": [],
-        "tsMs": 1783072810000,
+        "tsMs": 1783073400000,
         "usage": {
           "cacheCreationTokens": 0,
           "cacheReadTokens": 31000,
@@ -73,7 +73,7 @@
   },
   "sessions": [
     {
-      "activeSecs": 10,
+      "activeSecs": 600,
       "agent": "claude",
       "billableCacheCreationTokens": 0,
       "billableCacheReadTokens": 67000,
@@ -1982,7 +1982,7 @@
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-3-5-haiku-20241022",
-          "secsSincePriorTurn": 5,
+          "secsSincePriorTurn": 300,
           "speed": null,
           "subagentLaunches": 0,
           "subagentTokens": 0,
@@ -3851,7 +3851,7 @@
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-3-5-haiku-20241022",
-          "secsSincePriorTurn": 5,
+          "secsSincePriorTurn": 300,
           "speed": null,
           "subagentLaunches": 0,
           "subagentTokens": 0,
@@ -3872,7 +3872,7 @@
         "outputUsd": 0.00011999999999999999,
         "totalUsd": 0.03068
       },
-      "durationSecs": 10,
+      "durationSecs": 600,
       "efficiency": {
         "carryUsd": 0.00536,
         "growthTokens": 35000,
