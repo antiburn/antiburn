@@ -21,16 +21,64 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-25
+
+### Added
+
+- `analysis::framing` frames a JSONL transcript one record at a time.
+  `BoundedJsonlReader` and `FramedRecord` hold each record under
+  `MAX_RECORD_BYTES`, so a single oversized or malformed line cannot make a scan
+  allocate without bound, and the caller can cancel between records.
+- `analysis::interface` adds a streaming seam for transcript records:
+  `RecordSink`, `NormalizedRecord`, `RecordSkip`, `RecordCoverage`,
+  `PartialReason`, `SessionSummary`, and `SessionCollector`. An adapter reports
+  one record at a time and finishes with a `SessionSummary`. `SessionCollector`
+  accumulates the same `NormalizedSession` the whole-document path produces and
+  reports the coverage and the partial reasons for it.
+- `discovery::source_version` gives a session source a storage-neutral identity
+  and version: `SourceDescriptor`, `SourceVersion`, `SourceStat`,
+  `FingerprintInputs`, `Streamability`, `head_hash_of`, and
+  `FINGERPRINT_HEAD_BYTES`, with `SourceRead` in `discovery`.
+  `Explorers::source_version` builds the value, and a scan keeps the
+  fingerprint, so a caller can tell an unchanged source from a grown one without
+  reading the transcript again.
+- `analysis::merge::merge_subagent_events` folds a sub-agent transcript into its
+  parent session, and `EventSource` records which transcript an event came from.
+- `SessionMetrics` carries `model_runs: Vec<ModelRun>`, `compaction_count`, and
+  `cache_rehydration_count`. A `Bucket` carries `cache_read_tokens`,
+  `cache_write_tokens`, `is_cache_rehydration`, `subagent_tokens`,
+  `secs_since_prior_turn`, `subagent_launches`, `user_prompts`, `last_tool`,
+  `model`, `thinking_mode`, `speed`, `has_thinking`, `compaction_trigger`
+  (`CompactionTrigger`), `compaction_pre_tokens`, and `compaction_post_tokens`.
+
 ### Changed
 
 - Analysis and discovery now emit structured local diagnostic events at silent
   recovery seams. This change does not alter analysis results or public APIs.
+- The bundled TOML integration now uses `toml` 1.1.4.
+
+### Removed
+
+- The session pattern analytics surface: `Phase`, `PhaseSegment`,
+  `PhaseDistribution`, `MIN_PHASE_WEIGHT`, and `active_time_fraction`. What they
+  reported did not describe the sessions they claimed to describe.
+- The local skill detail surface: `SkillDetail`, `LocalSkillDetails`, and
+  `SkillScope`.
+
 ### Fixed
 
 - Codex title discovery now distinguishes user-set names and generated titles
   from raw first-message fallbacks in the current state database. Generated
   session-index names can replace raw prompts, while legacy title-only state
   databases keep their existing rename behavior.
+- Codex cache rehydration is now inferred when the cached prefix stays cached,
+  and the `token_count` row Codex repeats on resume no longer counts twice.
+- A Codex compaction is now detected from a top-level compacted record.
+- A session keeps its own context window in its summary rather than the
+  reference window.
+- A multi-model session now reports stable cost totals across repeated analysis.
+- Codex task titles are restored.
+- The spawn-edges sidecar is flushed before its rename.
 
 ## [0.1.4] - 2026-08-21
 

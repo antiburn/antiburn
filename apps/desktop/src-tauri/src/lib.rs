@@ -76,6 +76,7 @@ mod tray;
 mod tray_title;
 mod updates;
 mod usage_alerts;
+mod webview_defaults;
 mod window_lifecycle;
 mod window_placement;
 mod window_readiness;
@@ -124,6 +125,7 @@ pub fn run() {
     let builder = antiburn_nudge::register(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(webview_defaults::plugin())
         .invoke_handler(tauri::generate_handler![
             commands::add_scan_root,
             commands::app_info,

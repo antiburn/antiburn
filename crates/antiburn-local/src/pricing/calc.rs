@@ -22,7 +22,7 @@ use crate::pricing::table::lookup_pricing;
 pub struct CostResult {
     pub cost: Cost,
     /// Model keys present in the breakdown with no entry in the pricing map,
-    /// in breakdown iteration order. Includes zero-token models.
+    /// sorted by model key. Includes zero-token models.
     pub unpriced_models: Vec<String>,
 }
 
@@ -52,8 +52,11 @@ pub fn calculate_cost(
 ) -> CostResult {
     let mut cost = Cost::default();
     let mut unpriced_models = Vec::new();
+    let mut model_ids: Vec<&String> = breakdown.keys().collect();
+    model_ids.sort_unstable();
 
-    for (model_id, tokens) in breakdown {
+    for model_id in model_ids {
+        let tokens = &breakdown[model_id];
         let Some(pricing) = lookup_pricing(model_id, pricing_map) else {
             unpriced_models.push(model_id.clone());
             continue;
@@ -231,6 +234,116 @@ mod tests {
         let result = calculate_cost(&breakdown, &pricing);
         // gpt-5.5 Priority: 1M*$12.50/M + 100K*$75/M + 500K*$1.25/M.
         assert!((result.cost.total_usd - 20.625).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_multi_model_cost_does_not_depend_on_hash_map_seeding() {
+        fn sum_in_order(
+            breakdown: &HashMap<String, ModelTokens>,
+            pricing_map: &HashMap<String, ModelPricing>,
+            model_ids: &[&String],
+        ) -> Cost {
+            let mut cost = Cost::default();
+
+            for model_id in model_ids {
+                let tokens = &breakdown[*model_id];
+                let pricing = lookup_pricing(model_id, pricing_map).unwrap();
+                let input = tokens.input_tokens as f64 * pricing.input_cost_per_token;
+                let output = tokens.output_tokens as f64 * pricing.output_cost_per_token;
+                let cache_read =
+                    tokens.cache_read_tokens as f64 * pricing.cache_read_cost_per_token;
+                let cache_write = calculate_cache_write_cost(tokens, pricing);
+
+                cost.input_usd += input;
+                cost.output_usd += output;
+                cost.cache_read_usd += cache_read;
+                cost.cache_write_usd += cache_write;
+                cost.total_usd += input + output + cache_read + cache_write;
+            }
+
+            cost
+        }
+
+        fn cost_bits(cost: &Cost) -> [u64; 5] {
+            [
+                cost.total_usd.to_bits(),
+                cost.input_usd.to_bits(),
+                cost.output_usd.to_bits(),
+                cost.cache_read_usd.to_bits(),
+                cost.cache_write_usd.to_bits(),
+            ]
+        }
+
+        let pricing = fallback_pricing();
+        let priced_entries = [
+            (
+                "claude-3-5-haiku-20241022",
+                ModelTokens {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                    ..ModelTokens::default()
+                },
+            ),
+            (
+                "claude-opus-4-6-20260115",
+                ModelTokens {
+                    input_tokens: 700,
+                    output_tokens: 70,
+                    ..ModelTokens::default()
+                },
+            ),
+            (
+                "claude-opus-4-7-20260115",
+                ModelTokens {
+                    input_tokens: 200,
+                    output_tokens: 20,
+                    ..ModelTokens::default()
+                },
+            ),
+        ];
+        let expected_breakdown = breakdown(&priced_entries);
+        let mut sorted_model_ids: Vec<&String> = expected_breakdown.keys().collect();
+        sorted_model_ids.sort_unstable();
+        let expected_cost = sum_in_order(&expected_breakdown, &pricing, &sorted_model_ids);
+        let mut expected_unpriced_models = vec![
+            "unknown-alpha".to_string(),
+            "unknown-beta".to_string(),
+            "unknown-gamma".to_string(),
+        ];
+        expected_unpriced_models.sort_unstable();
+        let mut saw_distinct_order = false;
+        let mut saw_unsorted_unpriced = false;
+
+        for _ in 0..1_000 {
+            let priced_breakdown = breakdown(&priced_entries);
+            let observed_model_ids: Vec<&String> = priced_breakdown.keys().collect();
+            let observed_cost = sum_in_order(&priced_breakdown, &pricing, &observed_model_ids);
+            saw_distinct_order |=
+                observed_cost.total_usd.to_bits() != expected_cost.total_usd.to_bits();
+
+            let priced_result = calculate_cost(&priced_breakdown, &pricing);
+            assert_eq!(cost_bits(&priced_result.cost), cost_bits(&expected_cost));
+
+            let mut unpriced_breakdown = HashMap::new();
+            for model_id in expected_unpriced_models.iter().rev() {
+                unpriced_breakdown.insert(model_id.clone(), ModelTokens::default());
+            }
+            let observed_unpriced_models: Vec<String> =
+                unpriced_breakdown.keys().cloned().collect();
+            saw_unsorted_unpriced |= observed_unpriced_models != expected_unpriced_models;
+
+            let unpriced_result = calculate_cost(&unpriced_breakdown, &pricing);
+            assert_eq!(unpriced_result.unpriced_models, expected_unpriced_models);
+        }
+
+        assert!(
+            saw_distinct_order,
+            "the loop did not witness an arithmetic-distinct model order"
+        );
+        assert!(
+            saw_unsorted_unpriced,
+            "the loop did not witness an unsorted unpriced-model order"
+        );
     }
 
     #[test]

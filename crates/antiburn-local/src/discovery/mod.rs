@@ -1732,7 +1732,7 @@ impl Explorers {
         while let Some(result) = set.join_next().await {
             completed += 1;
             if let Ok((name, logs)) = result {
-                ::tracing::info!(
+                ::tracing::debug!(
                     event = "repo_discovery_agent_done",
                     agent = name,
                     sessions = logs.len(),
@@ -1795,7 +1795,7 @@ impl Explorers {
         while let Some(result) = set.join_next().await {
             completed += 1;
             if let Ok((name, cwds)) = result {
-                ::tracing::info!(
+                ::tracing::debug!(
                     event = "repo_discovery_agent_done",
                     agent = name,
                     cwds = cwds.len(),
