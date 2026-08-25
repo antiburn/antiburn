@@ -21,7 +21,7 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
-## [0.1.6] - 2026-08-25
+## [0.1.7] - 2026-08-25
 
 ### Changed
 
@@ -46,6 +46,12 @@ version and refuses the release if there is none.
 
 ### Added
 
+- `analysis::EfficiencyTotals` and `analysis::thread_efficiency` split the cost
+  of priced assistant turns into new work, cached carry, and rewritten input.
+  The calculation merges records for one message, orders turns by timestamp,
+  and reports unpriced turns separately. Callers calculate each parent or
+  sub-agent event stream on its own, then combine totals with
+  `EfficiencyTotals::add`.
 - `analysis::source_validity` decides whether a transcript that was read still
   describes the source it claimed to: `SourceClaim`, `PinnedSource`,
   `PinnedOpen`, `PinnedReader`, `AppendOnlyGuarantee`, and
