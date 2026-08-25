@@ -369,13 +369,20 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     let store = store();
     store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
     store
-        .save_analysis(&AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "abc"),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            source_fingerprint: "1:1".into(),
-            pricing_generation: 0,
-        })
+        .save_analysis(
+            &AnalysisRecord {
+                key: SessionKey::new("native", "claude-code", "abc"),
+                model_breakdown_json: "{}".into(),
+                inclusive_models_json: "[]".into(),
+                source_fingerprint: "1:1".into(),
+                pricing_generation: 0,
+                analyzed_generation: 0,
+                parser_revision: 0,
+                analyzer_revision: 0,
+                metrics_schema_revision: 0,
+            },
+            None,
+        )
         .unwrap();
     store
         .replace_relations(
@@ -678,17 +685,85 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
                 .into(),
         source_fingerprint: "1700000000:4096".into(),
         pricing_generation: 0,
+        analyzed_generation: 7,
+        parser_revision: 1,
+        analyzer_revision: 1,
+        metrics_schema_revision: 1,
     };
-    store.save_analysis(&record).unwrap();
+    store.save_analysis(&record, None).unwrap();
     assert_eq!(store.analysis(&key).unwrap().as_ref(), Some(&record));
 
     let updated = AnalysisRecord {
         source_fingerprint: "1700000900:8192".into(),
         ..record
     };
-    store.save_analysis(&updated).unwrap();
+    store.save_analysis(&updated, None).unwrap();
     let stored = store.analysis(&key).unwrap().expect("analysis");
     assert_eq!(stored.source_fingerprint, "1700000900:8192");
+}
+
+#[test]
+fn save_analysis_writes_the_generation_and_revision_columns() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "revisions");
+    store
+        .upsert_sessions(&[session("revisions", 1_000)])
+        .unwrap();
+    let record = AnalysisRecord {
+        key: key.clone(),
+        model_breakdown_json: "{}".into(),
+        inclusive_models_json: "[]".into(),
+        source_fingerprint: "sv1:source".into(),
+        pricing_generation: 3,
+        analyzed_generation: 8,
+        parser_revision: 1,
+        analyzer_revision: 2,
+        metrics_schema_revision: 3,
+    };
+
+    store.save_analysis(&record, Some(900)).unwrap();
+
+    assert_eq!(store.analysis(&key).unwrap(), Some(record));
+    assert_eq!(
+        store
+            .session_source_state(&key)
+            .unwrap()
+            .expect("source state")
+            .started_at_epoch,
+        Some(900)
+    );
+}
+
+#[test]
+fn save_analysis_never_clears_a_known_start_time() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "known-start");
+    store
+        .upsert_sessions(&[session("known-start", 1_000)])
+        .unwrap();
+    let record = AnalysisRecord {
+        key: key.clone(),
+        model_breakdown_json: "{}".into(),
+        inclusive_models_json: "[]".into(),
+        source_fingerprint: "sv1:source".into(),
+        pricing_generation: 0,
+        analyzed_generation: 1,
+        parser_revision: 1,
+        analyzer_revision: 1,
+        metrics_schema_revision: 1,
+    };
+
+    store.save_analysis(&record, Some(800)).unwrap();
+    store.save_analysis(&record, None).unwrap();
+
+    assert_eq!(
+        store
+            .session_source_state(&key)
+            .unwrap()
+            .expect("source state")
+            .started_at_epoch,
+        Some(800)
+    );
 }
 
 #[test]
@@ -740,13 +815,20 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
     let key = SessionKey::new("native", "claude-code", "abc");
     store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
     store
-        .save_analysis(&AnalysisRecord {
-            key: key.clone(),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            source_fingerprint: "x".into(),
-            pricing_generation: 0,
-        })
+        .save_analysis(
+            &AnalysisRecord {
+                key: key.clone(),
+                model_breakdown_json: "{}".into(),
+                inclusive_models_json: "[]".into(),
+                source_fingerprint: "x".into(),
+                pricing_generation: 0,
+                analyzed_generation: 0,
+                parser_revision: 0,
+                analyzer_revision: 0,
+                metrics_schema_revision: 0,
+            },
+            None,
+        )
         .unwrap();
     store
         .replace_relations(
@@ -872,13 +954,21 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
         .upsert_sessions(&[session("analyzed", 2_000), session("pending", 1_500)])
         .unwrap();
     store
-        .save_analysis(&AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "analyzed"),
-            model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
-            inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#.into(),
-            source_fingerprint: "1:1".into(),
-            pricing_generation: 0,
-        })
+        .save_analysis(
+            &AnalysisRecord {
+                key: SessionKey::new("native", "claude-code", "analyzed"),
+                model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
+                inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
+                    .into(),
+                source_fingerprint: "1:1".into(),
+                pricing_generation: 0,
+                analyzed_generation: 0,
+                parser_revision: 0,
+                analyzer_revision: 0,
+                metrics_schema_revision: 0,
+            },
+            None,
+        )
         .unwrap();
 
     let evidence = store.usage_evidence(1_000).unwrap();

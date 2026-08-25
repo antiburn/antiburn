@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "antiburn"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "antiburn-hud",
  "antiburn-local",
@@ -121,14 +121,16 @@ dependencies = [
 name = "antiburn-hud"
 version = "0.1.0"
 dependencies = [
+ "objc2-app-kit",
  "serde_json",
  "tauri",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "antiburn-local"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",

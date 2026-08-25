@@ -14,16 +14,22 @@
 //! every other command.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::Read;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, EfficiencyTotals, ModelRun, NormalizedSession, RawSource, SessionCost,
-    SessionInput, SessionMetrics, SkillUse, aggregate_metrics, analyze_session,
-    analyze_sources_with, merge_subagent_events, normalize_source, price_breakdown,
-    pricing_generation,
+    ANALYZER_REVISION, ActiveSessionsSummary, ClaudeAdapter, EfficiencyTotals,
+    METRICS_SCHEMA_REVISION, ModelRun, NormalizedSession, PARSER_REVISION, RawSource, SessionCost,
+    SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse, SourceClaim, VendorAdapter,
+    VisitOutcome, aggregate_metrics, analyze_session, analyze_sources_with, append_only_guarantee,
+    merge_metrics, merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
-    ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, ForkObservation, SessionSource,
-    session_source_content,
+    ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
+    ForkObservation, SessionSource, SourceStat, session_source_content,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
@@ -36,6 +42,56 @@ use crate::store::{AnalysisRecord, SessionKey};
 /// task is ordinary; two or more is genuine fan-out. Mirrors the webview's
 /// `MIN_ORCHESTRATED_SUBAGENTS`.
 pub const MIN_ORCHESTRATED_SUBAGENTS: u32 = 2;
+
+pub struct ClaimedSource {
+    pub fingerprint: Option<String>,
+    pub generation: i64,
+}
+
+#[derive(Clone)]
+pub struct CancelFlag(Arc<AtomicBool>);
+
+impl CancelFlag {
+    pub fn from_flag(flag: Arc<AtomicBool>) -> Self {
+        Self(flag)
+    }
+
+    pub fn never() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+pub struct StreamedSession {
+    pub parent: SessionMetrics,
+    pub merged: SessionMetrics,
+    pub subagents: Vec<SessionMetrics>,
+    pub started_at_epoch: Option<i64>,
+}
+
+enum StreamOutcome {
+    Published {
+        session: Box<StreamedSession>,
+        parent_fingerprint: Option<String>,
+    },
+    SourceChanged,
+    ParentUnreadable,
+}
+
+enum ComputedAnalysis {
+    Published {
+        parent: Box<SessionMetrics>,
+        merged: Box<SessionMetrics>,
+        subagents: Vec<SessionMetrics>,
+        started_at_epoch: Option<i64>,
+        parent_fingerprint: Option<String>,
+    },
+    SourceChanged,
+    Unavailable,
+}
 
 /// Longest a skill description may be once it leaves this module.
 ///
@@ -121,6 +177,9 @@ pub struct SessionAnalysis {
     pub source_path: Option<String>,
     /// `mtime:size` of that file, so a rescan can tell whether to redo the work.
     pub fingerprint: String,
+    pub analyzed_generation: i64,
+    pub started_at_epoch: Option<i64>,
+    pub source_changed: bool,
 }
 
 impl SessionAnalysis {
@@ -144,12 +203,18 @@ impl SessionAnalysis {
             orchestration: None,
             source_path: None,
             fingerprint: MISSING_FINGERPRINT.to_string(),
+            analyzed_generation: 0,
+            started_at_epoch: None,
+            source_changed: false,
         }
     }
 
     /// The cache record for this analysis, when there is anything to cache.
     pub fn record(&self, key: &SessionKey) -> Option<AnalysisRecord> {
         self.metrics.as_ref()?;
+        if self.source_changed {
+            return None;
+        }
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
@@ -158,6 +223,10 @@ impl SessionAnalysis {
                 .unwrap_or_else(|_| "[]".to_string()),
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
+            analyzed_generation: self.analyzed_generation,
+            parser_revision: PARSER_REVISION,
+            analyzer_revision: ANALYZER_REVISION,
+            metrics_schema_revision: METRICS_SCHEMA_REVISION,
         })
     }
 }
@@ -303,6 +372,158 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
     }
 }
 
+fn claim_file(path: &std::path::Path) -> anyhow::Result<SourceClaim> {
+    let mut file = std::fs::File::open(path)?;
+    let stat = SourceStat::from_open_std_file(&file)
+        .ok_or_else(|| anyhow::anyhow!("cannot read source metadata"))?;
+    let mut head = Vec::new();
+    file.by_ref()
+        .take(antiburn_local::discovery::source_version::FINGERPRINT_HEAD_BYTES as u64)
+        .read_to_end(&mut head)?;
+    Ok(SourceClaim::from_fingerprint_inputs(&FingerprintInputs {
+        stat,
+        head_hash: Some(antiburn_local::discovery::source_version::head_hash_of(
+            &head,
+        )),
+    }))
+}
+
+fn inline_fingerprint(content: &str) -> String {
+    FingerprintInputs {
+        stat: SourceStat {
+            identity: None,
+            size: content.len() as u64,
+            modified_nanos: None,
+            changed_nanos: None,
+        },
+        head_hash: Some(antiburn_local::discovery::source_version::head_hash_of(
+            content.as_bytes(),
+        )),
+    }
+    .fingerprint()
+}
+
+fn stream_claude(inputs: &[SessionInput], cancel: &CancelFlag) -> StreamOutcome {
+    stream_claude_with_claim_hook(inputs, cancel, &test_subagent_after_claim)
+}
+
+#[cfg(not(test))]
+fn test_subagent_after_claim(_: usize, _: &std::path::Path) {}
+
+#[cfg(test)]
+fn test_subagent_after_claim(_: usize, path: &std::path::Path) {
+    use std::io::Write;
+
+    let append = {
+        let mut override_ = subagent_test_override()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        override_
+            .as_mut()
+            .filter(|override_| override_.source_path == path)
+            .and_then(|override_| override_.append_after_claim.take())
+    };
+    if let Some(append) = append {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open changed sub-agent source")
+            .write_all(append.as_bytes())
+            .expect("append changed sub-agent source");
+    }
+}
+
+fn stream_claude_with_claim_hook(
+    inputs: &[SessionInput],
+    cancel: &CancelFlag,
+    after_claim: &dyn Fn(usize, &std::path::Path),
+) -> StreamOutcome {
+    stream_claude_with_hooks(inputs, &|| cancel.cancelled(), after_claim)
+}
+
+fn stream_claude_with_hooks(
+    inputs: &[SessionInput],
+    cancelled: &dyn Fn() -> bool,
+    after_claim: &dyn Fn(usize, &std::path::Path),
+) -> StreamOutcome {
+    let mut accumulators = Vec::with_capacity(inputs.len());
+    let mut parent_fingerprint = None;
+    for (index, input) in inputs.iter().enumerate() {
+        if cancelled() {
+            return StreamOutcome::ParentUnreadable;
+        }
+        let mut accumulator =
+            SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+        let result = match &input.source {
+            RawSource::File(path) => {
+                let claim = match claim_file(path) {
+                    Ok(claim) => claim,
+                    Err(_) if cancelled() || index == 0 => {
+                        return StreamOutcome::ParentUnreadable;
+                    }
+                    Err(_) => continue,
+                };
+                let fingerprint = claim.fingerprint.clone();
+                after_claim(index, path);
+                let outcome = ClaudeAdapter.visit_claimed(
+                    input,
+                    &claim,
+                    append_only_guarantee("claude"),
+                    cancelled,
+                    &mut accumulator,
+                );
+                if index == 0 {
+                    parent_fingerprint = Some(fingerprint);
+                }
+                outcome
+            }
+            RawSource::Jsonl(content) => {
+                if index == 0 {
+                    parent_fingerprint = Some(inline_fingerprint(content));
+                }
+                ClaudeAdapter.visit(input, &mut accumulator)
+            }
+            RawSource::Sqlite(_) if index == 0 => return StreamOutcome::ParentUnreadable,
+            RawSource::Sqlite(_) => continue,
+        };
+        match result {
+            Ok(VisitOutcome::SourceChanged(_)) => return StreamOutcome::SourceChanged,
+            Ok(_) if cancelled() => return StreamOutcome::ParentUnreadable,
+            Ok(_) => accumulators.push(accumulator),
+            Err(_) if cancelled() || index == 0 => {
+                return StreamOutcome::ParentUnreadable;
+            }
+            Err(_) => continue,
+        }
+    }
+    if cancelled() {
+        return StreamOutcome::ParentUnreadable;
+    }
+    let Some((parent, children)) = accumulators.split_first() else {
+        return StreamOutcome::ParentUnreadable;
+    };
+    let started_at_epoch = accumulators
+        .iter()
+        .filter_map(SessionMetricsAccumulator::earliest_ts_ms)
+        .min()
+        .map(|timestamp| timestamp / 1000);
+    let parent_metrics = parent.metrics();
+    let subagents = children
+        .iter()
+        .map(SessionMetricsAccumulator::metrics)
+        .collect();
+    let merged = merge_metrics(parent, children);
+    StreamOutcome::Published {
+        session: Box::new(StreamedSession {
+            parent: parent_metrics,
+            merged,
+            subagents,
+            started_at_epoch,
+        }),
+        parent_fingerprint,
+    }
+}
+
 /// Normalize the parent and every sub-agent input, then merge their events
 /// into one time-aligned session via [`merge_subagent_events`].
 ///
@@ -310,6 +531,13 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
 /// this stays correct even if a vendor adapter fails to read one input (the
 /// same tolerance [`analyze_sources_with`] gives the per-source batch).
 /// `None` when the parent itself could not be normalized.
+fn attributed_generation(claimed: &ClaimedSource, actual_fingerprint: Option<&str>) -> i64 {
+    match (claimed.fingerprint.as_deref(), actual_fingerprint) {
+        (Some(expected), Some(actual)) if expected == actual => claimed.generation,
+        _ => 0,
+    }
+}
+
 fn merge_parent_and_subagents(
     inputs: &[SessionInput],
     parent_session_id: &str,
@@ -344,6 +572,8 @@ pub async fn analyze(
     agent: AgentKind,
     session_id: &str,
     wsl_distro: Option<&str>,
+    claimed: ClaimedSource,
+    cancel: CancelFlag,
 ) -> SessionAnalysis {
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
         return SessionAnalysis::unavailable();
@@ -399,36 +629,90 @@ pub async fn analyze(
 
     let inputs_for_merge = inputs.clone();
     let parent_session_id_for_merge = parent_session_id.clone();
+    let is_claude = label == "claude";
 
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads.
     let computed = tauri::async_runtime::spawn_blocking(move || {
+        if is_claude {
+            return match stream_claude(&inputs, &cancel) {
+                StreamOutcome::Published {
+                    session,
+                    parent_fingerprint,
+                } => ComputedAnalysis::Published {
+                    parent: Box::new(session.parent),
+                    merged: Box::new(session.merged),
+                    subagents: session.subagents,
+                    started_at_epoch: session.started_at_epoch,
+                    parent_fingerprint,
+                },
+                StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
+                StreamOutcome::ParentUnreadable => ComputedAnalysis::Unavailable,
+            };
+        }
         let batch = analyze_sources_with(inputs, true);
-        let merged = merge_parent_and_subagents(&inputs_for_merge, &parent_session_id_for_merge)
-            .map(|session| analyze_session(&session));
-        (batch, merged)
+        let Some(merged) =
+            merge_parent_and_subagents(&inputs_for_merge, &parent_session_id_for_merge)
+                .map(|session| analyze_session(&session))
+        else {
+            return ComputedAnalysis::Unavailable;
+        };
+        let mut sessions = batch.sessions;
+        let Some(parent_index) = sessions
+            .iter()
+            .position(|metrics| metrics.session_id == parent_session_id_for_merge)
+        else {
+            return ComputedAnalysis::Unavailable;
+        };
+        let parent = sessions.remove(parent_index);
+        ComputedAnalysis::Published {
+            parent: Box::new(parent),
+            merged: Box::new(merged),
+            subagents: sessions,
+            started_at_epoch: None,
+            parent_fingerprint: None,
+        }
     })
     .await;
 
-    let Ok((batch, merged)) = computed else {
+    let Ok(computed) = computed else {
         return SessionAnalysis::unavailable();
     };
-
-    let mut by_id: HashMap<String, SessionMetrics> = batch
-        .sessions
+    let (parent_metrics, merged, subagents, started_at_epoch, parent_fingerprint) = match computed {
+        ComputedAnalysis::Published {
+            parent,
+            merged,
+            subagents,
+            started_at_epoch,
+            parent_fingerprint,
+        } => (
+            *parent,
+            *merged,
+            subagents,
+            started_at_epoch,
+            parent_fingerprint,
+        ),
+        ComputedAnalysis::SourceChanged => {
+            return SessionAnalysis {
+                source_path,
+                fingerprint,
+                source_changed: true,
+                ..SessionAnalysis::unavailable()
+            };
+        }
+        ComputedAnalysis::Unavailable => {
+            return SessionAnalysis {
+                source_path,
+                fingerprint,
+                ..SessionAnalysis::unavailable()
+            };
+        }
+    };
+    let analyzed_generation = attributed_generation(&claimed, parent_fingerprint.as_deref());
+    let by_id: HashMap<String, SessionMetrics> = subagents
         .into_iter()
         .map(|metrics| (metrics.session_id.clone(), metrics))
         .collect();
-
-    let Some(parent_metrics) = by_id.remove(&parent_session_id) else {
-        // The transcript was readable but produced nothing analyzable — an
-        // empty session, not a failure.
-        return SessionAnalysis {
-            source_path,
-            fingerprint,
-            ..SessionAnalysis::unavailable()
-        };
-    };
 
     // `metrics` is the session's headline view: buckets, token totals, and
     // tool mix summed across the parent and every sub-agent, time-aligned.
@@ -440,7 +724,7 @@ pub async fn analyze(
     // above, which does not happen in practice; falling back to
     // `parent_metrics` keeps that theoretical case merely parent-only
     // instead of unavailable.
-    let mut metrics = merged.unwrap_or_else(|| parent_metrics.clone());
+    let mut metrics = merged;
     metrics.initial_context = parent_metrics.initial_context.clone();
     metrics.skill_uses = parent_metrics.skill_uses.clone();
     // Each sub-agent runs its own context window, so its spend split comes
@@ -512,6 +796,9 @@ pub async fn analyze(
         orchestration,
         source_path,
         fingerprint,
+        analyzed_generation,
+        started_at_epoch,
+        source_changed: false,
     }
 }
 
@@ -525,10 +812,10 @@ pub async fn analyze_subagent(
     parent_session_id: &str,
     subagent_id: &str,
     wsl_distro: Option<&str>,
+    cancel: CancelFlag,
 ) -> SessionAnalysis {
-    let Some(source) = Explorers::DISK
-        .locate_subagent_source_in_environment(&agent, parent_session_id, subagent_id, wsl_distro)
-        .await
+    let Some(source) =
+        locate_subagent_source(agent, parent_session_id, subagent_id, wsl_distro).await
     else {
         return SessionAnalysis::unavailable();
     };
@@ -545,13 +832,24 @@ pub async fn analyze_subagent(
     let source_path = source_path(&source);
     let agent_slug = agent.slug().to_string();
 
-    let Ok(batch) =
-        tauri::async_runtime::spawn_blocking(move || analyze_sources_with(vec![input], true)).await
-    else {
-        return SessionAnalysis::unavailable();
-    };
-
-    let Some(mut metrics) = batch.sessions.into_iter().next() else {
+    let is_claude = vendor_label(agent) == "claude";
+    let computed = tauri::async_runtime::spawn_blocking(move || {
+        if is_claude {
+            return match stream_claude(&[input], &cancel) {
+                StreamOutcome::Published { session, .. } => {
+                    Some((session.parent, session.started_at_epoch))
+                }
+                StreamOutcome::SourceChanged | StreamOutcome::ParentUnreadable => None,
+            };
+        }
+        analyze_sources_with(vec![input], true)
+            .sessions
+            .into_iter()
+            .next()
+            .map(|metrics| (metrics, None))
+    })
+    .await;
+    let Ok(Some((mut metrics, started_at_epoch))) = computed else {
         return SessionAnalysis {
             source_path,
             fingerprint,
@@ -588,7 +886,48 @@ pub async fn analyze_subagent(
         orchestration: None,
         source_path,
         fingerprint,
+        analyzed_generation: 0,
+        started_at_epoch,
+        source_changed: false,
     }
+}
+
+async fn locate_subagent_source(
+    agent: AgentKind,
+    parent_session_id: &str,
+    subagent_id: &str,
+    wsl_distro: Option<&str>,
+) -> Option<SessionSource> {
+    #[cfg(test)]
+    {
+        let override_ = subagent_test_override()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(override_) = override_.as_ref()
+            && override_.parent_session_id == parent_session_id
+            && override_.subagent_id == subagent_id
+        {
+            return Some(SessionSource::File(override_.source_path.clone()));
+        }
+    }
+    Explorers::DISK
+        .locate_subagent_source_in_environment(&agent, parent_session_id, subagent_id, wsl_distro)
+        .await
+}
+
+#[cfg(test)]
+struct SubagentTestOverride {
+    parent_session_id: String,
+    subagent_id: String,
+    source_path: std::path::PathBuf,
+    append_after_claim: Option<String>,
+}
+
+#[cfg(test)]
+fn subagent_test_override() -> &'static std::sync::Mutex<Option<SubagentTestOverride>> {
+    static OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<SubagentTestOverride>>> =
+        std::sync::OnceLock::new();
+    OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 /// Whether analysis of this agent's transcripts is more than a generic parse.
@@ -753,6 +1092,382 @@ pub fn price_cached_breakdown(model_breakdown_json: &str) -> (Option<SessionCost
 mod tests {
     use super::*;
 
+    fn claude_record(id: &str, timestamp: i64) -> String {
+        format!(
+            concat!(
+                r#"{{"type":"assistant","timestamp":{timestamp},"message":{{"id":"{id}","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{{"input_tokens":2,"output_tokens":3}},"content":[{{"type":"text","text":"Synthetic output."}}]}}}}"#,
+                "\n"
+            ),
+            timestamp = timestamp,
+            id = id,
+        )
+    }
+
+    fn file_input(path: &std::path::Path, id: &str) -> SessionInput {
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: id.to_string(),
+            source: RawSource::File(path.to_path_buf()),
+        }
+    }
+
+    fn inline_input(content: String, id: &str) -> SessionInput {
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: id.to_string(),
+            source: RawSource::Jsonl(content),
+        }
+    }
+
+    struct SubagentOverrideGuard;
+
+    impl Drop for SubagentOverrideGuard {
+        fn drop(&mut self) {
+            *subagent_test_override()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+    }
+
+    #[test]
+    fn an_accepted_claude_read_publishes_metrics_and_a_start_time() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("parent.jsonl");
+        std::fs::write(&path, claude_record("parent", 1_760_000_000)).expect("write parent");
+
+        let StreamOutcome::Published { session, .. } =
+            stream_claude(&[file_input(&path, "parent")], &CancelFlag::never())
+        else {
+            panic!("stable source must publish");
+        };
+        assert_eq!(session.parent.event_count, 1);
+        assert_eq!(session.parent.tokens_in, 2);
+        assert_eq!(session.parent.tokens_out, 3);
+        assert_eq!(session.started_at_epoch, Some(1_760_000_000));
+    }
+
+    #[test]
+    fn an_accepted_child_read_publishes_the_merged_metrics() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, claude_record("parent", 1_760_000_000)).expect("write parent");
+        std::fs::write(&child, claude_record("child", 1_760_000_001)).expect("write child");
+        let inputs = [file_input(&parent, "parent"), file_input(&child, "child")];
+
+        let StreamOutcome::Published { session, .. } = stream_claude(&inputs, &CancelFlag::never())
+        else {
+            panic!("stable sources must publish");
+        };
+        assert_eq!(session.subagents.len(), 1);
+        assert_eq!(session.merged.event_count, 2);
+        assert_eq!(session.merged.tokens_in, 4);
+        assert_eq!(session.merged.tokens_out, 6);
+    }
+
+    #[test]
+    fn a_changed_parent_source_publishes_neither_projection() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("parent.jsonl");
+        std::fs::write(&path, claude_record("parent", 1_760_000_000)).expect("write parent");
+        let hook = |_: usize, path: &std::path::Path| {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("open parent")
+                .write_all(claude_record("later", 1_760_000_001).as_bytes())
+                .expect("append parent");
+        };
+
+        assert!(matches!(
+            stream_claude_with_claim_hook(
+                &[file_input(&path, "parent")],
+                &CancelFlag::never(),
+                &hook,
+            ),
+            StreamOutcome::SourceChanged
+        ));
+    }
+
+    #[test]
+    fn a_changed_child_source_publishes_neither_projection() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, claude_record("parent", 1_760_000_000)).expect("write parent");
+        std::fs::write(&child, claude_record("child", 1_760_000_001)).expect("write child");
+        let hook = |index: usize, path: &std::path::Path| {
+            if index == 1 {
+                use std::io::Write;
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .expect("open child")
+                    .write_all(claude_record("later", 1_760_000_002).as_bytes())
+                    .expect("append child");
+            }
+        };
+
+        assert!(matches!(
+            stream_claude_with_claim_hook(
+                &[file_input(&parent, "parent"), file_input(&child, "child")],
+                &CancelFlag::never(),
+                &hook,
+            ),
+            StreamOutcome::SourceChanged
+        ));
+    }
+
+    #[test]
+    fn a_missing_child_is_skipped_and_the_session_still_publishes() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        std::fs::write(&parent, claude_record("parent", 1_760_000_000)).expect("write parent");
+        let missing = directory.path().join("missing.jsonl");
+
+        let StreamOutcome::Published { session, .. } = stream_claude(
+            &[file_input(&parent, "parent"), file_input(&missing, "child")],
+            &CancelFlag::never(),
+        ) else {
+            panic!("missing child must not block the parent");
+        };
+        assert!(session.subagents.is_empty());
+        assert_eq!(session.parent.event_count, 1);
+        assert_eq!(session.parent.tokens_in, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_child_is_skipped_and_the_session_still_publishes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let unreadable = directory.path().join("unreadable.jsonl");
+        let remaining = directory.path().join("remaining.jsonl");
+        std::fs::write(&parent, claude_record("parent", 1_760_000_000)).expect("write parent");
+        std::fs::write(&unreadable, claude_record("unreadable", 1_760_000_001))
+            .expect("write unreadable child");
+        std::fs::write(&remaining, claude_record("remaining", 1_760_000_002))
+            .expect("write remaining child");
+        let make_child_unreadable = |index: usize, path: &std::path::Path| {
+            if index == 1 {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))
+                    .expect("remove child read permission");
+            }
+        };
+
+        let outcome = stream_claude_with_claim_hook(
+            &[
+                file_input(&parent, "parent"),
+                file_input(&unreadable, "unreadable"),
+                file_input(&remaining, "remaining"),
+            ],
+            &CancelFlag::never(),
+            &make_child_unreadable,
+        );
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600))
+            .expect("restore child read permission");
+
+        let StreamOutcome::Published { session, .. } = outcome else {
+            panic!("unreadable child must not block readable sources");
+        };
+        assert_eq!(session.parent.session_id, "parent");
+        assert_eq!(session.parent.event_count, 1);
+        assert_eq!(session.subagents.len(), 1);
+        assert_eq!(session.subagents[0].session_id, "remaining");
+        assert_eq!(session.subagents[0].event_count, 1);
+        assert_eq!(session.merged.event_count, 2);
+    }
+
+    #[test]
+    fn streaming_inline_metrics_equal_the_shipped_batch() {
+        let input = inline_input(claude_record("inline-equality", 1_760_000_000), "inline");
+        let expected = analyze_sources_with(vec![input.clone()], true)
+            .sessions
+            .into_iter()
+            .next()
+            .expect("batch metrics");
+
+        let StreamOutcome::Published { session, .. } =
+            stream_claude(&[input], &CancelFlag::never())
+        else {
+            panic!("inline source must publish");
+        };
+        assert_eq!(session.parent, expected);
+    }
+
+    #[test]
+    fn an_inline_source_reports_unvalidated_and_publishes() {
+        let input = inline_input(claude_record("inline-outcome", 1_760_000_000), "inline");
+        let mut accumulator = SessionMetricsAccumulator::new("claude", "inline");
+
+        assert_eq!(
+            ClaudeAdapter
+                .visit(&input, &mut accumulator)
+                .expect("inline visit"),
+            VisitOutcome::Unvalidated
+        );
+        assert!(matches!(
+            stream_claude(&[input], &CancelFlag::never()),
+            StreamOutcome::Published { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_changed_subagent_source_rejects_the_direct_subagent_view() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("agent-review-gap.jsonl");
+        std::fs::write(&path, claude_record("before-change", 1_760_000_000))
+            .expect("write sub-agent");
+        let parent_session_id = "review-gap-parent";
+        let subagent_id = "review-gap-child";
+        {
+            let mut override_ = subagent_test_override()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(override_.is_none());
+            *override_ = Some(SubagentTestOverride {
+                parent_session_id: parent_session_id.to_string(),
+                subagent_id: subagent_id.to_string(),
+                source_path: path,
+                append_after_claim: Some(claude_record("after-change", 1_760_000_001)),
+            });
+        }
+        let _guard = SubagentOverrideGuard;
+
+        let analysis = analyze_subagent(
+            AgentKind::Claude,
+            parent_session_id,
+            subagent_id,
+            None,
+            CancelFlag::never(),
+        )
+        .await;
+
+        assert!(analysis.metrics.is_none());
+        assert!(analysis.summary.is_none());
+        assert!(analysis.cost.is_none());
+        assert!(analysis.inclusive_tokens.is_none());
+        assert!(analysis.inclusive_model_breakdown.is_empty());
+    }
+
+    #[test]
+    fn an_inline_source_records_matching_and_mismatching_generations() {
+        let content = claude_record("inline", 1_760_000_000);
+        let fingerprint = inline_fingerprint(&content);
+        let matching = ClaimedSource {
+            fingerprint: Some(fingerprint),
+            generation: 9,
+        };
+        let mismatching = ClaimedSource {
+            fingerprint: Some("sv1:different".to_string()),
+            generation: 9,
+        };
+        let actual = inline_fingerprint(&content);
+        let StreamOutcome::Published { session, .. } = stream_claude(
+            &[SessionInput {
+                agent: "claude".to_string(),
+                session_id: "inline".to_string(),
+                source: RawSource::Jsonl(content),
+            }],
+            &CancelFlag::never(),
+        ) else {
+            panic!("inline source must publish");
+        };
+        let key = SessionKey::new("native", "claude-code", "inline");
+        let matching_analysis = SessionAnalysis {
+            metrics: Some(session.parent.clone()),
+            analyzed_generation: attributed_generation(&matching, Some(&actual)),
+            ..SessionAnalysis::unavailable()
+        };
+        let mismatching_analysis = SessionAnalysis {
+            metrics: Some(session.parent),
+            analyzed_generation: attributed_generation(&mismatching, Some(&actual)),
+            ..SessionAnalysis::unavailable()
+        };
+
+        assert_eq!(
+            matching_analysis
+                .record(&key)
+                .expect("matching analysis record")
+                .analyzed_generation,
+            9
+        );
+        assert_eq!(
+            mismatching_analysis
+                .record(&key)
+                .expect("mismatching analysis record")
+                .analyzed_generation,
+            0
+        );
+    }
+
+    #[test]
+    fn cancellation_during_a_child_read_publishes_and_persists_nothing() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, claude_record("parent", 1_760_000_000)).expect("write parent");
+        let child_content = format!(
+            "{}{}",
+            claude_record("child-first", 1_760_000_001),
+            claude_record("child-second", 1_760_000_002)
+        );
+        std::fs::write(&child, child_content).expect("write child");
+        let reading_child = std::cell::Cell::new(false);
+        let child_cancel_checks = std::cell::Cell::new(0);
+        let cancelled = || {
+            if !reading_child.get() {
+                return false;
+            }
+            let checks = child_cancel_checks.get();
+            if checks >= 3 {
+                return true;
+            }
+            child_cancel_checks.set(checks + 1);
+            checks + 1 >= 3
+        };
+        let hook = |index: usize, _: &std::path::Path| {
+            if index == 1 {
+                reading_child.set(true);
+            }
+        };
+
+        let analysis = match stream_claude_with_hooks(
+            &[file_input(&parent, "parent"), file_input(&child, "child")],
+            &cancelled,
+            &hook,
+        ) {
+            StreamOutcome::ParentUnreadable => SessionAnalysis::unavailable(),
+            StreamOutcome::Published { .. } => panic!("cancelled child read must not publish"),
+            StreamOutcome::SourceChanged => panic!("cancelled child read is not a source change"),
+        };
+
+        assert_eq!(child_cancel_checks.get(), 3);
+        assert!(analysis.metrics.is_none());
+        assert!(analysis.summary.is_none());
+        assert!(
+            analysis
+                .record(&SessionKey::new("native", "claude-code", "parent"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_cancelled_pass_publishes_nothing() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("parent.jsonl");
+        std::fs::write(&path, claude_record("parent", 1_760_000_000)).expect("write parent");
+        let flag = Arc::new(AtomicBool::new(true));
+
+        assert!(matches!(
+            stream_claude(&[file_input(&path, "parent")], &CancelFlag::from_flag(flag),),
+            StreamOutcome::ParentUnreadable
+        ));
+    }
+
     #[test]
     fn a_session_written_moments_ago_reads_as_active() {
         let now = 1_800_000_000;
@@ -770,6 +1485,10 @@ mod tests {
             inclusive_models_json: "[]".into(),
             source_fingerprint: MISSING_FINGERPRINT.into(),
             pricing_generation: pricing_generation() as i64,
+            analyzed_generation: 0,
+            parser_revision: 0,
+            analyzer_revision: 0,
+            metrics_schema_revision: 0,
         };
         assert!(!cache_is_fresh(&cached, MISSING_FINGERPRINT));
 
@@ -789,6 +1508,10 @@ mod tests {
             inclusive_models_json: "[]".into(),
             source_fingerprint: "123:456".into(),
             pricing_generation: pricing_generation() as i64 - 1,
+            analyzed_generation: 0,
+            parser_revision: 0,
+            analyzer_revision: 0,
+            metrics_schema_revision: 0,
         };
         assert!(!cache_is_fresh(&cached, "123:456"));
     }

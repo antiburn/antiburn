@@ -78,6 +78,7 @@ fn a_replacement_before_pinning_streams_nothing() {
             &file_input(&path),
             &claim,
             AppendOnlyGuarantee::Evidenced,
+            &|| false,
             &mut sink,
         )
         .expect("visit replacement");
@@ -105,6 +106,7 @@ fn a_rename_after_pinning_is_accepted_on_the_original_inode() {
             &file_input(&path),
             &claim,
             AppendOnlyGuarantee::Evidenced,
+            &|| false,
             &mut sink,
         )
         .expect("visit renamed source");
@@ -138,6 +140,7 @@ fn a_rewritten_record_after_the_head_region_passes_the_recheck() {
             &file_input(&path),
             &claim,
             AppendOnlyGuarantee::Evidenced,
+            &|| false,
             &mut sink,
         )
         .expect("visit rewritten prefix");
@@ -160,7 +163,13 @@ fn two_reads_of_the_same_identity_and_boundary_are_byte_identical() {
     let input = file_input(&path);
     let mut first = SessionCollector::new("claude", "claimed-session");
     let first_outcome = ClaudeAdapter
-        .visit_claimed(&input, &claim, AppendOnlyGuarantee::Evidenced, &mut first)
+        .visit_claimed(
+            &input,
+            &claim,
+            AppendOnlyGuarantee::Evidenced,
+            &|| false,
+            &mut first,
+        )
         .expect("visit first prefix");
     OpenOptions::new()
         .append(true)
@@ -170,7 +179,13 @@ fn two_reads_of_the_same_identity_and_boundary_are_byte_identical() {
         .expect("append source");
     let mut second = SessionCollector::new("claude", "claimed-session");
     let second_outcome = ClaudeAdapter
-        .visit_claimed(&input, &claim, AppendOnlyGuarantee::Evidenced, &mut second)
+        .visit_claimed(
+            &input,
+            &claim,
+            AppendOnlyGuarantee::Evidenced,
+            &|| false,
+            &mut second,
+        )
         .expect("visit second prefix");
 
     assert_eq!(first_outcome, second_outcome);
@@ -199,6 +214,7 @@ fn an_absent_guarantee_accepts_a_stable_full_read() {
             &file_input(&path),
             &claim,
             AppendOnlyGuarantee::Absent,
+            &|| false,
             &mut collector,
         )
         .expect("visit stable full source");
@@ -225,6 +241,7 @@ fn an_absent_guarantee_takes_the_full_reprocess_path() {
             &file_input(&path),
             &claim,
             append_only_guarantee("claude"),
+            &|| false,
             &mut collector,
         )
         .expect("visit full source");
@@ -254,6 +271,7 @@ fn an_evidenced_guarantee_reads_a_pinned_prefix() {
             &file_input(&path),
             &claim,
             AppendOnlyGuarantee::Evidenced,
+            &|| false,
             &mut collector,
         )
         .expect("visit prefix");

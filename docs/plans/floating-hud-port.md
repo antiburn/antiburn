@@ -13,6 +13,10 @@ timing, persistence, copy, information architecture, or resource bounds.
 Source-governance D-026 authorizes the port. Deviations-register D-30 records
 the macOS-only release and accepted costs.
 
+> **Post-port change:** issue #108 replaces the fixed 176×500 frame and hover
+> region command with an original public dynamic-frame implementation. The
+> historical parity requirements below describe the initial port.
+
 ## Authoritative behavior
 
 The observable reference is antiburn PR #40 at commit
@@ -65,10 +69,10 @@ event order. `flushSync` commits layout state before the session measures the
 panel, following the established `NudgeSession` pattern. Added HUD code contains
 no `useEffect` or `useLayoutEffect`.
 
-`HudVisibilitySession` owns the Usage pop-out button's native visibility read
-and focus listener. `PopoverSession` restores the preference when its external
-session starts. The Settings toggle reads localStorage once when the pane
-instance starts, as the reference does.
+`HudVisibilitySession` owns each HUD control's native visibility read, focus
+listener, and native visibility-event subscription. `PopoverSession` restores
+the preference when its external session starts. Settings and the Usage pop-out
+button treat the native window as the live source of truth.
 
 ### Data adaptation
 

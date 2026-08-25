@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use antiburn_local::analysis::{
     MAX_RECORD_BYTES, NormalizedSession, PartialReason, RawSource, RecordCoverage,
-    SessionCollector, SessionInput, adapter_for, analyze_session, analyze_sources_with,
-    normalize_source,
+    SessionCollector, SessionInput, SessionMetricsAccumulator, adapter_for, analyze_session,
+    analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
 };
 use serde_json::{Value, json};
 
@@ -156,6 +156,15 @@ fn three_record_source() -> String {
     .join("\n")
 }
 
+fn stream_claude(input: &SessionInput) -> SessionMetricsAccumulator {
+    let mut accumulator =
+        SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    adapter_for("claude")
+        .visit(input, &mut accumulator)
+        .expect("Claude source must be visited");
+    accumulator
+}
+
 fn collect_claude(
     input: &SessionInput,
 ) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
@@ -191,6 +200,86 @@ fn oversized_metric_jsonl(payload_bytes: usize) -> String {
     source.push_str(&assistant_record("second-neighbour", 1_761_000_002, 4, 5));
     source.push('\n');
     source
+}
+
+#[test]
+fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
+    for name in [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+    ] {
+        let input = input(name);
+        let expected = analyze_sources_with(vec![input.clone()], true)
+            .sessions
+            .remove(0);
+        assert_eq!(stream_claude(&input).metrics(), expected, "fixture {name}");
+    }
+}
+
+#[test]
+fn streaming_metrics_match_every_golden() {
+    for name in [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+    ] {
+        let expected_text = fs::read_to_string(golden_path(name)).expect("golden must exist");
+        let expected: Value = serde_json::from_str(&expected_text).expect("golden must be valid");
+        let rendered = serde_json::to_string_pretty(&stream_claude(&input(name)).metrics())
+            .expect("metrics must serialize");
+        let actual: Value =
+            serde_json::from_str(&rendered).expect("rendered metrics must be valid JSON");
+        assert_eq!(actual, expected["sessions"][0], "fixture {name}");
+    }
+}
+
+#[test]
+fn golden_cost_values_compare_after_a_text_round_trip() {
+    let value = 0.0009119999999999999_f64;
+    let rendered = serde_json::to_string(&value).expect("cost must serialize");
+    let parsed: f64 = serde_json::from_str(&rendered).expect("cost must parse");
+
+    // The golden contract compares serialized text, not in-memory f64 bits.
+    assert_ne!(parsed.to_bits(), value.to_bits());
+}
+
+#[test]
+fn merged_streaming_metrics_equal_the_merged_batch() {
+    let parent_input = input("parent_with_task_spawn");
+    let child_input = input("subagent_child");
+    let parent = stream_claude(&parent_input);
+    let child = stream_claude(&child_input);
+    let expected = analyze_session(&merge_subagent_events(
+        normalize_source(&parent_input).expect("parent fixture must normalize"),
+        vec![normalize_source(&child_input).expect("child fixture must normalize")],
+    ));
+    assert_eq!(merge_metrics(&parent, &[child]), expected);
+}
+
+#[test]
+fn a_compaction_boundary_bucket_reports_zero_context_tokens() {
+    let metrics = stream_claude(&input("compaction_with_cache_rehydration")).metrics();
+    let boundary = metrics
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_compaction_boundary)
+        .expect("fixture must contain a compaction boundary");
+    assert_eq!(boundary.context_tokens, 0);
 }
 
 #[test]

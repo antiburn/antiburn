@@ -84,8 +84,10 @@ pub struct InitialContextBreakdown {
 /// Parse a raw transcript into a public initial-context breakdown, or `None`
 /// when the agent/session has no reliable signal ("unavailable").
 pub fn parse_initial_context(agent: &str, payload: &str) -> Option<InitialContextBreakdown> {
+    if agent.eq_ignore_ascii_case("claude") {
+        return parse_claude(payload);
+    }
     let result = match agent.to_ascii_lowercase().as_str() {
-        "claude" => parse_claude(payload),
         "codex" => parse_codex(payload),
         _ => InitialContextTokenParseResult::Unsupported,
     };
@@ -114,20 +116,12 @@ pub fn parse_skill_descriptions(agent: &str, payload: &str) -> HashMap<String, S
 }
 
 fn collect_claude_skill_descriptions(payload: &str, out: &mut HashMap<String, String>) {
+    let mut accumulator = ClaudeContextAccumulator::default();
     for value in parse_json_lines(payload) {
-        if value.get("type").and_then(Value::as_str) != Some("attachment") {
-            continue;
-        }
-        let Some(attachment) = value.get("attachment") else {
-            continue;
-        };
-        if attachment.get("type").and_then(Value::as_str) != Some("skill_listing") {
-            continue;
-        }
-        if let Some(content) = attachment.get("content").and_then(Value::as_str) {
-            insert_bullet_descriptions(content, out);
-        }
+        accumulator.observe(&value);
     }
+    let (_, descriptions) = accumulator.finish();
+    out.extend(descriptions);
 }
 
 fn collect_codex_skill_descriptions(payload: &str, out: &mut HashMap<String, String>) {
@@ -279,26 +273,25 @@ fn parse_codex(payload: &str) -> InitialContextTokenParseResult {
     InitialContextTokenParseResult::Supported(normalize_breakdown(total_tokens, source_rows))
 }
 
-fn parse_claude(payload: &str) -> InitialContextTokenParseResult {
-    let mut total_tokens = None;
-    let mut system_instruction_texts = Vec::new();
-    let mut source_rows = Vec::new();
-    // The first assistant turn fixes `total_tokens` (its usage *is* the initial
-    // context size) and ends accumulation of *new* system-instruction prose — but
-    // we keep scanning instead of breaking, so skill-listing / MCP-delta /
-    // attachment records that sit adjacent to the first request are still
-    // attributed rather than dropped on the first assistant turn.
-    let mut seen_first_assistant = false;
+#[derive(Default)]
+pub(crate) struct ClaudeContextAccumulator {
+    total_tokens: Option<i64>,
+    system_instruction_texts: Vec<String>,
+    source_rows: Vec<InitialContextTokenSourceCount>,
+    seen_first_assistant: bool,
+    skill_descriptions: HashMap<String, String>,
+}
 
-    for value in parse_json_lines(payload) {
+impl ClaudeContextAccumulator {
+    pub(crate) fn observe(&mut self, value: &Value) {
         match value
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default()
         {
-            "assistant" if !seen_first_assistant => {
-                total_tokens = first_claude_usage_total(&value);
-                seen_first_assistant = true;
+            "assistant" if !self.seen_first_assistant => {
+                self.total_tokens = first_claude_usage_total(value);
+                self.seen_first_assistant = true;
             }
             "user" | "human" => {
                 let is_meta = value
@@ -306,26 +299,26 @@ fn parse_claude(payload: &str) -> InitialContextTokenParseResult {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 if !is_meta {
-                    continue;
+                    return;
                 }
-                let text = extract_claude_message_text(&value);
+                let text = extract_claude_message_text(value);
                 if text.contains("Base directory for this skill:") {
-                    source_rows.push(InitialContextTokenSourceCount {
+                    self.source_rows.push(InitialContextTokenSourceCount {
                         source: InitialContextTokenSource::SkillInstructions,
                         source_name: parse_claude_loaded_skill_name(&text),
                         token_count: estimate_tokens(&text),
                     });
                 } else if !text.trim().is_empty() {
                     let (without_agent_files, agent_rows) = parse_instruction_file_mentions(&text);
-                    source_rows.extend(agent_rows);
-                    if !seen_first_assistant && !without_agent_files.trim().is_empty() {
-                        system_instruction_texts.push(without_agent_files);
+                    self.source_rows.extend(agent_rows);
+                    if !self.seen_first_assistant && !without_agent_files.trim().is_empty() {
+                        self.system_instruction_texts.push(without_agent_files);
                     }
                 }
             }
             "attachment" => {
                 let Some(attachment) = value.get("attachment") else {
-                    continue;
+                    return;
                 };
                 match attachment
                     .get("type")
@@ -334,10 +327,11 @@ fn parse_claude(payload: &str) -> InitialContextTokenParseResult {
                 {
                     "skill_listing" => {
                         if let Some(content) = attachment.get("content").and_then(Value::as_str) {
-                            source_rows.extend(parse_named_markdown_bullets(
+                            self.source_rows.extend(parse_named_markdown_bullets(
                                 content,
                                 InitialContextTokenSource::SkillInstructions,
                             ));
+                            insert_bullet_descriptions(content, &mut self.skill_descriptions);
                         }
                     }
                     "mcp_instructions_delta" => {
@@ -352,8 +346,10 @@ fn parse_claude(payload: &str) -> InitialContextTokenParseResult {
                             .cloned()
                             .unwrap_or_default();
                         for (index, block) in blocks.iter().enumerate() {
-                            let Some(text) = block.as_str() else { continue };
-                            source_rows.push(InitialContextTokenSourceCount {
+                            let Some(text) = block.as_str() else {
+                                continue;
+                            };
+                            self.source_rows.push(InitialContextTokenSourceCount {
                                 source: InitialContextTokenSource::McpInstructions,
                                 source_name: names
                                     .get(index)
@@ -368,8 +364,8 @@ fn parse_claude(payload: &str) -> InitialContextTokenParseResult {
                     | "auto_mode"
                     | "diagnostics" => {
                         let text = serde_json::to_string(attachment).unwrap_or_default();
-                        if !seen_first_assistant && !text.is_empty() {
-                            system_instruction_texts.push(text);
+                        if !self.seen_first_assistant && !text.is_empty() {
+                            self.system_instruction_texts.push(text);
                         }
                     }
                     _ => {}
@@ -379,20 +375,33 @@ fn parse_claude(payload: &str) -> InitialContextTokenParseResult {
         }
     }
 
-    if system_instruction_texts.is_empty() && source_rows.is_empty() && total_tokens.is_none() {
-        return InitialContextTokenParseResult::Unsupported;
+    pub(crate) fn finish(mut self) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+        if self.system_instruction_texts.is_empty()
+            && self.source_rows.is_empty()
+            && self.total_tokens.is_none()
+        {
+            return (None, self.skill_descriptions);
+        }
+        let system_instruction_tokens =
+            estimate_tokens(&self.system_instruction_texts.join("\n\n"));
+        if system_instruction_tokens > 0 {
+            self.source_rows.push(InitialContextTokenSourceCount {
+                source: InitialContextTokenSource::SystemInstructions,
+                source_name: None,
+                token_count: system_instruction_tokens,
+            });
+        }
+        let breakdown = normalize_breakdown(self.total_tokens, self.source_rows);
+        (Some(to_output(breakdown)), self.skill_descriptions)
     }
+}
 
-    let system_instruction_tokens = estimate_tokens(&system_instruction_texts.join("\n\n"));
-    if system_instruction_tokens > 0 {
-        source_rows.push(InitialContextTokenSourceCount {
-            source: InitialContextTokenSource::SystemInstructions,
-            source_name: None,
-            token_count: system_instruction_tokens,
-        });
+fn parse_claude(payload: &str) -> Option<InitialContextBreakdown> {
+    let mut accumulator = ClaudeContextAccumulator::default();
+    for value in parse_json_lines(payload) {
+        accumulator.observe(&value);
     }
-
-    InitialContextTokenParseResult::Supported(normalize_breakdown(total_tokens, source_rows))
+    accumulator.finish().0
 }
 
 fn normalize_breakdown(

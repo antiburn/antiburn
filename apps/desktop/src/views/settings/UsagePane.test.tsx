@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
@@ -21,15 +21,30 @@ vi.mock("../../lib/platform", async (importOriginal) => {
 
 const openOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
 const hideOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
-const isFloatingHudEnabled = vi.hoisted(() => vi.fn(() => false))
 const setFloatingHudEnabled = vi.hoisted(() => vi.fn())
+const hudVisibility = vi.hoisted(() => ({
+  visible: false,
+  listeners: new Set<() => void>(),
+}))
 vi.mock("../../lib/overlayWindow", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
+  class HudVisibilitySession {
+    getSnapshot = () => hudVisibility.visible
+    subscribe = (listener: () => void) => {
+      hudVisibility.listeners.add(listener)
+      return () => hudVisibility.listeners.delete(listener)
+    }
+    set = (visible: boolean) => {
+      emitHudVisibility(visible)
+      setFloatingHudEnabled(visible)
+      void (visible ? openOverlayWindow() : hideOverlayWindow())
+    }
+  }
   return {
     ...actual,
+    HudVisibilitySession,
     openOverlayWindow,
     hideOverlayWindow,
-    isFloatingHudEnabled,
     setFloatingHudEnabled,
   }
 })
@@ -52,6 +67,11 @@ function pane(settings: Partial<AppSettings> = {}, update = vi.fn()) {
   return update
 }
 
+function emitHudVisibility(visible: boolean) {
+  hudVisibility.visible = visible
+  for (const listener of hudVisibility.listeners) listener()
+}
+
 describe("UsagePane", () => {
   beforeEach(() => {
     getLiveUsage.mockReset()
@@ -60,7 +80,6 @@ describe("UsagePane", () => {
     refreshLiveUsage.mockResolvedValue(summary())
     onLiveUsageChanged.mockClear()
     platform.mac = false
-    isFloatingHudEnabled.mockReturnValue(false)
   })
 
   it("names both consequences of the one switch", async () => {
@@ -154,8 +173,8 @@ describe("UsagePane — floating HUD", () => {
     getLiveUsage.mockResolvedValue(summary())
     refreshLiveUsage.mockResolvedValue(summary())
     platform.mac = true
-    isFloatingHudEnabled.mockReset()
-    isFloatingHudEnabled.mockReturnValue(false)
+    hudVisibility.visible = false
+    hudVisibility.listeners.clear()
     setFloatingHudEnabled.mockClear()
     openOverlayWindow.mockClear()
     hideOverlayWindow.mockClear()
@@ -175,12 +194,23 @@ describe("UsagePane — floating HUD", () => {
   })
 
   it("reads the preference and hides the HUD", () => {
-    isFloatingHudEnabled.mockReturnValue(true)
+    hudVisibility.visible = true
     pane()
     const toggle = screen.getByRole("switch", { name: "Show floating usage HUD" })
     expect(toggle).toBeChecked()
     fireEvent.click(toggle)
     expect(setFloatingHudEnabled).toHaveBeenCalledWith(false)
     expect(hideOverlayWindow).toHaveBeenCalled()
+  })
+
+  it("turns off when the native HUD closes", () => {
+    hudVisibility.visible = true
+    pane()
+    const toggle = screen.getByRole("switch", { name: "Show floating usage HUD" })
+    expect(toggle).toBeChecked()
+
+    act(() => emitHudVisibility(false))
+
+    expect(toggle).not.toBeChecked()
   })
 })

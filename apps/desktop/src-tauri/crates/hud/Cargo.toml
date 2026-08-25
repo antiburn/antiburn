@@ -22,3 +22,5 @@ tauri = { version = "2", features = ["macos-private-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tokio = { version = "1", features = ["time"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow"] }
+tracing = "0.1"

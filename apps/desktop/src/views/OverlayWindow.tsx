@@ -11,10 +11,7 @@ import { OverlaySession } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
 
-/**
- * Render the floating usage HUD: bars only, at a fixed size. The spelled-out
- * stats live in the separate hover detail window the shell owns.
- */
+/** Render the content-sized usage HUD. The detail window owns the full stats. */
 export function OverlayWindow() {
   const [session] = useState(() => new OverlaySession())
   const state = useSyncExternalStore(
@@ -29,16 +26,16 @@ export function OverlayWindow() {
   )
 
   return (
-    <div className="h-screen w-screen bg-transparent">
+    <div
+      className="h-screen w-screen bg-transparent"
+      onMouseEnter={() => session.requestHover(true)}
+      onMouseLeave={() => session.requestHover(false)}
+    >
       <div
         ref={panelRef}
-        onMouseEnter={() => session.requestHover(true)}
-        onMouseLeave={() => session.requestHover(false)}
         className="relative mx-2 select-none rounded-xl border border-transparent px-3 pt-2 pb-2"
         onMouseDown={(event) => session.startDrag(event)}
       >
-        {/* top-2/right-3 name the corner of the drawn bars (pt-2, px-3). The
-            translate centers the chip on that corner point. */}
         <button
           type="button"
           aria-label="Close overlay"

@@ -69,6 +69,15 @@ struct Turn<'a> {
     usage: Usage,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct EfficiencyInput<'a> {
+    pub(crate) ts_ms: Option<i64>,
+    pub(crate) role: Role,
+    pub(crate) message_id: Option<&'a str>,
+    pub(crate) model: Option<&'a str>,
+    pub(crate) usage: Usage,
+}
+
 /// The efficiency totals for one thread of events.
 ///
 /// A Claude transcript writes one record per content block of a message,
@@ -83,35 +92,51 @@ pub fn thread_efficiency(
     events: &[NormalizedEvent],
     fallback_model: Option<&str>,
 ) -> EfficiencyTotals {
-    let mut turns: Vec<Turn<'_>> = Vec::new();
-    let mut index_by_id: HashMap<&str, usize> = HashMap::new();
+    thread_efficiency_from_inputs(
+        events.iter().map(|event| EfficiencyInput {
+            ts_ms: event.ts_ms,
+            role: event.role,
+            message_id: event.message_id.as_deref(),
+            model: event.model.as_deref(),
+            usage: event.usage,
+        }),
+        fallback_model,
+    )
+}
+
+pub(crate) fn thread_efficiency_from_inputs<'a>(
+    events: impl IntoIterator<Item = EfficiencyInput<'a>>,
+    fallback_model: Option<&str>,
+) -> EfficiencyTotals {
+    let mut turns: Vec<Turn<'a>> = Vec::new();
+    let mut index_by_id: HashMap<&'a str, usize> = HashMap::new();
     let mut last_ts = i64::MIN;
-    for ev in events {
-        if let Some(ts) = ev.ts_ms {
+    for event in events {
+        if let Some(ts) = event.ts_ms {
             last_ts = ts;
         }
-        if ev.role != Role::Assistant {
+        if event.role != Role::Assistant {
             continue;
         }
-        if let Some(&i) = ev.message_id.as_deref().and_then(|id| index_by_id.get(id)) {
-            let turn = &mut turns[i];
-            turn.usage = turn.usage.saturating_add(ev.usage);
+        if let Some(&index) = event.message_id.and_then(|id| index_by_id.get(id)) {
+            let turn = &mut turns[index];
+            turn.usage = turn.usage.saturating_add(event.usage);
             if turn.model.is_none() {
-                turn.model = ev.model.as_deref();
+                turn.model = event.model;
             }
             continue;
         }
-        if let Some(id) = ev.message_id.as_deref() {
+        if let Some(id) = event.message_id {
             index_by_id.insert(id, turns.len());
         }
         turns.push(Turn {
             ts: last_ts,
-            model: ev.model.as_deref(),
-            usage: ev.usage,
+            model: event.model,
+            usage: event.usage,
         });
     }
-    turns.retain(|t| t.usage.output_tokens > 0);
-    turns.sort_by_key(|t| t.ts);
+    turns.retain(|turn| turn.usage.output_tokens > 0);
+    turns.sort_by_key(|turn| turn.ts);
 
     let mut totals = EfficiencyTotals::default();
     let mut prev_ctx: Option<u64> = None;
