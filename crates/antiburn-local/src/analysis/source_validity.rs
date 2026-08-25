@@ -40,7 +40,9 @@ pub enum AppendOnlyGuarantee {
     Absent,
 }
 
-/// Returns the provider's current append-only guarantee.
+/// Repository fixtures must be synthetic under `CONTRIBUTING.md`.
+/// They cannot prove how a third-party writer updates files.
+/// One local observation cannot establish a repeatable guarantee.
 pub fn append_only_guarantee(_agent: &str) -> AppendOnlyGuarantee {
     AppendOnlyGuarantee::Absent
 }
