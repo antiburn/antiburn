@@ -11,7 +11,7 @@ use crate::analysis::model::{
 };
 use crate::analysis::{
     NormalizedRecord, PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector,
-    SessionInput, adapter_for, analyze_sources, normalize_source,
+    SessionInput, SessionSummary, VisitOutcome, adapter_for, analyze_sources, normalize_source,
 };
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
@@ -19,6 +19,22 @@ fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
         agent: agent.into(),
         session_id: "s".into(),
         source: RawSource::Jsonl(jsonl.into()),
+    }
+}
+
+#[derive(Default)]
+struct CountingSink {
+    records: usize,
+    finishes: usize,
+}
+
+impl RecordSink for CountingSink {
+    fn record(&mut self, _record: NormalizedRecord) {
+        self.records += 1;
+    }
+
+    fn finish(&mut self, _summary: SessionSummary) {
+        self.finishes += 1;
     }
 }
 
@@ -374,6 +390,52 @@ const CODEX_FIXTURE: &str = concat!(
     "\n",
     r#"{"timestamp":"2024-06-01T12:00:35Z","type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
 );
+
+#[test]
+fn a_legacy_adapter_read_reports_unvalidated() {
+    let input = jsonl_input(
+        "cursor",
+        r#"{"role":"assistant","content":"done","model":"claude-sonnet-4"}"#,
+    );
+    let mut sink = CountingSink::default();
+
+    let outcome = adapter_for("cursor")
+        .visit(&input, &mut sink)
+        .expect("legacy visit must complete");
+
+    assert_eq!(outcome, VisitOutcome::Unvalidated);
+    assert_eq!(sink.finishes, 1);
+}
+
+#[test]
+fn a_legacy_adapter_stream_is_unchanged() {
+    let source = concat!(
+        r#"{"timestamp":"2024-06-01T12:00:00Z","type":"session_meta","payload":{"model":"gpt-5.4"}}"#,
+        "\n",
+        r#"{"timestamp":"2024-06-01T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}}}"#,
+    );
+    let input = jsonl_input("codex", source);
+    let adapter = adapter_for("codex");
+    let expected = adapter
+        .normalize(&input)
+        .expect("Codex source must normalize");
+    let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
+    let outcome = adapter
+        .visit(&input, &mut collector)
+        .expect("default visit must complete");
+    let actual = collector
+        .into_session()
+        .expect("visited session must finish");
+    let mut counter = CountingSink::default();
+    adapter
+        .visit(&input, &mut counter)
+        .expect("counted visit must complete");
+
+    assert_eq!(outcome, VisitOutcome::Unvalidated);
+    assert_eq!(actual, expected);
+    assert_eq!(counter.records, expected.events.len());
+    assert_eq!(counter.finishes, 1);
+}
 
 #[test]
 fn a_non_claude_adapter_visits_through_the_default_implementation() {

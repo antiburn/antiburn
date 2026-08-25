@@ -118,6 +118,11 @@ impl SourceStat {
         Some(Self::from_path_metadata(&metadata))
     }
 
+    pub fn from_open_std_file(file: &std::fs::File) -> Option<Self> {
+        let metadata = file.metadata().ok()?;
+        Some(Self::from_open_std_metadata(file, &metadata))
+    }
+
     #[cfg(unix)]
     fn from_open_metadata(_file: &tokio::fs::File, metadata: &std::fs::Metadata) -> Self {
         Self::from_unix_metadata(metadata)
@@ -125,14 +130,34 @@ impl SourceStat {
 
     #[cfg(windows)]
     fn from_open_metadata(file: &tokio::fs::File, metadata: &std::fs::Metadata) -> Self {
-        use std::mem::MaybeUninit;
         use std::os::windows::io::AsRawHandle;
+
+        Self::from_windows_handle(file.as_raw_handle(), metadata)
+    }
+
+    #[cfg(unix)]
+    fn from_open_std_metadata(_file: &std::fs::File, metadata: &std::fs::Metadata) -> Self {
+        Self::from_unix_metadata(metadata)
+    }
+
+    #[cfg(windows)]
+    fn from_open_std_metadata(file: &std::fs::File, metadata: &std::fs::Metadata) -> Self {
+        use std::os::windows::io::AsRawHandle;
+
+        Self::from_windows_handle(file.as_raw_handle(), metadata)
+    }
+
+    #[cfg(windows)]
+    fn from_windows_handle(
+        handle: std::os::windows::io::RawHandle,
+        metadata: &std::fs::Metadata,
+    ) -> Self {
+        use std::mem::MaybeUninit;
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle,
             GetFileInformationByHandleEx,
         };
 
-        let handle = file.as_raw_handle();
         let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
         let mut basic = MaybeUninit::<FILE_BASIC_INFO>::zeroed();
         // SAFETY: the file owns the valid handle, and both output buffers match the requested types.
