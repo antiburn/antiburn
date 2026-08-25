@@ -310,9 +310,7 @@ describe("ContextTokensTooltip", () => {
       <ContextTokensTooltip
         active
         contextWindow={200_000}
-        payload={[
-          { payload: point({ isCacheRehydration: true, cacheWriteTokens: 40_000 }) },
-        ]}
+        payload={[{ payload: point({ isCacheRehydration: true, cacheWriteTokens: 40_000 }) }]}
       />,
     )
 
