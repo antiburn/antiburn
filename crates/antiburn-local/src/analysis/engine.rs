@@ -285,6 +285,8 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         context_window: session.context_window,
         model: session.model.clone(),
         late_tools: Vec::new(),
+        initial_context: None,
+        skill_descriptions: HashMap::new(),
     };
     crate::analysis::metrics_sink::SessionMetricsAccumulator::from_parts(
         session.agent.clone(),

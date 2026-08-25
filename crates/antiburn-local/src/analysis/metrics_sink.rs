@@ -134,13 +134,14 @@ impl SessionMetricsAccumulator {
     }
 
     pub fn metrics(&self) -> SessionMetrics {
-        let summary = self.summary.as_ref().unwrap_or(&EMPTY_SUMMARY);
+        let empty_summary = SessionSummary::default();
+        let summary = self.summary.as_ref().unwrap_or(&empty_summary);
         let turns = self
             .turns
             .iter()
             .map(|turn| (turn.source, turn))
             .collect::<Vec<_>>();
-        finalize_metrics(
+        let mut metrics = finalize_metrics(
             MetricsIdentity {
                 agent: self.identity.agent.clone(),
                 session_id: self.identity.session_id.clone(),
@@ -148,7 +149,14 @@ impl SessionMetricsAccumulator {
             summary,
             &turns,
             &self.tallies,
-        )
+        );
+        metrics.initial_context = summary.initial_context.clone();
+        for skill_use in &mut metrics.skill_uses {
+            if let Some(description) = summary.skill_descriptions.get(&skill_use.name) {
+                skill_use.description = Some(description.clone());
+            }
+        }
+        metrics
     }
 
     pub fn earliest_ts_ms(&self) -> Option<i64> {
@@ -192,13 +200,6 @@ impl SessionMetricsAccumulator {
         accumulator
     }
 }
-
-static EMPTY_SUMMARY: SessionSummary = SessionSummary {
-    cache_write_tokens_available: false,
-    context_window: None,
-    model: None,
-    late_tools: Vec::new(),
-};
 
 impl RecordSink for SessionMetricsAccumulator {
     fn record(&mut self, record: NormalizedRecord) {
@@ -246,12 +247,13 @@ pub fn merge_metrics(
     for (source, turn) in &sourced_turns {
         tallies.observe(turn, *source);
     }
+    let empty_summary = SessionSummary::default();
     finalize_metrics(
         MetricsIdentity {
             agent: parent.identity.agent.clone(),
             session_id: parent.identity.session_id.clone(),
         },
-        parent.summary.as_ref().unwrap_or(&EMPTY_SUMMARY),
+        parent.summary.as_ref().unwrap_or(&empty_summary),
         &sourced_turns,
         &tallies,
     )

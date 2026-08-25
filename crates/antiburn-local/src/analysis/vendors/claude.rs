@@ -22,6 +22,7 @@ use super::jsonl::{
     command_skill_name, parse_record, record_text,
 };
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
+use crate::analysis::initial_context::ClaudeContextAccumulator;
 use crate::analysis::interface::{
     NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionSummary,
     VendorAdapter, VisitOutcome,
@@ -51,12 +52,12 @@ impl VendorAdapter for ClaudeAdapter {
             let summary = match &input.source {
                 RawSource::File(path) => {
                     let file = File::open(path)?;
-                    self.visit_reader(BufReader::new(file), sink)?
+                    self.visit_reader(BufReader::new(file), &|| false, sink)?
                 }
                 RawSource::Jsonl(content) => {
                     let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
                     let source = Cursor::new(content.as_bytes()).chain(suffix);
-                    self.visit_reader(BufReader::new(source), sink)?
+                    self.visit_reader(BufReader::new(source), &|| false, sink)?
                 }
                 RawSource::Sqlite(path) => {
                     anyhow::bail!(
@@ -78,6 +79,7 @@ impl ClaudeAdapter {
         input: &SessionInput,
         claim: &SourceClaim,
         guarantee: AppendOnlyGuarantee,
+        cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         (|| -> anyhow::Result<VisitOutcome> {
@@ -92,7 +94,7 @@ impl ClaudeAdapter {
                 AppendOnlyGuarantee::Evidenced => claim.boundary,
                 AppendOnlyGuarantee::Absent => u64::MAX,
             };
-            let summary = self.visit_reader(BufReader::new(pinned.reader(limit)), sink)?;
+            let summary = self.visit_reader(BufReader::new(pinned.reader(limit)), cancel, sink)?;
             let outcome = match guarantee {
                 AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
                     Some(reason) => VisitOutcome::SourceChanged(reason),
@@ -117,13 +119,13 @@ impl ClaudeAdapter {
     fn visit_reader(
         &self,
         reader: impl BufRead,
+        cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<SessionSummary> {
         let mut reader = BoundedJsonlReader::new(reader);
         let mut state = ClaudeStreamState::default();
 
-        // TODO @agent: CH-005 will supply the real cancellation signal
-        while let Some(record) = reader.next_record(&|| false) {
+        while let Some(record) = reader.next_record(cancel) {
             match record {
                 FramedRecord::Skipped(skip) => match skip {
                     RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
@@ -146,6 +148,7 @@ impl ClaudeAdapter {
                         continue;
                     };
 
+                    state.context.observe(&value);
                     let has_skill_marker = record.contains(SKILL_BASE_MARKER);
                     let has_command_name = record.contains("<command-name>");
                     let text = (has_skill_marker || has_command_name).then(|| record_text(&value));
@@ -191,6 +194,7 @@ struct ClaudeStreamState {
     skill_base_names: HashSet<String>,
     pending_commands: Vec<(usize, Vec<String>)>,
     ordinal: usize,
+    context: ClaudeContextAccumulator,
 }
 
 impl ClaudeStreamState {
@@ -257,6 +261,7 @@ impl ClaudeStreamState {
     }
 
     fn into_summary(self) -> SessionSummary {
+        let (initial_context, skill_descriptions) = self.context.finish();
         let model = self
             .best_priceable
             .map(|(model, _)| model)
@@ -276,6 +281,8 @@ impl ClaudeStreamState {
             context_window: self.context_window,
             model,
             late_tools,
+            initial_context,
+            skill_descriptions,
         }
     }
 }
@@ -371,6 +378,7 @@ mod tests {
                 &input,
                 &claim,
                 AppendOnlyGuarantee::Evidenced,
+                &|| false,
                 &mut collector,
             )
             .expect("visit claimed prefix");
@@ -406,7 +414,13 @@ mod tests {
         let mut sink = HeadMutatingSink::new(&path);
 
         let outcome = ClaudeAdapter
-            .visit_claimed(&input, &claim, AppendOnlyGuarantee::Evidenced, &mut sink)
+            .visit_claimed(
+                &input,
+                &claim,
+                AppendOnlyGuarantee::Evidenced,
+                &|| false,
+                &mut sink,
+            )
             .expect("visit changed source");
 
         assert_eq!(
@@ -414,6 +428,26 @@ mod tests {
             VisitOutcome::SourceChanged(crate::analysis::SourceChangedReason::HeadRegionMismatch)
         );
         assert!(sink.collector.into_session().is_err());
+    }
+
+    #[test]
+    fn a_cancelled_claimed_read_does_not_finish_the_sink() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let claim = claim_for_path(&path);
+        let input = file_input(&path);
+        let mut collector = SessionCollector::new("claude", "claimed-session");
+
+        let result = ClaudeAdapter.visit_claimed(
+            &input,
+            &claim,
+            AppendOnlyGuarantee::Absent,
+            &|| true,
+            &mut collector,
+        );
+
+        assert!(result.is_err());
+        assert!(collector.into_session().is_err());
     }
 
     #[test]
@@ -429,6 +463,7 @@ mod tests {
                 &input,
                 &claim,
                 AppendOnlyGuarantee::Evidenced,
+                &|| false,
                 &mut collector,
             )
             .expect("visit stable prefix");
@@ -471,7 +506,7 @@ mod tests {
         let source = b"{\"type\":\"assistant\",\"message\":{\"id\":\"first\",\"role\":\"assistant\",\"content\":[]}}\n";
         let reader = BufReader::new(DataThenError::new(source));
         let mut collector = SessionCollector::new("claude", "read-failure");
-        let result = ClaudeAdapter.visit_reader(reader, &mut collector);
+        let result = ClaudeAdapter.visit_reader(reader, &|| false, &mut collector);
         assert!(result.is_err());
     }
 
