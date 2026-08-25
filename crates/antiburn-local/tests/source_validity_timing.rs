@@ -274,6 +274,7 @@ fn an_evidenced_guarantee_reads_a_pinned_prefix() {
     );
 }
 
+#[cfg(unix)]
 struct RenameSink {
     collector: SessionCollector,
     path: PathBuf,
@@ -281,6 +282,7 @@ struct RenameSink {
     renamed: bool,
 }
 
+#[cfg(unix)]
 impl RenameSink {
     fn new(path: &Path, replacement: PathBuf) -> Self {
         Self {
@@ -292,6 +294,7 @@ impl RenameSink {
     }
 }
 
+#[cfg(unix)]
 impl RecordSink for RenameSink {
     fn record(&mut self, record: NormalizedRecord) {
         if !self.renamed {
