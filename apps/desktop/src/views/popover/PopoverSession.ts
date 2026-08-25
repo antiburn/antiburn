@@ -74,6 +74,18 @@ type PopoverAnalysisState = {
   error: boolean
 } | null
 
+/** Whether the settled analysis for `key` has nothing usable. */
+function isUnavailableAnalysis(state: PopoverAnalysisState, key: string): boolean {
+  if (state === null || state.key !== key) return false
+  if (state.error) return true
+  return (
+    state.payload !== null &&
+    state.payload.supportsAnalysis &&
+    state.payload.summary === null &&
+    state.payload.cost === null
+  )
+}
+
 export interface PopoverSnapshot {
   appVersion: string | null
   debugBuild: boolean
@@ -165,6 +177,9 @@ async function loadAnalysisFingerprint(subject: SessionSubject): Promise<string>
 /** How often the open detail pane checks its transcript for new activity. */
 export const ANALYSIS_POLL_MS = 10_000
 
+/** How many times a subject can re-read an unavailable analysis. */
+const MAX_UNAVAILABLE_ANALYSIS_RETRIES = 3
+
 /**
  * How often the store forces a snapshot change while a detail pane is open,
  * so the header's relative-time text ("last just now") stays current even
@@ -210,6 +225,8 @@ export class PopoverSession {
    */
   private analysisFingerprintKey: string | null = null
   private analysisFingerprint: string | null = null
+  private analysisRetryKey: string | null = null
+  private analysisRetryCount = 0
   /** Set while a poll tick's fetch is in flight, so ticks never overlap. */
   private analysisPollInFlight = false
   private analysisPollTimer: ReturnType<typeof setInterval> | null = null
@@ -379,6 +396,8 @@ export class PopoverSession {
     this.stopNowTicking()
     this.analysisFingerprintKey = null
     this.analysisFingerprint = null
+    this.analysisRetryKey = null
+    this.analysisRetryCount = 0
     window.removeEventListener("keydown", this.onWindowKeyDown)
   }
 
@@ -667,6 +686,8 @@ export class PopoverSession {
     const key = sessionKey(subject)
     this.analysisFingerprintKey = key
     this.analysisFingerprint = null
+    this.analysisRetryKey = key
+    this.analysisRetryCount = 0
     void this.loadAnalysisFor(subject).then(() => {
       if (generation !== this.generation || key !== this.analysisFingerprintKey) return
       this.seedAnalysisFingerprint(subject, generation, key)
@@ -706,6 +727,19 @@ export class PopoverSession {
         const previous = this.analysisFingerprint
         this.analysisFingerprint = fingerprint
         if (previous !== null && fingerprint !== previous) {
+          void this.refreshAnalysis()
+          return
+        }
+        if (subject.subagent) return
+        if (key !== this.analysisRetryKey) {
+          this.analysisRetryKey = key
+          this.analysisRetryCount = 0
+        }
+        if (
+          isUnavailableAnalysis(this.snapshot.analysis, key) &&
+          this.analysisRetryCount < MAX_UNAVAILABLE_ANALYSIS_RETRIES
+        ) {
+          this.analysisRetryCount += 1
           void this.refreshAnalysis()
         }
       })
@@ -756,6 +790,10 @@ export class PopoverSession {
       .then((payload) => {
         if (generation !== this.generation || token !== this.analysisToken) return
         this.update({ analysis: { key, payload, error: false } })
+        if (!isUnavailableAnalysis(this.snapshot.analysis, key)) {
+          this.analysisRetryKey = key
+          this.analysisRetryCount = 0
+        }
       })
       .catch(() => {
         if (generation !== this.generation || token !== this.analysisToken) return
