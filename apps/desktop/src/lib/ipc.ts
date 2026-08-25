@@ -1276,7 +1276,9 @@ export async function onSessionEntryChanged(
   handler: (entry: ActivityEntryPayload) => void,
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
-  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) => handler(event.payload))
+  return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
 }
 
 /**
