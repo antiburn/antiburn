@@ -136,6 +136,29 @@ impl RecordSink for SessionCollector {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisitOutcome {
+    /// The adapter reads the source to its end without a source-validity check.
+    /// This outcome states only that the stream completed.
+    Unvalidated,
+    /// The post-read recheck confirms the same source version for the whole source.
+    AcceptedFull,
+    AcceptedPrefix {
+        boundary: u64,
+    },
+    SourceChanged(SourceChangedReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceChangedReason {
+    IdentityMismatch,
+    ShortAtOpen { size: u64, boundary: u64 },
+    HeadRegionMismatch,
+    ShortRead { consumed: u64, boundary: u64 },
+    TruncatedAfterRead { size: u64, boundary: u64 },
+    FingerprintMismatch,
+}
+
 /// Implemented once per vendor format. Stateless and `Sync` so adapters can be
 /// stored as `&'static dyn VendorAdapter` in the registry.
 pub trait VendorAdapter: Sync {
@@ -149,7 +172,11 @@ pub trait VendorAdapter: Sync {
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession>;
 
     /// Streams one raw session into `sink`, one record at a time.
-    fn visit(&self, input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result<()> {
+    fn visit(
+        &self,
+        input: &SessionInput,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
         let session = self.normalize(input)?;
         let NormalizedSession {
             events,
@@ -167,6 +194,6 @@ pub trait VendorAdapter: Sync {
             model,
             late_tools: Vec::new(),
         });
-        Ok(())
+        Ok(VisitOutcome::Unvalidated)
     }
 }
