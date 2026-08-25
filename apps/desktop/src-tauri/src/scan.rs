@@ -80,6 +80,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
+use crate::agents;
 use crate::analysis;
 use crate::dto::ScanStatus;
 use crate::repositories;
@@ -324,7 +325,11 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
-    checked(app, "The session index", store.upsert_sessions(&records))?;
+    checked(
+        app,
+        "The session index",
+        store.upsert_sessions(&records, &agents::evidence_cohort()),
+    )?;
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
@@ -1260,7 +1265,9 @@ mod tests {
             else {
                 panic!("native Codex session should be described");
             };
-            store.upsert_sessions(&[*record]).unwrap();
+            store
+                .upsert_sessions(&[*record], &agents::evidence_cohort())
+                .unwrap();
         }
 
         let native = store
@@ -1318,9 +1325,14 @@ mod tests {
 
         let store = crate::store::Store::open_in_memory(home.path()).unwrap();
         store
-            .upsert_sessions(&[record("codex", parent_session_id, Some(1_799_999_000))])
+            .upsert_sessions(
+                &[record("codex", parent_session_id, Some(1_799_999_000))],
+                &agents::evidence_cohort(),
+            )
             .unwrap();
-        store.upsert_sessions(std::slice::from_ref(&child)).unwrap();
+        store
+            .upsert_sessions(std::slice::from_ref(&child), &agents::evidence_cohort())
+            .unwrap();
 
         assert_eq!(
             store
@@ -1618,7 +1630,7 @@ mod tests {
         session.source_label = source_path.to_string_lossy().into_owned();
         let store = Store::open_in_memory(home.path()).unwrap();
         store
-            .upsert_sessions(std::slice::from_ref(&session))
+            .upsert_sessions(std::slice::from_ref(&session), &agents::evidence_cohort())
             .unwrap();
 
         let legacy_fingerprint =
@@ -1694,7 +1706,9 @@ mod tests {
         let store = Store::open_in_memory(home.path()).unwrap();
         let mut session = record("claude-code", "recent-change", Some(100));
         session.source_fingerprint = Some("sv1:recent".to_string());
-        store.upsert_sessions(&[session]).unwrap();
+        store
+            .upsert_sessions(&[session], &agents::evidence_cohort())
+            .unwrap();
         let analysis_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = Arc::clone(&analysis_calls);
 
@@ -1755,7 +1769,9 @@ mod tests {
                 &HashSet::new(),
             )
             .await;
-            store.upsert_sessions(&records.records).unwrap();
+            store
+                .upsert_sessions(&records.records, &agents::evidence_cohort())
+                .unwrap();
             for (agent, seen, cursor) in per_agent_totals(&records.records) {
                 store.record_agent_scan(&agent, cursor, seen).unwrap();
             }
@@ -1824,7 +1840,9 @@ mod tests {
         stale.source_label = path.to_string_lossy().into_owned();
         stale.activity_cursor = "legacy".into();
         stale.activity_source = "mtime".into();
-        store.upsert_sessions(&[stale]).unwrap();
+        store
+            .upsert_sessions(&[stale], &agents::evidence_cohort())
+            .unwrap();
 
         let states = store.session_activity_states().unwrap();
         let described = describe_with_states(
@@ -1842,7 +1860,9 @@ mod tests {
         .unix_timestamp();
         assert_eq!(described.records[0].updated_at_epoch, Some(expected));
         assert_eq!(described.records[0].activity_source, "event");
-        store.upsert_sessions(&described.records).unwrap();
+        store
+            .upsert_sessions(&described.records, &agents::evidence_cohort())
+            .unwrap();
         let stored = store
             .session_activity_states()
             .unwrap()
@@ -1884,7 +1904,9 @@ mod tests {
 
         // A later mtime-only touch now hits the unchanged-size cursor gate.
         let states = {
-            store.upsert_sessions(&touched.records).unwrap();
+            store
+                .upsert_sessions(&touched.records, &agents::evidence_cohort())
+                .unwrap();
             store.session_activity_states().unwrap()
         };
         let gated = describe_with_states(
@@ -1925,7 +1947,9 @@ mod tests {
         .await;
         assert_eq!(first.records[0].subagent_count, 1);
         let first_epoch = first.records[0].updated_at_epoch.unwrap();
-        store.upsert_sessions(&first.records).unwrap();
+        store
+            .upsert_sessions(&first.records, &agents::evidence_cohort())
+            .unwrap();
 
         // An mtime-only parent touch with an unchanged parent+child cursor is
         // served from the cached semantic event without reading either tail.
@@ -2049,7 +2073,10 @@ mod tests {
         let store = crate::store::Store::open_in_memory(home.path()).unwrap();
         // An earlier, ungated version of the app indexed the sidechain.
         store
-            .upsert_sessions(&[record("claude-code", "aaaa-1111", Some(1_800_000_000))])
+            .upsert_sessions(
+                &[record("claude-code", "aaaa-1111", Some(1_800_000_000))],
+                &agents::evidence_cohort(),
+            )
             .unwrap();
         assert_eq!(store.recent_sessions(0, 10).unwrap().len(), 1);
 
