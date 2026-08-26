@@ -8,8 +8,10 @@
 //! The current evidence contract carries no child model identity:
 //! `SubagentChild::child_model` is a bare marker. A spawned child can
 //! therefore not be classified against the parent tier. A session with
-//! observed spawns reports `ContractIncomplete` — never a finding and
-//! never clean — until CH-009 carries child model identity.
+//! observed spawns — or with delegated turns, which the sink counts
+//! independently of spawn records — reports `ContractIncomplete`,
+//! never a finding and never clean, until CH-009 carries child model
+//! identity.
 //!
 //! Partial-evidence rules:
 //! - A complete-zero spawn count proves absence and supports clean.
@@ -24,7 +26,9 @@ use super::{Observation, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence) -> Observation {
     if let Some(subagents) = observed(&evidence.subagents)
-        && (subagents.spawn_count > 0 || !subagents.children.is_empty())
+        && (subagents.spawn_count > 0
+            || subagents.delegated_turns > 0
+            || !subagents.children.is_empty())
     {
         return Observation::ContractIncomplete;
     }
@@ -52,6 +56,18 @@ mod tests {
             unreachable!()
         };
         subagents.spawn_count = 1;
+
+        assert_eq!(evaluate(&evidence), Observation::ContractIncomplete);
+    }
+
+    #[test]
+    fn delegated_turns_without_spawn_records_report_the_contract_gap() {
+        let mut evidence = claude_evidence("delegated-only");
+        let EvidenceValue::Complete(subagents) = &mut evidence.subagents else {
+            unreachable!()
+        };
+        subagents.spawn_count = 0;
+        subagents.delegated_turns = 1;
 
         assert_eq!(evaluate(&evidence), Observation::ContractIncomplete);
     }
