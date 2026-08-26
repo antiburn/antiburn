@@ -395,18 +395,17 @@ mod tests {
             assert_eq!(report.assessed_sessions, 1);
             assert!(coverage.is_consistent());
 
-            // Verify the cohort contains only the "ready" session, not the unknown-start sessions.
-            // The "ready" session has all required capabilities, so any examples in capability
-            // gaps must come from the assessed session. Check that examples identify "ready".
+            // Only the "ready" session is in the cohort, so every capability gap
+            // example must name it. The Claude capability set blocks four detectors,
+            // so the example list cannot be empty.
             let all_examples: Vec<_> = report
                 .capability_gap_examples
                 .values()
                 .flat_map(|v| v.iter())
                 .collect();
-            if !all_examples.is_empty() {
-                // If there are gaps, they must be from the "ready" session (the cohort member).
-                let first_example = all_examples[0];
-                assert_eq!(first_example.session_id, "ready");
+            assert!(!all_examples.is_empty());
+            for example in all_examples {
+                assert_eq!(example.session_id, "ready");
             }
 
             assert_eq!(
@@ -424,6 +423,51 @@ mod tests {
                     .map(|counts| counts.assessed)
                     .sum::<u64>(),
                 5
+            );
+        }
+
+        #[test]
+        fn unknown_start_rows_split_on_in_window_activity() {
+            // Each case seeds one row alone, so a reversed activity predicate
+            // cannot pass by counting the other row.
+            let active_dir = TempDir::new().unwrap();
+            let active_store = Store::open(active_dir.path()).unwrap();
+            let active = session("unknown-active", 150, "sv1:unknown-active");
+            active_store.upsert_sessions(&[active], &[]).unwrap();
+
+            let report = reduce_on_snapshot(active_dir.path(), request(), &mut || {}).unwrap();
+            let coverage = &report.context.coverage;
+            assert_eq!(coverage.discovered, 1);
+            assert_eq!(coverage.unknown_start, 1);
+            assert_eq!(report.assessed_sessions, 0);
+            assert!(coverage.is_consistent());
+            assert_eq!(
+                report
+                    .detectors
+                    .iter()
+                    .map(|counts| counts.eligible + counts.assessed)
+                    .sum::<u64>(),
+                0
+            );
+
+            let inactive_dir = TempDir::new().unwrap();
+            let inactive_store = Store::open(inactive_dir.path()).unwrap();
+            let inactive = session("unknown-inactive", 99, "sv1:unknown-inactive");
+            inactive_store.upsert_sessions(&[inactive], &[]).unwrap();
+
+            let report = reduce_on_snapshot(inactive_dir.path(), request(), &mut || {}).unwrap();
+            let coverage = &report.context.coverage;
+            assert_eq!(coverage.discovered, 0);
+            assert_eq!(coverage.unknown_start, 0);
+            assert_eq!(report.assessed_sessions, 0);
+            assert!(coverage.is_consistent());
+            assert_eq!(
+                report
+                    .detectors
+                    .iter()
+                    .map(|counts| counts.eligible + counts.assessed)
+                    .sum::<u64>(),
+                0
             );
         }
 
