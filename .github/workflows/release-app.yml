@@ -351,6 +351,37 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The engine embeds a compacted antiburn/systemprompts tool catalogue at
+      # build time (scripts/build-tool-catalog.mjs). A release build needs the
+      # real catalogue, not the fixture CI uses, so this checks out that
+      # repository fresh on every build leg rather than sharing one checkout
+      # across the matrix — each leg is an independent runner with its own
+      # dependency install already, and the checkout is small.
+      - name: Check out antiburn/systemprompts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: antiburn/systemprompts
+          path: systemprompts
+
+      - name: Build the tool catalog from antiburn/systemprompts
+        id: tool-catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run tool-catalog -- systemprompts
+          echo "commit=$(git -C systemprompts rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Record the systemprompts commit
+        shell: bash
+        env:
+          COMMIT: ${{ steps.tool-catalog.outputs.commit }}
+        run: |
+          {
+            echo "### Tool catalog (${{ matrix.name }})"
+            echo
+            echo "Built from [antiburn/systemprompts@${COMMIT}](https://github.com/antiburn/systemprompts/commit/${COMMIT})."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # The bundle declares macOS 13 as its minimum; the compiler has to agree.
       - name: Set the macOS deployment target
         if: runner.os == 'macOS'

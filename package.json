@@ -14,9 +14,11 @@
   },
   "scripts": {
     "desktop": "pnpm --filter @antiburn/desktop",
-    "slop": "aislop ci --changes --base origin/main"
+    "slop": "aislop ci --changes --base origin/main",
+    "tool-catalog": "node scripts/build-tool-catalog.mjs"
   },
   "devDependencies": {
-    "aislop": "0.14.1"
+    "aislop": "0.14.1",
+    "yaml": "^2.9.0"
   }
 }

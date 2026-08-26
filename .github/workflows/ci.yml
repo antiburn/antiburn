@@ -41,7 +41,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Test the CI control plane
-        run: node --test scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
 
       # The drift guard runs here, not in a classified job. It reads the
       # contract, the stylesheets, and the popover window's own corner
@@ -97,6 +97,23 @@ jobs:
         uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
         with:
           tool: cargo-nextest
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The engine embeds a compacted antiburn/systemprompts tool catalogue at
+      # build time. CI does not check out that repository, so this copies the
+      # committed fixture catalogue instead of building the real one.
+      - name: Generate the tool catalog from the fixture
+        run: pnpm run tool-catalog
 
       - name: Check formatting
         if: runner.os == 'Linux'
@@ -266,6 +283,28 @@ jobs:
           key: ${{ matrix.platform.name }}-${{ matrix.workspace.name }}
           cache-bin: false
           save-if: ${{ matrix.check.save_cache && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      # Only the shell workspace depends on the engine (antiburn-local), which
+      # embeds a compacted antiburn/systemprompts tool catalogue at build
+      # time. CI does not check out that repository, so this copies the
+      # committed fixture catalogue instead of building the real one.
+      - name: Install Node
+        if: matrix.workspace.name == 'shell'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        if: matrix.workspace.name == 'shell'
+        run: corepack enable
+
+      - name: Install dependencies
+        if: matrix.workspace.name == 'shell'
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate the tool catalog from the fixture
+        if: matrix.workspace.name == 'shell'
+        run: pnpm run tool-catalog
 
       - name: Run ${{ matrix.check.name }}
         working-directory: ${{ matrix.workspace.directory }}
@@ -491,6 +530,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # The engine embeds a compacted antiburn/systemprompts tool catalogue at
+      # build time. CI does not check out that repository, so this copies the
+      # committed fixture catalogue instead of building the real one.
+      - name: Generate the tool catalog from the fixture
+        run: pnpm run tool-catalog
 
       # Match the signed release job exactly so cached macOS objects cannot
       # silently raise the application's deployment floor.

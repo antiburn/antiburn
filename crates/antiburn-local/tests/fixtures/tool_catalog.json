@@ -1,0 +1,1961 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "repository": "antiburn/systemprompts",
+    "commit": "d6614c8cb9227cd5958500c82b05d4a9fbc2fe30"
+  },
+  "agents": {
+    "claude": {
+      "versions": {
+        "2.1.220": 0,
+        "2.1.232": 1,
+        "2.1.233": 2,
+        "2.1.246": 3
+      },
+      "surfaces": [
+        {
+          "tools": [
+            {
+              "name": "agent",
+              "aliases": [
+                "Agent"
+              ],
+              "tokens": {
+                "claude-fable-5": 995,
+                "claude-haiku-4-5-20251001": 2050,
+                "claude-opus-4-5-20251101": 2050,
+                "claude-opus-4-6": 2050,
+                "claude-opus-4-7": 2735,
+                "claude-opus-4-8": 995,
+                "claude-opus-5": 934,
+                "claude-sonnet-4-5-20250929": 2050,
+                "claude-sonnet-4-6": 1994,
+                "claude-sonnet-5": 2735
+              }
+            },
+            {
+              "name": "bash",
+              "aliases": [
+                "Bash"
+              ],
+              "tokens": {
+                "claude-fable-5": 1013,
+                "claude-haiku-4-5-20251001": 2967,
+                "claude-opus-4-5-20251101": 2965,
+                "claude-opus-4-6": 2965,
+                "claude-opus-4-7": 4043,
+                "claude-opus-4-8": 1015,
+                "claude-opus-5": 1034,
+                "claude-sonnet-4-5-20250929": 2967,
+                "claude-sonnet-4-6": 2902,
+                "claude-sonnet-5": 4043
+              }
+            },
+            {
+              "name": "cron_create",
+              "aliases": [
+                "CronCreate"
+              ],
+              "tokens": {
+                "claude-fable-5": 1648,
+                "claude-haiku-4-5-20251001": 1273,
+                "claude-opus-4-5-20251101": 1273,
+                "claude-opus-4-6": 1273,
+                "claude-opus-4-7": 1648,
+                "claude-opus-4-8": 1648,
+                "claude-opus-5": 1648,
+                "claude-sonnet-4-5-20250929": 1273,
+                "claude-sonnet-4-6": 1225,
+                "claude-sonnet-5": 1648
+              }
+            },
+            {
+              "name": "cron_delete",
+              "aliases": [
+                "CronDelete"
+              ],
+              "tokens": {
+                "claude-fable-5": 180,
+                "claude-haiku-4-5-20251001": 131,
+                "claude-opus-4-5-20251101": 131,
+                "claude-opus-4-6": 131,
+                "claude-opus-4-7": 180,
+                "claude-opus-4-8": 180,
+                "claude-opus-5": 180,
+                "claude-sonnet-4-5-20250929": 131,
+                "claude-sonnet-4-6": 131,
+                "claude-sonnet-5": 180
+              }
+            },
+            {
+              "name": "cron_list",
+              "aliases": [
+                "CronList"
+              ],
+              "tokens": {
+                "claude-fable-5": 120,
+                "claude-haiku-4-5-20251001": 90,
+                "claude-opus-4-5-20251101": 90,
+                "claude-opus-4-6": 90,
+                "claude-opus-4-7": 120,
+                "claude-opus-4-8": 120,
+                "claude-opus-5": 120,
+                "claude-sonnet-4-5-20250929": 90,
+                "claude-sonnet-4-6": 90,
+                "claude-sonnet-5": 120
+              }
+            },
+            {
+              "name": "edit",
+              "aliases": [
+                "Edit"
+              ],
+              "tokens": {
+                "claude-fable-5": 348,
+                "claude-haiku-4-5-20251001": 440,
+                "claude-opus-4-5-20251101": 440,
+                "claude-opus-4-6": 440,
+                "claude-opus-4-7": 579,
+                "claude-opus-4-8": 348,
+                "claude-opus-5": 348,
+                "claude-sonnet-4-5-20250929": 440,
+                "claude-sonnet-4-6": 440,
+                "claude-sonnet-5": 579
+              }
+            },
+            {
+              "name": "enter_worktree",
+              "aliases": [
+                "EnterWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 1396,
+                "claude-haiku-4-5-20251001": 1095,
+                "claude-opus-4-5-20251101": 1095,
+                "claude-opus-4-6": 1095,
+                "claude-opus-4-7": 1396,
+                "claude-opus-4-8": 1396,
+                "claude-opus-5": 1396,
+                "claude-sonnet-4-5-20250929": 1095,
+                "claude-sonnet-4-6": 1067,
+                "claude-sonnet-5": 1396
+              }
+            },
+            {
+              "name": "exit_worktree",
+              "aliases": [
+                "ExitWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 913,
+                "claude-haiku-4-5-20251001": 710,
+                "claude-opus-4-5-20251101": 710,
+                "claude-opus-4-6": 710,
+                "claude-opus-4-7": 913,
+                "claude-opus-4-8": 913,
+                "claude-opus-5": 913,
+                "claude-sonnet-4-5-20250929": 710,
+                "claude-sonnet-4-6": 698,
+                "claude-sonnet-5": 913
+              }
+            },
+            {
+              "name": "notebook_edit",
+              "aliases": [
+                "NotebookEdit"
+              ],
+              "tokens": {
+                "claude-fable-5": 632,
+                "claude-haiku-4-5-20251001": 476,
+                "claude-opus-4-5-20251101": 476,
+                "claude-opus-4-6": 476,
+                "claude-opus-4-7": 632,
+                "claude-opus-4-8": 632,
+                "claude-opus-5": 632,
+                "claude-sonnet-4-5-20250929": 476,
+                "claude-sonnet-4-6": 468,
+                "claude-sonnet-5": 632
+              }
+            },
+            {
+              "name": "read",
+              "aliases": [
+                "Read"
+              ],
+              "tokens": {
+                "claude-fable-5": 625,
+                "claude-haiku-4-5-20251001": 696,
+                "claude-opus-4-5-20251101": 696,
+                "claude-opus-4-6": 696,
+                "claude-opus-4-7": 923,
+                "claude-opus-4-8": 625,
+                "claude-opus-5": 625,
+                "claude-sonnet-4-5-20250929": 696,
+                "claude-sonnet-4-6": 692,
+                "claude-sonnet-5": 923
+              }
+            },
+            {
+              "name": "report_findings",
+              "aliases": [
+                "ReportFindings"
+              ],
+              "tokens": {
+                "claude-fable-5": 821,
+                "claude-haiku-4-5-20251001": 609,
+                "claude-opus-4-5-20251101": 609,
+                "claude-opus-4-6": 609,
+                "claude-opus-4-7": 821,
+                "claude-opus-4-8": 821,
+                "claude-opus-5": 821,
+                "claude-sonnet-4-5-20250929": 609,
+                "claude-sonnet-4-6": 604,
+                "claude-sonnet-5": 821
+              }
+            },
+            {
+              "name": "schedule_wakeup",
+              "aliases": [
+                "ScheduleWakeup"
+              ],
+              "tokens": {
+                "claude-fable-5": 1528,
+                "claude-haiku-4-5-20251001": 1144,
+                "claude-opus-4-5-20251101": 1144,
+                "claude-opus-4-6": 1144,
+                "claude-opus-4-7": 1528,
+                "claude-opus-4-8": 1528,
+                "claude-opus-5": 1528,
+                "claude-sonnet-4-5-20250929": 1144,
+                "claude-sonnet-4-6": 1082,
+                "claude-sonnet-5": 1528
+              }
+            },
+            {
+              "name": "send_message",
+              "aliases": [
+                "SendMessage"
+              ],
+              "tokens": {
+                "claude-fable-5": 490,
+                "claude-haiku-4-5-20251001": 391,
+                "claude-opus-4-5-20251101": 391,
+                "claude-opus-4-6": 391,
+                "claude-opus-4-7": 490,
+                "claude-opus-4-8": 490,
+                "claude-opus-5": 490,
+                "claude-sonnet-4-5-20250929": 391,
+                "claude-sonnet-4-6": 379,
+                "claude-sonnet-5": 490
+              }
+            },
+            {
+              "name": "skill",
+              "aliases": [
+                "Skill"
+              ],
+              "tokens": {
+                "claude-fable-5": 623,
+                "claude-haiku-4-5-20251001": 467,
+                "claude-opus-4-5-20251101": 467,
+                "claude-opus-4-6": 467,
+                "claude-opus-4-7": 623,
+                "claude-opus-4-8": 623,
+                "claude-opus-5": 623,
+                "claude-sonnet-4-5-20250929": 467,
+                "claude-sonnet-4-6": 452,
+                "claude-sonnet-5": 623
+              }
+            },
+            {
+              "name": "task_create",
+              "aliases": [
+                "TaskCreate"
+              ],
+              "tokens": {
+                "claude-fable-5": 998,
+                "claude-haiku-4-5-20251001": 708,
+                "claude-opus-4-5-20251101": 708,
+                "claude-opus-4-6": 708,
+                "claude-opus-4-7": 998,
+                "claude-opus-4-8": 998,
+                "claude-opus-5": 998,
+                "claude-sonnet-4-5-20250929": 708,
+                "claude-sonnet-4-6": 708,
+                "claude-sonnet-5": 998
+              }
+            },
+            {
+              "name": "task_get",
+              "aliases": [
+                "TaskGet"
+              ],
+              "tokens": {
+                "claude-fable-5": 391,
+                "claude-haiku-4-5-20251001": 289,
+                "claude-opus-4-5-20251101": 289,
+                "claude-opus-4-6": 289,
+                "claude-opus-4-7": 391,
+                "claude-opus-4-8": 391,
+                "claude-opus-5": 391,
+                "claude-sonnet-4-5-20250929": 289,
+                "claude-sonnet-4-6": 289,
+                "claude-sonnet-5": 391
+              }
+            },
+            {
+              "name": "task_list",
+              "aliases": [
+                "TaskList"
+              ],
+              "tokens": {
+                "claude-fable-5": 445,
+                "claude-haiku-4-5-20251001": 321,
+                "claude-opus-4-5-20251101": 321,
+                "claude-opus-4-6": 321,
+                "claude-opus-4-7": 445,
+                "claude-opus-4-8": 445,
+                "claude-opus-5": 445,
+                "claude-sonnet-4-5-20250929": 321,
+                "claude-sonnet-4-6": 321,
+                "claude-sonnet-5": 445
+              }
+            },
+            {
+              "name": "task_output",
+              "aliases": [
+                "TaskOutput"
+              ],
+              "tokens": {
+                "claude-fable-5": 543,
+                "claude-haiku-4-5-20251001": 421,
+                "claude-opus-4-5-20251101": 421,
+                "claude-opus-4-6": 421,
+                "claude-opus-4-7": 543,
+                "claude-opus-4-8": 543,
+                "claude-opus-5": 543,
+                "claude-sonnet-4-5-20250929": 421,
+                "claude-sonnet-4-6": 409,
+                "claude-sonnet-5": 543
+              }
+            },
+            {
+              "name": "task_stop",
+              "aliases": [
+                "TaskStop"
+              ],
+              "tokens": {
+                "claude-fable-5": 302,
+                "claude-haiku-4-5-20251001": 230,
+                "claude-opus-4-5-20251101": 230,
+                "claude-opus-4-6": 230,
+                "claude-opus-4-7": 302,
+                "claude-opus-4-8": 302,
+                "claude-opus-5": 302,
+                "claude-sonnet-4-5-20250929": 230,
+                "claude-sonnet-4-6": 230,
+                "claude-sonnet-5": 302
+              }
+            },
+            {
+              "name": "task_update",
+              "aliases": [
+                "TaskUpdate"
+              ],
+              "tokens": {
+                "claude-fable-5": 1410,
+                "claude-haiku-4-5-20251001": 1051,
+                "claude-opus-4-5-20251101": 1051,
+                "claude-opus-4-6": 1051,
+                "claude-opus-4-7": 1410,
+                "claude-opus-4-8": 1410,
+                "claude-opus-5": 1410,
+                "claude-sonnet-4-5-20250929": 1051,
+                "claude-sonnet-4-6": 1043,
+                "claude-sonnet-5": 1410
+              }
+            },
+            {
+              "name": "web_fetch",
+              "aliases": [
+                "WebFetch"
+              ],
+              "tokens": {
+                "claude-fable-5": 298,
+                "claude-haiku-4-5-20251001": 492,
+                "claude-opus-4-5-20251101": 492,
+                "claude-opus-4-6": 492,
+                "claude-opus-4-7": 691,
+                "claude-opus-4-8": 298,
+                "claude-opus-5": 298,
+                "claude-sonnet-4-5-20250929": 492,
+                "claude-sonnet-4-6": 492,
+                "claude-sonnet-5": 691
+              }
+            },
+            {
+              "name": "web_search",
+              "aliases": [
+                "WebSearch"
+              ],
+              "tokens": {
+                "claude-fable-5": 310,
+                "claude-haiku-4-5-20251001": 500,
+                "claude-opus-4-5-20251101": 500,
+                "claude-opus-4-6": 500,
+                "claude-opus-4-7": 659,
+                "claude-opus-4-8": 310,
+                "claude-opus-5": 310,
+                "claude-sonnet-4-5-20250929": 500,
+                "claude-sonnet-4-6": 500,
+                "claude-sonnet-5": 659
+              }
+            },
+            {
+              "name": "workflow",
+              "aliases": [
+                "Workflow"
+              ],
+              "tokens": {
+                "claude-fable-5": 7900,
+                "claude-haiku-4-5-20251001": 6023,
+                "claude-opus-4-5-20251101": 6023,
+                "claude-opus-4-6": 6023,
+                "claude-opus-4-7": 7900,
+                "claude-opus-4-8": 7900,
+                "claude-opus-5": 7900,
+                "claude-sonnet-4-5-20250929": 6023,
+                "claude-sonnet-4-6": 5644,
+                "claude-sonnet-5": 7900
+              }
+            },
+            {
+              "name": "write",
+              "aliases": [
+                "Write"
+              ],
+              "tokens": {
+                "claude-fable-5": 236,
+                "claude-haiku-4-5-20251001": 277,
+                "claude-opus-4-5-20251101": 277,
+                "claude-opus-4-6": 277,
+                "claude-opus-4-7": 360,
+                "claude-opus-4-8": 236,
+                "claude-opus-5": 236,
+                "claude-sonnet-4-5-20250929": 277,
+                "claude-sonnet-4-6": 273,
+                "claude-sonnet-5": 360
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agent",
+              "aliases": [
+                "Agent"
+              ],
+              "tokens": {
+                "claude-fable-5": 1049,
+                "claude-haiku-4-5-20251001": 2126,
+                "claude-opus-4-5-20251101": 2126,
+                "claude-opus-4-6": 2126,
+                "claude-opus-4-7": 2824,
+                "claude-opus-4-8": 1049,
+                "claude-opus-5": 988,
+                "claude-sonnet-4-5-20250929": 2126,
+                "claude-sonnet-4-6": 2062,
+                "claude-sonnet-5": 2824
+              }
+            },
+            {
+              "name": "bash",
+              "aliases": [
+                "Bash"
+              ],
+              "tokens": {
+                "claude-fable-5": 1034,
+                "claude-haiku-4-5-20251001": 2967,
+                "claude-opus-4-5-20251101": 2965,
+                "claude-opus-4-6": 2965,
+                "claude-opus-4-7": 4043,
+                "claude-opus-4-8": 1036,
+                "claude-opus-5": 1034,
+                "claude-sonnet-4-5-20250929": 2967,
+                "claude-sonnet-4-6": 2902,
+                "claude-sonnet-5": 4043
+              }
+            },
+            {
+              "name": "cron_create",
+              "aliases": [
+                "CronCreate"
+              ],
+              "tokens": {
+                "claude-fable-5": 1648,
+                "claude-haiku-4-5-20251001": 1273,
+                "claude-opus-4-5-20251101": 1273,
+                "claude-opus-4-6": 1273,
+                "claude-opus-4-7": 1648,
+                "claude-opus-4-8": 1648,
+                "claude-opus-5": 1648,
+                "claude-sonnet-4-5-20250929": 1273,
+                "claude-sonnet-4-6": 1225,
+                "claude-sonnet-5": 1648
+              }
+            },
+            {
+              "name": "cron_delete",
+              "aliases": [
+                "CronDelete"
+              ],
+              "tokens": {
+                "claude-fable-5": 180,
+                "claude-haiku-4-5-20251001": 131,
+                "claude-opus-4-5-20251101": 131,
+                "claude-opus-4-6": 131,
+                "claude-opus-4-7": 180,
+                "claude-opus-4-8": 180,
+                "claude-opus-5": 180,
+                "claude-sonnet-4-5-20250929": 131,
+                "claude-sonnet-4-6": 131,
+                "claude-sonnet-5": 180
+              }
+            },
+            {
+              "name": "cron_list",
+              "aliases": [
+                "CronList"
+              ],
+              "tokens": {
+                "claude-fable-5": 120,
+                "claude-haiku-4-5-20251001": 90,
+                "claude-opus-4-5-20251101": 90,
+                "claude-opus-4-6": 90,
+                "claude-opus-4-7": 120,
+                "claude-opus-4-8": 120,
+                "claude-opus-5": 120,
+                "claude-sonnet-4-5-20250929": 90,
+                "claude-sonnet-4-6": 90,
+                "claude-sonnet-5": 120
+              }
+            },
+            {
+              "name": "edit",
+              "aliases": [
+                "Edit"
+              ],
+              "tokens": {
+                "claude-fable-5": 348,
+                "claude-haiku-4-5-20251001": 440,
+                "claude-opus-4-5-20251101": 440,
+                "claude-opus-4-6": 440,
+                "claude-opus-4-7": 579,
+                "claude-opus-4-8": 348,
+                "claude-opus-5": 348,
+                "claude-sonnet-4-5-20250929": 440,
+                "claude-sonnet-4-6": 440,
+                "claude-sonnet-5": 579
+              }
+            },
+            {
+              "name": "enter_worktree",
+              "aliases": [
+                "EnterWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 1396,
+                "claude-haiku-4-5-20251001": 1095,
+                "claude-opus-4-5-20251101": 1095,
+                "claude-opus-4-6": 1095,
+                "claude-opus-4-7": 1396,
+                "claude-opus-4-8": 1396,
+                "claude-opus-5": 1396,
+                "claude-sonnet-4-5-20250929": 1095,
+                "claude-sonnet-4-6": 1067,
+                "claude-sonnet-5": 1396
+              }
+            },
+            {
+              "name": "exit_worktree",
+              "aliases": [
+                "ExitWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 913,
+                "claude-haiku-4-5-20251001": 710,
+                "claude-opus-4-5-20251101": 710,
+                "claude-opus-4-6": 710,
+                "claude-opus-4-7": 913,
+                "claude-opus-4-8": 913,
+                "claude-opus-5": 913,
+                "claude-sonnet-4-5-20250929": 710,
+                "claude-sonnet-4-6": 698,
+                "claude-sonnet-5": 913
+              }
+            },
+            {
+              "name": "notebook_edit",
+              "aliases": [
+                "NotebookEdit"
+              ],
+              "tokens": {
+                "claude-fable-5": 632,
+                "claude-haiku-4-5-20251001": 476,
+                "claude-opus-4-5-20251101": 476,
+                "claude-opus-4-6": 476,
+                "claude-opus-4-7": 632,
+                "claude-opus-4-8": 632,
+                "claude-opus-5": 632,
+                "claude-sonnet-4-5-20250929": 476,
+                "claude-sonnet-4-6": 468,
+                "claude-sonnet-5": 632
+              }
+            },
+            {
+              "name": "read",
+              "aliases": [
+                "Read"
+              ],
+              "tokens": {
+                "claude-fable-5": 625,
+                "claude-haiku-4-5-20251001": 696,
+                "claude-opus-4-5-20251101": 696,
+                "claude-opus-4-6": 696,
+                "claude-opus-4-7": 923,
+                "claude-opus-4-8": 625,
+                "claude-opus-5": 625,
+                "claude-sonnet-4-5-20250929": 696,
+                "claude-sonnet-4-6": 692,
+                "claude-sonnet-5": 923
+              }
+            },
+            {
+              "name": "report_findings",
+              "aliases": [
+                "ReportFindings"
+              ],
+              "tokens": {
+                "claude-fable-5": 821,
+                "claude-haiku-4-5-20251001": 609,
+                "claude-opus-4-5-20251101": 609,
+                "claude-opus-4-6": 609,
+                "claude-opus-4-7": 821,
+                "claude-opus-4-8": 821,
+                "claude-opus-5": 821,
+                "claude-sonnet-4-5-20250929": 609,
+                "claude-sonnet-4-6": 604,
+                "claude-sonnet-5": 821
+              }
+            },
+            {
+              "name": "schedule_wakeup",
+              "aliases": [
+                "ScheduleWakeup"
+              ],
+              "tokens": {
+                "claude-fable-5": 1528,
+                "claude-haiku-4-5-20251001": 1144,
+                "claude-opus-4-5-20251101": 1144,
+                "claude-opus-4-6": 1144,
+                "claude-opus-4-7": 1528,
+                "claude-opus-4-8": 1528,
+                "claude-opus-5": 1528,
+                "claude-sonnet-4-5-20250929": 1144,
+                "claude-sonnet-4-6": 1082,
+                "claude-sonnet-5": 1528
+              }
+            },
+            {
+              "name": "send_message",
+              "aliases": [
+                "SendMessage"
+              ],
+              "tokens": {
+                "claude-fable-5": 547,
+                "claude-haiku-4-5-20251001": 433,
+                "claude-opus-4-5-20251101": 433,
+                "claude-opus-4-6": 433,
+                "claude-opus-4-7": 547,
+                "claude-opus-4-8": 547,
+                "claude-opus-5": 547,
+                "claude-sonnet-4-5-20250929": 433,
+                "claude-sonnet-4-6": 421,
+                "claude-sonnet-5": 547
+              }
+            },
+            {
+              "name": "skill",
+              "aliases": [
+                "Skill"
+              ],
+              "tokens": {
+                "claude-fable-5": 623,
+                "claude-haiku-4-5-20251001": 467,
+                "claude-opus-4-5-20251101": 467,
+                "claude-opus-4-6": 467,
+                "claude-opus-4-7": 623,
+                "claude-opus-4-8": 623,
+                "claude-opus-5": 623,
+                "claude-sonnet-4-5-20250929": 467,
+                "claude-sonnet-4-6": 452,
+                "claude-sonnet-5": 623
+              }
+            },
+            {
+              "name": "task_create",
+              "aliases": [
+                "TaskCreate"
+              ],
+              "tokens": {
+                "claude-fable-5": 998,
+                "claude-haiku-4-5-20251001": 708,
+                "claude-opus-4-5-20251101": 708,
+                "claude-opus-4-6": 708,
+                "claude-opus-4-7": 998,
+                "claude-opus-4-8": 998,
+                "claude-opus-5": 998,
+                "claude-sonnet-4-5-20250929": 708,
+                "claude-sonnet-4-6": 708,
+                "claude-sonnet-5": 998
+              }
+            },
+            {
+              "name": "task_get",
+              "aliases": [
+                "TaskGet"
+              ],
+              "tokens": {
+                "claude-fable-5": 391,
+                "claude-haiku-4-5-20251001": 289,
+                "claude-opus-4-5-20251101": 289,
+                "claude-opus-4-6": 289,
+                "claude-opus-4-7": 391,
+                "claude-opus-4-8": 391,
+                "claude-opus-5": 391,
+                "claude-sonnet-4-5-20250929": 289,
+                "claude-sonnet-4-6": 289,
+                "claude-sonnet-5": 391
+              }
+            },
+            {
+              "name": "task_list",
+              "aliases": [
+                "TaskList"
+              ],
+              "tokens": {
+                "claude-fable-5": 445,
+                "claude-haiku-4-5-20251001": 321,
+                "claude-opus-4-5-20251101": 321,
+                "claude-opus-4-6": 321,
+                "claude-opus-4-7": 445,
+                "claude-opus-4-8": 445,
+                "claude-opus-5": 445,
+                "claude-sonnet-4-5-20250929": 321,
+                "claude-sonnet-4-6": 321,
+                "claude-sonnet-5": 445
+              }
+            },
+            {
+              "name": "task_output",
+              "aliases": [
+                "TaskOutput"
+              ],
+              "tokens": {
+                "claude-fable-5": 543,
+                "claude-haiku-4-5-20251001": 421,
+                "claude-opus-4-5-20251101": 421,
+                "claude-opus-4-6": 421,
+                "claude-opus-4-7": 543,
+                "claude-opus-4-8": 543,
+                "claude-opus-5": 543,
+                "claude-sonnet-4-5-20250929": 421,
+                "claude-sonnet-4-6": 409,
+                "claude-sonnet-5": 543
+              }
+            },
+            {
+              "name": "task_stop",
+              "aliases": [
+                "TaskStop"
+              ],
+              "tokens": {
+                "claude-fable-5": 302,
+                "claude-haiku-4-5-20251001": 230,
+                "claude-opus-4-5-20251101": 230,
+                "claude-opus-4-6": 230,
+                "claude-opus-4-7": 302,
+                "claude-opus-4-8": 302,
+                "claude-opus-5": 302,
+                "claude-sonnet-4-5-20250929": 230,
+                "claude-sonnet-4-6": 230,
+                "claude-sonnet-5": 302
+              }
+            },
+            {
+              "name": "task_update",
+              "aliases": [
+                "TaskUpdate"
+              ],
+              "tokens": {
+                "claude-fable-5": 1410,
+                "claude-haiku-4-5-20251001": 1051,
+                "claude-opus-4-5-20251101": 1051,
+                "claude-opus-4-6": 1051,
+                "claude-opus-4-7": 1410,
+                "claude-opus-4-8": 1410,
+                "claude-opus-5": 1410,
+                "claude-sonnet-4-5-20250929": 1051,
+                "claude-sonnet-4-6": 1043,
+                "claude-sonnet-5": 1410
+              }
+            },
+            {
+              "name": "web_fetch",
+              "aliases": [
+                "WebFetch"
+              ],
+              "tokens": {
+                "claude-fable-5": 298,
+                "claude-haiku-4-5-20251001": 492,
+                "claude-opus-4-5-20251101": 492,
+                "claude-opus-4-6": 492,
+                "claude-opus-4-7": 691,
+                "claude-opus-4-8": 298,
+                "claude-opus-5": 298,
+                "claude-sonnet-4-5-20250929": 492,
+                "claude-sonnet-4-6": 492,
+                "claude-sonnet-5": 691
+              }
+            },
+            {
+              "name": "web_search",
+              "aliases": [
+                "WebSearch"
+              ],
+              "tokens": {
+                "claude-fable-5": 310,
+                "claude-haiku-4-5-20251001": 500,
+                "claude-opus-4-5-20251101": 500,
+                "claude-opus-4-6": 500,
+                "claude-opus-4-7": 659,
+                "claude-opus-4-8": 310,
+                "claude-opus-5": 310,
+                "claude-sonnet-4-5-20250929": 500,
+                "claude-sonnet-4-6": 500,
+                "claude-sonnet-5": 659
+              }
+            },
+            {
+              "name": "workflow",
+              "aliases": [
+                "Workflow"
+              ],
+              "tokens": {
+                "claude-fable-5": 7900,
+                "claude-haiku-4-5-20251001": 6024,
+                "claude-opus-4-5-20251101": 6024,
+                "claude-opus-4-6": 6024,
+                "claude-opus-4-7": 7900,
+                "claude-opus-4-8": 7900,
+                "claude-opus-5": 7900,
+                "claude-sonnet-4-5-20250929": 6024,
+                "claude-sonnet-4-6": 5645,
+                "claude-sonnet-5": 7900
+              }
+            },
+            {
+              "name": "write",
+              "aliases": [
+                "Write"
+              ],
+              "tokens": {
+                "claude-fable-5": 236,
+                "claude-haiku-4-5-20251001": 277,
+                "claude-opus-4-5-20251101": 277,
+                "claude-opus-4-6": 277,
+                "claude-opus-4-7": 360,
+                "claude-opus-4-8": 236,
+                "claude-opus-5": 236,
+                "claude-sonnet-4-5-20250929": 277,
+                "claude-sonnet-4-6": 273,
+                "claude-sonnet-5": 360
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agent",
+              "aliases": [
+                "Agent"
+              ],
+              "tokens": {
+                "claude-fable-5": 1049,
+                "claude-haiku-4-5-20251001": 2126,
+                "claude-opus-4-5-20251101": 2126,
+                "claude-opus-4-6": 2126,
+                "claude-opus-4-7": 2824,
+                "claude-opus-4-8": 1049,
+                "claude-opus-5": 988,
+                "claude-sonnet-4-5-20250929": 2126,
+                "claude-sonnet-4-6": 2062,
+                "claude-sonnet-5": 2824
+              }
+            },
+            {
+              "name": "bash",
+              "aliases": [
+                "Bash"
+              ],
+              "tokens": {
+                "claude-fable-5": 1034,
+                "claude-haiku-4-5-20251001": 2967,
+                "claude-opus-4-5-20251101": 2965,
+                "claude-opus-4-6": 2965,
+                "claude-opus-4-7": 4043,
+                "claude-opus-4-8": 1036,
+                "claude-opus-5": 1034,
+                "claude-sonnet-4-5-20250929": 2967,
+                "claude-sonnet-4-6": 2902,
+                "claude-sonnet-5": 4043
+              }
+            },
+            {
+              "name": "cron_create",
+              "aliases": [
+                "CronCreate"
+              ],
+              "tokens": {
+                "claude-fable-5": 1648,
+                "claude-haiku-4-5-20251001": 1273,
+                "claude-opus-4-5-20251101": 1273,
+                "claude-opus-4-6": 1273,
+                "claude-opus-4-7": 1648,
+                "claude-opus-4-8": 1648,
+                "claude-opus-5": 1648,
+                "claude-sonnet-4-5-20250929": 1273,
+                "claude-sonnet-4-6": 1225,
+                "claude-sonnet-5": 1648
+              }
+            },
+            {
+              "name": "cron_delete",
+              "aliases": [
+                "CronDelete"
+              ],
+              "tokens": {
+                "claude-fable-5": 180,
+                "claude-haiku-4-5-20251001": 131,
+                "claude-opus-4-5-20251101": 131,
+                "claude-opus-4-6": 131,
+                "claude-opus-4-7": 180,
+                "claude-opus-4-8": 180,
+                "claude-opus-5": 180,
+                "claude-sonnet-4-5-20250929": 131,
+                "claude-sonnet-4-6": 131,
+                "claude-sonnet-5": 180
+              }
+            },
+            {
+              "name": "cron_list",
+              "aliases": [
+                "CronList"
+              ],
+              "tokens": {
+                "claude-fable-5": 120,
+                "claude-haiku-4-5-20251001": 90,
+                "claude-opus-4-5-20251101": 90,
+                "claude-opus-4-6": 90,
+                "claude-opus-4-7": 120,
+                "claude-opus-4-8": 120,
+                "claude-opus-5": 120,
+                "claude-sonnet-4-5-20250929": 90,
+                "claude-sonnet-4-6": 90,
+                "claude-sonnet-5": 120
+              }
+            },
+            {
+              "name": "edit",
+              "aliases": [
+                "Edit"
+              ],
+              "tokens": {
+                "claude-fable-5": 348,
+                "claude-haiku-4-5-20251001": 440,
+                "claude-opus-4-5-20251101": 440,
+                "claude-opus-4-6": 440,
+                "claude-opus-4-7": 579,
+                "claude-opus-4-8": 348,
+                "claude-opus-5": 348,
+                "claude-sonnet-4-5-20250929": 440,
+                "claude-sonnet-4-6": 440,
+                "claude-sonnet-5": 579
+              }
+            },
+            {
+              "name": "enter_worktree",
+              "aliases": [
+                "EnterWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 1396,
+                "claude-haiku-4-5-20251001": 1095,
+                "claude-opus-4-5-20251101": 1095,
+                "claude-opus-4-6": 1095,
+                "claude-opus-4-7": 1396,
+                "claude-opus-4-8": 1396,
+                "claude-opus-5": 1396,
+                "claude-sonnet-4-5-20250929": 1095,
+                "claude-sonnet-4-6": 1067,
+                "claude-sonnet-5": 1396
+              }
+            },
+            {
+              "name": "exit_worktree",
+              "aliases": [
+                "ExitWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 913,
+                "claude-haiku-4-5-20251001": 710,
+                "claude-opus-4-5-20251101": 710,
+                "claude-opus-4-6": 710,
+                "claude-opus-4-7": 913,
+                "claude-opus-4-8": 913,
+                "claude-opus-5": 913,
+                "claude-sonnet-4-5-20250929": 710,
+                "claude-sonnet-4-6": 698,
+                "claude-sonnet-5": 913
+              }
+            },
+            {
+              "name": "notebook_edit",
+              "aliases": [
+                "NotebookEdit"
+              ],
+              "tokens": {
+                "claude-fable-5": 632,
+                "claude-haiku-4-5-20251001": 476,
+                "claude-opus-4-5-20251101": 476,
+                "claude-opus-4-6": 476,
+                "claude-opus-4-7": 632,
+                "claude-opus-4-8": 632,
+                "claude-opus-5": 632,
+                "claude-sonnet-4-5-20250929": 476,
+                "claude-sonnet-4-6": 468,
+                "claude-sonnet-5": 632
+              }
+            },
+            {
+              "name": "read",
+              "aliases": [
+                "Read"
+              ],
+              "tokens": {
+                "claude-fable-5": 625,
+                "claude-haiku-4-5-20251001": 696,
+                "claude-opus-4-5-20251101": 696,
+                "claude-opus-4-6": 696,
+                "claude-opus-4-7": 923,
+                "claude-opus-4-8": 625,
+                "claude-opus-5": 625,
+                "claude-sonnet-4-5-20250929": 696,
+                "claude-sonnet-4-6": 692,
+                "claude-sonnet-5": 923
+              }
+            },
+            {
+              "name": "report_findings",
+              "aliases": [
+                "ReportFindings"
+              ],
+              "tokens": {
+                "claude-fable-5": 821,
+                "claude-haiku-4-5-20251001": 609,
+                "claude-opus-4-5-20251101": 609,
+                "claude-opus-4-6": 609,
+                "claude-opus-4-7": 821,
+                "claude-opus-4-8": 821,
+                "claude-opus-5": 821,
+                "claude-sonnet-4-5-20250929": 609,
+                "claude-sonnet-4-6": 604,
+                "claude-sonnet-5": 821
+              }
+            },
+            {
+              "name": "schedule_wakeup",
+              "aliases": [
+                "ScheduleWakeup"
+              ],
+              "tokens": {
+                "claude-fable-5": 1528,
+                "claude-haiku-4-5-20251001": 1144,
+                "claude-opus-4-5-20251101": 1144,
+                "claude-opus-4-6": 1144,
+                "claude-opus-4-7": 1528,
+                "claude-opus-4-8": 1528,
+                "claude-opus-5": 1528,
+                "claude-sonnet-4-5-20250929": 1144,
+                "claude-sonnet-4-6": 1082,
+                "claude-sonnet-5": 1528
+              }
+            },
+            {
+              "name": "send_message",
+              "aliases": [
+                "SendMessage"
+              ],
+              "tokens": {
+                "claude-fable-5": 547,
+                "claude-haiku-4-5-20251001": 433,
+                "claude-opus-4-5-20251101": 433,
+                "claude-opus-4-6": 433,
+                "claude-opus-4-7": 547,
+                "claude-opus-4-8": 547,
+                "claude-opus-5": 547,
+                "claude-sonnet-4-5-20250929": 433,
+                "claude-sonnet-4-6": 421,
+                "claude-sonnet-5": 547
+              }
+            },
+            {
+              "name": "skill",
+              "aliases": [
+                "Skill"
+              ],
+              "tokens": {
+                "claude-fable-5": 623,
+                "claude-haiku-4-5-20251001": 467,
+                "claude-opus-4-5-20251101": 467,
+                "claude-opus-4-6": 467,
+                "claude-opus-4-7": 623,
+                "claude-opus-4-8": 623,
+                "claude-opus-5": 623,
+                "claude-sonnet-4-5-20250929": 467,
+                "claude-sonnet-4-6": 452,
+                "claude-sonnet-5": 623
+              }
+            },
+            {
+              "name": "task_create",
+              "aliases": [
+                "TaskCreate"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 708,
+                "claude-opus-4-5-20251101": 708,
+                "claude-opus-4-6": 708,
+                "claude-opus-4-7": 998,
+                "claude-sonnet-4-5-20250929": 708,
+                "claude-sonnet-4-6": 708
+              }
+            },
+            {
+              "name": "task_get",
+              "aliases": [
+                "TaskGet"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 289,
+                "claude-opus-4-5-20251101": 289,
+                "claude-opus-4-6": 289,
+                "claude-opus-4-7": 391,
+                "claude-sonnet-4-5-20250929": 289,
+                "claude-sonnet-4-6": 289
+              }
+            },
+            {
+              "name": "task_list",
+              "aliases": [
+                "TaskList"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 321,
+                "claude-opus-4-5-20251101": 321,
+                "claude-opus-4-6": 321,
+                "claude-opus-4-7": 445,
+                "claude-sonnet-4-5-20250929": 321,
+                "claude-sonnet-4-6": 321
+              }
+            },
+            {
+              "name": "task_output",
+              "aliases": [
+                "TaskOutput"
+              ],
+              "tokens": {
+                "claude-fable-5": 543,
+                "claude-haiku-4-5-20251001": 421,
+                "claude-opus-4-5-20251101": 421,
+                "claude-opus-4-6": 421,
+                "claude-opus-4-7": 543,
+                "claude-opus-4-8": 543,
+                "claude-opus-5": 543,
+                "claude-sonnet-4-5-20250929": 421,
+                "claude-sonnet-4-6": 409,
+                "claude-sonnet-5": 543
+              }
+            },
+            {
+              "name": "task_stop",
+              "aliases": [
+                "TaskStop"
+              ],
+              "tokens": {
+                "claude-fable-5": 302,
+                "claude-haiku-4-5-20251001": 230,
+                "claude-opus-4-5-20251101": 230,
+                "claude-opus-4-6": 230,
+                "claude-opus-4-7": 302,
+                "claude-opus-4-8": 302,
+                "claude-opus-5": 302,
+                "claude-sonnet-4-5-20250929": 230,
+                "claude-sonnet-4-6": 230,
+                "claude-sonnet-5": 302
+              }
+            },
+            {
+              "name": "task_update",
+              "aliases": [
+                "TaskUpdate"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 1051,
+                "claude-opus-4-5-20251101": 1051,
+                "claude-opus-4-6": 1051,
+                "claude-opus-4-7": 1410,
+                "claude-sonnet-4-5-20250929": 1051,
+                "claude-sonnet-4-6": 1043
+              }
+            },
+            {
+              "name": "web_fetch",
+              "aliases": [
+                "WebFetch"
+              ],
+              "tokens": {
+                "claude-fable-5": 298,
+                "claude-haiku-4-5-20251001": 497,
+                "claude-opus-4-5-20251101": 497,
+                "claude-opus-4-6": 497,
+                "claude-opus-4-7": 699,
+                "claude-opus-4-8": 298,
+                "claude-opus-5": 298,
+                "claude-sonnet-4-5-20250929": 497,
+                "claude-sonnet-4-6": 497,
+                "claude-sonnet-5": 699
+              }
+            },
+            {
+              "name": "web_search",
+              "aliases": [
+                "WebSearch"
+              ],
+              "tokens": {
+                "claude-fable-5": 310,
+                "claude-haiku-4-5-20251001": 500,
+                "claude-opus-4-5-20251101": 500,
+                "claude-opus-4-6": 500,
+                "claude-opus-4-7": 659,
+                "claude-opus-4-8": 310,
+                "claude-opus-5": 310,
+                "claude-sonnet-4-5-20250929": 500,
+                "claude-sonnet-4-6": 500,
+                "claude-sonnet-5": 659
+              }
+            },
+            {
+              "name": "workflow",
+              "aliases": [
+                "Workflow"
+              ],
+              "tokens": {
+                "claude-fable-5": 7900,
+                "claude-haiku-4-5-20251001": 6024,
+                "claude-opus-4-5-20251101": 6024,
+                "claude-opus-4-6": 6024,
+                "claude-opus-4-7": 7900,
+                "claude-opus-4-8": 7900,
+                "claude-opus-5": 7900,
+                "claude-sonnet-4-5-20250929": 6024,
+                "claude-sonnet-4-6": 5645,
+                "claude-sonnet-5": 7900
+              }
+            },
+            {
+              "name": "write",
+              "aliases": [
+                "Write"
+              ],
+              "tokens": {
+                "claude-fable-5": 236,
+                "claude-haiku-4-5-20251001": 277,
+                "claude-opus-4-5-20251101": 277,
+                "claude-opus-4-6": 277,
+                "claude-opus-4-7": 360,
+                "claude-opus-4-8": 236,
+                "claude-opus-5": 236,
+                "claude-sonnet-4-5-20250929": 277,
+                "claude-sonnet-4-6": 273,
+                "claude-sonnet-5": 360
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "agent",
+              "aliases": [
+                "Agent"
+              ],
+              "tokens": {
+                "claude-fable-5": 1049,
+                "claude-haiku-4-5-20251001": 2126,
+                "claude-opus-5": 988,
+                "claude-sonnet-4-5-20250929": 2126,
+                "claude-sonnet-5": 2824
+              }
+            },
+            {
+              "name": "bash",
+              "aliases": [
+                "Bash"
+              ],
+              "tokens": {
+                "claude-fable-5": 1034,
+                "claude-haiku-4-5-20251001": 2967,
+                "claude-opus-5": 1034,
+                "claude-sonnet-4-5-20250929": 2967,
+                "claude-sonnet-5": 4043
+              }
+            },
+            {
+              "name": "cron_create",
+              "aliases": [
+                "CronCreate"
+              ],
+              "tokens": {
+                "claude-fable-5": 1648,
+                "claude-haiku-4-5-20251001": 1273,
+                "claude-opus-5": 1648,
+                "claude-sonnet-4-5-20250929": 1273,
+                "claude-sonnet-5": 1648
+              }
+            },
+            {
+              "name": "cron_delete",
+              "aliases": [
+                "CronDelete"
+              ],
+              "tokens": {
+                "claude-fable-5": 180,
+                "claude-haiku-4-5-20251001": 131,
+                "claude-opus-5": 180,
+                "claude-sonnet-4-5-20250929": 131,
+                "claude-sonnet-5": 180
+              }
+            },
+            {
+              "name": "cron_list",
+              "aliases": [
+                "CronList"
+              ],
+              "tokens": {
+                "claude-fable-5": 120,
+                "claude-haiku-4-5-20251001": 90,
+                "claude-opus-5": 120,
+                "claude-sonnet-4-5-20250929": 90,
+                "claude-sonnet-5": 120
+              }
+            },
+            {
+              "name": "edit",
+              "aliases": [
+                "Edit"
+              ],
+              "tokens": {
+                "claude-fable-5": 348,
+                "claude-haiku-4-5-20251001": 440,
+                "claude-opus-5": 348,
+                "claude-sonnet-4-5-20250929": 440,
+                "claude-sonnet-5": 579
+              }
+            },
+            {
+              "name": "enter_worktree",
+              "aliases": [
+                "EnterWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 1396,
+                "claude-haiku-4-5-20251001": 1095,
+                "claude-opus-5": 1396,
+                "claude-sonnet-4-5-20250929": 1095,
+                "claude-sonnet-5": 1396
+              }
+            },
+            {
+              "name": "exit_worktree",
+              "aliases": [
+                "ExitWorktree"
+              ],
+              "tokens": {
+                "claude-fable-5": 913,
+                "claude-haiku-4-5-20251001": 710,
+                "claude-opus-5": 913,
+                "claude-sonnet-4-5-20250929": 710,
+                "claude-sonnet-5": 913
+              }
+            },
+            {
+              "name": "notebook_edit",
+              "aliases": [
+                "NotebookEdit"
+              ],
+              "tokens": {
+                "claude-fable-5": 632,
+                "claude-haiku-4-5-20251001": 476,
+                "claude-opus-5": 632,
+                "claude-sonnet-4-5-20250929": 476,
+                "claude-sonnet-5": 632
+              }
+            },
+            {
+              "name": "read",
+              "aliases": [
+                "Read"
+              ],
+              "tokens": {
+                "claude-fable-5": 625,
+                "claude-haiku-4-5-20251001": 696,
+                "claude-opus-5": 625,
+                "claude-sonnet-4-5-20250929": 696,
+                "claude-sonnet-5": 923
+              }
+            },
+            {
+              "name": "report_findings",
+              "aliases": [
+                "ReportFindings"
+              ],
+              "tokens": {
+                "claude-fable-5": 821,
+                "claude-haiku-4-5-20251001": 609,
+                "claude-opus-5": 821,
+                "claude-sonnet-4-5-20250929": 609,
+                "claude-sonnet-5": 821
+              }
+            },
+            {
+              "name": "schedule_wakeup",
+              "aliases": [
+                "ScheduleWakeup"
+              ],
+              "tokens": {
+                "claude-fable-5": 1820,
+                "claude-haiku-4-5-20251001": 1356,
+                "claude-opus-5": 1820,
+                "claude-sonnet-4-5-20250929": 1356,
+                "claude-sonnet-5": 1820
+              }
+            },
+            {
+              "name": "send_message",
+              "aliases": [
+                "SendMessage"
+              ],
+              "tokens": {
+                "claude-fable-5": 577,
+                "claude-haiku-4-5-20251001": 453,
+                "claude-opus-5": 577,
+                "claude-sonnet-4-5-20250929": 453,
+                "claude-sonnet-5": 577
+              }
+            },
+            {
+              "name": "skill",
+              "aliases": [
+                "Skill"
+              ],
+              "tokens": {
+                "claude-fable-5": 623,
+                "claude-haiku-4-5-20251001": 467,
+                "claude-opus-5": 623,
+                "claude-sonnet-4-5-20250929": 467,
+                "claude-sonnet-5": 623
+              }
+            },
+            {
+              "name": "task_create",
+              "aliases": [
+                "TaskCreate"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 708,
+                "claude-sonnet-4-5-20250929": 708
+              }
+            },
+            {
+              "name": "task_get",
+              "aliases": [
+                "TaskGet"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 289,
+                "claude-sonnet-4-5-20250929": 289
+              }
+            },
+            {
+              "name": "task_list",
+              "aliases": [
+                "TaskList"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 321,
+                "claude-sonnet-4-5-20250929": 321
+              }
+            },
+            {
+              "name": "task_output",
+              "aliases": [
+                "TaskOutput"
+              ],
+              "tokens": {
+                "claude-fable-5": 543,
+                "claude-haiku-4-5-20251001": 421,
+                "claude-opus-5": 543,
+                "claude-sonnet-4-5-20250929": 421,
+                "claude-sonnet-5": 543
+              }
+            },
+            {
+              "name": "task_stop",
+              "aliases": [
+                "TaskStop"
+              ],
+              "tokens": {
+                "claude-fable-5": 302,
+                "claude-haiku-4-5-20251001": 230,
+                "claude-opus-5": 302,
+                "claude-sonnet-4-5-20250929": 230,
+                "claude-sonnet-5": 302
+              }
+            },
+            {
+              "name": "task_update",
+              "aliases": [
+                "TaskUpdate"
+              ],
+              "tokens": {
+                "claude-haiku-4-5-20251001": 1051,
+                "claude-sonnet-4-5-20250929": 1051
+              }
+            },
+            {
+              "name": "web_fetch",
+              "aliases": [
+                "WebFetch"
+              ],
+              "tokens": {
+                "claude-fable-5": 298,
+                "claude-haiku-4-5-20251001": 497,
+                "claude-opus-5": 298,
+                "claude-sonnet-4-5-20250929": 497,
+                "claude-sonnet-5": 699
+              }
+            },
+            {
+              "name": "web_search",
+              "aliases": [
+                "WebSearch"
+              ],
+              "tokens": {
+                "claude-fable-5": 310,
+                "claude-haiku-4-5-20251001": 500,
+                "claude-opus-5": 310,
+                "claude-sonnet-4-5-20250929": 500,
+                "claude-sonnet-5": 659
+              }
+            },
+            {
+              "name": "workflow",
+              "aliases": [
+                "Workflow"
+              ],
+              "tokens": {
+                "claude-fable-5": 7900,
+                "claude-haiku-4-5-20251001": 6024,
+                "claude-opus-5": 7900,
+                "claude-sonnet-4-5-20250929": 6024,
+                "claude-sonnet-5": 7900
+              }
+            },
+            {
+              "name": "write",
+              "aliases": [
+                "Write"
+              ],
+              "tokens": {
+                "claude-fable-5": 236,
+                "claude-haiku-4-5-20251001": 277,
+                "claude-opus-5": 236,
+                "claude-sonnet-4-5-20250929": 277,
+                "claude-sonnet-5": 360
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "codex": {
+      "versions": {
+        "0.146.1": 0,
+        "0.147.0": 1,
+        "0.149.1": 2
+      },
+      "surfaces": [
+        {
+          "tools": [
+            {
+              "name": "apply_patch",
+              "aliases": [
+                "apply_patch"
+              ],
+              "tokens": {
+                "gpt-5.4": 270
+              }
+            },
+            {
+              "name": "exec_command",
+              "aliases": [
+                "exec_command"
+              ],
+              "tokens": {
+                "gpt-5.4": 261
+              }
+            },
+            {
+              "name": "request_user_input",
+              "aliases": [
+                "request_user_input"
+              ],
+              "tokens": {
+                "gpt-5.4": 316
+              }
+            },
+            {
+              "name": "tool_search",
+              "aliases": [
+                "tool_search"
+              ],
+              "tokens": {
+                "gpt-5.4": 157
+              }
+            },
+            {
+              "name": "update_plan",
+              "aliases": [
+                "update_plan"
+              ],
+              "tokens": {
+                "gpt-5.4": 95
+              }
+            },
+            {
+              "name": "view_image",
+              "aliases": [
+                "view_image"
+              ],
+              "tokens": {
+                "gpt-5.4": 73
+              }
+            },
+            {
+              "name": "web_search",
+              "aliases": [
+                "web_search"
+              ],
+              "tokens": {
+                "gpt-5.4": 4436
+              }
+            },
+            {
+              "name": "write_stdin",
+              "aliases": [
+                "write_stdin"
+              ],
+              "tokens": {
+                "gpt-5.4": 122
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "apply_patch",
+              "aliases": [
+                "apply_patch"
+              ],
+              "tokens": {
+                "gpt-5.4": 270
+              }
+            },
+            {
+              "name": "exec_command",
+              "aliases": [
+                "exec_command"
+              ],
+              "tokens": {
+                "gpt-5.4": 261
+              }
+            },
+            {
+              "name": "request_user_input",
+              "aliases": [
+                "request_user_input"
+              ],
+              "tokens": {
+                "gpt-5.4": 186
+              }
+            },
+            {
+              "name": "tool_search",
+              "aliases": [
+                "tool_search"
+              ],
+              "tokens": {
+                "gpt-5.4": 157
+              }
+            },
+            {
+              "name": "update_plan",
+              "aliases": [
+                "update_plan"
+              ],
+              "tokens": {
+                "gpt-5.4": 95
+              }
+            },
+            {
+              "name": "view_image",
+              "aliases": [
+                "view_image"
+              ],
+              "tokens": {
+                "gpt-5.4": 73
+              }
+            },
+            {
+              "name": "web_search",
+              "aliases": [
+                "web_search"
+              ],
+              "tokens": {
+                "gpt-5.4": 4436
+              }
+            },
+            {
+              "name": "write_stdin",
+              "aliases": [
+                "write_stdin"
+              ],
+              "tokens": {
+                "gpt-5.4": 122
+              }
+            }
+          ]
+        },
+        {
+          "tools": [
+            {
+              "name": "apply_patch",
+              "aliases": [
+                "apply_patch"
+              ],
+              "tokens": {
+                "gpt-5.4": 270,
+                "gpt-5.4-mini": 270,
+                "gpt-5.5": 270
+              }
+            },
+            {
+              "name": "collaboration_followup_task",
+              "aliases": [
+                "collaboration.followup_task"
+              ],
+              "tokens": {
+                "gpt-5.6-sol": 93,
+                "gpt-5.6-terra": 93
+              }
+            },
+            {
+              "name": "collaboration_interrupt_agent",
+              "aliases": [
+                "collaboration.interrupt_agent"
+              ],
+              "tokens": {
+                "gpt-5.6-sol": 55,
+                "gpt-5.6-terra": 55
+              }
+            },
+            {
+              "name": "collaboration_list_agents",
+              "aliases": [
+                "collaboration.list_agents"
+              ],
+              "tokens": {
+                "gpt-5.6-sol": 51,
+                "gpt-5.6-terra": 51
+              }
+            },
+            {
+              "name": "collaboration_send_message",
+              "aliases": [
+                "collaboration.send_message"
+              ],
+              "tokens": {
+                "gpt-5.6-sol": 62,
+                "gpt-5.6-terra": 62
+              }
+            },
+            {
+              "name": "collaboration_spawn_agent",
+              "aliases": [
+                "collaboration.spawn_agent"
+              ],
+              "tokens": {
+                "gpt-5.6-sol": 599,
+                "gpt-5.6-terra": 599
+              }
+            },
+            {
+              "name": "collaboration_wait_agent",
+              "aliases": [
+                "collaboration.wait_agent"
+              ],
+              "tokens": {
+                "gpt-5.6-sol": 111,
+                "gpt-5.6-terra": 111
+              }
+            },
+            {
+              "name": "exec_command",
+              "aliases": [
+                "exec_command"
+              ],
+              "tokens": {
+                "gpt-5.4": 261,
+                "gpt-5.4-mini": 261,
+                "gpt-5.5": 261
+              }
+            },
+            {
+              "name": "functions_exec",
+              "aliases": [
+                "functions.exec"
+              ],
+              "tokens": {
+                "gpt-5.6-luna": 1946,
+                "gpt-5.6-sol": 1896,
+                "gpt-5.6-terra": 1896
+              }
+            },
+            {
+              "name": "functions_request_user_input",
+              "aliases": [
+                "functions.request_user_input"
+              ],
+              "tokens": {
+                "gpt-5.6-luna": 186,
+                "gpt-5.6-sol": 186,
+                "gpt-5.6-terra": 186
+              }
+            },
+            {
+              "name": "functions_wait",
+              "aliases": [
+                "functions.wait"
+              ],
+              "tokens": {
+                "gpt-5.6-luna": 262,
+                "gpt-5.6-sol": 262,
+                "gpt-5.6-terra": 262
+              }
+            },
+            {
+              "name": "request_user_input",
+              "aliases": [
+                "request_user_input"
+              ],
+              "tokens": {
+                "gpt-5.4": 186,
+                "gpt-5.4-mini": 186,
+                "gpt-5.5": 186
+              }
+            },
+            {
+              "name": "tool_search",
+              "aliases": [
+                "tool_search"
+              ],
+              "tokens": {
+                "gpt-5.4": 157,
+                "gpt-5.4-mini": 157,
+                "gpt-5.5": 157
+              }
+            },
+            {
+              "name": "update_plan",
+              "aliases": [
+                "update_plan"
+              ],
+              "tokens": {
+                "gpt-5.4": 95,
+                "gpt-5.4-mini": 95,
+                "gpt-5.5": 95
+              }
+            },
+            {
+              "name": "view_image",
+              "aliases": [
+                "view_image"
+              ],
+              "tokens": {
+                "gpt-5.4": 73,
+                "gpt-5.4-mini": 73,
+                "gpt-5.5": 73
+              }
+            },
+            {
+              "name": "web_search",
+              "aliases": [
+                "web_search"
+              ],
+              "tokens": {
+                "gpt-5.4": 4436,
+                "gpt-5.4-mini": 4436,
+                "gpt-5.5": 4436
+              }
+            },
+            {
+              "name": "write_stdin",
+              "aliases": [
+                "write_stdin"
+              ],
+              "tokens": {
+                "gpt-5.4": 122,
+                "gpt-5.4-mini": 122,
+                "gpt-5.5": 122
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

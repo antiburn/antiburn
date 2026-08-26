@@ -11,6 +11,9 @@ importers:
       aislop:
         specifier: 0.14.1
         version: 0.14.1(@types/react@19.2.18)
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
   apps/desktop:
     dependencies:
