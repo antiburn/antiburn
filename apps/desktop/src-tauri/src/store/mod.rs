@@ -34,9 +34,10 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::dto::DeferredPermissionDir;
 
@@ -78,6 +79,21 @@ fn database_file() -> &'static str {
 /// Path of the database inside `data_dir`.
 pub fn database_path(data_dir: &Path) -> PathBuf {
     data_dir.join(database_file())
+}
+
+/// Opens a second connection for reads only. It never writes.
+pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connection> {
+    let path = database_path(data_dir);
+    let connection = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("failed to open {} for reporting", path.display()))?;
+    connection.busy_timeout(busy_timeout)?;
+    connection.pragma_update(None, "query_only", true)?;
+    Ok(connection)
 }
 
 /// The app's local database.

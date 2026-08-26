@@ -81,3 +81,19 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Why deferred:** The read occurs upstream of the CH-005 analysis boundary. Removing it requires a discovery source contract change.
 - **Kind:** `deferred`
 - **Disposition:** `file-issue` after CH-013 measures the affected source volume.
+
+## Unsupported evidence publication trigger
+
+- **What was found:** The first production writer of `PublishedEvidence::Unsupported` needs the detector prerequisite sets before it can classify a provider.
+- **Found by seam:** GH-70 seam 0016.
+- **Why deferred:** CH-010 reads unsupported rows but does not own evidence publication policy.
+- **Kind:** `deferred`
+- **Disposition:** `fold-into-later-seam` for CH-011.
+
+## Report scope for hosts with WSL sessions
+
+- **What was found:** The report entry point accepts one environment key, so CH-012 must decide whether a host report combines native and WSL scopes.
+- **Found by seam:** GH-70 seam 0016.
+- **Why deferred:** CH-012 owns the IPC request and the reader-facing scope.
+- **Kind:** `enhancement`
+- **Disposition:** `fold-into-later-seam` for CH-012.

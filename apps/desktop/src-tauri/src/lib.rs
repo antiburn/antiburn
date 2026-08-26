@@ -61,6 +61,7 @@ mod dto;
 mod export;
 mod global_click;
 mod hud;
+mod insights_report;
 mod insights_worker;
 mod notifications;
 mod nudges;
@@ -76,6 +77,9 @@ mod store;
 // This bridge keeps CH-007 evidence readers reachable until the evidence pane calls them.
 // TODO @agent: CH-012 will remove this re-export.
 pub use store::Store;
+// This bridge keeps the CH-010 report reducer reachable until the Insights pane calls it.
+// TODO @agent: CH-012 will remove this re-export.
+pub use insights_report::{ReportRequest, reduce_report};
 mod tray;
 mod tray_title;
 mod updates;
