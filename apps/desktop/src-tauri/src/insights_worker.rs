@@ -290,8 +290,8 @@ pub(crate) async fn process_next(
         return Ok(true);
     };
     pass.analysis.analyzed_generation = claim.source_generation;
-    let published =
-        pass.outcome == PassOutcome::Published && apply_outcome(store, &claim, &pass, clock())?;
+    let applied = apply_outcome(store, &claim, &pass, clock())?;
+    let published = applied && pass.outcome == PassOutcome::Published;
     if published && let Some(entry) = completion_entry(store, &claim.key, clock()) {
         announce(entry);
     }
@@ -1025,6 +1025,114 @@ mod tests {
             .unwrap()
         );
         assert!(announced.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_changed_source_backs_off_through_the_worker() {
+        let store = store();
+        store
+            .upsert_sessions(
+                &[record("worker-changed")],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let runner = |_: &SessionRecord, _: PassSignal| {
+            Box::pin(async { failed_pass(PassOutcome::SourceChanged) }) as PassFuture
+        };
+
+        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+            .await
+            .unwrap();
+        let key = SessionKey::new("native", "claude-code", "worker-changed");
+        let row = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(row.status, EvidenceStatus::Pending);
+        assert_eq!(row.retry_count, 1);
+        assert_eq!(row.next_attempt_at_epoch, Some(100 + BACKOFF_BASE_SECS));
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_pass_is_terminal_through_the_worker() {
+        let store = store();
+        store
+            .upsert_sessions(
+                &[record("worker-unsupported")],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let runner = |_: &SessionRecord, _: PassSignal| {
+            Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
+        };
+
+        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+            .await
+            .unwrap();
+        let key = SessionKey::new("native", "claude-code", "worker-unsupported");
+        let row = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(row.status, EvidenceStatus::Failed);
+        assert_eq!(row.next_attempt_at_epoch, None);
+    }
+
+    #[tokio::test]
+    async fn a_missing_source_stops_being_claimed_through_the_worker() {
+        let store = store();
+        store
+            .upsert_sessions(
+                &[record("worker-missing")],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let runner = |_: &SessionRecord, _: PassSignal| {
+            Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
+        };
+
+        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+            .await
+            .unwrap();
+        let key = SessionKey::new("native", "claude-code", "worker-missing");
+        let row = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(row.status, EvidenceStatus::Failed);
+        assert!(
+            store
+                .claim_next_evidence(&crate::agents::evidence_cohort(), 401, LEASE_SECS)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
+        let store = store();
+        store
+            .upsert_sessions(
+                &[record("worker-unreadable")],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let clock = AtomicI64::new(100);
+        let runner = |_: &SessionRecord, _: PassSignal| {
+            Box::pin(async { failed_pass(PassOutcome::Unreadable) }) as PassFuture
+        };
+        let key = SessionKey::new("native", "claude-code", "worker-unreadable");
+
+        for attempt in 0..=MAX_EVIDENCE_ATTEMPTS {
+            process_next(
+                &store,
+                &WorkerHandle::default(),
+                &|| clock.load(Ordering::SeqCst),
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap();
+            let row = store.evidence(&key).unwrap().unwrap();
+            if attempt == MAX_EVIDENCE_ATTEMPTS {
+                assert_eq!(row.status, EvidenceStatus::Failed);
+                assert_eq!(row.next_attempt_at_epoch, None);
+            } else {
+                assert_eq!(row.status, EvidenceStatus::Pending);
+                clock.store(row.next_attempt_at_epoch.unwrap(), Ordering::SeqCst);
+            }
+        }
     }
 
     #[test]
