@@ -297,6 +297,13 @@ impl EfficiencyReportAccumulator {
             self.actively_growing += 1;
         }
 
+        // Clone identity strings once to avoid per-detector allocations. The bounded
+        // examples use the shared identity for every detector gap.
+        let bounded_example = SessionExample {
+            agent: evidence.identity.agent.clone(),
+            session_id: evidence.identity.session_id.clone(),
+        };
+
         for detector in DetectorId::ALL {
             let requirements = requirements(detector);
             let capabilities_hold = requirements.capabilities.iter().all(|clause| {
@@ -325,10 +332,7 @@ impl EfficiencyReportAccumulator {
             *self.capability_gaps.entry(detector).or_default() += 1;
             let examples = self.capability_gap_examples.entry(detector).or_default();
             if examples.len() < MAX_EXAMPLES_PER_DETECTOR {
-                examples.push(SessionExample {
-                    agent: evidence.identity.agent.clone(),
-                    session_id: evidence.identity.session_id.clone(),
-                });
+                examples.push(bounded_example.clone());
             }
         }
     }
