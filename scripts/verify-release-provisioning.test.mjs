@@ -63,7 +63,7 @@ test("the release workflow validates and verifies the profile-backed entitlement
   assert.match(workflow, /ExpirationDate/);
   assert.match(
     workflow,
-    /TAURI_SIGNING_CONFIG=apps\/desktop\/src-tauri\/tauri\.release\.conf\.json/,
+    /TAURI_SIGNING_CONFIG=\$\{GITHUB_WORKSPACE\}\/apps\/desktop\/src-tauri\/tauri\.release\.conf\.json/,
   );
   assert.match(
     workflow,
