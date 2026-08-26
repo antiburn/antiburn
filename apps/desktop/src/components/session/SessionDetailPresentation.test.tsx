@@ -491,7 +491,7 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(screen.getByText("Context")).toBeTruthy()
   })
 
-  it("adds the Skills and MCPs card when the session has initial context", () => {
+  it("adds the Skills, MCPs and tools card when the session has initial context", () => {
     const withContext = summary({
       sessions: [
         metrics({
@@ -509,11 +509,11 @@ describe("SessionDetailPresentation — session facts", () => {
       ],
     })
     const { unmount } = view({ summary: withContext })
-    expect(screen.getByText("Skills and MCPs")).toBeTruthy()
+    expect(screen.getByText("Skills, MCPs and tools")).toBeTruthy()
     unmount()
 
     view({ summary: summary() })
-    expect(screen.queryByText("Skills and MCPs")).toBeNull()
+    expect(screen.queryByText("Skills, MCPs and tools")).toBeNull()
   })
 })
 

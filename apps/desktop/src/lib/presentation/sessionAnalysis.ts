@@ -342,14 +342,19 @@ export function timeAxisTicks(
 export interface SkillMcpRow {
   key: string
   /** Which kind of source this is. */
-  kind: "skill" | "mcp"
-  /** The skill or MCP server name, without the kind prefix. */
+  kind: "skill" | "mcp" | "tool"
+  /** The skill, MCP server, or tool name, without the kind prefix. */
   name: string
   tokenCount: number
   /** How many times the session used this source after it loaded. */
   useCount: number
   /** Where the skill or MCP server is installed. */
   origin: SourceOrigin
+  /**
+   * True for a tool row the harness deferred this session: it sent only the
+   * tool's name, not its definition, so `tokenCount` is a small estimate.
+   */
+  deferred?: boolean
 }
 
 export interface SkillMcpUsage {
@@ -361,10 +366,15 @@ export interface SkillMcpUsage {
   rows: SkillMcpRow[]
 }
 
-/** Display word for a row's status: `"Unused"`, `"Used"`, or `"Used ×N"` when the session used it more than once. */
-export function skillMcpStatusLabel(row: Pick<SkillMcpRow, "useCount">): string {
-  if (row.useCount <= 0) return "Unused"
-  return row.useCount > 1 ? `Used ×${row.useCount}` : "Used"
+/**
+ * Display word for a row's status: `"Unused"`, `"Deferred"` for an unused
+ * deferred tool, `"Used"`, or `"Used ×N"` when the session used it more than
+ * once.
+ */
+export function skillMcpStatusLabel(row: Pick<SkillMcpRow, "useCount" | "deferred">): string {
+  if (row.useCount > 0) return row.useCount > 1 ? `Used ×${row.useCount}` : "Used"
+  if (row.deferred) return "Deferred"
+  return "Unused"
 }
 
 /** Display word for a row's install origin, or `null` when the origin is unknown. */
@@ -383,24 +393,35 @@ export function skillMcpOriginLabel(origin: SourceOrigin): string | null {
   }
 }
 
+/** Row kind for each engine source dimension. */
+function skillMcpKind(source: InitialContextBreakdown["sources"][number]["source"]) {
+  if (source === "skill_instructions") return "skill" as const
+  if (source === "mcp_instructions") return "mcp" as const
+  return "tool" as const
+}
+
 /**
- * Skill and MCP rows from the initial-context breakdown, sorted by token
- * contribution descending. A skill or an MCP server loads its instructions
- * before the first response; a row with `useCount` 0 spent that space
- * without the session ever calling on it.
+ * Skill, MCP, and built-in tool rows from the initial-context breakdown,
+ * sorted by token contribution descending, then by name. A skill or an MCP
+ * server loads its instructions before the first response, and a harness
+ * tool definition loads the same way; a row with `useCount` 0 spent that
+ * space without the session ever calling on it. A deferred tool's estimate
+ * still counts as wasted when unused — the harness paid for the name even
+ * though the model never asked for the full definition.
  */
 export function skillMcpUsage(breakdown: InitialContextBreakdown): SkillMcpUsage {
   const rows = breakdown.sources
     .filter((row): row is typeof row & { sourceName: string } => row.sourceName != null)
     .map((row) => ({
       key: `${row.source}:${row.sourceName}`,
-      kind: row.source === "skill_instructions" ? ("skill" as const) : ("mcp" as const),
+      kind: skillMcpKind(row.source),
       name: row.sourceName,
       tokenCount: row.tokenCount,
       useCount: row.useCount ?? 0,
       origin: row.origin ?? "unknown",
+      ...(row.deferred !== undefined ? { deferred: row.deferred } : {}),
     }))
-    .sort((a, b) => b.tokenCount - a.tokenCount)
+    .sort((a, b) => b.tokenCount - a.tokenCount || a.name.localeCompare(b.name))
 
   return {
     totalTokens: rows.reduce((acc, r) => acc + r.tokenCount, 0),

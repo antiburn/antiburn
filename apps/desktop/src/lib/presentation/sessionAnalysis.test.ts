@@ -498,6 +498,57 @@ describe("skillMcpUsage", () => {
     expect(usage.totalTokens).toBe(0)
     expect(usage.rows).toEqual([])
   })
+
+  it("maps a builtin_tool source to a tool row and carries deferred through", () => {
+    const ic = breakdown([
+      { source: "skill_instructions", sourceName: "research", tokenCount: 500, useCount: 1 },
+      {
+        source: "builtin_tool",
+        sourceName: "Bash",
+        tokenCount: 300,
+        useCount: 2,
+        origin: "bundled",
+      },
+      {
+        source: "builtin_tool",
+        sourceName: "Read",
+        tokenCount: 20,
+        useCount: 0,
+        origin: "bundled",
+        deferred: true,
+      },
+    ])
+    const usage = skillMcpUsage(ic)
+    expect(usage.rows.map((r) => [r.kind, r.name, r.deferred])).toEqual([
+      ["skill", "research", undefined],
+      ["tool", "Bash", undefined],
+      ["tool", "Read", true],
+    ])
+  })
+
+  it("counts a deferred unused tool's estimate toward wasted tokens", () => {
+    const ic = breakdown([
+      {
+        source: "builtin_tool",
+        sourceName: "Read",
+        tokenCount: 20,
+        useCount: 0,
+        origin: "bundled",
+        deferred: true,
+      },
+    ])
+    const usage = skillMcpUsage(ic)
+    expect(usage.wastedTokens).toBe(20)
+  })
+
+  it("breaks a token-count tie by name", () => {
+    const ic = breakdown([
+      { source: "skill_instructions", sourceName: "zeta", tokenCount: 100 },
+      { source: "mcp_instructions", sourceName: "alpha", tokenCount: 100 },
+    ])
+    const usage = skillMcpUsage(ic)
+    expect(usage.rows.map((r) => r.name)).toEqual(["alpha", "zeta"])
+  })
 })
 
 describe("skillMcpStatusLabel", () => {
@@ -505,6 +556,11 @@ describe("skillMcpStatusLabel", () => {
     expect(skillMcpStatusLabel({ useCount: 0 })).toBe("Unused")
     expect(skillMcpStatusLabel({ useCount: 1 })).toBe("Used")
     expect(skillMcpStatusLabel({ useCount: 3 })).toBe("Used ×3")
+  })
+
+  it("labels an unused deferred tool 'Deferred', but a used one by its use count", () => {
+    expect(skillMcpStatusLabel({ useCount: 0, deferred: true })).toBe("Deferred")
+    expect(skillMcpStatusLabel({ useCount: 2, deferred: true })).toBe("Used ×2")
   })
 })
 
