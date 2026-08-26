@@ -10,9 +10,29 @@ use crate::analysis::model::{
     CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCategory,
 };
 use crate::analysis::{
-    NormalizedRecord, PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector,
-    SessionInput, SessionSummary, VisitOutcome, adapter_for, analyze_sources, normalize_source,
+    CompositeSink, EvidenceSource, EvidenceValue, NormalizedRecord, PartialReason, RawSource,
+    RecordCoverage, RecordSink, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
+    SessionInput, SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind,
+    VisitOutcome, adapter_for, analyze_sources, normalize_source,
 };
+
+fn claude_evidence(jsonl: &str) -> SessionEvidence {
+    let input = jsonl_input("claude", jsonl);
+    let mut composite = CompositeSink::new(
+        SessionMetricsAccumulator::new("claude", "s"),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: "s".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::claude(),
+        }),
+    );
+    let outcome = adapter_for("claude")
+        .visit(&input, &mut composite)
+        .expect("Claude source must parse");
+    composite.observe_source_outcome(outcome);
+    composite.evidence().expect("evidence must publish")
+}
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
     SessionInput {
@@ -20,6 +40,70 @@ fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
         session_id: "s".into(),
         source: RawSource::Jsonl(jsonl.into()),
     }
+}
+
+#[test]
+fn claude_capabilities_are_false_for_every_unevidenced_signal() {
+    let evidence = claude_evidence(concat!(
+        r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- orbit: Synthetic description."}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Task","input":{"description":"not retained","prompt":"not retained"}}]}}"#,
+    ));
+    let capabilities = evidence.capabilities;
+    assert!(!capabilities.tool_definitions);
+    assert!(!capabilities.service_tier);
+    assert!(!capabilities.subagent_models);
+    assert!(!capabilities.thread_identity);
+    assert!(!capabilities.quota_incidents);
+    assert!(!capabilities.harness_version);
+    assert!(matches!(
+        evidence.context_sources,
+        EvidenceValue::Complete(ref sources)
+            if matches!(sources.tool_definitions, EvidenceValue::Unsupported)
+                && sources.skills.values().all(|source| matches!(source.origin, EvidenceValue::Unsupported))
+    ));
+    assert!(matches!(
+        evidence.models,
+        EvidenceValue::Complete(ref models)
+            if matches!(models.service_tiers, EvidenceValue::Unsupported)
+    ));
+    assert!(matches!(
+        evidence.provenance.harness_version,
+        EvidenceValue::Unsupported
+    ));
+    assert!(matches!(
+        evidence.quota_incidents,
+        EvidenceValue::Unsupported
+    ));
+    assert!(matches!(
+        evidence.subagents,
+        EvidenceValue::Complete(ref subagents)
+            if subagents.children.iter().all(|child| matches!(child.child_model, EvidenceValue::Unsupported))
+    ));
+    let EvidenceValue::Complete(cache) = evidence.cache else {
+        panic!("cache must be complete");
+    };
+    assert!(matches!(cache.previous_turn, EvidenceValue::Unsupported));
+    assert!(matches!(
+        cache.provider_eviction,
+        EvidenceValue::Unsupported
+    ));
+}
+
+#[test]
+fn an_unknown_model_leaves_by_model_unattributed_not_invented() {
+    let evidence = claude_evidence(
+        r#"{"type":"assistant","timestamp":1,"message":{"role":"assistant","model":"<synthetic>","usage":{"input_tokens":1},"content":[]}}"#,
+    );
+    let EvidenceValue::Partial {
+        observed: models,
+        reason: crate::analysis::CoverageReason::AttributionIncomplete,
+    } = evidence.models
+    else {
+        panic!("unknown model must be partial");
+    };
+    assert_eq!(models.unattributed_turns, 1);
+    assert!(models.by_model.is_empty());
 }
 
 #[derive(Default)]

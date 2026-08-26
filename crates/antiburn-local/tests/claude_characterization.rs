@@ -47,6 +47,9 @@ fn fixture(name: &str) -> &'static str {
         "reasoning_and_fast_mode" => {
             include_str!("fixtures/claude_characterization/reasoning_and_fast_mode.jsonl")
         }
+        "delegated_turns" => {
+            include_str!("fixtures/claude_characterization/delegated_turns.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -331,6 +334,38 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     };
     assert!(matches!(
         sources.tool_definitions,
+        EvidenceValue::Unsupported
+    ));
+}
+
+#[test]
+fn quota_incidents_are_unsupported_for_claude() {
+    let evidence = stream_composite(&input("delegated_turns"))
+        .evidence()
+        .expect("evidence must publish");
+    assert!(!evidence.capabilities.quota_incidents);
+    assert!(matches!(
+        evidence.quota_incidents,
+        EvidenceValue::Unsupported
+    ));
+}
+
+#[test]
+fn provider_eviction_is_unsupported_not_estimated() {
+    let evidence = stream_composite(&input("compaction_with_cache_rehydration"))
+        .evidence()
+        .expect("evidence must publish");
+    let cache = match evidence.cache {
+        EvidenceValue::Complete(cache)
+        | EvidenceValue::Partial {
+            observed: cache, ..
+        } => cache,
+        EvidenceValue::Unsupported => panic!("Claude cache evidence must be supported"),
+        #[cfg(debug_assertions)]
+        EvidenceValue::Unimplemented => panic!("cache must be implemented"),
+    };
+    assert!(matches!(
+        cache.provider_eviction,
         EvidenceValue::Unsupported
     ));
 }

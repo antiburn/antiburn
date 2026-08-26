@@ -4,24 +4,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(debug_assertions)]
-use crate::analysis::evidence::UnfinishedGroup;
 use crate::analysis::evidence::{
-    ContextEvidence, ContextSourceEvidence, CoverageReason, DepthExample, EligibilityEvidence,
-    EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource, MAX_CONTEXT_SOURCES,
-    MAX_EVIDENCE_EXAMPLES, MAX_MODELS, MAX_SUBAGENT_CHILDREN, MAX_TIER_LABELS, MAX_TOOL_NAMES,
-    MAX_UNRECOGNIZED_TYPES, ModelEvidence, ModelTokens, OrderingObservation, ParseDiagnostics,
-    RelationConfidence, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
-    SessionTimeRange, SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild,
-    SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts, cap_string,
-    insert_diagnostic_field,
+    CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
+    ContextSourceEvidence, CoverageReason, DepthExample, EligibilityEvidence, EvidenceCoverage,
+    EvidenceSource, EvidenceValue, LoadedSource, MAX_COMPACTION_BOUNDARIES, MAX_CONTEXT_SOURCES,
+    MAX_EVIDENCE_EXAMPLES, MAX_MODEL_TRANSITIONS, MAX_MODELS, MAX_SUBAGENT_CHILDREN,
+    MAX_TIER_LABELS, MAX_TOOL_NAMES, MAX_UNRECOGNIZED_TYPES, ModelEvidence, ModelTokens,
+    ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence, SessionEvidence,
+    SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SourceAcceptance,
+    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
+    ToolEvidence, ToolUse, TurnCounts, cap_string, insert_diagnostic_field,
 };
 use crate::analysis::interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RecordSink, SessionSummary,
     VisitOutcome,
 };
 use crate::analysis::metrics_sink::SessionMetricsAccumulator;
-use crate::analysis::model::{EventSource, NormalizedEvent, Role};
+use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
 use crate::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionMetrics,
 };
@@ -61,6 +60,18 @@ pub struct SessionEvidenceAccumulator {
     subagent_children: Vec<SubagentChild>,
     subagent_examples: Vec<SubagentExample>,
     subagents_cap_exceeded: bool,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    fresh_input_tokens: u64,
+    model_transitions: Vec<ModelTransition>,
+    active_model: Option<String>,
+    previous_turn_ts: Option<i64>,
+    longest_idle_gap_ms: i64,
+    idle_gap_ms_total: i64,
+    manual_compactions: u64,
+    cache_cap_exceeded: bool,
+    compaction_boundaries: Vec<CompactionBoundary>,
+    compactions_cap_exceeded: bool,
     summary_observed: bool,
 }
 
@@ -105,6 +116,18 @@ impl SessionEvidenceAccumulator {
             subagent_children: Vec::new(),
             subagent_examples: Vec::new(),
             subagents_cap_exceeded: false,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            fresh_input_tokens: 0,
+            model_transitions: Vec::new(),
+            active_model: None,
+            previous_turn_ts: None,
+            longest_idle_gap_ms: 0,
+            idle_gap_ms_total: 0,
+            manual_compactions: 0,
+            cache_cap_exceeded: false,
+            compaction_boundaries: Vec::new(),
+            compactions_cap_exceeded: false,
             summary_observed: false,
         }
     }
@@ -176,6 +199,7 @@ impl SessionEvidenceAccumulator {
         }
 
         self.observe_model(event);
+        self.observe_cache_and_compaction(event);
 
         for tool in &event.tools {
             let source_name = if tool.name.eq_ignore_ascii_case("skill") {
@@ -250,6 +274,73 @@ impl SessionEvidenceAccumulator {
             );
             self.models_cap_exceeded |= truncated || capped;
             self.session_cap_exceeded |= diagnostic_capped;
+        }
+    }
+
+    fn observe_cache_and_compaction(&mut self, event: &NormalizedEvent) {
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(event.usage.cache_read_tokens);
+        self.cache_creation_tokens = self
+            .cache_creation_tokens
+            .saturating_add(event.usage.cache_creation_tokens);
+        self.fresh_input_tokens = self
+            .fresh_input_tokens
+            .saturating_add(event.usage.input_tokens);
+        if let Some(ts_ms) = event.ts_ms {
+            if let Some(previous) = self.previous_turn_ts {
+                let gap = ts_ms.saturating_sub(previous).max(0);
+                self.longest_idle_gap_ms = self.longest_idle_gap_ms.max(gap);
+                self.idle_gap_ms_total = self.idle_gap_ms_total.saturating_add(gap);
+            }
+            self.previous_turn_ts = Some(ts_ms);
+        }
+        if let Some(model) = event.model.as_deref() {
+            if let Some(previous) = self.active_model.as_deref()
+                && previous != model
+                && let Some(ts_ms) = event.ts_ms
+            {
+                let from_model = cap_string(
+                    "cache.model_transitions.from_model",
+                    previous,
+                    &mut self.diagnostics,
+                );
+                let to_model = cap_string(
+                    "cache.model_transitions.to_model",
+                    model,
+                    &mut self.diagnostics,
+                );
+                if from_model.len() != previous.len() || to_model.len() != model.len() {
+                    self.cache_cap_exceeded = true;
+                }
+                if self.model_transitions.len() == MAX_MODEL_TRANSITIONS {
+                    self.cache_cap_exceeded = true;
+                    self.note_collection_cap("cache.model_transitions");
+                } else {
+                    self.model_transitions.push(ModelTransition {
+                        ts_ms,
+                        from_model,
+                        to_model,
+                    });
+                }
+            }
+            self.active_model = Some(model.to_owned());
+        }
+        if event.is_compaction_boundary {
+            self.manual_compactions = self.manual_compactions.saturating_add(u64::from(
+                event.compaction_trigger == Some(CompactionTrigger::Manual),
+            ));
+            if self.compaction_boundaries.len() == MAX_COMPACTION_BOUNDARIES {
+                self.compactions_cap_exceeded = true;
+                self.note_collection_cap("compactions.boundaries");
+            } else {
+                self.compaction_boundaries.push(CompactionBoundary {
+                    ts_ms: event.ts_ms.unwrap_or(0),
+                    trigger: event.compaction_trigger,
+                    pre_tokens: event.compaction_pre_tokens,
+                    post_tokens: event.compaction_post_tokens,
+                });
+            }
         }
     }
 
@@ -437,6 +528,22 @@ impl SessionEvidenceAccumulator {
             children: self.subagent_children.clone(),
             examples: self.subagent_examples.clone(),
         };
+        let cache = CacheEvidence {
+            cache_read_tokens: self.cache_read_tokens,
+            cache_creation_tokens: self.cache_creation_tokens,
+            fresh_input_tokens: self.fresh_input_tokens,
+            model_transitions: self.model_transitions.clone(),
+            longest_idle_gap_ms: self.longest_idle_gap_ms,
+            idle_gap_ms_total: self.idle_gap_ms_total,
+            user_controlled_churn: ChurnCounts {
+                manual_compactions: self.manual_compactions,
+            },
+            previous_turn: EvidenceValue::Unsupported,
+            provider_eviction: EvidenceValue::Unsupported,
+        };
+        let compactions = CompactionEvidence {
+            boundaries: self.compaction_boundaries.clone(),
+        };
         let coverage_reason = self.record_loss_reason.or(self
             .session_cap_exceeded
             .then_some(CoverageReason::CapExceeded));
@@ -460,6 +567,7 @@ impl SessionEvidenceAccumulator {
                 source_kind: self.source_kind,
                 source_acceptance: self.source_acceptance,
                 ordering: self.ordering,
+                harness_version: EvidenceValue::Unsupported,
             },
             diagnostics: self.diagnostics.clone(),
             time_range: self.supported_value(
@@ -503,12 +611,13 @@ impl SessionEvidenceAccumulator {
                 self.capabilities.subagent_relationships,
                 self.subagents_cap_exceeded,
             ),
-            #[cfg(debug_assertions)]
-            cache: EvidenceValue::<UnfinishedGroup>::Unimplemented,
-            #[cfg(debug_assertions)]
-            compactions: EvidenceValue::<UnfinishedGroup>::Unimplemented,
-            #[cfg(debug_assertions)]
-            quota_incidents: EvidenceValue::<UnfinishedGroup>::Unimplemented,
+            cache: self.supported_value(cache, true, self.cache_cap_exceeded),
+            compactions: self.supported_value(
+                compactions,
+                self.capabilities.compaction_boundaries,
+                self.compactions_cap_exceeded,
+            ),
+            quota_incidents: EvidenceValue::Unsupported,
         }
     }
 

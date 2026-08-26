@@ -18,6 +18,8 @@ pub const MAX_DIAGNOSTIC_FIELDS: usize = 16;
 pub const MAX_MODELS: usize = 32;
 pub const MAX_TIER_LABELS: usize = 16;
 pub const MAX_SUBAGENT_CHILDREN: usize = 64;
+pub const MAX_MODEL_TRANSITIONS: usize = 64;
+pub const MAX_COMPACTION_BOUNDARIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "value", rename_all = "snake_case")]
@@ -190,6 +192,49 @@ pub struct SubagentEvidence {
     pub examples: Vec<SubagentExample>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTransition {
+    pub ts_ms: i64,
+    pub from_model: String,
+    pub to_model: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChurnCounts {
+    pub manual_compactions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheEvidence {
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub fresh_input_tokens: u64,
+    pub model_transitions: Vec<ModelTransition>,
+    pub longest_idle_gap_ms: i64,
+    pub idle_gap_ms_total: i64,
+    pub user_controlled_churn: ChurnCounts,
+    pub previous_turn: EvidenceValue<()>,
+    pub provider_eviction: EvidenceValue<()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionBoundary {
+    pub ts_ms: i64,
+    pub trigger: Option<crate::analysis::model::CompactionTrigger>,
+    pub pre_tokens: Option<u64>,
+    pub post_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionEvidence {
+    pub boundaries: Vec<CompactionBoundary>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceCapabilities {
@@ -206,6 +251,10 @@ pub struct SourceCapabilities {
     pub service_tier: bool,
     pub subagent_relationships: bool,
     pub subagent_models: bool,
+    pub compaction_boundaries: bool,
+    pub thread_identity: bool,
+    pub quota_incidents: bool,
+    pub harness_version: bool,
 }
 
 impl SourceCapabilities {
@@ -224,6 +273,10 @@ impl SourceCapabilities {
             service_tier: false,
             subagent_relationships: true,
             subagent_models: false,
+            compaction_boundaries: true,
+            thread_identity: false,
+            quota_incidents: false,
+            harness_version: false,
         }
     }
 }
@@ -290,6 +343,7 @@ pub struct SessionProvenance {
     pub source_kind: SourceKind,
     pub source_acceptance: SourceAcceptance,
     pub ordering: OrderingObservation,
+    pub harness_version: EvidenceValue<()>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,12 +442,9 @@ pub struct SessionEvidence {
     pub context_sources: EvidenceValue<ContextSourceEvidence>,
     pub models: EvidenceValue<ModelEvidence>,
     pub subagents: EvidenceValue<SubagentEvidence>,
-    #[cfg(debug_assertions)]
-    pub cache: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub compactions: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub quota_incidents: EvidenceValue<UnfinishedGroup>,
+    pub cache: EvidenceValue<CacheEvidence>,
+    pub compactions: EvidenceValue<CompactionEvidence>,
+    pub quota_incidents: EvidenceValue<()>,
 }
 
 #[cfg(test)]

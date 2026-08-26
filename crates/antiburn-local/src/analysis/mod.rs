@@ -53,12 +53,13 @@ pub use engine::{
 #[cfg(debug_assertions)]
 pub use evidence::UnfinishedGroup;
 pub use evidence::{
-    ContextEvidence, ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP,
-    EligibilityEvidence, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
-    ModelEvidence, ModelTokens, OrderingObservation, ParseDiagnostics, RelationConfidence,
-    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionTimeRange,
-    SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
-    SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts,
+    CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
+    ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP, EligibilityEvidence,
+    EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource, ModelEvidence, ModelTokens,
+    ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence, SessionEvidence,
+    SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SourceAcceptance,
+    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
+    ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
 pub use framing::{
