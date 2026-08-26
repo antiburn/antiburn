@@ -71,7 +71,9 @@ describe("SessionList — rows", () => {
     expect(
       screen.getByLabelText("Estimated cost $24.00, higher than usual").className,
     ).toContain("bg-brand-tint")
-    expect(screen.getByLabelText("Estimated cost $2.40").className).not.toContain("bg-brand-tint")
+    expect(screen.getByLabelText("Estimated cost $2.40").className).not.toContain(
+      "bg-brand-tint",
+    )
   })
 
   it("shows the repository, extra repositories, and branch", () => {

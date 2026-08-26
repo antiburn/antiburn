@@ -122,7 +122,9 @@ export function SessionCostBadge({
           isHighCost && "font-medium!",
           appearance === "pill" && COST_PILL_SHAPE,
           appearance === "pill" &&
-            (isHighCost ? "bg-brand-tint text-white" : "bg-label-tertiary/15 text-label-secondary"),
+            (isHighCost
+              ? "bg-brand-tint text-white"
+              : "bg-label-tertiary/15 text-label-secondary"),
           className,
         )}
       >
