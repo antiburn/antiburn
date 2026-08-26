@@ -100,6 +100,10 @@ pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     })
 }
 
+pub fn wake(app: &tauri::AppHandle) {
+    app.state::<WorkerHandle>().wake.notify_one();
+}
+
 pub(crate) fn backoff_secs(retry_count: i64) -> i64 {
     let exponent = u32::try_from(retry_count.max(0))
         .unwrap_or(u32::MAX)
@@ -204,7 +208,7 @@ pub(crate) fn apply_outcome(
             },
             EVIDENCE_ERROR_UNSUPPORTED,
         ),
-        PassOutcome::Unreadable if claim.retry_count < MAX_EVIDENCE_ATTEMPTS - 1 => store
+        PassOutcome::Unreadable if claim.retry_count < MAX_EVIDENCE_ATTEMPTS => store
             .fail_evidence(
                 claim,
                 EvidenceFailure::Retry {
@@ -220,6 +224,16 @@ pub(crate) fn apply_outcome(
             EVIDENCE_ERROR_UNREADABLE,
         ),
     }
+}
+
+#[cfg(not(test))]
+fn lease_renew_interval() -> Duration {
+    Duration::from_secs(LEASE_RENEW_SECS)
+}
+
+#[cfg(test)]
+fn lease_renew_interval() -> Duration {
+    Duration::from_secs(LEASE_RENEW_SECS).min(Duration::from_millis(10))
 }
 
 pub(crate) async fn process_next(
@@ -258,7 +272,7 @@ pub(crate) async fn process_next(
     let result = loop {
         tokio::select! {
             result = &mut pass => break Some(result),
-            () = tokio::time::sleep(Duration::from_secs(LEASE_RENEW_SECS)) => {
+            () = tokio::time::sleep(lease_renew_interval()) => {
                 let observed = signal.progress();
                 if observed == progress {
                     continue;
@@ -317,7 +331,7 @@ fn unix_now() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
     use std::sync::{Arc, Mutex};
 
     use antiburn_local::analysis::{RawSource, SessionInput};
@@ -384,6 +398,29 @@ mod tests {
             .clone()
             .unwrap_or_else(|| analysis::MISSING_FINGERPRINT.into());
         pass
+    }
+
+    async fn captured_signal(slot: &Mutex<Option<PassSignal>>) -> PassSignal {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(signal) = slot.lock().unwrap().clone() {
+                    break signal;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the pass receives its signal")
+    }
+
+    async fn wait_until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the worker reaches the expected state");
     }
 
     #[test]
@@ -462,6 +499,12 @@ mod tests {
             evidence_after.diagnostics_json,
             evidence_before.diagnostics_json
         );
+        assert_eq!(evidence_after.status, EvidenceStatus::Pending);
+        assert_eq!(evidence_after.retry_count, 1);
+        assert_eq!(
+            evidence_after.next_attempt_at_epoch,
+            Some(101 + BACKOFF_BASE_SECS)
+        );
     }
 
     #[tokio::test]
@@ -490,10 +533,9 @@ mod tests {
             100,
         )
         .unwrap();
-        assert_eq!(
-            store.evidence(&claim.key).unwrap().unwrap().status,
-            EvidenceStatus::Failed
-        );
+        let row = store.evidence(&claim.key).unwrap().unwrap();
+        assert_eq!(row.status, EvidenceStatus::Failed);
+        assert_eq!(row.next_attempt_at_epoch, None);
         assert!(
             store
                 .claim_next_evidence(&crate::agents::evidence_cohort(), 101, LEASE_SECS)
@@ -507,18 +549,18 @@ mod tests {
         let store = store();
         let claim = claim(&store, "unsupported", 100);
         apply_outcome(&store, &claim, &failed_pass(PassOutcome::Unsupported), 100).unwrap();
-        assert_eq!(
-            store.evidence(&claim.key).unwrap().unwrap().status,
-            EvidenceStatus::Failed
-        );
+        let row = store.evidence(&claim.key).unwrap().unwrap();
+        assert_eq!(row.status, EvidenceStatus::Failed);
         assert!(store.analysis(&claim.key).unwrap().is_none());
+        assert!(row.evidence_json.is_none());
+        assert!(row.diagnostics_json.is_none());
     }
 
     #[test]
     fn an_unreadable_source_is_terminal_after_the_attempt_cap() {
         let store = store();
         let mut now = 100;
-        for attempt in 0..MAX_EVIDENCE_ATTEMPTS {
+        for attempt in 0..=MAX_EVIDENCE_ATTEMPTS {
             let claim = if attempt == 0 {
                 claim(&store, "unreadable", now)
             } else {
@@ -529,7 +571,7 @@ mod tests {
             };
             apply_outcome(&store, &claim, &failed_pass(PassOutcome::Unreadable), now).unwrap();
             let row = store.evidence(&claim.key).unwrap().unwrap();
-            if attempt + 1 == MAX_EVIDENCE_ATTEMPTS {
+            if attempt == MAX_EVIDENCE_ATTEMPTS {
                 assert_eq!(row.status, EvidenceStatus::Failed);
             } else {
                 assert_eq!(row.status, EvidenceStatus::Pending);
@@ -586,52 +628,284 @@ mod tests {
         );
     }
 
-    #[test]
-    fn progress_renews_the_lease() {
-        let store = store();
-        let claim = claim(&store, "progress", 100);
-        assert!(store.renew_evidence_lease(&claim, 160, LEASE_SECS).unwrap());
+    #[tokio::test]
+    async fn progress_renews_the_lease() {
+        let store = Arc::new(store());
+        store
+            .upsert_sessions(&[record("progress")], &crate::agents::evidence_cohort())
+            .unwrap();
+        let handle = Arc::new(WorkerHandle::default());
+        let clock = Arc::new(AtomicI64::new(100));
+        let signal = Arc::new(Mutex::new(None::<PassSignal>));
+        let release = Arc::new(Notify::new());
+        let task_store = Arc::clone(&store);
+        let task_handle = Arc::clone(&handle);
+        let task_clock = Arc::clone(&clock);
+        let task_signal = Arc::clone(&signal);
+        let task_release = Arc::clone(&release);
+        let task = tokio::spawn(async move {
+            let runner = move |_: &SessionRecord, pass_signal: PassSignal| {
+                *task_signal.lock().unwrap() = Some(pass_signal);
+                let release = Arc::clone(&task_release);
+                Box::pin(async move {
+                    release.notified().await;
+                    failed_pass(PassOutcome::SourceMissing)
+                }) as PassFuture
+            };
+            process_next(
+                &task_store,
+                &task_handle,
+                &|| task_clock.load(Ordering::SeqCst),
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap()
+        });
+        let pass_signal = captured_signal(&signal).await;
+        let key = SessionKey::new("native", "claude-code", "progress");
+
+        assert!(!pass_signal.observe());
+        clock.store(160, Ordering::SeqCst);
+        wait_until(|| {
+            store
+                .evidence(&key)
+                .unwrap()
+                .unwrap()
+                .lease_expires_at_epoch
+                == Some(460)
+        })
+        .await;
+        assert!(!pass_signal.observe());
+        clock.store(220, Ordering::SeqCst);
+        wait_until(|| {
+            store
+                .evidence(&key)
+                .unwrap()
+                .unwrap()
+                .lease_expires_at_epoch
+                == Some(520)
+        })
+        .await;
+
+        release.notify_one();
+        assert!(task.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_pass_stops_renewing() {
+        let store = Arc::new(store());
+        store
+            .upsert_sessions(&[record("stalled")], &crate::agents::evidence_cohort())
+            .unwrap();
+        let handle = Arc::new(WorkerHandle::default());
+        let clock = Arc::new(AtomicI64::new(100));
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(Notify::new());
+        let task_store = Arc::clone(&store);
+        let task_handle = Arc::clone(&handle);
+        let task_clock = Arc::clone(&clock);
+        let task_entered = Arc::clone(&entered);
+        let task_release = Arc::clone(&release);
+        let task = tokio::spawn(async move {
+            let runner = move |_: &SessionRecord, _: PassSignal| {
+                task_entered.store(true, Ordering::SeqCst);
+                let release = Arc::clone(&task_release);
+                Box::pin(async move {
+                    release.notified().await;
+                    failed_pass(PassOutcome::SourceMissing)
+                }) as PassFuture
+            };
+            process_next(
+                &task_store,
+                &task_handle,
+                &|| task_clock.load(Ordering::SeqCst),
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap()
+        });
+        wait_until(|| entered.load(Ordering::SeqCst)).await;
+        let key = SessionKey::new("native", "claude-code", "stalled");
+        let first = store.evidence(&key).unwrap().unwrap();
+
+        clock.store(160, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(
             store
-                .evidence(&claim.key)
+                .evidence(&key)
                 .unwrap()
                 .unwrap()
                 .lease_expires_at_epoch,
-            Some(460)
+            Some(100 + LEASE_SECS)
         );
-    }
-
-    #[test]
-    fn a_stalled_pass_stops_renewing() {
-        let store = store();
-        let first = claim(&store, "stalled", 100);
+        clock.store(401, Ordering::SeqCst);
         let reclaimed = store
             .claim_next_evidence(&crate::agents::evidence_cohort(), 401, LEASE_SECS)
             .unwrap()
             .unwrap();
         assert!(reclaimed.claim_fence > first.claim_fence);
+
+        release.notify_one();
+        assert!(task.await.unwrap());
     }
 
-    #[test]
-    fn a_lost_renewal_cancels_without_a_post_claim_write() {
-        let store = store();
-        let first = claim(&store, "lost", 100);
-        let _next = store
+    #[tokio::test]
+    async fn a_lost_renewal_cancels_without_a_post_claim_write() {
+        let store = Arc::new(store());
+        store
+            .upsert_sessions(&[record("lost")], &crate::agents::evidence_cohort())
+            .unwrap();
+        let handle = Arc::new(WorkerHandle::default());
+        let clock = Arc::new(AtomicI64::new(100));
+        let signal = Arc::new(Mutex::new(None::<PassSignal>));
+        let release = Arc::new(Notify::new());
+        let task_store = Arc::clone(&store);
+        let task_handle = Arc::clone(&handle);
+        let task_clock = Arc::clone(&clock);
+        let task_signal = Arc::clone(&signal);
+        let task_release = Arc::clone(&release);
+        let task = tokio::spawn(async move {
+            let runner = move |_: &SessionRecord, pass_signal: PassSignal| {
+                *task_signal.lock().unwrap() = Some(pass_signal);
+                let release = Arc::clone(&task_release);
+                Box::pin(async move {
+                    release.notified().await;
+                    failed_pass(PassOutcome::SourceMissing)
+                }) as PassFuture
+            };
+            process_next(
+                &task_store,
+                &task_handle,
+                &|| task_clock.load(Ordering::SeqCst),
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap()
+        });
+        let pass_signal = captured_signal(&signal).await;
+        let key = SessionKey::new("native", "claude-code", "lost");
+        let successor = store
             .claim_next_evidence(&crate::agents::evidence_cohort(), 401, LEASE_SECS)
             .unwrap()
             .unwrap();
-        assert!(!store.renew_evidence_lease(&first, 402, LEASE_SECS).unwrap());
-        assert!(store.analysis(&first.key).unwrap().is_none());
+        let before = store.evidence(&key).unwrap().unwrap();
+
+        assert!(!pass_signal.observe());
+        clock.store(402, Ordering::SeqCst);
+        wait_until(|| pass_signal.observe()).await;
+        release.notify_one();
+        assert!(task.await.unwrap());
+
+        assert_eq!(store.evidence(&key).unwrap().unwrap(), before);
+        assert_eq!(successor.claim_fence, before.claim_fence);
+        assert!(store.analysis(&key).unwrap().is_none());
     }
 
-    #[test]
-    fn a_stale_pass_cannot_affect_the_next_claim() {
-        let first = PassSignal::new();
-        let second = PassSignal::new();
-        first.cancel();
-        first.observe();
-        assert!(!second.observe());
-        assert_eq!(second.progress(), 1);
+    #[tokio::test]
+    async fn a_stale_pass_cannot_affect_the_next_claim() {
+        let store = Arc::new(store());
+        store
+            .upsert_sessions(&[record("stale-pass")], &crate::agents::evidence_cohort())
+            .unwrap();
+        let handle = Arc::new(WorkerHandle::default());
+        let clock = Arc::new(AtomicI64::new(100));
+        let first_signal_slot = Arc::new(Mutex::new(None::<PassSignal>));
+        let first_release = Arc::new(Notify::new());
+        let first_store = Arc::clone(&store);
+        let first_handle = Arc::clone(&handle);
+        let first_clock = Arc::clone(&clock);
+        let first_task_signal = Arc::clone(&first_signal_slot);
+        let first_task_release = Arc::clone(&first_release);
+        let first_task = tokio::spawn(async move {
+            let runner = move |_: &SessionRecord, pass_signal: PassSignal| {
+                *first_task_signal.lock().unwrap() = Some(pass_signal);
+                let release = Arc::clone(&first_task_release);
+                Box::pin(async move {
+                    release.notified().await;
+                    failed_pass(PassOutcome::SourceMissing)
+                }) as PassFuture
+            };
+            process_next(
+                &first_store,
+                &first_handle,
+                &|| first_clock.load(Ordering::SeqCst),
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap()
+        });
+        let first_signal = captured_signal(&first_signal_slot).await;
+        let mut changed = record("stale-pass");
+        changed.source_fingerprint = Some("sv1:stale-pass-next".into());
+        assert!(!first_signal.observe());
+        store
+            .upsert_sessions(&[changed], &crate::agents::evidence_cohort())
+            .unwrap();
+        clock.store(160, Ordering::SeqCst);
+        wait_until(|| first_signal.observe()).await;
+        first_release.notify_one();
+        assert!(first_task.await.unwrap());
+
+        let second_signal_slot = Arc::new(Mutex::new(None::<PassSignal>));
+        let second_release = Arc::new(Notify::new());
+        let second_store = Arc::clone(&store);
+        let second_handle = Arc::clone(&handle);
+        let second_clock = Arc::clone(&clock);
+        let second_task_signal = Arc::clone(&second_signal_slot);
+        let second_task_release = Arc::clone(&second_release);
+        let second_task = tokio::spawn(async move {
+            let runner = move |record: &SessionRecord, pass_signal: PassSignal| {
+                *second_task_signal.lock().unwrap() = Some(pass_signal);
+                let pass = published_pass(record);
+                let release = Arc::clone(&second_task_release);
+                Box::pin(async move {
+                    release.notified().await;
+                    pass
+                }) as PassFuture
+            };
+            process_next(
+                &second_store,
+                &second_handle,
+                &|| second_clock.load(Ordering::SeqCst),
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap()
+        });
+        let second_signal = captured_signal(&second_signal_slot).await;
+        let key = SessionKey::new("native", "claude-code", "stale-pass");
+        let successor_lease = store
+            .evidence(&key)
+            .unwrap()
+            .unwrap()
+            .lease_expires_at_epoch;
+
+        first_signal.cancel();
+        assert!(first_signal.observe());
+        clock.store(220, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(
+            store
+                .evidence(&key)
+                .unwrap()
+                .unwrap()
+                .lease_expires_at_epoch,
+            successor_lease
+        );
+        assert!(!second_signal.observe());
+
+        second_release.notify_one();
+        assert!(second_task.await.unwrap());
+        assert_eq!(
+            store.evidence(&key).unwrap().unwrap().status,
+            EvidenceStatus::Ready
+        );
+        assert!(store.analysis(&key).unwrap().is_some());
     }
 
     #[tokio::test]
@@ -755,13 +1029,35 @@ mod tests {
 
     #[test]
     fn errors_carry_no_transcript_content() {
-        for error in [
+        const SOURCE_CONTENT: &str = "PRIVATE_TRANSCRIPT_MARKER";
+        let mappings = [
+            (PassOutcome::SourceChanged, EVIDENCE_ERROR_SOURCE_CHANGED),
+            (PassOutcome::SourceMissing, EVIDENCE_ERROR_SOURCE_MISSING),
+            (PassOutcome::Unreadable, EVIDENCE_ERROR_UNREADABLE),
+            (PassOutcome::Unsupported, EVIDENCE_ERROR_UNSUPPORTED),
+        ];
+        let allowed = [
             EVIDENCE_ERROR_SOURCE_CHANGED,
             EVIDENCE_ERROR_SOURCE_MISSING,
             EVIDENCE_ERROR_UNREADABLE,
             EVIDENCE_ERROR_UNSUPPORTED,
-        ] {
-            assert!(!error.contains("PRIVATE_TRANSCRIPT_MARKER"));
+        ];
+
+        for (index, (outcome, expected)) in mappings.into_iter().enumerate() {
+            let store = store();
+            let id = format!("{SOURCE_CONTENT}-{index}");
+            let claim = claim(&store, &id, 100);
+            assert!(apply_outcome(&store, &claim, &failed_pass(outcome), 100).unwrap());
+
+            let error = store
+                .evidence(&claim.key)
+                .unwrap()
+                .unwrap()
+                .last_error
+                .unwrap();
+            assert_eq!(error, expected);
+            assert!(allowed.contains(&error.as_str()));
+            assert!(!error.contains(SOURCE_CONTENT));
         }
     }
 

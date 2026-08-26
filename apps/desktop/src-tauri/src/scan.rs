@@ -330,6 +330,7 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
         "The session index",
         store.upsert_sessions(&records, &agents::evidence_cohort()),
     )?;
+    crate::insights_worker::wake(app);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
@@ -368,8 +369,11 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     top_up_analysis(
         &store,
         &controller,
-        now,
-        i64::from(activity_window_days),
+        TopUpScope {
+            now,
+            activity_days: i64::from(activity_window_days),
+            evidence_agents: &agents::evidence_cohort(),
+        },
         |agent, session_id, wsl_distro| async move {
             analysis::locate(agent, &session_id, wsl_distro.as_deref()).await
         },
@@ -899,12 +903,17 @@ fn per_agent_totals(records: &[SessionRecord]) -> Vec<(String, i64, Option<i64>)
         .collect()
 }
 
+struct TopUpScope<'a> {
+    now: i64,
+    activity_days: i64,
+    evidence_agents: &'a [&'a str],
+}
+
 /// Analyze the newest sessions whose cached analysis is missing or stale.
 async fn top_up_analysis<F, Fut, A, AFut>(
     store: &Store,
     controller: &ScanController,
-    now: i64,
-    activity_days: i64,
+    scope: TopUpScope<'_>,
     mut locate: F,
     mut analyze: A,
 ) -> anyhow::Result<()>
@@ -920,10 +929,13 @@ where
     ) -> AFut,
     AFut: std::future::Future<Output = analysis::SessionAnalysis>,
 {
-    let since = now - activity_days.max(1) * 86_400;
+    let since = scope.now - scope.activity_days.max(1) * 86_400;
     let candidates = store.recent_sessions(since, MAX_ANALYSES_PER_PASS)?;
 
     for record in candidates {
+        if scope.evidence_agents.contains(&record.key.agent.as_str()) {
+            continue;
+        }
         // Analysis is the long tail of a pass — one whole transcript read per
         // session — so this is where a cancel is felt.
         if controller.cancelled() {
@@ -1674,8 +1686,11 @@ mod tests {
         top_up_analysis(
             &store,
             &ScanController::default(),
-            200,
-            1,
+            TopUpScope {
+                now: 200,
+                activity_days: 1,
+                evidence_agents: &[],
+            },
             move |agent, candidate_id, wsl_distro| {
                 observed_locates.fetch_add(1, Ordering::SeqCst);
                 let source = located_source.clone();
@@ -1715,8 +1730,11 @@ mod tests {
         top_up_analysis(
             &store,
             &ScanController::default(),
-            101,
-            1,
+            TopUpScope {
+                now: 101,
+                activity_days: 1,
+                evidence_agents: &[],
+            },
             |_, _, _| async {
                 Some(SessionSource::Inline {
                     label: "recent-change".to_string(),
@@ -1732,6 +1750,53 @@ mod tests {
         .unwrap();
 
         assert_eq!(analysis_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn top_up_analysis_skips_the_evidence_cohort() {
+        let home = tempfile::TempDir::new().unwrap();
+        let store = Store::open_in_memory(home.path()).unwrap();
+        store
+            .upsert_sessions(
+                &[
+                    record("claude-code", "queued", Some(100)),
+                    record("codex", "direct", Some(99)),
+                ],
+                &agents::evidence_cohort(),
+            )
+            .unwrap();
+        let located = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let located_by_pass = Arc::clone(&located);
+        let analyzed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let analyzed_by_pass = Arc::clone(&analyzed);
+
+        top_up_analysis(
+            &store,
+            &ScanController::default(),
+            TopUpScope {
+                now: 101,
+                activity_days: 1,
+                evidence_agents: &agents::evidence_cohort(),
+            },
+            move |agent, session_id, _| {
+                located_by_pass.lock().unwrap().push(session_id);
+                async move {
+                    Some(SessionSource::Inline {
+                        label: agent.slug().to_string(),
+                        content: String::new(),
+                    })
+                }
+            },
+            move |_, session_id, _, _, _| {
+                analyzed_by_pass.lock().unwrap().push(session_id);
+                async { analysis::SessionAnalysis::unavailable() }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(located.lock().unwrap().as_slice(), ["direct"]);
+        assert_eq!(analyzed.lock().unwrap().as_slice(), ["direct"]);
     }
 
     #[tokio::test]

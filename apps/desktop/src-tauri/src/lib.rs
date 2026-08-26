@@ -73,8 +73,8 @@ mod settings;
 mod startup_registration;
 mod storage_health;
 mod store;
-// The queue has no in-tree caller until CH-008 adds the worker.
-// TODO @agent: CH-008 will remove this re-export.
+// This bridge keeps CH-007 evidence readers reachable until the evidence pane calls them.
+// TODO @agent: CH-012 will remove this re-export.
 pub use store::Store;
 mod tray;
 mod tray_title;
@@ -331,7 +331,7 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
-            abort_schedulers(app);
+            abort_schedulers(app.try_state::<Schedulers>().as_deref());
             finish_retention_cleanup(&mut retention_cleanup);
             if let Some(mut guard) = trace_guard.take() {
                 guard.flush();
@@ -378,11 +378,11 @@ fn should_prevent_exit(onboarding_pending: bool, code: Option<i32>) -> bool {
 }
 
 /// Stop every background task. Safe to call when none ever started.
-fn abort_schedulers(app: &tauri::AppHandle) {
-    let Some(schedulers) = app.try_state::<Schedulers>() else {
+fn abort_schedulers(schedulers: Option<&Schedulers>) {
+    let Some(schedulers) = schedulers else {
         return;
     };
-    stop_schedulers(&schedulers);
+    stop_schedulers(schedulers);
 }
 
 pub(crate) fn stop_schedulers(schedulers: &Schedulers) {
@@ -519,8 +519,8 @@ fn install_updater(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClosePolicy, Schedulers, close_policy, finish_retention_cleanup, should_prevent_exit,
-        stop_schedulers,
+        ClosePolicy, Schedulers, abort_schedulers, close_policy, finish_retention_cleanup,
+        should_prevent_exit,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -559,6 +559,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_scheduler_stop_leaves_the_claim_reclaimable() {
+        use std::sync::Mutex;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
         use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
         use crate::insights_worker::{PassFuture, WorkerHandle, worker_loop};
         use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
@@ -589,12 +593,23 @@ mod tests {
             )
             .unwrap();
         let handle = Arc::new(WorkerHandle::default());
-        let blocker = Arc::new(tokio::sync::Notify::new());
-        let pass_blocker = Arc::clone(&blocker);
+        let (release, blocked) = mpsc::channel();
+        let blocked = Arc::new(Mutex::new(blocked));
+        let (entered, pass_entered) = mpsc::channel();
+        let (completed, pass_completed) = mpsc::channel();
+        let pass_blocked = Arc::clone(&blocked);
         let runner = move |_: &SessionRecord, _: PassSignal| {
-            let blocker = Arc::clone(&pass_blocker);
+            let blocked = Arc::clone(&pass_blocked);
+            let entered = entered.clone();
+            let completed = completed.clone();
             Box::pin(async move {
-                blocker.notified().await;
+                tauri::async_runtime::spawn_blocking(move || {
+                    entered.send(()).unwrap();
+                    blocked.lock().unwrap().recv().unwrap();
+                    completed.send(()).unwrap();
+                })
+                .await
+                .unwrap();
                 EvidencePass {
                     analysis: SessionAnalysis::unavailable(),
                     evidence: None,
@@ -602,32 +617,36 @@ mod tests {
                 }
             }) as PassFuture
         };
+        let announced = Arc::new(Mutex::new(Vec::new()));
+        let task_announced = Arc::clone(&announced);
         let task_store = Arc::clone(&store);
         let task_handle = Arc::clone(&handle);
         let task = tauri::async_runtime::spawn(async move {
-            worker_loop(&task_store, &task_handle, &|| 100, &runner, &|_| {}).await;
+            worker_loop(&task_store, &task_handle, &|| 100, &runner, &|entry| {
+                task_announced.lock().unwrap().push(entry)
+            })
+            .await;
         });
-        for _ in 0..20 {
-            if store
-                .evidence(&key)
-                .unwrap()
-                .is_some_and(|row| row.status == EvidenceStatus::Processing)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        pass_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the blocking pass starts");
+        let processing = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(processing.status, EvidenceStatus::Processing);
+        let analysis_before = store.analysis(&key).unwrap();
         let schedulers = Schedulers::default();
         schedulers.push(task);
 
-        stop_schedulers(&schedulers);
-        assert_eq!(
-            store.evidence(&key).unwrap().unwrap().status,
-            EvidenceStatus::Processing
-        );
-        blocker.notify_waiters();
+        abort_schedulers(Some(&schedulers));
+        assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
+        release.send(()).unwrap();
+        pass_completed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the blocking job survives the worker abort");
         tokio::task::yield_now().await;
-        assert!(store.analysis(&key).unwrap().is_none());
+        assert_eq!(store.analysis(&key).unwrap(), analysis_before);
+        assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
+        assert!(announced.lock().unwrap().is_empty());
+
         store
             .reconcile_evidence_revisions(
                 &crate::agents::evidence_cohort(),
