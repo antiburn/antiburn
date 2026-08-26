@@ -270,7 +270,9 @@ mod tests {
             title_source,
             1_700_000_000,
         );
-        store.upsert_sessions(&[seeded]).unwrap();
+        store
+            .upsert_sessions(&[seeded], &crate::agents::evidence_cohort())
+            .unwrap();
         (store, key)
     }
 
@@ -374,7 +376,9 @@ mod tests {
             "firstMessage",
             1_700_000_100,
         );
-        store.upsert_sessions(&[rescan]).unwrap();
+        store
+            .upsert_sessions(&[rescan], &crate::agents::evidence_cohort())
+            .unwrap();
         assert_eq!(
             stored_title(&store, &key),
             (
@@ -384,7 +388,9 @@ mod tests {
         );
 
         let renamed = record(&key, "Reader's own name", "userRename", 1_700_000_200);
-        store.upsert_sessions(&[renamed]).unwrap();
+        store
+            .upsert_sessions(&[renamed], &crate::agents::evidence_cohort())
+            .unwrap();
         let (title, source) = stored_title(&store, &key);
         assert_eq!(title.as_deref(), Some("Reader's own name"));
         assert_eq!(source.as_deref(), Some("userRename"));

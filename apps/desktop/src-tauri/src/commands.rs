@@ -401,6 +401,12 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         crate::disk_monitor::refresh_title(app);
     }
 
+    // On macOS, the Focus-status authorization waits for a completed setup
+    // and the master notification switch. The function checks both itself,
+    // and repeat calls are free (the gate keeps a once-flag), so no
+    // transition edge needs to be computed here.
+    crate::notifications::maybe_initialize_authorization(app);
+
     // Consent changing is the queue's business: turning it off withdraws
     // whatever is already queued rather than merely pausing it, and destroys
     // the installation identifier so a later opt-in cannot be joined to this
@@ -484,7 +490,7 @@ pub fn list_recent_sessions(
 /// popover's first paint unbounded.
 const MAX_ACTIVITY_ROWS: usize = 500;
 
-fn activity_entry(
+pub(crate) fn activity_entry(
     store: &Store,
     repositories: &[RepositoryRecord],
     session: SessionRecord,
@@ -561,6 +567,28 @@ fn analysis_changed(previous: Option<&AnalysisRecord>, next: &AnalysisRecord) ->
                 || previous.inclusive_models_json != next.inclusive_models_json
         }
     }
+}
+
+fn cache_detail_analysis(
+    store: &Store,
+    record: &AnalysisRecord,
+    started_at_epoch: Option<i64>,
+) -> bool {
+    if crate::agents::evidence_cohort().contains(&record.key.agent.as_str()) {
+        return false;
+    }
+    let previous = store.analysis(&record.key).ok().flatten();
+    store.save_analysis(record, started_at_epoch).is_ok()
+        && analysis_changed(previous.as_ref(), record)
+}
+
+fn cache_detail_relations(store: &Store, key: &SessionKey, members: &[RelationRecord]) -> bool {
+    if crate::agents::evidence_cohort().contains(&key.agent.as_str()) {
+        return false;
+    }
+    store
+        .replace_relations(key, RelationKind::Subagent, members)
+        .is_ok()
 }
 
 fn path_is_under(path: &str, root: &str) -> bool {
@@ -746,19 +774,14 @@ pub async fn get_session_analysis(
 
     let stored = store.session(&key).ok().flatten();
 
-    if let Some(record) = analysis.record(&key) {
-        let previous = store.analysis(&key).ok().flatten();
-        if store
-            .save_analysis(&record, analysis.started_at_epoch)
-            .is_ok()
-            && analysis_changed(previous.as_ref(), &record)
-            && let Some(session_record) = stored.clone()
-        {
-            let repositories = store.repositories().unwrap_or_default();
-            let now = scan::unix_now();
-            if let Ok(entry) = activity_entry(&store, &repositories, session_record, now) {
-                let _ = app.emit(SESSION_ENTRY_CHANGED_EVENT, &entry);
-            }
+    if let Some(record) = analysis.record(&key)
+        && cache_detail_analysis(&store, &record, analysis.started_at_epoch)
+        && let Some(session_record) = stored.clone()
+    {
+        let repositories = store.repositories().unwrap_or_default();
+        let now = scan::unix_now();
+        if let Ok(entry) = activity_entry(&store, &repositories, session_record, now) {
+            let _ = app.emit(SESSION_ENTRY_CHANGED_EVENT, &entry);
         }
     }
     let orchestration = match &analysis.orchestration {
@@ -772,7 +795,7 @@ pub async fn get_session_analysis(
                     label: Some(member.label.clone()),
                 })
                 .collect();
-            let _ = store.replace_relations(&key, RelationKind::Subagent, &members);
+            cache_detail_relations(&store, &key, &members);
             Some(orchestration.clone())
         }
         // The listing came back empty. That is usually the truth, but it is
@@ -1571,6 +1594,103 @@ mod tests {
         let models_changed = analysis_record("{}", r#"[{"model":"claude-fable-5"}]"#);
         assert!(analysis_changed(Some(&previous), &breakdown_changed));
         assert!(analysis_changed(Some(&previous), &models_changed));
+    }
+
+    #[test]
+    fn the_detail_path_does_not_persist_claude_projections() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let store = Store::open_in_memory(directory.path()).unwrap();
+        let session = |agent: &str, id: &str| SessionRecord {
+            key: SessionKey::new("native", agent, id),
+            source_kind: "file".into(),
+            source_label: format!("/tmp/{id}.jsonl"),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: Some(100),
+            activity_cursor: String::new(),
+            activity_source: "event".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: Some(format!("sv1:{id}")),
+        };
+        let claude = session("claude-code", "claude-detail");
+        let codex = session("codex", "codex-detail");
+        store
+            .upsert_sessions(
+                &[claude.clone(), codex.clone()],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let _claim = store
+            .claim_next_evidence(&crate::agents::evidence_cohort(), 100, 300)
+            .unwrap()
+            .unwrap();
+        let sentinel = AnalysisRecord {
+            key: claude.key.clone(),
+            model_breakdown_json: r#"{"sentinel":{}}"#.into(),
+            inclusive_models_json: "[]".into(),
+            source_fingerprint: "sv1:sentinel".into(),
+            pricing_generation: 1,
+            analyzed_generation: 0,
+            parser_revision: 1,
+            analyzer_revision: 1,
+            metrics_schema_revision: 1,
+        };
+        store.save_analysis(&sentinel, None).unwrap();
+        let sentinel_relation = RelationRecord {
+            kind: RelationKind::Subagent,
+            related_id: "sentinel-child".into(),
+            label: None,
+        };
+        store
+            .replace_relations(
+                &claude.key,
+                RelationKind::Subagent,
+                std::slice::from_ref(&sentinel_relation),
+            )
+            .unwrap();
+        let mut claude_next = sentinel.clone();
+        claude_next.model_breakdown_json = r#"{"replacement":{}}"#.into();
+        let replacement = RelationRecord {
+            kind: RelationKind::Subagent,
+            related_id: "replacement-child".into(),
+            label: None,
+        };
+
+        assert!(!cache_detail_analysis(&store, &claude_next, None));
+        assert!(!cache_detail_relations(
+            &store,
+            &claude.key,
+            std::slice::from_ref(&replacement),
+        ));
+        assert_eq!(store.analysis(&claude.key).unwrap(), Some(sentinel));
+        assert_eq!(
+            store.relations(&claude.key).unwrap(),
+            vec![sentinel_relation]
+        );
+
+        let codex_analysis = AnalysisRecord {
+            key: codex.key.clone(),
+            model_breakdown_json: r#"{"codex":{}}"#.into(),
+            inclusive_models_json: "[]".into(),
+            source_fingerprint: "sv1:codex-detail".into(),
+            pricing_generation: 1,
+            analyzed_generation: 1,
+            parser_revision: 1,
+            analyzer_revision: 1,
+            metrics_schema_revision: 1,
+        };
+        assert!(cache_detail_analysis(&store, &codex_analysis, None));
+        assert!(cache_detail_relations(
+            &store,
+            &codex.key,
+            std::slice::from_ref(&replacement),
+        ));
+        assert_eq!(store.analysis(&codex.key).unwrap(), Some(codex_analysis));
+        assert_eq!(store.relations(&codex.key).unwrap(), vec![replacement]);
     }
 
     #[test]

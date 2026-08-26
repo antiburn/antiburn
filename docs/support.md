@@ -175,6 +175,19 @@ select-all and clear-all controls. antiburn constructs each notification on this
 machine, and nothing about it leaves the machine. The test and first-run
 location ignore the master switch because both follow a direct action.
 
+**Notifications respect Focus and Do Not Disturb.** Immediately before an
+automated notification appears, antiburn asks your operating system whether
+interruptions are welcome — Focus and Do Not Disturb on macOS, fullscreen and
+presentation states on Windows, Do Not Disturb on GNOME and KDE Plasma. A
+suppressed notification is dropped, not saved: turning Focus off never releases
+a backlog of stale alerts. The test button still works during Focus, because
+you pressed it. On macOS this needs your permission once — antiburn asks after
+setup, reads only whether Focus is on, and nothing about it leaves this Mac; if
+you decline, notifications simply stop yielding to Focus. If antiburn is in a
+Focus's Allowed Apps list, macOS lets its notifications through, and antiburn
+follows that answer. When the system cannot say either way, antiburn delivers
+rather than staying silent.
+
 ## Reporting a gap
 
 If an agent on this list is not discovered on a supported platform, that is a bug —

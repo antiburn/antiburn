@@ -752,11 +752,14 @@ mod tests {
             source_fingerprint: None,
         };
         store
-            .upsert_sessions(&[
-                session("in-widgets", "/home/avery/code/widgets"),
-                session("in-widgets-sub", "/home/avery/code/widgets/src"),
-                session("in-gadgets", "/home/avery/code/gadgets"),
-            ])
+            .upsert_sessions(
+                &[
+                    session("in-widgets", "/home/avery/code/widgets"),
+                    session("in-widgets-sub", "/home/avery/code/widgets/src"),
+                    session("in-gadgets", "/home/avery/code/gadgets"),
+                ],
+                &[],
+            )
             .unwrap();
 
         ignored_paths::ignore_path(store.state_dir(), IGNORE_SCOPE, "/home/avery/code/widgets")

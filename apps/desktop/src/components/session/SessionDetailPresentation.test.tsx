@@ -159,7 +159,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.queryByText("Cost")).toBeNull()
   })
 
-  it("shows the Efficiency card under the Cost card, with an unpriced hint", () => {
+  it("shows the Efficiency card under the Cost card with a definition", () => {
     view({
       cost: cost(),
       efficiency: {
@@ -175,7 +175,9 @@ describe("SessionDetailPresentation — chrome", () => {
     })
     expect(screen.getByText("Efficiency")).toBeTruthy()
     expect(screen.getByText("$/MTok")).toBeTruthy()
-    expect(screen.getByText("3 turns unpriced")).toBeTruthy()
+    expect(
+      screen.getByText("Relative to real work: context growth and output tokens."),
+    ).toBeTruthy()
   })
 
   it("omits the Efficiency card when the session is unpriced", () => {

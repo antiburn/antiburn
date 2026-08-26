@@ -61,6 +61,7 @@ mod dto;
 mod export;
 mod global_click;
 mod hud;
+mod insights_worker;
 mod notifications;
 mod nudges;
 mod onboarding;
@@ -73,8 +74,8 @@ mod startup_registration;
 mod storage_health;
 mod store;
 mod titles;
-// The queue has no in-tree caller until CH-008 adds the worker.
-// TODO @agent: CH-008 will remove this re-export.
+// This bridge keeps CH-007 evidence readers reachable until the evidence pane calls them.
+// TODO @agent: CH-012 will remove this re-export.
 pub use store::Store;
 mod tray;
 mod tray_title;
@@ -92,7 +93,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 /// Handles of the app's background tasks, kept so it can abort them on exit
 /// rather than leaving them running against a store that is going away.
 #[derive(Default)]
-struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
+pub(crate) struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
 
 impl Schedulers {
     fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
@@ -210,6 +211,13 @@ pub fn run() {
             // engine's state helpers as an explicit argument.
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
+            app.manage(insights_worker::WorkerHandle::default());
+            if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
+                &agents::evidence_cohort(),
+                analysis::projection_revisions(),
+            ) {
+                ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
+            }
 
             // Apply the persisted theme before any window shows, so the first
             // paint is already in the reader's chosen appearance. "system" and
@@ -234,6 +242,7 @@ pub fn run() {
             app.manage(settings::SettingsWindowState::default());
             app.manage(onboarding::OnboardingWindowState::default());
             app.manage(nudges::AnchorOverride::default());
+            app.manage(antiburn_nudge::NotificationGate::default());
 
             tray::create(app.handle())?;
             // After the tray, and on the main thread: the monitor reaches the
@@ -284,6 +293,10 @@ pub fn run() {
             // The notification window's manager and the chime player. The
             // webview itself is created only when policy delivers a nudge.
             nudges::init(app.handle())?;
+            // On macOS, ask for the Focus-status authorization when a
+            // completed setup already permits notifications. First runs wait:
+            // apply_settings_transition asks again when onboarding finishes.
+            notifications::maybe_initialize_authorization(app.handle());
             // The live-usage registry: the sources that can prove a
             // provider's own limit figures, and the milestone ledger they
             // feed. Registered before the schedulers so the first pass sees
@@ -295,6 +308,7 @@ pub fn run() {
             app.manage(live_usage);
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
+                schedulers.push(insights_worker::spawn(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
                 schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
                 schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
@@ -323,7 +337,7 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
-            abort_schedulers(app);
+            abort_schedulers(app.try_state::<Schedulers>().as_deref());
             finish_retention_cleanup(&mut retention_cleanup);
             if let Some(mut guard) = trace_guard.take() {
                 guard.flush();
@@ -370,10 +384,14 @@ fn should_prevent_exit(onboarding_pending: bool, code: Option<i32>) -> bool {
 }
 
 /// Stop every background task. Safe to call when none ever started.
-fn abort_schedulers(app: &tauri::AppHandle) {
-    let Some(schedulers) = app.try_state::<Schedulers>() else {
+fn abort_schedulers(schedulers: Option<&Schedulers>) {
+    let Some(schedulers) = schedulers else {
         return;
     };
+    stop_schedulers(schedulers);
+}
+
+pub(crate) fn stop_schedulers(schedulers: &Schedulers) {
     let Ok(mut handles) = schedulers.0.lock() else {
         return;
     };
@@ -506,7 +524,10 @@ fn install_updater(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClosePolicy, close_policy, finish_retention_cleanup, should_prevent_exit};
+    use super::{
+        ClosePolicy, Schedulers, abort_schedulers, close_policy, finish_retention_cleanup,
+        should_prevent_exit,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -540,6 +561,108 @@ mod tests {
 
         assert!(completed.load(Ordering::Acquire));
         assert!(handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_scheduler_stop_leaves_the_claim_reclaimable() {
+        use std::sync::Mutex;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
+        use crate::insights_worker::{PassFuture, WorkerHandle, worker_loop};
+        use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
+
+        let store = Arc::new(
+            Store::open_in_memory(std::path::Path::new("/tmp/antiburn-stop-test")).unwrap(),
+        );
+        let key = SessionKey::new("native", "claude-code", "shutdown");
+        store
+            .upsert_sessions(
+                &[SessionRecord {
+                    key: key.clone(),
+                    source_kind: "file".into(),
+                    source_label: "/tmp/shutdown.jsonl".into(),
+                    wsl_distro: None,
+                    title: None,
+                    title_source: None,
+                    cwd: None,
+                    surface: "cli".into(),
+                    updated_at_epoch: Some(100),
+                    activity_cursor: String::new(),
+                    activity_source: "event".into(),
+                    subagent_count: 0,
+                    fork_parent_session_id: None,
+                    source_fingerprint: Some("sv1:shutdown".into()),
+                }],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let handle = Arc::new(WorkerHandle::default());
+        let (release, blocked) = mpsc::channel();
+        let blocked = Arc::new(Mutex::new(blocked));
+        let (entered, pass_entered) = mpsc::channel();
+        let (completed, pass_completed) = mpsc::channel();
+        let pass_blocked = Arc::clone(&blocked);
+        let runner = move |_: &SessionRecord, _: PassSignal| {
+            let blocked = Arc::clone(&pass_blocked);
+            let entered = entered.clone();
+            let completed = completed.clone();
+            Box::pin(async move {
+                tauri::async_runtime::spawn_blocking(move || {
+                    entered.send(()).unwrap();
+                    blocked.lock().unwrap().recv().unwrap();
+                    completed.send(()).unwrap();
+                })
+                .await
+                .unwrap();
+                EvidencePass {
+                    analysis: SessionAnalysis::unavailable(),
+                    evidence: None,
+                    outcome: PassOutcome::SourceMissing,
+                }
+            }) as PassFuture
+        };
+        let announced = Arc::new(Mutex::new(Vec::new()));
+        let task_announced = Arc::clone(&announced);
+        let task_store = Arc::clone(&store);
+        let task_handle = Arc::clone(&handle);
+        let task = tauri::async_runtime::spawn(async move {
+            worker_loop(&task_store, &task_handle, &|| 100, &runner, &|entry| {
+                task_announced.lock().unwrap().push(entry)
+            })
+            .await;
+        });
+        pass_entered
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the blocking pass starts");
+        let processing = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(processing.status, EvidenceStatus::Processing);
+        let analysis_before = store.analysis(&key).unwrap();
+        let schedulers = Schedulers::default();
+        schedulers.push(task);
+
+        abort_schedulers(Some(&schedulers));
+        assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
+        release.send(()).unwrap();
+        pass_completed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the blocking job survives the worker abort");
+        tokio::task::yield_now().await;
+        assert_eq!(store.analysis(&key).unwrap(), analysis_before);
+        assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
+        assert!(announced.lock().unwrap().is_empty());
+
+        store
+            .reconcile_evidence_revisions(
+                &crate::agents::evidence_cohort(),
+                crate::analysis::projection_revisions(),
+            )
+            .unwrap();
+        assert_eq!(
+            store.evidence(&key).unwrap().unwrap().status,
+            EvidenceStatus::Pending
+        );
     }
 
     #[test]

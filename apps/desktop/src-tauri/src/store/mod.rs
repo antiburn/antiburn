@@ -43,9 +43,9 @@ use crate::dto::DeferredPermissionDir;
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceCompletion,
     EvidenceFailure, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
-    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions, RelationKind,
-    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey,
-    SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions, PublishedEvidence,
+    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState,
+    SessionKey, SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Internal-scalar key holding the protected directories the last pass declined
@@ -480,12 +480,33 @@ impl Store {
     /// `first_seen_at` survives a rescan; everything else is replaced with what
     /// the scan just observed, so a renamed session picks up its new title
     /// without producing a second row.
-    pub fn upsert_sessions(&self, records: &[SessionRecord]) -> Result<()> {
+    pub fn upsert_sessions(
+        &self,
+        records: &[SessionRecord],
+        evidence_agents: &[&str],
+    ) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         for record in records {
+            let source_returned = tx.query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM session_evidence
+                      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                        AND status = 'failed' AND last_error = 'source-missing'
+                 )",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id
+                ],
+                |row| row.get::<_, i64>(0),
+            )? != 0;
             let (previous_generation, source_generation) = upsert_session_in(&tx, record)?;
-            if previous_generation.is_none_or(|previous| source_generation > previous) {
+            let generation_increased =
+                previous_generation.is_none_or(|previous| source_generation > previous);
+            if evidence_agents.contains(&record.key.agent.as_str())
+                && (generation_increased || source_returned)
+            {
                 mark_evidence_pending_in(&tx, &record.key)?;
             }
         }
@@ -692,7 +713,8 @@ impl Store {
                            OR evidence.parser_revision IS NOT ?{parser_parameter}
                            OR evidence.analyzer_revision IS NOT ?{analyzer_parameter}
                            OR evidence.evidence_schema_revision IS NOT ?{evidence_parameter}
-                           OR NOT EXISTS (
+                           OR (evidence.status NOT IN ('failed', 'unsupported')
+                               AND NOT EXISTS (
                                SELECT 1 FROM session_analysis AS analysis
                                 WHERE analysis.environment_key = session.environment_key
                                   AND analysis.agent = session.agent
@@ -701,7 +723,7 @@ impl Store {
                                   AND analysis.parser_revision = ?{parser_parameter}
                                   AND analysis.analyzer_revision = ?{analyzer_parameter}
                                   AND analysis.metrics_schema_revision = ?{metrics_parameter}
-                           )
+                           ))
                        )
                 )"
         );
@@ -852,39 +874,65 @@ impl Store {
         failure: EvidenceFailure,
         last_error: &str,
     ) -> Result<bool> {
-        let (status, next_attempt_at_epoch) = match failure {
+        let connection = self.lock();
+        let updated = match failure {
             EvidenceFailure::Retry {
                 next_attempt_at_epoch,
-            } => ("pending", Some(next_attempt_at_epoch)),
-            EvidenceFailure::Failed => ("failed", None),
+            } => connection.execute(
+                "UPDATE session_evidence AS evidence
+                    SET status = 'pending', retry_count = retry_count + 1,
+                        last_error = ?6, claimed_at_epoch = NULL,
+                        lease_expires_at_epoch = NULL, next_attempt_at_epoch = ?7
+                  WHERE evidence.environment_key = ?1
+                    AND evidence.agent = ?2 AND evidence.session_id = ?3
+                    AND evidence.status = 'processing' AND evidence.claim_fence = ?4
+                    AND EXISTS (
+                        SELECT 1 FROM session
+                         WHERE session.environment_key = evidence.environment_key
+                           AND session.agent = evidence.agent
+                           AND session.session_id = evidence.session_id
+                           AND session.source_generation = ?5
+                    )",
+                params![
+                    claim.key.environment_key,
+                    claim.key.agent,
+                    claim.key.session_id,
+                    claim.claim_fence,
+                    claim.source_generation,
+                    last_error,
+                    next_attempt_at_epoch,
+                ],
+            )?,
+            EvidenceFailure::Failed { revisions } => connection.execute(
+                "UPDATE session_evidence AS evidence
+                    SET status = 'failed', retry_count = retry_count + 1,
+                        analyzed_generation = ?5, parser_revision = ?7,
+                        analyzer_revision = ?8, evidence_schema_revision = ?9,
+                        last_error = ?6, claimed_at_epoch = NULL,
+                        lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL
+                  WHERE evidence.environment_key = ?1
+                    AND evidence.agent = ?2 AND evidence.session_id = ?3
+                    AND evidence.status = 'processing' AND evidence.claim_fence = ?4
+                    AND EXISTS (
+                        SELECT 1 FROM session
+                         WHERE session.environment_key = evidence.environment_key
+                           AND session.agent = evidence.agent
+                           AND session.session_id = evidence.session_id
+                           AND session.source_generation = ?5
+                    )",
+                params![
+                    claim.key.environment_key,
+                    claim.key.agent,
+                    claim.key.session_id,
+                    claim.claim_fence,
+                    claim.source_generation,
+                    last_error,
+                    revisions.parser_revision,
+                    revisions.analyzer_revision,
+                    revisions.evidence_schema_revision,
+                ],
+            )?,
         };
-        let connection = self.lock();
-        let updated = connection.execute(
-            "UPDATE session_evidence AS evidence
-                SET status = ?6, retry_count = retry_count + 1,
-                    last_error = ?7, claimed_at_epoch = NULL,
-                    lease_expires_at_epoch = NULL, next_attempt_at_epoch = ?8
-              WHERE evidence.environment_key = ?1
-                AND evidence.agent = ?2 AND evidence.session_id = ?3
-                AND evidence.status = 'processing' AND evidence.claim_fence = ?4
-                AND EXISTS (
-                    SELECT 1 FROM session
-                     WHERE session.environment_key = evidence.environment_key
-                       AND session.agent = evidence.agent
-                       AND session.session_id = evidence.session_id
-                       AND session.source_generation = ?5
-                )",
-            params![
-                claim.key.environment_key,
-                claim.key.agent,
-                claim.key.session_id,
-                claim.claim_fence,
-                claim.source_generation,
-                status,
-                last_error,
-                next_attempt_at_epoch,
-            ],
-        )?;
         Ok(updated > 0)
     }
 
@@ -940,6 +988,7 @@ impl Store {
         record: &AnalysisRecord,
         started_at_epoch: Option<i64>,
         completion: &EvidenceCompletion,
+        relations: &[RelationRecord],
     ) -> Result<bool> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
@@ -1023,6 +1072,7 @@ impl Store {
         if updated == 0 {
             return Ok(false);
         }
+        replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
         transaction.commit()?;
         Ok(true)
     }
@@ -1161,32 +1211,7 @@ impl Store {
     ) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        tx.execute(
-            "DELETE FROM session_relation
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND kind = ?4",
-            params![
-                key.environment_key,
-                key.agent,
-                key.session_id,
-                kind.as_str()
-            ],
-        )?;
-        for relation in relations {
-            tx.execute(
-                "INSERT INTO session_relation
-                     (environment_key, agent, session_id, kind, related_id, label)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT DO UPDATE SET label = excluded.label",
-                params![
-                    key.environment_key,
-                    key.agent,
-                    key.session_id,
-                    relation.kind.as_str(),
-                    relation.related_id,
-                    relation.label,
-                ],
-            )?;
-        }
+        replace_relations_in(&tx, key, kind, relations)?;
         tx.commit()?;
         Ok(())
     }
@@ -1712,6 +1737,41 @@ fn upsert_session_in(
         |row| row.get(0),
     )?;
     Ok((previous_generation, source_generation))
+}
+
+fn replace_relations_in(
+    connection: &Connection,
+    key: &SessionKey,
+    kind: RelationKind,
+    relations: &[RelationRecord],
+) -> Result<()> {
+    connection.execute(
+        "DELETE FROM session_relation
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND kind = ?4",
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            kind.as_str()
+        ],
+    )?;
+    for relation in relations {
+        connection.execute(
+            "INSERT INTO session_relation
+                 (environment_key, agent, session_id, kind, related_id, label)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT DO UPDATE SET label = excluded.label",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                relation.kind.as_str(),
+                relation.related_id,
+                relation.label,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result<()> {

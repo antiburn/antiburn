@@ -29,8 +29,8 @@ describe("EfficiencyBreakdown", () => {
   it("renders the three rows with their values and band words", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
     expect(screen.getByText("$/MTok")).toBeTruthy()
-    expect(screen.getByText("New Work %")).toBeTruthy()
-    expect(screen.getByText("Rewrite %")).toBeTruthy()
+    expect(screen.getByText("Real Work %")).toBeTruthy()
+    expect(screen.getByText("Rewrite Waste %")).toBeTruthy()
     expect(screen.getByText("$40.00")).toBeTruthy()
     expect(screen.getByText("34%")).toBeTruthy()
     expect(screen.getByText("12%")).toBeTruthy()
@@ -45,10 +45,10 @@ describe("EfficiencyBreakdown", () => {
     expect(cost.children).toHaveLength(4)
     expect(cost.children[0]?.getAttribute("class")).toContain("bg-system-green")
     expect(cost.children[2]?.getAttribute("class")).toContain("bg-system-orange")
-    // New work reads higher-is-better, so its good segment sits on the right.
-    const newWork = screen.getByTestId("thermometer-newWorkShare")
-    expect(newWork.children[0]?.getAttribute("class")).toContain("bg-system-orange")
-    expect(newWork.children[2]?.getAttribute("class")).toContain("bg-system-green")
+    // Real work reads higher-is-better, so its good segment sits on the right.
+    const realWork = screen.getByTestId("thermometer-realWorkShare")
+    expect(realWork.children[0]?.getAttribute("class")).toContain("bg-system-orange")
+    expect(realWork.children[2]?.getAttribute("class")).toContain("bg-system-green")
   })
 
   it("colours a good reading green and names a bad one by direction", () => {
@@ -97,7 +97,7 @@ describe("EfficiencyBreakdown", () => {
   it("gives each row its own info mark", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "codex")} />)
     expect(screen.getByLabelText("About $/MTok")).toBeTruthy()
-    expect(screen.getByLabelText("About New Work %")).toBeTruthy()
-    expect(screen.getByLabelText("About Rewrite %")).toBeTruthy()
+    expect(screen.getByLabelText("About Real Work %")).toBeTruthy()
+    expect(screen.getByLabelText("About Rewrite Waste %")).toBeTruthy()
   })
 })

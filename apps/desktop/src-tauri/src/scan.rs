@@ -81,6 +81,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
+use crate::agents;
 use crate::analysis;
 use crate::dto::ScanStatus;
 use crate::repositories;
@@ -329,7 +330,12 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
-    checked(app, "The session index", store.upsert_sessions(&records))?;
+    checked(
+        app,
+        "The session index",
+        store.upsert_sessions(&records, &agents::evidence_cohort()),
+    )?;
+    crate::insights_worker::wake(app);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
@@ -386,8 +392,11 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     top_up_analysis(
         &store,
         &controller,
-        now,
-        i64::from(activity_window_days),
+        TopUpScope {
+            now,
+            activity_days: i64::from(activity_window_days),
+            evidence_agents: &agents::evidence_cohort(),
+        },
         |agent, session_id, wsl_distro| async move {
             analysis::locate(agent, &session_id, wsl_distro.as_deref()).await
         },
@@ -997,12 +1006,17 @@ fn per_agent_totals(records: &[SessionRecord]) -> Vec<(String, i64, Option<i64>)
         .collect()
 }
 
+struct TopUpScope<'a> {
+    now: i64,
+    activity_days: i64,
+    evidence_agents: &'a [&'a str],
+}
+
 /// Analyze the newest sessions whose cached analysis is missing or stale.
 async fn top_up_analysis<F, Fut, A, AFut>(
     store: &Store,
     controller: &ScanController,
-    now: i64,
-    activity_days: i64,
+    scope: TopUpScope<'_>,
     mut locate: F,
     mut analyze: A,
 ) -> anyhow::Result<()>
@@ -1018,10 +1032,13 @@ where
     ) -> AFut,
     AFut: std::future::Future<Output = analysis::SessionAnalysis>,
 {
-    let since = now - activity_days.max(1) * 86_400;
+    let since = scope.now - scope.activity_days.max(1) * 86_400;
     let candidates = store.recent_sessions(since, MAX_ANALYSES_PER_PASS)?;
 
     for record in candidates {
+        if scope.evidence_agents.contains(&record.key.agent.as_str()) {
+            continue;
+        }
         // Analysis is the long tail of a pass — one whole transcript read per
         // session — so this is where a cancel is felt.
         if controller.cancelled() {
@@ -1530,7 +1547,9 @@ mod tests {
             else {
                 panic!("native Codex session should be described");
             };
-            store.upsert_sessions(&[*record]).unwrap();
+            store
+                .upsert_sessions(&[*record], &agents::evidence_cohort())
+                .unwrap();
         }
 
         let native = store
@@ -1588,9 +1607,14 @@ mod tests {
 
         let store = crate::store::Store::open_in_memory(home.path()).unwrap();
         store
-            .upsert_sessions(&[record("codex", parent_session_id, Some(1_799_999_000))])
+            .upsert_sessions(
+                &[record("codex", parent_session_id, Some(1_799_999_000))],
+                &agents::evidence_cohort(),
+            )
             .unwrap();
-        store.upsert_sessions(std::slice::from_ref(&child)).unwrap();
+        store
+            .upsert_sessions(std::slice::from_ref(&child), &agents::evidence_cohort())
+            .unwrap();
 
         assert_eq!(
             store
@@ -1888,7 +1912,7 @@ mod tests {
         session.source_label = source_path.to_string_lossy().into_owned();
         let store = Store::open_in_memory(home.path()).unwrap();
         store
-            .upsert_sessions(std::slice::from_ref(&session))
+            .upsert_sessions(std::slice::from_ref(&session), &agents::evidence_cohort())
             .unwrap();
 
         let legacy_fingerprint =
@@ -1932,8 +1956,11 @@ mod tests {
         top_up_analysis(
             &store,
             &ScanController::default(),
-            200,
-            1,
+            TopUpScope {
+                now: 200,
+                activity_days: 1,
+                evidence_agents: &[],
+            },
             move |agent, candidate_id, wsl_distro| {
                 observed_locates.fetch_add(1, Ordering::SeqCst);
                 let source = located_source.clone();
@@ -1964,15 +1991,20 @@ mod tests {
         let store = Store::open_in_memory(home.path()).unwrap();
         let mut session = record("claude-code", "recent-change", Some(100));
         session.source_fingerprint = Some("sv1:recent".to_string());
-        store.upsert_sessions(&[session]).unwrap();
+        store
+            .upsert_sessions(&[session], &agents::evidence_cohort())
+            .unwrap();
         let analysis_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = Arc::clone(&analysis_calls);
 
         top_up_analysis(
             &store,
             &ScanController::default(),
-            101,
-            1,
+            TopUpScope {
+                now: 101,
+                activity_days: 1,
+                evidence_agents: &[],
+            },
             |_, _, _| async {
                 Some(SessionSource::Inline {
                     label: "recent-change".to_string(),
@@ -1988,6 +2020,53 @@ mod tests {
         .unwrap();
 
         assert_eq!(analysis_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn top_up_analysis_skips_the_evidence_cohort() {
+        let home = tempfile::TempDir::new().unwrap();
+        let store = Store::open_in_memory(home.path()).unwrap();
+        store
+            .upsert_sessions(
+                &[
+                    record("claude-code", "queued", Some(100)),
+                    record("codex", "direct", Some(99)),
+                ],
+                &agents::evidence_cohort(),
+            )
+            .unwrap();
+        let located = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let located_by_pass = Arc::clone(&located);
+        let analyzed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let analyzed_by_pass = Arc::clone(&analyzed);
+
+        top_up_analysis(
+            &store,
+            &ScanController::default(),
+            TopUpScope {
+                now: 101,
+                activity_days: 1,
+                evidence_agents: &agents::evidence_cohort(),
+            },
+            move |agent, session_id, _| {
+                located_by_pass.lock().unwrap().push(session_id);
+                async move {
+                    Some(SessionSource::Inline {
+                        label: agent.slug().to_string(),
+                        content: String::new(),
+                    })
+                }
+            },
+            move |_, session_id, _, _, _| {
+                analyzed_by_pass.lock().unwrap().push(session_id);
+                async { analysis::SessionAnalysis::unavailable() }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(located.lock().unwrap().as_slice(), ["direct"]);
+        assert_eq!(analyzed.lock().unwrap().as_slice(), ["direct"]);
     }
 
     #[tokio::test]
@@ -2025,7 +2104,9 @@ mod tests {
                 &HashSet::new(),
             )
             .await;
-            store.upsert_sessions(&records.records).unwrap();
+            store
+                .upsert_sessions(&records.records, &agents::evidence_cohort())
+                .unwrap();
             for (agent, seen, cursor) in per_agent_totals(&records.records) {
                 store.record_agent_scan(&agent, cursor, seen).unwrap();
             }
@@ -2094,7 +2175,9 @@ mod tests {
         stale.source_label = path.to_string_lossy().into_owned();
         stale.activity_cursor = "legacy".into();
         stale.activity_source = "mtime".into();
-        store.upsert_sessions(&[stale]).unwrap();
+        store
+            .upsert_sessions(&[stale], &agents::evidence_cohort())
+            .unwrap();
 
         let states = store.session_activity_states().unwrap();
         let described = describe_with_states(
@@ -2112,7 +2195,9 @@ mod tests {
         .unix_timestamp();
         assert_eq!(described.records[0].updated_at_epoch, Some(expected));
         assert_eq!(described.records[0].activity_source, "event");
-        store.upsert_sessions(&described.records).unwrap();
+        store
+            .upsert_sessions(&described.records, &agents::evidence_cohort())
+            .unwrap();
         let stored = store
             .session_activity_states()
             .unwrap()
@@ -2154,7 +2239,9 @@ mod tests {
 
         // A later mtime-only touch now hits the unchanged-size cursor gate.
         let states = {
-            store.upsert_sessions(&touched.records).unwrap();
+            store
+                .upsert_sessions(&touched.records, &agents::evidence_cohort())
+                .unwrap();
             store.session_activity_states().unwrap()
         };
         let gated = describe_with_states(
@@ -2195,7 +2282,9 @@ mod tests {
         .await;
         assert_eq!(first.records[0].subagent_count, 1);
         let first_epoch = first.records[0].updated_at_epoch.unwrap();
-        store.upsert_sessions(&first.records).unwrap();
+        store
+            .upsert_sessions(&first.records, &agents::evidence_cohort())
+            .unwrap();
 
         // An mtime-only parent touch with an unchanged parent+child cursor is
         // served from the cached semantic event without reading either tail.
@@ -2319,7 +2408,10 @@ mod tests {
         let store = crate::store::Store::open_in_memory(home.path()).unwrap();
         // An earlier, ungated version of the app indexed the sidechain.
         store
-            .upsert_sessions(&[record("claude-code", "aaaa-1111", Some(1_800_000_000))])
+            .upsert_sessions(
+                &[record("claude-code", "aaaa-1111", Some(1_800_000_000))],
+                &agents::evidence_cohort(),
+            )
             .unwrap();
         assert_eq!(store.recent_sessions(0, 10).unwrap().len(), 1);
 

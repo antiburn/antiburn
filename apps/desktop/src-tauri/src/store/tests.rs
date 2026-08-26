@@ -63,7 +63,10 @@ fn claimed_projection(
     let fingerprint = format!("sv1:{session_id}");
     session.source_fingerprint = Some(fingerprint.clone());
     store
-        .upsert_sessions(std::slice::from_ref(&session))
+        .upsert_sessions(
+            std::slice::from_ref(&session),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     let claim = store
         .claim_next_evidence(&["claude-code"], now_epoch, lease_secs)
@@ -93,7 +96,10 @@ fn seed_current_session_evidence(store: &Store, session_id: &str) -> SessionReco
     let mut record = session(session_id, 1_000);
     record.source_fingerprint = Some("sv1:current".into());
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     store
         .save_analysis(
@@ -166,7 +172,10 @@ fn assert_unchanged_session_evidence(
     let before = store.evidence(&record.key).unwrap().unwrap();
 
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     assert_eq!(
         store
@@ -456,7 +465,9 @@ fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
             ..AppSettings::default()
         })
         .unwrap();
-    store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 2_000)], &crate::agents::evidence_cohort())
+        .unwrap();
     store.add_scan_root("/home/avery/work").unwrap();
     store.queue_analytics_event("app_launched", "{}").unwrap();
 
@@ -577,7 +588,10 @@ fn session_evidence_status_index_exists() {
 fn session_evidence_rejects_an_unknown_status() {
     let store = store();
     store
-        .upsert_sessions(&[session("bad-status", 1_000)])
+        .upsert_sessions(
+            &[session("bad-status", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     let result = store.lock().execute(
         "INSERT INTO session_evidence (environment_key, agent, session_id, status)
@@ -658,7 +672,9 @@ fn session_evidence_survives_an_upgrade_from_the_shipped_head() {
 #[test]
 fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     let store = store();
-    store.upsert_sessions(&[session("abc", 2_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 2_000)], &crate::agents::evidence_cohort())
+        .unwrap();
     store
         .save_analysis(
             &AnalysisRecord {
@@ -777,16 +793,25 @@ fn an_out_of_range_activity_window_is_clamped_on_the_way_in() {
 #[test]
 fn a_session_round_trips_and_a_rescan_updates_it_in_place() {
     let store = store();
-    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 1_000)], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let mut later = session("abc", 2_000);
     later.title = Some("Wire the popover, take two".into());
     later.subagent_count = 3;
-    store.upsert_sessions(std::slice::from_ref(&later)).unwrap();
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&later),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
 
     // Idempotent: a rescan that sees the same session again must not duplicate
     // it, and must not rewind the activity timestamp.
-    store.upsert_sessions(&[session("abc", 1_500)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 1_500)], &crate::agents::evidence_cohort())
+        .unwrap();
 
     assert_eq!(store.recent_sessions(0, 100).unwrap().len(), 1);
     let stored = store
@@ -804,12 +829,16 @@ fn an_event_timestamp_survives_a_newer_mtime_only_upsert() {
     let mut event = session("semantic", 1_000);
     event.activity_cursor = "[\"parent\",10]".into();
     event.activity_source = "event".into();
-    store.upsert_sessions(&[event]).unwrap();
+    store
+        .upsert_sessions(&[event], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let mut mtime = session("semantic", 2_000);
     mtime.activity_cursor = "[\"parent\",20]".into();
     mtime.activity_source = "mtime".into();
-    store.upsert_sessions(&[mtime]).unwrap();
+    store
+        .upsert_sessions(&[mtime], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let stored = store
         .session(&SessionKey::new("native", "claude-code", "semantic"))
@@ -826,7 +855,9 @@ fn activity_cursors_do_not_collide_across_environments() {
     let native = session("shared", 1_000);
     let mut wsl = native.clone();
     wsl.key = SessionKey::new("wsl:ubuntu", "claude-code", "shared");
-    store.upsert_sessions(&[native, wsl]).unwrap();
+    store
+        .upsert_sessions(&[native, wsl], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let states = store.session_activity_states().unwrap();
     assert_eq!(states.len(), 2);
@@ -849,7 +880,9 @@ fn title_and_source_are_replaced_or_preserved_as_one_pair() {
     let mut source_without_title = session("orphan-source", 500);
     source_without_title.title = None;
     source_without_title.title_source = Some("firstMessage".into());
-    store.upsert_sessions(&[source_without_title]).unwrap();
+    store
+        .upsert_sessions(&[source_without_title], &crate::agents::evidence_cohort())
+        .unwrap();
     let stored = store
         .session(&SessionKey::new("native", "claude-code", "orphan-source"))
         .unwrap()
@@ -870,24 +903,32 @@ fn title_and_source_are_replaced_or_preserved_as_one_pair() {
     let mut no_title_again = session("orphan-source", 750);
     no_title_again.title = None;
     no_title_again.title_source = None;
-    store.upsert_sessions(&[no_title_again]).unwrap();
+    store
+        .upsert_sessions(&[no_title_again], &crate::agents::evidence_cohort())
+        .unwrap();
     let healed = store
         .session(&SessionKey::new("native", "claude-code", "orphan-source"))
         .unwrap()
         .expect("session");
     assert_eq!((healed.title, healed.title_source), (None, None));
 
-    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 1_000)], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let mut renamed = session("abc", 2_000);
     renamed.title = Some("Reader supplied title".into());
     renamed.title_source = Some("userRename".into());
-    store.upsert_sessions(&[renamed]).unwrap();
+    store
+        .upsert_sessions(&[renamed], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let mut missing = session("abc", 3_000);
     missing.title = None;
     missing.title_source = Some("firstMessage".into());
-    store.upsert_sessions(&[missing]).unwrap();
+    store
+        .upsert_sessions(&[missing], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let stored = store
         .session(&SessionKey::new("native", "claude-code", "abc"))
@@ -900,13 +941,18 @@ fn title_and_source_are_replaced_or_preserved_as_one_pair() {
 #[test]
 fn the_same_session_id_in_two_environments_stays_two_sessions() {
     let store = store();
-    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 1_000)], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let mut in_wsl = session("abc", 1_100);
     in_wsl.key.environment_key = "wsl:ubuntu".into();
     in_wsl.wsl_distro = Some("Ubuntu".into());
     store
-        .upsert_sessions(std::slice::from_ref(&in_wsl))
+        .upsert_sessions(
+            std::slice::from_ref(&in_wsl),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
 
     assert_eq!(store.recent_sessions(0, 100).unwrap().len(), 2);
@@ -915,9 +961,15 @@ fn the_same_session_id_in_two_environments_stays_two_sessions() {
 #[test]
 fn recent_sessions_are_windowed_and_ordered_newest_first() {
     let store = store();
-    store.upsert_sessions(&[session("old", 1_000)]).unwrap();
-    store.upsert_sessions(&[session("mid", 2_000)]).unwrap();
-    store.upsert_sessions(&[session("new", 3_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("old", 1_000)], &crate::agents::evidence_cohort())
+        .unwrap();
+    store
+        .upsert_sessions(&[session("mid", 2_000)], &crate::agents::evidence_cohort())
+        .unwrap();
+    store
+        .upsert_sessions(&[session("new", 3_000)], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let recent = store.recent_sessions(1_500, 100).unwrap();
     let ids: Vec<_> = recent
@@ -936,10 +988,20 @@ fn recent_sessions_are_windowed_and_ordered_newest_first() {
 #[test]
 fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
     let store = store();
-    store.upsert_sessions(&[session("parent", 1_000)]).unwrap();
+    store
+        .upsert_sessions(
+            &[session("parent", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
     let mut child = session("child", 2_000);
     child.fork_parent_session_id = Some("parent".into());
-    store.upsert_sessions(std::slice::from_ref(&child)).unwrap();
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&child),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
 
     let stored = store
         .session(&SessionKey::new("native", "claude-code", "child"))
@@ -953,7 +1015,12 @@ fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
     assert_eq!(children, vec!["child".to_string()]);
 
     // A later scan can carry no observation. It must keep the recorded lineage.
-    store.upsert_sessions(&[session("child", 2_100)]).unwrap();
+    store
+        .upsert_sessions(
+            &[session("child", 2_100)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
     assert_eq!(
         store
             .fork_children(&SessionKey::new("native", "claude-code", "parent"))
@@ -966,7 +1033,9 @@ fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
 fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "abc");
-    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 1_000)], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let record = AnalysisRecord {
         key: key.clone(),
@@ -998,7 +1067,10 @@ fn save_analysis_writes_the_generation_and_revision_columns() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "revisions");
     store
-        .upsert_sessions(&[session("revisions", 1_000)])
+        .upsert_sessions(
+            &[session("revisions", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     let record = AnalysisRecord {
         key: key.clone(),
@@ -1030,7 +1102,10 @@ fn save_analysis_never_clears_a_known_start_time() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "known-start");
     store
-        .upsert_sessions(&[session("known-start", 1_000)])
+        .upsert_sessions(
+            &[session("known-start", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     let record = AnalysisRecord {
         key: key.clone(),
@@ -1061,7 +1136,9 @@ fn save_analysis_never_clears_a_known_start_time() {
 fn subagent_relations_are_replaced_wholesale() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "abc");
-    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 1_000)], &crate::agents::evidence_cohort())
+        .unwrap();
 
     store
         .replace_relations(
@@ -1104,7 +1181,9 @@ fn subagent_relations_are_replaced_wholesale() {
 fn deleting_a_session_takes_its_derived_records_with_it() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "abc");
-    store.upsert_sessions(&[session("abc", 1_000)]).unwrap();
+    store
+        .upsert_sessions(&[session("abc", 1_000)], &crate::agents::evidence_cohort())
+        .unwrap();
     store
         .save_analysis(
             &AnalysisRecord {
@@ -1242,7 +1321,10 @@ fn agent_scan_state_records_the_high_water_cursor() {
 fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
     let store = store();
     store
-        .upsert_sessions(&[session("analyzed", 2_000), session("pending", 1_500)])
+        .upsert_sessions(
+            &[session("analyzed", 2_000), session("pending", 1_500)],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     store
         .save_analysis(
@@ -1452,10 +1534,16 @@ fn the_generation_increments_only_when_the_fingerprint_changes() {
     let mut record = session("generation", 1_000);
     record.source_fingerprint = Some("sv1:first".to_string());
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     let first = store
         .session_source_state(&key)
@@ -1465,7 +1553,10 @@ fn the_generation_increments_only_when_the_fingerprint_changes() {
 
     record.source_fingerprint = Some("sv1:second".to_string());
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     let second = store
         .session_source_state(&key)
@@ -1475,7 +1566,9 @@ fn the_generation_increments_only_when_the_fingerprint_changes() {
     assert_eq!(second.source_fingerprint.as_deref(), Some("sv1:second"));
 
     record.source_fingerprint = None;
-    store.upsert_sessions(&[record]).unwrap();
+    store
+        .upsert_sessions(&[record], &crate::agents::evidence_cohort())
+        .unwrap();
     let unreadable = store
         .session_source_state(&key)
         .unwrap()
@@ -1490,7 +1583,10 @@ fn a_new_source_generation_marks_session_evidence_pending() {
     record.source_fingerprint = Some("sv1:changed".into());
 
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
 
     assert_eq!(
@@ -1514,7 +1610,9 @@ fn marking_session_evidence_pending_keeps_the_last_completed_payload() {
     let before = store.evidence(&record.key).unwrap().unwrap();
     record.source_fingerprint = Some("sv1:changed".into());
 
-    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let after = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(after.status, EvidenceStatus::Pending);
@@ -1605,7 +1703,9 @@ fn reconciling_enrolls_a_session_evidence_row_for_an_upgraded_session() {
     let mut record = session("upgrade-enrollment", 1_000);
     record.source_fingerprint = Some("sv1:current".into());
 
-    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
     assert!(store.evidence(&record.key).unwrap().is_none());
     assert_eq!(
         store
@@ -1700,7 +1800,10 @@ fn reconciling_session_evidence_skips_a_disabled_agent() {
     let mut codex = session("disabled-evidence", 1_000);
     codex.key.agent = "codex".into();
     store
-        .upsert_sessions(&[claude.clone(), codex.clone()])
+        .upsert_sessions(
+            &[claude.clone(), codex.clone()],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     store
         .lock()
@@ -1718,11 +1821,120 @@ fn reconciling_session_evidence_skips_a_disabled_agent() {
 }
 
 #[test]
+fn a_session_outside_the_evidence_cohort_gets_no_row() {
+    let store = store();
+    let claude = session("cohort-claude", 1_000);
+    let mut codex = session("cohort-codex", 1_000);
+    codex.key.agent = "codex".to_string();
+
+    store
+        .upsert_sessions(
+            &[claude.clone(), codex.clone()],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    assert!(store.evidence(&claude.key).unwrap().is_some());
+    assert!(store.evidence(&codex.key).unwrap().is_none());
+}
+
+#[test]
+fn a_terminal_failure_survives_two_startup_reconciles() {
+    let store = store();
+    let (_, claim) = claimed_projection(&store, "terminal-reconcile", 100, 60);
+    assert!(
+        store
+            .fail_evidence(
+                &claim,
+                EvidenceFailure::Failed {
+                    revisions: projection_revisions(),
+                },
+                "source-missing",
+            )
+            .unwrap()
+    );
+
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store.evidence(&claim.key).unwrap().unwrap().status,
+            EvidenceStatus::Failed
+        );
+        assert!(
+            store
+                .claim_next_evidence(&["claude-code"], 200, 60)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn a_returned_source_requeues_with_an_unchanged_fingerprint() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "returned-source", 100, 60);
+    assert!(
+        store
+            .fail_evidence(
+                &claim,
+                EvidenceFailure::Failed {
+                    revisions: projection_revisions(),
+                },
+                "source-missing",
+            )
+            .unwrap()
+    );
+    let generation = claim.source_generation;
+    let mut returned = session("returned-source", 1_000);
+    returned.source_fingerprint = Some(record.source_fingerprint);
+
+    store
+        .upsert_sessions(&[returned], &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let evidence = store.evidence(&claim.key).unwrap().unwrap();
+    assert_eq!(
+        store
+            .session_source_state(&claim.key)
+            .unwrap()
+            .unwrap()
+            .source_generation,
+        generation
+    );
+    assert_eq!(evidence.status, EvidenceStatus::Pending);
+    assert_eq!(evidence.retry_count, 0);
+}
+
+#[test]
+fn an_abandoned_processing_row_requeues_at_startup() {
+    let store = store();
+    let (_, claim) = claimed_projection(&store, "abandoned-startup", 100, 60);
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.evidence(&claim.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
 fn the_first_session_evidence_claim_excludes_a_second_claim() {
     let store = store();
     let mut record = session("exclusive-claim", 1_000);
     record.source_fingerprint = Some("sv1:exclusive".into());
-    store.upsert_sessions(&[record]).unwrap();
+    store
+        .upsert_sessions(&[record], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let first = store
         .claim_next_evidence(&["claude-code"], 100, 60)
@@ -1743,7 +1955,9 @@ fn reclaiming_an_abandoned_session_evidence_row_raises_the_fence() {
     let store = store();
     let mut record = session("reclaimed-claim", 1_000);
     record.source_fingerprint = Some("sv1:reclaim".into());
-    store.upsert_sessions(&[record]).unwrap();
+    store
+        .upsert_sessions(&[record], &crate::agents::evidence_cohort())
+        .unwrap();
     let first = store
         .claim_next_evidence(&["claude-code"], 100, 10)
         .unwrap()
@@ -1764,7 +1978,9 @@ fn a_late_session_evidence_transition_is_rejected() {
     let store = store();
     let mut record = session("late-transition", 1_000);
     record.source_fingerprint = Some("sv1:late".into());
-    store.upsert_sessions(&[record]).unwrap();
+    store
+        .upsert_sessions(&[record], &crate::agents::evidence_cohort())
+        .unwrap();
     let first = store
         .claim_next_evidence(&["claude-code"], 100, 10)
         .unwrap()
@@ -1777,7 +1993,13 @@ fn a_late_session_evidence_transition_is_rejected() {
 
     assert!(
         !store
-            .fail_evidence(&first, EvidenceFailure::Failed, "late")
+            .fail_evidence(
+                &first,
+                EvidenceFailure::Failed {
+                    revisions: projection_revisions()
+                },
+                "late"
+            )
             .unwrap()
     );
     assert_eq!(store.evidence(&current.key).unwrap().unwrap(), before);
@@ -1788,7 +2010,9 @@ fn a_stale_generation_rejects_a_session_evidence_lease_renewal() {
     let store = store();
     let mut record = session("stale-renewal", 1_000);
     record.source_fingerprint = Some("sv1:renewal".into());
-    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
     let claim = store
         .claim_next_evidence(&["claude-code"], 100, 60)
         .unwrap()
@@ -1816,7 +2040,9 @@ fn a_stale_generation_rejects_a_session_evidence_failure() {
     let store = store();
     let mut record = session("stale-failure", 1_000);
     record.source_fingerprint = Some("sv1:failure".into());
-    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
     let claim = store
         .claim_next_evidence(&["claude-code"], 100, 60)
         .unwrap()
@@ -1837,7 +2063,13 @@ fn a_stale_generation_rejects_a_session_evidence_failure() {
 
     assert!(
         !store
-            .fail_evidence(&claim, EvidenceFailure::Failed, "stale")
+            .fail_evidence(
+                &claim,
+                EvidenceFailure::Failed {
+                    revisions: projection_revisions()
+                },
+                "stale"
+            )
             .unwrap()
     );
     assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
@@ -1848,7 +2080,9 @@ fn a_session_evidence_claim_is_not_eligible_before_its_next_attempt() {
     let store = store();
     let mut record = session("delayed-claim", 1_000);
     record.source_fingerprint = Some("sv1:delayed".into());
-    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
     store
         .lock()
         .execute(
@@ -1881,7 +2115,9 @@ fn failing_session_evidence_with_retry_returns_it_to_pending_with_backoff() {
     let store = store();
     let mut record = session("retry-failure", 1_000);
     record.source_fingerprint = Some("sv1:retry".into());
-    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
     let claim = store
         .claim_next_evidence(&["claude-code"], 100, 60)
         .unwrap()
@@ -1919,7 +2155,9 @@ fn failing_session_evidence_terminally_marks_it_failed() {
     let store = store();
     let mut record = session("terminal-failure", 1_000);
     record.source_fingerprint = Some("sv1:terminal".into());
-    store.upsert_sessions(&[record.clone()]).unwrap();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
     let claim = store
         .claim_next_evidence(&["claude-code"], 100, 60)
         .unwrap()
@@ -1927,7 +2165,13 @@ fn failing_session_evidence_terminally_marks_it_failed() {
 
     assert!(
         store
-            .fail_evidence(&claim, EvidenceFailure::Failed, "terminal")
+            .fail_evidence(
+                &claim,
+                EvidenceFailure::Failed {
+                    revisions: projection_revisions()
+                },
+                "terminal"
+            )
             .unwrap()
     );
 
@@ -1952,7 +2196,7 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
 
     assert!(
         store
-            .publish_projections(&record, Some(50), &completion)
+            .publish_projections(&record, Some(50), &completion, &[])
             .unwrap()
     );
 
@@ -1994,7 +2238,7 @@ fn published_session_evidence_and_analysis_describe_the_same_pass() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion)
+            .publish_projections(&record, None, &completion, &[])
             .unwrap()
     );
 
@@ -2037,7 +2281,7 @@ fn a_stale_generation_publishes_no_session_evidence_and_no_analysis() {
 
     assert!(
         !store
-            .publish_projections(&record, Some(88), &completion)
+            .publish_projections(&record, Some(88), &completion, &[])
             .unwrap()
     );
 
@@ -2073,7 +2317,7 @@ fn a_stale_fence_publishes_no_session_evidence_and_no_analysis() {
 
     assert!(
         !store
-            .publish_projections(&record, Some(88), &completion)
+            .publish_projections(&record, Some(88), &completion, &[])
             .unwrap()
     );
 
@@ -2092,12 +2336,115 @@ fn a_stale_fence_publishes_no_session_evidence_and_no_analysis() {
 }
 
 #[test]
+fn a_stale_claim_cannot_change_projections_or_relations() {
+    let store = store();
+    let (record, first_claim) = claimed_projection(&store, "stale-all-projections", 100, 10);
+    let current_claim = store
+        .claim_next_evidence(&["claude-code"], 110, 60)
+        .unwrap()
+        .unwrap();
+    let current_completion = evidence_completion(
+        &current_claim,
+        PublishedEvidence::Ready,
+        "{\"new\":true}".into(),
+    );
+    let current_relations = [RelationRecord {
+        kind: RelationKind::Subagent,
+        related_id: "new-child".into(),
+        label: Some("New child".into()),
+    }];
+    assert!(
+        store
+            .publish_projections(&record, None, &current_completion, &current_relations)
+            .unwrap()
+    );
+    let analysis_before = store.analysis(&record.key).unwrap();
+    let evidence_before = store.evidence(&record.key).unwrap();
+    let relations_before = store.relations(&record.key).unwrap();
+    let mut stale_record = record.clone();
+    stale_record.model_breakdown_json = "{\"old\":true}".into();
+    let stale_completion = evidence_completion(
+        &first_claim,
+        PublishedEvidence::Ready,
+        "{\"old\":true}".into(),
+    );
+    let stale_relations = [RelationRecord {
+        kind: RelationKind::Subagent,
+        related_id: "old-child".into(),
+        label: Some("Old child".into()),
+    }];
+
+    assert!(
+        !store
+            .publish_projections(&stale_record, None, &stale_completion, &stale_relations)
+            .unwrap()
+    );
+    assert_eq!(store.analysis(&record.key).unwrap(), analysis_before);
+    assert_eq!(store.evidence(&record.key).unwrap(), evidence_before);
+    assert_eq!(store.relations(&record.key).unwrap(), relations_before);
+}
+
+#[test]
+fn publication_replaces_subagent_relations_in_one_transaction() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "relation-publication", 100, 60);
+    store
+        .replace_relations(
+            &record.key,
+            RelationKind::ForkParent,
+            &[RelationRecord {
+                kind: RelationKind::ForkParent,
+                related_id: "fork-parent".into(),
+                label: None,
+            }],
+        )
+        .unwrap();
+    store
+        .replace_relations(
+            &record.key,
+            RelationKind::Subagent,
+            &[RelationRecord {
+                kind: RelationKind::Subagent,
+                related_id: "old-child".into(),
+                label: None,
+            }],
+        )
+        .unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let new_relations = [RelationRecord {
+        kind: RelationKind::Subagent,
+        related_id: "new-child".into(),
+        label: Some("New child".into()),
+    }];
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &new_relations)
+            .unwrap()
+    );
+    assert_eq!(
+        store.relations(&record.key).unwrap(),
+        vec![
+            RelationRecord {
+                kind: RelationKind::ForkParent,
+                related_id: "fork-parent".into(),
+                label: None,
+            },
+            new_relations[0].clone(),
+        ]
+    );
+}
+
+#[test]
 fn deleting_a_session_removes_its_session_evidence() {
     let store = store();
     let mut record = session("delete-evidence", 1_000);
     record.source_fingerprint = Some("sv1:delete".into());
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     assert!(store.evidence(&record.key).unwrap().is_some());
 
@@ -2113,7 +2460,9 @@ fn clearing_local_session_data_removes_every_session_evidence_row() {
     first.source_fingerprint = Some("sv1:clear-one".into());
     let mut second = session("clear-evidence-two", 1_000);
     second.source_fingerprint = Some("sv1:clear-two".into());
-    store.upsert_sessions(&[first, second]).unwrap();
+    store
+        .upsert_sessions(&[first, second], &crate::agents::evidence_cohort())
+        .unwrap();
 
     assert_eq!(store.clear_local_session_data().unwrap(), 2);
 
@@ -2146,7 +2495,7 @@ fn a_session_evidence_payload_round_trips_through_the_store() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion)
+            .publish_projections(&record, None, &completion, &[])
             .unwrap()
     );
 
@@ -2167,10 +2516,15 @@ fn started_at_epoch_stays_null_through_scan_upserts() {
     let mut record = session("no-start", 1_000);
     record.source_fingerprint = Some("sv1:first".to_string());
     store
-        .upsert_sessions(std::slice::from_ref(&record))
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
     record.source_fingerprint = Some("sv1:second".to_string());
-    store.upsert_sessions(&[record]).unwrap();
+    store
+        .upsert_sessions(&[record], &crate::agents::evidence_cohort())
+        .unwrap();
 
     let state = store
         .session_source_state(&key)
