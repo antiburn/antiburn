@@ -71,8 +71,6 @@ test("the release workflow validates and verifies the profile-backed entitlement
   );
   assert.match(workflow, /codesign -d --entitlements :- "\$executable"/);
   assert.match(workflow, /test "\$communication" = "true"/);
-  assert.match(
-    workflow,
-    /test ! -e "\$app\/Contents\/embedded\.provisionprofile"/,
-  );
+  assert.doesNotMatch(workflow, /ALLOW_UNSIGNED_MACOS/);
+  assert.doesNotMatch(workflow, /Signature=adhoc/);
 });
