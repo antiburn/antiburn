@@ -33,11 +33,9 @@ import { UsageRing } from "./UsageRing"
 /**
  * The diameter of a provider's ring on the closed bar, in logical pixels.
  *
- * Larger than the 22 it was inside a pill. The pill and the percentage beside
- * it are gone, so the arc is the whole reading, and an arc has to be big
- * enough to tell a low share from an empty one. It stops short of a size that
- * competes with the session rows under it. Local geometry for this one
- * visualization, not a shared token.
+ * The arc is large enough to show a low share clearly. It also leaves room
+ * for the percentage beside it without competing with the session rows.
+ * This is local geometry for one visualization, not a shared token.
  */
 const RING_SIZE = 26
 
@@ -54,9 +52,9 @@ export interface UsageLimitsBarProps {
 }
 
 /**
- * The popover's usage-limits bar: one ring per provider carrying the worst
- * live window, and a chart-icon disclosure that replaces the row with
- * per-provider segmented meters.
+ * The popover's usage-limits bar: one ring and percentage per provider for
+ * the worst live window, and a chart-icon disclosure that replaces the row
+ * with per-provider segmented meters.
  *
  * The two states do not stack. A closed bar is the ring row. An open one is
  * the meters alone, with the disclosure moved onto the first provider's name:
@@ -106,7 +104,7 @@ export function UsageLimitsBar({
     <div data-testid="usage-limits-bar" className="relative shrink-0 border-b border-separator">
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             {limited.map((provider) => (
               <ProviderRadial key={provider.provider} provider={provider} onOpen={onViewAll} />
             ))}
@@ -258,14 +256,9 @@ function ProviderGroup({
 }
 
 /**
- * One provider's worst-window reading, as a ring and nothing else. A click
- * opens the full Usage view — the review removed the separate "Show All…"
- * text button, so the radials themselves are the entry point.
- *
- * The pill and the percentage beside it are both gone. The figure they stated
- * is restated by every meter one click away, and the row's job here is a
- * glance, not a readout. The words survive on hover and for assistive
- * technology, so nothing that was said is now unsayable.
+ * One provider's worst-window reading, as a ring and percentage. A click
+ * opens the full Usage view. The review removed the separate "Show All…"
+ * text button, so the radial and figure form the entry point.
  */
 function ProviderRadial({
   provider,
@@ -281,7 +274,7 @@ function ProviderRadial({
       type="button"
       onClick={onOpen}
       title={`${provider.displayName} — ${figure}`}
-      className="shrink-0 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
+      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
       aria-label={`${provider.displayName}${
         percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
       }`}
@@ -293,6 +286,9 @@ function ProviderRadial({
         size={RING_SIZE}
         className="block text-label-secondary"
       />
+      <span aria-hidden="true" className="type-footnote leading-none text-label">
+        <SegmentFigure>{percent != null ? `${Math.round(percent)}%` : "—"}</SegmentFigure>
+      </span>
     </button>
   )
 }

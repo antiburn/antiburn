@@ -130,14 +130,21 @@ describe("UsageLimitsBar — the ring row", () => {
     expect(screen.getByRole("button", { name: "Claude at 42 percent" })).toBeInTheDocument()
   })
 
-  it("draws the reading as a ring alone, with the figure only on hover", () => {
-    // The row states no percentage: the ring is the glance, and the meters a
-    // click away are the readout. A figure printed here would be the same
-    // number twice.
+  it("shows the percentage beside the ring", () => {
     bar()
     const seat = screen.getByRole("button", { name: "Claude at 42 percent" })
-    expect(seat).toHaveTextContent("")
+    expect(within(seat).getByText("42%")).toBeInTheDocument()
     expect(seat).toHaveAttribute("title", "Claude — 42%")
+  })
+
+  it("shows a dash beside the ring when the provider states no figure", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ windows: [liveWindow({ usedPercent: null })] })],
+      }),
+    })
+    const seat = screen.getByRole("button", { name: "Claude, no stated figure" })
+    expect(within(seat).getByText("—")).toBeInTheDocument()
   })
 })
 
