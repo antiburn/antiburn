@@ -351,12 +351,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The engine embeds a compacted antiburn/systemprompts tool catalogue at
-      # build time (scripts/build-tool-catalog.mjs). A release build needs the
-      # real catalogue, not the fixture CI uses, so this checks out that
-      # repository fresh on every build leg rather than sharing one checkout
-      # across the matrix — each leg is an independent runner with its own
-      # dependency install already, and the checkout is small.
+      # cargo needs tool_catalog.json, which is gitignored. CI uses the committed
+      # fixture catalogue; a release builds the real one from a systemprompts
+      # checkout (scripts/build-tool-catalog.mjs). Each matrix leg checks the
+      # repository out itself: the legs are independent runners, and the
+      # checkout is small.
       - name: Check out antiburn/systemprompts
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
