@@ -21,7 +21,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023", "D-024", "D-026", "D-028", "D-029"]
+governance_decisions = ["D-001", "D-002", "D-003", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-014", "D-020", "D-021", "D-022", "D-023", "D-024", "D-026", "D-028", "D-029", "D-030"]
 default_action = "deny"
 publication_authorization = "authorized MPL-2.0 repository commit or merge; unresolved rights remain denied"
 third_party_resolution = "deferred until the public local-crate manifest and lockfile exist"
@@ -733,7 +733,7 @@ current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
   "Keep the poll cadence, binary-GB arithmetic, edge trigger with re-arm hysteresis, launch seeding, and the rationale comments.",
-  "Rewrite the delivery function against the public notifications pipeline; do not copy popover parking, DeferredNudge, NotificationGate, or NudgeAccess entitlement gating.",
+  "Rewrite the delivery function against the public notifications pipeline; do not copy popover parking, DeferredNudge, or NudgeAccess entitlement gating. The NotificationGate check is separately authorized by rule focus-dnd-gate under D-030.",
   "Strip Cadence names, analytics calls, and private state types; add MPL-2.0 headers.",
 ]
 
@@ -788,8 +788,30 @@ current_license = "Proprietary"
 intended_license = "MPL-2.0"
 notes = [
   "Extract only the slim subset: window construction, placement geometry, show/replace/dismiss, auto-dismiss timing, and the view's tone/title/body/dismiss presentation.",
-  "Do not copy gate.rs (Focus/DND gate), popover parking, DeferredNudge, NudgeAccess entitlement, ambience/radar/tune-up kinds, cooldown telemetry, or analytics.",
+  "Do not copy popover parking, DeferredNudge, NudgeAccess entitlement, ambience/radar/tune-up kinds, cooldown telemetry, or analytics. gate.rs (Focus/DND gate) is separately authorized by rule focus-dnd-gate under D-030.",
   "Strip Cadence names and event names; add MPL-2.0 headers; route delivery through the public notifications module's gating.",
+]
+
+[[rule]]
+id = "focus-dnd-gate"
+source_paths = [
+  "desktop/src-tauri/crates/nudge/src/gate.rs",
+  "desktop/src-tauri/src/nudges.rs",
+  "desktop/src-tauri/src/lib.rs",
+  "desktop/src-tauri/src/commands.rs",
+  "desktop/src-tauri/src/disk_monitor.rs",
+]
+path_kind = "file-sections"
+disposition = "adapt"
+destination = "apps/desktop/src-tauri/crates/nudge/src/gate.rs and the notification policy seams in apps/desktop/src-tauri/src"
+provenance = "Cadence company-authored OS interruption gate; D-030 maintainer decision authorizes the adapt port; reviewed at private merge commit 7b7d54f49b3200aed78dd075c685822d46da08e3"
+current_license = "Proprietary"
+intended_license = "MPL-2.0"
+notes = [
+  "Extract the NotificationGate states, the fail-open policy, the bounded unknown logging, the one-shot authorization, and the macOS/Windows/GNOME/Plasma probes with their unit tests.",
+  "Do not copy popover parking, DeferredNudge, delivery-class park/drain machinery, NudgeAccess entitlement gating, or the provider-usage, ambience, radar, and tray call sites.",
+  "Route the gate through the public notifications module's single delivery seam; explicit previews bypass it there.",
+  "Strip private names; add MPL-2.0 headers; keep every probe on-demand with no resident observers.",
 ]
 
 [[rule]]

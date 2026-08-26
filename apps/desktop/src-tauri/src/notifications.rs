@@ -28,6 +28,16 @@
 //! - **Only the shell posts one.** The webview is granted no notification
 //!   permission (`capabilities/default.json`), so "what is worth interrupting
 //!   someone for" is decided in one place, in this file.
+//! - **The operating system gets the last word** for automated kinds.
+//!   Immediately before an automated notification shows, [`deliver`] asks the
+//!   OS whether interruptions are welcome right now — Focus and Do Not Disturb
+//!   on macOS, fullscreen/presentation/toasts-off states on Windows, DND on
+//!   GNOME and Plasma ([`antiburn_nudge::NotificationGate`]). A suppressed
+//!   notification is dropped and its trigger stays consumed, so ending Focus
+//!   does not release a backlog of stale notifications. Unknown OS state fails
+//!   open. Preview kinds bypass the gate for the same reason they bypass the
+//!   master switch: the reader just asked to see them. See
+//!   `docs/os-notification-gating.md`.
 //!
 //! Delivery goes to antiburn's own notification window (the `antiburn-nudge`
 //! crate, via [`crate::nudges`]): the decisions above are ordinary functions
@@ -181,7 +191,34 @@ impl NotificationState {
     }
 }
 
+/// Who asked for this notification.
+///
+/// The OS interruption gate applies only to [`Delivery::Automated`]. A preview
+/// is the direct result of a button the reader pressed a moment earlier, so
+/// Focus or Do Not Disturb must not hide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// antiburn decided to speak. The OS gate can drop it.
+    Automated,
+    /// The reader asked to see it. The OS gate does not apply.
+    Preview,
+}
+
+/// Ask the OS whether an automated notification may interrupt right now.
+///
+/// A missing gate fails open: the gate is managed at setup, so its absence
+/// means a test harness, not a policy answer.
+fn os_gate_allows(app: &AppHandle) -> bool {
+    app.try_state::<antiburn_nudge::NotificationGate>()
+        .is_none_or(|gate| gate.delivery_allowed())
+}
+
 /// Build and hand off one approved nudge.
+///
+/// For [`Delivery::Automated`], the OS interruption gate runs here, last,
+/// after every preference and claim has already passed — so a suppressed
+/// notification is dropped with its bookkeeping consumed, and ending Focus
+/// cannot release it later.
 ///
 /// The id is unique per delivery — the view de-duplicates re-emitted events
 /// by id, so reusing one would make a genuinely new nudge look like an echo.
@@ -190,10 +227,15 @@ impl NotificationState {
 fn deliver(
     app: &AppHandle,
     kind: Kind,
+    delivery: Delivery,
     copy: NotificationCopy,
     extra_action: Option<(&str, &str)>,
     tone_override: Option<NudgeTone>,
 ) {
+    if delivery == Delivery::Automated && !os_gate_allows(app) {
+        tracing::debug!(event = "nudge_os_suppressed", ?kind);
+        return;
+    }
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let (nudge_kind, default_tone) = match kind {
         Kind::UpdateAvailable => (NudgeKind::UpdateAvailable, NudgeTone::Info),
@@ -365,6 +407,7 @@ pub fn note_scan_outcome(app: &AppHandle, status: &ScanStatus) {
     deliver(
         app,
         Kind::ScanFailure,
+        Delivery::Automated,
         scan_failure_message(error),
         Some(("review_sources", "Review sources")),
         None,
@@ -395,6 +438,7 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
     deliver(
         app,
         Kind::UpdateAvailable,
+        Delivery::Automated,
         update_message(version),
         Some(("view", "View")),
         None,
@@ -402,8 +446,10 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
 }
 
 /// Report low disk space. Returns whether the episode was consumed: `true`
-/// when delivered, `false` when suppressed by preference so the caller's
-/// trigger retries on its next tick (see [`crate::disk_monitor`]).
+/// when delivered — or when Focus/DND suppressed it, because a stale disk
+/// warning must not appear when Focus ends; the trigger re-arms only after
+/// free space recovers. `false` means suppressed by preference, so the
+/// caller's trigger retries on its next tick (see [`crate::disk_monitor`]).
 pub fn note_disk_space_low(app: &AppHandle, free_gb: u64, threshold_gb: u32) -> bool {
     if !enabled(app, Kind::DiskSpaceLow) {
         return false;
@@ -411,6 +457,7 @@ pub fn note_disk_space_low(app: &AppHandle, free_gb: u64, threshold_gb: u32) -> 
     deliver(
         app,
         Kind::DiskSpaceLow,
+        Delivery::Automated,
         disk_space_low_message(free_gb, threshold_gb),
         None,
         None,
@@ -420,6 +467,8 @@ pub fn note_disk_space_low(app: &AppHandle, free_gb: u64, threshold_gb: u32) -> 
 
 /// Report crossed milestones. Selection and dedup happen in the engine
 /// ([`crate::provider_usage::live`]); this only applies the preference gate.
+/// A crossing that Focus/DND suppresses stays consumed (`true`): the moment
+/// it described has passed, and it must not surface when Focus ends.
 pub fn note_usage_milestone(
     app: &AppHandle,
     content: &crate::provider_usage::live::MilestoneContent,
@@ -430,6 +479,7 @@ pub fn note_usage_milestone(
     deliver(
         app,
         Kind::UsageMilestone,
+        Delivery::Automated,
         usage_milestone_message(content),
         None,
         Some(usage_milestone_tone(content)),
@@ -449,6 +499,7 @@ pub fn note_menu_bar_home(app: &AppHandle) {
     deliver(
         app,
         Kind::MenuBarHome,
+        Delivery::Preview,
         menu_bar_home_message(),
         Some(("show", "Show me")),
         None,
@@ -459,7 +510,14 @@ pub fn note_menu_bar_home(app: &AppHandle) {
 /// the reader pressed the button — but is otherwise the same delivery path as
 /// every real kind, so what they see is what they will get.
 pub fn note_test(app: &AppHandle) {
-    deliver(app, Kind::Test, test_message(), None, None);
+    deliver(
+        app,
+        Kind::Test,
+        Delivery::Preview,
+        test_message(),
+        None,
+        None,
+    );
 }
 
 /// Post a sample of `kind` with representative figures, for copy work.
@@ -499,7 +557,32 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
         }
         Kind::Test => (test_message(), None, None),
     };
-    deliver(app, kind, copy, extra_action, tone);
+    deliver(app, kind, Delivery::Preview, copy, extra_action, tone);
+}
+
+/// Request the macOS Focus-status authorization, at most once per process.
+///
+/// The request runs only when setup is complete and the master notification
+/// preference is on, so the permission sheet cannot appear over the first-run
+/// window. Repeat calls are free: the gate keeps a once-flag. The other
+/// platforms need no authorization. The gate self-skips for unbundled dev
+/// binaries, which cannot hold the signed entitlement.
+pub fn maybe_initialize_authorization(app: &AppHandle) {
+    let ready = app
+        .try_state::<Store>()
+        .and_then(|store| store.settings().ok())
+        .is_some_and(|settings| settings.onboarding_completed && settings.notifications_enabled);
+    if !ready {
+        return;
+    }
+    let init_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        if let Some(gate) = init_app.try_state::<antiburn_nudge::NotificationGate>() {
+            gate.initialize_authorization();
+        }
+    }) {
+        tracing::debug!(event = "nudge_authorization_dispatch_failed", %error);
+    }
 }
 
 /// The reader's preferences, read fresh, defaulting to *silence* when the store

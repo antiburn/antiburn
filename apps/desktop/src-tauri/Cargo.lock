@@ -150,14 +150,21 @@ dependencies = [
 name = "antiburn-nudge"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "core-foundation",
  "core-graphics",
+ "gio",
  "gtk",
+ "objc2",
+ "objc2-foundation",
+ "objc2-intents",
+ "objc2-user-notifications",
  "serde",
  "tauri",
  "tauri-nspanel",
  "tracing",
  "windows 0.62.2",
+ "zbus",
 ]
 
 [[package]]
@@ -2933,6 +2940,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-intents"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80fac082e6de12282b24ea745e9707cd374363c7ae0b2f813bf1813cfc289325"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-io-surface"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3018,6 +3036,8 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
 dependencies = [
+ "bitflags 2.13.1",
+ "block2",
  "objc2",
  "objc2-foundation",
 ]

@@ -23,7 +23,7 @@ source_commit = "54c4a3bceda80558760a9ff6fc8bf7d04873b43f"
 # later authorized platform migration makes it canonical, version this manifest at the next source
 # review to record its exact reviewed commit while retaining Cadence provenance.
 intended_future_private_repository = "antiburn/antiburn-cloud"
-governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025", "D-026", "D-027", "D-028", "D-029"]
+governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D-009", "D-010", "D-011", "D-012", "D-015", "D-016", "D-017", "D-018", "D-019", "D-020", "D-021", "D-022", "D-023", "D-024", "D-025", "D-026", "D-027", "D-028", "D-029", "D-030"]
 # D-025 (maintainer decision, 2026-08-18; definition of "local" in docs/deviations.md D-27):
 # fixes the boundary this manifest draws around what the installed app may DO.
 # antiburn is local in that it needs no service of antiburn's; as the reader's
@@ -104,6 +104,26 @@ governance_decisions = ["D-001", "D-003", "D-004", "D-005", "D-007", "D-008", "D
 # The macos-private-api feature this needs is already in the build, resolved
 # through tauri-nspanel. The manifest now asks for it directly so the popover
 # does not depend on another crate's feature by accident.
+# D-030 (maintainer decision, ratified 2026-08-26): authorizes the adapt port
+# named by allowlist rule focus-dnd-gate — the best-effort OS interruption gate
+# that keeps automated notifications from appearing while Focus, Do Not
+# Disturb, presentation mode, or an equivalent desktop inhibition state is
+# active.
+# D-023's nudge-window-mechanics and disk-space-monitor rules excluded this
+# gate to bound that port's scope; this decision lifts exactly that exclusion
+# and no other. Popover parking, deferred-nudge machinery, delivery-class
+# park/drain state, entitlement-based access gating, and the private app's
+# provider-usage, ambience, radar, and tray call sites remain denied — the
+# public app has none of those surfaces.
+# The gate adds no data flow and no resident state. Every platform probe runs
+# on demand, immediately before one automated notification would show, and
+# retains nothing between probes. Suppression drops the notification and
+# consumes its trigger, so nothing queues while Focus is on. Unknown or
+# unavailable OS state fails open with bounded logging.
+# Reviewed at private merge commit 7b7d54f49b3200aed78dd075c685822d46da08e3
+# (the OS-aware delivery change). The macOS usage description, entitlement
+# plist, and bundle wiring are configuration authored for this tree; they
+# carry ordinary Git/DCO provenance.
 # D-023 (maintainer decision): authorizes the adapt ports named by allowlist rules
 # startup-registration, disk-space-monitor, tray-title-attributed-string,
 # notification-sound-crate, nudge-window-mechanics, and usage-milestone-engine.
