@@ -12,6 +12,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::analysis::framing::PartialReason;
 use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall};
@@ -40,7 +42,40 @@ pub struct SessionInput {
 /// One framed record's outcome, in transcript order.
 pub enum NormalizedRecord {
     MetricsEvent(Box<NormalizedEvent>),
+    Observation(Box<EvidenceObservation>),
     Unusable(PartialReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceObservation {
+    ContextSource {
+        kind: ContextSourceKind,
+        name: String,
+        description: Option<String>,
+    },
+    SubagentSpawn {
+        ts_ms: Option<i64>,
+        parent_model: Option<String>,
+        provenance: RelationProvenance,
+    },
+    DelegatedTurn {
+        is_sidechain: bool,
+    },
+    UnrecognizedType {
+        discriminator: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSourceKind {
+    Skill,
+    McpServer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationProvenance {
+    TaskToolUse,
 }
 
 /// Session facts that an adapter can state only after the last record.
@@ -129,6 +164,7 @@ impl RecordSink for SessionCollector {
     fn record(&mut self, record: NormalizedRecord) {
         match record {
             NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
+            NormalizedRecord::Observation(_) => {}
             NormalizedRecord::Unusable(reason) => {
                 self.partial_reasons.insert(reason);
             }

@@ -1,0 +1,3 @@
+{"type":"assistant","timestamp":"2026-08-02T10:00:00Z","effort":"high","message":{"id":"msg-mode-1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":20,"output_tokens":5,"speed":"fast"},"content":[{"type":"text","text":"Synthetic main-loop turn."}]}}
+{"type":"assistant","timestamp":"2026-08-02T10:00:01Z","isSidechain":true,"reasoning_effort":"low","speed":"fast","message":{"id":"msg-mode-2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":15,"output_tokens":4},"content":[{"type":"text","text":"Synthetic delegated turn."}]}}
+{"type":"user","timestamp":"2026-08-02T10:00:02Z","message":{"role":"user","content":"Use high effort wording only as synthetic prompt text."}}

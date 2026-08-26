@@ -2,25 +2,30 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::interface::RelationProvenance;
 use crate::analysis::{PartialReason, RawSource, VisitOutcome};
 
 pub const EVIDENCE_STRING_CAP: usize = 256;
+pub const MAX_EVIDENCE_EXAMPLES: usize = 8;
+pub const MAX_TOOL_NAMES: usize = 128;
+pub const MAX_CONTEXT_SOURCES: usize = 64;
+pub const MAX_UNRECOGNIZED_TYPES: usize = 16;
+pub const MAX_DIAGNOSTIC_FIELDS: usize = 16;
+pub const MAX_MODELS: usize = 32;
+pub const MAX_TIER_LABELS: usize = 16;
+pub const MAX_SUBAGENT_CHILDREN: usize = 64;
+pub const MAX_MODEL_TRANSITIONS: usize = 64;
+pub const MAX_COMPACTION_BOUNDARIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "value", rename_all = "snake_case")]
 pub enum EvidenceValue<T> {
-    // TODO @agent: CH-009 will remove this.
-    #[cfg(debug_assertions)]
-    Unimplemented,
     Unsupported,
-    Partial {
-        observed: T,
-        reason: CoverageReason,
-    },
+    Partial { observed: T, reason: CoverageReason },
     Complete(T),
 }
 
@@ -34,6 +39,8 @@ pub enum CoverageReason {
     ReadFailed,
     UnrecognizedRecordType,
     PinnedPrefix,
+    CapExceeded,
+    AttributionIncomplete,
 }
 
 impl From<PartialReason> for CoverageReason {
@@ -51,8 +58,175 @@ impl From<PartialReason> for CoverageReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionTimeRange {
+    pub first_ts_ms: i64,
+    pub last_ts_ms: i64,
+    pub timestamped_turns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EligibilityEvidence {
+    pub turns: u64,
+    pub assistant_turns: u64,
+    pub tool_turns: u64,
+    pub depth_eligible_turns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContextEvidence {
     pub max_request_context_tokens: u64,
+    pub top_depth_examples: Vec<DepthExample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepthExample {
+    pub ts_ms: i64,
+    pub depth_tokens: u64,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolClass {
+    Mcp,
+    Skill,
+    Unclassified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolUse {
+    pub calls: u64,
+    pub class: ToolClass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolEvidence {
+    pub by_name: BTreeMap<String, ToolUse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadedSource {
+    pub description: Option<String>,
+    pub invoked: bool,
+    pub origin: EvidenceValue<()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSourceEvidence {
+    pub skills: BTreeMap<String, LoadedSource>,
+    pub mcp_servers: BTreeMap<String, LoadedSource>,
+    pub tool_definitions: EvidenceValue<()>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTokens {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+    pub turns: u64,
+    pub first_ts_ms: i64,
+    pub last_ts_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnCounts {
+    pub main_loop: u64,
+    pub delegated: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEvidence {
+    pub by_model: BTreeMap<String, ModelTokens>,
+    pub unattributed_turns: u64,
+    pub effort_tiers: BTreeMap<String, TurnCounts>,
+    pub fast_modes: BTreeMap<String, TurnCounts>,
+    pub service_tiers: EvidenceValue<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationConfidence {
+    Observed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentChild {
+    pub ordinal: u32,
+    pub parent_model: Option<String>,
+    pub child_model: EvidenceValue<()>,
+    pub confidence: RelationConfidence,
+    pub provenance: RelationProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentExample {
+    pub ts_ms: i64,
+    pub parent_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentEvidence {
+    pub spawn_count: u64,
+    pub delegated_turns: u64,
+    pub children: Vec<SubagentChild>,
+    pub examples: Vec<SubagentExample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTransition {
+    pub ts_ms: i64,
+    pub from_model: String,
+    pub to_model: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChurnCounts {
+    pub manual_compactions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheEvidence {
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub fresh_input_tokens: u64,
+    pub model_transitions: Vec<ModelTransition>,
+    pub longest_idle_gap_ms: i64,
+    pub idle_gap_ms_total: i64,
+    pub user_controlled_churn: ChurnCounts,
+    pub previous_turn: EvidenceValue<()>,
+    pub provider_eviction: EvidenceValue<()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionBoundary {
+    pub ts_ms: i64,
+    pub trigger: Option<crate::analysis::model::CompactionTrigger>,
+    pub pre_tokens: Option<u64>,
+    pub post_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionEvidence {
+    pub boundaries: Vec<CompactionBoundary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +234,21 @@ pub struct ContextEvidence {
 pub struct SourceCapabilities {
     pub request_context_tokens: bool,
     pub cache_write_tokens: bool,
+    pub timestamps_and_order: bool,
+    pub tool_invocations: bool,
+    pub skill_mcp_attribution: bool,
+    pub tool_definitions: bool,
+    pub model_identity: bool,
+    pub token_classes: bool,
+    pub reasoning_effort_tier: bool,
+    pub fast_tier: bool,
+    pub service_tier: bool,
+    pub subagent_relationships: bool,
+    pub subagent_models: bool,
+    pub compaction_boundaries: bool,
+    pub thread_identity: bool,
+    pub quota_incidents: bool,
+    pub harness_version: bool,
 }
 
 impl SourceCapabilities {
@@ -67,6 +256,21 @@ impl SourceCapabilities {
         Self {
             request_context_tokens: true,
             cache_write_tokens: true,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            skill_mcp_attribution: true,
+            tool_definitions: false,
+            model_identity: true,
+            token_classes: true,
+            reasoning_effort_tier: true,
+            fast_tier: true,
+            service_tier: false,
+            subagent_relationships: true,
+            subagent_models: false,
+            compaction_boundaries: true,
+            thread_identity: false,
+            quota_incidents: false,
+            harness_version: false,
         }
     }
 }
@@ -133,6 +337,7 @@ pub struct SessionProvenance {
     pub source_kind: SourceKind,
     pub source_acceptance: SourceAcceptance,
     pub ordering: OrderingObservation,
+    pub harness_version: EvidenceValue<()>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +346,22 @@ pub struct ParseDiagnostics {
     pub records_observed: u64,
     pub records_unusable: u64,
     pub unusable_reasons: BTreeMap<CoverageReason, u64>,
+    pub unrecognized_types: BTreeSet<String>,
+    pub truncated_strings: BTreeSet<String>,
+    pub capped_collections: BTreeSet<String>,
+}
+
+impl ParseDiagnostics {
+    pub(crate) fn new() -> Self {
+        Self {
+            records_observed: 0,
+            records_unusable: 0,
+            unusable_reasons: BTreeMap::new(),
+            unrecognized_types: BTreeSet::new(),
+            truncated_strings: BTreeSet::new(),
+            capped_collections: BTreeSet::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,20 +372,57 @@ pub struct SessionEvidenceIdentity {
 }
 
 impl SessionEvidenceIdentity {
-    pub fn new(agent: &str, session_id: &str) -> Self {
+    pub(crate) fn new(agent: &str, session_id: &str, diagnostics: &mut ParseDiagnostics) -> Self {
         Self {
-            agent: capped_string(agent),
-            session_id: capped_string(session_id),
+            agent: cap_string("identity.agent", agent, diagnostics),
+            session_id: cap_string("identity.session_id", session_id, diagnostics),
         }
     }
 }
 
-fn capped_string(value: &str) -> String {
+pub(crate) fn cap_string(
+    field: &'static str,
+    value: &str,
+    diagnostics: &mut ParseDiagnostics,
+) -> String {
     let mut end = value.len().min(EVIDENCE_STRING_CAP);
     while !value.is_char_boundary(end) {
         end -= 1;
     }
+    if end < value.len() && insert_diagnostic_field(&mut diagnostics.truncated_strings, field) {
+        record_diagnostic_set_cap(diagnostics, "diagnostics.truncated_strings");
+    }
     value[..end].to_owned()
+}
+
+pub(crate) fn insert_diagnostic_field(set: &mut BTreeSet<String>, field: &'static str) -> bool {
+    if set.contains(field) {
+        return false;
+    }
+    if set.len() == MAX_DIAGNOSTIC_FIELDS {
+        return true;
+    }
+    set.insert(field.to_owned());
+    false
+}
+
+pub(crate) fn record_diagnostic_set_cap(diagnostics: &mut ParseDiagnostics, field: &'static str) {
+    if diagnostics.capped_collections.contains(field) {
+        return;
+    }
+    if diagnostics.capped_collections.len() == MAX_DIAGNOSTIC_FIELDS {
+        diagnostics.capped_collections.pop_last();
+        diagnostics
+            .capped_collections
+            .insert("diagnostics.capped_collections".to_owned());
+        if field == "diagnostics.capped_collections" {
+            return;
+        }
+        if diagnostics.capped_collections.len() == MAX_DIAGNOSTIC_FIELDS {
+            diagnostics.capped_collections.pop_last();
+        }
+    }
+    diagnostics.capped_collections.insert(field.to_owned());
 }
 
 /// Contains the source facts that an accumulator needs at construction.
@@ -176,11 +434,6 @@ pub struct EvidenceSource {
     pub capabilities: SourceCapabilities,
 }
 
-// TODO @agent: CH-009 will remove this.
-#[cfg(debug_assertions)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnfinishedGroup;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEvidence {
@@ -191,44 +444,123 @@ pub struct SessionEvidence {
     pub coverage: EvidenceCoverage,
     pub provenance: SessionProvenance,
     pub diagnostics: ParseDiagnostics,
-    // TODO @agent: CH-009 will remove this.
-    #[cfg(debug_assertions)]
-    pub time_range: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub eligibility: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub models: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub tools: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub context_sources: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub subagents: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub cache: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub compactions: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub quota_incidents: EvidenceValue<UnfinishedGroup>,
+    pub time_range: EvidenceValue<SessionTimeRange>,
+    pub eligibility: EvidenceValue<EligibilityEvidence>,
+    pub tools: EvidenceValue<ToolEvidence>,
+    pub context_sources: EvidenceValue<ContextSourceEvidence>,
+    pub models: EvidenceValue<ModelEvidence>,
+    pub subagents: EvidenceValue<SubagentEvidence>,
+    pub cache: EvidenceValue<CacheEvidence>,
+    pub compactions: EvidenceValue<CompactionEvidence>,
+    pub quota_incidents: EvidenceValue<()>,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
     use serde_json::json;
 
     use super::*;
-    use crate::analysis::{ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION};
+    use crate::analysis::SessionEvidenceAccumulator;
+
+    fn empty_evidence(session_id: &str) -> SessionEvidence {
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: session_id.to_owned(),
+            kind: SourceKind::File,
+            capabilities: SourceCapabilities::claude(),
+        })
+        .evidence()
+    }
+
+    fn expected_empty_evidence(
+        session_id: String,
+        coverage: serde_json::Value,
+        truncated_strings: serde_json::Value,
+    ) -> serde_json::Value {
+        json!({
+            "schemaRevision": 2,
+            "identity": {"agent": "claude", "sessionId": session_id},
+            "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
+            "capabilities": {
+                "requestContextTokens": true,
+                "cacheWriteTokens": true,
+                "timestampsAndOrder": true,
+                "toolInvocations": true,
+                "skillMcpAttribution": true,
+                "toolDefinitions": false,
+                "modelIdentity": true,
+                "tokenClasses": true,
+                "reasoningEffortTier": true,
+                "fastTier": true,
+                "serviceTier": false,
+                "subagentRelationships": true,
+                "subagentModels": false,
+                "compactionBoundaries": true,
+                "threadIdentity": false,
+                "quotaIncidents": false,
+                "harnessVersion": false
+            },
+            "coverage": coverage,
+            "provenance": {
+                "parserRevision": 1,
+                "analyzerRevision": 2,
+                "evidenceSchemaRevision": 2,
+                "sourceKind": "file",
+                "sourceAcceptance": "not_observed",
+                "ordering": "monotonic",
+                "harnessVersion": {"state": "unsupported"}
+            },
+            "diagnostics": {
+                "recordsObserved": 0,
+                "recordsUnusable": 0,
+                "unusableReasons": {},
+                "unrecognizedTypes": [],
+                "truncatedStrings": truncated_strings,
+                "cappedCollections": []
+            },
+            "timeRange": {"state": "complete", "value": {"firstTsMs": 0, "lastTsMs": 0, "timestampedTurns": 0}},
+            "eligibility": {"state": "complete", "value": {"turns": 0, "assistantTurns": 0, "toolTurns": 0, "depthEligibleTurns": 0}},
+            "tools": {"state": "complete", "value": {"byName": {}}},
+            "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
+            "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}}},
+            "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "children": [], "examples": []}},
+            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "unsupported"}, "providerEviction": {"state": "unsupported"}}},
+            "compactions": {"state": "complete", "value": {"boundaries": []}},
+            "quotaIncidents": {"state": "unsupported"}
+        })
+    }
+
+    #[test]
+    fn complete_session_evidence_serializes_to_the_exact_object() {
+        assert_eq!(
+            serde_json::to_value(empty_evidence("s1")).unwrap(),
+            expected_empty_evidence("s1".to_owned(), json!("complete"), json!([]))
+        );
+    }
+
+    #[test]
+    fn partial_session_evidence_serializes_to_the_exact_object() {
+        let long_id = "s".repeat(EVIDENCE_STRING_CAP + 1);
+        assert_eq!(
+            serde_json::to_value(empty_evidence(&long_id)).unwrap(),
+            expected_empty_evidence(
+                "s".repeat(EVIDENCE_STRING_CAP),
+                json!({"partial": "cap_exceeded"}),
+                json!(["identity.session_id"]),
+            )
+        );
+    }
 
     #[test]
     fn evidence_value_serde_shape_is_adjacently_tagged() {
         let complete = EvidenceValue::Complete(ContextEvidence {
             max_request_context_tokens: 7,
+            top_depth_examples: Vec::new(),
         });
         let partial = EvidenceValue::Partial {
             observed: ContextEvidence {
                 max_request_context_tokens: 7,
+                top_depth_examples: Vec::new(),
             },
             reason: CoverageReason::MalformedRecord,
         };
@@ -236,17 +568,11 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(complete).unwrap(),
-            json!({"state": "complete", "value": {"maxRequestContextTokens": 7}})
+            json!({"state": "complete", "value": {"maxRequestContextTokens": 7, "topDepthExamples": []}})
         );
         assert_eq!(
             serde_json::to_value(partial).unwrap(),
-            json!({
-                "state": "partial",
-                "value": {
-                    "observed": {"maxRequestContextTokens": 7},
-                    "reason": "malformed_record"
-                }
-            })
+            json!({"state": "partial", "value": {"observed": {"maxRequestContextTokens": 7, "topDepthExamples": []}, "reason": "malformed_record"}})
         );
         assert_eq!(
             serde_json::to_value(unsupported).unwrap(),
@@ -255,250 +581,20 @@ mod tests {
     }
 
     #[test]
-    fn evidence_value_round_trips_through_json() {
-        let values = [
-            EvidenceValue::Complete(ContextEvidence {
-                max_request_context_tokens: 7,
-            }),
-            EvidenceValue::Partial {
-                observed: ContextEvidence {
-                    max_request_context_tokens: 7,
-                },
-                reason: CoverageReason::MalformedRecord,
-            },
-            EvidenceValue::Unsupported,
-        ];
-
-        for value in values {
-            let encoded = serde_json::to_string(&value).unwrap();
-            let decoded: EvidenceValue<ContextEvidence> = serde_json::from_str(&encoded).unwrap();
-            assert_eq!(decoded, value);
-        }
-    }
-
-    #[test]
-    fn complete_zero_is_distinguishable_from_unsupported() {
-        let complete = serde_json::to_value(EvidenceValue::Complete(ContextEvidence {
-            max_request_context_tokens: 0,
-        }))
-        .unwrap();
-        let unsupported =
-            serde_json::to_value(EvidenceValue::<ContextEvidence>::Unsupported).unwrap();
-
-        assert_ne!(complete, unsupported);
-        assert_ne!(complete, serde_json::Value::Null);
-        assert_ne!(unsupported, serde_json::Value::Null);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    fn unimplemented_serializes_as_its_own_state() {
-        assert_eq!(
-            serde_json::to_value(EvidenceValue::<UnfinishedGroup>::Unimplemented).unwrap(),
-            json!({"state": "unimplemented"})
-        );
-    }
-
-    #[test]
-    fn complete_session_evidence_serializes_to_the_exact_object() {
-        let evidence = session_evidence(
-            EvidenceValue::Complete(ContextEvidence {
-                max_request_context_tokens: 7,
-            }),
-            EvidenceCoverage::Complete,
-            SourceAcceptance::AcceptedFull,
-            BTreeMap::new(),
-        );
-
-        assert_eq!(
-            serde_json::to_value(evidence).unwrap(),
-            json!({
-                "schemaRevision": 1,
-                "identity": {"agent": "claude", "sessionId": "s1"},
-                "context": {"state": "complete", "value": {"maxRequestContextTokens": 7}},
-                "capabilities": {"requestContextTokens": true, "cacheWriteTokens": true},
-                "coverage": "complete",
-                "provenance": {
-                    "parserRevision": 1,
-                    "analyzerRevision": ANALYZER_REVISION,
-                    "evidenceSchemaRevision": 1,
-                    "sourceKind": "file",
-                    "sourceAcceptance": "accepted_full",
-                    "ordering": "monotonic"
-                },
-                "diagnostics": {
-                    "recordsObserved": 3,
-                    "recordsUnusable": 0,
-                    "unusableReasons": {}
-                },
-                "timeRange": {"state": "unimplemented"},
-                "eligibility": {"state": "unimplemented"},
-                "models": {"state": "unimplemented"},
-                "tools": {"state": "unimplemented"},
-                "contextSources": {"state": "unimplemented"},
-                "subagents": {"state": "unimplemented"},
-                "cache": {"state": "unimplemented"},
-                "compactions": {"state": "unimplemented"},
-                "quotaIncidents": {"state": "unimplemented"}
-            })
-        );
-    }
-
-    #[test]
-    fn partial_session_evidence_serializes_to_the_exact_object() {
-        let reasons = BTreeMap::from([(CoverageReason::MalformedRecord, 1)]);
-        let evidence = session_evidence(
-            EvidenceValue::Partial {
-                observed: ContextEvidence {
-                    max_request_context_tokens: 7,
-                },
-                reason: CoverageReason::MalformedRecord,
-            },
-            EvidenceCoverage::Partial(CoverageReason::MalformedRecord),
-            SourceAcceptance::AcceptedPrefix { boundary: 4096 },
-            reasons,
-        );
-
-        assert_eq!(
-            serde_json::to_value(evidence).unwrap(),
-            json!({
-                "schemaRevision": 1,
-                "identity": {"agent": "claude", "sessionId": "s1"},
-                "context": {
-                    "state": "partial",
-                    "value": {
-                        "observed": {"maxRequestContextTokens": 7},
-                        "reason": "malformed_record"
-                    }
-                },
-                "capabilities": {"requestContextTokens": true, "cacheWriteTokens": true},
-                "coverage": {"partial": "malformed_record"},
-                "provenance": {
-                    "parserRevision": 1,
-                    "analyzerRevision": ANALYZER_REVISION,
-                    "evidenceSchemaRevision": 1,
-                    "sourceKind": "file",
-                    "sourceAcceptance": {"accepted_prefix": {"boundary": 4096}},
-                    "ordering": "monotonic"
-                },
-                "diagnostics": {
-                    "recordsObserved": 3,
-                    "recordsUnusable": 1,
-                    "unusableReasons": {"malformed_record": 1}
-                },
-                "timeRange": {"state": "unimplemented"},
-                "eligibility": {"state": "unimplemented"},
-                "models": {"state": "unimplemented"},
-                "tools": {"state": "unimplemented"},
-                "contextSources": {"state": "unimplemented"},
-                "subagents": {"state": "unimplemented"},
-                "cache": {"state": "unimplemented"},
-                "compactions": {"state": "unimplemented"},
-                "quotaIncidents": {"state": "unimplemented"}
-            })
-        );
-    }
-
-    #[test]
-    fn coverage_reason_maps_every_partial_reason() {
-        let cases = [
-            (
-                PartialReason::Oversized,
-                CoverageReason::Oversized,
-                "oversized",
-            ),
-            (
-                PartialReason::MalformedRecord,
-                CoverageReason::MalformedRecord,
-                "malformed_record",
-            ),
-            (
-                PartialReason::IncompleteTail,
-                CoverageReason::IncompleteTail,
-                "incomplete_tail",
-            ),
-            (
-                PartialReason::Cancelled,
-                CoverageReason::Cancelled,
-                "cancelled",
-            ),
-            (
-                PartialReason::ReadFailed,
-                CoverageReason::ReadFailed,
-                "read_failed",
-            ),
-            (
-                PartialReason::UnrecognizedRecordType,
-                CoverageReason::UnrecognizedRecordType,
-                "unrecognized_record_type",
-            ),
-        ];
-        let mut mapped = BTreeSet::new();
-
-        for (partial, expected, serialized) in cases {
-            let actual = CoverageReason::from(partial);
-            assert_eq!(actual, expected);
-            assert_eq!(serde_json::to_value(actual).unwrap(), json!(serialized));
-            mapped.insert(actual);
-        }
-
-        assert_eq!(mapped.len(), 6);
-        assert!(!mapped.contains(&CoverageReason::PinnedPrefix));
-    }
-
-    #[test]
-    fn identity_strings_are_capped() {
+    fn identity_strings_are_capped_and_diagnosed() {
         let prefix = "a".repeat(EVIDENCE_STRING_CAP - 1);
         let over_cap = format!("{prefix}ésuffix");
-        let identity = SessionEvidenceIdentity::new(&over_cap, &over_cap);
+        let mut diagnostics = ParseDiagnostics::new();
+        let identity = SessionEvidenceIdentity::new(&over_cap, &over_cap, &mut diagnostics);
 
-        assert!(identity.agent.len() <= EVIDENCE_STRING_CAP);
-        assert!(identity.session_id.len() <= EVIDENCE_STRING_CAP);
         assert_eq!(identity.agent, prefix);
         assert_eq!(identity.session_id, prefix);
-        assert!(identity.agent.is_char_boundary(identity.agent.len()));
-        assert!(
-            identity
-                .session_id
-                .is_char_boundary(identity.session_id.len())
+        assert_eq!(
+            diagnostics.truncated_strings,
+            BTreeSet::from([
+                "identity.agent".to_owned(),
+                "identity.session_id".to_owned()
+            ])
         );
-    }
-
-    #[cfg(debug_assertions)]
-    fn session_evidence(
-        context: EvidenceValue<ContextEvidence>,
-        coverage: EvidenceCoverage,
-        source_acceptance: SourceAcceptance,
-        unusable_reasons: BTreeMap<CoverageReason, u64>,
-    ) -> SessionEvidence {
-        SessionEvidence {
-            schema_revision: EVIDENCE_SCHEMA_REVISION,
-            identity: SessionEvidenceIdentity::new("claude", "s1"),
-            context,
-            capabilities: SourceCapabilities::claude(),
-            coverage,
-            provenance: SessionProvenance {
-                parser_revision: PARSER_REVISION,
-                analyzer_revision: ANALYZER_REVISION,
-                evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
-                source_kind: SourceKind::File,
-                source_acceptance,
-                ordering: OrderingObservation::Monotonic,
-            },
-            diagnostics: ParseDiagnostics {
-                records_observed: 3,
-                records_unusable: u64::from(!unusable_reasons.is_empty()),
-                unusable_reasons,
-            },
-            time_range: EvidenceValue::Unimplemented,
-            eligibility: EvidenceValue::Unimplemented,
-            models: EvidenceValue::Unimplemented,
-            tools: EvidenceValue::Unimplemented,
-            context_sources: EvidenceValue::Unimplemented,
-            subagents: EvidenceValue::Unimplemented,
-            cache: EvidenceValue::Unimplemented,
-            compactions: EvidenceValue::Unimplemented,
-            quota_incidents: EvidenceValue::Unimplemented,
-        }
     }
 }

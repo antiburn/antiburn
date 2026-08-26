@@ -50,12 +50,14 @@ pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
     aggregate_metrics, analyze_session,
 };
-#[cfg(debug_assertions)]
-pub use evidence::UnfinishedGroup;
 pub use evidence::{
-    ContextEvidence, CoverageReason, EVIDENCE_STRING_CAP, EvidenceCoverage, EvidenceSource,
-    EvidenceValue, OrderingObservation, ParseDiagnostics, SessionEvidence, SessionEvidenceIdentity,
-    SessionProvenance, SourceAcceptance, SourceCapabilities, SourceKind,
+    CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
+    ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP, EligibilityEvidence,
+    EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource, ModelEvidence, ModelTokens,
+    ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence, SessionEvidence,
+    SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SourceAcceptance,
+    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
+    ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
 pub use framing::{
@@ -64,8 +66,9 @@ pub use framing::{
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
 pub use interface::{
-    NormalizedRecord, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionInput,
-    SessionSummary, SourceChangedReason, VendorAdapter, VisitOutcome,
+    ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordCoverage,
+    RecordSink, RelationProvenance, SessionCollector, SessionInput, SessionSummary,
+    SourceChangedReason, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{SessionMetricsAccumulator, merge_metrics};
@@ -82,7 +85,7 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 pub const PARSER_REVISION: i64 = 1;
 pub const ANALYZER_REVISION: i64 = 2;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 1;
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 2;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
