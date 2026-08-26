@@ -292,10 +292,9 @@ jobs:
           cache-bin: false
           save-if: ${{ matrix.check.save_cache && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-      # Only the shell workspace depends on the engine (antiburn-local), which
-      # embeds a compacted antiburn/systemprompts tool catalogue at build
-      # time. CI does not check out that repository, so this copies the
-      # committed fixture catalogue instead of building the real one.
+      # Only the shell workspace depends on the engine (antiburn-local). cargo
+      # needs its tool_catalog.json, which is gitignored. Releases build it from
+      # a systemprompts checkout; CI uses the committed fixture catalogue instead.
       - name: Install Node
         if: matrix.workspace.name == 'shell'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
