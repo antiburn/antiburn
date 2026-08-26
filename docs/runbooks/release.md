@@ -259,6 +259,10 @@ Those are machine gates, not boxes for a person to repeat.
 Open the draft release and perform the checks that need a real reader or
 installed operating system:
 
+The debug updater simulator described in
+[`docs/debugging.md`](../debugging.md#test-the-updater-interface) helps with UI
+work, but it does not replace these signed-artifact checks.
+
 - [ ] **It installs and runs.** On each platform you can reach: install from the
       downloaded installer, launch it, confirm the tray item appears, open the
       popover, and check that Settings → About shows the new version. On macOS,
@@ -270,6 +274,15 @@ installed operating system:
 - [ ] **The previous version can update to this one.** The real test of a
       release: install the previous version, point it at the draft only after
       publishing (drafts are not reachable), or rehearse with a pre-release tag.
+      On macOS and Linux AppImage, confirm About shows download progress, changes
+      to the installed state, and offers Restart to update. Restart and confirm
+      About shows the new version. On Windows, confirm the passive NSIS installer
+      exits and relaunches the updated application. The Debian package is
+      install-only and must report that in-app updates are unavailable.
+- [ ] **Updater failures stay safe and visible.** In a release rehearsal, interrupt
+      one download and serve one bundle with a bad updater signature. Each attempt
+      must end in a visible install failure with a retry action. The bad bundle must
+      not replace the installed application.
 - [ ] **"Set as the latest release" is checked.** The application's updater
       reads `releases/latest/download/latest.json`; if this release is not the
       latest one, nobody is offered the update. The workflow sets this already —
@@ -292,7 +305,8 @@ curl -sSL https://github.com/antiburn/antiburn/releases/latest/download/latest.j
 
 The `version` must be the one just published and the URLs must point at its tag.
 Then open an installed copy of the previous version and use Settings → About →
-Check now: it should report the new version.
+Check for updates. It should report the new version and complete the install and
+restart flow described above.
 
 If anything here is wrong, **do not fix the assets**. Go to
 [`rollback.md`](rollback.md).

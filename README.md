@@ -54,6 +54,8 @@ docs/oss/                Approved source-boundary manifests; the engine's
                          mechanical boundary tests validate against them.
 docs/support.md          The v1 platform and agent support matrix, and what
                          antiburn stores about your sessions.
+docs/debugging.md        Desktop development modes, isolated data, logs, and
+                         focused debug tools.
 docs/deviations.md       Every deliberate difference from the ratified feature
                          matrix, with its reason and revisit milestone.
 docs/macos-folder-access.md
@@ -61,6 +63,9 @@ docs/macos-folder-access.md
                          why discovery is shaped around never surprising you
                          with a permission dialog.
 ```
+
+See the [desktop debugging guide](docs/debugging.md) for development modes and
+focused debug tools.
 
 ## Build and test
 

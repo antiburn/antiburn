@@ -233,17 +233,16 @@ export class NudgeSession {
   }
 
   /**
-   * Clicking the notification body runs its default CTA, like a native macOS
-   * notification. `bodyClickAction` picks it, and returns null when the nudge
-   * has nothing to run, in which case we send the synthetic `open_app` id,
-   * whose only effect is to surface the app.
+   * Clicking an update body opens About without installing. Other bodies use
+   * their safe default CTA or the synthetic `open_app` action.
    */
   handleBodyClick = (): void => {
     const nudge = this.snapshot.nudge
     // `exiting`/`pendingExit` mean a CTA/close/timeout already armed an exit; a
     // second click on the (now much larger) hit area must not clobber it.
     if (!nudge || this.snapshot.exiting || this.pendingExit) return
-    const chosen = bodyClickAction(nudge.actions ?? [])
+    const chosen =
+      nudge.kind === "updateAvailable" ? null : bodyClickAction(nudge.actions ?? [])
     const actionId = chosen?.id ?? NUDGE_OPEN_APP_ACTION_ID
     this.beginExit(() => {
       void nudgeAction(nudge.kind, actionId, chosen?.target).catch(() => {})

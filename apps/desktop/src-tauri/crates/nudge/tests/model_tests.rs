@@ -183,6 +183,23 @@ mod tests {
     }
 
     #[test]
+    fn update_target_round_trips_the_exact_expected_version() {
+        let target = NudgeActionTarget::Update {
+            expected_version: "2.4.0-beta.1+build.7".into(),
+        };
+
+        let json = serde_json::to_string(&target).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"update","expectedVersion":"2.4.0-beta.1+build.7"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<NudgeActionTarget>(&json).unwrap(),
+            target
+        );
+    }
+
+    #[test]
     fn action_event_uses_camel_case_kind() {
         let ev = NudgeActionEvent {
             kind: NudgeKind::UsageMilestone,

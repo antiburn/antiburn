@@ -79,58 +79,11 @@ not need a built bundle. Release packaging embeds `apps/desktop/dist`.
 `rusqlite` is compiled from bundled sources, so neither CI nor a checkout needs
 a system SQLite.
 
-## Development builds have their own identity
+## Debugging
 
-Both `dev` scripts above pass
-[`src-tauri/tauri.debug.conf.json`](src-tauri/tauri.debug.conf.json), which
-overrides one field that has to differ: the bundle identifier becomes
-`ai.antiburn.desktop.debug`. That single override splits two things at once.
-
-- **The app data directory.** `app_data_dir()` is derived from the identifier,
-  so a development run reads and writes
-  `~/Library/Application Support/ai.antiburn.desktop.debug` (and the platform
-  equivalents) rather than the installed app's directory. Before this override
-  the split was partial: the store's own file name is branched on
-  `debug_assertions`, but everything beside it — the engine's state files —
-  was shared, and a development run wrote into an installed copy's folder.
-- **The platform's privacy identity.** On macOS, TCC keys folder-access grants
-  by bundle identifier. Sharing one identifier means a bundled debug build is
-  the _same privacy subject_ as an installed `/Applications/antiburn.app`: the
-  grants are pooled, and a `tccutil reset` aimed at `ai.antiburn.desktop`
-  during development revokes the installed app's access too. With the override
-  they are separate subjects, listed separately in System Settings → Privacy &
-  Security, and resettable independently.
-
-The file also turns `bundle.createUpdaterArtifacts` off, because a debug bundle
-is never distributed and therefore has no updater artifact worth signing — which
-is why `dev:bundle` needs no `TAURI_SIGNING_PRIVATE_KEY`.
-
-The override rides on the Tauri CLI's `--config`, so it reaches every build the
-`dev` scripts start, and only those. A bare `cargo run`/`cargo build` inside
-`src-tauri` still compiles the release identifier; it is not a path anyone runs
-the app from (the frontend would have to be served separately), and `cargo
-fmt`/`clippy`/`test` never launch the app. Reach for `pnpm dev` rather than
-`pnpm tauri dev`, which bypasses the flag.
-
-## Restarting onboarding
-
-A debug build has **Reset Onboarding** in its tray menu. Packaged builds use
-**Settings → General → Run setup again**. Both actions change only the stored
-`onboardingCompleted` value to `false`, recreate the setup window at Welcome,
-and keep all indexed sessions and preferences. Closing setup before completion
-keeps it pending, so the window returns on the next launch or tray interaction.
-
-Do not edit the SQLite database while antiburn runs. For a true fresh-install
-test, open **Settings → About → Data folder**, reveal the active directory, and
-quit antiburn. Move that exact directory aside instead of deleting it. The move
-keeps the previous profile recoverable and avoids touching the other build's
-data.
-
-Forks must keep different bundle identifiers for debug and release builds. The
-identifier separates app data and platform privacy grants, so sharing it can
-make a development reset affect an installed build. Keep the debug override in
-the documented package scripts. A bare Tauri command that omits
-`tauri.debug.conf.json` can target the release identity.
+See [`docs/debugging.md`](../../docs/debugging.md) for development modes,
+debug-profile isolation, developer tools, logs, onboarding tests, sample
+notifications, and the updater simulator.
 
 ## What keeps the app local
 

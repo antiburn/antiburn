@@ -121,12 +121,18 @@ or backend, ever. The connections it makes beyond that are yours, not ours: read
 a provider's own figures with your own credentials is traffic between this machine
 and a provider you already use. The application's own connection to a service of
 ours is exactly one kind: the updater, which asks GitHub Releases whether a newer
-version exists, and which the app never depends on.
+version exists and downloads its signed bundle only after you select Install. The
+app never depends on this connection.
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can
   always be run by hand from Settings → About.
+- Automatic checks never download or install an update.
+- An install verifies the downloaded bundle against the public key in the app before
+  it changes the installed application.
 - Development builds carry no updater at all.
+- Linux AppImage releases update in the app. Debian packages remain install-only
+  and require the next package to be installed manually.
 - **Anonymised analytics** are the one thing antiburn reports about itself.
   On by default; the switch is in Settings → Privacy, and the first-run Ready
   screen shows it before anything is sent. Each event carries thirteen fields and

@@ -286,7 +286,7 @@ jobs:
             bundles: appimage,deb
             artifact: linux-x64
             arch_label: x64
-            updater_platform: linux-x86_64
+            updater_platform: linux-x86_64-appimage
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -798,7 +798,7 @@ jobs:
           fi
           jq -e -s '
             (map(.platform) | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64", "windows-x86_64"] and
+              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"] and
             all(.[]; (.signing | length) > 0 and (.files | length) >= 2)
           ' "${evidence[@]}" > /dev/null
 
@@ -829,7 +829,7 @@ jobs:
 
           jq -e '
             (.platforms | keys | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64", "windows-x86_64"]
+              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"]
           ' dist/latest.json > /dev/null
 
           # Every URL the manifest advertises must be immutable, point at this

@@ -117,12 +117,17 @@ pub fn post_test_notification(app: tauri::AppHandle) {
 /// Debug builds only: a release build refuses, so the row that sends this can
 /// never become a way around the preferences.
 #[tauri::command]
-pub fn post_sample_notification(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+pub async fn post_sample_notification(app: tauri::AppHandle, kind: String) -> Result<(), String> {
     if !cfg!(debug_assertions) {
         return Err("sample notifications are for debug builds only".to_string());
     }
     let kind = crate::notifications::Kind::from_id(&kind)
         .ok_or_else(|| format!("unknown notification kind: {kind}"))?;
+    if kind == crate::notifications::Kind::UpdateAvailable {
+        crate::updates::start_simulation(&app)
+            .await
+            .map_err(str::to_string)?;
+    }
     crate::notifications::note_sample(&app, kind);
     Ok(())
 }
@@ -262,6 +267,41 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         analytics_supported: crate::analytics::available(),
         analytics_operator: crate::analytics::operator().map(str::to_string),
     })
+}
+
+/// Ask the release feed for a newer version.
+#[tauri::command]
+pub async fn check_for_updates(app: tauri::AppHandle) -> crate::updates::UpdateStatus {
+    crate::updates::manual_check(&app).await
+}
+
+/// Return the latest updater state for a pane that mounted after its event.
+#[tauri::command]
+pub fn get_update_status(app: tauri::AppHandle) -> Option<crate::updates::UpdateStatus> {
+    crate::updates::current_status(&app)
+}
+
+/// Start the fixed local update lifecycle used for interface testing.
+#[tauri::command]
+pub async fn start_update_simulation(
+    app: tauri::AppHandle,
+) -> CommandResult<crate::updates::UpdateStatus> {
+    crate::updates::start_simulation(&app).await.map_err(fail)
+}
+
+/// Download, verify, and install the version the reader selected.
+#[tauri::command]
+pub async fn install_update(
+    app: tauri::AppHandle,
+    expected_version: String,
+) -> crate::updates::UpdateStatus {
+    crate::updates::install(&app, &expected_version).await
+}
+
+/// Restart the application after an update installs.
+#[tauri::command]
+pub fn restart_to_update(app: tauri::AppHandle) -> CommandResult<()> {
+    crate::updates::restart(&app).map_err(fail)
 }
 
 /* -------------------------------------------------------------------------
