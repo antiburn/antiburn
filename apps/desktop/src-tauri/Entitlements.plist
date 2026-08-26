@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Signed into the macOS bundle by tauri-bundler (bundle.macOS.entitlements).
+
+  The communication-notifications entitlement is what lets a signed antiburn
+  ask macOS whether Focus applies to it (INFocusStatusCenter). Without the
+  entitlement the query has no value, the notification gate reads Unknown,
+  and delivery fails open. Unbundled development builds skip the query
+  entirely; see the antiburn-nudge gate module.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.developer.usernotifications.communication</key>
+    <true/>
+</dict>
+</plist>
