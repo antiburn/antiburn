@@ -17,15 +17,17 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, ActiveSessionsSummary, ClaudeAdapter, EfficiencyTotals,
-    METRICS_SCHEMA_REVISION, ModelRun, NormalizedSession, PARSER_REVISION, RawSource, SessionCost,
-    SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse, SourceClaim, VendorAdapter,
-    VisitOutcome, aggregate_metrics, analyze_session, analyze_sources_with, append_only_guarantee,
-    merge_metrics, merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
+    ANALYZER_REVISION, ActiveSessionsSummary, ClaudeAdapter, CompositeSink,
+    EVIDENCE_SCHEMA_REVISION, EfficiencyTotals, EvidenceSource, METRICS_SCHEMA_REVISION, ModelRun,
+    NormalizedSession, PARSER_REVISION, RawSource, SessionCost, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse,
+    SourceCapabilities, SourceClaim, SourceKind, VendorAdapter, VisitOutcome, aggregate_metrics,
+    analyze_session, analyze_sources_with, append_only_guarantee, merge_metrics,
+    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -36,7 +38,7 @@ use antiburn_local::pricing::ModelTokens;
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
-use crate::store::{AnalysisRecord, SessionKey};
+use crate::store::{AnalysisRecord, ProjectionRevisions, SessionKey};
 
 /// Minimum sub-agents before a session reads as an orchestrator. One delegated
 /// task is ordinary; two or more is genuine fan-out. Mirrors the webview's
@@ -63,6 +65,72 @@ impl CancelFlag {
     pub fn cancelled(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
+
+    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.0)
+    }
+}
+
+/// This signal keeps cancellation and progress within one evidence claim.
+#[derive(Clone)]
+pub struct PassSignal {
+    cancel: Arc<AtomicBool>,
+    progress: Arc<AtomicU64>,
+}
+
+impl PassSignal {
+    pub fn new() -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn from_cancel(cancel: CancelFlag) -> Self {
+        let signal = Self {
+            cancel: cancel.flag(),
+            progress: Arc::new(AtomicU64::new(0)),
+        };
+        if cancel.cancelled() {
+            signal.cancel();
+        }
+        signal
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn progress(&self) -> u64 {
+        self.progress.load(Ordering::SeqCst)
+    }
+
+    /// This observation advances progress and reports the current cancellation state.
+    pub fn observe(&self) -> bool {
+        self.progress.fetch_add(1, Ordering::SeqCst);
+        self.cancel.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for PassSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassOutcome {
+    Published,
+    SourceChanged,
+    SourceMissing,
+    Unsupported,
+    Unreadable,
+}
+
+pub struct EvidencePass {
+    pub analysis: SessionAnalysis,
+    pub evidence: Option<SessionEvidence>,
+    pub outcome: PassOutcome,
 }
 
 pub struct StreamedSession {
@@ -70,6 +138,7 @@ pub struct StreamedSession {
     pub merged: SessionMetrics,
     pub subagents: Vec<SessionMetrics>,
     pub started_at_epoch: Option<i64>,
+    pub evidence: Option<SessionEvidence>,
 }
 
 enum StreamOutcome {
@@ -78,6 +147,8 @@ enum StreamOutcome {
         parent_fingerprint: Option<String>,
     },
     SourceChanged,
+    ParentMissing,
+    ParentUnsupported,
     ParentUnreadable,
 }
 
@@ -88,8 +159,11 @@ enum ComputedAnalysis {
         subagents: Vec<SessionMetrics>,
         started_at_epoch: Option<i64>,
         parent_fingerprint: Option<String>,
+        evidence: Box<Option<SessionEvidence>>,
     },
     SourceChanged,
+    Missing,
+    Unsupported,
     Unavailable,
 }
 
@@ -215,6 +289,7 @@ impl SessionAnalysis {
         if self.source_changed {
             return None;
         }
+        let revisions = projection_revisions();
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
@@ -224,9 +299,9 @@ impl SessionAnalysis {
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: self.analyzed_generation,
-            parser_revision: PARSER_REVISION,
-            analyzer_revision: ANALYZER_REVISION,
-            metrics_schema_revision: METRICS_SCHEMA_REVISION,
+            parser_revision: revisions.parser_revision,
+            analyzer_revision: revisions.analyzer_revision,
+            metrics_schema_revision: revisions.metrics_schema_revision,
         })
     }
 }
@@ -452,15 +527,28 @@ fn stream_claude_with_hooks(
         if cancelled() {
             return StreamOutcome::ParentUnreadable;
         }
-        let mut accumulator =
-            SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+        let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: input.agent.clone(),
+            session_id: input.session_id.clone(),
+            kind: SourceKind::from(&input.source),
+            capabilities: SourceCapabilities::claude(),
+        });
+        let mut accumulator = CompositeSink::new(metrics, evidence);
         let result = match &input.source {
             RawSource::File(path) => {
                 let claim = match claim_file(path) {
                     Ok(claim) => claim,
-                    Err(_) if cancelled() || index == 0 => {
-                        return StreamOutcome::ParentUnreadable;
+                    Err(_) if cancelled() => return StreamOutcome::ParentUnreadable,
+                    Err(error)
+                        if index == 0
+                            && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                                error.kind() == std::io::ErrorKind::NotFound
+                            }) =>
+                    {
+                        return StreamOutcome::ParentMissing;
                     }
+                    Err(_) if index == 0 => return StreamOutcome::ParentUnreadable,
                     Err(_) => continue,
                 };
                 let fingerprint = claim.fingerprint.clone();
@@ -483,13 +571,24 @@ fn stream_claude_with_hooks(
                 }
                 ClaudeAdapter.visit(input, &mut accumulator)
             }
-            RawSource::Sqlite(_) if index == 0 => return StreamOutcome::ParentUnreadable,
+            RawSource::Sqlite(_) if index == 0 => return StreamOutcome::ParentUnsupported,
             RawSource::Sqlite(_) => continue,
         };
         match result {
-            Ok(VisitOutcome::SourceChanged(_)) => return StreamOutcome::SourceChanged,
-            Ok(_) if cancelled() => return StreamOutcome::ParentUnreadable,
-            Ok(_) => accumulators.push(accumulator),
+            Ok(outcome @ VisitOutcome::SourceChanged(_)) => {
+                accumulator.observe_source_outcome(outcome);
+                return StreamOutcome::SourceChanged;
+            }
+            Ok(outcome) => {
+                accumulator.observe_source_outcome(outcome);
+                if cancelled() {
+                    return StreamOutcome::ParentUnreadable;
+                }
+                let Some(parts) = accumulator.into_parts() else {
+                    return StreamOutcome::ParentUnreadable;
+                };
+                accumulators.push(parts);
+            }
             Err(_) if cancelled() || index == 0 => {
                 return StreamOutcome::ParentUnreadable;
             }
@@ -499,10 +598,11 @@ fn stream_claude_with_hooks(
     if cancelled() {
         return StreamOutcome::ParentUnreadable;
     }
-    let Some((parent, children)) = accumulators.split_first() else {
+    let (metrics, evidence): (Vec<_>, Vec<_>) = accumulators.into_iter().unzip();
+    let Some((parent, children)) = metrics.split_first() else {
         return StreamOutcome::ParentUnreadable;
     };
-    let started_at_epoch = accumulators
+    let started_at_epoch = metrics
         .iter()
         .filter_map(SessionMetricsAccumulator::earliest_ts_ms)
         .min()
@@ -519,6 +619,7 @@ fn stream_claude_with_hooks(
             merged,
             subagents,
             started_at_epoch,
+            evidence: evidence.first().map(SessionEvidenceAccumulator::evidence),
         }),
         parent_fingerprint,
     }
@@ -575,11 +676,37 @@ pub async fn analyze(
     claimed: ClaimedSource,
     cancel: CancelFlag,
 ) -> SessionAnalysis {
+    let pass = analyze_for_evidence(
+        agent,
+        session_id,
+        wsl_distro,
+        claimed,
+        PassSignal::from_cancel(cancel),
+    )
+    .await;
+    debug_assert!(
+        pass.evidence.is_none()
+            || (agent == AgentKind::Claude && pass.outcome == PassOutcome::Published)
+    );
+    pass.analysis
+}
+
+pub async fn analyze_for_evidence(
+    agent: AgentKind,
+    session_id: &str,
+    wsl_distro: Option<&str>,
+    claimed: ClaimedSource,
+    signal: PassSignal,
+) -> EvidencePass {
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
-        return SessionAnalysis::unavailable();
+        return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
     let Some(raw) = raw_source(&source).await else {
-        return SessionAnalysis::unavailable();
+        return unavailable_evidence_pass(
+            PassOutcome::Unreadable,
+            source_path(&source),
+            Some(fingerprint_of(&source)),
+        );
     };
 
     let label = vendor_label(agent);
@@ -633,9 +760,11 @@ pub async fn analyze(
 
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads.
+    let signal_for_pass = signal.clone();
     let computed = tauri::async_runtime::spawn_blocking(move || {
         if is_claude {
-            return match stream_claude(&inputs, &cancel) {
+            let cancelled = || signal_for_pass.observe();
+            return match stream_claude_with_hooks(&inputs, &cancelled, &test_subagent_after_claim) {
                 StreamOutcome::Published {
                     session,
                     parent_fingerprint,
@@ -645,8 +774,11 @@ pub async fn analyze(
                     subagents: session.subagents,
                     started_at_epoch: session.started_at_epoch,
                     parent_fingerprint,
+                    evidence: Box::new(session.evidence),
                 },
                 StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
+                StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
+                StreamOutcome::ParentUnsupported => ComputedAnalysis::Unsupported,
                 StreamOutcome::ParentUnreadable => ComputedAnalysis::Unavailable,
             };
         }
@@ -671,43 +803,66 @@ pub async fn analyze(
             subagents: sessions,
             started_at_epoch: None,
             parent_fingerprint: None,
+            evidence: Box::new(None),
         }
     })
     .await;
 
+    debug_assert!(agent != AgentKind::Claude || signal.progress() > 0);
     let Ok(computed) = computed else {
-        return SessionAnalysis::unavailable();
+        return unavailable_evidence_pass(PassOutcome::Unreadable, source_path, Some(fingerprint));
     };
-    let (parent_metrics, merged, subagents, started_at_epoch, parent_fingerprint) = match computed {
-        ComputedAnalysis::Published {
-            parent,
-            merged,
-            subagents,
-            started_at_epoch,
-            parent_fingerprint,
-        } => (
-            *parent,
-            *merged,
-            subagents,
-            started_at_epoch,
-            parent_fingerprint,
-        ),
-        ComputedAnalysis::SourceChanged => {
-            return SessionAnalysis {
-                source_path,
-                fingerprint,
-                source_changed: true,
-                ..SessionAnalysis::unavailable()
-            };
-        }
-        ComputedAnalysis::Unavailable => {
-            return SessionAnalysis {
-                source_path,
-                fingerprint,
-                ..SessionAnalysis::unavailable()
-            };
-        }
-    };
+    let (parent_metrics, merged, subagents, started_at_epoch, parent_fingerprint, evidence) =
+        match computed {
+            ComputedAnalysis::Published {
+                parent,
+                merged,
+                subagents,
+                started_at_epoch,
+                parent_fingerprint,
+                evidence,
+            } => (
+                *parent,
+                *merged,
+                subagents,
+                started_at_epoch,
+                parent_fingerprint,
+                *evidence,
+            ),
+            ComputedAnalysis::SourceChanged => {
+                return EvidencePass {
+                    analysis: SessionAnalysis {
+                        source_path,
+                        fingerprint,
+                        source_changed: true,
+                        ..SessionAnalysis::unavailable()
+                    },
+                    evidence: None,
+                    outcome: PassOutcome::SourceChanged,
+                };
+            }
+            ComputedAnalysis::Missing => {
+                return unavailable_evidence_pass(
+                    PassOutcome::SourceMissing,
+                    source_path,
+                    Some(fingerprint),
+                );
+            }
+            ComputedAnalysis::Unsupported => {
+                return unavailable_evidence_pass(
+                    PassOutcome::Unsupported,
+                    source_path,
+                    Some(fingerprint),
+                );
+            }
+            ComputedAnalysis::Unavailable => {
+                return unavailable_evidence_pass(
+                    PassOutcome::Unreadable,
+                    source_path,
+                    Some(fingerprint),
+                );
+            }
+        };
     let analyzed_generation = attributed_generation(&claimed, parent_fingerprint.as_deref());
     let by_id: HashMap<String, SessionMetrics> = subagents
         .into_iter()
@@ -780,25 +935,94 @@ pub async fn analyze(
     let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
-    SessionAnalysis {
-        efficiency: Some(metrics.efficiency),
-        metrics: Some(metrics),
-        summary: Some(summary),
-        cost,
-        top_level_cost,
-        subagents_cost,
-        inclusive_tokens,
-        subagents_tokens,
-        models,
-        model_runs,
-        inclusive_model_breakdown,
-        skills,
-        orchestration,
-        source_path,
-        fingerprint,
-        analyzed_generation,
-        started_at_epoch,
-        source_changed: false,
+    EvidencePass {
+        analysis: SessionAnalysis {
+            efficiency: Some(metrics.efficiency),
+            metrics: Some(metrics),
+            summary: Some(summary),
+            cost,
+            top_level_cost,
+            subagents_cost,
+            inclusive_tokens,
+            subagents_tokens,
+            models,
+            model_runs,
+            inclusive_model_breakdown,
+            skills,
+            orchestration,
+            source_path,
+            fingerprint,
+            analyzed_generation,
+            started_at_epoch,
+            source_changed: false,
+        },
+        evidence,
+        outcome: PassOutcome::Published,
+    }
+}
+
+fn unavailable_evidence_pass(
+    outcome: PassOutcome,
+    source_path: Option<String>,
+    fingerprint: Option<String>,
+) -> EvidencePass {
+    EvidencePass {
+        analysis: SessionAnalysis {
+            source_path,
+            fingerprint: fingerprint.unwrap_or_else(|| MISSING_FINGERPRINT.to_string()),
+            ..SessionAnalysis::unavailable()
+        },
+        evidence: None,
+        outcome,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn evidence_pass(inputs: &[SessionInput], cancelled: &dyn Fn() -> bool) -> EvidencePass {
+    evidence_pass_with_hook(inputs, cancelled, &test_subagent_after_claim)
+}
+
+#[cfg(test)]
+fn evidence_pass_with_hook(
+    inputs: &[SessionInput],
+    cancelled: &dyn Fn() -> bool,
+    after_claim: &dyn Fn(usize, &std::path::Path),
+) -> EvidencePass {
+    match stream_claude_with_hooks(inputs, cancelled, after_claim) {
+        StreamOutcome::Published { session, .. } => {
+            let StreamedSession {
+                merged, evidence, ..
+            } = *session;
+            EvidencePass {
+                analysis: SessionAnalysis {
+                    metrics: Some(merged),
+                    ..SessionAnalysis::unavailable()
+                },
+                evidence,
+                outcome: PassOutcome::Published,
+            }
+        }
+        StreamOutcome::SourceChanged => {
+            unavailable_evidence_pass(PassOutcome::SourceChanged, None, None)
+        }
+        StreamOutcome::ParentMissing => {
+            unavailable_evidence_pass(PassOutcome::SourceMissing, None, None)
+        }
+        StreamOutcome::ParentUnsupported => {
+            unavailable_evidence_pass(PassOutcome::Unsupported, None, None)
+        }
+        StreamOutcome::ParentUnreadable => {
+            unavailable_evidence_pass(PassOutcome::Unreadable, None, None)
+        }
+    }
+}
+
+pub fn projection_revisions() -> ProjectionRevisions {
+    ProjectionRevisions {
+        parser_revision: PARSER_REVISION,
+        analyzer_revision: ANALYZER_REVISION,
+        metrics_schema_revision: METRICS_SCHEMA_REVISION,
+        evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
     }
 }
 
@@ -839,7 +1063,10 @@ pub async fn analyze_subagent(
                 StreamOutcome::Published { session, .. } => {
                     Some((session.parent, session.started_at_epoch))
                 }
-                StreamOutcome::SourceChanged | StreamOutcome::ParentUnreadable => None,
+                StreamOutcome::SourceChanged
+                | StreamOutcome::ParentMissing
+                | StreamOutcome::ParentUnsupported
+                | StreamOutcome::ParentUnreadable => None,
             };
         }
         analyze_sources_with(vec![input], true)
@@ -1315,6 +1542,120 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn an_inline_source_still_publishes_metrics() {
+        let pass = evidence_pass(
+            &[inline_input(
+                claude_record("inline-metrics", 1_760_000_000),
+                "inline-metrics",
+            )],
+            &|| false,
+        );
+
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        assert!(pass.analysis.metrics.is_some());
+    }
+
+    #[test]
+    fn a_published_claude_pass_carries_evidence() {
+        let pass = evidence_pass(
+            &[inline_input(
+                claude_record("inline-evidence", 1_760_000_000),
+                "inline-evidence",
+            )],
+            &|| false,
+        );
+
+        let evidence = pass.evidence.expect("published evidence");
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        assert_eq!(evidence.schema_revision, EVIDENCE_SCHEMA_REVISION);
+    }
+
+    #[test]
+    fn a_changed_source_publishes_neither_projection() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("changed.jsonl");
+        std::fs::write(&path, claude_record("before", 1_760_000_000)).expect("write source");
+        let change_source = |_: usize, path: &std::path::Path| {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("open source")
+                .write_all(claude_record("after", 1_760_000_001).as_bytes())
+                .expect("change source");
+        };
+
+        let pass =
+            evidence_pass_with_hook(&[file_input(&path, "changed")], &|| false, &change_source);
+
+        assert_eq!(pass.outcome, PassOutcome::SourceChanged);
+        assert!(pass.analysis.metrics.is_none());
+        assert!(pass.evidence.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_deleted_source_is_missing_not_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let deleted = directory.path().join("deleted.jsonl");
+        let unreadable = directory.path().join("unreadable.jsonl");
+        std::fs::write(&deleted, claude_record("deleted", 1_760_000_000))
+            .expect("write deleted source");
+        std::fs::write(&unreadable, claude_record("unreadable", 1_760_000_000))
+            .expect("write unreadable source");
+        let deleted_input = file_input(&deleted, "deleted");
+        let unreadable_input = file_input(&unreadable, "unreadable");
+        std::fs::remove_file(&deleted).expect("remove source");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+            .expect("remove read permission");
+
+        let missing = evidence_pass(&[deleted_input], &|| false);
+        let unreadable_pass = evidence_pass(&[unreadable_input], &|| false);
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600))
+            .expect("restore read permission");
+
+        assert_eq!(missing.outcome, PassOutcome::SourceMissing);
+        assert_eq!(unreadable_pass.outcome, PassOutcome::Unreadable);
+    }
+
+    #[test]
+    fn an_unsupported_schema_terminates() {
+        let pass = evidence_pass(
+            &[SessionInput {
+                agent: "claude".to_string(),
+                session_id: "unsupported".to_string(),
+                source: RawSource::Sqlite(std::path::PathBuf::from("unsupported.sqlite")),
+            }],
+            &|| false,
+        );
+
+        assert_eq!(pass.outcome, PassOutcome::Unsupported);
+        assert!(pass.analysis.metrics.is_none());
+        assert!(pass.evidence.is_none());
+    }
+
+    #[test]
+    fn a_pass_signal_counts_every_record_and_carries_cancellation() {
+        use std::io::Cursor;
+
+        let first = PassSignal::new();
+        let second = PassSignal::new();
+        let mut reader = antiburn_local::analysis::BoundedJsonlReader::new(Cursor::new(
+            b"one\ntwo\n".as_slice(),
+        ));
+        while reader.next_record(&|| first.observe()).is_some() {}
+
+        assert!(first.progress() > 0);
+        assert!(!first.observe());
+        first.cancel();
+        assert!(first.observe());
+        assert!(!second.observe());
+        assert_eq!(second.progress(), 1);
+    }
+
     #[tokio::test]
     async fn a_changed_subagent_source_rejects_the_direct_subagent_view() {
         let directory = tempfile::TempDir::new().expect("tempdir");
@@ -1443,6 +1784,9 @@ mod tests {
             StreamOutcome::ParentUnreadable => SessionAnalysis::unavailable(),
             StreamOutcome::Published { .. } => panic!("cancelled child read must not publish"),
             StreamOutcome::SourceChanged => panic!("cancelled child read is not a source change"),
+            StreamOutcome::ParentMissing | StreamOutcome::ParentUnsupported => {
+                panic!("cancelled child read must stay unreadable")
+            }
         };
 
         assert_eq!(child_cancel_checks.get(), 3);
