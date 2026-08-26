@@ -48,7 +48,7 @@ mod vendors;
 pub use efficiency::{EfficiencyTotals, thread_efficiency};
 pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
-    ToolMix, aggregate_metrics, analyze_session,
+    aggregate_metrics, analyze_session,
 };
 #[cfg(debug_assertions)]
 pub use evidence::UnfinishedGroup;
@@ -62,7 +62,7 @@ pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
 };
-pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
+pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
 pub use interface::{
     NormalizedRecord, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionInput,
     SessionSummary, SourceChangedReason, VendorAdapter, VisitOutcome,
@@ -80,7 +80,7 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 1;
-pub const ANALYZER_REVISION: i64 = 1;
+pub const ANALYZER_REVISION: i64 = 2;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 1;
 
@@ -190,7 +190,12 @@ pub fn analyze_sources_with(
             .iter_mut()
             .find(|m| m.agent == input.agent && m.session_id == input.session_id)
         {
-            if let Some(breakdown) = breakdown {
+            if let Some(mut breakdown) = breakdown {
+                initial_context::fill_use_counts(
+                    &mut breakdown,
+                    &metrics.skill_uses,
+                    &metrics.mcp_tool_calls,
+                );
                 metrics.initial_context = Some(breakdown);
             }
             for skill_use in &mut metrics.skill_uses {

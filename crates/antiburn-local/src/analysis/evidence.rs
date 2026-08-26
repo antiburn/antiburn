@@ -320,7 +320,7 @@ mod tests {
                 "coverage": "complete",
                 "provenance": {
                     "parserRevision": 1,
-                    "analyzerRevision": 1,
+                    "analyzerRevision": ANALYZER_REVISION,
                     "evidenceSchemaRevision": 1,
                     "sourceKind": "file",
                     "sourceAcceptance": "accepted_full",
@@ -375,7 +375,7 @@ mod tests {
                 "coverage": {"partial": "malformed_record"},
                 "provenance": {
                     "parserRevision": 1,
-                    "analyzerRevision": 1,
+                    "analyzerRevision": ANALYZER_REVISION,
                     "evidenceSchemaRevision": 1,
                     "sourceKind": "file",
                     "sourceAcceptance": {"accepted_prefix": {"boundary": 4096}},

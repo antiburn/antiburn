@@ -7,7 +7,7 @@ use std::mem::size_of;
 
 use crate::analysis::efficiency::{EfficiencyInput, thread_efficiency_from_inputs};
 use crate::analysis::engine::{
-    BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionMetrics, SkillUse, ToolMix,
+    BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionMetrics, SkillUse,
 };
 use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{
@@ -81,8 +81,6 @@ pub(crate) struct OnlineTallies {
     billable_cache_creation_tokens: u64,
     peak_context_tokens: u64,
     compaction_count: u64,
-    tool_mix: ToolMix,
-    grep_count: u64,
     event_count: usize,
 }
 
@@ -109,12 +107,6 @@ impl OnlineTallies {
             self.compaction_count = self
                 .compaction_count
                 .saturating_add(u64::from(turn.is_compaction_boundary));
-        }
-        for tool in &turn.tools {
-            self.tool_mix.add(tool.category);
-            if crate::analysis::model::ToolCategory::is_grep(&tool.name) {
-                self.grep_count = self.grep_count.saturating_add(1);
-            }
         }
         self.event_count = self.event_count.saturating_add(1);
     }
@@ -162,6 +154,16 @@ impl SessionMetricsAccumulator {
             if let Some(description) = summary.skill_descriptions.get(&skill_use.name) {
                 skill_use.description = Some(description.clone());
             }
+        }
+        // Fill `use_count` here too, from this same session's `skill_uses` and
+        // `mcp_tool_calls`, so the streaming path matches the batch path in
+        // `analyze_sources_with` (both compute the same breakdown, independently).
+        if let Some(breakdown) = metrics.initial_context.as_mut() {
+            crate::analysis::initial_context::fill_use_counts(
+                breakdown,
+                &metrics.skill_uses,
+                &metrics.mcp_tool_calls,
+            );
         }
         metrics
     }
@@ -221,10 +223,6 @@ impl RecordSink for SessionMetricsAccumulator {
     fn finish(&mut self, summary: SessionSummary) {
         for (ordinal, tool) in &summary.late_tools {
             if let Some(turn) = self.turns.get_mut(*ordinal) {
-                self.tallies.tool_mix.add(tool.category);
-                if crate::analysis::model::ToolCategory::is_grep(&tool.name) {
-                    self.tallies.grep_count = self.tallies.grep_count.saturating_add(1);
-                }
                 turn.tools.push(tool.clone());
             }
         }
@@ -494,6 +492,7 @@ pub(crate) fn finalize_metrics(
 
     let mut skill_uses = Vec::new();
     let mut skill_event_indices = Vec::new();
+    let mut mcp_tool_calls: HashMap<String, u32> = HashMap::new();
     let mut buckets = vec![Bucket::default(); BUCKETS];
     let cache_miss_events = cache_miss_events(turns, summary);
     let mut last_progress = 0.0f32;
@@ -602,6 +601,10 @@ pub(crate) fn finalize_metrics(
                     context_tokens: turn.usage.context_tokens(),
                 });
                 skill_event_indices.push(index);
+            } else if let Some(server) = mcp_server_name(&tool.name) {
+                *mcp_tool_calls
+                    .entry(server.to_ascii_lowercase())
+                    .or_insert(0) += 1;
             }
         }
     }
@@ -689,8 +692,6 @@ pub(crate) fn finalize_metrics(
         cache_rehydration_count,
         context_available,
         context_window,
-        tool_mix: tallies.tool_mix,
-        grep_count: tallies.grep_count,
         buckets,
         initial_context: None,
         model: summary.model.clone(),
@@ -703,7 +704,22 @@ pub(crate) fn finalize_metrics(
         cost,
         efficiency,
         skill_uses,
+        mcp_tool_calls,
     }
+}
+
+/// Extract the server-name segment from an MCP tool name shaped
+/// `mcp__<server>__<tool>`. The `mcp__` prefix check is case-insensitive.
+/// Returns `None` for a name that is not an MCP tool call.
+fn mcp_server_name(name: &str) -> Option<&str> {
+    if name.len() < 5 || !name.as_bytes()[..5].eq_ignore_ascii_case(b"mcp__") {
+        return None;
+    }
+    let rest = &name[5..];
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.split("__").next().unwrap_or(rest))
 }
 
 fn resolve_context_window(reported: u64, peak: u64) -> u64 {

@@ -121,13 +121,6 @@ impl ToolCategory {
             ToolCategory::Other
         }
     }
-
-    /// True for the specific "grep/glob/search" tools the sleep-card breakdown
-    /// surfaces as a standalone "search intensity" signal.
-    pub fn is_grep(name: &str) -> bool {
-        let n = name.to_ascii_lowercase();
-        n.contains("grep") || n.contains("glob") || n.contains("ripgrep") || n.contains("search")
-    }
 }
 
 /// True when a shell command's text invokes a known test/build/verify runner.

@@ -10,54 +10,62 @@
 //!
 //! This runs as a separate pass over the **raw transcript** (not the normalized
 //! [`crate::analysis::model`] stream, which discards the per-source text this needs). It
-//! is best-effort: agent-specific parsing stays isolated, and a shared
-//! normalizer assigns any unknown remainder to [`InitialContextTokenSource::Unattributed`].
+//! is best-effort: agent-specific parsing stays isolated.
 //!
 //! Supported agents today: Claude Code and Codex (both delivered as JSONL by the
-//! app). Everything else returns `None` ("unavailable"); no misleading zero rows.
+//! app). Everything else returns `None` ("unavailable"). A supported agent whose
+//! session has no skills or MCP servers still returns a breakdown, with empty
+//! `sources`.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::model::skill::SkillUse;
+
 /// Source dimension for tokens loaded before a coding agent's first response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InitialContextTokenSource {
-    /// User or repository-authored instructions, such as AGENTS.md or CLAUDE.md.
-    AgentInstructions,
-    /// Coding-agent harness instructions: system prompts, internal context, etc.
-    SystemInstructions,
     /// Skill catalog entries or loaded skill instructions.
-    SkillInstructions,
+    Skill,
     /// MCP server/tool instructions.
-    McpInstructions,
-    /// Known initial-context tokens that cannot be attributed to another source.
-    Unattributed,
+    Mcp,
 }
 
 impl InitialContextTokenSource {
     /// Stable string key, used verbatim in [`InitialContextSourceCount::source`].
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AgentInstructions => "agent_instructions",
-            Self::SystemInstructions => "system_instructions",
-            Self::SkillInstructions => "skill_instructions",
-            Self::McpInstructions => "mcp_instructions",
-            Self::Unattributed => "unattributed",
+            Self::Skill => "skill_instructions",
+            Self::Mcp => "mcp_instructions",
         }
     }
 }
 
-/// How completely the initial context could be attributed for a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TrackingStatus {
-    /// Every known initial-context token was attributed to a concrete source.
-    Tracked,
-    /// Some tokens are known to be present but couldn't be attributed
-    /// (surfaced as an `unattributed` source).
-    TrackedPartial,
+/// Where a skill or MCP server is installed. `Unknown` when the transcript
+/// and the local file system give no evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceOrigin {
+    /// Ships with the coding agent itself.
+    Bundled,
+    /// Installed through a plugin.
+    Plugin,
+    /// Installed for the current user, outside any project.
+    User,
+    /// Installed inside the current project (the session's working directory).
+    Project,
+    /// No evidence tells us where the source came from. For a Claude skill,
+    /// this only happens when the filesystem probe could not run (the
+    /// transcript's `cwd` does not exist on this machine) or when the name
+    /// carries a `:` and matches neither the project nor the user directory.
+    /// A bare name that the probe checked and found in neither directory
+    /// resolves to `Bundled` instead: the harness only lists skills it
+    /// found, and a plugin skill always carries a `<plugin>:` prefix, so a
+    /// bare, unmatched name can only ship with the agent.
+    #[default]
+    Unknown,
 }
 
 /// One source/source-name token count in the public breakdown.
@@ -69,15 +77,21 @@ pub struct InitialContextSourceCount {
     /// Optional source name, such as a skill name or MCP server name.
     pub source_name: Option<String>,
     pub token_count: u64,
+    /// How many times the session used this source after it loaded. Skills count
+    /// `Skill` tool calls with this name. MCP servers count tool calls whose name
+    /// starts with `mcp__<server>__`. Always 0 for other sources.
+    #[serde(default)]
+    pub use_count: u32,
+    /// Where this source is installed. Always [`SourceOrigin::Unknown`] for
+    /// an MCP row, for now.
+    #[serde(default)]
+    pub origin: SourceOrigin,
 }
 
 /// The per-session initial-context breakdown surfaced to the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitialContextBreakdown {
-    pub tracking_status: TrackingStatus,
-    /// Exact or estimated total initial input context size, when known.
-    pub total_tokens: Option<u64>,
     pub sources: Vec<InitialContextSourceCount>,
 }
 
@@ -147,7 +161,7 @@ fn collect_codex_skill_descriptions(payload: &str, out: &mut HashMap<String, Str
 
 fn insert_bullet_descriptions(text: &str, out: &mut HashMap<String, String>) {
     for line in text.lines() {
-        if let Some((name, description)) = parse_markdown_bullet(line)
+        if let Some((name, description, _file_path)) = parse_markdown_bullet(line)
             && !description.is_empty()
         {
             out.entry(name).or_insert(description);
@@ -156,30 +170,55 @@ fn insert_bullet_descriptions(text: &str, out: &mut HashMap<String, String>) {
 }
 
 fn to_output(breakdown: InitialContextTokenBreakdown) -> InitialContextBreakdown {
-    let mut partial = false;
     let sources = breakdown
         .rows
         .into_iter()
         .filter(|row| row.token_count > 0)
-        .map(|row| {
-            if row.source == InitialContextTokenSource::Unattributed {
-                partial = true;
-            }
-            InitialContextSourceCount {
-                source: row.source.as_str().to_string(),
-                source_name: row.source_name,
-                token_count: row.token_count.max(0) as u64,
-            }
+        .map(|row| InitialContextSourceCount {
+            source: row.source.as_str().to_string(),
+            source_name: row.source_name,
+            token_count: row.token_count.max(0) as u64,
+            // `analyze_sources` fills this from session tool-call metrics
+            // after the breakdown is grafted onto `SessionMetrics`.
+            use_count: 0,
+            origin: row.origin,
         })
         .collect();
-    InitialContextBreakdown {
-        tracking_status: if partial {
-            TrackingStatus::TrackedPartial
+    InitialContextBreakdown { sources }
+}
+
+/// Fill `InitialContextSourceCount::use_count` on a breakdown's skill and MCP
+/// rows, from the session's own tool-call counts. A skill row counts entries in
+/// `skill_uses` whose name matches (case-insensitive); an MCP row counts
+/// `mcp_tool_calls` for the matching server name (also case-insensitive).
+///
+/// Callers run this once per session, over whichever `skill_uses` and
+/// `mcp_tool_calls` the same session's `SessionMetrics` already computed — the
+/// streaming path (`SessionMetricsAccumulator::metrics`) and the batch path
+/// (`analyze_sources_with`) each call it so their results stay identical.
+pub(crate) fn fill_use_counts(
+    breakdown: &mut InitialContextBreakdown,
+    skill_uses: &[SkillUse],
+    mcp_tool_calls: &HashMap<String, u32>,
+) {
+    for row in &mut breakdown.sources {
+        let Some(name) = row.source_name.as_deref() else {
+            continue;
+        };
+        row.use_count = if row.source == InitialContextTokenSource::Skill.as_str() {
+            skill_uses
+                .iter()
+                .filter(|skill_use| skill_use.name.eq_ignore_ascii_case(name))
+                .count() as u32
+        } else if row.source == InitialContextTokenSource::Mcp.as_str() {
+            mcp_tool_calls
+                .iter()
+                .find(|(server, _)| server.eq_ignore_ascii_case(name))
+                .map(|(_, count)| *count)
+                .unwrap_or(0)
         } else {
-            TrackingStatus::Tracked
-        },
-        total_tokens: breakdown.total_tokens.map(|t| t.max(0) as u64),
-        sources,
+            0
+        };
     }
 }
 
@@ -191,7 +230,6 @@ enum InitialContextTokenParseResult {
 }
 
 struct InitialContextTokenBreakdown {
-    total_tokens: Option<i64>,
     rows: Vec<InitialContextTokenSourceCount>,
 }
 
@@ -199,100 +237,97 @@ struct InitialContextTokenSourceCount {
     source: InitialContextTokenSource,
     source_name: Option<String>,
     token_count: i64,
+    origin: SourceOrigin,
 }
 
 fn parse_codex(payload: &str) -> InitialContextTokenParseResult {
-    let mut total_tokens = None;
-    let mut system_instruction_texts = Vec::new();
+    let values = parse_json_lines(payload);
+    // The session's cwd tells a project-scoped skill from a user-scoped one.
+    // Read it up front so it is available no matter where a `## Skills`
+    // bullet turns up relative to the `session_meta` record.
+    let cwd = values.iter().find_map(|value| {
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            return None;
+        }
+        value
+            .pointer("/payload/cwd")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+
     let mut source_rows = Vec::new();
 
-    for value in parse_json_lines(payload) {
-        match value
+    for value in values {
+        if value
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default()
+            != "response_item"
         {
-            "session_meta" => {
-                if let Some(text) = value
-                    .pointer("/payload/base_instructions/text")
-                    .and_then(Value::as_str)
-                {
-                    system_instruction_texts.push(text.to_string());
-                }
-            }
-            "response_item" => {
-                if value.pointer("/payload/type").and_then(Value::as_str) != Some("message") {
-                    continue;
-                }
-                let role = value
-                    .pointer("/payload/role")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if role != "developer" && role != "system" {
-                    continue;
-                }
-                let text = extract_codex_message_text(&value);
-                if text.is_empty() {
-                    continue;
-                }
-                let (without_skills, skill_rows) = parse_codex_developer_prompt(&text);
-                let (without_agent_files, agent_rows) =
-                    parse_instruction_file_mentions(&without_skills);
-                source_rows.extend(agent_rows);
-                if !without_agent_files.trim().is_empty() {
-                    system_instruction_texts.push(without_agent_files);
-                }
-                source_rows.extend(skill_rows);
-            }
-            "event_msg"
-                if total_tokens.is_none()
-                    && value.pointer("/payload/type").and_then(Value::as_str)
-                        == Some("token_count") =>
-            {
-                total_tokens = value
-                    .pointer("/payload/info/total_token_usage/input_tokens")
-                    .and_then(Value::as_i64);
-            }
-            _ => {}
+            continue;
         }
+        if value.pointer("/payload/type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let role = value
+            .pointer("/payload/role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if role != "developer" && role != "system" {
+            continue;
+        }
+        let text = extract_codex_message_text(&value);
+        if text.is_empty() {
+            continue;
+        }
+        source_rows.extend(parse_codex_developer_prompt(&text, cwd.as_deref()));
     }
 
-    if system_instruction_texts.is_empty() && source_rows.is_empty() && total_tokens.is_none() {
-        return InitialContextTokenParseResult::Unsupported;
-    }
+    InitialContextTokenParseResult::Supported(normalize_breakdown(source_rows))
+}
 
-    let system_instruction_tokens = estimate_tokens(&system_instruction_texts.join("\n\n"));
-    if system_instruction_tokens > 0 {
-        source_rows.push(InitialContextTokenSourceCount {
-            source: InitialContextTokenSource::SystemInstructions,
-            source_name: None,
-            token_count: system_instruction_tokens,
-        });
-    }
-
-    InitialContextTokenParseResult::Supported(normalize_breakdown(total_tokens, source_rows))
+/// How strongly a piece of evidence pins down a Claude skill's origin, lowest
+/// number wins. Matches the priority order in the module doc: an
+/// `invoked_skills` attachment beats a `dynamic_skill` attachment, which beats
+/// the skill-expansion preamble path, which beats a plugin-qualified listing
+/// name, which beats the filesystem probe (applied only when nothing else
+/// answered, in [`ClaudeContextAccumulator::finish_with_probe`]).
+mod claude_origin_rank {
+    pub(super) const INVOKED_SKILLS: u8 = 0;
+    pub(super) const DYNAMIC_SKILL: u8 = 1;
+    pub(super) const PREAMBLE_PATH: u8 = 2;
+    pub(super) const LISTING_NAME_SHAPE: u8 = 3;
 }
 
 #[derive(Default)]
 pub(crate) struct ClaudeContextAccumulator {
-    total_tokens: Option<i64>,
-    system_instruction_texts: Vec<String>,
     source_rows: Vec<InitialContextTokenSourceCount>,
-    seen_first_assistant: bool,
     skill_descriptions: HashMap<String, String>,
+    /// The session's own working directory, read from the `cwd` Claude
+    /// records on every line. Used to tell a project-scoped skill from a
+    /// user-scoped one.
+    cwd: Option<String>,
+    /// Best origin evidence seen so far for each skill name, applied in
+    /// [`Self::finish_with_probe`] once every record has been observed —
+    /// evidence for a listing row can arrive after the row itself.
+    skill_origin_evidence: HashMap<String, (u8, SourceOrigin)>,
 }
 
 impl ClaudeContextAccumulator {
     pub(crate) fn observe(&mut self, value: &Value) {
+        if self.cwd.is_none()
+            && let Some(cwd) = value
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|cwd| !cwd.is_empty())
+        {
+            self.cwd = Some(cwd.to_string());
+        }
         match value
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default()
         {
-            "assistant" if !self.seen_first_assistant => {
-                self.total_tokens = first_claude_usage_total(value);
-                self.seen_first_assistant = true;
-            }
             "user" | "human" => {
                 let is_meta = value
                     .get("isMeta")
@@ -303,17 +338,19 @@ impl ClaudeContextAccumulator {
                 }
                 let text = extract_claude_message_text(value);
                 if text.contains("Base directory for this skill:") {
-                    self.source_rows.push(InitialContextTokenSourceCount {
-                        source: InitialContextTokenSource::SkillInstructions,
-                        source_name: parse_claude_loaded_skill_name(&text),
-                        token_count: estimate_tokens(&text),
-                    });
-                } else if !text.trim().is_empty() {
-                    let (without_agent_files, agent_rows) = parse_instruction_file_mentions(&text);
-                    self.source_rows.extend(agent_rows);
-                    if !self.seen_first_assistant && !without_agent_files.trim().is_empty() {
-                        self.system_instruction_texts.push(without_agent_files);
+                    let name = parse_claude_loaded_skill_name(&text);
+                    if let Some((name, path)) =
+                        name.as_deref().zip(parse_claude_loaded_skill_path(&text))
+                    {
+                        let origin = classify_claude_filesystem_path(path, self.cwd.as_deref());
+                        self.record_skill_origin(name, claude_origin_rank::PREAMBLE_PATH, origin);
                     }
+                    self.source_rows.push(InitialContextTokenSourceCount {
+                        source: InitialContextTokenSource::Skill,
+                        source_name: name,
+                        token_count: estimate_tokens(&text),
+                        origin: SourceOrigin::Unknown,
+                    });
                 }
             }
             "attachment" => {
@@ -327,11 +364,68 @@ impl ClaudeContextAccumulator {
                 {
                     "skill_listing" => {
                         if let Some(content) = attachment.get("content").and_then(Value::as_str) {
-                            self.source_rows.extend(parse_named_markdown_bullets(
+                            let rows = parse_named_markdown_bullets(
                                 content,
-                                InitialContextTokenSource::SkillInstructions,
-                            ));
+                                InitialContextTokenSource::Skill,
+                                None,
+                            );
+                            for row in &rows {
+                                // A `<plugin>:<skill>` listing name is plugin
+                                // evidence. A directory-scoped project skill
+                                // also uses `<dir>:<skill>`, but a
+                                // `dynamic_skill` attachment (Project, a
+                                // stronger rank) always wins when both are
+                                // present for the same name.
+                                if let Some(name) = &row.source_name
+                                    && name.contains(':')
+                                {
+                                    self.record_skill_origin(
+                                        name,
+                                        claude_origin_rank::LISTING_NAME_SHAPE,
+                                        SourceOrigin::Plugin,
+                                    );
+                                }
+                            }
+                            self.source_rows.extend(rows);
                             insert_bullet_descriptions(content, &mut self.skill_descriptions);
+                        }
+                    }
+                    "invoked_skills" => {
+                        let skills = attachment
+                            .get("skills")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        for skill in &skills {
+                            let (Some(name), Some(path)) = (
+                                skill.get("name").and_then(Value::as_str),
+                                skill.get("path").and_then(Value::as_str),
+                            ) else {
+                                continue;
+                            };
+                            let origin = match path.strip_prefix("bundled:") {
+                                Some(_) => SourceOrigin::Bundled,
+                                None => classify_claude_filesystem_path(path, self.cwd.as_deref()),
+                            };
+                            self.record_skill_origin(
+                                name,
+                                claude_origin_rank::INVOKED_SKILLS,
+                                origin,
+                            );
+                        }
+                    }
+                    "dynamic_skill" => {
+                        let names = attachment
+                            .get("skillNames")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        for name in names.iter().filter_map(Value::as_str) {
+                            self.record_skill_origin(
+                                name,
+                                claude_origin_rank::DYNAMIC_SKILL,
+                                SourceOrigin::Project,
+                            );
                         }
                     }
                     "mcp_instructions_delta" => {
@@ -350,22 +444,14 @@ impl ClaudeContextAccumulator {
                                 continue;
                             };
                             self.source_rows.push(InitialContextTokenSourceCount {
-                                source: InitialContextTokenSource::McpInstructions,
+                                source: InitialContextTokenSource::Mcp,
                                 source_name: names
                                     .get(index)
                                     .and_then(Value::as_str)
                                     .map(str::to_string),
                                 token_count: estimate_tokens(text),
+                                origin: SourceOrigin::Unknown,
                             });
-                        }
-                    }
-                    "deferred_tools_delta"
-                    | "command_permissions"
-                    | "auto_mode"
-                    | "diagnostics" => {
-                        let text = serde_json::to_string(attachment).unwrap_or_default();
-                        if !self.seen_first_assistant && !text.is_empty() {
-                            self.system_instruction_texts.push(text);
                         }
                     }
                     _ => {}
@@ -375,25 +461,113 @@ impl ClaudeContextAccumulator {
         }
     }
 
-    pub(crate) fn finish(mut self) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
-        if self.system_instruction_texts.is_empty()
-            && self.source_rows.is_empty()
-            && self.total_tokens.is_none()
-        {
-            return (None, self.skill_descriptions);
+    /// Record `origin` for `name` only if it out-ranks (or is the first) the
+    /// evidence already on file — a lower `rank` wins. See
+    /// [`claude_origin_rank`] for the priority order.
+    fn record_skill_origin(&mut self, name: &str, rank: u8, origin: SourceOrigin) {
+        match self.skill_origin_evidence.get(name) {
+            Some((existing_rank, _)) if *existing_rank <= rank => {}
+            _ => {
+                self.skill_origin_evidence
+                    .insert(name.to_string(), (rank, origin));
+            }
         }
-        let system_instruction_tokens =
-            estimate_tokens(&self.system_instruction_texts.join("\n\n"));
-        if system_instruction_tokens > 0 {
-            self.source_rows.push(InitialContextTokenSourceCount {
-                source: InitialContextTokenSource::SystemInstructions,
-                source_name: None,
-                token_count: system_instruction_tokens,
-            });
+    }
+
+    pub(crate) fn finish(self) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+        self.finish_with_probe(&real_claude_filesystem_probe)
+    }
+
+    /// Same as [`Self::finish`], but takes the filesystem-existence check as an
+    /// argument so a test can stub it instead of touching the real disk.
+    fn finish_with_probe(
+        mut self,
+        probe: &dyn Fn(&str) -> bool,
+    ) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+        let home = crate::paths::home_dir().map(|path| path.to_string_lossy().into_owned());
+        for row in &mut self.source_rows {
+            if row.source != InitialContextTokenSource::Skill {
+                continue;
+            }
+            let Some(name) = row.source_name.as_deref() else {
+                continue;
+            };
+            row.origin = resolve_claude_skill_origin(
+                name,
+                &self.skill_origin_evidence,
+                self.cwd.as_deref(),
+                home.as_deref(),
+                probe,
+            );
         }
-        let breakdown = normalize_breakdown(self.total_tokens, self.source_rows);
+        let breakdown = normalize_breakdown(self.source_rows);
         (Some(to_output(breakdown)), self.skill_descriptions)
     }
+}
+
+/// Classify an absolute Claude skill path into a [`SourceOrigin`]. `cwd` is the
+/// session's own working directory, the only way to tell a project-scoped
+/// skill from a user-scoped one at the same `.claude/skills/` path shape.
+fn classify_claude_filesystem_path(path: &str, cwd: Option<&str>) -> SourceOrigin {
+    if path.contains("/bundled-skills/") {
+        return SourceOrigin::Bundled;
+    }
+    if path.contains("/.claude/plugins/") {
+        return SourceOrigin::Plugin;
+    }
+    if path.contains("/.claude/skills/") {
+        return match cwd {
+            Some(cwd) if !cwd.is_empty() && path.starts_with(cwd) => SourceOrigin::Project,
+            _ => SourceOrigin::User,
+        };
+    }
+    SourceOrigin::Unknown
+}
+
+/// Resolve one skill's origin: transcript evidence wins outright; otherwise,
+/// when the session's `cwd` exists on this machine (so the transcript is
+/// local rather than from another machine or a fixture), probe the
+/// filesystem for a `SKILL.md` under the project or the user's home. When the
+/// probe ran but found neither, a bare name (no `:`) resolves to `Bundled` —
+/// see [`SourceOrigin::Unknown`] for the reasoning. Stays `Unknown` when the
+/// probe could not run at all, or when the name carries a `:` and still has
+/// no hit.
+fn resolve_claude_skill_origin(
+    name: &str,
+    evidence: &HashMap<String, (u8, SourceOrigin)>,
+    cwd: Option<&str>,
+    home: Option<&str>,
+    probe: &dyn Fn(&str) -> bool,
+) -> SourceOrigin {
+    if let Some(&(_, origin)) = evidence.get(name) {
+        return origin;
+    }
+    let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) else {
+        return SourceOrigin::Unknown;
+    };
+    if !probe(cwd) {
+        return SourceOrigin::Unknown;
+    }
+    if probe(&format!("{cwd}/.claude/skills/{name}/SKILL.md")) {
+        return SourceOrigin::Project;
+    }
+    if let Some(home) = home.filter(|home| !home.is_empty())
+        && probe(&format!("{home}/.claude/skills/{name}/SKILL.md"))
+    {
+        return SourceOrigin::User;
+    }
+    // The probe ran but found the skill in neither directory. The harness
+    // only lists skills it actually found, and a plugin skill always carries
+    // a `<plugin>:` prefix, so a bare name (no `:`) with no project or user
+    // hit can only have shipped with the agent itself.
+    if !name.contains(':') {
+        return SourceOrigin::Bundled;
+    }
+    SourceOrigin::Unknown
+}
+
+fn real_claude_filesystem_probe(path: &str) -> bool {
+    std::path::Path::new(path).exists()
 }
 
 fn parse_claude(payload: &str) -> Option<InitialContextBreakdown> {
@@ -405,30 +579,11 @@ fn parse_claude(payload: &str) -> Option<InitialContextBreakdown> {
 }
 
 fn normalize_breakdown(
-    total_tokens: Option<i64>,
     mut rows: Vec<InitialContextTokenSourceCount>,
 ) -> InitialContextTokenBreakdown {
     rows.retain(|row| row.token_count >= 0);
     merge_rows(&mut rows);
-
-    if let Some(total_tokens) = total_tokens {
-        // `known_tokens` is a sum of chars/4 *estimates*, so it can exceed the
-        // reported `total_tokens` and clamp `unattributed` to 0. That's intentional:
-        // we don't shrink the per-source estimates to fit. The frontend donut shows
-        // a center of `max(total, sliceTotal)` so the displayed center is never less
-        // than the slices even when the estimates overshoot.
-        let known_tokens = rows.iter().map(|row| row.token_count).sum::<i64>();
-        let unattributed = (total_tokens - known_tokens).max(0);
-        if unattributed > 0 {
-            rows.push(InitialContextTokenSourceCount {
-                source: InitialContextTokenSource::Unattributed,
-                source_name: None,
-                token_count: unattributed,
-            });
-        }
-    }
-
-    InitialContextTokenBreakdown { total_tokens, rows }
+    InitialContextTokenBreakdown { rows }
 }
 
 /// Sum rows that share a `(source, source_name)` key, preserving first-seen
@@ -492,52 +647,64 @@ fn extract_claude_message_text(value: &Value) -> String {
     }
 }
 
-fn first_claude_usage_total(value: &Value) -> Option<i64> {
-    let usage = value
-        .get("usage")
-        .or_else(|| value.pointer("/message/usage"))?;
-    let input = usage
-        .get("input_tokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let cache_creation = usage
-        .get("cache_creation_input_tokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let cache_read = usage
-        .get("cache_read_input_tokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let total = input + cache_creation + cache_read;
-    (total > 0).then_some(total)
-}
-
-fn parse_codex_developer_prompt(text: &str) -> (String, Vec<InitialContextTokenSourceCount>) {
+fn parse_codex_developer_prompt(
+    text: &str,
+    cwd: Option<&str>,
+) -> Vec<InitialContextTokenSourceCount> {
     let Some((skills_start, skills_end)) = section_bounds(text, "## Skills") else {
-        return (text.to_string(), Vec::new());
+        return Vec::new();
     };
     let skills_section = &text[skills_start..skills_end];
-    let mut without_skills = String::with_capacity(text.len() - skills_section.len());
-    without_skills.push_str(&text[..skills_start]);
-    without_skills.push_str(&text[skills_end..]);
-    (
-        without_skills,
-        parse_named_markdown_bullets(skills_section, InitialContextTokenSource::SkillInstructions),
-    )
+    parse_named_markdown_bullets(skills_section, InitialContextTokenSource::Skill, cwd)
+}
+
+/// Classify a Codex skill's `(file: <path>)` locator into a [`SourceOrigin`].
+/// `cwd` is the session's own working directory (from `session_meta`), the
+/// only way to tell a project-scoped skill from a user-scoped one at the same
+/// `skills/` path shape.
+fn classify_codex_skill_origin(path: &str, cwd: Option<&str>) -> SourceOrigin {
+    if path.contains("/.codex/skills/.system/")
+        || path.contains("/.codex/plugins/cache/openai-bundled/")
+        || path.contains("/.codex/plugins/cache/openai-primary-runtime/")
+    {
+        return SourceOrigin::Bundled;
+    }
+    if path.contains("/plugins/cache/") {
+        return SourceOrigin::Plugin;
+    }
+    let is_skill_path = path.contains("/.codex/skills/") || path.contains("/.agents/skills/");
+    if !is_skill_path {
+        return SourceOrigin::Unknown;
+    }
+    match cwd {
+        Some(cwd) if !cwd.is_empty() && path.starts_with(cwd) => SourceOrigin::Project,
+        _ => SourceOrigin::User,
+    }
 }
 
 fn parse_named_markdown_bullets(
     text: &str,
     source: InitialContextTokenSource,
+    cwd: Option<&str>,
 ) -> Vec<InitialContextTokenSourceCount> {
     let mut rows = Vec::new();
     let mut current_name: Option<String> = None;
+    let mut current_origin = SourceOrigin::Unknown;
     let mut current_text = String::new();
 
     for line in text.lines() {
-        if let Some(name) = parse_markdown_bullet_name(line) {
-            push_named_source(&mut rows, source, current_name.take(), &current_text);
+        if let Some((name, _, file_path)) = parse_markdown_bullet(line) {
+            push_named_source(
+                &mut rows,
+                source,
+                current_name.take(),
+                current_origin,
+                &current_text,
+            );
             current_name = Some(name);
+            current_origin = file_path
+                .map(|path| classify_codex_skill_origin(&path, cwd))
+                .unwrap_or_default();
             current_text.clear();
         }
         if current_name.is_some() {
@@ -545,35 +712,61 @@ fn parse_named_markdown_bullets(
             current_text.push('\n');
         }
     }
-    push_named_source(&mut rows, source, current_name, &current_text);
+    push_named_source(
+        &mut rows,
+        source,
+        current_name,
+        current_origin,
+        &current_text,
+    );
     rows
 }
 
-fn parse_markdown_bullet_name(line: &str) -> Option<String> {
-    parse_markdown_bullet(line).map(|(name, _)| name)
-}
-
-/// Parse a `"- <name>: <description>"` skill-listing bullet into its name and the
-/// post-colon description text (trimmed). The name half keeps the original
-/// validation (single token, backtick-stripped); the description is everything
-/// after the first colon, so it may itself contain colons. `None` for non-bullet
-/// lines or a multi-word/empty name.
-fn parse_markdown_bullet(line: &str) -> Option<(String, String)> {
+/// Parse a `"- <name>: <description>"` skill-listing bullet into its name, the
+/// post-colon description text (trimmed, with any trailing Codex `(file: <path>)`
+/// locator removed), and that locator's path when present. The name half keeps
+/// the original validation (no internal space, backtick-stripped); splitting on
+/// the first `": "` first (falling back to a bare `:`) lets a plugin-qualified
+/// name such as `browser:control-in-app-browser` survive, since a valid name
+/// never contains a space and so never contains `": "` itself. `None` for a
+/// non-bullet line or a multi-word/empty name.
+fn parse_markdown_bullet(line: &str) -> Option<(String, String, Option<String>)> {
     let line = line.trim_start();
     let rest = line.strip_prefix("- ")?;
-    let (name, description) = rest.split_once(':')?;
+    let (name, description) = rest.split_once(": ").or_else(|| rest.split_once(':'))?;
     let name = name.trim().trim_matches('`');
     if name.is_empty() || name.contains(' ') {
-        None
-    } else {
-        Some((name.to_string(), description.trim().to_string()))
+        return None;
     }
+    let (description, file_path) = split_file_locator(description.trim());
+    Some((name.to_string(), description, file_path))
+}
+
+/// Split a bullet description from a trailing Codex `(file: <path>)` source
+/// locator, when present. The token estimate still runs over the raw line (the
+/// locator is real context), but a stored skill description must not carry it.
+fn split_file_locator(description: &str) -> (String, Option<String>) {
+    const LOCATOR_OPEN: &str = "(file: ";
+    let trimmed = description.trim_end();
+    if trimmed.ends_with(')')
+        && let Some(open) = trimmed.rfind(LOCATOR_OPEN)
+    {
+        let path = trimmed[open + LOCATOR_OPEN.len()..trimmed.len() - 1].trim();
+        if !path.is_empty() {
+            return (
+                trimmed[..open].trim_end().to_string(),
+                Some(path.to_string()),
+            );
+        }
+    }
+    (trimmed.to_string(), None)
 }
 
 fn push_named_source(
     rows: &mut Vec<InitialContextTokenSourceCount>,
     source: InitialContextTokenSource,
     source_name: Option<String>,
+    origin: SourceOrigin,
     text: &str,
 ) {
     let token_count = estimate_tokens(text);
@@ -584,49 +777,20 @@ fn push_named_source(
         source,
         source_name,
         token_count,
+        origin,
     });
 }
 
-fn parse_claude_loaded_skill_name(text: &str) -> Option<String> {
+fn parse_claude_loaded_skill_path(text: &str) -> Option<&str> {
     text.lines()
         .find_map(|line| line.strip_prefix("Base directory for this skill: "))
+}
+
+fn parse_claude_loaded_skill_name(text: &str) -> Option<String> {
+    parse_claude_loaded_skill_path(text)
         .and_then(|path| path.rsplit('/').next())
         .filter(|name| !name.is_empty())
         .map(str::to_string)
-}
-
-fn parse_instruction_file_mentions(text: &str) -> (String, Vec<InitialContextTokenSourceCount>) {
-    let mut remainder = Vec::new();
-    let mut rows = Vec::new();
-
-    for line in text.lines() {
-        if let Some(file_name) = instruction_file_name(line) {
-            push_named_source(
-                &mut rows,
-                InitialContextTokenSource::AgentInstructions,
-                Some(file_name.to_string()),
-                line,
-            );
-        } else {
-            remainder.push(line);
-        }
-    }
-
-    (remainder.join("\n"), rows)
-}
-
-fn instruction_file_name(text: &str) -> Option<&'static str> {
-    const INSTRUCTION_FILES: [&str; 4] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", ".cursorrules"];
-
-    INSTRUCTION_FILES.into_iter().find(|file_name| {
-        // Only attribute when the filename appears as a path basename — at line
-        // start or immediately after a `/` (the `Instructions from /workspace/
-        // AGENTS.md:` framing) — not as a space-preceded word in prose like
-        // "edit CLAUDE.md", which would otherwise reclassify a System mention as
-        // an Agent-file instruction.
-        text.match_indices(file_name)
-            .any(|(idx, _)| idx == 0 || text.as_bytes().get(idx - 1) == Some(&b'/'))
-    })
 }
 
 fn section_bounds(text: &str, heading: &str) -> Option<(usize, usize)> {
@@ -674,67 +838,258 @@ mod tests {
             .sum()
     }
 
+    /// The `origin` of the one skill row named `source_name`, or `None` when no
+    /// such row exists.
+    fn skill_origin(
+        breakdown: &InitialContextBreakdown,
+        source_name: &str,
+    ) -> Option<SourceOrigin> {
+        breakdown
+            .sources
+            .iter()
+            .find(|row| {
+                row.source == InitialContextTokenSource::Skill.as_str()
+                    && row.source_name.as_deref() == Some(source_name)
+            })
+            .map(|row| row.origin)
+    }
+
     #[test]
-    fn codex_extracts_system_instructions_named_skills_and_remainder() {
+    fn codex_extracts_named_skills() {
         let payload = include_str!("../../tests/fixtures/initial_context/codex_realistic.jsonl");
         let breakdown =
             parse_initial_context("codex", payload).expect("expected supported Codex breakdown");
 
-        assert_eq!(breakdown.total_tokens, Some(18_764));
-        assert_eq!(breakdown.tracking_status, TrackingStatus::TrackedPartial);
         assert!(
             source_tokens(
                 &breakdown,
-                InitialContextTokenSource::SystemInstructions,
-                None
-            ) > 0
-        );
-        assert!(
-            source_tokens(
-                &breakdown,
-                InitialContextTokenSource::SkillInstructions,
+                InitialContextTokenSource::Skill,
                 Some("orbit-tracker")
             ) > 0
         );
         assert!(
             source_tokens(
                 &breakdown,
-                InitialContextTokenSource::SkillInstructions,
+                InitialContextTokenSource::Skill,
                 Some("atlas-notes")
             ) > 0
         );
-        assert!(source_tokens(&breakdown, InitialContextTokenSource::Unattributed, None) > 0);
     }
 
     #[test]
-    fn codex_reserves_agent_instructions_for_instruction_files() {
-        let payload = r#"{"type":"session_meta","payload":{"base_instructions":{"text":"You are Codex, a coding agent."}}}
-{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>Sandbox details omitted.</permissions instructions>\nInstructions from /workspace/AGENTS.md: follow repo guidance.\nInstructions from /workspace/CLAUDE.md: follow Claude guidance."}]}}
-{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000}}}}"#;
+    fn codex_classifies_skill_origin_from_the_file_locator_path() {
+        let payload = concat!(
+            r#"{"type":"session_meta","payload":{"cwd":"/home/avery/projects/demo-app","base_instructions":{"text":"You are Codex, a coding agent."}}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<skills_instructions>\n"#,
+            r#"## Skills\n"#,
+            r#"- imagegen: Generate images. (file: /home/avery/.codex/skills/.system/imagegen/SKILL.md)\n"#,
+            r#"- browser:control-in-app-browser: Control the browser. (file: /home/avery/.codex/plugins/cache/openai-bundled/browser/1.0.0/skills/control-in-app-browser/SKILL.md)\n"#,
+            r#"- documents:documents: Edit docs. (file: /home/avery/.codex/plugins/cache/openai-primary-runtime/documents/1.0.0/skills/documents/SKILL.md)\n"#,
+            r#"- deep-research-work:deep-research: Research things. (file: /home/avery/.codex/plugins/cache/openai-curated-remote/deep-research-work/0.1.14/skills/deep-research/SKILL.md)\n"#,
+            r#"- design-review: Review designs. (file: /home/avery/projects/demo-app/.agents/skills/design-review/SKILL.md)\n"#,
+            r#"- discuss: Discuss things. (file: /home/avery/.codex/skills/discuss/SKILL.md)\n"#,
+            r#"- changelog-cli: Changelog help. (file: /home/avery/.agents/skills/changelog-cli/SKILL.md)\n"#,
+            r#"- mystery-skill: No locator here.\n"#,
+            r#"</skills_instructions>"}]}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000}}}}"#,
+        );
 
         let breakdown =
             parse_initial_context("codex", payload).expect("expected supported Codex breakdown");
 
-        assert!(
-            source_tokens(
-                &breakdown,
-                InitialContextTokenSource::SystemInstructions,
-                None
-            ) > 0
+        assert_eq!(
+            skill_origin(&breakdown, "imagegen"),
+            Some(SourceOrigin::Bundled)
         );
-        assert!(
-            source_tokens(
-                &breakdown,
-                InitialContextTokenSource::AgentInstructions,
-                Some("AGENTS.md")
-            ) > 0
+        assert_eq!(
+            skill_origin(&breakdown, "browser:control-in-app-browser"),
+            Some(SourceOrigin::Bundled)
         );
-        assert!(
-            source_tokens(
-                &breakdown,
-                InitialContextTokenSource::AgentInstructions,
-                Some("CLAUDE.md")
-            ) > 0
+        assert_eq!(
+            skill_origin(&breakdown, "documents:documents"),
+            Some(SourceOrigin::Bundled)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "deep-research-work:deep-research"),
+            Some(SourceOrigin::Plugin)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "design-review"),
+            Some(SourceOrigin::Project)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "discuss"),
+            Some(SourceOrigin::User)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "changelog-cli"),
+            Some(SourceOrigin::User)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "mystery-skill"),
+            Some(SourceOrigin::Unknown)
+        );
+
+        // The `(file: …)` locator counts toward the token estimate but must not
+        // leak into the stored description.
+        let descriptions = parse_skill_descriptions("codex", payload);
+        assert_eq!(
+            descriptions.get("imagegen").map(String::as_str),
+            Some("Generate images.")
+        );
+        assert!(!descriptions["imagegen"].contains("(file:"));
+        assert_eq!(
+            descriptions
+                .get("browser:control-in-app-browser")
+                .map(String::as_str),
+            Some("Control the browser.")
+        );
+    }
+
+    #[test]
+    fn claude_classifies_skill_origin_from_transcript_evidence() {
+        let payload = concat!(
+            r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- bundled-evidence-skill: Comes with the agent.\n- project-evidence-skill: Loaded for this project.\n- browser:control-in-app-browser: Control the browser.\n- no-evidence-skill: No signal at all."}}"#,
+            "\n",
+            r#"{"type":"attachment","attachment":{"type":"invoked_skills","skills":[{"name":"bundled-evidence-skill","path":"bundled:bundled-evidence-skill","content":"..."}]}}"#,
+            "\n",
+            r#"{"type":"attachment","attachment":{"type":"dynamic_skill","skillDir":"/home/avery/projects/demo-app/.claude/skills","skillNames":["project-evidence-skill"],"displayPath":".claude/skills"}}"#,
+        );
+
+        let breakdown =
+            parse_initial_context("claude", payload).expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "bundled-evidence-skill"),
+            Some(SourceOrigin::Bundled)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "project-evidence-skill"),
+            Some(SourceOrigin::Project)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "browser:control-in-app-browser"),
+            Some(SourceOrigin::Plugin)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "no-evidence-skill"),
+            Some(SourceOrigin::Unknown)
+        );
+    }
+
+    #[test]
+    fn claude_dynamic_skill_evidence_outranks_the_listing_name_shape() {
+        // A directory-scoped project skill can *also* use a `<dir>:<skill>`
+        // listing name (Plugin's shape), so a `dynamic_skill` attachment must
+        // still win as Project for that same name (contract priority order).
+        let payload = concat!(
+            r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- project-dir:scoped-skill: A directory-scoped project skill."}}"#,
+            "\n",
+            r#"{"type":"attachment","attachment":{"type":"dynamic_skill","skillDir":"/home/avery/projects/demo-app/.claude/skills/project-dir","skillNames":["project-dir:scoped-skill"],"displayPath":".claude/skills/project-dir"}}"#,
+        );
+
+        let breakdown =
+            parse_initial_context("claude", payload).expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "project-dir:scoped-skill"),
+            Some(SourceOrigin::Project)
+        );
+    }
+
+    #[test]
+    fn claude_probes_filesystem_for_project_and_user_skills() {
+        let cwd = "/home/avery/projects/demo-app";
+        let home = crate::paths::home_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/home/avery".to_string());
+        let project_skill_path = format!("{cwd}/.claude/skills/project-skill/SKILL.md");
+        let user_skill_path = format!("{home}/.claude/skills/user-skill/SKILL.md");
+
+        let payload = format!(
+            r#"{{"type":"attachment","cwd":"{cwd}","attachment":{{"type":"skill_listing","content":"- project-skill: Loaded from the project.\n- user-skill: Loaded for the user.\n- bare-skill: No evidence, no `:` in the name."}}}}"#
+        );
+
+        // A stub probe: never touches the real disk. Only the two exact paths
+        // the resolver is expected to build report as present.
+        let probe = move |path: &str| -> bool {
+            path == cwd || path == project_skill_path || path == user_skill_path
+        };
+
+        let mut accumulator = ClaudeContextAccumulator::default();
+        for value in parse_json_lines(&payload) {
+            accumulator.observe(&value);
+        }
+        let (breakdown, _) = accumulator.finish_with_probe(&probe);
+        let breakdown = breakdown.expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "project-skill"),
+            Some(SourceOrigin::Project)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "user-skill"),
+            Some(SourceOrigin::User)
+        );
+        // The probe ran (cwd exists) and found the bare name in neither
+        // directory, so it can only have shipped with the agent.
+        assert_eq!(
+            skill_origin(&breakdown, "bare-skill"),
+            Some(SourceOrigin::Bundled)
+        );
+    }
+
+    #[test]
+    fn resolve_claude_skill_origin_keeps_a_colon_qualified_name_unknown_without_a_hit() {
+        // A `:`-qualified name with no transcript evidence and no filesystem
+        // hit is a plugin skill missing its evidence, not a bundled one, so
+        // it must stay Unknown rather than being misclassified as Bundled.
+        // (A listing bullet with this shape actually carries its own
+        // Plugin evidence before this function ever runs — see
+        // `claude_origin_rank::LISTING_NAME_SHAPE` — so this exercises the
+        // resolver directly, as if that evidence were absent.)
+        let cwd = "/home/avery/projects/demo-app";
+        let evidence = HashMap::new();
+        let probe = |path: &str| -> bool { path == cwd };
+
+        assert_eq!(
+            resolve_claude_skill_origin(
+                "plugin:bare-skill",
+                &evidence,
+                Some(cwd),
+                Some("/home/avery"),
+                &probe
+            ),
+            SourceOrigin::Unknown
+        );
+    }
+
+    #[test]
+    fn claude_leaves_bare_skill_unknown_when_the_probe_cannot_run() {
+        // The transcript's `cwd` does not exist on this machine (a fixture, or
+        // a session recorded elsewhere), so the probe never runs. A bare name
+        // with no other evidence must stay Unknown, not be misread as Bundled.
+        let cwd = "/home/avery/projects/demo-app";
+        let payload = format!(
+            r#"{{"type":"attachment","cwd":"{cwd}","attachment":{{"type":"skill_listing","content":"- bare-skill: No evidence at all."}}}}"#
+        );
+
+        // The stub probe reports the cwd itself as absent, so the resolver
+        // must stop before checking the project or user directory.
+        let probe = |_path: &str| -> bool { false };
+
+        let mut accumulator = ClaudeContextAccumulator::default();
+        for value in parse_json_lines(&payload) {
+            accumulator.observe(&value);
+        }
+        let (breakdown, _) = accumulator.finish_with_probe(&probe);
+        let breakdown = breakdown.expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "bare-skill"),
+            Some(SourceOrigin::Unknown)
         );
     }
 
@@ -744,54 +1099,34 @@ mod tests {
         let breakdown =
             parse_initial_context("claude", payload).expect("expected supported Claude breakdown");
 
-        assert_eq!(breakdown.total_tokens, Some(84_321));
-        assert_eq!(breakdown.tracking_status, TrackingStatus::TrackedPartial);
         assert!(
             source_tokens(
                 &breakdown,
-                InitialContextTokenSource::SkillInstructions,
+                InitialContextTokenSource::Skill,
                 Some("orbit-tracker")
             ) > 0
         );
         assert!(
             source_tokens(
                 &breakdown,
-                InitialContextTokenSource::SkillInstructions,
+                InitialContextTokenSource::Skill,
                 Some("atlas-notes")
             ) > 0
         );
         assert!(
             source_tokens(
                 &breakdown,
-                InitialContextTokenSource::SkillInstructions,
+                InitialContextTokenSource::Skill,
                 Some("ledger-sync")
             ) > 0
         );
         assert!(
             source_tokens(
                 &breakdown,
-                InitialContextTokenSource::McpInstructions,
+                InitialContextTokenSource::Mcp,
                 Some("nebula-docs")
             ) > 0
         );
-        assert!(source_tokens(&breakdown, InitialContextTokenSource::Unattributed, None) > 0);
-    }
-
-    #[test]
-    fn instruction_file_name_requires_a_path_basename() {
-        // Path basenames (line start or after `/`) are instruction files…
-        assert_eq!(
-            instruction_file_name("Instructions from /workspace/AGENTS.md: follow guidance."),
-            Some("AGENTS.md")
-        );
-        assert_eq!(instruction_file_name("CLAUDE.md"), Some("CLAUDE.md"));
-        // …but a space-preceded prose mention is not, so it stays System, not
-        // Agent-file (F4a regression: `contains` reclassified prose like this).
-        assert_eq!(
-            instruction_file_name("Remember to edit CLAUDE.md first."),
-            None
-        );
-        assert_eq!(instruction_file_name("see the AGENTS.md for details"), None);
     }
 
     #[test]
@@ -818,7 +1153,7 @@ mod tests {
         let names: Vec<_> = breakdown
             .sources
             .iter()
-            .filter(|r| r.source == InitialContextTokenSource::SkillInstructions.as_str())
+            .filter(|r| r.source == InitialContextTokenSource::Skill.as_str())
             .filter_map(|r| r.source_name.as_deref())
             .collect();
         assert!(names.contains(&"orbit-tracker"));
@@ -839,14 +1174,28 @@ mod tests {
         );
         let breakdown =
             parse_initial_context("claude", payload).expect("expected supported Claude breakdown");
-        assert_eq!(breakdown.total_tokens, Some(5000));
         assert!(
             source_tokens(
                 &breakdown,
-                InitialContextTokenSource::SkillInstructions,
+                InitialContextTokenSource::Skill,
                 Some("deferred-skill")
             ) > 0
         );
+    }
+
+    #[test]
+    fn claude_session_with_no_skills_or_mcp_still_returns_a_breakdown() {
+        // A supported agent whose transcript carries no skill or MCP evidence still
+        // gets a breakdown, so the UI can show its empty state instead of
+        // disappearing the card entirely.
+        let payload = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hello"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":"hi"}}"#,
+        );
+        let breakdown = parse_initial_context("claude", payload)
+            .expect("a supported agent always returns a breakdown");
+        assert!(breakdown.sources.is_empty());
     }
 
     #[test]

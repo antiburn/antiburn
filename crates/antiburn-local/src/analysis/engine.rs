@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::efficiency::EfficiencyTotals;
 use crate::analysis::initial_context::InitialContextBreakdown;
-use crate::analysis::model::{CompactionTrigger, ModelRun, NormalizedSession, ToolCategory};
+use crate::analysis::model::{CompactionTrigger, ModelRun, NormalizedSession};
 
 /// Number of progress buckets each session is resampled onto (0% → 100%).
 pub const BUCKETS: usize = 180;
@@ -29,39 +29,6 @@ pub const CONTEXT_WINDOW: u64 = 200_000;
 /// Inter-event gaps at or above this are treated as "away" time and excluded
 /// from active time; shorter gaps count as active work. Tunable.
 pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolMix {
-    pub edit: u64,
-    pub read: u64,
-    pub search: u64,
-    pub test: u64,
-    pub bash: u64,
-    pub other: u64,
-}
-
-impl ToolMix {
-    pub(crate) fn add(&mut self, category: ToolCategory) {
-        match category {
-            ToolCategory::Edit => self.edit = self.edit.saturating_add(1),
-            ToolCategory::Read => self.read = self.read.saturating_add(1),
-            ToolCategory::Search => self.search = self.search.saturating_add(1),
-            ToolCategory::Test => self.test = self.test.saturating_add(1),
-            ToolCategory::Bash => self.bash = self.bash.saturating_add(1),
-            ToolCategory::Other => self.other = self.other.saturating_add(1),
-        }
-    }
-
-    fn merge(&mut self, other: ToolMix) {
-        self.edit = self.edit.saturating_add(other.edit);
-        self.read = self.read.saturating_add(other.read);
-        self.search = self.search.saturating_add(other.search);
-        self.test = self.test.saturating_add(other.test);
-        self.bash = self.bash.saturating_add(other.bash);
-        self.other = self.other.saturating_add(other.other);
-    }
-}
 
 /// One point on the shared 0→100% progress grid.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -182,8 +149,6 @@ pub struct SessionMetrics {
     /// session (Codex's reported window, else the reference `CONTEXT_WINDOW`).
     /// Aggregation rescales each session's occupancy into the shared reference.
     pub context_window: u64,
-    pub tool_mix: ToolMix,
-    pub grep_count: u64,
     pub buckets: Vec<Bucket>,
     /// Where this session's *initial* context window went, by source. `None`
     /// when the agent/session has no reliable signal ("unavailable"). Populated
@@ -232,6 +197,12 @@ pub struct SessionMetrics {
     /// Empty when the session invoked no skills. Skills stay in `ToolCategory::Other`.
     #[serde(default, skip_serializing)]
     pub skill_uses: Vec<SkillUse>,
+    /// Tool calls per MCP server, keyed by the lowercased `<server>` segment of
+    /// tool names shaped `mcp__<server>__<tool>`. `analyze_sources` reads this to
+    /// fill `InitialContextSourceCount::use_count` for MCP-sourced rows. Unlike
+    /// `skill_uses`, this never needs merging across sessions.
+    #[serde(default, skip_serializing)]
+    pub mcp_tool_calls: HashMap<String, u32>,
 }
 
 /// Averaged view across all analyzed sessions.
@@ -241,8 +212,6 @@ pub struct ActiveSessionsSummary {
     pub session_count: usize,
     pub avg_duration_secs: u64,
     pub avg_active_secs: u64,
-    pub tool_mix: ToolMix,
-    pub grep_total: u64,
     pub tokens_in_total: u64,
     pub tokens_out_total: u64,
     pub peak_context_tokens: u64,
@@ -268,8 +237,6 @@ impl ActiveSessionsSummary {
             session_count: 0,
             avg_duration_secs: 0,
             avg_active_secs: 0,
-            tool_mix: ToolMix::default(),
-            grep_total: 0,
             tokens_in_total: 0,
             tokens_out_total: 0,
             peak_context_tokens: 0,
@@ -357,8 +324,6 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     }
 
     let count = metrics.len();
-    let mut tool_mix = ToolMix::default();
-    let mut grep_total = 0u64;
     let mut tokens_in_total = 0u64;
     let mut tokens_out_total = 0u64;
     let mut peak_context = 0u64;
@@ -370,8 +335,6 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
     let mut cost_total_usd: Option<f64> = None;
     let reference = reference_window(&metrics);
     for m in &metrics {
-        tool_mix.merge(m.tool_mix);
-        grep_total += m.grep_count;
         tokens_in_total += m.tokens_in;
         tokens_out_total += m.tokens_out;
         compaction_count += m.compaction_count;
@@ -471,8 +434,6 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         session_count: count,
         avg_duration_secs: duration_sum / count as u64,
         avg_active_secs: active_sum / count as u64,
-        tool_mix,
-        grep_total,
         tokens_in_total,
         tokens_out_total,
         peak_context_tokens: peak_context,

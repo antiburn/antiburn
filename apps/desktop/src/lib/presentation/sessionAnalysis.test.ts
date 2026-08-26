@@ -20,10 +20,11 @@ import {
   HIGH_COST_FLOOR_USD,
   HIGH_COST_MEDIAN_MULTIPLE,
   HIGH_COST_MIN_SAMPLE,
-  initialContextNamedRows,
-  initialContextTotal,
   median,
   modeChangeMarkers,
+  skillMcpOriginLabel,
+  skillMcpStatusLabel,
+  skillMcpUsage,
 } from "./sessionAnalysis"
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
@@ -436,50 +437,84 @@ describe("costFigureLabel", () => {
   })
 })
 
-describe("initialContextTotal / initialContextNamedRows", () => {
-  const breakdown = (
-    totalTokens: number | null,
-    sources: InitialContextBreakdown["sources"],
-  ): InitialContextBreakdown => ({ trackingStatus: "trackedPartial", totalTokens, sources })
+describe("skillMcpUsage", () => {
+  const breakdown = (sources: InitialContextBreakdown["sources"]): InitialContextBreakdown => ({
+    sources,
+  })
 
-  it("uses the slice sum when per-source estimates overshoot the reported total", () => {
-    const ic = breakdown(1000, [
-      { source: "skill_instructions", sourceName: "a", tokenCount: 800 },
-      { source: "system_instructions", sourceName: null, tokenCount: 700 },
+  it("builds one row per named skill/MCP source, sorted by tokens descending", () => {
+    const ic = breakdown([
+      { source: "skill_instructions", sourceName: "research", tokenCount: 500, useCount: 3 },
+      { source: "mcp_instructions", sourceName: "figma", tokenCount: 900, useCount: 0 },
+      { source: "skill_instructions", sourceName: "imagegen", tokenCount: 200, useCount: 1 },
     ])
-    expect(initialContextTotal(ic)).toBe(1500)
-  })
-
-  it("uses the reported total when the slices agree", () => {
-    const ic = breakdown(1000, [
-      { source: "system_instructions", sourceName: null, tokenCount: 600 },
-      { source: "unattributed", sourceName: null, tokenCount: 400 },
+    const usage = skillMcpUsage(ic)
+    expect(usage.totalTokens).toBe(1600)
+    expect(usage.rows.map((r) => [r.kind, r.name])).toEqual([
+      ["mcp", "figma"],
+      ["skill", "research"],
+      ["skill", "imagegen"],
     ])
-    expect(initialContextTotal(ic)).toBe(1000)
   })
 
-  it("sorts named rows by contribution and rolls the tail into one Other row", () => {
-    const ic = breakdown(
-      null,
-      ["a", "b", "c", "d", "e", "f", "g"].map((name, i) => ({
-        source: "skill_instructions" as const,
-        sourceName: name,
-        tokenCount: (i + 1) * 100,
-      })),
-    )
-    const rows = initialContextNamedRows(ic)
-    expect(rows).toHaveLength(6)
-    expect(rows[0]?.label).toBe("Skill: g")
-    expect(rows[5]?.label).toBe("Other (2)")
-    expect(rows[5]?.tokenCount).toBe(300) // a (100) + b (200)
+  it("computes the wasted-token total from rows the session never used", () => {
+    const ic = breakdown([
+      { source: "skill_instructions", sourceName: "a", tokenCount: 300, useCount: 1 },
+      { source: "mcp_instructions", sourceName: "b", tokenCount: 100, useCount: 0 },
+    ])
+    const usage = skillMcpUsage(ic)
+    expect(usage.wastedTokens).toBe(100)
   })
 
-  it("drops unnamed and unprefixed sources from the named drill-down", () => {
-    const ic = breakdown(null, [
+  it("treats a missing useCount as unused", () => {
+    const ic = breakdown([{ source: "skill_instructions", sourceName: "a", tokenCount: 300 }])
+    const usage = skillMcpUsage(ic)
+    expect(usage.rows.map((r) => r.useCount)).toEqual([0])
+    expect(usage.wastedTokens).toBe(300)
+  })
+
+  it("carries the origin through, treating a missing one as unknown", () => {
+    const ic = breakdown([
+      { source: "skill_instructions", sourceName: "a", tokenCount: 300, origin: "user" },
+      { source: "mcp_instructions", sourceName: "b", tokenCount: 100 },
+    ])
+    const usage = skillMcpUsage(ic)
+    expect(usage.rows.map((r) => r.origin)).toEqual(["user", "unknown"])
+  })
+
+  it("ignores unnamed sources", () => {
+    const ic = breakdown([
       { source: "skill_instructions", sourceName: null, tokenCount: 900 },
-      { source: "unattributed", sourceName: "baseline", tokenCount: 900 },
+      { source: "mcp_instructions", sourceName: null, tokenCount: 900 },
     ])
-    expect(initialContextNamedRows(ic)).toEqual([])
+    const usage = skillMcpUsage(ic)
+    expect(usage.totalTokens).toBe(0)
+    expect(usage.rows).toEqual([])
+  })
+
+  it("reports zero totals when there is nothing to attribute", () => {
+    const usage = skillMcpUsage(breakdown([]))
+    expect(usage.wastedTokens).toBe(0)
+    expect(usage.totalTokens).toBe(0)
+    expect(usage.rows).toEqual([])
+  })
+})
+
+describe("skillMcpStatusLabel", () => {
+  it("labels an unused row, a single use, and a repeated use", () => {
+    expect(skillMcpStatusLabel({ useCount: 0 })).toBe("Unused")
+    expect(skillMcpStatusLabel({ useCount: 1 })).toBe("Used")
+    expect(skillMcpStatusLabel({ useCount: 3 })).toBe("Used ×3")
+  })
+})
+
+describe("skillMcpOriginLabel", () => {
+  it("labels every known origin, and reports null for unknown", () => {
+    expect(skillMcpOriginLabel("bundled")).toBe("Bundled")
+    expect(skillMcpOriginLabel("plugin")).toBe("Plugin")
+    expect(skillMcpOriginLabel("user")).toBe("User")
+    expect(skillMcpOriginLabel("project")).toBe("Project")
+    expect(skillMcpOriginLabel("unknown")).toBeNull()
   })
 })
 
