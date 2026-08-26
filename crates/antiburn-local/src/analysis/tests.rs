@@ -268,9 +268,6 @@ fn claude_tokens_tools_and_timing() {
     assert_eq!(m.tokens_in, 1000 + 1200);
     assert_eq!(m.tokens_out, 200 + 50);
     assert_eq!(m.peak_context_tokens, 6000);
-    assert_eq!(m.tool_mix.edit, 1);
-    assert_eq!(m.tool_mix.search, 1);
-    assert_eq!(m.grep_count, 1);
     // Duration spans 12:00 → 12:03 = 180s.
     assert_eq!(m.duration_secs, 180);
     // Every gap is 60s (< idle threshold), so active time == wall-clock span.
@@ -327,7 +324,7 @@ fn active_time_excludes_idle_gaps() {
 }
 
 #[test]
-fn pi_jsonl_tool_calls_feed_tool_mix() {
+fn pi_jsonl_tool_calls_classify_into_tool_categories() {
     let pi_fixture = concat!(
         r#"{"type":"message","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll inspect first."},{"type":"toolCall","id":"call_read","name":"read","arguments":{"path":"src/lib.rs"}}]}}"#,
         "\n",
@@ -339,10 +336,16 @@ fn pi_jsonl_tool_calls_feed_tool_mix() {
         "\n",
         r#"{"type":"message","timestamp":"2024-06-01T12:04:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Need another approach."}]}}"#,
     );
-    let summary = analyze_sources(vec![jsonl_input("pi", pi_fixture)]);
-    assert_eq!(summary.tool_mix.read, 1);
-    assert_eq!(summary.tool_mix.edit, 1);
-    assert_eq!(summary.tool_mix.test, 1);
+    let session = normalize_source(&jsonl_input("pi", pi_fixture)).unwrap();
+    let categories: Vec<ToolCategory> = session
+        .events
+        .iter()
+        .flat_map(|e| e.tools.iter().map(|t| t.category))
+        .collect();
+    assert_eq!(
+        categories,
+        vec![ToolCategory::Read, ToolCategory::Edit, ToolCategory::Test]
+    );
 }
 
 #[test]
@@ -587,9 +590,14 @@ fn codex_rollout_envelope_is_normalized() {
     assert!(m.buckets.iter().any(|b| b.tokens_in > 0));
     assert!(m.buckets.iter().any(|b| b.tokens_out > 0));
     assert!(m.buckets.iter().any(|b| b.context_tokens > 0));
+    let categories: Vec<ToolCategory> = session
+        .events
+        .iter()
+        .flat_map(|e| e.tools.iter().map(|t| t.category))
+        .collect();
     // exec_command running `cargo test` is reclassified Bash → Test.
-    assert_eq!(m.tool_mix.test, 1);
-    assert_eq!(m.tool_mix.edit, 1); // apply_patch
+    assert!(categories.contains(&ToolCategory::Test));
+    assert!(categories.contains(&ToolCategory::Edit)); // apply_patch
 }
 
 #[test]
@@ -649,11 +657,6 @@ fn codex_exec_wrapper_recovers_current_tool_categories() {
     assert_eq!(session.events[2].tools.len(), 2);
     assert_eq!(session.events[2].tools[0].category, ToolCategory::Test);
     assert_eq!(session.events[2].tools[1].category, ToolCategory::Edit);
-
-    let metrics = analyze_session(&session);
-    assert_eq!(metrics.tool_mix.bash, 1);
-    assert_eq!(metrics.tool_mix.test, 2);
-    assert_eq!(metrics.tool_mix.edit, 1);
 }
 
 #[test]
@@ -1591,12 +1594,12 @@ fn opencode_message_part_stream_is_joined() {
     assert_eq!(a.usage.output_tokens, 50);
     assert_eq!(a.usage.cache_creation_tokens, 500);
     assert_eq!(a.tools.len(), 2); // bash + patch
+    assert_eq!(a.tools[0].category, ToolCategory::Test); // bash running `cargo test`
+    assert_eq!(a.tools[1].category, ToolCategory::Edit); // patch
 
     let m = analyze_session(&session);
     assert_eq!(m.tokens_in, 1500); // 1000 fresh input + 500 cache write
     assert_eq!(m.tokens_out, 50);
-    assert_eq!(m.tool_mix.test, 1); // bash running `cargo test`
-    assert_eq!(m.tool_mix.edit, 1); // patch
 }
 
 /// OpenCode reports two distinct per-turn context readings.
@@ -1871,9 +1874,6 @@ fn aggregate_blends_multiple_vendors() {
     ];
     let summary = analyze_sources(inputs);
     assert_eq!(summary.session_count, 2);
-    assert_eq!(summary.tool_mix.edit, 2); // Edit + write_file
-    assert_eq!(summary.tool_mix.search, 1); // Grep
-    assert_eq!(summary.grep_total, 1);
     assert_eq!(summary.buckets.len(), crate::analysis::BUCKETS);
     assert!(summary.tokens_out_total > 0);
 }
@@ -1934,6 +1934,61 @@ fn initial_context_grafts_to_each_session_by_distinct_id() {
     assert!(!skill_names("sess-b").iter().any(|n| n == "skill-a"));
 }
 
+/// A skill row's `use_count` counts `Skill` tool calls with the matching name
+/// after the skill loads; a listed but never-invoked skill stays at 0.
+#[test]
+fn initial_context_use_count_reflects_skill_tool_calls() {
+    let fixture = concat!(
+        r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- deep-research: Research harness.\n- unused-skill: Never invoked."}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000},"content":[{"type":"tool_use","name":"Skill","input":{"skill":"deep-research"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"deep-research"}}]}}"#,
+    );
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+    let breakdown = summary.sessions[0]
+        .initial_context
+        .as_ref()
+        .expect("expected a breakdown");
+
+    let use_count = |name: &str| -> u32 {
+        breakdown
+            .sources
+            .iter()
+            .find(|s| s.source == "skill_instructions" && s.source_name.as_deref() == Some(name))
+            .map(|s| s.use_count)
+            .expect("expected a skill row")
+    };
+    assert_eq!(use_count("deep-research"), 2);
+    assert_eq!(use_count("unused-skill"), 0);
+}
+
+/// An MCP server row's `use_count` counts tool calls named `mcp__<server>__<tool>`,
+/// matched to the server name case-insensitively.
+#[test]
+fn initial_context_use_count_reflects_mcp_tool_calls() {
+    let fixture = concat!(
+        r#"{"type":"attachment","attachment":{"type":"mcp_instructions_delta","addedNames":["nebula-docs"],"addedBlocks":["Query the indexed docs."]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000},"content":[{"type":"tool_use","name":"mcp__nebula-docs__search_docs","input":{}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__NEBULA-DOCS__read_doc","input":{}}]}}"#,
+    );
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+    let breakdown = summary.sessions[0]
+        .initial_context
+        .as_ref()
+        .expect("expected a breakdown");
+
+    let mcp_row = breakdown
+        .sources
+        .iter()
+        .find(|s| s.source == "mcp_instructions" && s.source_name.as_deref() == Some("nebula-docs"))
+        .expect("expected an mcp row");
+    // Both calls count, including the differently-cased second one.
+    assert_eq!(mcp_row.use_count, 2);
+}
+
 #[test]
 fn empty_inputs_give_empty_summary() {
     let summary = analyze_sources(vec![]);
@@ -1982,7 +2037,6 @@ fn cursor_transcript_uses_embedded_time_model_and_structured_tools() {
     assert_eq!(session.events[1].tools[0].category, ToolCategory::Edit);
     let metrics = analyze_session(&session);
     assert_eq!(metrics.duration_secs, 60);
-    assert_eq!(metrics.tool_mix.edit, 1);
 }
 
 /// A brain-transcript payload: the synthesized metadata header line followed
@@ -2023,9 +2077,6 @@ fn antigravity_brain_transcript_normalizes_steps() {
     assert_eq!(session.events[4].role, Role::Tool);
 
     let m = analyze_session(&session);
-    assert_eq!(m.tool_mix.search, 1);
-    assert_eq!(m.tool_mix.edit, 1);
-    assert_eq!(m.grep_count, 1);
     // Span 12:00 → 12:01:30 = 90s.
     assert_eq!(m.duration_secs, 90);
 }
@@ -2085,8 +2136,14 @@ fn antigravity_aggregates_alongside_claude() {
         jsonl_input("claude", CLAUDE_FIXTURE),
     ]);
     assert_eq!(summary.session_count, 2);
-    // The Antigravity session contributes a non-empty, analyzed session.
-    assert!(summary.sessions.iter().any(|s| s.tool_mix.edit >= 1));
+    // The Antigravity session contributes a non-empty, analyzed session: its five
+    // steps (see `antigravity_brain_transcript_normalizes_steps`) all parse.
+    assert!(
+        summary
+            .sessions
+            .iter()
+            .any(|s| s.agent == "antigravity" && s.event_count == 5)
+    );
 }
 
 #[test]
@@ -2097,7 +2154,12 @@ fn claude_skill_use_is_captured_with_position_tokens_and_duration() {
         "\n",
         r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
     );
-    let m = analyze_session(&normalize_source(&jsonl_input("claude", fixture)).unwrap());
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    // The skill call classifies as Other, not Edit.
+    assert_eq!(session.events[0].tools[0].category, ToolCategory::Other);
+    assert_eq!(session.events[1].tools[0].category, ToolCategory::Edit);
+
+    let m = analyze_session(&session);
 
     assert_eq!(m.skill_uses.len(), 1);
     let su = &m.skill_uses[0];
@@ -2108,9 +2170,6 @@ fn claude_skill_use_is_captured_with_position_tokens_and_duration() {
     assert_eq!(su.duration_ms, Some(60_000));
     // No description until a skill listing grafts one (see analyze_sources test).
     assert_eq!(su.description, None);
-    // The skill remains in `tool_mix.other`.
-    assert_eq!(m.tool_mix.other, 1);
-    assert_eq!(m.tool_mix.edit, 1);
 }
 
 #[test]

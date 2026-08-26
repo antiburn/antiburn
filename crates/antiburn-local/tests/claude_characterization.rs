@@ -761,7 +761,6 @@ fn records_all_kinds_reports_initial_context() {
         .initial_context
         .as_ref()
         .expect("initial context must be available");
-    assert_eq!(context.total_tokens, Some(5_000));
     assert!(context.sources.iter().any(|source| {
         source.source == "skill_instructions"
             && source.source_name.as_deref() == Some("orbit-tracker")
@@ -977,7 +976,6 @@ fn an_oversized_metric_bearing_record_is_dropped_for_both_source_variants() {
                 session.events.len(),
                 metrics.tokens_in,
                 metrics.tokens_out,
-                metrics.tool_mix.bash,
             )
         })
         .collect();
@@ -988,7 +986,6 @@ fn an_oversized_metric_bearing_record_is_dropped_for_both_source_variants() {
             2,
             6,
             8,
-            0,
         );
         2
     ];

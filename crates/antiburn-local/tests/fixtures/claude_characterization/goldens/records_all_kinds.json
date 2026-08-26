@@ -4139,37 +4139,23 @@
         "unpricedTurns": 0
       },
       "eventCount": 6,
-      "grepCount": 0,
       "initialContext": {
         "sources": [
           {
-            "source": "agent_instructions",
-            "sourceName": "AGENTS.md",
-            "tokenCount": 15
-          },
-          {
+            "origin": "unknown",
             "source": "skill_instructions",
             "sourceName": "orbit-tracker",
-            "tokenCount": 18
+            "tokenCount": 18,
+            "useCount": 1
           },
           {
+            "origin": "unknown",
             "source": "skill_instructions",
             "sourceName": "atlas-notes",
-            "tokenCount": 16
-          },
-          {
-            "source": "system_instructions",
-            "sourceName": null,
-            "tokenCount": 7
-          },
-          {
-            "source": "unattributed",
-            "sourceName": null,
-            "tokenCount": 4944
+            "tokenCount": 16,
+            "useCount": 0
           }
-        ],
-        "totalTokens": 5000,
-        "trackingStatus": "trackedPartial"
+        ]
       },
       "model": "claude-3-5-haiku-20241022",
       "modelBreakdown": {
@@ -4189,15 +4175,7 @@
       "peakContextTokens": 5000,
       "sessionId": "records_all_kinds",
       "tokensIn": 2170,
-      "tokensOut": 190,
-      "toolMix": {
-        "bash": 0,
-        "edit": 0,
-        "other": 1,
-        "read": 1,
-        "search": 0,
-        "test": 0
-      }
+      "tokensOut": 190
     }
   ]
 }

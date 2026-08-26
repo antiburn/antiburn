@@ -33,13 +33,13 @@ import {
   formatCompact,
   formatDuration,
   isEmptySummary,
+  skillMcpUsage,
 } from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import { efficiencyMetrics } from "../../lib/presentation/sessionEfficiency"
 import type {
   ActiveSessionsSummary,
   SessionEfficiency,
-  LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
 } from "../../lib/types/session"
@@ -51,10 +51,8 @@ import { Skeleton } from "../ui/Skeleton"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
-import { InitialContextChart } from "./analysis/InitialContextChart"
-import { ToolMixChart } from "./analysis/ToolMixChart"
+import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
-import { OrchestratedBadge } from "./orchestration/OrchestratedBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
 import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
@@ -109,8 +107,8 @@ export interface SessionDetailPresentationProps {
   costSplit: TokensCostSplit | null
   /** Where the spend behind `cost` went. The same subject as `cost`. */
   efficiency: SessionEfficiency | null
-  /** Sub-agents this session launched. */
-  orchestration: LocalOrchestrationStatus | null
+  /** How many sub-agents this session launched. Known before the cost is priced. */
+  subagentCount: number
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
@@ -428,7 +426,7 @@ export function SessionDetailPresentation({
   cost,
   costSplit,
   efficiency,
-  orchestration,
+  subagentCount,
   modelRuns,
   relations,
   onBack,
@@ -475,8 +473,7 @@ export function SessionDetailPresentation({
   const empty = !summary || isEmptySummary(summary)
   const showEmptyState = ready && !error && empty
 
-  const isOrchestrator = !subagent && !!orchestration?.orchestrating
-  const costSubagentCount = orchestration?.subagentCount ?? costSplit?.subagentCount ?? 0
+  const costSubagentCount = subagentCount || (costSplit?.subagentCount ?? 0)
   const hasCostSubagents = !subagent && costSubagentCount > 0
   const costBadge = cost
     ? {
@@ -499,6 +496,8 @@ export function SessionDetailPresentation({
         selectedSubagentsCost: costSplit?.subagents ?? null,
         hasCostSubagents,
         costSubagentCount,
+        members: costSplit?.members ?? [],
+        sessionStartedAtEpoch: costSplit?.sessionStartedAtEpoch ?? null,
         summaryCostTotalUsd: summary.costTotalUsd ?? null,
         tokensInTotal: summary.tokensInTotal,
         tokensOutTotal: summary.tokensOutTotal,
@@ -773,15 +772,6 @@ export function SessionDetailPresentation({
               />
             )}
 
-            {/* The orchestrator's roster, expanding inline. */}
-            {isOrchestrator && orchestration && (
-              <OrchestratedBadge
-                status={orchestration}
-                onOpenSubagent={onOpenSubagent}
-                renderAgentIcon={renderAgentIcon}
-              />
-            )}
-
             {tokensCard && (
               <Card title="Context" hint={tokensCard.hint}>
                 <ContextTokensChart
@@ -794,7 +784,11 @@ export function SessionDetailPresentation({
 
             {cost && tokensCard && (
               <Card title="Cost">
-                <CostBreakdown cost={cost} split={tokensCard.split} />
+                <CostBreakdown
+                  cost={cost}
+                  split={tokensCard.split}
+                  onOpenSubagent={onOpenSubagent}
+                />
               </Card>
             )}
 
@@ -807,25 +801,15 @@ export function SessionDetailPresentation({
               </Card>
             )}
 
-            {/* Show where the context window went before the first response. */}
             {firstSession?.initialContext && (
               <Card
-                title="Initial context"
-                info="Tokens loaded before the first response, by source. 'Fixed overhead' is the platform's baseline context that's always loaded and can't be edited — the system prompt and built-in tool definitions; exact makeup varies by agent."
-                {...(firstSession.initialContext.totalTokens != null
-                  ? { hint: formatCompact(firstSession.initialContext.totalTokens) }
-                  : {})}
+                title="Skills and MCPs"
+                info="Skills and MCP servers load their instructions into context before the first response. If they're unused, they still cost you tokens repeatedly."
+                hint={`${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens unused`}
               >
-                <InitialContextChart breakdown={firstSession.initialContext} />
+                <SkillsMcpChart breakdown={firstSession.initialContext} />
               </Card>
             )}
-
-            <Card
-              title="Tools"
-              info="Which tool types the agent leaned on. Heavy searching often means it's hunting for context rather than making changes."
-            >
-              <ToolMixChart summary={summary} />
-            </Card>
           </>
         )}
       </div>

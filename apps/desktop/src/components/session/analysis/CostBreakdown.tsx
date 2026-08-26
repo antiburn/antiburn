@@ -2,16 +2,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { ChevronDown, ChevronRight } from "lucide-react"
+
 import {
   costBreakdownRows,
   costFigureLabel,
   formatCost,
+  formatTime,
   formatTokensShort,
 } from "../../../lib/presentation/sessionAnalysis"
 import {
   resultComponentCost,
   type LocalSessionCost,
 } from "../../../lib/presentation/sessionCosts"
+import { modelRunShortNames } from "../../../lib/presentation/models"
+import type { SubagentMember } from "../../../lib/types/session"
+import { TruncatedText } from "../../presentation/TruncatedText"
+import { toggleSubagentsExpanded, useSubagentsExpanded } from "./subagentsExpandedStore"
 
 interface CostBreakdownSplit {
   /** The orchestrator's own transcript. */
@@ -19,6 +26,11 @@ interface CostBreakdownSplit {
   /** Every sub-agent it launched, together. */
   subagents: LocalSessionCost
   subagentCount: number
+  /** One entry per sub-agent, for the expandable detail rows below the total. */
+  members: SubagentMember[]
+  /** Unix seconds of the session's own first transcript event, or null when
+   * unknown. Each detail row shows its sub-agent's start relative to this. */
+  sessionStartedAtEpoch: number | null
 }
 
 export interface CostBreakdownProps {
@@ -32,17 +44,9 @@ export interface CostBreakdownProps {
    * for any other subject, where there is nothing to break apart.
    */
   split?: CostBreakdownSplit | null
+  /** Open one sub-agent's own analysis, from an expanded detail row. */
+  onOpenSubagent?: (subagentId: string, label: string) => void
 }
-
-/**
- * Grid columns shared by every row: the label takes the rest of the width,
- * then tokens, USD, and percent each hold a fixed track. Fixed tracks (not
- * `auto`) keep every row's columns at the same screen position, since an
- * `auto` track's width would otherwise follow that one row's own content.
- */
-const ROW_GRID = "grid grid-cols-[1fr_2.5rem_3.5rem_2.25rem] items-center gap-x-3"
-
-const DATA_ROW_CLASS = `${ROW_GRID} rounded-control -mx-1 px-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover`
 
 /**
  * Percent of `totalUsd` that `usd` accounts for, as a whole percent. A
@@ -71,7 +75,7 @@ function CostRowLine({
   totalUsd: number
 }) {
   return (
-    <div className={DATA_ROW_CLASS}>
+    <div className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 mb-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
       <span className="text-label-tertiary">{label}</span>
       <span className="text-right text-label-tertiary tabular-nums">
         {formatTokensShort(tokens)}
@@ -84,6 +88,138 @@ function CostRowLine({
   )
 }
 
+function memberTokenTotal(member: SubagentMember): number | null {
+  if (!member.tokens) return null
+  const { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens } = member.tokens
+  return inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens
+}
+
+function formatMemberStart(
+  member: SubagentMember,
+  sessionStartedAtEpoch: number | null,
+): string {
+  if (sessionStartedAtEpoch == null || member.startedAtEpoch == null) return "—"
+  const elapsedSecs = Math.max(0, member.startedAtEpoch - sessionStartedAtEpoch)
+  return formatTime(elapsedSecs)
+}
+
+/**
+ * One sub-agent, indented under the "N sub-agents" row it expands from. The
+ * whole row is a button: a click opens that sub-agent's own analysis. A
+ * sub-agent that has no priced cost yet shows a dash in its cost and percent
+ * columns rather than a false zero.
+ */
+function SubagentMemberRow({
+  member,
+  totalUsd,
+  sessionStartedAtEpoch,
+  onOpenSubagent,
+}: {
+  member: SubagentMember
+  totalUsd: number
+  sessionStartedAtEpoch: number | null
+  onOpenSubagent?: ((subagentId: string, label: string) => void) | undefined
+}) {
+  const modelLabel = modelRunShortNames(member.modelRuns).join(" · ")
+  const tokens = memberTokenTotal(member)
+  const usd = member.cost?.totalUsd ?? null
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenSubagent?.(member.subagentId, member.label)}
+      className="col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary type-caption py-2 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
+    >
+      <span className="col-span-full items-center text-left">
+        <span className="tabular-nums">
+          [{formatMemberStart(member, sessionStartedAtEpoch)}]
+        </span>{" "}
+        <TruncatedText className="inline" text={member.label} />
+      </span>
+
+      <span className="text-left type-caption truncate">{modelLabel}</span>
+      <span className="text-right tabular-nums">
+        {tokens != null ? formatTokensShort(tokens) : "—"}
+      </span>
+      <span className="pr-1.5 text-right text-label tabular-nums">
+        {usd != null ? formatCost(usd) : "—"}
+      </span>
+      <span className="text-right tabular-nums">
+        {usd != null ? formatSharePct(usd, totalUsd) : "—"}
+      </span>
+    </button>
+  )
+}
+
+/**
+ * The "N sub-agents" split row. It expands, when it has a roster to show, into
+ * one {@link SubagentMemberRow} per sub-agent. A roster-less split (an older
+ * result the engine has not repriced yet) falls back to the plain summary row,
+ * since there is nothing underneath it to disclose.
+ *
+ * `members` keeps the engine's own order: the earliest-started sub-agent
+ * first. This view does not re-sort it.
+ */
+function SubagentsSplitRow({
+  label,
+  usd,
+  tokens,
+  totalUsd,
+  members,
+  sessionStartedAtEpoch,
+  onOpenSubagent,
+}: {
+  label: string
+  usd: number
+  tokens: number
+  totalUsd: number
+  members: SubagentMember[]
+  sessionStartedAtEpoch: number | null
+  onOpenSubagent?: ((subagentId: string, label: string) => void) | undefined
+}) {
+  const expanded = useSubagentsExpanded()
+
+  if (members.length === 0) {
+    return <CostRowLine label={label} usd={usd} tokens={tokens} totalUsd={totalUsd} />
+  }
+
+  const Chevron = expanded ? ChevronDown : ChevronRight
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={toggleSubagentsExpanded}
+        aria-expanded={expanded}
+        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 mb-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
+      >
+        <span className="min-w-0 flex items-center gap-x-1 text-label-tertiary">
+          <Chevron size={12} aria-hidden="true" className="shrink-0" />
+          {label}
+        </span>
+        <span className="text-right text-label-tertiary tabular-nums">
+          {formatTokensShort(tokens)}
+        </span>
+        <span className="pr-1.5 text-right text-label tabular-nums">{formatCost(usd)}</span>
+        <span className="text-right text-label-tertiary tabular-nums">
+          {formatSharePct(usd, totalUsd)}
+        </span>
+      </button>
+
+      {expanded &&
+        members.map((member) => (
+          <SubagentMemberRow
+            key={member.subagentId}
+            member={member}
+            totalUsd={totalUsd}
+            sessionStartedAtEpoch={sessionStartedAtEpoch}
+            onOpenSubagent={onOpenSubagent}
+          />
+        ))}
+    </>
+  )
+}
+
 /**
  * The billable-component breakdown beneath the tokens chart.
  *
@@ -93,28 +229,32 @@ function CostRowLine({
  * that do not add up. The token and percent columns share that same subject,
  * so every row's percent reads as a share of the one total shown in the footer.
  */
-export function CostBreakdown({ cost, split }: CostBreakdownProps) {
+export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProps) {
   const rows = costBreakdownRows(resultComponentCost(cost))
   const totalUsd = cost.totalCostUsd
 
   return (
-    <div className="space-y-1 border-t border-separator pt-2">
+    <div className="grid grid-cols-[1fr_max-content_max-content_max-content] gap-x-3 gap-y-1 border-t border-separator pt-2">
       {split && (
-        <div className="mb-1 space-y-1 border-b border-separator pb-1">
+        <div className="col-span-full grid grid-cols-subgrid mb-1 border-b border-separator pb-1">
           <CostRowLine
             label="Parent agent"
             usd={split.parent.totalCostUsd}
             tokens={split.parent.totalTokens}
             totalUsd={totalUsd}
           />
-          <CostRowLine
+          <SubagentsSplitRow
             label={`${split.subagentCount} sub-agent${split.subagentCount === 1 ? "" : "s"}`}
             usd={split.subagents.totalCostUsd}
             tokens={split.subagents.totalTokens}
             totalUsd={totalUsd}
+            members={split.members}
+            sessionStartedAtEpoch={split.sessionStartedAtEpoch}
+            onOpenSubagent={onOpenSubagent}
           />
         </div>
       )}
+
       {rows.map((row) => (
         <CostRowLine
           key={row.label}
@@ -124,7 +264,8 @@ export function CostBreakdown({ cost, split }: CostBreakdownProps) {
           totalUsd={totalUsd}
         />
       ))}
-      <div className={`${ROW_GRID} mt-1 border-t border-separator pt-1 type-caption`}>
+
+      <div className="col-span-full grid grid-cols-subgrid mt-1 border-t border-separator pt-1 type-caption">
         <span className="text-label-tertiary">{costFigureLabel(cost.isActive)}</span>
         <span className="text-right text-label-tertiary tabular-nums">
           {formatTokensShort(cost.totalTokens)}

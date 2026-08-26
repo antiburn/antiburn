@@ -4070,17 +4070,8 @@
         "unpricedTurns": 0
       },
       "eventCount": 3,
-      "grepCount": 0,
       "initialContext": {
-        "sources": [
-          {
-            "source": "unattributed",
-            "sourceName": null,
-            "tokenCount": 35
-          }
-        ],
-        "totalTokens": 35,
-        "trackingStatus": "trackedPartial"
+        "sources": []
       },
       "model": "claude-3-5-haiku-20241022",
       "modelBreakdown": {
@@ -4100,15 +4091,7 @@
       "peakContextTokens": 35,
       "sessionId": "subagent_child",
       "tokensIn": 55,
-      "tokensOut": 27,
-      "toolMix": {
-        "bash": 0,
-        "edit": 0,
-        "other": 0,
-        "read": 1,
-        "search": 0,
-        "test": 0
-      }
+      "tokensOut": 27
     }
   ]
 }

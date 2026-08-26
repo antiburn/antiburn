@@ -13,8 +13,8 @@
 import type {
   ActiveSessionsSummary,
   InitialContextBreakdown,
-  InitialContextSource,
   SessionBucket,
+  SourceOrigin,
 } from "../types/session"
 import { modelShortName } from "./models"
 
@@ -335,161 +335,80 @@ export function timeAxisTicks(
   return ticks
 }
 
-export interface ToolSlice {
-  key: string
-  label: string
-  value: number
-  colorVar: string
-}
-
-/** Tool-mix donut slices. */
-export function toolMixSlices(summary: ActiveSessionsSummary): ToolSlice[] {
-  const m = summary.toolMix
-  return [
-    {
-      key: "edit",
-      label: "Edits",
-      value: m.edit,
-      colorVar: "var(--color-analysis-blue-strong)",
-    },
-    { key: "test", label: "Tests", value: m.test, colorVar: "var(--color-analysis-green)" },
-    { key: "read", label: "Reads", value: m.read, colorVar: "var(--color-analysis-blue)" },
-    {
-      key: "search",
-      label: "Searches",
-      value: m.search,
-      colorVar: "var(--color-analysis-cyan)",
-    },
-    { key: "bash", label: "Commands", value: m.bash, colorVar: "var(--color-label-secondary)" },
-    { key: "other", label: "Other", value: m.other, colorVar: "var(--color-label-tertiary)" },
-  ].filter((s) => s.value > 0)
-}
-
 /* -------------------------------------------------------------------------
- * Initial context
+ * Skills and MCPs
  * ---------------------------------------------------------------------- */
 
-interface InitialContextSourceMeta {
-  key: InitialContextSource
-  label: string
-  colorVar: string
-  /** One-line explanation of the source (legend-item tooltip). */
-  tip: string
-}
-
-/**
- * Broad initial-context source dimensions, in display order. The
- * `unattributed` remainder is the platform's fixed baseline overhead — always
- * loaded and not user-editable. It is last and takes a neutral role color, not
- * a saturated hue, so the largest slice reads as inert baseline rather
- * than as an alarm.
- */
-const INITIAL_CONTEXT_SOURCES: readonly InitialContextSourceMeta[] = [
-  {
-    key: "skill_instructions",
-    label: "Skills",
-    colorVar: "var(--color-analysis-cyan)",
-    tip: "Instructions loaded from installed skills before the first response.",
-  },
-  {
-    key: "mcp_instructions",
-    label: "MCP",
-    colorVar: "var(--color-analysis-blue)",
-    tip: "Tool definitions and instructions from connected MCP servers.",
-  },
-  {
-    key: "agent_instructions",
-    label: "Agent files",
-    colorVar: "var(--color-analysis-blue-strong)",
-    tip: "Project and personal agent files loaded at startup.",
-  },
-  {
-    key: "system_instructions",
-    label: "System",
-    colorVar: "var(--color-context-system)",
-    tip: "The agent's own system prompt and harness instructions.",
-  },
-  {
-    key: "unattributed",
-    label: "Fixed overhead",
-    colorVar: "var(--color-context-fixed)",
-    tip: "The platform's baseline context that's always loaded and can't be edited — system prompt and built-in tool definitions; exact makeup varies by agent.",
-  },
-]
-
-/** Broad-source donut slices for the initial-context card. */
-export function initialContextSlices(
-  breakdown: InitialContextBreakdown,
-): (ToolSlice & { tip: string })[] {
-  const totals = new Map<InitialContextSource, number>()
-  for (const row of breakdown.sources) {
-    totals.set(row.source, (totals.get(row.source) ?? 0) + row.tokenCount)
-  }
-  return INITIAL_CONTEXT_SOURCES.map((meta) => ({
-    key: meta.key,
-    label: meta.label,
-    value: totals.get(meta.key) ?? 0,
-    colorVar: meta.colorVar,
-    tip: meta.tip,
-  })).filter((s) => s.value > 0)
-}
-
-/**
- * Donut-center total for the initial-context card: the larger of the reported
- * total and the sum of the displayed slices. Per-source counts are character
- * estimates that can overshoot the reported total, so taking the max
- * guarantees the center is never smaller than its own slices (a no-op when the
- * two agree).
- */
-export function initialContextTotal(breakdown: InitialContextBreakdown): number {
-  const sliceTotal = initialContextSlices(breakdown).reduce((acc, s) => acc + s.value, 0)
-  return Math.max(breakdown.totalTokens ?? 0, sliceTotal)
-}
-
-export interface NamedSourceRow {
+export interface SkillMcpRow {
   key: string
-  /** For example `"Skill: imagegen"`, `"MCP: figma"`. */
-  label: string
+  /** Which kind of source this is. */
+  kind: "skill" | "mcp"
+  /** The skill or MCP server name, without the kind prefix. */
+  name: string
   tokenCount: number
-  colorVar: string
+  /** How many times the session used this source after it loaded. */
+  useCount: number
+  /** Where the skill or MCP server is installed. */
+  origin: SourceOrigin
 }
 
-const NAMED_SOURCE_PREFIX: Partial<Record<InitialContextSource, string>> = {
-  skill_instructions: "Skill",
-  mcp_instructions: "MCP",
-  agent_instructions: "File",
+export interface SkillMcpUsage {
+  /** Total tokens skills and MCPs occupied in the initial context. */
+  totalTokens: number
+  /** Tokens spent on skills and MCPs the session never used. */
+  wastedTokens: number
+  /** Every skill and MCP row, sorted by token contribution descending. */
+  rows: SkillMcpRow[]
+}
+
+/** Display word for a row's status: `"Unused"`, `"Used"`, or `"Used ×N"` when the session used it more than once. */
+export function skillMcpStatusLabel(row: Pick<SkillMcpRow, "useCount">): string {
+  if (row.useCount <= 0) return "Unused"
+  return row.useCount > 1 ? `Used ×${row.useCount}` : "Used"
+}
+
+/** Display word for a row's install origin, or `null` when the origin is unknown. */
+export function skillMcpOriginLabel(origin: SourceOrigin): string | null {
+  switch (origin) {
+    case "bundled":
+      return "Bundled"
+    case "plugin":
+      return "Plugin"
+    case "user":
+      return "User"
+    case "project":
+      return "Project"
+    case "unknown":
+      return null
+  }
 }
 
 /**
- * Named skill / MCP / file rows, sorted by token contribution descending and
- * capped to `limit`, with the remainder rolled into an "Other" row.
+ * Skill and MCP rows from the initial-context breakdown, sorted by token
+ * contribution descending. A skill or an MCP server loads its instructions
+ * before the first response; a row with `useCount` 0 spent that space
+ * without the session ever calling on it.
  */
-export function initialContextNamedRows(
-  breakdown: InitialContextBreakdown,
-  limit = 5,
-): NamedSourceRow[] {
-  const named = breakdown.sources
-    .filter((row) => row.sourceName && NAMED_SOURCE_PREFIX[row.source])
+export function skillMcpUsage(breakdown: InitialContextBreakdown): SkillMcpUsage {
+  const rows = breakdown.sources
+    .filter((row): row is typeof row & { sourceName: string } => row.sourceName != null)
     .map((row) => ({
       key: `${row.source}:${row.sourceName}`,
-      label: `${NAMED_SOURCE_PREFIX[row.source]}: ${row.sourceName}`,
+      kind: row.source === "skill_instructions" ? ("skill" as const) : ("mcp" as const),
+      name: row.sourceName,
       tokenCount: row.tokenCount,
-      colorVar:
-        INITIAL_CONTEXT_SOURCES.find((m) => m.key === row.source)?.colorVar ??
-        "var(--color-label-tertiary)",
+      useCount: row.useCount ?? 0,
+      origin: row.origin ?? "unknown",
     }))
     .sort((a, b) => b.tokenCount - a.tokenCount)
 
-  if (named.length <= limit) return named
-  const top = named.slice(0, limit)
-  const rest = named.slice(limit)
-  top.push({
-    key: "other-named",
-    label: `Other (${rest.length})`,
-    tokenCount: rest.reduce((acc, r) => acc + r.tokenCount, 0),
-    colorVar: "var(--color-label-tertiary)",
-  })
-  return top
+  return {
+    totalTokens: rows.reduce((acc, r) => acc + r.tokenCount, 0),
+    wastedTokens: rows
+      .filter((r) => r.useCount === 0)
+      .reduce((acc, r) => acc + r.tokenCount, 0),
+    rows,
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -510,6 +429,15 @@ export function formatDuration(secs: number): string {
   if (hrs > 0 && mins > 0) return `${hrs}h ${mins}m`
   if (hrs > 0) return `${hrs}h`
   return `${mins}m`
+}
+
+/** Whole seconds as a zero-padded `HH:MM:SS` clock offset. */
+export function formatTime(totalSecs: number): string {
+  const whole = Math.max(0, Math.floor(totalSecs))
+  const hrs = Math.floor(whole / 3600)
+  const mins = Math.floor((whole % 3600) / 60)
+  const secs = whole % 60
+  return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
 }
 
 /** A 0..1 fraction as a whole percent. */

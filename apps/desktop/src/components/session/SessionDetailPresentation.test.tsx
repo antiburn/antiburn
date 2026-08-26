@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   inclusiveCostSubject,
@@ -14,12 +14,20 @@ import type {
   SessionBucket,
   SessionMetrics,
 } from "../../lib/types/session"
+import { subagentsExpandedStore } from "./analysis/subagentsExpandedStore"
 import {
   SessionDetailPresentation,
   type SessionDetailPresentationProps,
 } from "./SessionDetailPresentation"
 
 afterEach(cleanup)
+
+// The Cost card's sub-agent roster now remembers its open/closed state in a
+// module-level store, shared across every test in this file. Start each test
+// from the same collapsed state so an earlier test's click cannot leak in.
+beforeEach(() => {
+  subagentsExpandedStore.set(false)
+})
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
@@ -59,8 +67,6 @@ function metrics(over: Partial<SessionMetrics> = {}): SessionMetrics {
     peakContextTokens: 90_000,
     contextAvailable: true,
     contextWindow: 200_000,
-    toolMix: { edit: 10, read: 8, search: 3, test: 2, bash: 5, other: 1 },
-    grepCount: 3,
     buckets: [bucket(), bucket()],
     ...over,
   }
@@ -71,8 +77,6 @@ function summary(over: Partial<ActiveSessionsSummary> = {}): ActiveSessionsSumma
     sessionCount: 1,
     avgDurationSecs: 3600,
     avgActiveSecs: 1800,
-    toolMix: { edit: 10, read: 8, search: 3, test: 2, bash: 5, other: 1 },
-    grepTotal: 3,
     tokensInTotal: 120_000,
     tokensOutTotal: 8_000,
     peakContextTokens: 90_000,
@@ -119,7 +123,7 @@ function presentationProps(
     cost: null,
     costSplit: null,
     efficiency: null,
-    orchestration: null,
+    subagentCount: 0,
     modelRuns: [],
     relations: null,
     onOpenSubagent: () => {},
@@ -142,7 +146,6 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.getByText("Cost")).toBeTruthy()
-    expect(screen.getByText("Tools")).toBeTruthy()
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -365,22 +368,49 @@ describe("SessionDetailPresentation — session facts", () => {
     ).toBeTruthy()
   })
 
-  it("offers the orchestrator roster and opens a sub-agent from it", () => {
+  it("shows no orchestrator banner, and opens a sub-agent from the Cost card instead", () => {
     const onOpenSubagent = vi.fn()
+    const members = [
+      {
+        agent: "claude-code",
+        subagentId: "a",
+        label: "Investigate",
+        cost: { totalUsd: 3, inputUsd: 1, outputUsd: 1, cacheReadUsd: 0.5, cacheWriteUsd: 0.5 },
+        tokens: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        },
+        startedAtEpoch: null,
+        modelRuns: [{ model: "claude-sonnet-4-6" }],
+      },
+      {
+        agent: "claude-code",
+        subagentId: "b",
+        label: "Write tests",
+        cost: null,
+        tokens: null,
+        startedAtEpoch: null,
+        modelRuns: [],
+      },
+    ]
     view({
       onOpenSubagent,
-      orchestration: {
-        orchestrating: true,
-        orchestratorAgent: "claude-code",
-        orchestratorSessionId: "session-1",
+      cost: cost(41.45),
+      costSplit: {
+        parent: cost(32.95),
+        subagents: cost(8.5),
         subagentCount: 2,
-        members: [
-          { agent: "claude-code", subagentId: "a", label: "Investigate" },
-          { agent: "claude-code", subagentId: "b", label: "Write tests" },
-        ],
+        members,
+        sessionStartedAtEpoch: null,
       },
+      subagentCount: 2,
     })
-    fireEvent.click(screen.getByText("Orchestrated 2 agents"))
+
+    expect(screen.queryByText(/Orchestrated \d+ agents/)).toBeNull()
+
+    fireEvent.click(screen.getByText("2 sub-agents"))
     fireEvent.click(screen.getByText("Write tests"))
     expect(onOpenSubagent).toHaveBeenCalledWith("b", "Write tests")
   })
@@ -461,26 +491,29 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(screen.getByText("Context")).toBeTruthy()
   })
 
-  it("adds the initial-context card when the session has initial context", () => {
+  it("adds the Skills and MCPs card when the session has initial context", () => {
     const withContext = summary({
       sessions: [
         metrics({
           initialContext: {
-            trackingStatus: "tracked",
-            totalTokens: 12_000,
             sources: [
-              { source: "skill_instructions", sourceName: "research", tokenCount: 12_000 },
+              {
+                source: "skill_instructions",
+                sourceName: "research",
+                tokenCount: 12_000,
+                useCount: 1,
+              },
             ],
           },
         }),
       ],
     })
     const { unmount } = view({ summary: withContext })
-    expect(screen.getByText("Initial context")).toBeTruthy()
+    expect(screen.getByText("Skills and MCPs")).toBeTruthy()
     unmount()
 
     view({ summary: summary() })
-    expect(screen.queryByText("Initial context")).toBeNull()
+    expect(screen.queryByText("Skills and MCPs")).toBeNull()
   })
 })
 

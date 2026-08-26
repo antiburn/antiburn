@@ -125,6 +125,7 @@ describe("PopoverSession live analysis poll", () => {
     orchestration: null,
     relations: null,
     sourcePath: null,
+    startedAtEpoch: null,
     ...overrides,
   })
 
@@ -134,8 +135,6 @@ describe("PopoverSession live analysis poll", () => {
         sessionCount: 1,
         avgDurationSecs: 1,
         avgActiveSecs: 1,
-        toolMix: { edit: 0, read: 0, search: 0, test: 0, bash: 0, other: 0 },
-        grepTotal: 0,
         tokensInTotal: 0,
         tokensOutTotal: 0,
         peakContextTokens: 0,
