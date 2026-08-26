@@ -48,6 +48,8 @@ pub(crate) struct MetricTurn {
     compaction_trigger: Option<CompactionTrigger>,
     compaction_pre_tokens: Option<u64>,
     compaction_post_tokens: Option<u64>,
+    /// See `NormalizedEvent::wrapper_tool`.
+    wrapper_tool: Option<String>,
 }
 
 impl From<NormalizedEvent> for MetricTurn {
@@ -67,6 +69,7 @@ impl From<NormalizedEvent> for MetricTurn {
             compaction_trigger: event.compaction_trigger,
             compaction_pre_tokens: event.compaction_pre_tokens,
             compaction_post_tokens: event.compaction_post_tokens,
+            wrapper_tool: event.wrapper_tool,
         }
     }
 }
@@ -163,6 +166,7 @@ impl SessionMetricsAccumulator {
                 breakdown,
                 &metrics.skill_uses,
                 &metrics.mcp_tool_calls,
+                &metrics.tool_calls_by_name,
             );
         }
         metrics
@@ -185,6 +189,7 @@ impl SessionMetricsAccumulator {
                 .saturating_add(turn.model.as_ref().map_or(0, String::capacity))
                 .saturating_add(turn.thinking_mode.as_ref().map_or(0, String::capacity))
                 .saturating_add(turn.speed.as_ref().map_or(0, String::capacity))
+                .saturating_add(turn.wrapper_tool.as_ref().map_or(0, String::capacity))
                 .saturating_add(
                     turn.tools
                         .iter()
@@ -493,6 +498,7 @@ pub(crate) fn finalize_metrics(
     let mut skill_uses = Vec::new();
     let mut skill_event_indices = Vec::new();
     let mut mcp_tool_calls: HashMap<String, u32> = HashMap::new();
+    let mut tool_calls_by_name: HashMap<String, u32> = HashMap::new();
     let mut buckets = vec![Bucket::default(); BUCKETS];
     let cache_miss_events = cache_miss_events(turns, summary);
     let mut last_progress = 0.0f32;
@@ -591,6 +597,7 @@ pub(crate) fn finalize_metrics(
         }
 
         for tool in &turn.tools {
+            *tool_calls_by_name.entry(tool.name.clone()).or_insert(0) += 1;
             if tool.name.eq_ignore_ascii_case("skill") {
                 skill_uses.push(SkillUse {
                     name: tool.detail.clone().unwrap_or_else(|| "skill".to_string()),
@@ -606,6 +613,12 @@ pub(crate) fn finalize_metrics(
                     .entry(server.to_ascii_lowercase())
                     .or_insert(0) += 1;
             }
+        }
+        // A Codex `exec` wrapper unwraps into its nested calls in `tools`
+        // (real tool-mix accounting), but the wrapper itself is the built-in
+        // tool whose definition costs tokens, so its use counts here too.
+        if let Some(wrapper) = &turn.wrapper_tool {
+            *tool_calls_by_name.entry(wrapper.clone()).or_insert(0) += 1;
         }
     }
 
@@ -705,6 +718,7 @@ pub(crate) fn finalize_metrics(
         efficiency,
         skill_uses,
         mcp_tool_calls,
+        tool_calls_by_name,
     }
 }
 

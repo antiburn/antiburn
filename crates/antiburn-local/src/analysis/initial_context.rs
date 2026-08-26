@@ -17,12 +17,19 @@
 //! session has no skills or MCP servers still returns a breakdown, with empty
 //! `sources`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::analysis::tool_catalog::{self, ToolCatalog};
 use crate::model::skill::SkillUse;
+
+/// Estimated token cost of the short name line the harness sends for a
+/// deferred tool, in place of its full definition. This is an estimate, not a
+/// measured value — a deferred tool never sends its real definition, so
+/// there is nothing to measure per session.
+const DEFERRED_TOOL_TOKEN_ESTIMATE: u32 = 5;
 
 /// Source dimension for tokens loaded before a coding agent's first response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,6 +38,9 @@ pub enum InitialContextTokenSource {
     Skill,
     /// MCP server/tool instructions.
     Mcp,
+    /// A built-in tool's definition (`Bash`, `Read`, …), from the embedded
+    /// tool catalogue.
+    BuiltinTool,
 }
 
 impl InitialContextTokenSource {
@@ -39,6 +49,7 @@ impl InitialContextTokenSource {
         match self {
             Self::Skill => "skill_instructions",
             Self::Mcp => "mcp_instructions",
+            Self::BuiltinTool => "builtin_tool",
         }
     }
 }
@@ -86,6 +97,22 @@ pub struct InitialContextSourceCount {
     /// an MCP row, for now.
     #[serde(default)]
     pub origin: SourceOrigin,
+    /// True for a `builtin_tool` row when the session deferred this tool
+    /// (the harness sent only its name, not its full definition). Always
+    /// `false` for a skill or MCP row. Omitted from JSON when `false`, so
+    /// existing skill and MCP rows serialize unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
+    /// Extra raw names `fill_use_counts` also matches for a `builtin_tool`
+    /// row's `use_count`, beyond `source_name` itself: the catalogue's
+    /// canonical name, each alias, and each alias's last dot-segment. A
+    /// harness can call one tool by more than one of these spellings across
+    /// versions (Codex namespaces some tools, e.g. `functions.exec`, but
+    /// calls them by their bare last segment, `exec`, in the transcript).
+    /// Never serialized — this is an implementation detail of `use_count`,
+    /// not a UI-facing value. Always empty for a skill or MCP row.
+    #[serde(skip)]
+    pub(crate) match_names: Vec<String>,
 }
 
 /// The per-session initial-context breakdown surfaced to the UI.
@@ -98,11 +125,22 @@ pub struct InitialContextBreakdown {
 /// Parse a raw transcript into a public initial-context breakdown, or `None`
 /// when the agent/session has no reliable signal ("unavailable").
 pub fn parse_initial_context(agent: &str, payload: &str) -> Option<InitialContextBreakdown> {
+    parse_initial_context_with_catalog(agent, payload, tool_catalog::embedded())
+}
+
+/// Same as [`parse_initial_context`], but takes the built-in tool catalogue as
+/// an argument so a test can supply a fixture catalogue instead of the one
+/// embedded in the binary.
+fn parse_initial_context_with_catalog(
+    agent: &str,
+    payload: &str,
+    catalog: &ToolCatalog,
+) -> Option<InitialContextBreakdown> {
     if agent.eq_ignore_ascii_case("claude") {
-        return parse_claude(payload);
+        return parse_claude(payload, catalog);
     }
     let result = match agent.to_ascii_lowercase().as_str() {
-        "codex" => parse_codex(payload),
+        "codex" => parse_codex(payload, catalog),
         _ => InitialContextTokenParseResult::Unsupported,
     };
     match result {
@@ -134,7 +172,7 @@ fn collect_claude_skill_descriptions(payload: &str, out: &mut HashMap<String, St
     for value in parse_json_lines(payload) {
         accumulator.observe(&value);
     }
-    let (_, descriptions) = accumulator.finish();
+    let (_, descriptions) = accumulator.finish(tool_catalog::embedded());
     out.extend(descriptions);
 }
 
@@ -182,24 +220,33 @@ fn to_output(breakdown: InitialContextTokenBreakdown) -> InitialContextBreakdown
             // after the breakdown is grafted onto `SessionMetrics`.
             use_count: 0,
             origin: row.origin,
+            deferred: row.deferred,
+            match_names: row.match_names,
         })
         .collect();
     InitialContextBreakdown { sources }
 }
 
-/// Fill `InitialContextSourceCount::use_count` on a breakdown's skill and MCP
-/// rows, from the session's own tool-call counts. A skill row counts entries in
-/// `skill_uses` whose name matches (case-insensitive); an MCP row counts
-/// `mcp_tool_calls` for the matching server name (also case-insensitive).
+/// Fill `InitialContextSourceCount::use_count` on a breakdown's skill, MCP, and
+/// built-in-tool rows, from the session's own tool-call counts. A skill row
+/// counts entries in `skill_uses` whose name matches (case-insensitive); an MCP
+/// row counts `mcp_tool_calls` for the matching server name (also
+/// case-insensitive); a built-in-tool row sums `tool_calls_by_name` entries
+/// whose raw name matches the row's displayed name or any of its
+/// `match_names` (also case-insensitive) — a harness can call one tool by
+/// more than one spelling across versions (its canonical catalogue name, an
+/// alias, or an alias's bare last segment).
 ///
-/// Callers run this once per session, over whichever `skill_uses` and
-/// `mcp_tool_calls` the same session's `SessionMetrics` already computed — the
-/// streaming path (`SessionMetricsAccumulator::metrics`) and the batch path
+/// Callers run this once per session, over whichever `skill_uses`,
+/// `mcp_tool_calls`, and `tool_calls_by_name` the same session's
+/// `SessionMetrics` already computed — the streaming path
+/// (`SessionMetricsAccumulator::metrics`) and the batch path
 /// (`analyze_sources_with`) each call it so their results stay identical.
 pub(crate) fn fill_use_counts(
     breakdown: &mut InitialContextBreakdown,
     skill_uses: &[SkillUse],
     mcp_tool_calls: &HashMap<String, u32>,
+    tool_calls_by_name: &HashMap<String, u32>,
 ) {
     for row in &mut breakdown.sources {
         let Some(name) = row.source_name.as_deref() else {
@@ -216,6 +263,18 @@ pub(crate) fn fill_use_counts(
                 .find(|(server, _)| server.eq_ignore_ascii_case(name))
                 .map(|(_, count)| *count)
                 .unwrap_or(0)
+        } else if row.source == InitialContextTokenSource::BuiltinTool.as_str() {
+            tool_calls_by_name
+                .iter()
+                .filter(|(call_name, _)| {
+                    call_name.eq_ignore_ascii_case(name)
+                        || row
+                            .match_names
+                            .iter()
+                            .any(|candidate| candidate.eq_ignore_ascii_case(call_name))
+                })
+                .map(|(_, count)| *count)
+                .sum()
         } else {
             0
         };
@@ -238,9 +297,15 @@ struct InitialContextTokenSourceCount {
     source_name: Option<String>,
     token_count: i64,
     origin: SourceOrigin,
+    /// See [`InitialContextSourceCount::deferred`]. Always `false` outside
+    /// [`builtin_tool_rows`].
+    deferred: bool,
+    /// See [`InitialContextSourceCount::match_names`]. Always empty outside
+    /// [`builtin_tool_rows`].
+    match_names: Vec<String>,
 }
 
-fn parse_codex(payload: &str) -> InitialContextTokenParseResult {
+fn parse_codex(payload: &str, catalog: &ToolCatalog) -> InitialContextTokenParseResult {
     let values = parse_json_lines(payload);
     // The session's cwd tells a project-scoped skill from a user-scoped one.
     // Read it up front so it is available no matter where a `## Skills`
@@ -251,6 +316,28 @@ fn parse_codex(payload: &str) -> InitialContextTokenParseResult {
         }
         value
             .pointer("/payload/cwd")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    // The Codex CLI version, from `session_meta`, and the model, from
+    // `turn_context`. First-seen value wins for each — a session runs one
+    // harness build throughout, and a mid-session model switch is rare
+    // enough that "first" is as defensible a pick as any other.
+    let cli_version = values.iter().find_map(|value| {
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            return None;
+        }
+        value
+            .pointer("/payload/cli_version")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let model = values.iter().find_map(|value| {
+        if value.get("type").and_then(Value::as_str) != Some("turn_context") {
+            return None;
+        }
+        value
+            .pointer("/payload/model")
             .and_then(Value::as_str)
             .map(str::to_string)
     });
@@ -283,6 +370,16 @@ fn parse_codex(payload: &str) -> InitialContextTokenParseResult {
         source_rows.extend(parse_codex_developer_prompt(&text, cwd.as_deref()));
     }
 
+    // Codex carries no known deferred-tool marker, so every catalogued tool
+    // counts as loaded in full.
+    source_rows.extend(builtin_tool_rows(
+        "codex",
+        cli_version.as_deref(),
+        model.as_deref(),
+        &HashSet::new(),
+        catalog,
+    ));
+
     InitialContextTokenParseResult::Supported(normalize_breakdown(source_rows))
 }
 
@@ -311,6 +408,17 @@ pub(crate) struct ClaudeContextAccumulator {
     /// [`Self::finish_with_probe`] once every record has been observed —
     /// evidence for a listing row can arrive after the row itself.
     skill_origin_evidence: HashMap<String, (u8, SourceOrigin)>,
+    /// The harness's own version, from the top-level `version` field Claude
+    /// stamps on every record. First-seen value wins.
+    harness_version: Option<String>,
+    /// Frequency of each full model id seen on `message.model`, in first-seen
+    /// order. A bare alias such as `sonnet` never enters this list — see
+    /// [`Self::observe_model_id`] — so the catalogue lookup always resolves
+    /// against a real model id when the transcript names one at all.
+    model_frequency: Vec<(String, u32)>,
+    /// Tool names the harness has deferred at least once this session,
+    /// unioned from every `deferred_tools_delta` attachment.
+    deferred_tools: HashSet<String>,
 }
 
 impl ClaudeContextAccumulator {
@@ -322,6 +430,17 @@ impl ClaudeContextAccumulator {
                 .filter(|cwd| !cwd.is_empty())
         {
             self.cwd = Some(cwd.to_string());
+        }
+        if self.harness_version.is_none()
+            && let Some(version) = value
+                .get("version")
+                .and_then(Value::as_str)
+                .filter(|version| !version.is_empty())
+        {
+            self.harness_version = Some(version.to_string());
+        }
+        if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
+            self.observe_model_id(model);
         }
         match value
             .get("type")
@@ -350,6 +469,8 @@ impl ClaudeContextAccumulator {
                         source_name: name,
                         token_count: estimate_tokens(&text),
                         origin: SourceOrigin::Unknown,
+                        deferred: false,
+                        match_names: Vec::new(),
                     });
                 }
             }
@@ -451,7 +572,19 @@ impl ClaudeContextAccumulator {
                                     .map(str::to_string),
                                 token_count: estimate_tokens(text),
                                 origin: SourceOrigin::Unknown,
+                                deferred: false,
+                                match_names: Vec::new(),
                             });
+                        }
+                    }
+                    "deferred_tools_delta" => {
+                        let names = attachment
+                            .get("addedNames")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        for name in names.iter().filter_map(Value::as_str) {
+                            self.deferred_tools.insert(name.to_string());
                         }
                     }
                     _ => {}
@@ -474,8 +607,39 @@ impl ClaudeContextAccumulator {
         }
     }
 
-    pub(crate) fn finish(self) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
-        self.finish_with_probe(&real_claude_filesystem_probe)
+    /// Count one sighting of a `message.model` value. A bare alias (`sonnet`,
+    /// `opus`, `haiku`) carries no hyphen and never resolves against the tool
+    /// catalogue, so it is dropped here rather than competing with a full id
+    /// for "most frequent".
+    fn observe_model_id(&mut self, model: &str) {
+        let model = model.trim();
+        if model.is_empty() || !model.contains('-') {
+            return;
+        }
+        match self
+            .model_frequency
+            .iter_mut()
+            .find(|(seen, _)| seen == model)
+        {
+            Some((_, count)) => *count += 1,
+            None => self.model_frequency.push((model.to_string(), 1)),
+        }
+    }
+
+    /// The most frequently seen full model id, or `None` when the transcript
+    /// never named one.
+    fn resolved_model(&self) -> Option<String> {
+        self.model_frequency
+            .iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(model, _)| model.clone())
+    }
+
+    pub(crate) fn finish(
+        self,
+        catalog: &ToolCatalog,
+    ) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+        self.finish_with_probe(&real_claude_filesystem_probe, catalog)
     }
 
     /// Same as [`Self::finish`], but takes the filesystem-existence check as an
@@ -483,6 +647,7 @@ impl ClaudeContextAccumulator {
     fn finish_with_probe(
         mut self,
         probe: &dyn Fn(&str) -> bool,
+        catalog: &ToolCatalog,
     ) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
         let home = crate::paths::home_dir().map(|path| path.to_string_lossy().into_owned());
         for row in &mut self.source_rows {
@@ -500,6 +665,14 @@ impl ClaudeContextAccumulator {
                 probe,
             );
         }
+        let resolved_model = self.resolved_model();
+        self.source_rows.extend(builtin_tool_rows(
+            "claude",
+            self.harness_version.as_deref(),
+            resolved_model.as_deref(),
+            &self.deferred_tools,
+            catalog,
+        ));
         let breakdown = normalize_breakdown(self.source_rows);
         (Some(to_output(breakdown)), self.skill_descriptions)
     }
@@ -570,12 +743,12 @@ fn real_claude_filesystem_probe(path: &str) -> bool {
     std::path::Path::new(path).exists()
 }
 
-fn parse_claude(payload: &str) -> Option<InitialContextBreakdown> {
+fn parse_claude(payload: &str, catalog: &ToolCatalog) -> Option<InitialContextBreakdown> {
     let mut accumulator = ClaudeContextAccumulator::default();
     for value in parse_json_lines(payload) {
         accumulator.observe(&value);
     }
-    accumulator.finish().0
+    accumulator.finish(catalog).0
 }
 
 fn normalize_breakdown(
@@ -584,6 +757,68 @@ fn normalize_breakdown(
     rows.retain(|row| row.token_count >= 0);
     merge_rows(&mut rows);
     InitialContextTokenBreakdown { rows }
+}
+
+/// Build one `builtin_tool` row per tool the catalogue lists for `agent` at
+/// `version`/`model`. A tool named in `deferred` (case-insensitive, against
+/// its catalogue name or any alias) gets [`DEFERRED_TOOL_TOKEN_ESTIMATE`]
+/// instead of its measured cost. Empty when `version` or `model` is unknown,
+/// or when the catalogue cannot resolve them.
+fn builtin_tool_rows(
+    agent: &str,
+    version: Option<&str>,
+    model: Option<&str>,
+    deferred: &HashSet<String>,
+    catalog: &ToolCatalog,
+) -> Vec<InitialContextTokenSourceCount> {
+    let (Some(version), Some(model)) = (version, model) else {
+        return Vec::new();
+    };
+    let Some(tools) = catalog.lookup(agent, version, model) else {
+        return Vec::new();
+    };
+    tools
+        .into_iter()
+        .map(|tool| {
+            let is_deferred = deferred.iter().any(|name| {
+                name.eq_ignore_ascii_case(&tool.name)
+                    || tool
+                        .aliases
+                        .iter()
+                        .any(|alias| name.eq_ignore_ascii_case(alias))
+            });
+            // A namespaced alias (Codex's `functions.exec`,
+            // `collaboration.spawn_agent`) is not the name a session ever
+            // calls the tool by — the transcript uses its bare last segment
+            // (`exec`, `spawn_agent`). Display and match against that
+            // segment, not the full namespaced spelling.
+            let mut match_names = vec![tool.name.clone()];
+            for alias in &tool.aliases {
+                match_names.push(alias.clone());
+                match_names.push(last_dot_segment(alias).to_string());
+            }
+            let raw_name = tool.aliases.into_iter().next().unwrap_or(tool.name);
+            let source_name = last_dot_segment(&raw_name).to_string();
+            InitialContextTokenSourceCount {
+                source: InitialContextTokenSource::BuiltinTool,
+                source_name: Some(source_name),
+                token_count: if is_deferred {
+                    DEFERRED_TOOL_TOKEN_ESTIMATE as i64
+                } else {
+                    tool.tokens as i64
+                },
+                origin: SourceOrigin::Bundled,
+                deferred: is_deferred,
+                match_names,
+            }
+        })
+        .collect()
+}
+
+/// The last `.`-separated segment of a namespaced tool alias, or the whole
+/// string when it carries no `.` at all (every Claude alias, e.g. `Bash`).
+fn last_dot_segment(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
 }
 
 /// Sum rows that share a `(source, source_name)` key, preserving first-seen
@@ -778,6 +1013,8 @@ fn push_named_source(
         source_name,
         token_count,
         origin,
+        deferred: false,
+        match_names: Vec::new(),
     });
 }
 
@@ -822,6 +1059,14 @@ fn estimate_tokens(text: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The committed fixture catalogue, not the embedded production one — so
+    /// these tests stay deterministic regardless of what a local build or CI
+    /// run happens to regenerate at `tool_catalog.json`.
+    fn test_catalog() -> ToolCatalog {
+        ToolCatalog::from_json(include_str!("../../tests/fixtures/tool_catalog.json"))
+            .expect("fixture catalog must parse")
+    }
 
     fn source_tokens(
         breakdown: &InitialContextBreakdown,
@@ -1022,7 +1267,7 @@ mod tests {
         for value in parse_json_lines(&payload) {
             accumulator.observe(&value);
         }
-        let (breakdown, _) = accumulator.finish_with_probe(&probe);
+        let (breakdown, _) = accumulator.finish_with_probe(&probe, &test_catalog());
         let breakdown = breakdown.expect("expected supported Claude breakdown");
 
         assert_eq!(
@@ -1084,7 +1329,7 @@ mod tests {
         for value in parse_json_lines(&payload) {
             accumulator.observe(&value);
         }
-        let (breakdown, _) = accumulator.finish_with_probe(&probe);
+        let (breakdown, _) = accumulator.finish_with_probe(&probe, &test_catalog());
         let breakdown = breakdown.expect("expected supported Claude breakdown");
 
         assert_eq!(
@@ -1240,5 +1485,144 @@ mod tests {
         assert!(parse_initial_context("copilot", cursor).is_none());
         // Even a Claude-shaped payload is "unavailable" under an unknown label.
         assert!(parse_initial_context("windsurf", cursor).is_none());
+    }
+
+    fn builtin_tool_row<'a>(
+        breakdown: &'a InitialContextBreakdown,
+        name: &str,
+    ) -> Option<&'a InitialContextSourceCount> {
+        breakdown.sources.iter().find(|row| {
+            row.source == InitialContextTokenSource::BuiltinTool.as_str()
+                && row.source_name.as_deref() == Some(name)
+        })
+    }
+
+    /// End-to-end against a Claude fixture carrying a `version`, a
+    /// `message.model` (with a bare-alias distractor), and a
+    /// `deferred_tools_delta` attachment. The fixture catalogue, not the
+    /// embedded production one, keeps the expected token counts stable.
+    #[test]
+    fn claude_builtin_tool_rows_reflect_version_model_and_deferral() {
+        let payload =
+            include_str!("../../tests/fixtures/initial_context/claude_builtin_tools.jsonl");
+        let breakdown = parse_initial_context_with_catalog("claude", payload, &test_catalog())
+            .expect("expected supported Claude breakdown");
+
+        // `claude-fable-5` is the most frequent full model id (2 sightings);
+        // the single bare `sonnet` alias never competes for that slot.
+        let bash = builtin_tool_row(&breakdown, "Bash").expect("expected a Bash row");
+        assert!(bash.deferred);
+        assert_eq!(bash.token_count, DEFERRED_TOOL_TOKEN_ESTIMATE as u64);
+
+        let read = builtin_tool_row(&breakdown, "Read").expect("expected a Read row");
+        assert!(!read.deferred);
+        assert_eq!(read.token_count, 625);
+
+        let cron_create =
+            builtin_tool_row(&breakdown, "CronCreate").expect("expected a CronCreate row");
+        assert!(cron_create.deferred);
+        assert_eq!(cron_create.token_count, DEFERRED_TOOL_TOKEN_ESTIMATE as u64);
+
+        // claude-fable-5 carries no task_* tool at 2.1.246.
+        assert!(builtin_tool_row(&breakdown, "TaskCreate").is_none());
+
+        // `fill_use_counts` is independent of the catalogue: it only matches a
+        // row's displayed name against the session's own raw tool-call counts.
+        let mut breakdown = breakdown;
+        let tool_calls_by_name =
+            HashMap::from([("Bash".to_string(), 2u32), ("Read".to_string(), 1u32)]);
+        fill_use_counts(&mut breakdown, &[], &HashMap::new(), &tool_calls_by_name);
+        assert_eq!(builtin_tool_row(&breakdown, "Bash").unwrap().use_count, 2);
+        assert_eq!(builtin_tool_row(&breakdown, "Read").unwrap().use_count, 1);
+        // Deferred and never called: still a row, still zero use.
+        assert_eq!(
+            builtin_tool_row(&breakdown, "CronCreate")
+                .unwrap()
+                .use_count,
+            0
+        );
+    }
+
+    /// End-to-end against a Codex fixture carrying `session_meta.cli_version`
+    /// and `turn_context.model`. Codex has no deferred-tool marker, so every
+    /// catalogued tool loads at its measured cost.
+    #[test]
+    fn codex_builtin_tool_rows_use_cli_version_and_turn_context_model() {
+        let payload =
+            include_str!("../../tests/fixtures/initial_context/codex_builtin_tools.jsonl");
+        let breakdown = parse_initial_context_with_catalog("codex", payload, &test_catalog())
+            .expect("expected supported Codex breakdown");
+
+        let apply_patch =
+            builtin_tool_row(&breakdown, "apply_patch").expect("expected an apply_patch row");
+        assert!(!apply_patch.deferred);
+        assert_eq!(apply_patch.token_count, 270);
+
+        let web_search =
+            builtin_tool_row(&breakdown, "web_search").expect("expected a web_search row");
+        assert_eq!(web_search.token_count, 4436);
+
+        let mut breakdown = breakdown;
+        let tool_calls_by_name = HashMap::from([("apply_patch".to_string(), 2u32)]);
+        fill_use_counts(&mut breakdown, &[], &HashMap::new(), &tool_calls_by_name);
+        assert_eq!(
+            builtin_tool_row(&breakdown, "apply_patch")
+                .unwrap()
+                .use_count,
+            2
+        );
+    }
+
+    /// End-to-end against a real Codex namespacing shape: 0.149.1's catalogue
+    /// carries `functions.exec` and `collaboration.spawn_agent` aliases, but a
+    /// session calls the wrapper `exec` (unwrapped into a nested `read` call)
+    /// and the short `spawn_agent` name — never the dotted alias itself.
+    /// Proves the display name folds to the alias's last segment, and that
+    /// `tool_calls_by_name` (computed by the real Codex adapter + metrics
+    /// pipeline, exercising the `exec`-wrapper fix) drives `use_count` for
+    /// both rows.
+    #[test]
+    fn codex_builtin_tool_rows_match_namespaced_aliases_by_last_segment() {
+        let payload =
+            include_str!("../../tests/fixtures/initial_context/codex_namespaced_tools.jsonl");
+
+        let input = crate::analysis::SessionInput {
+            agent: "codex".to_string(),
+            session_id: "namespaced-tools".to_string(),
+            source: crate::analysis::RawSource::Jsonl(payload.to_string()),
+        };
+        let session = crate::analysis::normalize_source(&input).expect("normalize codex session");
+        let metrics = crate::analysis::analyze_session(&session);
+        // The `exec` wrapper is not lost: it unwraps into a nested `read` call
+        // for tool-mix accounting, but its own use still counts.
+        assert_eq!(metrics.tool_calls_by_name.get("exec").copied(), Some(1));
+        assert_eq!(metrics.tool_calls_by_name.get("read").copied(), Some(1));
+        assert_eq!(
+            metrics.tool_calls_by_name.get("spawn_agent").copied(),
+            Some(1)
+        );
+
+        let mut breakdown = parse_initial_context_with_catalog("codex", payload, &test_catalog())
+            .expect("expected supported Codex breakdown");
+
+        // Display names fold the namespaced alias to its bare last segment.
+        assert!(builtin_tool_row(&breakdown, "exec").is_some());
+        assert!(builtin_tool_row(&breakdown, "spawn_agent").is_some());
+        assert!(builtin_tool_row(&breakdown, "functions.exec").is_none());
+        assert!(builtin_tool_row(&breakdown, "collaboration.spawn_agent").is_none());
+
+        fill_use_counts(
+            &mut breakdown,
+            &metrics.skill_uses,
+            &metrics.mcp_tool_calls,
+            &metrics.tool_calls_by_name,
+        );
+        assert_eq!(builtin_tool_row(&breakdown, "exec").unwrap().use_count, 1);
+        assert_eq!(
+            builtin_tool_row(&breakdown, "spawn_agent")
+                .unwrap()
+                .use_count,
+            1
+        );
     }
 }

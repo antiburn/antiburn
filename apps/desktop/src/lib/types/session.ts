@@ -71,7 +71,7 @@ export interface SessionBucket {
  * ---------------------------------------------------------------------- */
 
 /** Source dimension for tokens loaded before the agent's first response. */
-type InitialContextSource = "skill_instructions" | "mcp_instructions"
+type InitialContextSource = "skill_instructions" | "mcp_instructions" | "builtin_tool"
 
 /** Where a skill or MCP server installs from. Mirrors `initial_context::SourceOrigin`. */
 export type SourceOrigin = "bundled" | "plugin" | "user" | "project" | "unknown"
@@ -79,13 +79,19 @@ export type SourceOrigin = "bundled" | "plugin" | "user" | "project" | "unknown"
 /** One source/source-name token count in the initial-context breakdown. */
 interface InitialContextSourceCount {
   source: InitialContextSource
-  /** Skill name or MCP server name — `null` when unnamed. */
+  /** Skill name, MCP server name, or tool name — `null` when unnamed. */
   sourceName: string | null
   tokenCount: number
   /** How many times the session used this source after it loaded. */
   useCount?: number
   /** Where the skill or MCP server is installed. Mirrors `initial_context::SourceOrigin`. */
   origin?: SourceOrigin
+  /**
+   * True for a `builtin_tool` row when the harness deferred the tool this
+   * session. A deferred tool sends only its name, not its full definition, so
+   * its token count is a small estimate, not the catalogue value.
+   */
+  deferred?: boolean
 }
 
 /**

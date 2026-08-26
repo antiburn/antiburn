@@ -304,8 +304,10 @@ fn function_call_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<
 ///
 /// Current Codex Desktop wraps one or more actual tool calls in an outer `exec`
 /// script. When that bounded shape is recognized, expose the nested tools and
-/// omit the wrapper so tool-mix accounting reflects the work itself.
-/// Unknown/malformed scripts retain the outer `exec` Bash fallback.
+/// omit the wrapper from `tools` so tool-mix accounting reflects the work
+/// itself; `wrapper_tool` still names the wrapper, so its own use as a
+/// built-in tool is not lost. Unknown/malformed scripts retain the outer
+/// `exec` Bash fallback (in `tools`, with no `wrapper_tool`).
 fn custom_tool_call_event(
     payload: &Map<String, Value>,
     ts: Option<i64>,
@@ -325,6 +327,11 @@ fn custom_tool_call_event(
     }
     if ev.tools.is_empty() {
         ev.tools.push(tool_call_from_input(name, input));
+    } else {
+        // The wrapper itself is the real built-in tool whose definition costs
+        // tokens. Record its use separately from `tools`, so tool-mix
+        // accounting still reflects only the nested work it did.
+        ev.wrapper_tool = Some(name.to_string());
     }
     Some(ev)
 }

@@ -40,8 +40,17 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Enable Corepack
+        run: corepack enable
+
+      # build-tool-catalog.test.mjs exercises the YAML parser the real
+      # catalogue build uses, so this job needs node_modules before it can
+      # run the control-plane tests.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Test the CI control plane
-        run: node --test scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
 
       # The drift guard runs here, not in a classified job. It reads the
       # contract, the stylesheets, and the popover window's own corner

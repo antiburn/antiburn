@@ -789,7 +789,7 @@ export function SessionDetailPresentation({
 
             {firstSession?.initialContext && (
               <Card
-                title="Skills and MCPs"
+                title="Skills, MCPs and tools"
                 subtitle={`The unused items here burned ${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens.`}
               >
                 <SkillsMcpChart breakdown={firstSession.initialContext} />

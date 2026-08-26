@@ -43,6 +43,7 @@ mod metrics_sink;
 mod model;
 mod pricing;
 mod source_validity;
+pub mod tool_catalog;
 mod vendors;
 
 pub use efficiency::{EfficiencyTotals, thread_efficiency};
@@ -83,7 +84,7 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 1;
-pub const ANALYZER_REVISION: i64 = 2;
+pub const ANALYZER_REVISION: i64 = 3;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 2;
 
@@ -198,6 +199,7 @@ pub fn analyze_sources_with(
                     &mut breakdown,
                     &metrics.skill_uses,
                     &metrics.mcp_tool_calls,
+                    &metrics.tool_calls_by_name,
                 );
                 metrics.initial_context = Some(breakdown);
             }

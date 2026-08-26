@@ -272,7 +272,9 @@ impl ClaudeStreamState {
     }
 
     fn into_summary(self) -> SessionSummary {
-        let (initial_context, skill_descriptions) = self.context.finish();
+        let (initial_context, skill_descriptions) = self
+            .context
+            .finish(crate::analysis::tool_catalog::embedded());
         let model = self
             .best_priceable
             .map(|(model, _)| model)
