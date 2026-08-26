@@ -37,11 +37,16 @@ function SkillMcpRowLine({ row }: { row: SkillMcpRow }) {
       <span className="text-center text-label-tertiary">
         {skillMcpOriginLabel(row.origin) ?? "—"}
       </span>
-      <span className={cn("text-center text-label-tertiary tabular-nums", !used && "font-bold")}>
+      <span
+        className={cn("text-center text-label-tertiary tabular-nums", !used && "font-bold")}
+      >
         {formatCompact(row.tokenCount)}
       </span>
       <span
-        className={cn("text-center", used ? "text-label-secondary" : "text-label-tertiary font-bold")}
+        className={cn(
+          "text-center",
+          used ? "text-label-secondary" : "text-label-tertiary font-bold",
+        )}
       >
         {skillMcpStatusLabel(row)}
       </span>
