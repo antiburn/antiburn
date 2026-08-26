@@ -171,7 +171,13 @@ function member(over: Partial<SubagentMember> = {}): SubagentMember {
     agent: "claude-code",
     subagentId: "sub-1",
     label: "Investigate the build",
-    cost: { totalUsd: 1.2, inputUsd: 0.5, outputUsd: 0.5, cacheReadUsd: 0.1, cacheWriteUsd: 0.1 },
+    cost: {
+      totalUsd: 1.2,
+      inputUsd: 0.5,
+      outputUsd: 0.5,
+      cacheReadUsd: 0.1,
+      cacheWriteUsd: 0.1,
+    },
     tokens: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheCreationTokens: 5 },
     startedAtEpoch: null,
     modelRuns: [{ model: "claude-sonnet-4-6" }],
@@ -212,9 +218,9 @@ describe("CostBreakdown — sub-agent roster", () => {
     unmount()
 
     render(<CostBreakdown cost={result(41.45)} split={split} />)
-    expect(screen.getByRole("button", { name: /1 sub-agent/ }).getAttribute("aria-expanded")).toBe(
-      "true",
-    )
+    expect(
+      screen.getByRole("button", { name: /1 sub-agent/ }).getAttribute("aria-expanded"),
+    ).toBe("true")
     expect(screen.getByText("Investigate the build")).toBeTruthy()
   })
 

@@ -23,7 +23,10 @@ export const subagentsExpandedStore = createExternalStore<boolean>({
 
 /** Read the current expanded state, and re-render when it changes. */
 export function useSubagentsExpanded(): boolean {
-  return useSyncExternalStore(subagentsExpandedStore.subscribe, subagentsExpandedStore.getSnapshot)
+  return useSyncExternalStore(
+    subagentsExpandedStore.subscribe,
+    subagentsExpandedStore.getSnapshot,
+  )
 }
 
 /** Flip the expanded state. */

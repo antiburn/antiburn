@@ -94,7 +94,10 @@ function memberTokenTotal(member: SubagentMember): number | null {
   return inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens
 }
 
-function formatMemberStart(member: SubagentMember, sessionStartedAtEpoch: number | null): string {
+function formatMemberStart(
+  member: SubagentMember,
+  sessionStartedAtEpoch: number | null,
+): string {
   if (sessionStartedAtEpoch == null || member.startedAtEpoch == null) return "—"
   const elapsedSecs = Math.max(0, member.startedAtEpoch - sessionStartedAtEpoch)
   return formatTime(elapsedSecs)
@@ -128,7 +131,9 @@ function SubagentMemberRow({
       className="col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary type-caption py-2 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
     >
       <span className="col-span-full items-center text-left">
-        <span className="tabular-nums">[{formatMemberStart(member, sessionStartedAtEpoch)}]</span>{" "}
+        <span className="tabular-nums">
+          [{formatMemberStart(member, sessionStartedAtEpoch)}]
+        </span>{" "}
         <TruncatedText className="inline" text={member.label} />
       </span>
 
@@ -201,15 +206,16 @@ function SubagentsSplitRow({
         </span>
       </button>
 
-      {expanded && members.map((member) => (
-        <SubagentMemberRow
-          key={member.subagentId}
-          member={member}
-          totalUsd={totalUsd}
-          sessionStartedAtEpoch={sessionStartedAtEpoch}
-          onOpenSubagent={onOpenSubagent}
-        />
-      ))}
+      {expanded &&
+        members.map((member) => (
+          <SubagentMemberRow
+            key={member.subagentId}
+            member={member}
+            totalUsd={totalUsd}
+            sessionStartedAtEpoch={sessionStartedAtEpoch}
+            onOpenSubagent={onOpenSubagent}
+          />
+        ))}
     </>
   )
 }

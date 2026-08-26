@@ -381,7 +381,12 @@ describe("SessionDetailPresentation — session facts", () => {
         subagentId: "a",
         label: "Investigate",
         cost: { totalUsd: 3, inputUsd: 1, outputUsd: 1, cacheReadUsd: 0.5, cacheWriteUsd: 0.5 },
-        tokens: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        tokens: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        },
         startedAtEpoch: null,
         modelRuns: [{ model: "claude-sonnet-4-6" }],
       },
