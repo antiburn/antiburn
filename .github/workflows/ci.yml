@@ -118,9 +118,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The engine embeds a compacted antiburn/systemprompts tool catalogue at
-      # build time. CI does not check out that repository, so this copies the
-      # committed fixture catalogue instead of building the real one.
+      # cargo needs tool_catalog.json, which is gitignored. Releases build it from
+      # a systemprompts checkout; CI uses the committed fixture catalogue instead.
       - name: Generate the tool catalog from the fixture
         run: pnpm run tool-catalog
 
@@ -540,9 +539,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The engine embeds a compacted antiburn/systemprompts tool catalogue at
-      # build time. CI does not check out that repository, so this copies the
-      # committed fixture catalogue instead of building the real one.
+      # cargo needs tool_catalog.json, which is gitignored. Releases build it from
+      # a systemprompts checkout; CI uses the committed fixture catalogue instead.
       - name: Generate the tool catalog from the fixture
         run: pnpm run tool-catalog
 
