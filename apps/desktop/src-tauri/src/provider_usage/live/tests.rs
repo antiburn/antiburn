@@ -303,6 +303,7 @@ fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageS
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
         plan: None,
+        plan_tier: None,
         observed_at: at(observed),
         source: UsageSource {
             id: "fixture",
@@ -441,6 +442,30 @@ fn the_live_payload_carries_manual_reset_credits() {
     );
 }
 
+#[test]
+fn the_live_payload_carries_the_plan_and_its_tier_through() {
+    let mut reading = snapshot(Freshness::Fresh, NOW, 81.0);
+    reading.plan = Some("max".into());
+    reading.plan_tier = Some("default_claude_max_5x".into());
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed("fixture", vec![reading]))];
+
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
+    let plan = summary.providers[0].plan.as_ref().expect("plan present");
+    assert_eq!(plan.name, "max");
+    assert_eq!(plan.tier.as_deref(), Some("default_claude_max_5x"));
+}
+
+#[test]
+fn the_live_payload_has_no_plan_when_the_snapshot_stated_none() {
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Fixed(
+        "fixture",
+        vec![snapshot(Freshness::Fresh, NOW, 81.0)],
+    ))];
+
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
+    assert_eq!(summary.providers[0].plan, None);
+}
+
 fn required_present(json: &str, field: &str) -> bool {
     json.contains(&format!("\"{field}\":"))
 }
@@ -571,6 +596,7 @@ fn weekly_scoped_snapshot(
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
         plan: None,
+        plan_tier: None,
         observed_at: at(observed),
         source: UsageSource {
             id: "fixture",

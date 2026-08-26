@@ -235,6 +235,7 @@ function liveProvider(): LiveProviderUsagePayload {
     ],
     extraUsage: null,
     resetCredits: null,
+    plan: null,
   }
 }
 
@@ -287,6 +288,32 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(within(card).getByText("1 usage limit reset available.")).toBeInTheDocument()
     expect(within(card).getByText("/usage")).toBeInTheDocument()
     expect(within(card).getByText(/in Codex to use one/)).toBeInTheDocument()
+  })
+
+  it("shows the plan as a muted suffix on the provider card heading", () => {
+    // Anthropic is the only provider in "Recently used" for this fixture, so
+    // its region carries exactly one provider card and one h3.
+    const pro = live({
+      providers: [{ ...liveProvider(), plan: { name: "pro", tier: null } }],
+    })
+    render(<UsageView summary={summary()} live={pro} now={NOW} onBack={vi.fn()} />)
+
+    const recent = within(screen.getByRole("region", { name: "Recently used" }))
+    const heading = recent.getByRole("heading", { level: 3 })
+    expect(heading).toHaveTextContent("Anthropic · Pro")
+    const suffix = within(heading).getByText("· Pro")
+    expect(suffix.className).toContain("text-label-secondary")
+  })
+
+  it("omits the separator and suffix entirely when the source reports no plan", () => {
+    // liveProvider()'s default carries no plan. The heading stays the bare
+    // provider name, with no trailing separator left dangling.
+    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+
+    const recent = within(screen.getByRole("region", { name: "Recently used" }))
+    const heading = recent.getByRole("heading", { level: 3 })
+    expect(heading).toHaveTextContent("Anthropic")
+    expect(heading.textContent).not.toContain("·")
   })
 
   it("marks how far through the period the clock has travelled", () => {

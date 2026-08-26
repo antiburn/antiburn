@@ -65,7 +65,7 @@ pub use model::{
 };
 
 use crate::dto::{
-    LiveExtraUsage, LiveProviderUsage, LiveUsageForecast, LiveUsageFreshness,
+    LiveExtraUsage, LiveProviderPlan, LiveProviderUsage, LiveUsageForecast, LiveUsageFreshness,
     LiveUsageResetCredits, LiveUsageSourceError, LiveUsageSummary, LiveUsageSupport,
     LiveUsageWindow,
 };
@@ -249,6 +249,10 @@ pub fn summarize_collected(
             }),
             reset_credits: snapshot.reset_credits.map(|credits| LiveUsageResetCredits {
                 available_count: credits.available_count,
+            }),
+            plan: snapshot.plan.map(|name| LiveProviderPlan {
+                name,
+                tier: snapshot.plan_tier,
             }),
         })
         .collect();

@@ -404,6 +404,7 @@ mod tests {
                 windows: vec![],
                 extra_usage: None,
                 reset_credits: None,
+                plan: None,
             }],
             errors: vec![LiveUsageSourceError {
                 source: "fixture".into(),

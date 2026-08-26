@@ -524,6 +524,23 @@ pub struct LiveProviderUsage {
     /// The provider reports manual rate-limit resets here.
     #[serde(default)]
     pub reset_credits: Option<LiveUsageResetCredits>,
+    /// The subscription plan, when the source stated one. `null` when it did
+    /// not. Defaulted on deserialize: a snapshot cached before this field
+    /// existed must still load.
+    #[serde(default)]
+    pub plan: Option<LiveProviderPlan>,
+}
+
+/// The provider's own plan label, raw. The frontend maps these strings to
+/// display text; nothing here is a display string already.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveProviderPlan {
+    /// The plan, for example `"max"` or `"plus"`.
+    pub name: String,
+    /// A finer-grained tier within `name`, when the source stated one, for
+    /// example `"default_claude_max_5x"`.
+    pub tier: Option<String>,
 }
 
 /// Provider credits that manually reset rate limits.

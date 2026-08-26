@@ -26,6 +26,7 @@
 import type {
   LiveProviderUsagePayload,
   LiveUsageFreshness,
+  LiveUsagePlanPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../ipc"
@@ -39,6 +40,84 @@ export interface UnavailableLiveProvider {
   category: string
 }
 import { relativeTime } from "./relativeTime"
+
+/** Canonical provider ids, matching the Rust `provider_usage::providers` constants. */
+const ANTHROPIC = "anthropic"
+const OPENAI = "openai"
+
+/** Claude plan names that resolve to a fixed label with no tier to read. */
+const CLAUDE_PLAN_NAME_LABELS: Readonly<Record<string, string>> = {
+  pro: "Pro",
+  team: "Team",
+  enterprise: "Enterprise",
+}
+
+/**
+ * Claude's `max` tiers, matched by substring because the raw values carry
+ * extra prefixes (for example `default_claude_max_5x`) that this label does
+ * not repeat.
+ */
+const CLAUDE_MAX_TIER_LABELS: ReadonlyArray<{ substring: string; label: string }> = [
+  { substring: "max_5x", label: "Max 5x" },
+  { substring: "max_20x", label: "Max 20x" },
+]
+
+/** Codex plan names, mapped to the words this app shows for them. */
+const CODEX_PLAN_NAME_LABELS: Readonly<Record<string, string>> = {
+  free: "Free",
+  go: "Go",
+  plus: "Plus",
+  pro: "Pro",
+  prolite: "Pro Lite",
+  team: "Team",
+  business: "Business",
+  self_serve_business_prolite: "Business",
+  self_serve_business_usage_based: "Business",
+  enterprise: "Enterprise",
+  ent26: "Enterprise",
+  enterprise_cbp_automation: "Enterprise",
+  enterprise_cbp_usage_based: "Enterprise",
+  edu: "Edu",
+  edu_plus: "Edu Plus",
+  edu_pro: "Edu Pro",
+}
+
+/** Claude's plan label, reading the tier only for the `max` name. */
+function claudePlanLabel(plan: LiveUsagePlanPayload): string {
+  if (plan.name === "max") {
+    const tier = plan.tier ?? ""
+    const matched = CLAUDE_MAX_TIER_LABELS.find((entry) => tier.includes(entry.substring))
+    return matched?.label ?? "Max"
+  }
+  return CLAUDE_PLAN_NAME_LABELS[plan.name] ?? plan.name
+}
+
+/** Codex's plan label. Codex never reports a tier, so only the name matters. */
+function codexPlanLabel(plan: LiveUsagePlanPayload): string {
+  return CODEX_PLAN_NAME_LABELS[plan.name] ?? plan.name
+}
+
+/** How to read a plan, keyed by the provider's canonical id. */
+const PLAN_LABEL_BY_PROVIDER: Readonly<Record<string, (plan: LiveUsagePlanPayload) => string>> =
+  {
+    [ANTHROPIC]: claudePlanLabel,
+    [OPENAI]: codexPlanLabel,
+  }
+
+/**
+ * The plan a provider reports, in words, or null when nothing was reported.
+ *
+ * A provider with no entry in the table below falls back to the raw name
+ * rather than hiding it: the rule this module lives by is "never fill a
+ * gap", and swallowing a real value the app has not learned to word yet
+ * would be exactly that, in the other direction.
+ */
+export function livePlanLabel(provider: LiveProviderUsagePayload): string | null {
+  const { plan } = provider
+  if (!plan) return null
+  const label = PLAN_LABEL_BY_PROVIDER[provider.provider]
+  return label ? label(plan) : plan.name
+}
 
 /**
  * The full name of one window.

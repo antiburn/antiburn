@@ -47,6 +47,7 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
     windows: [usageWindow()],
     extraUsage: null,
     resetCredits: null,
+    plan: null,
     ...overrides,
   }
 }

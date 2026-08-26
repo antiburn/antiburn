@@ -87,6 +87,9 @@ struct ClaudeCredentials {
     access_token: String,
     expires_at_ms: i64,
     subscription_type: Option<String>,
+    /// The finer-grained tier within `subscriptionType`, for example
+    /// `default_claude_max_5x`.
+    rate_limit_tier: Option<String>,
 }
 
 /// Read and parse the credentials file. `None` covers both "no file" and "a
@@ -113,6 +116,11 @@ fn parse_credentials_json(contents: &str) -> Option<ClaudeCredentials> {
         expires_at_ms: oauth.get("expiresAt")?.as_i64()?,
         subscription_type: oauth
             .get("subscriptionType")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        rate_limit_tier: oauth
+            .get("rateLimitTier")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .map(str::to_owned),
@@ -322,6 +330,7 @@ fn fetch_live(
         // between.
         account: None,
         plan: credentials.subscription_type.clone(),
+        plan_tier: credentials.rate_limit_tier.clone(),
         observed_at: now,
         source: UsageSource {
             id: SOURCE_ID,
@@ -352,7 +361,8 @@ mod tests {
         format!(
             r#"{{"claudeAiOauth": {{"accessToken": "synthetic-token",
               "refreshToken": "synthetic-refresh", "expiresAt": {expires_at_ms},
-              "subscriptionType": "{subscription_type}"}}}}"#
+              "subscriptionType": "{subscription_type}",
+              "rateLimitTier": "default_claude_max_5x"}}}}"#
         )
     }
 
@@ -391,6 +401,7 @@ mod tests {
             access_token: "synthetic-token".into(),
             expires_at_ms: (NOW - 3_600) * 1_000,
             subscription_type: Some("max".into()),
+            rate_limit_tier: None,
         };
         assert_eq!(
             fetch_live(&credentials, now),
@@ -421,14 +432,19 @@ mod tests {
         assert_eq!(credentials.access_token, "synthetic-token");
         assert_eq!(credentials.expires_at_ms, NOW * 1_000);
         assert_eq!(credentials.subscription_type.as_deref(), Some("max"));
+        assert_eq!(
+            credentials.rate_limit_tier.as_deref(),
+            Some("default_claude_max_5x")
+        );
     }
 
     /// The Keychain and the file carrier hold the identical JSON shape, so
     /// this exercises `parse_credentials_json` directly against a synthetic
     /// value shaped exactly like what `security find-generic-password -w`
     /// prints — including the fields this source never reads
-    /// (`refreshTokenExpiresAt`, `scopes`, `rateLimitTier`), to confirm they
-    /// are ignored rather than tripping the parser.
+    /// (`refreshTokenExpiresAt`, `scopes`), to confirm they are ignored
+    /// rather than tripping the parser. `rateLimitTier` is read, into
+    /// `plan_tier` on the resulting snapshot.
     #[test]
     fn keychain_shaped_json_parses_through_the_same_function_as_the_file() {
         let keychain_value = format!(
@@ -443,6 +459,10 @@ mod tests {
         assert_eq!(credentials.access_token, "synthetic-token");
         assert_eq!(credentials.expires_at_ms, NOW * 1_000);
         assert_eq!(credentials.subscription_type.as_deref(), Some("max"));
+        assert_eq!(
+            credentials.rate_limit_tier.as_deref(),
+            Some("default_claude_max_5x")
+        );
     }
 
     #[test]
