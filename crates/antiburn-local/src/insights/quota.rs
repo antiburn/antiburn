@@ -54,7 +54,7 @@ pub struct QuotaPressureFindings {
     pub affected_models_truncated: bool,
     pub first_observed_ts_ms: i64,
     pub last_observed_ts_ms: i64,
-    /// Bounded example observation times in observation order.
+    /// Bounded example observation times, ascending in each session.
     pub observed_times_ms: Vec<i64>,
 }
 
@@ -80,9 +80,22 @@ impl QuotaPressureAccumulator {
             EvidenceValue::Partial { observed, .. } => &observed.incidents,
             EvidenceValue::Complete(observed) => &observed.incidents,
         };
-        // The dedup set is transient and bounded by the per-session
-        // incident cap the evidence contract enforces.
-        let deduplicated: BTreeSet<_> = incidents.iter().collect();
+        // The key projects the incident identity — time, limit kind,
+        // severity, and model. A re-logged limit error with a shifted
+        // reset timestamp or a new utilization reading counts once.
+        // The set is transient; CH-009 owns the per-session incident
+        // cap that bounds the input collection.
+        let deduplicated: BTreeSet<_> = incidents
+            .iter()
+            .map(|incident| {
+                (
+                    incident.ts_ms,
+                    incident.limit_kind,
+                    incident.severity,
+                    incident.model.as_deref(),
+                )
+            })
+            .collect();
         if deduplicated.is_empty() {
             return;
         }
@@ -107,29 +120,26 @@ impl QuotaPressureAccumulator {
                 session_id: identity.session_id.clone(),
             });
         }
-        for incident in deduplicated {
+        for (ts_ms, limit_kind, severity, model) in deduplicated {
             findings.total_hits += 1;
-            *findings
-                .hits_by_limit_kind
-                .entry(incident.limit_kind)
-                .or_default() += 1;
-            match incident.severity {
+            *findings.hits_by_limit_kind.entry(limit_kind).or_default() += 1;
+            match severity {
                 QuotaHitSeverity::HardHit => findings.hard_hits += 1,
                 QuotaHitSeverity::Warning => findings.warnings += 1,
             }
-            if let Some(model) = &incident.model {
+            if let Some(model) = model {
                 if findings.affected_models.contains(model) {
                     // Already retained.
                 } else if findings.affected_models.len() < MAX_QUOTA_AFFECTED_MODELS {
-                    findings.affected_models.insert(model.clone());
+                    findings.affected_models.insert(model.to_owned());
                 } else {
                     findings.affected_models_truncated = true;
                 }
             }
-            findings.first_observed_ts_ms = findings.first_observed_ts_ms.min(incident.ts_ms);
-            findings.last_observed_ts_ms = findings.last_observed_ts_ms.max(incident.ts_ms);
+            findings.first_observed_ts_ms = findings.first_observed_ts_ms.min(ts_ms);
+            findings.last_observed_ts_ms = findings.last_observed_ts_ms.max(ts_ms);
             if findings.observed_times_ms.len() < MAX_QUOTA_OBSERVED_TIMES {
-                findings.observed_times_ms.push(incident.ts_ms);
+                findings.observed_times_ms.push(ts_ms);
             }
         }
     }
@@ -243,6 +253,35 @@ mod tests {
         assert_eq!(findings.first_observed_ts_ms, 100);
         assert_eq!(findings.last_observed_ts_ms, 400);
         assert_eq!(findings.observed_times_ms, vec![100, 250, 400]);
+    }
+
+    #[test]
+    fn a_relogged_incident_with_shifted_metadata_counts_once() {
+        // The dedup key is (time, limit kind, severity, model).
+        // Fields outside the key must not split one incident in two.
+        // QuotaConfidence has one variant, so it cannot vary here.
+        let mut accumulator = QuotaPressureAccumulator::default();
+        let first = incident(100, QuotaLimitKind::RollingWindow, "model-a");
+        let mut relogged = first.clone();
+        relogged.reset_ts_ms = Some(9_999);
+        relogged.utilization_pct = Some(97);
+        accumulator.observe_session(
+            &identity("s1"),
+            &EvidenceValue::Complete(SessionQuotaEvidence {
+                incidents: vec![first, relogged],
+            }),
+        );
+
+        let QuotaPressureSection::Findings(findings) = accumulator.finish() else {
+            panic!("expected findings");
+        };
+        assert_eq!(findings.total_hits, 1);
+        assert_eq!(
+            findings.hits_by_limit_kind,
+            BTreeMap::from([(QuotaLimitKind::RollingWindow, 1)])
+        );
+        assert_eq!(findings.hard_hits, 1);
+        assert_eq!(findings.observed_times_ms, vec![100]);
     }
 
     #[test]
