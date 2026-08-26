@@ -161,7 +161,10 @@ mod tests {
             first_message: "make the pane clickable".into(),
             context: vec![],
         };
-        assert_eq!(title_prompt(&bare), "First message: make the pane clickable");
+        assert_eq!(
+            title_prompt(&bare),
+            "First message: make the pane clickable"
+        );
     }
 
     #[test]
