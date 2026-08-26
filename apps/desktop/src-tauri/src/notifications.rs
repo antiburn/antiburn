@@ -52,7 +52,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use antiburn_nudge::{Nudge, NudgeKind, NudgeTone};
+use antiburn_nudge::{Nudge, NudgeActionTarget, NudgeKind, NudgeTone};
 use tauri::{AppHandle, Manager};
 
 use crate::dto::ScanStatus;
@@ -229,7 +229,7 @@ fn deliver(
     kind: Kind,
     delivery: Delivery,
     copy: NotificationCopy,
-    extra_action: Option<(&str, &str)>,
+    extra_action: Option<(&str, &str, Option<NudgeActionTarget>)>,
     tone_override: Option<NudgeTone>,
 ) {
     if delivery == Delivery::Automated && !os_gate_allows(app) {
@@ -256,24 +256,30 @@ fn deliver(
         copy.description,
     )
     .action(NOTIFICATION_SETTINGS_ACTION_ID, "Settings", false);
-    if let Some((id, label)) = extra_action {
-        nudge = nudge.action(id, label, true);
+    let dismiss_primary = extra_action.is_none();
+    if let Some((id, label, target)) = extra_action {
+        nudge = match target {
+            Some(target) => nudge.action_with_target(id, label, true, target),
+            None => nudge.action(id, label, true),
+        };
     }
-    nudge = nudge.action("dismiss", "Dismiss", extra_action.is_none());
+    nudge = nudge.action("dismiss", "Dismiss", dismiss_primary);
     crate::nudges::deliver(app, nudge);
 }
 
-/// Deliberately does not say "ready to install". This build checks the release
-/// feed and reports what it found; downloading and installing an update is the
-/// release milestone's work and has no UI yet (`docs/deviations.md`). A
-/// notification that promised an install button would be describing an app
-/// nobody has shipped.
+/// Tell the reader where the explicit install action is.
 pub fn update_message(version: &str) -> NotificationCopy {
     NotificationCopy::new(
         "antiburn update released",
         format!("New version {version} is available."),
-        "This build checks the release feed but does not install updates yet.",
+        "Select Install to download, verify, and install it. Open About to follow progress.",
     )
+}
+
+fn update_target(expected_version: &str) -> NudgeActionTarget {
+    NudgeActionTarget::Update {
+        expected_version: expected_version.to_string(),
+    }
 }
 
 /// The error is the store's or the engine's own words. It names a path or a
@@ -409,7 +415,7 @@ pub fn note_scan_outcome(app: &AppHandle, status: &ScanStatus) {
         Kind::ScanFailure,
         Delivery::Automated,
         scan_failure_message(error),
-        Some(("review_sources", "Review sources")),
+        Some(("review_sources", "Review sources", None)),
         None,
     );
 }
@@ -440,7 +446,7 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
         Kind::UpdateAvailable,
         Delivery::Automated,
         update_message(version),
-        Some(("view", "View")),
+        Some(("install", "Install", Some(update_target(version)))),
         None,
     );
 }
@@ -501,7 +507,7 @@ pub fn note_menu_bar_home(app: &AppHandle) {
         Kind::MenuBarHome,
         Delivery::Preview,
         menu_bar_home_message(),
-        Some(("show", "Show me")),
+        Some(("show", "Show me", None)),
         None,
     );
 }
@@ -530,10 +536,18 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
     use crate::provider_usage::live::milestones::{MilestoneContent, MilestoneCrossing};
 
     let (copy, extra_action, tone) = match kind {
-        Kind::UpdateAvailable => (update_message("0.2.0"), Some(("view", "View")), None),
+        Kind::UpdateAvailable => (
+            update_message(crate::updates::SIMULATED_VERSION),
+            Some((
+                "install",
+                "Install",
+                Some(update_target(crate::updates::SIMULATED_VERSION)),
+            )),
+            None,
+        ),
         Kind::ScanFailure => (
             scan_failure_message("Could not read ~/.claude/projects"),
-            Some(("review_sources", "Review sources")),
+            Some(("review_sources", "Review sources", None)),
             None,
         ),
         Kind::DiskSpaceLow => (disk_space_low_message(18, 25), None, None),
@@ -553,7 +567,11 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
         }
         Kind::MenuBarHome => {
             crate::nudges::anchor_next_to_the_tray(app);
-            (menu_bar_home_message(), Some(("show", "Show me")), None)
+            (
+                menu_bar_home_message(),
+                Some(("show", "Show me", None)),
+                None,
+            )
         }
         Kind::Test => (test_message(), None, None),
     };
@@ -614,6 +632,24 @@ mod tests {
             assert_eq!(Kind::from_id(id), Some(kind));
         }
         assert_eq!(Kind::from_id("anything-else"), None);
+    }
+
+    #[test]
+    fn update_copy_leads_to_the_in_app_install() {
+        let copy = update_message("0.2.0");
+        assert!(copy.subtitle.contains("0.2.0"));
+        assert!(copy.description.contains("Select Install"));
+        assert!(copy.description.contains("Open About"));
+    }
+
+    #[test]
+    fn update_notification_target_keeps_the_exact_version() {
+        assert_eq!(
+            update_target("2.4.0-beta.1+build.7"),
+            NudgeActionTarget::Update {
+                expected_version: "2.4.0-beta.1+build.7".to_string(),
+            }
+        );
     }
 
     #[test]
