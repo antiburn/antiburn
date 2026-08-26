@@ -6,3 +6,6 @@ src-tauri/gen/
 
 # Incremental type-check state.
 *.tsbuildinfo
+
+# CI writes the restricted-entitlement profile before signed macOS builds.
+src-tauri/antiburn.provisionprofile

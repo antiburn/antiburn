@@ -66,6 +66,7 @@ Placeholders below show the shape, never a real value.
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | If the key has one        | The passphrase for the above. Give the key a passphrase.                                                                  | Chosen when generating the key. Placeholder: `<passphrase>`                                                                                                                                                                          |
 | `APPLE_CERTIFICATE`                  | For signed macOS builds   | Base64 of the **Developer ID Application** certificate and its private key, exported as `.p12`.                           | `base64 -i DeveloperID.p12 \| pbcopy`. Placeholder: `MIIM…`                                                                                                                                                                          |
 | `APPLE_CERTIFICATE_PASSWORD`         | If the `.p12` has one     | The `.p12` export passphrase.                                                                                             | Chosen during export. Leave this secret unset when the export has no passphrase. Placeholder: `<passphrase>`                                                                                                                         |
+| `APPLE_PROVISIONING_PROFILE`         | For signed macOS builds   | Base64 of the Developer ID profile for `ai.antiburn.desktop`, with Communication Notifications enabled.                  | Download `antiburn.provisionprofile` from Apple Developer, then run `base64 -i antiburn.provisionprofile \| pbcopy`.                                                                                                                 |
 | `APPLE_ID`                           | For notarization          | The Apple ID that owns the notarization submission.                                                                       | Placeholder: `releases@example.org`                                                                                                                                                                                                  |
 | `APPLE_PASSWORD`                     | For notarization          | An **app-specific password** for that Apple ID — never the account password.                                              | appleid.apple.com → Sign-In and Security → App-Specific Passwords. Placeholder: `abcd-efgh-ijkl-mnop`                                                                                                                                |
 | `APPLE_TEAM_ID`                      | For notarization          | The ten-character Apple Developer team identifier.                                                                        | Apple Developer → Membership. Placeholder: `ABCDE12345`                                                                                                                                                                              |
@@ -81,6 +82,28 @@ replaced by a personal access token.
 empty. Both halves have to exist for an update to be verifiable, and an update
 that cannot be verified is worse than no updater at all. See
 [`updater-key-recovery.md`](updater-key-recovery.md) for custody.
+
+#### Communication Notifications profile
+
+The Focus-status API needs more than a Developer ID signature. The signed app
+must carry a matching Developer ID provisioning profile that authorizes the
+restricted `com.apple.developer.usernotifications.communication` entitlement.
+
+1. In Apple Developer, select the explicit App ID `ai.antiburn.desktop`.
+2. Enable **Communication Notifications** and save the App ID.
+3. Create a **Developer ID** provisioning profile for that App ID. Select the
+   same Developer ID Application certificate stored in `APPLE_CERTIFICATE`.
+4. Download it as `antiburn.provisionprofile`.
+5. Store it in the `release` environment:
+
+   ```bash
+   base64 -i antiburn.provisionprofile | gh secret set \
+     --env release APPLE_PROVISIONING_PROFILE --repo antiburn/antiburn
+   ```
+
+Regenerate the profile after the App ID capability or signing certificate
+changes. Never commit it. The release workflow checks its team, application
+identifier, capability, distribution type, and expiration before embedding it.
 
 ### 1.3 Repository variables
 

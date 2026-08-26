@@ -374,6 +374,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           ALLOW_UNSIGNED_MACOS: ${{ vars.ALLOW_UNSIGNED_MACOS }}
           ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
@@ -392,8 +393,8 @@ jobs:
           case "${RUNNER_OS}" in
             macOS)
               if [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
-                if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
-                  echo "::error::APPLE_CERTIFICATE is set but APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID are not. A Developer ID build that is not notarized is blocked by Gatekeeper on arrival, which is worse than an honest unsigned build."
+                if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_PROVISIONING_PROFILE:-}" ]]; then
+                  echo "::error::APPLE_CERTIFICATE is set but APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID or APPLE_PROVISIONING_PROFILE is not. A Developer ID build needs notarization and the profile-backed Communication Notifications entitlement."
                   exit 1
                 fi
                 platform_signing=developer-id
@@ -460,6 +461,52 @@ jobs:
             exit 1
           fi
           printf '%s\n' "APPLE_SIGNING_IDENTITY=$(printf '%s\n' "$identity" | head -n 1 | awk -F'"' '{print $2}')" >> "$GITHUB_ENV"
+
+      - name: Prepare the Apple provisioning profile
+        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id'
+        env:
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          profile="apps/desktop/src-tauri/antiburn.provisionprofile"
+          decoded="${RUNNER_TEMP}/antiburn.provisionprofile.plist"
+          printf '%s' "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$profile"
+          security cms -D -i "$profile" > "$decoded"
+
+          profile_team=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$decoded")
+          profile_app=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$decoded")
+          communication=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.usernotifications.communication' "$decoded")
+          declared_team=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.team-identifier' apps/desktop/src-tauri/Entitlements.plist)
+          declared_app=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' apps/desktop/src-tauri/Entitlements.plist)
+          all_devices=$(plutil -extract ProvisionsAllDevices raw -o - "$decoded")
+          expiration=$(plutil -extract ExpirationDate raw -o - "$decoded")
+
+          if [[ "$profile_team" != "$APPLE_TEAM_ID" ]]; then
+            echo "::error::Provisioning profile team ${profile_team} does not match APPLE_TEAM_ID."
+            exit 1
+          fi
+          if [[ "$declared_team" != "$APPLE_TEAM_ID" || "$declared_app" != "$profile_app" ]]; then
+            echo "::error::Entitlements.plist does not match the provisioning profile and APPLE_TEAM_ID."
+            exit 1
+          fi
+          if [[ "$profile_app" != "${APPLE_TEAM_ID}.ai.antiburn.desktop" ]]; then
+            echo "::error::Provisioning profile application identifier ${profile_app} does not match antiburn."
+            exit 1
+          fi
+          if [[ "$communication" != "true" ]]; then
+            echo "::error::Provisioning profile does not authorize Communication Notifications."
+            exit 1
+          fi
+          if [[ "$all_devices" != "true" ]]; then
+            echo "::error::Provisioning profile is not a Developer ID distribution profile."
+            exit 1
+          fi
+          if [[ "$expiration" < "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ]]; then
+            echo "::error::Provisioning profile expired at ${expiration}."
+            exit 1
+          fi
+          echo "TAURI_SIGNING_CONFIG=apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
 
       # An unsigned macOS build still needs a *sealed* bundle. Without any
       # bundle signature the .app carries only the linker's per-binary ad-hoc
@@ -590,11 +637,24 @@ jobs:
         if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id'
         env:
           TARGET: ${{ matrix.target }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           app="apps/desktop/src-tauri/target/${TARGET}/release/bundle/macos/antiburn.app"
           test -d "$app"
+          test -f "$app/Contents/embedded.provisionprofile"
           codesign --verify --deep --strict --verbose=2 "$app"
+          executable="$app/Contents/MacOS/antiburn"
+          entitlements="${RUNNER_TEMP}/antiburn-entitlements.plist"
+          codesign -d --entitlements :- "$executable" > "$entitlements"
+          application_id=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' "$entitlements")
+          team_id=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.team-identifier' "$entitlements")
+          communication=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.usernotifications.communication' "$entitlements")
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+          test "$application_id" = "${APPLE_TEAM_ID}.ai.antiburn.desktop"
+          test "$team_id" = "$APPLE_TEAM_ID"
+          test "$communication" = "true"
+          test "$bundle_id" = "ai.antiburn.desktop"
           # Gatekeeper's own answer, which is the one a reader's machine gives.
           spctl --assess --type execute --verbose=4 "$app"
           xcrun stapler validate "$app"
@@ -611,6 +671,7 @@ jobs:
           set -euo pipefail
           app="apps/desktop/src-tauri/target/${TARGET}/release/bundle/macos/antiburn.app"
           test -d "$app"
+          test ! -e "$app/Contents/embedded.provisionprofile"
           codesign --verify --deep --strict --verbose=2 "$app"
           details=$(codesign -dv "$app" 2>&1)
           printf '%s\n' "$details"
