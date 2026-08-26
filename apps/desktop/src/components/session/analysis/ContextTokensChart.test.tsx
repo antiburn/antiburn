@@ -3,7 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { cleanup, render, screen } from "@testing-library/react"
-import { cloneElement, isValidElement, type ReactElement, type ReactNode } from "react"
+import {
+  cloneElement,
+  isValidElement,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from "react"
 import type * as Recharts from "recharts"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -23,6 +29,11 @@ vi.mock("recharts", async (importOriginal) => {
   const actual = await importOriginal<typeof Recharts>()
   return {
     ...actual,
+    Area: (props: ComponentProps<typeof actual.Area>) => (
+      <g data-animation-active={String(props.isAnimationActive)}>
+        <actual.Area {...props} />
+      </g>
+    ),
     ResponsiveContainer: ({ children }: { children: ReactNode }) => (
       <div style={{ width: 600, height: 160 }}>
         {isValidElement(children)
@@ -63,6 +74,27 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
 }
 
 describe("ContextTokensChart", () => {
+  it("renders the first bucket set without animation and animates a replacement set", () => {
+    const initialBuckets = [
+      bucket({ contextTokens: 100_000 }),
+      bucket({ contextTokens: 120_000 }),
+    ]
+    const { container, rerender } = render(
+      <ContextTokensChart buckets={initialBuckets} contextWindow={200_000} />,
+    )
+
+    expect(container.querySelectorAll('g[data-animation-active="false"]')).toHaveLength(4)
+
+    rerender(
+      <ContextTokensChart
+        buckets={[...initialBuckets, bucket({ contextTokens: 140_000 })]}
+        contextWindow={200_000}
+      />,
+    )
+
+    expect(container.querySelectorAll('g[data-animation-active="true"]')).toHaveLength(4)
+  })
+
   it("draws a wide red bar up to the context level for a cache-rehydration bucket", () => {
     const buckets = [
       bucket({ contextTokens: 200_000 }),

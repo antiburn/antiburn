@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { useId, type ReactElement } from "react"
+import { useId, useState, type ReactElement } from "react"
 import {
   Area,
   AreaChart,
@@ -321,10 +321,9 @@ export function ContextTokensChart({
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
   const hasContext = contextWindow != null
-  // A live poll can grow this chart's data mid-session, unlike the other
-  // analysis charts, which only ever draw once. The transition makes that
-  // arrival readable instead of a silent jump cut.
-  const animate = !prefersReducedMotion()
+  const [initialBuckets] = useState(() => buckets)
+  // The first bucket set renders without motion. A later set comes from the live poll.
+  const animate = buckets !== initialBuckets && !prefersReducedMotion()
   const animationDurationMs = slowAnimationDurationMs()
 
   const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
