@@ -15,7 +15,7 @@ afterEach(() => {
 })
 
 function breakdown(sources: InitialContextBreakdown["sources"]): InitialContextBreakdown {
-  return { trackingStatus: "trackedPartial", totalTokens: null, sources }
+  return { sources }
 }
 
 describe("SkillsMcpChart", () => {
@@ -90,13 +90,7 @@ describe("SkillsMcpChart", () => {
   })
 
   it("shows a footnote when no skill or MCP source loaded", () => {
-    render(
-      <SkillsMcpChart
-        breakdown={breakdown([
-          { source: "system_instructions", sourceName: null, tokenCount: 900 },
-        ])}
-      />,
-    )
+    render(<SkillsMcpChart breakdown={breakdown([])} />)
     expect(screen.getByText("No skills or MCPs loaded.")).toBeTruthy()
     expect(screen.queryByText("Used")).toBeNull()
   })

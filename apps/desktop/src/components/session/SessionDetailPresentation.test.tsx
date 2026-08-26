@@ -59,8 +59,6 @@ function metrics(over: Partial<SessionMetrics> = {}): SessionMetrics {
     peakContextTokens: 90_000,
     contextAvailable: true,
     contextWindow: 200_000,
-    toolMix: { edit: 10, read: 8, search: 3, test: 2, bash: 5, other: 1 },
-    grepCount: 3,
     buckets: [bucket(), bucket()],
     ...over,
   }
@@ -71,8 +69,6 @@ function summary(over: Partial<ActiveSessionsSummary> = {}): ActiveSessionsSumma
     sessionCount: 1,
     avgDurationSecs: 3600,
     avgActiveSecs: 1800,
-    toolMix: { edit: 10, read: 8, search: 3, test: 2, bash: 5, other: 1 },
-    grepTotal: 3,
     tokensInTotal: 120_000,
     tokensOutTotal: 8_000,
     peakContextTokens: 90_000,
@@ -465,8 +461,6 @@ describe("SessionDetailPresentation — session facts", () => {
       sessions: [
         metrics({
           initialContext: {
-            trackingStatus: "tracked",
-            totalTokens: 12_000,
             sources: [
               {
                 source: "skill_instructions",

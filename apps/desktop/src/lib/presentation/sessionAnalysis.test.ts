@@ -429,8 +429,6 @@ describe("costFigureLabel", () => {
 
 describe("skillMcpUsage", () => {
   const breakdown = (sources: InitialContextBreakdown["sources"]): InitialContextBreakdown => ({
-    trackingStatus: "trackedPartial",
-    totalTokens: null,
     sources,
   })
 
@@ -474,11 +472,10 @@ describe("skillMcpUsage", () => {
     expect(usage.rows.map((r) => r.origin)).toEqual(["user", "unknown"])
   })
 
-  it("ignores unnamed and non-skill/MCP sources", () => {
+  it("ignores unnamed sources", () => {
     const ic = breakdown([
       { source: "skill_instructions", sourceName: null, tokenCount: 900 },
-      { source: "agent_instructions", sourceName: "AGENTS.md", tokenCount: 400, useCount: 2 },
-      { source: "unattributed", sourceName: null, tokenCount: 900 },
+      { source: "mcp_instructions", sourceName: null, tokenCount: 900 },
     ])
     const usage = skillMcpUsage(ic)
     expect(usage.totalTokens).toBe(0)

@@ -19,18 +19,8 @@
  */
 
 /* -------------------------------------------------------------------------
- * Timeline metrics — mirrors `analysis::engine::{ToolMix, Bucket}`.
+ * Timeline metrics — mirrors `analysis::engine::Bucket`.
  * ---------------------------------------------------------------------- */
-
-/** Tool-call counts by category. Mirrors engine `ToolMix`. */
-interface ToolMix {
-  edit: number
-  read: number
-  search: number
-  test: number
-  bash: number
-  other: number
-}
 
 /** One point on the shared 0→100% session-progress grid. Mirrors engine `Bucket`. */
 export interface SessionBucket {
@@ -81,12 +71,7 @@ export interface SessionBucket {
  * ---------------------------------------------------------------------- */
 
 /** Source dimension for tokens loaded before the agent's first response. */
-type InitialContextSource =
-  | "agent_instructions"
-  | "system_instructions"
-  | "skill_instructions"
-  | "mcp_instructions"
-  | "unattributed"
+type InitialContextSource = "skill_instructions" | "mcp_instructions"
 
 /** Where a skill or MCP server installs from. Mirrors `initial_context::SourceOrigin`. */
 export type SourceOrigin = "bundled" | "plugin" | "user" | "project" | "unknown"
@@ -94,10 +79,10 @@ export type SourceOrigin = "bundled" | "plugin" | "user" | "project" | "unknown"
 /** One source/source-name token count in the initial-context breakdown. */
 interface InitialContextSourceCount {
   source: InitialContextSource
-  /** Skill name, MCP server name, or instruction file — `null` when unnamed. */
+  /** Skill name or MCP server name — `null` when unnamed. */
   sourceName: string | null
   tokenCount: number
-  /** How many times the session used this source after it loaded. 0 for non-skill/MCP sources. */
+  /** How many times the session used this source after it loaded. */
   useCount?: number
   /** Where the skill or MCP server is installed. Mirrors `initial_context::SourceOrigin`. */
   origin?: SourceOrigin
@@ -108,9 +93,6 @@ interface InitialContextSourceCount {
  * session means the breakdown is unavailable for that agent (not zero).
  */
 export interface InitialContextBreakdown {
-  /** `tracked` = fully attributed; `trackedPartial` = some `unattributed`. */
-  trackingStatus: "tracked" | "trackedPartial"
-  totalTokens: number | null
   sources: InitialContextSourceCount[]
 }
 
@@ -194,8 +176,6 @@ export interface SessionMetrics {
   /** False when the model's context window is unknown. */
   contextAvailable?: boolean
   contextWindow: number
-  toolMix: ToolMix
-  grepCount: number
   buckets: SessionBucket[]
   initialContext?: InitialContextBreakdown | null
   model?: string | null
@@ -217,8 +197,6 @@ export interface ActiveSessionsSummary {
   sessionCount: number
   avgDurationSecs: number
   avgActiveSecs: number
-  toolMix: ToolMix
-  grepTotal: number
   tokensInTotal: number
   tokensOutTotal: number
   peakContextTokens: number
