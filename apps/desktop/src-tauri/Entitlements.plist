@@ -12,9 +12,9 @@
 <plist version="1.0">
 <dict>
     <key>com.apple.application-identifier</key>
-    <string>BJ2QWU874P.ai.antiburn.desktop</string>
+    <string>JCK9YYRR88.ai.antiburn.desktop</string>
     <key>com.apple.developer.team-identifier</key>
-    <string>BJ2QWU874P</string>
+    <string>JCK9YYRR88</string>
     <key>com.apple.developer.usernotifications.communication</key>
     <true/>
 </dict>

@@ -31,11 +31,11 @@ const workflow = readFileSync(
 test("the macOS entitlement names the provisioned app identity", () => {
   assert.match(
     entitlements,
-    /<key>com\.apple\.application-identifier<\/key>\s*<string>BJ2QWU874P\.ai\.antiburn\.desktop<\/string>/,
+    /<key>com\.apple\.application-identifier<\/key>\s*<string>JCK9YYRR88\.ai\.antiburn\.desktop<\/string>/,
   );
   assert.match(
     entitlements,
-    /<key>com\.apple\.developer\.team-identifier<\/key>\s*<string>BJ2QWU874P<\/string>/,
+    /<key>com\.apple\.developer\.team-identifier<\/key>\s*<string>JCK9YYRR88<\/string>/,
   );
   assert.match(
     entitlements,
