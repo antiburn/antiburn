@@ -549,8 +549,18 @@ mod tests {
     #[test]
     fn unknown_start_and_pending_rows_never_enter_a_detector_denominator() {
         // Denominator-only rows reach the report through coverage
-        // counts and never through observe_session. Their presence
-        // must not move any detector's eligible or assessed count.
+        // counts and never through observe_session. This test pins
+        // that data-path property: the same cohort with and without
+        // the denominator-only rows must produce identical detector
+        // counts and statuses. The population-side exclusion is
+        // CH-010's job, proven by the population tests in
+        // apps/desktop/src-tauri/src/insights_report.rs.
+        let mut baseline = EfficiencyReportAccumulator::new();
+        baseline.observe_session(evidence("cohort-only"));
+        let mut baseline_coverage = CoverageCounts::default();
+        baseline_coverage.observe(CoverageBucket::Ready, 1);
+        let baseline_report = baseline.finish(context(baseline_coverage));
+
         let mut accumulator = EfficiencyReportAccumulator::new();
         accumulator.observe_session(evidence("cohort-only"));
         let mut coverage = CoverageCounts::default();
@@ -560,6 +570,8 @@ mod tests {
         let report = accumulator.finish(context(coverage));
 
         assert_eq!(report.assessed_sessions, 1);
+        assert_eq!(report.detectors, baseline_report.detectors);
+        assert_eq!(report.detector_statuses, baseline_report.detector_statuses);
         for detector in DetectorId::ALL {
             let counts = report.detectors[detector.index()];
             assert!(counts.eligible <= report.assessed_sessions);
