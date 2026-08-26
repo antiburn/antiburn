@@ -229,7 +229,7 @@ pub struct EvidenceClaim {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceFailure {
     Retry { next_attempt_at_epoch: i64 },
-    Failed,
+    Failed { revisions: ProjectionRevisions },
 }
 
 /// The two successful publication states.

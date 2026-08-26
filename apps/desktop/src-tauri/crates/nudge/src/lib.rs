@@ -26,6 +26,7 @@
 //! antiburn app, so there's no need to be generic over the runtime.
 
 pub mod commands;
+mod gate;
 mod geometry;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -42,6 +43,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
+pub use gate::{NotificationGate, NotificationGateState};
 pub use model::{Nudge, NudgeAction, NudgeActionEvent, NudgeActionTarget, NudgeKind, NudgeTone};
 
 /// Register the platform support this crate needs while building the Tauri app.

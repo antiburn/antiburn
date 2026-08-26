@@ -30,10 +30,10 @@ release page is the canonical artifact host and the updater host at once.
 
 ## Part 1 — One-time repository setup
 
-None of this exists yet. The release workflows are written against it and will
-fail loudly (and early, before building anything) if it is missing, which is the
-intended behaviour: an unconfigured repository should not be able to produce
-something that looks like a signed release.
+The `release` environment, updater key, and Apple credentials are configured.
+Use this section when credentials rotate or the environment must be recreated.
+The workflows fail early if required material is missing, so an unconfigured
+repository cannot produce something that looks like a signed release.
 
 ### 1.1 The `release` environment
 
@@ -65,7 +65,7 @@ Placeholders below show the shape, never a real value.
 | `TAURI_SIGNING_PRIVATE_KEY`          | **Always**                | The updater's private signing key. Signs every updater bundle; the app verifies against the public half compiled into it. | `pnpm --filter @antiburn/desktop exec tauri signer generate -w "$HOME/antiburn.key"` (absolute path — a relative one lands in the working tree), then paste the contents of `antiburn.key`. Placeholder: `dW50cnVzdGVkIGNvbW1lbnQ6…` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | If the key has one        | The passphrase for the above. Give the key a passphrase.                                                                  | Chosen when generating the key. Placeholder: `<passphrase>`                                                                                                                                                                          |
 | `APPLE_CERTIFICATE`                  | For signed macOS builds   | Base64 of the **Developer ID Application** certificate and its private key, exported as `.p12`.                           | `base64 -i DeveloperID.p12 \| pbcopy`. Placeholder: `MIIM…`                                                                                                                                                                          |
-| `APPLE_CERTIFICATE_PASSWORD`         | With the above            | The `.p12` export passphrase.                                                                                             | Chosen during export. Placeholder: `<passphrase>`                                                                                                                                                                                    |
+| `APPLE_CERTIFICATE_PASSWORD`         | If the `.p12` has one     | The `.p12` export passphrase.                                                                                             | Chosen during export. Leave this secret unset when the export has no passphrase. Placeholder: `<passphrase>`                                                                                                                         |
 | `APPLE_ID`                           | For notarization          | The Apple ID that owns the notarization submission.                                                                       | Placeholder: `releases@example.org`                                                                                                                                                                                                  |
 | `APPLE_PASSWORD`                     | For notarization          | An **app-specific password** for that Apple ID — never the account password.                                              | appleid.apple.com → Sign-In and Security → App-Specific Passwords. Placeholder: `abcd-efgh-ijkl-mnop`                                                                                                                                |
 | `APPLE_TEAM_ID`                      | For notarization          | The ten-character Apple Developer team identifier.                                                                        | Apple Developer → Membership. Placeholder: `ABCDE12345`                                                                                                                                                                              |
@@ -92,12 +92,10 @@ Variables (Settings → Secrets and variables → Actions → Variables), not se
 | `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate)     | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download.                                                                                                                                                                                                                                        |
 | `WINDOWS_TIMESTAMP_URL`  | `http://timestamp.digicert.com`                 | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate.                                                                                                                                                                                                                                             |
 
-The two `ALLOW_UNSIGNED_*` variables exist because antiburn refuses to fake a
-signature. Until the certificates exist, the honest options are "no release" or
-"a release that says in as many words that it is unsigned" — not "a release that
-looks signed". This is recorded as a deviation (D-16) in
-[`docs/deviations.md`](../deviations.md); delete the variables the day the
-certificates land.
+`ALLOW_UNSIGNED_MACOS` is an emergency escape hatch and must remain unset while
+the Apple credentials are available. `ALLOW_UNSIGNED_WINDOWS` remains set under
+D-16 until an Authenticode certificate exists. These variables produce builds
+that say they are unsigned; they never fake a platform signature.
 
 ### 1.4 Tag protection
 

@@ -401,7 +401,7 @@ jobs:
                 echo "::warning::Building macOS artifacts WITHOUT Developer ID signing or notarization, because ALLOW_UNSIGNED_MACOS is true. They are sealed with an ad-hoc signature: Gatekeeper still warns, but right-click → Open works."
                 platform_signing=unsigned
               else
-                echo "::error::No Apple signing credentials (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID) are configured. Add them to the 'release' environment, or set the repository variable ALLOW_UNSIGNED_MACOS=true to deliberately ship an unsigned, clearly-labelled build."
+                echo "::error::No Apple signing credentials (APPLE_CERTIFICATE, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID) are configured. Add them to the 'release' environment, or set the repository variable ALLOW_UNSIGNED_MACOS=true to deliberately ship an unsigned, clearly-labelled build."
                 exit 1
               fi
               ;;
