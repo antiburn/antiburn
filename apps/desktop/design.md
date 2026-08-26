@@ -131,30 +131,12 @@ colors:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
-  analysis-blue-strong:
-    light: "hsl(224.2 76.3% 48%)"
-    dark: "hsl(221.2 83% 53.3%)"
-  analysis-green:
-    light: "hsl(161.3 93% 30.4%)"
-    dark: "hsl(158 64% 51.56%)"
-  analysis-blue:
-    light: "hsl(217.2 91% 59.8%)"
-    dark: "hsl(213 94% 67.8%)"
-  analysis-cyan:
-    light: "hsl(188.7 94.4% 42.7%)"
-    dark: "hsl(188 86% 53.3%)"
   context-fill-top:
     light: "hsl(217.2 91% 59.8% / 0.6)"
     dark: "hsl(213 94% 67.8% / 0.75)"
   context-fill-base:
     light: "hsl(217.2 91% 59.8% / 0.2)"
     dark: "hsl(213 94% 67.8% / 0.25)"
-  context-fixed:
-    light: "hsl(215 16% 46.9%)"
-    dark: "hsl(215 20% 65%)"
-  context-system:
-    light: "hsl(262 83% 57.8%)"
-    dark: "hsl(255 91% 76.2%)"
   token-in:
     light: "hsl(217.2 91% 59.8%)"
     dark: "hsl(213 94% 67.8%)"
