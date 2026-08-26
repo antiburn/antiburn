@@ -1006,7 +1006,7 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
             db_path,
             session_id,
         } => {
-            #[cfg(any(test, debug_assertions))]
+            #[cfg(any(test, feature = "test-instrumentation"))]
             record_tracked_provider_db_render(db_path);
             agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await
         }
@@ -1229,18 +1229,18 @@ async fn read_file_source(path: &Path) -> Option<(Option<SourceStat>, u64, Optio
 }
 
 async fn open_file_for_head_read(path: &Path) -> Option<tokio::fs::File> {
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, feature = "test-instrumentation"))]
     record_tracked_head_read(path);
     tokio::fs::File::open(path).await.ok()
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 static TRACKED_PROVIDER_DB_RENDERS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[doc(hidden)]
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 pub fn track_provider_db_renders(path: &Path) {
     TRACKED_PROVIDER_DB_RENDERS
         .lock()
@@ -1248,7 +1248,7 @@ pub fn track_provider_db_renders(path: &Path) {
         .insert(path.to_path_buf(), 0);
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 fn record_tracked_provider_db_render(path: &Path) {
     let mut renders = TRACKED_PROVIDER_DB_RENDERS
         .lock()
@@ -1259,7 +1259,7 @@ fn record_tracked_provider_db_render(path: &Path) {
 }
 
 #[doc(hidden)]
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 pub fn take_tracked_provider_db_renders(path: &Path) -> usize {
     TRACKED_PROVIDER_DB_RENDERS
         .lock()
@@ -1268,13 +1268,13 @@ pub fn take_tracked_provider_db_renders(path: &Path) -> usize {
         .unwrap_or(0)
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 static TRACKED_HEAD_READS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[doc(hidden)]
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 pub fn track_head_reads(path: &Path) {
     TRACKED_HEAD_READS
         .lock()
@@ -1282,7 +1282,7 @@ pub fn track_head_reads(path: &Path) {
         .insert(path.to_path_buf(), 0);
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 fn record_tracked_head_read(path: &Path) {
     let mut reads = TRACKED_HEAD_READS
         .lock()
@@ -1293,7 +1293,7 @@ fn record_tracked_head_read(path: &Path) {
 }
 
 #[doc(hidden)]
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, feature = "test-instrumentation"))]
 pub fn take_tracked_head_reads(path: &Path) -> usize {
     TRACKED_HEAD_READS
         .lock()

@@ -149,6 +149,9 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttr
 winreg = "0.56"
 
 [dev-dependencies]
+# This dev-dependency resolves the engine counters for test builds only.
+# Release runtime builds exclude it.
+antiburn-local = { path = "../../../crates/antiburn-local", features = ["test-instrumentation"] }
 # Synthetic agent stores for the scan-pipeline tests.
 tempfile = "3"
 
