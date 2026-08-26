@@ -72,6 +72,8 @@ pub struct NudgeAction {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum NudgeActionTarget {
     #[serde(rename_all = "camelCase")]
+    Update { expected_version: String },
+    #[serde(rename_all = "camelCase")]
     ProviderUsage {
         provider: String,
         account_key: Option<String>,

@@ -14,7 +14,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use antiburn_nudge::{Nudge, NudgeActionEvent, NudgeKind, NudgeManager, NudgePlacement};
+use antiburn_nudge::{
+    Nudge, NudgeActionEvent, NudgeActionTarget, NudgeKind, NudgeManager, NudgePlacement,
+};
 use tauri::{AppHandle, Manager};
 
 use crate::store::{NudgePlacement as PlacementPref, Store};
@@ -157,9 +159,26 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
         }
         return;
     }
+    if event.kind == NudgeKind::UpdateAvailable {
+        let expected_version = match classify_update_action(&event) {
+            UpdateAction::OpenAbout => {
+                if event.action_id == "install" {
+                    tracing::warn!("the update install action has no valid version target");
+                }
+                None
+            }
+            UpdateAction::Install(expected_version) => Some(expected_version.to_string()),
+        };
+        let _ = crate::settings::open(app, Some("about".to_string()));
+        if let Some(expected_version) = expected_version {
+            let install_app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::updates::install(&install_app, &expected_version).await;
+            });
+        }
+        return;
+    }
     let pane = match event.kind {
-        // Software update lives inside About (with the build it updates).
-        NudgeKind::UpdateAvailable => Some("about"),
         NudgeKind::ScanFailure => Some("sources"),
         NudgeKind::DiskSpaceLow | NudgeKind::UsageMilestone => Some("notifications"),
         // Test, and anything the crate's non-exhaustive enum grows later: a
@@ -167,6 +186,25 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
         _ => None,
     };
     let _ = crate::settings::open(app, pane.map(str::to_string));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateAction<'a> {
+    OpenAbout,
+    Install(&'a str),
+}
+
+fn classify_update_action(event: &NudgeActionEvent) -> UpdateAction<'_> {
+    if event.kind != NudgeKind::UpdateAvailable || event.action_id != "install" {
+        return UpdateAction::OpenAbout;
+    }
+    let Some(NudgeActionTarget::Update { expected_version }) = event.target.as_ref() else {
+        return UpdateAction::OpenAbout;
+    };
+    if expected_version.trim().is_empty() {
+        return UpdateAction::OpenAbout;
+    }
+    UpdateAction::Install(expected_version)
 }
 
 /// The same CTA where the tray backend reports no rectangle.
@@ -198,5 +236,50 @@ mod tests {
         // The next notification is somebody else's — a disk warning, an
         // update — and must land wherever the reader's preference says.
         assert!(!override_.take());
+    }
+
+    #[test]
+    fn only_the_exact_update_install_action_is_classified_for_install() {
+        let exact = NudgeActionEvent {
+            kind: NudgeKind::UpdateAvailable,
+            action_id: "install".to_string(),
+            target: Some(NudgeActionTarget::Update {
+                expected_version: "2.4.0-beta.1+build.7".to_string(),
+            }),
+        };
+        assert_eq!(
+            classify_update_action(&exact),
+            UpdateAction::Install("2.4.0-beta.1+build.7")
+        );
+
+        for malformed in [
+            NudgeActionEvent {
+                action_id: "open_app".to_string(),
+                ..exact.clone()
+            },
+            NudgeActionEvent {
+                target: None,
+                ..exact.clone()
+            },
+            NudgeActionEvent {
+                target: Some(NudgeActionTarget::ProviderUsage {
+                    provider: "openai".to_string(),
+                    account_key: None,
+                }),
+                ..exact.clone()
+            },
+            NudgeActionEvent {
+                target: Some(NudgeActionTarget::Update {
+                    expected_version: "  ".to_string(),
+                }),
+                ..exact.clone()
+            },
+            NudgeActionEvent {
+                kind: NudgeKind::ScanFailure,
+                ..exact.clone()
+            },
+        ] {
+            assert_eq!(classify_update_action(&malformed), UpdateAction::OpenAbout);
+        }
     }
 }

@@ -99,8 +99,8 @@ System Settings → Focus.
 
 Focus status is only available to a bundle with a stable identity, the
 communication-notifications entitlement (`Entitlements.plist`, wired through
-`bundle.macOS.entitlements`), and a signature macOS recognizes. Two
-consequences:
+`bundle.macOS.entitlements`), a Developer ID signature, and a matching embedded
+provisioning profile. Two consequences:
 
 - The unbundled binary `tauri dev` produces cannot even ask: UserNotifications
   raises an Objective-C exception (which Rust cannot catch) for unbundled

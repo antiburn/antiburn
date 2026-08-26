@@ -19,7 +19,6 @@ import { SettingsView } from "./SettingsView"
 const invoke = vi.hoisted(() => vi.fn())
 const openDialog = vi.hoisted(() => vi.fn())
 const confirmDialog = vi.hoisted(() => vi.fn())
-const checkForUpdate = vi.hoisted(() => vi.fn())
 const closeWindow = vi.hoisted(() => vi.fn())
 /** Mutable so a test can render the macOS chrome; jsdom itself has no OS. */
 const platform = vi.hoisted(() => ({ mac: false }))
@@ -41,7 +40,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   confirm: confirmDialog,
   save: vi.fn(),
 }))
-vi.mock("@tauri-apps/plugin-updater", () => ({ check: checkForUpdate }))
 vi.mock("../lib/platform", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
   return { ...actual, isMacOS: () => platform.mac }
@@ -85,6 +83,33 @@ const INFO = {
   updatesSupported: false,
 }
 
+let updateRevision = 0
+
+function updateStatus(
+  kind:
+    | "unsupported"
+    | "current"
+    | "available"
+    | "downloading"
+    | "installing"
+    | "installed"
+    | "failed",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    kind,
+    version: null,
+    message: null,
+    checkedAt: new Date().toISOString(),
+    automatic: false,
+    downloadedBytes: null,
+    totalBytes: null,
+    failureOperation: null,
+    revision: ++updateRevision,
+    ...overrides,
+  }
+}
+
 const SCAN_STATUS = {
   running: false,
   completedAgents: 11,
@@ -112,6 +137,10 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(args?.["settings"])
       case "app_info":
         return Promise.resolve(INFO)
+      case "check_for_updates":
+        return Promise.resolve(updateStatus("current"))
+      case "get_update_status":
+        return Promise.resolve(null)
       case "get_scan_status":
       case "scan_now":
       case "cancel_scan":
@@ -131,7 +160,6 @@ describe("SettingsView", () => {
     invoke.mockReset()
     openDialog.mockReset()
     confirmDialog.mockReset()
-    checkForUpdate.mockReset()
     listeners.clear()
     delete document.documentElement.dataset["theme"]
     mockCommands()
@@ -247,18 +275,18 @@ describe("SettingsView", () => {
     // `app_info` resolves; wait for the settled state rather than racing it.
     await waitFor(() => expect(button).toBeDisabled())
     expect(
-      screen.getByText(/updater is installed in packaged releases only/i),
+      screen.getByText(/in-app updates are unavailable in this build/i),
     ).toBeInTheDocument()
 
     fireEvent.click(button)
-    expect(checkForUpdate).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith("check_for_updates")
   })
 
   it("renders no automatic-update control at all in a build that cannot update", async () => {
     render(<SettingsView />)
 
     fireEvent.click(screen.getByRole("tab", { name: "About" }))
-    await screen.findByText(/updater is installed in packaged releases only/i)
+    await screen.findByText(/in-app updates are unavailable in this build/i)
 
     // Not a disabled switch over a preference nothing reads — no switch.
     expect(
@@ -267,9 +295,44 @@ describe("SettingsView", () => {
     expect(screen.getByText(/never contacts the release feed/i)).toBeInTheDocument()
   })
 
+  it("runs the complete updater simulation in a debug build", async () => {
+    let installAttempt = 0
+    mockCommands({
+      app_info: { ...INFO, debugBuild: true },
+      start_update_simulation: () => updateStatus("available", { version: "99.0.0" }),
+      install_update: () => {
+        installAttempt += 1
+        return installAttempt === 1
+          ? updateStatus("failed", {
+              version: "99.0.0",
+              message: "The simulated download failed. Try the install again.",
+              failureOperation: "install",
+            })
+          : updateStatus("installed", { version: "99.0.0" })
+      },
+    })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "About" }))
+    const start = await screen.findByRole("button", { name: "Start simulation" })
+    fireEvent.click(start)
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("start_update_simulation"))
+    fireEvent.click(await screen.findByRole("button", { name: "Install" }))
+    expect(await screen.findByText(/simulated download failed/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Try install again" }))
+    expect(await screen.findByText(/Version 99.0.0 is installed/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Restart to update" }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("restart_to_update"))
+
+    emit("update:status", updateStatus("unsupported"))
+    expect(await screen.findByRole("button", { name: "Start simulation" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Check for updates" })).toBeDisabled()
+  })
+
   it("runs a real check when the build carries the updater", async () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } })
-    checkForUpdate.mockResolvedValue(null)
     render(<SettingsView />)
 
     fireEvent.click(screen.getByRole("tab", { name: "About" }))
@@ -280,7 +343,7 @@ describe("SettingsView", () => {
     await waitFor(() => expect(button).toBeEnabled())
     fireEvent.click(button)
 
-    await waitFor(() => expect(checkForUpdate).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("check_for_updates"))
     expect(await screen.findByText("Up to date")).toBeInTheDocument()
   })
 
@@ -310,18 +373,188 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "About" }))
     await screen.findByRole("switch", { name: "Check for updates automatically" })
 
-    emit("update:status", {
-      kind: "available",
-      version: "0.2.0",
-      message: null,
-      checkedAt: new Date().toISOString(),
-      automatic: true,
-    })
+    emit(
+      "update:status",
+      updateStatus("available", {
+        version: "0.2.0",
+        automatic: true,
+      }),
+    )
 
     expect(await screen.findByText("Version 0.2.0 is available")).toBeInTheDocument()
     // The switch says when the schedule last ran, so "automatic" is an
     // observable fact rather than an assurance.
     expect(screen.getByText(/last checked/i)).toBeInTheDocument()
+  })
+
+  it("loads an automatic result that arrived before About mounted", async () => {
+    mockCommands({
+      app_info: { ...INFO, updatesSupported: true },
+      get_update_status: updateStatus("available", {
+        version: "0.2.0",
+        automatic: true,
+      }),
+    })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "About" }))
+
+    expect(await screen.findByText("Version 0.2.0 is available")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Install" })).toBeEnabled()
+  })
+
+  it("loads notification-started download progress after About mounts", async () => {
+    mockCommands({
+      app_info: { ...INFO, updatesSupported: true },
+      get_update_status: updateStatus("downloading", {
+        version: "0.2.0",
+        downloadedBytes: 1_048_576,
+        totalBytes: 2_097_152,
+      }),
+    })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "About" }))
+
+    expect(await screen.findByText(/Downloading version 0.2.0/i)).toBeInTheDocument()
+    expect(screen.getByRole("progressbar", { name: "Downloading update" })).toHaveAttribute(
+      "aria-valuetext",
+      "1.0 MB of 2.0 MB",
+    )
+  })
+
+  it("installs only the version the reader selected", async () => {
+    mockCommands({
+      app_info: { ...INFO, updatesSupported: true },
+      check_for_updates: () => updateStatus("available", { version: "0.2.0" }),
+      install_update: () => updateStatus("installed", { version: "0.2.0" }),
+    })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "About" }))
+    emit("update:status", updateStatus("current"))
+    const checkButton = await screen.findByRole("button", { name: "Check for updates" })
+    const statusRegion = screen.getByRole("status")
+    await waitFor(() => expect(checkButton).toBeEnabled())
+    fireEvent.click(checkButton)
+    const installButton = await screen.findByRole("button", { name: "Install" })
+    installButton.focus()
+    fireEvent.click(installButton)
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("install_update", { expectedVersion: "0.2.0" }),
+    )
+    expect(document.activeElement).toBe(installButton)
+    expect(screen.getByRole("status")).toBe(statusRegion)
+    expect(await screen.findByText(/Version 0.2.0 is installed/i)).toBeInTheDocument()
+  })
+
+  it("shows determinate and indeterminate download progress", async () => {
+    let finishInstall!: (status: unknown) => void
+    const installing = new Promise((resolve) => {
+      finishInstall = resolve
+    })
+    mockCommands({
+      app_info: { ...INFO, updatesSupported: true },
+      check_for_updates: () => updateStatus("available", { version: "0.2.0" }),
+      install_update: () => installing,
+    })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "About" }))
+    emit("update:status", updateStatus("current"))
+    const checkButton = await screen.findByRole("button", { name: "Check for updates" })
+    await waitFor(() => expect(checkButton).toBeEnabled())
+    fireEvent.click(checkButton)
+    fireEvent.click(await screen.findByRole("button", { name: "Install" }))
+
+    emit(
+      "update:status",
+      updateStatus("downloading", {
+        version: "0.2.0",
+        downloadedBytes: 1_048_576,
+        totalBytes: 2_097_152,
+      }),
+    )
+    const progress = await screen.findByRole("progressbar", { name: "Downloading update" })
+    expect(progress).toHaveAttribute("aria-valuetext", "1.0 MB of 2.0 MB")
+
+    emit(
+      "update:status",
+      updateStatus("available", {
+        version: "0.2.0",
+        revision: 0,
+      }),
+    )
+    expect(progress).toBeInTheDocument()
+
+    emit(
+      "update:status",
+      updateStatus("downloading", {
+        version: "0.2.0",
+        downloadedBytes: 1_048_576,
+      }),
+    )
+    expect(progress).not.toHaveAttribute("aria-valuenow")
+    expect(within(progress).getByRole("generic")).toHaveAttribute("data-state", "indeterminate")
+    finishInstall(updateStatus("installed", { version: "0.2.0" }))
+  })
+
+  it("does not restore Install from an equal-revision status snapshot", async () => {
+    let resolveStatus!: (status: unknown) => void
+    const retainedStatus = new Promise((resolve) => {
+      resolveStatus = resolve
+    })
+    let finishInstall!: (status: unknown) => void
+    const installing = new Promise((resolve) => {
+      finishInstall = resolve
+    })
+    mockCommands({
+      app_info: { ...INFO, updatesSupported: true },
+      get_update_status: () => retainedStatus,
+      install_update: () => installing,
+    })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "About" }))
+    const available = updateStatus("available", { version: "0.2.0" })
+    emit("update:status", available)
+    fireEvent.click(await screen.findByRole("button", { name: "Install" }))
+    expect(await screen.findByText(/Downloading version 0.2.0/i)).toBeInTheDocument()
+
+    await act(async () => resolveStatus(available))
+    expect(screen.queryByRole("button", { name: "Install" })).not.toBeInTheDocument()
+    expect(screen.getByText(/Downloading version 0.2.0/i)).toBeInTheDocument()
+
+    await act(async () => finishInstall(updateStatus("installed", { version: "0.2.0" })))
+  })
+
+  it("surfaces install failures and restarts after a successful retry", async () => {
+    mockCommands({
+      app_info: { ...INFO, updatesSupported: true },
+      check_for_updates: () => updateStatus("available", { version: "0.2.0" }),
+      install_update: () =>
+        updateStatus("failed", {
+          version: "0.2.0",
+          message: "The update signature is invalid",
+          failureOperation: "install",
+        }),
+    })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "About" }))
+    emit("update:status", updateStatus("current"))
+    const checkButton = await screen.findByRole("button", { name: "Check for updates" })
+    await waitFor(() => expect(checkButton).toBeEnabled())
+    fireEvent.click(checkButton)
+    fireEvent.click(await screen.findByRole("button", { name: "Install" }))
+
+    expect(await screen.findByText("The update signature is invalid")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Try install again" })).toBeEnabled()
+
+    emit("update:status", updateStatus("installed", { version: "0.2.0" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Restart to update" }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("restart_to_update"))
   })
 
   it("clears local session data after confirming, and says what went", async () => {
@@ -747,7 +980,6 @@ describe("SettingsView — window chrome", () => {
     invoke.mockReset()
     openDialog.mockReset()
     confirmDialog.mockReset()
-    checkForUpdate.mockReset()
     closeWindow.mockReset()
     platform.mac = false
     listeners.clear()
@@ -821,7 +1053,6 @@ describe("SettingsView — notifications", () => {
     invoke.mockReset()
     openDialog.mockReset()
     confirmDialog.mockReset()
-    checkForUpdate.mockReset()
     listeners.clear()
     delete document.documentElement.dataset["theme"]
     mockCommands()

@@ -502,14 +502,26 @@ export interface StorageHealthPayload {
   message: string | null
 }
 
-/** The outcome of one update check. Mirrors Rust `UpdateStatus`. */
+/** One state in the update lifecycle. Mirrors Rust `UpdateStatus`. */
 export interface UpdateStatusPayload {
-  kind: "current" | "available" | "failed" | "unsupported"
+  kind:
+    | "current"
+    | "available"
+    | "downloading"
+    | "installing"
+    | "installed"
+    | "failed"
+    | "unsupported"
   version: string | null
   message: string | null
   checkedAt: string
   /** True when the shell's own schedule ran the check rather than a reader. */
   automatic: boolean
+  downloadedBytes: number | null
+  totalBytes: number | null
+  failureOperation: "check" | "install" | null
+  /** Monotonic process-local order for event and snapshot reconciliation. */
+  revision: number
 }
 
 /* -------------------------------------------------------------------------
@@ -546,6 +558,7 @@ export type NudgeTone = "info" | "success" | "warning"
  * it is clicked, so the handler acts on what the nudge was actually about.
  */
 export type NudgeActionTarget =
+  | { type: "update"; expectedVersion: string }
   | { type: "providerUsage"; provider: string; accountKey: string | null }
   | { type: "session"; agent: string; sessionId: string; environment: string | null }
 
@@ -772,6 +785,50 @@ export async function resizeOverlayWindow(
 export async function appInfo(): Promise<AppInfo | null> {
   if (!hasShell()) return null
   return invoke<AppInfo>("app_info")
+}
+
+/** Ask the shell to check the signed release feed. */
+export async function checkForUpdates(): Promise<UpdateStatusPayload> {
+  if (!hasShell()) return unsupportedUpdateStatus()
+  return invoke<UpdateStatusPayload>("check_for_updates")
+}
+
+/** Return the newest updater state retained by the shell. */
+export async function getUpdateStatus(): Promise<UpdateStatusPayload | null> {
+  if (!hasShell()) return null
+  return invoke<UpdateStatusPayload | null>("get_update_status")
+}
+
+/** Start the fixed local updater lifecycle in a debug shell. */
+export async function startUpdateSimulation(): Promise<UpdateStatusPayload> {
+  if (!hasShell()) return unsupportedUpdateStatus()
+  return invoke<UpdateStatusPayload>("start_update_simulation")
+}
+
+/** Download, verify, and install the version the reader selected. */
+export async function installUpdate(expectedVersion: string): Promise<UpdateStatusPayload> {
+  if (!hasShell()) return unsupportedUpdateStatus()
+  return invoke<UpdateStatusPayload>("install_update", { expectedVersion })
+}
+
+/** Restart after the shell has installed an update. */
+export async function restartToUpdate(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("restart_to_update")
+}
+
+function unsupportedUpdateStatus(): UpdateStatusPayload {
+  return {
+    kind: "unsupported",
+    version: null,
+    message: null,
+    checkedAt: new Date().toISOString(),
+    automatic: false,
+    downloadedBytes: null,
+    totalBytes: null,
+    failureOperation: null,
+    revision: 0,
+  }
 }
 
 /** Every persisted preference. */
@@ -1382,12 +1439,12 @@ export async function onSettingsPaneRequest(
   return listen<string>(SETTINGS_PANE_EVENT, (event) => handler(event.payload))
 }
 
-/** Event the shell emits after every update check. Mirrors `src-tauri/src/updates.rs`. */
+/** Event the shell emits as the update lifecycle changes. */
 export const UPDATE_EVENT = "update:status"
 
 /**
- * Subscribe to the outcome of every update check the shell runs on its own
- * schedule. The returned function unsubscribes.
+ * Subscribe to checks, download progress, installation, and failures. The
+ * returned function unsubscribes.
  *
  * This is what makes the "check automatically" preference visible: the shell
  * does the checking, and the Updates pane reflects what it found rather than

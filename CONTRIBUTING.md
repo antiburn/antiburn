@@ -86,15 +86,12 @@ cargo test
 All three must be clean before review. Behavior suites live in `tests/`;
 keep inline `#[cfg(test)]` modules small and tightly scoped.
 
-### Desktop onboarding tests
+### Desktop debugging
 
-Use **Reset Onboarding** in the debug-build tray menu for a one-step restart.
-Packaged builds provide **Settings → General → Run setup again**. Both paths
-keep indexed sessions, scan folders, repository choices, and preferences. They
-are not factory resets. Setup stays pending if you close it before completion.
-
-See [the desktop development guide](apps/desktop/README.md#restarting-onboarding)
-for clean-profile testing and the bundle-identifier rules that forks must keep.
+See [`docs/debugging.md`](docs/debugging.md) for desktop development modes,
+isolated profiles, logs, onboarding tests, sample notifications, and the
+updater simulator. Keep procedures in that guide so contributors have
+one current source.
 
 ## Slop gate
 

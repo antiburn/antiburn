@@ -17,7 +17,6 @@
     "core:window:allow-start-dragging",
     "core:window:allow-set-position",
     "dialog:default",
-    "opener:default",
-    "updater:default"
+    "opener:default"
   ]
 }

@@ -118,6 +118,27 @@ const targeted: Nudge = {
   ],
 }
 
+const updateAvailable: Nudge = {
+  id: "update-2.4.0",
+  kind: "updateAvailable",
+  tone: "info",
+  title: "antiburn update released",
+  subtitle: "New version 2.4.0 is available.",
+  description:
+    "Select Install to download, verify, and install it. Open About to follow progress.",
+  actions: [
+    { id: "notification_settings", label: "Settings", primary: false },
+    { id: "dismiss", label: "Dismiss", primary: false },
+    {
+      id: "install",
+      label: "Install",
+      primary: true,
+      target: { type: "update", expectedVersion: "2.4.0" },
+    },
+  ],
+  timeoutMs: 10_000,
+}
+
 /** Push a nudge at the view, the way the crate's `nudge:show` event does. */
 function showNudge(payload: Nudge) {
   act(() => listeners.get("nudge:show")?.({ payload }))
@@ -394,6 +415,41 @@ describe("NudgeView", () => {
       kind: "usageMilestone",
       actionId: "view_session",
       target: undefined,
+    })
+  })
+
+  it("opens About without installing when the update notification body is clicked", () => {
+    render(<NudgeView />)
+    showNudge(updateAvailable)
+
+    act(() => {
+      fireEvent.click(screen.getByText(updateAvailable.title))
+    })
+    showNudge(usageMilestone)
+
+    expect(invoke).toHaveBeenCalledWith("nudge_action", {
+      kind: "updateAvailable",
+      actionId: "open_app",
+      target: undefined,
+    })
+  })
+
+  it("sends the exact update target when the Install button is clicked", () => {
+    const { container } = render(<NudgeView />)
+    showNudge(updateAvailable)
+
+    act(() => {
+      fireEvent.mouseEnter(container.firstElementChild as HTMLElement)
+    })
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Install" }))
+    })
+    showNudge(usageMilestone)
+
+    expect(invoke).toHaveBeenCalledWith("nudge_action", {
+      kind: "updateAvailable",
+      actionId: "install",
+      target: { type: "update", expectedVersion: "2.4.0" },
     })
   })
 

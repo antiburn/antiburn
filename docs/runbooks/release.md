@@ -66,6 +66,7 @@ Placeholders below show the shape, never a real value.
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | If the key has one        | The passphrase for the above. Give the key a passphrase.                                                                  | Chosen when generating the key. Placeholder: `<passphrase>`                                                                                                                                                                          |
 | `APPLE_CERTIFICATE`                  | For signed macOS builds   | Base64 of the **Developer ID Application** certificate and its private key, exported as `.p12`.                           | `base64 -i DeveloperID.p12 \| pbcopy`. Placeholder: `MIIM…`                                                                                                                                                                          |
 | `APPLE_CERTIFICATE_PASSWORD`         | If the `.p12` has one     | The `.p12` export passphrase.                                                                                             | Chosen during export. Leave this secret unset when the export has no passphrase. Placeholder: `<passphrase>`                                                                                                                         |
+| `APPLE_PROVISIONING_PROFILE`         | For signed macOS builds   | Base64 of the Developer ID profile for `ai.antiburn.desktop`, with Communication Notifications enabled.                  | Download `antiburn.provisionprofile` from Apple Developer, then run `base64 -i antiburn.provisionprofile \| pbcopy`.                                                                                                                 |
 | `APPLE_ID`                           | For notarization          | The Apple ID that owns the notarization submission.                                                                       | Placeholder: `releases@example.org`                                                                                                                                                                                                  |
 | `APPLE_PASSWORD`                     | For notarization          | An **app-specific password** for that Apple ID — never the account password.                                              | appleid.apple.com → Sign-In and Security → App-Specific Passwords. Placeholder: `abcd-efgh-ijkl-mnop`                                                                                                                                |
 | `APPLE_TEAM_ID`                      | For notarization          | The ten-character Apple Developer team identifier.                                                                        | Apple Developer → Membership. Placeholder: `ABCDE12345`                                                                                                                                                                              |
@@ -81,6 +82,28 @@ replaced by a personal access token.
 empty. Both halves have to exist for an update to be verifiable, and an update
 that cannot be verified is worse than no updater at all. See
 [`updater-key-recovery.md`](updater-key-recovery.md) for custody.
+
+#### Communication Notifications profile
+
+The Focus-status API needs more than a Developer ID signature. The signed app
+must carry a matching Developer ID provisioning profile that authorizes the
+restricted `com.apple.developer.usernotifications.communication` entitlement.
+
+1. In Apple Developer, select the explicit App ID `ai.antiburn.desktop`.
+2. Enable **Communication Notifications** and save the App ID.
+3. Create a **Developer ID** provisioning profile for that App ID. Select the
+   same Developer ID Application certificate stored in `APPLE_CERTIFICATE`.
+4. Download it as `antiburn.provisionprofile`.
+5. Store it in the `release` environment:
+
+   ```bash
+   base64 -i antiburn.provisionprofile | gh secret set \
+     --env release APPLE_PROVISIONING_PROFILE --repo antiburn/antiburn
+   ```
+
+Regenerate the profile after the App ID capability or signing certificate
+changes. Never commit it. The release workflow checks its team, application
+identifier, capability, distribution type, and expiration before embedding it.
 
 ### 1.3 Repository variables
 
@@ -257,6 +280,10 @@ Those are machine gates, not boxes for a person to repeat.
 Open the draft release and perform the checks that need a real reader or
 installed operating system:
 
+The debug updater simulator described in
+[`docs/debugging.md`](../debugging.md#test-the-updater-interface) helps with UI
+work, but it does not replace these signed-artifact checks.
+
 - [ ] **It installs and runs.** On each platform you can reach: install from the
       downloaded installer, launch it, confirm the tray item appears, open the
       popover, and check that Settings → About shows the new version. On macOS,
@@ -268,6 +295,15 @@ installed operating system:
 - [ ] **The previous version can update to this one.** The real test of a
       release: install the previous version, point it at the draft only after
       publishing (drafts are not reachable), or rehearse with a pre-release tag.
+      On macOS and Linux AppImage, confirm About shows download progress, changes
+      to the installed state, and offers Restart to update. Restart and confirm
+      About shows the new version. On Windows, confirm the passive NSIS installer
+      exits and relaunches the updated application. The Debian package is
+      install-only and must report that in-app updates are unavailable.
+- [ ] **Updater failures stay safe and visible.** In a release rehearsal, interrupt
+      one download and serve one bundle with a bad updater signature. Each attempt
+      must end in a visible install failure with a retry action. The bad bundle must
+      not replace the installed application.
 - [ ] **"Set as the latest release" is checked.** The application's updater
       reads `releases/latest/download/latest.json`; if this release is not the
       latest one, nobody is offered the update. The workflow sets this already —
@@ -290,7 +326,8 @@ curl -sSL https://github.com/antiburn/antiburn/releases/latest/download/latest.j
 
 The `version` must be the one just published and the URLs must point at its tag.
 Then open an installed copy of the previous version and use Settings → About →
-Check now: it should report the new version.
+Check for updates. It should report the new version and complete the install and
+restart flow described above.
 
 If anything here is wrong, **do not fix the assets**. Go to
 [`rollback.md`](rollback.md).
