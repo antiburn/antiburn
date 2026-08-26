@@ -15,10 +15,9 @@
 
 use async_trait::async_trait;
 
-/// What a summarizer needs to name one session. Serializes as the JSON a
-/// sidecar backend writes to the helper's stdin.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+/// What a summarizer needs to name one session. Backends format this with
+/// [`title_prompt`] and pair it with [`TITLE_INSTRUCTIONS`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TitleInput {
     /// Repository or directory name, when known. Anchors the title.
     pub repo: Option<String>,
@@ -49,6 +48,44 @@ pub trait TitleSummarizer: Send + Sync {
     /// Callers pass the result through [`sanitize_generated_title`]; a `None`
     /// keeps the existing fallback title.
     async fn title(&self, input: &TitleInput) -> Option<String>;
+}
+
+/// The instruction text every title backend gives its model. The model
+/// backend itself is a generic prompt runner; the title task lives here.
+///
+/// Do not add literal example titles: small on-device models copy them
+/// verbatim into unrelated sessions.
+pub const TITLE_INSTRUCTIONS: &str = "\
+You name coding-agent chat sessions for a session list. The user shows you \
+the opening messages of one session. Name the session for the work it asks \
+for.
+
+Rules:
+- 4 to 8 words. A grammatical imperative phrase, not a word list.
+- Name the main task the user asks for. Ignore routine git setup such as \
+pulling main or creating a branch, unless that is the whole request.
+- Keep the concrete nouns that identify the work: file names, command \
+names, feature names, error codes, product names.
+- Use sentence case: capitalize the first word and proper names only. No \
+quotes. No trailing period.
+
+Reply with only the title.";
+
+/// Format `input` as the prompt a title backend sends with
+/// [`TITLE_INSTRUCTIONS`].
+pub fn title_prompt(input: &TitleInput) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(repo) = input.repo.as_deref().filter(|repo| !repo.is_empty()) {
+        lines.push(format!("Repository: {repo}"));
+    }
+    lines.push(format!("First message: {}", input.first_message));
+    if !input.context.is_empty() {
+        lines.push("Later messages:".into());
+        for message in &input.context {
+            lines.push(format!("- {message}"));
+        }
+    }
+    lines.join("\n")
 }
 
 /// Longest sanitized generated title, in characters. Matches the cleaned
@@ -106,6 +143,26 @@ pub(crate) fn capitalize_first(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_prompt_lists_repo_first_message_and_context() {
+        let full = TitleInput {
+            repo: Some("antiburn".into()),
+            first_message: "make the pane clickable".into(),
+            context: vec!["also fix hover".into()],
+        };
+        assert_eq!(
+            title_prompt(&full),
+            "Repository: antiburn\nFirst message: make the pane clickable\nLater messages:\n- also fix hover"
+        );
+
+        let bare = TitleInput {
+            repo: None,
+            first_message: "make the pane clickable".into(),
+            context: vec![],
+        };
+        assert_eq!(title_prompt(&bare), "First message: make the pane clickable");
+    }
 
     #[test]
     fn sanitize_strips_quotes_and_trailing_period() {

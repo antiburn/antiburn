@@ -10,14 +10,14 @@ Approved 2026-08-24 after review. Windows (Phi Silica) and Ollama backends are f
 | --- | --- |
 | 1. Heuristic fallback cleanup | Done (marker strip + first sentence + word-boundary truncation in `clean_first_message_title`, applied in `select_title_pair`) |
 | 2. `TitleSummarizer` trait + storage | Done (`TitleSummarizer` trait + `sanitize_generated_title` in the engine; `localSummary` provenance, guarded store writes, candidate collection in the scan, `local_summary_pass` wired after upsert — `platform_summarizer()` returns `None` until step 3. Follow-up fix 2026-08-25: candidate collection skips Codex-injected user turns — `# AGENTS.md instructions …` and `<environment_context>`-style elements — found when running the pipeline against Keith's real rollouts; without the filter the model titled the boilerplate) |
-| 3. macOS backend (Apple Foundation Models sidecar) | Done (Swift sidecar `sidecar/title-summarizer.swift` compiled by build.rs and bundled via `tauri.macos.conf.json` externalBin; `SidecarSummarizer` runs it with a 20s timeout; `local_summary_titles` setting, default on, macOS-only toggle in General settings; generate-once per session, 15 titles per pass, newest first) |
+| 3. macOS backend (Apple Foundation Models sidecar) | Done (generic Swift sidecar `sidecar/run-foundation-model.swift` — a prompt-in/text-out Foundation Models runner, reusable beyond titles per PR review — compiled by build.rs and bundled via `tauri.macos.conf.json` externalBin; `SidecarSummarizer` runs it with a 20s timeout; `local_summary_titles` setting, default on, macOS-only toggle in General settings; generate-once per session, 15 titles per pass, newest first) |
 
 ## Background (investigated 2026-08-24)
 
 - Antiburn's Codex title chain is already correct: user rename (`threads.name`) → Codex-generated title (`threads.title` / `session_index.jsonl`) → first user message ([codex.rs](../../crates/antiburn-local/src/discovery/agents/codex.rs)). The problem is upstream: on Keith's machine 322 of 329 Codex threads have `title` byte-identical to `first_user_message`. Only 7 ever got a generated name. The fallback IS the experience.
 - Antiburn tracks provenance per title via `TitleSource` (`userRename` / `aiGenerated` / `explicit` / `firstMessage`) in [scanner.rs](../../crates/antiburn-local/src/discovery/scanner.rs). A generated title slots in as a new variant.
 - Apple Foundation Models reports `available` on macOS 27. A Swift proof-of-concept titled real first messages in 300ms–1s each, on device, free. Quality with only the first message is mediocre; include repo name + first few turns for context.
-- FoundationModels is Swift-only (no Rust ABI). Integration is a small Swift sidecar binary bundled via Tauri (stdin JSON → stdout title), spawned from Rust with a timeout. Reviewed and agreed in discuss.
+- FoundationModels is Swift-only (no Rust ABI). Integration is a small generic Swift sidecar binary bundled via Tauri (stdin `{instructions, prompt}` JSON → stdout model response), spawned from Rust with a timeout; the title prompt is built in Rust. Reviewed and agreed in discuss.
 - Open question: `~/.codex` has no rollouts or new thread rows since Aug 6, yet the HUD showed a Codex session 12h ago. Newer Codex builds may have moved local storage. Verify against a live session before relying on any Codex store (gate for step 3).
 
 ## Design
@@ -50,7 +50,7 @@ trait TitleSummarizer {
 
 ### Step 3 — Apple Foundation Models sidecar
 
-- Small Swift helper binary bundled with the app via Tauri's sidecar mechanism (stdin JSON → stdout title). Compiled only on macOS.
+- Small generic Swift helper binary (`run-foundation-model`) bundled with the app via Tauri's sidecar mechanism (stdin `{instructions, prompt}` JSON → stdout model response). Compiled only on macOS; the title prompt lives in Rust.
 - Availability = `SystemLanguageModel.default.availability` (macOS 26+, Apple Intelligence enabled, supported hardware). Probe per run — the user can toggle Apple Intelligence off. Unavailable → step 1 cleanup only.
 - Prompt: "You name coding-agent chat sessions… 3–6 words, imperative mood, no quotes, no trailing period." Include repo name and early turns.
 - Guardrail: model output is untrusted — trim, cap length, strip newlines/quotes, reject empty or refusal-looking output and keep the fallback.

@@ -41,17 +41,21 @@ pub fn platform_summarizer() -> Option<Arc<dyn TitleSummarizer>> {
     None
 }
 
-/// The macOS backend: a bundled Swift helper (`title-summarizer`) that talks
-/// to the on-device Apple Foundation Models. One process run per request:
-/// `--probe` answers availability, and a run without arguments reads the
-/// [`TitleInput`] JSON on stdin and writes the title to stdout.
+/// The macOS backend: a bundled Swift helper (`run-foundation-model`) that
+/// talks to the on-device Apple Foundation Models. The helper is a generic
+/// prompt runner; this module builds the title-specific request. One process
+/// run per request: `--probe` answers availability, and a run without
+/// arguments reads `{"instructions", "prompt"}` JSON on stdin and writes the
+/// model response to stdout.
 #[cfg(target_os = "macos")]
 mod sidecar {
     use std::path::PathBuf;
     use std::process::Stdio;
     use std::time::Duration;
 
-    use antiburn_local::titles::{SummarizerAvailability, TitleInput, TitleSummarizer};
+    use antiburn_local::titles::{
+        SummarizerAvailability, TITLE_INSTRUCTIONS, TitleInput, TitleSummarizer, title_prompt,
+    };
     use async_trait::async_trait;
     use tokio::io::AsyncWriteExt;
 
@@ -107,7 +111,11 @@ mod sidecar {
         }
 
         async fn title(&self, input: &TitleInput) -> Option<String> {
-            let payload = serde_json::to_vec(input).ok()?;
+            let request = serde_json::json!({
+                "instructions": TITLE_INSTRUCTIONS,
+                "prompt": title_prompt(input),
+            });
+            let payload = serde_json::to_vec(&request).ok()?;
             self.run(&[], Some(payload)).await
         }
     }
@@ -117,7 +125,7 @@ mod sidecar {
     /// compiled into the manifest's `binaries/` directory.
     pub fn binary_path() -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
-        let bundled = exe.parent()?.join("title-summarizer");
+        let bundled = exe.parent()?.join("run-foundation-model");
         if bundled.is_file() {
             return Some(bundled);
         }
@@ -125,7 +133,7 @@ mod sidecar {
             let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("binaries")
                 .join(format!(
-                    "title-summarizer-{}",
+                    "run-foundation-model-{}",
                     env!("ANTIBURN_TARGET_TRIPLE")
                 ));
             if dev.is_file() {
@@ -391,7 +399,7 @@ mod tests {
         /// A stand-in helper script, so the tests cover the process protocol
         /// without the real model.
         fn stub(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
-            let path = dir.join("title-summarizer");
+            let path = dir.join("run-foundation-model");
             std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             path
@@ -419,7 +427,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn title_sends_input_json_and_returns_stdout() {
+        async fn title_sends_instructions_and_prompt_json() {
             let dir = tempfile::tempdir().unwrap();
             // The stub echoes the JSON it receives, so the assertion covers
             // both directions of the protocol.
@@ -430,9 +438,14 @@ mod tests {
                 context: vec!["also fix hover".into()],
             };
             let round_trip = echoing.title(&input).await.unwrap();
+            let request: serde_json::Value = serde_json::from_str(&round_trip).unwrap();
             assert_eq!(
-                round_trip,
-                r#"{"repo":"antiburn","firstMessage":"make the pane clickable","context":["also fix hover"]}"#
+                request["instructions"],
+                antiburn_local::titles::TITLE_INSTRUCTIONS
+            );
+            assert_eq!(
+                request["prompt"],
+                "Repository: antiburn\nFirst message: make the pane clickable\nLater messages:\n- also fix hover"
             );
         }
 
