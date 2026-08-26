@@ -24,6 +24,50 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.1.0-rc.10] - 2026-08-27
+
+A release-candidate rehearsal build, not a supported release. The macOS app is
+Developer ID signed and notarized. The Windows installer is **unsigned**, so
+Windows can show a SmartScreen warning.
+
+### Added
+
+- **Updates can now be installed from Settings.** Settings → About shows
+  download progress, verifies the signed update, and offers a restart when the
+  new version is ready. Failed or interrupted updates stay visible and can be
+  retried safely.
+
+- **One-command installers are available for macOS, Linux, and Windows.** The
+  release includes `install.sh` and `install.ps1`; each selects the correct
+  package, verifies its SHA-256 checksum, and upgrades the existing
+  installation without leaving a partial replacement on failure.
+
+- **Session detail shows the cost of skills, MCP servers, built-in tools, and
+  sub-agents.** The Skills, MCPs and tools table identifies loaded, used,
+  unused, and deferred context sources. Expand the sub-agent cost row to see
+  each agent's model, tokens, cost, timing, and share of the session total.
+
+- Automated notifications now respect Focus and Do Not Disturb where the
+  operating system exposes that state. Suppressed notifications are dropped
+  instead of appearing later as a stale backlog.
+
+### Changed
+
+- Provider usage headings now show the detected subscription plan, such as
+  Claude Max 5x or Codex Pro.
+
+- Session-analysis cards explain their context, cost, and efficiency measures
+  more clearly. Cache misses during a fast tool burst no longer appear as
+  avoidable cache rehydration.
+
+### Fixed
+
+- The Context chart appears fully drawn when it first opens while retaining
+  transitions for later live updates.
+
+- Collapsed provider-limit rings show their percentage again, or an em dash
+  when the provider reports no percentage.
+
 ## [0.1.0-rc.9] - 2026-08-27
 
 A release-candidate rehearsal build, not a supported release. The macOS app is

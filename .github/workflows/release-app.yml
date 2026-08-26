@@ -528,7 +528,7 @@ jobs:
             echo "::error::Provisioning profile expired at ${expiration}."
             exit 1
           fi
-          echo "TAURI_SIGNING_CONFIG=apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_CONFIG=${GITHUB_WORKSPACE}/apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
 
       - name: Import the Authenticode signing certificate
         if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
