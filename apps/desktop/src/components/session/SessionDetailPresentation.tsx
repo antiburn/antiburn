@@ -810,7 +810,7 @@ export function SessionDetailPresentation({
             {firstSession?.initialContext && (
               <Card
                 title="Skills and MCPs"
-                info="Skills and MCP servers load their instructions into context before the first response. An unused one still costs the tokens it loaded. Origin shows where it installs from: bundled ships with the agent, plugin is an installed plugin, user is your home skills directory, and project is this repo."
+                info="Skills and MCP servers load their instructions into context before the first response. If they're unused, they still cost you tokens repeatedly."
                 hint={`${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens unused`}
               >
                 <SkillsMcpChart breakdown={firstSession.initialContext} />

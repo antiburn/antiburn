@@ -4086,19 +4086,8 @@
         "unpricedTurns": 0
       },
       "eventCount": 4,
-      "grepCount": 0,
       "initialContext": {
-        "sources": [
-          {
-            "origin": "unknown",
-            "source": "unattributed",
-            "sourceName": null,
-            "tokenCount": 100,
-            "useCount": 0
-          }
-        ],
-        "totalTokens": 100,
-        "trackingStatus": "trackedPartial"
+        "sources": []
       },
       "model": "claude-opus-4-7-20260115",
       "modelBreakdown": {
@@ -4138,15 +4127,7 @@
       "peakContextTokens": 400,
       "sessionId": "multi_model_session",
       "tokensIn": 1000,
-      "tokensOut": 100,
-      "toolMix": {
-        "bash": 0,
-        "edit": 0,
-        "other": 0,
-        "read": 0,
-        "search": 0,
-        "test": 0
-      }
+      "tokensOut": 100
     }
   ]
 }

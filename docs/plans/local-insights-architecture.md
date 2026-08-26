@@ -162,7 +162,7 @@ Every seam must respect these however it is sliced.
 - Provider-database fingerprints: `Explorers::provider_db_fingerprint` and `AgentExplorer::provider_db_fingerprint`.
 - Vendor dispatch and adapter registry: `crates/antiburn-local/src/analysis/vendors/mod.rs` (`adapter_for`, `has_dedicated_adapter`).
 - Token, model, and tool normalization plus metric semantics: `crates/antiburn-local/src/analysis/engine.rs`.
-- Initial-context attribution semantics, including tracked/partial/unavailable states: `crates/antiburn-local/src/analysis/initial_context.rs`.
+- Initial-context attribution semantics — a breakdown of named skill/MCP sources for every supported agent (`claude`, `codex`), `None` only for an unsupported agent: `crates/antiburn-local/src/analysis/initial_context.rs`.
 - Pricing: `crates/antiburn-local/src/pricing/` and `analysis/pricing.rs` — reused at report time, never baked into evidence.
 - Cache-freshness and fingerprint conventions: `apps/desktop/src-tauri/src/analysis.rs` (`fingerprint_of`, `cache_is_fresh`, `MISSING_FINGERPRINT`).
 - Migration and store conventions: `apps/desktop/src-tauri/src/store/schema.rs`, `store/model.rs`, `store/mod.rs` (`Store::lock`, `save_analysis`, `usage_evidence`).

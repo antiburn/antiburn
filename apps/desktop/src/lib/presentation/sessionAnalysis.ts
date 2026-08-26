@@ -391,16 +391,7 @@ export function skillMcpOriginLabel(origin: SourceOrigin): string | null {
  */
 export function skillMcpUsage(breakdown: InitialContextBreakdown): SkillMcpUsage {
   const rows = breakdown.sources
-    .filter(
-      (
-        row,
-      ): row is typeof row & {
-        source: "skill_instructions" | "mcp_instructions"
-        sourceName: string
-      } =>
-        (row.source === "skill_instructions" || row.source === "mcp_instructions") &&
-        row.sourceName != null,
-    )
+    .filter((row): row is typeof row & { sourceName: string } => row.sourceName != null)
     .map((row) => ({
       key: `${row.source}:${row.sourceName}`,
       kind: row.source === "skill_instructions" ? ("skill" as const) : ("mcp" as const),

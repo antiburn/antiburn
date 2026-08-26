@@ -62,9 +62,7 @@ pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
 };
-pub use initial_context::{
-    InitialContextBreakdown, InitialContextSourceCount, SourceOrigin, TrackingStatus,
-};
+pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
 pub use interface::{
     NormalizedRecord, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionInput,
     SessionSummary, SourceChangedReason, VendorAdapter, VisitOutcome,
@@ -82,7 +80,7 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 1;
-pub const ANALYZER_REVISION: i64 = 1;
+pub const ANALYZER_REVISION: i64 = 2;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 1;
 
