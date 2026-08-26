@@ -178,7 +178,8 @@ mod tests {
 
     use super::*;
     use crate::store::{
-        AnalysisRecord, EvidenceCompletion, PublishedEvidence, SessionKey, SessionRecord, Store,
+        AnalysisRecord, EvidenceCompletion, EvidenceFailure, ProjectionRevisions,
+        PublishedEvidence, SessionKey, SessionRecord, Store,
     };
 
     fn request() -> ReportRequest {
@@ -211,7 +212,12 @@ mod tests {
         }
     }
 
-    fn publish_ready(store: &Store, session_id: &str, started_at_epoch: i64) {
+    fn publish_evidence(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        status: PublishedEvidence,
+    ) {
         let fingerprint = format!("sv1:{session_id}");
         let session = session(session_id, started_at_epoch, &fingerprint);
         store
@@ -242,7 +248,7 @@ mod tests {
         };
         let completion = EvidenceCompletion {
             claim_fence: claim.claim_fence,
-            status: PublishedEvidence::Ready,
+            status,
             evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
             evidence_json: serde_json::to_string(&evidence).unwrap(),
             diagnostics_json: None,
@@ -252,6 +258,22 @@ mod tests {
                 .publish_projections(&analysis, Some(started_at_epoch), &completion, &[])
                 .unwrap()
         );
+    }
+
+    fn publish_ready(store: &Store, session_id: &str, started_at_epoch: i64) {
+        publish_evidence(
+            store,
+            session_id,
+            started_at_epoch,
+            PublishedEvidence::Ready,
+        );
+    }
+
+    fn change_source(store: &Store, session_id: &str, evidence_agents: &[&str]) {
+        let changed = session(session_id, 150, &format!("sv2:{session_id}"));
+        store
+            .upsert_sessions(std::slice::from_ref(&changed), evidence_agents)
+            .unwrap();
     }
 
     mod concurrency {
@@ -300,6 +322,114 @@ mod tests {
 
             assert_eq!(report.context.coverage.discovered, 1);
             assert_eq!(report.assessed_sessions, 1);
+        }
+    }
+
+    mod population {
+        use super::*;
+
+        #[test]
+        fn denominator_partitions_non_cohort_rows_by_reason() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+
+            publish_ready(&store, "processing", 120);
+            change_source(&store, "processing", &["claude-code"]);
+            let processing_claim = store
+                .claim_next_evidence(&["claude-code"], 20, 600)
+                .unwrap()
+                .unwrap();
+            assert_eq!(processing_claim.key.session_id, "processing");
+
+            publish_ready(&store, "failed", 121);
+            change_source(&store, "failed", &["claude-code"]);
+            let failed_claim = store
+                .claim_next_evidence(&["claude-code"], 20, 600)
+                .unwrap()
+                .unwrap();
+            assert_eq!(failed_claim.key.session_id, "failed");
+            assert!(
+                store
+                    .fail_evidence(
+                        &failed_claim,
+                        EvidenceFailure::Failed {
+                            revisions: ProjectionRevisions {
+                                parser_revision: PARSER_REVISION,
+                                analyzer_revision: ANALYZER_REVISION,
+                                metrics_schema_revision: METRICS_SCHEMA_REVISION,
+                                evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+                            },
+                        },
+                        "synthetic terminal failure",
+                    )
+                    .unwrap()
+            );
+
+            publish_evidence(&store, "unsupported", 123, PublishedEvidence::Unsupported);
+
+            publish_ready(&store, "stale", 124);
+            change_source(&store, "stale", &[]);
+
+            let unknown_active = session("unknown-active", 150, "sv1:unknown-active");
+            let unknown_inactive = session("unknown-inactive", 99, "sv1:unknown-inactive");
+            store
+                .upsert_sessions(&[unknown_active, unknown_inactive], &[])
+                .unwrap();
+
+            publish_ready(&store, "ready", 125);
+
+            publish_ready(&store, "pending", 122);
+            change_source(&store, "pending", &["claude-code"]);
+
+            let report = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+            let coverage = &report.context.coverage;
+
+            assert_eq!(coverage.discovered, 7);
+            assert_eq!(coverage.ready, 1);
+            assert_eq!(coverage.pending, 1);
+            assert_eq!(coverage.processing, 1);
+            assert_eq!(coverage.failed, 1);
+            assert_eq!(coverage.unsupported, 1);
+            assert_eq!(coverage.stale, 1);
+            assert_eq!(coverage.unknown_start, 1);
+            assert_eq!(report.assessed_sessions, 1);
+            assert!(coverage.is_consistent());
+            assert_eq!(
+                report
+                    .detectors
+                    .iter()
+                    .map(|counts| counts.eligible)
+                    .sum::<u64>(),
+                5
+            );
+            assert_eq!(
+                report
+                    .detectors
+                    .iter()
+                    .map(|counts| counts.assessed)
+                    .sum::<u64>(),
+                5
+            );
+        }
+
+        #[test]
+        fn report_excludes_sessions_from_another_environment() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            let mut other = session("other-environment", 150, "sv1:other-environment");
+            other.key.environment_key = "wsl:ubuntu".to_owned();
+            store.upsert_sessions(&[other], &[]).unwrap();
+
+            let report = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+
+            assert_eq!(report.context.coverage.discovered, 0);
+            assert_eq!(report.assessed_sessions, 0);
+            assert!(
+                report
+                    .detectors
+                    .iter()
+                    .all(|counts| { counts.eligible == 0 && counts.assessed == 0 })
+            );
         }
     }
 
