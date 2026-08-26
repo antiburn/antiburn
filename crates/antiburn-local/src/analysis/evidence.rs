@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::interface::RelationProvenance;
 use crate::analysis::{PartialReason, RawSource, VisitOutcome};
 
 pub const EVIDENCE_STRING_CAP: usize = 256;
@@ -14,6 +15,9 @@ pub const MAX_TOOL_NAMES: usize = 128;
 pub const MAX_CONTEXT_SOURCES: usize = 64;
 pub const MAX_UNRECOGNIZED_TYPES: usize = 16;
 pub const MAX_DIAGNOSTIC_FIELDS: usize = 16;
+pub const MAX_MODELS: usize = 32;
+pub const MAX_TIER_LABELS: usize = 16;
+pub const MAX_SUBAGENT_CHILDREN: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "value", rename_all = "snake_case")]
@@ -125,6 +129,67 @@ pub struct ContextSourceEvidence {
     pub tool_definitions: EvidenceValue<()>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTokens {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+    pub turns: u64,
+    pub first_ts_ms: i64,
+    pub last_ts_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnCounts {
+    pub main_loop: u64,
+    pub delegated: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEvidence {
+    pub by_model: BTreeMap<String, ModelTokens>,
+    pub unattributed_turns: u64,
+    pub effort_tiers: BTreeMap<String, TurnCounts>,
+    pub fast_modes: BTreeMap<String, TurnCounts>,
+    pub service_tiers: EvidenceValue<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationConfidence {
+    Observed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentChild {
+    pub ordinal: u32,
+    pub parent_model: Option<String>,
+    pub child_model: EvidenceValue<()>,
+    pub confidence: RelationConfidence,
+    pub provenance: RelationProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentExample {
+    pub ts_ms: i64,
+    pub parent_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentEvidence {
+    pub spawn_count: u64,
+    pub delegated_turns: u64,
+    pub children: Vec<SubagentChild>,
+    pub examples: Vec<SubagentExample>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceCapabilities {
@@ -134,6 +199,13 @@ pub struct SourceCapabilities {
     pub tool_invocations: bool,
     pub skill_mcp_attribution: bool,
     pub tool_definitions: bool,
+    pub model_identity: bool,
+    pub token_classes: bool,
+    pub reasoning_effort_tier: bool,
+    pub fast_tier: bool,
+    pub service_tier: bool,
+    pub subagent_relationships: bool,
+    pub subagent_models: bool,
 }
 
 impl SourceCapabilities {
@@ -145,6 +217,13 @@ impl SourceCapabilities {
             tool_invocations: true,
             skill_mcp_attribution: true,
             tool_definitions: false,
+            model_identity: true,
+            token_classes: true,
+            reasoning_effort_tier: true,
+            fast_tier: true,
+            service_tier: false,
+            subagent_relationships: true,
+            subagent_models: false,
         }
     }
 }
@@ -307,10 +386,8 @@ pub struct SessionEvidence {
     pub eligibility: EvidenceValue<EligibilityEvidence>,
     pub tools: EvidenceValue<ToolEvidence>,
     pub context_sources: EvidenceValue<ContextSourceEvidence>,
-    #[cfg(debug_assertions)]
-    pub models: EvidenceValue<UnfinishedGroup>,
-    #[cfg(debug_assertions)]
-    pub subagents: EvidenceValue<UnfinishedGroup>,
+    pub models: EvidenceValue<ModelEvidence>,
+    pub subagents: EvidenceValue<SubagentEvidence>,
     #[cfg(debug_assertions)]
     pub cache: EvidenceValue<UnfinishedGroup>,
     #[cfg(debug_assertions)]

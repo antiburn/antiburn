@@ -41,6 +41,12 @@ fn fixture(name: &str) -> &'static str {
         "inferred_cache_rehydration" => {
             include_str!("fixtures/claude_characterization/inferred_cache_rehydration.jsonl")
         }
+        "mcp_and_skill_sources" => {
+            include_str!("fixtures/claude_characterization/mcp_and_skill_sources.jsonl")
+        }
+        "reasoning_and_fast_mode" => {
+            include_str!("fixtures/claude_characterization/reasoning_and_fast_mode.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -233,6 +239,100 @@ fn oversized_metric_jsonl(payload_bytes: usize) -> String {
     source.push_str(&assistant_record("second-neighbour", 1_761_000_002, 4, 5));
     source.push('\n');
     source
+}
+
+#[test]
+fn effort_tiers_come_only_from_explicit_fields() {
+    let evidence = stream_composite(&input("reasoning_and_fast_mode"))
+        .evidence()
+        .expect("evidence must publish");
+    let models = match evidence.models {
+        EvidenceValue::Complete(models)
+        | EvidenceValue::Partial {
+            observed: models, ..
+        } => models,
+        EvidenceValue::Unsupported => panic!("Claude models must be supported"),
+        #[cfg(debug_assertions)]
+        EvidenceValue::Unimplemented => panic!("models must be implemented"),
+    };
+    assert_eq!(models.effort_tiers["high"].main_loop, 1);
+    assert_eq!(models.effort_tiers["low"].delegated, 1);
+    assert!(!models.effort_tiers.contains_key("wording"));
+}
+
+#[test]
+fn fast_mode_counts_split_main_loop_from_delegated() {
+    let evidence = stream_composite(&input("reasoning_and_fast_mode"))
+        .evidence()
+        .expect("evidence must publish");
+    let models = match evidence.models {
+        EvidenceValue::Complete(models)
+        | EvidenceValue::Partial {
+            observed: models, ..
+        } => models,
+        EvidenceValue::Unsupported => panic!("Claude models must be supported"),
+        #[cfg(debug_assertions)]
+        EvidenceValue::Unimplemented => panic!("models must be implemented"),
+    };
+    assert_eq!(models.fast_modes["fast"].main_loop, 1);
+    assert_eq!(models.fast_modes["fast"].delegated, 1);
+}
+
+#[test]
+fn delegated_turns_are_not_double_counted() {
+    let evidence = stream_composite(&input("reasoning_and_fast_mode"))
+        .evidence()
+        .expect("evidence must publish");
+    let subagents = match evidence.subagents {
+        EvidenceValue::Complete(subagents)
+        | EvidenceValue::Partial {
+            observed: subagents,
+            ..
+        } => subagents,
+        EvidenceValue::Unsupported => panic!("Claude subagents must be supported"),
+        #[cfg(debug_assertions)]
+        EvidenceValue::Unimplemented => panic!("subagents must be implemented"),
+    };
+    assert_eq!(subagents.delegated_turns, 1);
+}
+
+#[test]
+fn a_skill_origin_is_unsupported_not_guessed() {
+    let evidence = stream_composite(&input("mcp_and_skill_sources"))
+        .evidence()
+        .expect("evidence must publish");
+    let sources = match evidence.context_sources {
+        EvidenceValue::Complete(sources)
+        | EvidenceValue::Partial {
+            observed: sources, ..
+        } => sources,
+        EvidenceValue::Unsupported => panic!("Claude sources must be supported"),
+        #[cfg(debug_assertions)]
+        EvidenceValue::Unimplemented => panic!("sources must be implemented"),
+    };
+    assert!(sources.skills.values().all(|source| {
+        matches!(source.origin, EvidenceValue::Unsupported) && source.description.is_some()
+    }));
+}
+
+#[test]
+fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
+    let evidence = stream_composite(&input("mcp_and_skill_sources"))
+        .evidence()
+        .expect("evidence must publish");
+    let sources = match evidence.context_sources {
+        EvidenceValue::Complete(sources)
+        | EvidenceValue::Partial {
+            observed: sources, ..
+        } => sources,
+        EvidenceValue::Unsupported => panic!("Claude sources must be supported"),
+        #[cfg(debug_assertions)]
+        EvidenceValue::Unimplemented => panic!("sources must be implemented"),
+    };
+    assert!(matches!(
+        sources.tool_definitions,
+        EvidenceValue::Unsupported
+    ));
 }
 
 #[test]

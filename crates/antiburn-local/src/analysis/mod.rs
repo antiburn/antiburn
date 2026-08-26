@@ -55,9 +55,10 @@ pub use evidence::UnfinishedGroup;
 pub use evidence::{
     ContextEvidence, ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP,
     EligibilityEvidence, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
-    OrderingObservation, ParseDiagnostics, SessionEvidence, SessionEvidenceIdentity,
-    SessionProvenance, SessionTimeRange, SourceAcceptance, SourceCapabilities, SourceKind,
-    ToolClass, ToolEvidence, ToolUse,
+    ModelEvidence, ModelTokens, OrderingObservation, ParseDiagnostics, RelationConfidence,
+    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionTimeRange,
+    SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
+    SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
 pub use framing::{
@@ -67,8 +68,8 @@ pub use framing::{
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
 pub use interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordCoverage,
-    RecordSink, SessionCollector, SessionInput, SessionSummary, SourceChangedReason, VendorAdapter,
-    VisitOutcome,
+    RecordSink, RelationProvenance, SessionCollector, SessionInput, SessionSummary,
+    SourceChangedReason, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{SessionMetricsAccumulator, merge_metrics};

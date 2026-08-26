@@ -12,6 +12,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::analysis::framing::PartialReason;
 use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall};
@@ -51,6 +53,14 @@ pub enum EvidenceObservation {
         name: String,
         description: Option<String>,
     },
+    SubagentSpawn {
+        ts_ms: Option<i64>,
+        parent_model: Option<String>,
+        provenance: RelationProvenance,
+    },
+    DelegatedTurn {
+        is_sidechain: bool,
+    },
     UnrecognizedType {
         discriminator: String,
     },
@@ -60,6 +70,12 @@ pub enum EvidenceObservation {
 pub enum ContextSourceKind {
     Skill,
     McpServer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationProvenance {
+    TaskToolUse,
 }
 
 /// Session facts that an adapter can state only after the last record.

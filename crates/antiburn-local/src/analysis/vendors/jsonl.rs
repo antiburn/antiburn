@@ -18,8 +18,10 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::analysis::interface::{ContextSourceKind, EvidenceObservation};
-use crate::analysis::model::{CompactionTrigger, NormalizedEvent, Role, ToolCall, Usage};
+use crate::analysis::interface::{ContextSourceKind, EvidenceObservation, RelationProvenance};
+use crate::analysis::model::{
+    CompactionTrigger, EventSource, NormalizedEvent, Role, ToolCall, Usage,
+};
 
 /// Parse line-delimited JSON into normalized events, skipping blank/malformed
 /// lines.
@@ -173,43 +175,43 @@ pub(super) fn command_skill_name(
 }
 
 pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
-    let Some(attachment) = value.get("attachment") else {
-        return Vec::new();
-    };
-    match attachment.get("type").and_then(Value::as_str) {
-        Some("skill_listing") => attachment
-            .get("content")
-            .and_then(Value::as_str)
-            .into_iter()
-            .flat_map(|content| content.lines())
-            .filter_map(|line| {
-                let (name, description) = line.trim().strip_prefix("- ")?.split_once(':')?;
-                let name = name.trim();
-                if name.is_empty() {
-                    return None;
-                }
-                let description = description.trim();
-                Some(EvidenceObservation::ContextSource {
-                    kind: ContextSourceKind::Skill,
-                    name: name.to_owned(),
-                    description: (!description.is_empty()).then(|| description.to_owned()),
-                })
-            })
-            .collect(),
-        Some("mcp_instructions_delta") => {
-            let names = attachment
-                .get("addedNames")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
-            let blocks = attachment
-                .get("addedBlocks")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
-            names
-                .zip(blocks)
-                .filter_map(|(name, block)| {
+    let mut observations = Vec::new();
+    if let Some(attachment) = value.get("attachment") {
+        match attachment.get("type").and_then(Value::as_str) {
+            Some("skill_listing") => {
+                let sources = attachment
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .into_iter()
+                    .flat_map(|content| content.lines())
+                    .filter_map(|line| {
+                        let (name, description) =
+                            line.trim().strip_prefix("- ")?.split_once(':')?;
+                        let name = name.trim();
+                        if name.is_empty() {
+                            return None;
+                        }
+                        let description = description.trim();
+                        Some(EvidenceObservation::ContextSource {
+                            kind: ContextSourceKind::Skill,
+                            name: name.to_owned(),
+                            description: (!description.is_empty()).then(|| description.to_owned()),
+                        })
+                    });
+                observations.extend(sources);
+            }
+            Some("mcp_instructions_delta") => {
+                let names = attachment
+                    .get("addedNames")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten();
+                let blocks = attachment
+                    .get("addedBlocks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten();
+                observations.extend(names.zip(blocks).filter_map(|(name, block)| {
                     let name = name.as_str()?.trim();
                     if name.is_empty() {
                         return None;
@@ -223,11 +225,52 @@ pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
                             .filter(|value| !value.is_empty())
                             .map(str::to_owned),
                     })
-                })
-                .collect()
+                }));
+            }
+            _ => {}
         }
-        _ => Vec::new(),
     }
+
+    let is_sidechain = value
+        .get("isSidechain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    observations.push(EvidenceObservation::DelegatedTurn { is_sidechain });
+
+    let parent_model = value
+        .get("message")
+        .and_then(|message| message.get("model"))
+        .or_else(|| value.get("model"))
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty() && *model != "<synthetic>")
+        .map(str::to_owned);
+    let ts_ms = value
+        .get("timestamp")
+        .or_else(|| value.get("ts"))
+        .or_else(|| value.get("created_at"))
+        .or_else(|| value.get("createdAt"))
+        .and_then(parse_ts);
+    let content = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .or_else(|| value.get("content"));
+    if let Some(items) = content.and_then(Value::as_array) {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) == Some("tool_use")
+                && item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("task"))
+            {
+                observations.push(EvidenceObservation::SubagentSpawn {
+                    ts_ms,
+                    parent_model: parent_model.clone(),
+                    provenance: RelationProvenance::TaskToolUse,
+                });
+            }
+        }
+    }
+    observations
 }
 
 pub(super) fn is_recognized_eventless(value: &Value) -> bool {
@@ -254,6 +297,13 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
 
     let role = resolve_role(msg, obj, top_type)?;
     let mut ev = NormalizedEvent::new(role);
+    if obj
+        .get("isSidechain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        ev.source = EventSource::Subagent;
+    }
 
     ev.ts_ms = obj
         .get("timestamp")

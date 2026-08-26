@@ -9,17 +9,19 @@ use crate::analysis::evidence::UnfinishedGroup;
 use crate::analysis::evidence::{
     ContextEvidence, ContextSourceEvidence, CoverageReason, DepthExample, EligibilityEvidence,
     EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource, MAX_CONTEXT_SOURCES,
-    MAX_EVIDENCE_EXAMPLES, MAX_TOOL_NAMES, MAX_UNRECOGNIZED_TYPES, OrderingObservation,
-    ParseDiagnostics, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
-    SessionTimeRange, SourceAcceptance, SourceCapabilities, SourceKind, ToolClass, ToolEvidence,
-    ToolUse, cap_string, insert_diagnostic_field,
+    MAX_EVIDENCE_EXAMPLES, MAX_MODELS, MAX_SUBAGENT_CHILDREN, MAX_TIER_LABELS, MAX_TOOL_NAMES,
+    MAX_UNRECOGNIZED_TYPES, ModelEvidence, ModelTokens, OrderingObservation, ParseDiagnostics,
+    RelationConfidence, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
+    SessionTimeRange, SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild,
+    SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts, cap_string,
+    insert_diagnostic_field,
 };
 use crate::analysis::interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RecordSink, SessionSummary,
     VisitOutcome,
 };
 use crate::analysis::metrics_sink::SessionMetricsAccumulator;
-use crate::analysis::model::{NormalizedEvent, Role};
+use crate::analysis::model::{EventSource, NormalizedEvent, Role};
 use crate::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionMetrics,
 };
@@ -49,6 +51,16 @@ pub struct SessionEvidenceAccumulator {
     skills: BTreeMap<String, LoadedSource>,
     mcp_servers: BTreeMap<String, LoadedSource>,
     context_sources_cap_exceeded: bool,
+    models: BTreeMap<String, ModelTokens>,
+    unattributed_turns: u64,
+    effort_tiers: BTreeMap<String, TurnCounts>,
+    fast_modes: BTreeMap<String, TurnCounts>,
+    models_cap_exceeded: bool,
+    subagent_spawn_count: u64,
+    delegated_turns: u64,
+    subagent_children: Vec<SubagentChild>,
+    subagent_examples: Vec<SubagentExample>,
+    subagents_cap_exceeded: bool,
     summary_observed: bool,
 }
 
@@ -83,6 +95,16 @@ impl SessionEvidenceAccumulator {
             skills: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
             context_sources_cap_exceeded: false,
+            models: BTreeMap::new(),
+            unattributed_turns: 0,
+            effort_tiers: BTreeMap::new(),
+            fast_modes: BTreeMap::new(),
+            models_cap_exceeded: false,
+            subagent_spawn_count: 0,
+            delegated_turns: 0,
+            subagent_children: Vec::new(),
+            subagent_examples: Vec::new(),
+            subagents_cap_exceeded: false,
             summary_observed: false,
         }
     }
@@ -153,6 +175,8 @@ impl SessionEvidenceAccumulator {
             }
         }
 
+        self.observe_model(event);
+
         for tool in &event.tools {
             let source_name = if tool.name.eq_ignore_ascii_case("skill") {
                 tool.detail.as_deref().unwrap_or(&tool.name)
@@ -183,6 +207,52 @@ impl SessionEvidenceAccumulator {
         }
     }
 
+    fn observe_model(&mut self, event: &NormalizedEvent) {
+        let delegated = event.source == EventSource::Subagent;
+        if event.role == Role::Assistant {
+            if let Some(model) = event.model.as_deref() {
+                let capped = cap_string("models.by_model", model, &mut self.diagnostics);
+                if capped.len() != model.len() {
+                    self.models_cap_exceeded = true;
+                }
+                if let Some(tokens) = self.models.get_mut(&capped) {
+                    add_model_tokens(tokens, event);
+                } else if self.models.len() == MAX_MODELS {
+                    self.models_cap_exceeded = true;
+                    self.note_collection_cap("models.by_model");
+                } else {
+                    let mut tokens = ModelTokens::default();
+                    add_model_tokens(&mut tokens, event);
+                    self.models.insert(capped, tokens);
+                }
+            } else {
+                self.unattributed_turns = self.unattributed_turns.saturating_add(1);
+            }
+        }
+        if let Some(tier) = event.thinking_mode.as_deref() {
+            let (truncated, capped, diagnostic_capped) = insert_turn_count(
+                &mut self.effort_tiers,
+                tier,
+                "models.effort_tiers",
+                delegated,
+                &mut self.diagnostics,
+            );
+            self.models_cap_exceeded |= truncated || capped;
+            self.session_cap_exceeded |= diagnostic_capped;
+        }
+        if let Some(tier) = event.speed.as_deref() {
+            let (truncated, capped, diagnostic_capped) = insert_turn_count(
+                &mut self.fast_modes,
+                tier,
+                "models.fast_modes",
+                delegated,
+                &mut self.diagnostics,
+            );
+            self.models_cap_exceeded |= truncated || capped;
+            self.session_cap_exceeded |= diagnostic_capped;
+        }
+    }
+
     fn push_depth_example(&mut self, example: DepthExample) {
         self.depth_examples.push(example);
         self.depth_examples.sort_by(|left, right| {
@@ -205,6 +275,16 @@ impl SessionEvidenceAccumulator {
                 name,
                 description,
             } => self.observe_context_source(*kind, name, description.as_deref()),
+            EvidenceObservation::SubagentSpawn {
+                ts_ms,
+                parent_model,
+                provenance,
+            } => self.observe_subagent_spawn(*ts_ms, parent_model.as_deref(), *provenance),
+            EvidenceObservation::DelegatedTurn { is_sidechain } => {
+                self.delegated_turns = self
+                    .delegated_turns
+                    .saturating_add(u64::from(*is_sidechain));
+            }
             EvidenceObservation::UnrecognizedType { discriminator } => {
                 let original_len = discriminator.len();
                 let discriminator = cap_string(
@@ -223,6 +303,45 @@ impl SessionEvidenceAccumulator {
                         self.diagnostics.unrecognized_types.insert(discriminator);
                     }
                 }
+            }
+        }
+    }
+
+    fn observe_subagent_spawn(
+        &mut self,
+        ts_ms: Option<i64>,
+        parent_model: Option<&str>,
+        provenance: crate::analysis::interface::RelationProvenance,
+    ) {
+        self.subagent_spawn_count = self.subagent_spawn_count.saturating_add(1);
+        let parent_model = parent_model.map(|model| {
+            let capped = cap_string("subagents.parent_model", model, &mut self.diagnostics);
+            if capped.len() != model.len() {
+                self.subagents_cap_exceeded = true;
+            }
+            capped
+        });
+        if self.subagent_children.len() == MAX_SUBAGENT_CHILDREN {
+            self.subagents_cap_exceeded = true;
+            self.note_collection_cap("subagents.children");
+        } else {
+            self.subagent_children.push(SubagentChild {
+                ordinal: u32::try_from(self.subagent_spawn_count).unwrap_or(u32::MAX),
+                parent_model: parent_model.clone(),
+                child_model: EvidenceValue::Unsupported,
+                confidence: RelationConfidence::Observed,
+                provenance,
+            });
+        }
+        if let Some(ts_ms) = ts_ms {
+            if self.subagent_examples.len() == MAX_EVIDENCE_EXAMPLES {
+                self.subagents_cap_exceeded = true;
+                self.note_collection_cap("subagents.examples");
+            } else {
+                self.subagent_examples.push(SubagentExample {
+                    ts_ms,
+                    parent_model,
+                });
             }
         }
     }
@@ -305,6 +424,19 @@ impl SessionEvidenceAccumulator {
         };
         let tools = self.classified_tools();
         let context_sources = self.context_sources();
+        let models = ModelEvidence {
+            by_model: self.models.clone(),
+            unattributed_turns: self.unattributed_turns,
+            effort_tiers: self.effort_tiers.clone(),
+            fast_modes: self.fast_modes.clone(),
+            service_tiers: EvidenceValue::Unsupported,
+        };
+        let subagents = SubagentEvidence {
+            spawn_count: self.subagent_spawn_count,
+            delegated_turns: self.delegated_turns,
+            children: self.subagent_children.clone(),
+            examples: self.subagent_examples.clone(),
+        };
         let coverage_reason = self.record_loss_reason.or(self
             .session_cap_exceeded
             .then_some(CoverageReason::CapExceeded));
@@ -346,10 +478,31 @@ impl SessionEvidenceAccumulator {
                 self.capabilities.skill_mcp_attribution,
                 self.context_sources_cap_exceeded,
             ),
-            #[cfg(debug_assertions)]
-            models: EvidenceValue::<UnfinishedGroup>::Unimplemented,
-            #[cfg(debug_assertions)]
-            subagents: EvidenceValue::<UnfinishedGroup>::Unimplemented,
+            models: if !self.capabilities.model_identity || !self.capabilities.token_classes {
+                EvidenceValue::Unsupported
+            } else if let Some(reason) = self.record_loss_reason {
+                EvidenceValue::Partial {
+                    observed: models,
+                    reason,
+                }
+            } else if self.models_cap_exceeded {
+                EvidenceValue::Partial {
+                    observed: models,
+                    reason: CoverageReason::CapExceeded,
+                }
+            } else if self.unattributed_turns > 0 {
+                EvidenceValue::Partial {
+                    observed: models,
+                    reason: CoverageReason::AttributionIncomplete,
+                }
+            } else {
+                EvidenceValue::Complete(models)
+            },
+            subagents: self.supported_value(
+                subagents,
+                self.capabilities.subagent_relationships,
+                self.subagents_cap_exceeded,
+            ),
             #[cfg(debug_assertions)]
             cache: EvidenceValue::<UnfinishedGroup>::Unimplemented,
             #[cfg(debug_assertions)]
@@ -437,6 +590,57 @@ impl SessionEvidenceAccumulator {
                 self.source_acceptance,
                 SourceAcceptance::NotObserved | SourceAcceptance::SourceChanged
             )
+    }
+}
+
+fn add_model_tokens(tokens: &mut ModelTokens, event: &NormalizedEvent) {
+    tokens.input = tokens.input.saturating_add(event.usage.input_tokens);
+    tokens.output = tokens.output.saturating_add(event.usage.output_tokens);
+    tokens.cache_read = tokens
+        .cache_read
+        .saturating_add(event.usage.cache_read_tokens);
+    tokens.cache_creation = tokens
+        .cache_creation
+        .saturating_add(event.usage.cache_creation_tokens);
+    tokens.turns = tokens.turns.saturating_add(1);
+    if let Some(ts_ms) = event.ts_ms {
+        if tokens.turns == 1 || tokens.first_ts_ms == 0 {
+            tokens.first_ts_ms = ts_ms;
+        } else {
+            tokens.first_ts_ms = tokens.first_ts_ms.min(ts_ms);
+        }
+        tokens.last_ts_ms = tokens.last_ts_ms.max(ts_ms);
+    }
+}
+
+fn insert_turn_count(
+    map: &mut BTreeMap<String, TurnCounts>,
+    value: &str,
+    field: &'static str,
+    delegated: bool,
+    diagnostics: &mut ParseDiagnostics,
+) -> (bool, bool, bool) {
+    let capped_value = cap_string(field, value, diagnostics);
+    let truncated = capped_value.len() != value.len();
+    if let Some(counts) = map.get_mut(&capped_value) {
+        increment_turn_count(counts, delegated);
+        return (truncated, false, false);
+    }
+    if map.len() == MAX_TIER_LABELS {
+        let diagnostic_capped = insert_diagnostic_field(&mut diagnostics.capped_collections, field);
+        return (truncated, true, diagnostic_capped);
+    }
+    let mut counts = TurnCounts::default();
+    increment_turn_count(&mut counts, delegated);
+    map.insert(capped_value, counts);
+    (truncated, false, false)
+}
+
+fn increment_turn_count(counts: &mut TurnCounts, delegated: bool) {
+    if delegated {
+        counts.delegated = counts.delegated.saturating_add(1);
+    } else {
+        counts.main_loop = counts.main_loop.saturating_add(1);
     }
 }
 

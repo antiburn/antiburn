@@ -150,6 +150,9 @@ impl ClaudeAdapter {
                     };
 
                     state.context.observe(&value);
+                    for observation in evidence_observations(&value) {
+                        sink.record(NormalizedRecord::Observation(Box::new(observation)));
+                    }
                     let has_skill_marker = record.contains(SKILL_BASE_MARKER);
                     let has_command_name = record.contains("<command-name>");
                     let text = (has_skill_marker || has_command_name).then(|| record_text(&value));
@@ -161,9 +164,6 @@ impl ClaudeAdapter {
                     }
 
                     let Some(mut event) = parse_record(&value) else {
-                        for observation in evidence_observations(&value) {
-                            sink.record(NormalizedRecord::Observation(Box::new(observation)));
-                        }
                         if !is_recognized_eventless(&value) {
                             sink.record(NormalizedRecord::Observation(Box::new(
                                 crate::analysis::interface::EvidenceObservation::UnrecognizedType {
