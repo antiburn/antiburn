@@ -159,13 +159,17 @@ pub(crate) fn evaluate(
 
 /// Returns whether this session belongs in the detector's eligible
 /// denominator. Unused MCP Servers and Unused Skills make absence
-/// claims about assistant work; a session with no observed assistant
-/// turns can support neither a finding nor absence, so it stays out
-/// of the denominator and an all-idle cohort cannot read clean.
+/// claims about assistant work; a session is excluded only when
+/// complete eligibility evidence proves zero assistant turns, so an
+/// all-idle cohort cannot read clean. Absence read from partial
+/// evidence is untrustworthy (see `observed`), so a partial-
+/// eligibility session stays in the denominator whatever its observed
+/// count: the assessed-only-when-complete rule holds it at
+/// eligible-but-unassessed, blocking a clean claim.
 pub(crate) fn in_denominator(detector: DetectorId, evidence: &SessionEvidence) -> bool {
     match detector {
-        DetectorId::UnusedMcpServers | DetectorId::UnusedSkills => observed(&evidence.eligibility)
-            .is_some_and(|eligibility| eligibility.assistant_turns > 0),
+        DetectorId::UnusedMcpServers | DetectorId::UnusedSkills => complete(&evidence.eligibility)
+            .is_none_or(|eligibility| eligibility.assistant_turns > 0),
         _ => true,
     }
 }
