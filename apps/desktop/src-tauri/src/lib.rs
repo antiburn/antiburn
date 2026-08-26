@@ -212,6 +212,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
             app.manage(insights_worker::WorkerHandle::default());
+            app.manage(titles::TitleWorkerHandle::default());
             if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
                 &agents::evidence_cohort(),
                 analysis::projection_revisions(),
@@ -309,6 +310,7 @@ pub fn run() {
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
                 schedulers.push(insights_worker::spawn(app.handle()));
+                schedulers.push(titles::spawn(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
                 schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
                 schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
