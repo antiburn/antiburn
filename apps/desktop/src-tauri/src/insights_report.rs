@@ -1,0 +1,327 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use antiburn_local::analysis::{
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence,
+};
+use antiburn_local::insights::{
+    CoverageBucket, CoverageCounts, EfficiencyReport, EfficiencyReportAccumulator, ReportContext,
+    ReportWindow,
+};
+use anyhow::{Context, Result, ensure};
+use rusqlite::params;
+
+use crate::store::open_read_only;
+
+const REPORT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+const CURRENT_EVIDENCE_PREDICATE: &str = "
+    e.status = 'ready'
+    AND NOT (e.analyzed_generation IS NOT s.source_generation)
+    AND NOT (e.parser_revision IS NOT ?4)
+    AND NOT (e.analyzer_revision IS NOT ?5)
+    AND NOT (e.evidence_schema_revision IS NOT ?6)";
+
+const DENOMINATOR_SQL: &str = "
+SELECT bucket, COUNT(*), SUM(awaiting_provider_support)
+  FROM (
+    SELECT CASE
+             WHEN s.started_at_epoch IS NULL THEN 'unknown_start'
+             WHEN e.status IS NULL OR e.status = 'pending' THEN 'pending'
+             WHEN e.status = 'processing' THEN 'processing'
+             WHEN e.status = 'failed' THEN 'failed'
+             WHEN e.status = 'unsupported' THEN 'unsupported'
+             WHEN NOT ({current}) THEN 'stale'
+             ELSE 'ready'
+           END AS bucket,
+           CASE WHEN s.started_at_epoch IS NOT NULL AND e.status IS NULL
+                THEN 1 ELSE 0 END AS awaiting_provider_support
+      FROM session s
+      LEFT JOIN session_evidence e
+        ON e.environment_key = s.environment_key
+       AND e.agent = s.agent
+       AND e.session_id = s.session_id
+     WHERE s.environment_key = ?1
+       AND ((s.started_at_epoch >= ?2 AND s.started_at_epoch < ?3)
+         OR (s.started_at_epoch IS NULL
+             AND s.updated_at_epoch >= ?2 AND s.updated_at_epoch < ?3))
+  )
+ GROUP BY bucket
+ ORDER BY bucket";
+
+const COHORT_SQL: &str = "
+SELECT e.evidence_json
+  FROM session s
+  JOIN session_evidence e
+    ON e.environment_key = s.environment_key
+   AND e.agent = s.agent
+   AND e.session_id = s.session_id
+ WHERE s.environment_key = ?1
+   AND s.started_at_epoch >= ?2
+   AND s.started_at_epoch < ?3
+   AND {current}
+ ORDER BY s.started_at_epoch, s.session_id";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportRequest {
+    pub environment_key: String,
+    pub window: ReportWindow,
+    pub computed_at_epoch: i64,
+}
+
+/// Reduces one report without blocking the async runtime.
+pub async fn reduce_report(data_dir: PathBuf, request: ReportRequest) -> Result<EfficiencyReport> {
+    tokio::task::spawn_blocking(move || reduce_on_snapshot(&data_dir, request, &mut || {}))
+        .await
+        .context("report reduction task failed")?
+}
+
+fn reduce_on_snapshot(
+    data_dir: &Path,
+    request: ReportRequest,
+    after_denominator: &mut dyn FnMut(),
+) -> Result<EfficiencyReport> {
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let transaction = connection.unchecked_transaction()?;
+    let mut coverage = CoverageCounts::default();
+    let denominator_sql = DENOMINATOR_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    {
+        let mut statement = transaction.prepare(&denominator_sql)?;
+        let mut rows = statement.query(params![
+            request.environment_key,
+            request.window.start_epoch,
+            request.window.end_epoch,
+            PARSER_REVISION,
+            ANALYZER_REVISION,
+            EVIDENCE_SCHEMA_REVISION,
+        ])?;
+        while let Some(row) = rows.next()? {
+            let bucket = coverage_bucket(row.get::<_, String>(0)?.as_str())?;
+            let count = u64::try_from(row.get::<_, i64>(1)?)?;
+            let awaiting_provider_support = u64::try_from(row.get::<_, i64>(2)?)?;
+            coverage.observe(bucket, count);
+            coverage.awaiting_provider_support += awaiting_provider_support;
+        }
+    }
+    ensure!(
+        coverage.is_consistent(),
+        "report coverage does not partition"
+    );
+
+    after_denominator();
+
+    let mut accumulator = EfficiencyReportAccumulator::new();
+    let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    {
+        let mut statement = transaction.prepare(&cohort_sql)?;
+        let mut rows = statement.query(params![
+            request.environment_key,
+            request.window.start_epoch,
+            request.window.end_epoch,
+            PARSER_REVISION,
+            ANALYZER_REVISION,
+            EVIDENCE_SCHEMA_REVISION,
+        ])?;
+        while let Some(row) = rows.next()? {
+            let evidence_json: String = row.get(0)?;
+            let evidence: SessionEvidence = serde_json::from_str(&evidence_json)
+                .context("stored session evidence is invalid")?;
+            accumulator.observe_session(evidence);
+        }
+    }
+
+    let report = accumulator.finish(ReportContext {
+        environment_key: request.environment_key,
+        window: request.window,
+        computed_at_epoch: request.computed_at_epoch,
+        parser_revision: PARSER_REVISION,
+        analyzer_revision: ANALYZER_REVISION,
+        evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+        coverage,
+    });
+    ensure!(
+        report.context.coverage.actively_growing <= report.context.coverage.ready,
+        "actively growing coverage exceeds ready coverage"
+    );
+    drop(transaction);
+    drop(connection);
+    Ok(report)
+}
+
+fn coverage_bucket(value: &str) -> Result<CoverageBucket> {
+    match value {
+        "unknown_start" => Ok(CoverageBucket::UnknownStart),
+        "pending" => Ok(CoverageBucket::Pending),
+        "processing" => Ok(CoverageBucket::Processing),
+        "failed" => Ok(CoverageBucket::Failed),
+        "unsupported" => Ok(CoverageBucket::Unsupported),
+        "stale" => Ok(CoverageBucket::Stale),
+        "ready" => Ok(CoverageBucket::Ready),
+        _ => anyhow::bail!("unknown report coverage bucket: {value}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+
+    use antiburn_local::analysis::{
+        EVIDENCE_SCHEMA_REVISION, EvidenceSource, METRICS_SCHEMA_REVISION,
+        SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
+    };
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::store::{
+        AnalysisRecord, EvidenceCompletion, PublishedEvidence, SessionKey, SessionRecord, Store,
+    };
+
+    fn request() -> ReportRequest {
+        ReportRequest {
+            environment_key: "native".to_owned(),
+            window: ReportWindow {
+                start_epoch: 100,
+                end_epoch: 200,
+            },
+            computed_at_epoch: 200,
+        }
+    }
+
+    fn session(session_id: &str, updated_at_epoch: i64, fingerprint: &str) -> SessionRecord {
+        SessionRecord {
+            key: SessionKey::new("native", "claude-code", session_id),
+            source_kind: "file".to_owned(),
+            source_label: format!("/home/avery/.claude/{session_id}.jsonl"),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".to_owned(),
+            updated_at_epoch: Some(updated_at_epoch),
+            activity_cursor: String::new(),
+            activity_source: "event".to_owned(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: Some(fingerprint.to_owned()),
+        }
+    }
+
+    fn publish_ready(store: &Store, session_id: &str, started_at_epoch: i64) {
+        let fingerprint = format!("sv1:{session_id}");
+        let session = session(session_id, started_at_epoch, &fingerprint);
+        store
+            .upsert_sessions(std::slice::from_ref(&session), &["claude-code"])
+            .unwrap();
+        let claim = store
+            .claim_next_evidence(&["claude-code"], 10, 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.key, session.key);
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude-code".to_owned(),
+            session_id: session_id.to_owned(),
+            kind: SourceKind::File,
+            capabilities: SourceCapabilities::claude(),
+        })
+        .evidence();
+        let analysis = AnalysisRecord {
+            key: session.key,
+            model_breakdown_json: "{}".to_owned(),
+            inclusive_models_json: "[]".to_owned(),
+            source_fingerprint: fingerprint,
+            pricing_generation: 1,
+            analyzed_generation: claim.source_generation,
+            parser_revision: PARSER_REVISION,
+            analyzer_revision: ANALYZER_REVISION,
+            metrics_schema_revision: METRICS_SCHEMA_REVISION,
+        };
+        let completion = EvidenceCompletion {
+            claim_fence: claim.claim_fence,
+            status: PublishedEvidence::Ready,
+            evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+            evidence_json: serde_json::to_string(&evidence).unwrap(),
+            diagnostics_json: None,
+        };
+        assert!(
+            store
+                .publish_projections(&analysis, Some(started_at_epoch), &completion, &[])
+                .unwrap()
+        );
+    }
+
+    mod concurrency {
+        use super::*;
+
+        #[test]
+        fn report_pins_one_snapshot_without_blocking_the_writer() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "before", 120);
+            let writer = Store::open(data_dir.path()).unwrap();
+            let (release_tx, release_rx) = mpsc::channel();
+            let (committed_tx, committed_rx) = mpsc::channel();
+            let writer_thread = thread::spawn(move || {
+                release_rx.recv().unwrap();
+                publish_ready(&writer, "during", 130);
+                committed_tx.send(()).unwrap();
+            });
+            let mut release_tx = Some(release_tx);
+
+            let first = reduce_on_snapshot(data_dir.path(), request(), &mut || {
+                release_tx.take().unwrap().send(()).unwrap();
+                committed_rx
+                    .recv_timeout(REPORT_BUSY_TIMEOUT)
+                    .expect("the writer must commit while the reader holds its snapshot");
+            })
+            .unwrap();
+            writer_thread.join().unwrap();
+
+            assert_eq!(first.context.coverage.discovered, 1);
+            assert_eq!(first.assessed_sessions, 1);
+            let second = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+            assert_eq!(second.context.coverage.discovered, 2);
+            assert_eq!(second.assessed_sessions, 2);
+        }
+
+        #[tokio::test]
+        async fn async_entry_point_reduces_inside_a_blocking_task() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+
+            let report = reduce_report(data_dir.path().to_path_buf(), request())
+                .await
+                .unwrap();
+
+            assert_eq!(report.context.coverage.discovered, 1);
+            assert_eq!(report.assessed_sessions, 1);
+        }
+    }
+
+    #[test]
+    fn report_keeps_gap_maps_and_examples_bounded() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        for index in 0..10 {
+            publish_ready(&store, &format!("ready-{index}"), 120 + index);
+        }
+
+        let report = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+
+        assert!(report.capability_gaps.len() <= 9);
+        assert!(report.capability_gap_examples.len() <= 9);
+        assert!(
+            report
+                .capability_gap_examples
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+                <= 9 * antiburn_local::insights::MAX_EXAMPLES_PER_DETECTOR
+        );
+    }
+}
