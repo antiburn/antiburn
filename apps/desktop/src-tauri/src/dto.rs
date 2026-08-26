@@ -94,6 +94,16 @@ pub struct SubagentMember {
     pub agent: String,
     pub subagent_id: String,
     pub label: String,
+    /// This sub-agent's own cost. `None` when the sub-agent has no metrics,
+    /// or when a model in its breakdown has no price.
+    pub cost: Option<SessionCost>,
+    /// Billable token counts for this sub-agent alone. `None` when unknown.
+    pub tokens: Option<BillableTokens>,
+    /// Distinct model runs this sub-agent used. Empty when unknown.
+    pub model_runs: Vec<ModelRun>,
+    /// Unix seconds of this sub-agent's earliest transcript event. `None`
+    /// when the child transcript could not be analyzed this pass.
+    pub started_at_epoch: Option<i64>,
 }
 
 /// The sub-agent picture for one session.
@@ -170,6 +180,9 @@ pub struct SessionAnalysis {
     pub model_runs: Vec<ModelRun>,
     pub orchestration: Option<OrchestrationStatus>,
     pub relations: Option<SessionRelations>,
+    /// Unix seconds of the earliest event in the parent or any sub-agent.
+    /// `None` when the transcript could not be read.
+    pub started_at_epoch: Option<i64>,
     /// The transcript's own path, for the reveal action. Absent for sessions
     /// held in a vendor database rather than a file.
     pub source_path: Option<String>,
@@ -569,4 +582,69 @@ pub struct LiveUsageSummary {
     pub errors: Vec<LiveUsageSourceError>,
     /// ISO-8601 stamp of the moment this snapshot was collected.
     pub generated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The webview's `SubagentMemberPayload` contract names these exact
+    /// camelCase keys. A rename here would silently break that contract, so
+    /// this test pins the wire shape rather than the Rust field names.
+    #[test]
+    fn subagent_member_serializes_with_camel_case_cost_tokens_and_model_runs() {
+        let member = SubagentMember {
+            agent: "claude-code".to_string(),
+            subagent_id: "sub-1".to_string(),
+            label: "Reviewer".to_string(),
+            cost: Some(SessionCost {
+                total_usd: 1.5,
+                input_usd: 0.5,
+                output_usd: 1.0,
+                cache_read_usd: 0.0,
+                cache_write_usd: 0.0,
+            }),
+            tokens: Some(BillableTokens {
+                input_tokens: 10,
+                output_tokens: 20,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+            }),
+            model_runs: vec![ModelRun {
+                model: "claude-3-5-haiku-20241022".to_string(),
+                thinking_mode: None,
+            }],
+            started_at_epoch: Some(1_760_000_000),
+        };
+
+        let value = serde_json::to_value(&member).expect("serialize");
+        assert_eq!(value["agent"], "claude-code");
+        assert_eq!(value["subagentId"], "sub-1");
+        assert_eq!(value["label"], "Reviewer");
+        assert_eq!(value["cost"]["totalUsd"], 1.5);
+        assert_eq!(value["tokens"]["inputTokens"], 10);
+        assert_eq!(value["modelRuns"][0]["model"], "claude-3-5-haiku-20241022");
+        assert_eq!(value["startedAtEpoch"], 1_760_000_000);
+    }
+
+    /// A sub-agent with no metrics reports `null`, never a partial or zeroed
+    /// figure — the same rule [`SessionAnalysis::cost`] follows.
+    #[test]
+    fn subagent_member_with_no_metrics_serializes_cost_and_tokens_as_null() {
+        let member = SubagentMember {
+            agent: "claude-code".to_string(),
+            subagent_id: "sub-2".to_string(),
+            label: "Sub-agent".to_string(),
+            cost: None,
+            tokens: None,
+            model_runs: Vec::new(),
+            started_at_epoch: None,
+        };
+
+        let value = serde_json::to_value(&member).expect("serialize");
+        assert!(value["cost"].is_null());
+        assert!(value["tokens"].is_null());
+        assert_eq!(value["modelRuns"], serde_json::json!([]));
+        assert!(value["startedAtEpoch"].is_null());
+    }
 }

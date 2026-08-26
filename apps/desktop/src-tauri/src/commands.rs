@@ -863,6 +863,7 @@ pub async fn get_session_analysis(
         model_runs: analysis.model_runs.clone(),
         orchestration,
         relations: (!relations.is_empty()).then_some(relations),
+        started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
     })
 }
@@ -927,6 +928,7 @@ pub async fn get_subagent_analysis(
         model_runs: analysis.model_runs.clone(),
         orchestration: None,
         relations: None,
+        started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
     })
 }
@@ -945,6 +947,13 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
                 .clone()
                 .unwrap_or_else(|| "Sub-agent".to_string()),
             subagent_id: relation.related_id,
+            // The store's roster carries no cost, token, or model figures —
+            // only the analysis pass computes those, and this path is the
+            // fallback for when that pass came back empty this time.
+            cost: None,
+            tokens: None,
+            model_runs: Vec::new(),
+            started_at_epoch: None,
         })
         .collect();
     if members.is_empty() {

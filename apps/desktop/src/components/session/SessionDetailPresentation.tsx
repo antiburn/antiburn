@@ -39,7 +39,6 @@ import { efficiencyMetrics } from "../../lib/presentation/sessionEfficiency"
 import type {
   ActiveSessionsSummary,
   SessionEfficiency,
-  LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
 } from "../../lib/types/session"
@@ -54,7 +53,6 @@ import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { InitialContextChart } from "./analysis/InitialContextChart"
 import { ToolMixChart } from "./analysis/ToolMixChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
-import { OrchestratedBadge } from "./orchestration/OrchestratedBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
 import { SubagentBadge } from "./orchestration/SubagentBadge"
 import { tokensCardModel, type TokensCostSplit } from "./tokensCard"
@@ -109,8 +107,8 @@ export interface SessionDetailPresentationProps {
   costSplit: TokensCostSplit | null
   /** Where the spend behind `cost` went. The same subject as `cost`. */
   efficiency: SessionEfficiency | null
-  /** Sub-agents this session launched. */
-  orchestration: LocalOrchestrationStatus | null
+  /** How many sub-agents this session launched. Known before the cost is priced. */
+  subagentCount: number
   /** Parent model runs followed by runs used only by sub-agents. */
   modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
@@ -428,7 +426,7 @@ export function SessionDetailPresentation({
   cost,
   costSplit,
   efficiency,
-  orchestration,
+  subagentCount,
   modelRuns,
   relations,
   onBack,
@@ -475,8 +473,7 @@ export function SessionDetailPresentation({
   const empty = !summary || isEmptySummary(summary)
   const showEmptyState = ready && !error && empty
 
-  const isOrchestrator = !subagent && !!orchestration?.orchestrating
-  const costSubagentCount = orchestration?.subagentCount ?? costSplit?.subagentCount ?? 0
+  const costSubagentCount = subagentCount || (costSplit?.subagentCount ?? 0)
   const hasCostSubagents = !subagent && costSubagentCount > 0
   const costBadge = cost
     ? {
@@ -499,6 +496,8 @@ export function SessionDetailPresentation({
         selectedSubagentsCost: costSplit?.subagents ?? null,
         hasCostSubagents,
         costSubagentCount,
+        members: costSplit?.members ?? [],
+        sessionStartedAtEpoch: costSplit?.sessionStartedAtEpoch ?? null,
         summaryCostTotalUsd: summary.costTotalUsd ?? null,
         tokensInTotal: summary.tokensInTotal,
         tokensOutTotal: summary.tokensOutTotal,
@@ -773,15 +772,6 @@ export function SessionDetailPresentation({
               />
             )}
 
-            {/* The orchestrator's roster, expanding inline. */}
-            {isOrchestrator && orchestration && (
-              <OrchestratedBadge
-                status={orchestration}
-                onOpenSubagent={onOpenSubagent}
-                renderAgentIcon={renderAgentIcon}
-              />
-            )}
-
             {tokensCard && (
               <Card title="Context" hint={tokensCard.hint}>
                 <ContextTokensChart
@@ -794,7 +784,11 @@ export function SessionDetailPresentation({
 
             {cost && tokensCard && (
               <Card title="Cost">
-                <CostBreakdown cost={cost} split={tokensCard.split} />
+                <CostBreakdown
+                  cost={cost}
+                  split={tokensCard.split}
+                  onOpenSubagent={onOpenSubagent}
+                />
               </Card>
             )}
 

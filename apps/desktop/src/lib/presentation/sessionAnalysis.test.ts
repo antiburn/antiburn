@@ -14,6 +14,7 @@ import {
   costOutlierThreshold,
   formatCost,
   formatDuration,
+  formatTime,
   formatTokenBand,
   formatTokensShort,
   HIGH_COST_FLOOR_USD,
@@ -345,6 +346,15 @@ describe("formatTokensShort", () => {
       const text = formatTokensShort(n).replace(/[kMB]$/, "")
       expect(text.replace(".", "").length).toBeLessThanOrEqual(3)
     }
+  })
+})
+
+describe("formatTime", () => {
+  it("formats whole seconds as a zero-padded clock offset", () => {
+    expect(formatTime(0)).toBe("00:00:00")
+    expect(formatTime(899)).toBe("00:14:59")
+    expect(formatTime(900)).toBe("00:15:00")
+    expect(formatTime(3661)).toBe("01:01:01")
   })
 })
 

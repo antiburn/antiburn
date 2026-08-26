@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   inclusiveCostSubject,
@@ -14,12 +14,20 @@ import type {
   SessionBucket,
   SessionMetrics,
 } from "../../lib/types/session"
+import { subagentsExpandedStore } from "./analysis/subagentsExpandedStore"
 import {
   SessionDetailPresentation,
   type SessionDetailPresentationProps,
 } from "./SessionDetailPresentation"
 
 afterEach(cleanup)
+
+// The Cost card's sub-agent roster now remembers its open/closed state in a
+// module-level store, shared across every test in this file. Start each test
+// from the same collapsed state so an earlier test's click cannot leak in.
+beforeEach(() => {
+  subagentsExpandedStore.set(false)
+})
 
 function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
   return {
@@ -119,7 +127,7 @@ function presentationProps(
     cost: null,
     costSplit: null,
     efficiency: null,
-    orchestration: null,
+    subagentCount: 0,
     modelRuns: [],
     relations: null,
     onOpenSubagent: () => {},
@@ -365,22 +373,49 @@ describe("SessionDetailPresentation — session facts", () => {
     ).toBeTruthy()
   })
 
-  it("offers the orchestrator roster and opens a sub-agent from it", () => {
+  it("shows no orchestrator banner, and opens a sub-agent from the Cost card instead", () => {
     const onOpenSubagent = vi.fn()
+    const members = [
+      {
+        agent: "claude-code",
+        subagentId: "a",
+        label: "Investigate",
+        cost: { totalUsd: 3, inputUsd: 1, outputUsd: 1, cacheReadUsd: 0.5, cacheWriteUsd: 0.5 },
+        tokens: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        },
+        startedAtEpoch: null,
+        modelRuns: [{ model: "claude-sonnet-4-6" }],
+      },
+      {
+        agent: "claude-code",
+        subagentId: "b",
+        label: "Write tests",
+        cost: null,
+        tokens: null,
+        startedAtEpoch: null,
+        modelRuns: [],
+      },
+    ]
     view({
       onOpenSubagent,
-      orchestration: {
-        orchestrating: true,
-        orchestratorAgent: "claude-code",
-        orchestratorSessionId: "session-1",
+      cost: cost(41.45),
+      costSplit: {
+        parent: cost(32.95),
+        subagents: cost(8.5),
         subagentCount: 2,
-        members: [
-          { agent: "claude-code", subagentId: "a", label: "Investigate" },
-          { agent: "claude-code", subagentId: "b", label: "Write tests" },
-        ],
+        members,
+        sessionStartedAtEpoch: null,
       },
+      subagentCount: 2,
     })
-    fireEvent.click(screen.getByText("Orchestrated 2 agents"))
+
+    expect(screen.queryByText(/Orchestrated \d+ agents/)).toBeNull()
+
+    fireEvent.click(screen.getByText("2 sub-agents"))
     fireEvent.click(screen.getByText("Write tests"))
     expect(onOpenSubagent).toHaveBeenCalledWith("b", "Write tests")
   })

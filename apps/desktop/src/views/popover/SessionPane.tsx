@@ -24,7 +24,6 @@ import {
 } from "../../lib/presentation/sessionCosts"
 import type {
   BillableTokens,
-  LocalOrchestrationStatus,
   LocalSessionRelation,
   LocalSessionRelations,
 } from "../../lib/types/session"
@@ -191,7 +190,16 @@ function toLocalCost(
 
   return {
     cost,
-    costSplit: parent && subagents ? { parent, subagents, subagentCount } : null,
+    costSplit:
+      parent && subagents
+        ? {
+            parent,
+            subagents,
+            subagentCount,
+            members: payload.orchestration?.members ?? [],
+            sessionStartedAtEpoch: payload.startedAtEpoch,
+          }
+        : null,
   }
 }
 
@@ -263,7 +271,6 @@ export function SessionPane({
   const { cost, costSplit } = payload
     ? toLocalCost(subject, payload)
     : { cost: null, costSplit: null }
-  const orchestration: LocalOrchestrationStatus | null = payload?.orchestration ?? null
   const relations: LocalSessionRelations | null = payload?.relations ?? null
   // The stored title is the authority once it arrives; the one the list handed
   // over is what keeps the header from being blank in the meantime.
@@ -345,7 +352,7 @@ export function SessionPane({
       cost={cost}
       costSplit={costSplit}
       efficiency={payload?.efficiency ?? null}
-      orchestration={orchestration}
+      subagentCount={payload?.orchestration?.subagentCount ?? 0}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
       onBack={onBack}

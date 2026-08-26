@@ -125,6 +125,7 @@ describe("PopoverSession live analysis poll", () => {
     orchestration: null,
     relations: null,
     sourcePath: null,
+    startedAtEpoch: null,
     ...overrides,
   })
 
