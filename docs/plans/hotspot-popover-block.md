@@ -179,9 +179,9 @@ boundary.
   `text-label` over `duration-fast` while the detail is open.
 - The fix line is `font-mono`, truncates with an ellipsis, never wraps.
 - The fix field is itself a `<button>`. Copy writes `finding.fix` to the
-  clipboard and swaps the icon to a check for 2s — the same shape as Cadence's
-  `copyText`. A rejected write is caught and shows nothing: the reader can still
-  select the line, and a 26px field has no room to say more.
+  clipboard and swaps the icon to a check for 2s. A rejected write is caught and
+  shows nothing: the reader can still select the line, and a 26px field has no
+  room to say more.
 
 ## Selection
 
