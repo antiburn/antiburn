@@ -81,12 +81,15 @@ export interface SessionBucket {
  * ---------------------------------------------------------------------- */
 
 /** Source dimension for tokens loaded before the agent's first response. */
-export type InitialContextSource =
+type InitialContextSource =
   | "agent_instructions"
   | "system_instructions"
   | "skill_instructions"
   | "mcp_instructions"
   | "unattributed"
+
+/** Where a skill or MCP server installs from. Mirrors `initial_context::SourceOrigin`. */
+export type SourceOrigin = "bundled" | "plugin" | "user" | "project" | "unknown"
 
 /** One source/source-name token count in the initial-context breakdown. */
 interface InitialContextSourceCount {
@@ -94,6 +97,10 @@ interface InitialContextSourceCount {
   /** Skill name, MCP server name, or instruction file — `null` when unnamed. */
   sourceName: string | null
   tokenCount: number
+  /** How many times the session used this source after it loaded. 0 for non-skill/MCP sources. */
+  useCount?: number
+  /** Where the skill or MCP server is installed. Mirrors `initial_context::SourceOrigin`. */
+  origin?: SourceOrigin
 }
 
 /**

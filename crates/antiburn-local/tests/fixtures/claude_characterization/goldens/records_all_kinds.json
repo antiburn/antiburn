@@ -4143,29 +4143,39 @@
       "initialContext": {
         "sources": [
           {
+            "origin": "unknown",
             "source": "agent_instructions",
             "sourceName": "AGENTS.md",
-            "tokenCount": 15
+            "tokenCount": 15,
+            "useCount": 0
           },
           {
+            "origin": "unknown",
             "source": "skill_instructions",
             "sourceName": "orbit-tracker",
-            "tokenCount": 18
+            "tokenCount": 18,
+            "useCount": 1
           },
           {
+            "origin": "unknown",
             "source": "skill_instructions",
             "sourceName": "atlas-notes",
-            "tokenCount": 16
+            "tokenCount": 16,
+            "useCount": 0
           },
           {
+            "origin": "unknown",
             "source": "system_instructions",
             "sourceName": null,
-            "tokenCount": 7
+            "tokenCount": 7,
+            "useCount": 0
           },
           {
+            "origin": "unknown",
             "source": "unattributed",
             "sourceName": null,
-            "tokenCount": 4944
+            "tokenCount": 4944,
+            "useCount": 0
           }
         ],
         "totalTokens": 5000,

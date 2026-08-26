@@ -142,7 +142,6 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.getByText("Cost")).toBeTruthy()
-    expect(screen.getByText("Tools")).toBeTruthy()
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -461,7 +460,7 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(screen.getByText("Context")).toBeTruthy()
   })
 
-  it("adds the initial-context card when the session has initial context", () => {
+  it("adds the Skills and MCPs card when the session has initial context", () => {
     const withContext = summary({
       sessions: [
         metrics({
@@ -469,18 +468,23 @@ describe("SessionDetailPresentation — session facts", () => {
             trackingStatus: "tracked",
             totalTokens: 12_000,
             sources: [
-              { source: "skill_instructions", sourceName: "research", tokenCount: 12_000 },
+              {
+                source: "skill_instructions",
+                sourceName: "research",
+                tokenCount: 12_000,
+                useCount: 1,
+              },
             ],
           },
         }),
       ],
     })
     const { unmount } = view({ summary: withContext })
-    expect(screen.getByText("Initial context")).toBeTruthy()
+    expect(screen.getByText("Skills and MCPs")).toBeTruthy()
     unmount()
 
     view({ summary: summary() })
-    expect(screen.queryByText("Initial context")).toBeNull()
+    expect(screen.queryByText("Skills and MCPs")).toBeNull()
   })
 })
 

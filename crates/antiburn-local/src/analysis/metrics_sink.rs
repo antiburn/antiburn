@@ -163,6 +163,16 @@ impl SessionMetricsAccumulator {
                 skill_use.description = Some(description.clone());
             }
         }
+        // Fill `use_count` here too, from this same session's `skill_uses` and
+        // `mcp_tool_calls`, so the streaming path matches the batch path in
+        // `analyze_sources_with` (both compute the same breakdown, independently).
+        if let Some(breakdown) = metrics.initial_context.as_mut() {
+            crate::analysis::initial_context::fill_use_counts(
+                breakdown,
+                &metrics.skill_uses,
+                &metrics.mcp_tool_calls,
+            );
+        }
         metrics
     }
 
@@ -494,6 +504,7 @@ pub(crate) fn finalize_metrics(
 
     let mut skill_uses = Vec::new();
     let mut skill_event_indices = Vec::new();
+    let mut mcp_tool_calls: HashMap<String, u32> = HashMap::new();
     let mut buckets = vec![Bucket::default(); BUCKETS];
     let cache_miss_events = cache_miss_events(turns, summary);
     let mut last_progress = 0.0f32;
@@ -602,6 +613,10 @@ pub(crate) fn finalize_metrics(
                     context_tokens: turn.usage.context_tokens(),
                 });
                 skill_event_indices.push(index);
+            } else if let Some(server) = mcp_server_name(&tool.name) {
+                *mcp_tool_calls
+                    .entry(server.to_ascii_lowercase())
+                    .or_insert(0) += 1;
             }
         }
     }
@@ -703,7 +718,22 @@ pub(crate) fn finalize_metrics(
         cost,
         efficiency,
         skill_uses,
+        mcp_tool_calls,
     }
+}
+
+/// Extract the server-name segment from an MCP tool name shaped
+/// `mcp__<server>__<tool>`. The `mcp__` prefix check is case-insensitive.
+/// Returns `None` for a name that is not an MCP tool call.
+fn mcp_server_name(name: &str) -> Option<&str> {
+    if name.len() < 5 || !name.as_bytes()[..5].eq_ignore_ascii_case(b"mcp__") {
+        return None;
+    }
+    let rest = &name[5..];
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.split("__").next().unwrap_or(rest))
 }
 
 fn resolve_context_window(reported: u64, peak: u64) -> u64 {

@@ -232,6 +232,12 @@ pub struct SessionMetrics {
     /// Empty when the session invoked no skills. Skills stay in `ToolCategory::Other`.
     #[serde(default, skip_serializing)]
     pub skill_uses: Vec<SkillUse>,
+    /// Tool calls per MCP server, keyed by the lowercased `<server>` segment of
+    /// tool names shaped `mcp__<server>__<tool>`. `analyze_sources` reads this to
+    /// fill `InitialContextSourceCount::use_count` for MCP-sourced rows. Unlike
+    /// `skill_uses`, this never needs merging across sessions.
+    #[serde(default, skip_serializing)]
+    pub mcp_tool_calls: HashMap<String, u32>,
 }
 
 /// Averaged view across all analyzed sessions.

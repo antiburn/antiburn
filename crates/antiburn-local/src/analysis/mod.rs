@@ -62,7 +62,9 @@ pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
 };
-pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, TrackingStatus};
+pub use initial_context::{
+    InitialContextBreakdown, InitialContextSourceCount, SourceOrigin, TrackingStatus,
+};
 pub use interface::{
     NormalizedRecord, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionInput,
     SessionSummary, SourceChangedReason, VendorAdapter, VisitOutcome,
@@ -190,7 +192,12 @@ pub fn analyze_sources_with(
             .iter_mut()
             .find(|m| m.agent == input.agent && m.session_id == input.session_id)
         {
-            if let Some(breakdown) = breakdown {
+            if let Some(mut breakdown) = breakdown {
+                initial_context::fill_use_counts(
+                    &mut breakdown,
+                    &metrics.skill_uses,
+                    &metrics.mcp_tool_calls,
+                );
                 metrics.initial_context = Some(breakdown);
             }
             for skill_use in &mut metrics.skill_uses {

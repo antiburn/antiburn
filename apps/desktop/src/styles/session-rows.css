@@ -34,7 +34,6 @@
   --activity-row-shimmer-base: var(--color-text-primary);
   --activity-row-shimmer-highlight: var(--color-shimmer);
   position: relative;
-  display: block;
   /* Contain the sweep's repaint to this box instead of invalidating the row. */
   contain: paint;
   color: var(--activity-row-shimmer-base);

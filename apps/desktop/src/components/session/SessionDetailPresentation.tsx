@@ -33,6 +33,7 @@ import {
   formatCompact,
   formatDuration,
   isEmptySummary,
+  skillMcpUsage,
 } from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import { efficiencyMetrics } from "../../lib/presentation/sessionEfficiency"
@@ -51,8 +52,7 @@ import { Skeleton } from "../ui/Skeleton"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
-import { InitialContextChart } from "./analysis/InitialContextChart"
-import { ToolMixChart } from "./analysis/ToolMixChart"
+import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import { OrchestratedBadge } from "./orchestration/OrchestratedBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
@@ -807,25 +807,15 @@ export function SessionDetailPresentation({
               </Card>
             )}
 
-            {/* Show where the context window went before the first response. */}
             {firstSession?.initialContext && (
               <Card
-                title="Initial context"
-                info="Tokens loaded before the first response, by source. 'Fixed overhead' is the platform's baseline context that's always loaded and can't be edited — the system prompt and built-in tool definitions; exact makeup varies by agent."
-                {...(firstSession.initialContext.totalTokens != null
-                  ? { hint: formatCompact(firstSession.initialContext.totalTokens) }
-                  : {})}
+                title="Skills and MCPs"
+                info="Skills and MCP servers load their instructions into context before the first response. An unused one still costs the tokens it loaded. Origin shows where it installs from: bundled ships with the agent, plugin is an installed plugin, user is your home skills directory, and project is this repo."
+                hint={`${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens unused`}
               >
-                <InitialContextChart breakdown={firstSession.initialContext} />
+                <SkillsMcpChart breakdown={firstSession.initialContext} />
               </Card>
             )}
-
-            <Card
-              title="Tools"
-              info="Which tool types the agent leaned on. Heavy searching often means it's hunting for context rather than making changes."
-            >
-              <ToolMixChart summary={summary} />
-            </Card>
           </>
         )}
       </div>

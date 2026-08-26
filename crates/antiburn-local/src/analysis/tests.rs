@@ -1850,6 +1850,61 @@ fn initial_context_grafts_to_each_session_by_distinct_id() {
     assert!(!skill_names("sess-b").iter().any(|n| n == "skill-a"));
 }
 
+/// A skill row's `use_count` counts `Skill` tool calls with the matching name
+/// after the skill loads; a listed but never-invoked skill stays at 0.
+#[test]
+fn initial_context_use_count_reflects_skill_tool_calls() {
+    let fixture = concat!(
+        r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- deep-research: Research harness.\n- unused-skill: Never invoked."}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000},"content":[{"type":"tool_use","name":"Skill","input":{"skill":"deep-research"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"deep-research"}}]}}"#,
+    );
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+    let breakdown = summary.sessions[0]
+        .initial_context
+        .as_ref()
+        .expect("expected a breakdown");
+
+    let use_count = |name: &str| -> u32 {
+        breakdown
+            .sources
+            .iter()
+            .find(|s| s.source == "skill_instructions" && s.source_name.as_deref() == Some(name))
+            .map(|s| s.use_count)
+            .expect("expected a skill row")
+    };
+    assert_eq!(use_count("deep-research"), 2);
+    assert_eq!(use_count("unused-skill"), 0);
+}
+
+/// An MCP server row's `use_count` counts tool calls named `mcp__<server>__<tool>`,
+/// matched to the server name case-insensitively.
+#[test]
+fn initial_context_use_count_reflects_mcp_tool_calls() {
+    let fixture = concat!(
+        r#"{"type":"attachment","attachment":{"type":"mcp_instructions_delta","addedNames":["nebula-docs"],"addedBlocks":["Query the indexed docs."]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000},"content":[{"type":"tool_use","name":"mcp__nebula-docs__search_docs","input":{}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__NEBULA-DOCS__read_doc","input":{}}]}}"#,
+    );
+    let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
+    let breakdown = summary.sessions[0]
+        .initial_context
+        .as_ref()
+        .expect("expected a breakdown");
+
+    let mcp_row = breakdown
+        .sources
+        .iter()
+        .find(|s| s.source == "mcp_instructions" && s.source_name.as_deref() == Some("nebula-docs"))
+        .expect("expected an mcp row");
+    // Both calls count, including the differently-cased second one.
+    assert_eq!(mcp_row.use_count, 2);
+}
+
 #[test]
 fn empty_inputs_give_empty_summary() {
     let summary = analyze_sources(vec![]);

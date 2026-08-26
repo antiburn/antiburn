@@ -4074,9 +4074,11 @@
       "initialContext": {
         "sources": [
           {
+            "origin": "unknown",
             "source": "unattributed",
             "sourceName": null,
-            "tokenCount": 35
+            "tokenCount": 35,
+            "useCount": 0
           }
         ],
         "totalTokens": 35,
