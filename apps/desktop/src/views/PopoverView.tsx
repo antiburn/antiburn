@@ -22,6 +22,7 @@ import {
   type ProviderUsageSummaryPayload,
 } from "../lib/ipc"
 import type { PopoverSurface } from "../lib/popoverHeight"
+import { HotspotBlock } from "./popover/HotspotBlock"
 import { PopoverSession, sessionKey } from "./popover/PopoverSession"
 import { UsageView } from "./popover/UsageView"
 import type { SessionSubject } from "./popover/SessionPane"
@@ -369,6 +370,13 @@ export function PopoverView() {
             />
           )}
         </div>
+
+        {/* The hotspot block sits between the list and the footer, and shows
+            nothing until the local insights report exists
+            (docs/plans/hotspot-popover-block.md). The list above it scrolls,
+            so a block that opens takes rows off the list and the window keeps
+            its height. */}
+        <HotspotBlock finding={null} />
 
         <PopoverFooter
           appVersion={state.appVersion}
