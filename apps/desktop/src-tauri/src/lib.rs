@@ -233,6 +233,7 @@ pub fn run() {
             app.manage(settings::SettingsWindowState::default());
             app.manage(onboarding::OnboardingWindowState::default());
             app.manage(nudges::AnchorOverride::default());
+            app.manage(antiburn_nudge::NotificationGate::default());
 
             tray::create(app.handle())?;
             // After the tray, and on the main thread: the monitor reaches the
@@ -283,6 +284,10 @@ pub fn run() {
             // The notification window's manager and the chime player. The
             // webview itself is created only when policy delivers a nudge.
             nudges::init(app.handle())?;
+            // On macOS, ask for the Focus-status authorization when a
+            // completed setup already permits notifications. First runs wait:
+            // apply_settings_transition asks again when onboarding finishes.
+            notifications::maybe_initialize_authorization(app.handle());
             // The live-usage registry: the sources that can prove a
             // provider's own limit figures, and the milestone ledger they
             // feed. Registered before the schedulers so the first pass sees

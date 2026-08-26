@@ -401,6 +401,12 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         crate::disk_monitor::refresh_title(app);
     }
 
+    // On macOS, the Focus-status authorization waits for a completed setup
+    // and the master notification switch. The function checks both itself,
+    // and repeat calls are free (the gate keeps a once-flag), so no
+    // transition edge needs to be computed here.
+    crate::notifications::maybe_initialize_authorization(app);
+
     // Consent changing is the queue's business: turning it off withdraws
     // whatever is already queued rather than merely pausing it, and destroys
     // the installation identifier so a later opt-in cannot be joined to this
