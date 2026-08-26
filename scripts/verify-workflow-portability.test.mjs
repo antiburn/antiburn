@@ -231,6 +231,14 @@ test("ci-required fails closed on the aislop job", () => {
     1,
   );
   assert.equal(count(job, /^ {6}EVENT_NAME:/gm), 1);
+  assert.equal(count(job, /^ {6}- installer-tests$/gm), 1);
+  assert.equal(
+    count(
+      job,
+      /^ {6}INSTALLER_TESTS_RESULT: \$\{\{ needs\.installer-tests\.result \}\}$/gm,
+    ),
+    1,
+  );
 
   const steps = stepsIn(job);
   assert.equal(steps.length, 1);
@@ -269,6 +277,7 @@ require_success boundary "$BOUNDARY_RESULT"
 require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
 require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
 require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
+require_if_selected installer-tests "$INSTALLERS_SELECTED" "$INSTALLER_TESTS_RESULT"
 if [[ "$RELEASE_APP_SELECTED" == "true" || "$RELEASE_ENGINE_SELECTED" == "true" ]]; then
   require_success release-metadata "$RELEASE_METADATA_RESULT"
 else

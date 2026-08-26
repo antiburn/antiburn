@@ -361,10 +361,10 @@ jobs:
       # are no detached signatures, and latest.json would point at downloads
       # nothing can verify.
       #
-      # Platform code signing can be waived, but only deliberately and only
-      # loudly: set the repository variable ALLOW_UNSIGNED_MACOS or
-      # ALLOW_UNSIGNED_WINDOWS to `true`, and the draft says so in its own
-      # first line. Nothing here ever fakes a signature.
+      # Windows platform signing can be waived, but only deliberately and only
+      # loudly: set ALLOW_UNSIGNED_WINDOWS to `true`, and the draft says so in
+      # its own first line. macOS releases always require Developer ID signing
+      # and notarization. Nothing here ever fakes a signature.
       - name: Check the signing credentials this build needs
         id: signing
         shell: bash
@@ -376,7 +376,6 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          ALLOW_UNSIGNED_MACOS: ${{ vars.ALLOW_UNSIGNED_MACOS }}
           ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
         run: |
           set -euo pipefail
@@ -392,19 +391,11 @@ jobs:
 
           case "${RUNNER_OS}" in
             macOS)
-              if [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
-                if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_PROVISIONING_PROFILE:-}" ]]; then
-                  echo "::error::APPLE_CERTIFICATE is set but APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID or APPLE_PROVISIONING_PROFILE is not. A Developer ID build needs notarization and the profile-backed Communication Notifications entitlement."
-                  exit 1
-                fi
-                platform_signing=developer-id
-              elif [[ "${ALLOW_UNSIGNED_MACOS:-}" == "true" ]]; then
-                echo "::warning::Building macOS artifacts WITHOUT Developer ID signing or notarization, because ALLOW_UNSIGNED_MACOS is true. They are sealed with an ad-hoc signature: Gatekeeper still warns, but right-click → Open works."
-                platform_signing=unsigned
-              else
-                echo "::error::No Apple signing credentials (APPLE_CERTIFICATE, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID) are configured. Add them to the 'release' environment, or set the repository variable ALLOW_UNSIGNED_MACOS=true to deliberately ship an unsigned, clearly-labelled build."
+              if [[ -z "${APPLE_CERTIFICATE:-}" || -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_PROVISIONING_PROFILE:-}" ]]; then
+                echo "::error::APPLE_CERTIFICATE, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID and APPLE_PROVISIONING_PROFILE are required. Every macOS release uses Developer ID signing, notarization and the profile-backed Communication Notifications entitlement."
                 exit 1
               fi
+              platform_signing=developer-id
               ;;
             Windows)
               if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
@@ -507,19 +498,6 @@ jobs:
             exit 1
           fi
           echo "TAURI_SIGNING_CONFIG=apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
-
-      # An unsigned macOS build still needs a *sealed* bundle. Without any
-      # bundle signature the .app carries only the linker's per-binary ad-hoc
-      # stubs (no Info.plist binding, no sealed resources), and macOS reports
-      # a quarantined download as "damaged" instead of offering the
-      # right-click → Open path for an unidentified developer — the rc.2
-      # rehearsal shipped exactly that. `-` is codesign's ad-hoc identity: no
-      # certificate and no identity claim, but the bundler runs its full
-      # signing pass — nested binaries, sealed resources — so Gatekeeper can
-      # at least read what it is refusing.
-      - name: Use the ad-hoc signing identity
-        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'unsigned'
-        run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
 
       - name: Import the Authenticode signing certificate
         if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
@@ -659,25 +637,6 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app"
           xcrun stapler validate "$app"
 
-      # The ad-hoc seal is verified with codesign only: Gatekeeper is
-      # *supposed* to refuse an ad-hoc build, so `spctl` would fail by design.
-      # The assertion is that the seal exists and is intact — the thing rc.2
-      # lacked, which turned "unidentified developer" into "damaged".
-      - name: Verify the ad-hoc seal
-        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'unsigned'
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          app="apps/desktop/src-tauri/target/${TARGET}/release/bundle/macos/antiburn.app"
-          test -d "$app"
-          test ! -e "$app/Contents/embedded.provisionprofile"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          details=$(codesign -dv "$app" 2>&1)
-          printf '%s\n' "$details"
-          grep -q '^Signature=adhoc$' <<<"$details"
-          grep -q '^Sealed Resources version=' <<<"$details"
-
       - name: Verify the Authenticode signature
         if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
         shell: pwsh
@@ -816,6 +775,9 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - name: Download the built artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -845,6 +807,7 @@ jobs:
           find incoming -type f ! -name 'updater-*.json' ! -name 'evidence-*.json' \
             -exec cp {} dist/ \;
           cp notes/RELEASE-NOTES.md dist/
+          cp install.sh install.ps1 dist/
 
           mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
           if [[ "${#manifests[@]}" -ne 4 ]]; then
@@ -862,7 +825,6 @@ jobs:
               ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"] and
             all(.[]; (.signing | length) > 0 and (.files | length) >= 2)
           ' "${evidence[@]}" > /dev/null
-
           require_count() {
             local pattern="$1" expected="$2" found
             found=$(find dist -maxdepth 1 -type f -name "$pattern" | wc -l | tr -d ' ')
@@ -878,6 +840,8 @@ jobs:
           require_count '*.app.tar.gz' 2
           require_count '*.sig' 4
           require_count '*.cdx.json' 2
+          require_count 'install.sh' 1
+          require_count 'install.ps1' 1
 
           platforms=$(jq -s 'add' "${manifests[@]}")
           jq -n \
@@ -1033,6 +997,7 @@ jobs:
             echo "### Manual acceptance"
             echo
             echo "- Install and launch on every reachable platform."
+            echo "- Run install.sh on macOS and Linux, and install.ps1 on Windows."
             echo "- Confirm Gatekeeper or SmartScreen behavior matches the signing mode above."
             echo "- Confirm a previous version can discover this update."
             echo "- Read the release notes and confirm the Latest/prerelease setting before publishing."

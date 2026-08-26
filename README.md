@@ -21,6 +21,36 @@ Supported platforms are macOS 13 or later, Windows 11, and mainstream x86-64 Lin
 desktops. See [`docs/support.md`](docs/support.md) for the full matrix and for what
 antiburn stores.
 
+## Install
+
+On macOS or Linux:
+
+```sh
+curl -fsSL https://github.com/antiburn/antiburn/releases/latest/download/install.sh | sh
+```
+
+On Windows 11 in PowerShell:
+
+```powershell
+irm https://github.com/antiburn/antiburn/releases/latest/download/install.ps1 | iex
+```
+
+The scripts resolve one release, download its package from an immutable tag URL,
+and require the package's entry in `SHA256SUMS`. macOS also verifies the application
+signature with Gatekeeper. Windows releases are not required to have an Authenticode
+signature yet, so SmartScreen can warn. Rerunning a script upgrades the existing
+installation.
+
+To inspect a script before it runs, download it first and read it. For a reproducible
+install, pass `--version <version>` to `install.sh` or `-Version <version>` to
+`install.ps1`. Set `ANTIBURN_VERIFY_ATTESTATION=1` to also require GitHub release
+attestation verification with `gh`. Manual packages remain available on the
+[latest release](https://github.com/antiburn/antiburn/releases/latest).
+
+The GitHub release URLs remain the canonical public URLs when this repository opens.
+A future short URL can redirect to them without changing the installer or release
+trust model.
+
 **Local boundary:** antiburn needs no connection to any service of ours — no antiburn
 account, server, or backend, ever. Everything runs on this machine, as you. The
 connections it makes beyond that are yours: it can read your provider's own current

@@ -14,7 +14,7 @@ There are two release trains, tagged separately and released separately:
 
 | Train               | Tag                         | Workflow                                                           | What it produces                                                                           |
 | ------------------- | --------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| Desktop application | `antiburn-v<version>`       | [`release-app.yml`](../../.github/workflows/release-app.yml)       | Installers, updater bundles, signatures, checksums, inventories, provenance, `latest.json` |
+| Desktop application | `antiburn-v<version>`       | [`release-app.yml`](../../.github/workflows/release-app.yml)       | Installers, bootstrap scripts, updater bundles, signatures, checksums, inventories, provenance, `latest.json` |
 | Engine crate        | `antiburn-local-v<version>` | [`release-engine.yml`](../../.github/workflows/release-engine.yml) | A source tarball, checksums, an inventory, provenance                                      |
 
 Both are **draft-first**. The workflow builds, signs, hashes, attests, and
@@ -111,14 +111,34 @@ Variables (Settings → Secrets and variables → Actions → Variables), not se
 
 | Variable                 | Default when unset                              | Effect                                                                                                                                                                                                                                                                                                                                           |
 | ------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ALLOW_UNSIGNED_MACOS`   | unset (= build fails without Apple credentials) | `true` builds macOS artifacts **without** Developer ID signing or notarization; the app is sealed with an ad-hoc signature instead. Gatekeeper still warns on first launch — right-click → Open accepts it, or clear quarantine with `xattr -dr com.apple.quarantine /Applications/antiburn.app`. Only for a deliberate, clearly-labelled build. |
 | `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate)     | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download.                                                                                                                                                                                                                                        |
 | `WINDOWS_TIMESTAMP_URL`  | `http://timestamp.digicert.com`                 | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate.                                                                                                                                                                                                                                             |
 
-`ALLOW_UNSIGNED_MACOS` is an emergency escape hatch and must remain unset while
-the Apple credentials are available. `ALLOW_UNSIGNED_WINDOWS` remains set under
-D-16 until an Authenticode certificate exists. These variables produce builds
-that say they are unsigned; they never fake a platform signature.
+macOS releases always require Developer ID signing and notarization.
+`ALLOW_UNSIGNED_WINDOWS` remains set under D-16 until an Authenticode certificate
+exists. It produces a build that says it is unsigned; it never fakes a platform
+signature.
+
+#### Enabling Windows installer signature enforcement
+
+The PowerShell bootstrap installer requires SHA-256 verification today but permits
+the unsigned Windows mode recorded in D-16. When an Authenticode certificate is
+available:
+
+1. Configure `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` in the
+   `release` environment.
+2. Remove `ALLOW_UNSIGNED_WINDOWS` and require the `authenticode` signing mode in
+   `release-app.yml`.
+3. Extend `Assert-InstallerIntegrity` in the root `install.ps1` with
+   `Get-AuthenticodeSignature`. Require `Valid` status and the expected antiburn
+   publisher identity.
+4. Add tests for a missing signature, a wrong publisher, an invalid chain, and an
+   expired certificate to `scripts/install-ps1.test.ps1`.
+5. Remove the unsigned-installer warning from `install.ps1` and the README only
+   after a signed release passes the Windows acceptance check.
+
+Do not add inactive signature code before these credentials exist. The checksum
+and the unsigned warning must continue to state the current release behavior.
 
 ### 1.4 Tag protection
 
@@ -260,7 +280,8 @@ tag only after the commit is on `main`.
    updater bundle, a detached signature, and a fragment of `latest.json`. These
    are the only jobs that can see a signing credential, and none may save a
    cache after doing so.
-5. **draft** — merges the fragments into `latest.json` with immutable
+5. **draft** — adds the root `install.sh` and `install.ps1`, then merges the
+   fragments into `latest.json` with immutable
    tag-specific URLs; verifies all four platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
    every asset; and creates the draft.
@@ -288,10 +309,7 @@ work, but it does not replace these signed-artifact checks.
       downloaded installer, launch it, confirm the tray item appears, open the
       popover, and check that Settings → About shows the new version. On macOS,
       confirm it opens without a Gatekeeper prompt (which is what notarization
-      buys); on Windows, note whether SmartScreen warns. For a deliberate
-      unsigned rehearsal build, the macOS expectation is different: the ad-hoc
-      seal produces the "unidentified developer" prompt and right-click → Open
-      accepts it — "damaged and can't be opened" means the seal regressed.
+      buys); on Windows, note whether SmartScreen warns.
 - [ ] **The previous version can update to this one.** The real test of a
       release: install the previous version, point it at the draft only after
       publishing (drafts are not reachable), or rehearse with a pre-release tag.
@@ -310,6 +328,10 @@ work, but it does not replace these signed-artifact checks.
       confirm it survived.
 - [ ] **The release notes and signing modes tell the truth.** Read the notes and
       compare any Gatekeeper or SmartScreen behavior with the workflow summary.
+- [ ] **The bootstrap scripts install this release.** Run `install.sh` on macOS
+      and Linux and `install.ps1` on Windows. Run each script twice and confirm
+      the second run replaces or upgrades the same installation. Interrupt one
+      package download and confirm the installed version does not change.
 - [ ] **Provenance verifies where available:**
       `gh attestation verify <asset> --repo antiburn/antiburn`.
 
@@ -322,6 +344,8 @@ deliberately a person's action.
 
 ```bash
 curl -sSL https://github.com/antiburn/antiburn/releases/latest/download/latest.json | jq .
+curl -fsSL https://github.com/antiburn/antiburn/releases/latest/download/install.sh | sh -s -- --help
+curl -fsSL https://github.com/antiburn/antiburn/releases/latest/download/install.ps1 > /dev/null
 ```
 
 The `version` must be the one just published and the URLs must point at its tag.
@@ -440,8 +464,6 @@ published one.
 - Publishing by hand from a local build. Every published artifact comes from a
   tagged run of these workflows, which is what the provenance attestation
   actually attests to.
-- Signing with anything but the credentials in the `release` environment. (The
-  deliberate `ALLOW_UNSIGNED_*` builds are sealed with codesign's ad-hoc
-  identity, which asserts no identity and uses no credential — a seal, not a
-  signature. The rule forbids any _identity-claiming_ signature from outside
-  the environment.)
+- Signing with anything but the credentials in the `release` environment.
+  `ALLOW_UNSIGNED_WINDOWS` uses no signing identity; it does not make an
+  identity claim from outside the environment.

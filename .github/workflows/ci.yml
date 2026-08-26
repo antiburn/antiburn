@@ -303,6 +303,75 @@ jobs:
           require_success desktop-backend-checks "$CHECKS_RESULT"
           exit "$failed"
 
+  installer-tests:
+    name: installer scripts (${{ matrix.name }})
+    needs: classify
+    if: needs.classify.outputs.full == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: POSIX
+            os: ubuntu-24.04
+          - name: Windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Test the POSIX installer
+        if: runner.os == 'Linux'
+        run: node --test scripts/install-sh.test.mjs
+
+      - name: Check the POSIX installer
+        if: runner.os == 'Linux'
+        run: shellcheck --shell=sh install.sh
+
+      - name: Install PowerShell test tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+
+      - name: Test the PowerShell installer with PowerShell 7
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester scripts/install-ps1.test.ps1 -CI
+
+      - name: Install the Windows PowerShell test tool
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+
+      - name: Test the PowerShell installer with Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester scripts/install-ps1.test.ps1 -CI
+
+      - name: Check the PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0
+          $findings = @(Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning)
+          if ($findings.Count -gt 0) {
+            $findings | Format-Table -AutoSize
+            throw "PSScriptAnalyzer found $($findings.Count) issue(s)."
+          }
+
   release-metadata:
     name: release metadata
     needs: classify
@@ -539,6 +608,7 @@ jobs:
       - engine
       - desktop-frontend
       - desktop-backend
+      - installer-tests
       - release-metadata
       - warm-release-cache
       - boundary
@@ -551,6 +621,7 @@ jobs:
       ENGINE_RESULT: ${{ needs.engine.result }}
       FRONTEND_RESULT: ${{ needs.desktop-frontend.result }}
       BACKEND_RESULT: ${{ needs.desktop-backend.result }}
+      INSTALLER_TESTS_RESULT: ${{ needs.installer-tests.result }}
       RELEASE_METADATA_RESULT: ${{ needs.release-metadata.result }}
       WARM_RELEASE_RESULT: ${{ needs.warm-release-cache.result }}
       BOUNDARY_RESULT: ${{ needs.boundary.result }}
@@ -561,6 +632,7 @@ jobs:
       ENGINE_SELECTED: ${{ needs.classify.outputs.engine }}
       FRONTEND_SELECTED: ${{ needs.classify.outputs.frontend }}
       BACKEND_SELECTED: ${{ needs.classify.outputs.desktop_backend }}
+      INSTALLERS_SELECTED: ${{ needs.classify.outputs.full }}
       RELEASE_APP_SELECTED: ${{ needs.classify.outputs.release_app }}
       RELEASE_ENGINE_SELECTED: ${{ needs.classify.outputs.release_engine }}
     steps:
@@ -597,6 +669,7 @@ jobs:
           require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
           require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
           require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
+          require_if_selected installer-tests "$INSTALLERS_SELECTED" "$INSTALLER_TESTS_RESULT"
           if [[ "$RELEASE_APP_SELECTED" == "true" || "$RELEASE_ENGINE_SELECTED" == "true" ]]; then
             require_success release-metadata "$RELEASE_METADATA_RESULT"
           else
