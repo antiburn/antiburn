@@ -9,7 +9,6 @@ import {
   FolderOpen,
   GitBranchPlus,
   GitFork,
-  Info,
   LoaderCircle,
   Moon,
   Share,
@@ -238,34 +237,18 @@ function RelationControl({
 function Card({
   title,
   subtitle,
-  info,
   hint,
   children,
 }: {
   title: string
   subtitle?: string
-  info?: string
   hint?: string
   children: ReactNode
 }) {
   return (
     <div className="flex flex-col gap-y-2 mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
       <div className="flex items-baseline justify-between">
-        <div className="flex items-center gap-1">
-          <h3 className="type-headline text-label">{title}</h3>
-
-          {info && (
-            <Tooltip label={info} side="top" interactive delayMs={150}>
-              <button
-                type="button"
-                aria-label={`About ${title}`}
-                className="leading-none text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out hover:text-label-secondary"
-              >
-                <Info size={13} aria-hidden="true" />
-              </button>
-            </Tooltip>
-          )}
-        </div>
+        <h3 className="type-headline text-label">{title}</h3>
 
         {hint && <span className="type-caption text-label-tertiary">{hint}</span>}
       </div>
@@ -773,7 +756,7 @@ export function SessionDetailPresentation({
             )}
 
             {tokensCard && (
-              <Card title="Context" hint={tokensCard.hint}>
+              <Card title="Context" subtitle={tokensCard.hint}>
                 <ContextTokensChart
                   buckets={summary.buckets}
                   contextWindow={summary.contextAvailable ? summary.contextWindow : null}
@@ -783,7 +766,10 @@ export function SessionDetailPresentation({
             )}
 
             {cost && tokensCard && (
-              <Card title="Cost">
+              <Card
+                title="Cost"
+                subtitle="On subscription this is estimated cost at API prices."
+              >
                 <CostBreakdown
                   cost={cost}
                   split={tokensCard.split}
@@ -804,8 +790,7 @@ export function SessionDetailPresentation({
             {firstSession?.initialContext && (
               <Card
                 title="Skills and MCPs"
-                info="Skills and MCP servers load their instructions into context before the first response. If they're unused, they still cost you tokens repeatedly."
-                hint={`${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens unused`}
+                subtitle={`The unused items here burned ${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens.`}
               >
                 <SkillsMcpChart breakdown={firstSession.initialContext} />
               </Card>
