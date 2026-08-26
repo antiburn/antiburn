@@ -312,6 +312,16 @@ pub struct NormalizedEvent {
     /// transcript records it. Some older Claude records omit this.
     #[serde(default)]
     pub compaction_post_tokens: Option<u64>,
+    /// The raw name of a wrapper tool call this event's `tools` were
+    /// unwrapped from. Codex's `exec` custom-tool-call wraps one or more
+    /// nested `tools.<name>(...)` calls; `tools` then lists the nested calls
+    /// (so tool-mix accounting reflects the real work), and this field names
+    /// the wrapper itself, which is the built-in tool whose definition costs
+    /// tokens. `None` for every other event, including a Codex `exec` call
+    /// whose script did not parse into any nested call (that case leaves the
+    /// wrapper in `tools` directly instead).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapper_tool: Option<String>,
 }
 
 impl NormalizedEvent {
@@ -331,6 +341,7 @@ impl NormalizedEvent {
             compaction_trigger: None,
             compaction_pre_tokens: None,
             compaction_post_tokens: None,
+            wrapper_tool: None,
         }
     }
 }

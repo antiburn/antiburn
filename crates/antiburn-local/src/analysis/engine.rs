@@ -203,6 +203,12 @@ pub struct SessionMetrics {
     /// `skill_uses`, this never needs merging across sessions.
     #[serde(default, skip_serializing)]
     pub mcp_tool_calls: HashMap<String, u32>,
+    /// Tool calls per raw tool name, exactly as the transcript names it (for
+    /// example `Bash`). `analyze_sources` reads this to fill
+    /// `InitialContextSourceCount::use_count` for `builtin_tool` rows. Like
+    /// `mcp_tool_calls`, this never needs merging across sessions.
+    #[serde(default, skip_serializing)]
+    pub tool_calls_by_name: HashMap<String, u32>,
 }
 
 /// Averaged view across all analyzed sessions.
