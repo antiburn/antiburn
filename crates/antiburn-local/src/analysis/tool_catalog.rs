@@ -140,7 +140,7 @@ impl ToolCatalog {
 pub fn embedded() -> &'static ToolCatalog {
     static CATALOG: OnceLock<ToolCatalog> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        ToolCatalog::from_json(include_str!("tool_catalog.json"))
+        ToolCatalog::from_json(include_str!(concat!(env!("OUT_DIR"), "/tool_catalog.json")))
             .expect("the embedded tool catalog must be valid JSON")
     })
 }

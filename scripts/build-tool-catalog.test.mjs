@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { buildAgentCatalog, compareVersions } from './build-tool-catalog.mjs';
+import { buildAgentCatalog, compareVersions, parseArgs } from './build-tool-catalog.mjs';
 
 /** Writes one antiburn/systemprompts version directory under `agentDir`. */
 function writeVersion(agentDir, version, yaml) {
@@ -231,4 +231,12 @@ test('compareVersions orders by number, not by digit text', () => {
   assert.ok(compareVersions('1.0.2', '1.0.10') < 0);
   assert.ok(compareVersions('1.0.10', '1.0.2') > 0);
   assert.equal(compareVersions('1.0.0', '1.0.0'), 0);
+});
+
+test('parseArgs ignores the literal -- that pnpm run passes through', () => {
+  assert.deepEqual(parseArgs(['--', 'checkout', '--out', 'x.json']), {
+    checkout: 'checkout',
+    out: 'x.json',
+    versions: undefined,
+  });
 });

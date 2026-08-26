@@ -13,34 +13,30 @@
 // running application never needs the checkout, or a network call, to know
 // a tool's canonical name, its aliases, and its measured token cost.
 //
-// Two outputs share one format:
-//
-//   node scripts/build-tool-catalog.mjs <checkout>
-//     The real catalogue, from a full antiburn/systemprompts checkout. This
-//     is what the release workflow runs.
-//
-//   node scripts/build-tool-catalog.mjs
-//     No checkout given. Copies the small, committed fixture catalogue
-//     instead, so a local build or CI run never needs the checkout.
+// The engine's build script (crates/antiburn-local/build.rs) embeds the file
+// that the ANTIBURN_TOOL_CATALOG environment variable names. The release
+// workflow runs this script and sets that variable. When it is not set, the
+// engine embeds the small committed fixture catalogue, so a dev build or a
+// CI run needs neither the checkout nor this script.
 //
 // Usage:
-//   node scripts/build-tool-catalog.mjs [<systemprompts-checkout>] [--out <path>]
+//   node scripts/build-tool-catalog.mjs <systemprompts-checkout> [--out <path>]
 //     [--versions claude=<v>,<v>;codex=<v>,<v>]
 //
+// `--out` defaults to crates/antiburn-local/target/tool_catalog.json.
 // `--versions` restricts which version directories are read, so the same
 // script cuts the small fixture catalogue from the real checkout. See
 // crates/antiburn-local/tests/fixtures/README.md for the exact command used.
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parse as parseYaml } from 'yaml';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_OUT = join(REPO_ROOT, 'crates/antiburn-local/src/analysis/tool_catalog.json');
-const FIXTURE = join(REPO_ROOT, 'crates/antiburn-local/tests/fixtures/tool_catalog.json');
+const DEFAULT_OUT = join(REPO_ROOT, 'crates/antiburn-local/target/tool_catalog.json');
 
 // antiburn/systemprompts' two agent directories, and the catalogue key each
 // one compacts to.
@@ -54,17 +50,19 @@ const VERSION_DIR = /^\d+\.\d+\.\d+$/;
 function usage(message) {
   if (message) console.error(`error: ${message}`);
   console.error(
-    'usage: build-tool-catalog.mjs [<systemprompts-checkout>] [--out <path>]' +
+    'usage: build-tool-catalog.mjs <systemprompts-checkout> [--out <path>]' +
       ' [--versions claude=<v>,<v>;codex=<v>,<v>]',
   );
   process.exit(2);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const positional = [];
   const options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    // `pnpm run tool-catalog -- <checkout>` passes the `--` through to node.
+    if (arg === '--') continue;
     if (arg === '--out' || arg === '--versions') {
       const value = argv[index + 1];
       if (value === undefined) usage(`${arg} needs a value`);
@@ -214,17 +212,12 @@ function summarize(catalog) {
 
 function main() {
   const { checkout, out, versions } = parseArgs(process.argv.slice(2));
+  if (!checkout) {
+    console.error('error: a systemprompts checkout path is required.');
+    process.exit(2);
+  }
   const outPath = out ? resolve(out) : DEFAULT_OUT;
   mkdirSync(dirname(outPath), { recursive: true });
-
-  if (!checkout) {
-    copyFileSync(FIXTURE, outPath);
-    console.error(
-      `warning: no systemprompts checkout given; copied the committed fixture catalogue to ${outPath}. ` +
-        'Pass a checkout path to build the real catalogue.',
-    );
-    return;
-  }
 
   const versionFilter = versions ? parseVersionFilter(versions) : null;
   const commit = resolveCommit(checkout);

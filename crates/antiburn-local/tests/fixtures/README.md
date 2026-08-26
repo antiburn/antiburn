@@ -10,9 +10,10 @@ node scripts/build-tool-catalog.mjs <systemprompts-checkout> \
 
 It is a small, committed stand-in for the file `scripts/build-tool-catalog.mjs`
 compacts from a full `antiburn/systemprompts` checkout (see that script's own
-header comment). The real catalogue is not committed: it is generated at
-build time, and this fixture is what dev builds and tests use when no
-checkout is available.
+header comment). The real catalogue is not committed: the release workflow
+builds it and names it in `ANTIBURN_TOOL_CATALOG`, and `build.rs` embeds
+this fixture whenever that variable is not set. Dev builds and tests never
+need the checkout.
 
 The four Claude versions span the `task_*` tool family's removal at 2.1.233,
 so the fixture exercises a real tool-surface change and not just a

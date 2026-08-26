@@ -351,11 +351,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # cargo needs tool_catalog.json, which is gitignored. CI uses the committed
-      # fixture catalogue; a release builds the real one from a systemprompts
-      # checkout (scripts/build-tool-catalog.mjs). Each matrix leg checks the
-      # repository out itself: the legs are independent runners, and the
-      # checkout is small.
+      # The engine embeds the tool catalogue that ANTIBURN_TOOL_CATALOG names
+      # (crates/antiburn-local/build.rs). CI and dev builds leave it unset and
+      # get the committed fixture; a release builds the real catalogue from a
+      # systemprompts checkout. Each matrix leg checks the repository out
+      # itself: the legs are independent runners, and the checkout is small.
       - name: Check out antiburn/systemprompts
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -367,7 +367,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pnpm run tool-catalog -- systemprompts
+          pnpm run tool-catalog -- systemprompts --out "$RUNNER_TEMP/tool_catalog.json"
+          echo "ANTIBURN_TOOL_CATALOG=$RUNNER_TEMP/tool_catalog.json" >> "$GITHUB_ENV"
           echo "commit=$(git -C systemprompts rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Record the systemprompts commit
