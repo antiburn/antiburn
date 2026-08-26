@@ -4,6 +4,7 @@
 
 import { formatCompact } from "../../lib/presentation/sessionAnalysis"
 import type { LocalCostSubject, LocalSessionCost } from "../../lib/presentation/sessionCosts"
+import type { SubagentMember } from "../../lib/types/session"
 
 /**
  * What the Context and Tokens card says, and the cost split the Cost card
@@ -20,6 +21,11 @@ export interface TokensCostSplit {
   parent: LocalSessionCost
   subagents: LocalSessionCost
   subagentCount: number
+  /** One entry per sub-agent, for the Cost card's expandable detail rows. */
+  members: SubagentMember[]
+  /** Unix seconds of the session's own first transcript event, or null when
+   * unknown. Each detail row shows its sub-agent's start relative to this. */
+  sessionStartedAtEpoch: number | null
 }
 
 /** Everything the Tokens card needs beyond its chart. */
@@ -58,6 +64,11 @@ export function tokensCardModel(input: {
   hasCostSubagents: boolean
   /** How many sub-agents the split names. */
   costSubagentCount: number
+  /** One entry per sub-agent, for the Cost card's expandable detail rows. */
+  members?: SubagentMember[]
+  /** Unix seconds of the session's own first transcript event, or null when
+   * unknown. Passed through to the split's detail rows. */
+  sessionStartedAtEpoch?: number | null
   /** Fallback total from the metrics summary, when no cost result exists. */
   summaryCostTotalUsd?: number | null
   tokensInTotal: number
@@ -74,6 +85,8 @@ export function tokensCardModel(input: {
     selectedSubagentsCost,
     hasCostSubagents,
     costSubagentCount,
+    members = [],
+    sessionStartedAtEpoch = null,
     tokensInTotal,
     tokensOutTotal,
     compactionCount = 0,
@@ -88,6 +101,8 @@ export function tokensCardModel(input: {
           parent: selectedParentCost,
           subagents: selectedSubagentsCost,
           subagentCount: costSubagentCount,
+          members,
+          sessionStartedAtEpoch,
         }
       : null
 

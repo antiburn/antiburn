@@ -240,6 +240,20 @@ export interface SubagentMember {
   subagentId: string
   /** First task prompt (truncated), or a persona/slug fallback. */
   label: string
+  /** The sub-agent's own priced cost, or null when it is not yet analyzed. */
+  cost: SessionCostComponents | null
+  /** Billable tokens that back `cost`. */
+  tokens: BillableTokens | null
+  /** Unix seconds of the sub-agent's first transcript event, or null when unknown. */
+  startedAtEpoch: number | null
+  /** Every model/thinking-mode pair the sub-agent used. */
+  modelRuns: SubagentModelRun[]
+}
+
+/** One model/thinking-mode pair. Mirrors engine `ModelRun`. */
+interface SubagentModelRun {
+  model: string
+  thinkingMode?: string
 }
 
 /** Sub-agent picture for one orchestrator session. */

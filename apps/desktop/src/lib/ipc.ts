@@ -210,6 +210,14 @@ export interface SubagentMemberPayload {
   agent: string
   subagentId: string
   label: string
+  /** The sub-agent's own priced cost, or null when it is not yet analyzed. */
+  cost: SessionCostComponents | null
+  /** Billable tokens that back `cost`. */
+  tokens: BillableTokens | null
+  /** Unix seconds of the sub-agent's first transcript event, or null when unknown. */
+  startedAtEpoch: number | null
+  /** Every model/thinking-mode pair the sub-agent used. */
+  modelRuns: ModelRunPayload[]
 }
 
 /** The sub-agent picture for one session. */
@@ -251,6 +259,10 @@ export interface SessionAnalysisPayload {
   relations: SessionRelationsPayload | null
   /** The provider's own transcript, for the reveal action. */
   sourcePath: string | null
+  /** Unix seconds of this session's own first transcript event, or null when
+   * unknown. The sub-agent roster uses it to show each member's start as
+   * elapsed time from the session start. */
+  startedAtEpoch: number | null
 }
 
 /**

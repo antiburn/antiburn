@@ -102,10 +102,43 @@ describe("tokensCardModel", () => {
       parent: base.selectedParentCost,
       subagents: base.selectedSubagentsCost,
       subagentCount: 3,
+      members: [],
+      sessionStartedAtEpoch: null,
     })
     expect(tokensCardModel({ ...base, costScope: "topLevel" }).split).toBeNull()
     expect(tokensCardModel({ ...base, hasCostSubagents: false }).split).toBeNull()
     expect(tokensCardModel({ ...base, selectedParentCost: null }).split).toBeNull()
     expect(tokensCardModel({ ...base, selectedSubagentsCost: null }).split).toBeNull()
+  })
+
+  it("carries the sub-agent roster through to the split", () => {
+    const members = [
+      {
+        agent: "claude-code",
+        subagentId: "a",
+        label: "Investigate",
+        cost: null,
+        tokens: null,
+        startedAtEpoch: null,
+        modelRuns: [],
+      },
+    ]
+    expect(tokensCardModel({ ...base, members }).split).toEqual({
+      parent: base.selectedParentCost,
+      subagents: base.selectedSubagentsCost,
+      subagentCount: 3,
+      members,
+      sessionStartedAtEpoch: null,
+    })
+  })
+
+  it("carries the session's own start epoch through to the split", () => {
+    expect(tokensCardModel({ ...base, sessionStartedAtEpoch: 1_700_000_000 }).split).toEqual({
+      parent: base.selectedParentCost,
+      subagents: base.selectedSubagentsCost,
+      subagentCount: 3,
+      members: [],
+      sessionStartedAtEpoch: 1_700_000_000,
+    })
   })
 })

@@ -68,7 +68,10 @@ impl CancelFlag {
 pub struct StreamedSession {
     pub parent: SessionMetrics,
     pub merged: SessionMetrics,
-    pub subagents: Vec<SessionMetrics>,
+    /// Each sub-agent's own metrics, paired with the unix-second timestamp of
+    /// its earliest transcript event. `None` when that child's accumulator
+    /// retained no timestamped turn.
+    pub subagents: Vec<(SessionMetrics, Option<i64>)>,
     pub started_at_epoch: Option<i64>,
 }
 
@@ -85,7 +88,7 @@ enum ComputedAnalysis {
     Published {
         parent: Box<SessionMetrics>,
         merged: Box<SessionMetrics>,
-        subagents: Vec<SessionMetrics>,
+        subagents: Vec<(SessionMetrics, Option<i64>)>,
         started_at_epoch: Option<i64>,
         parent_fingerprint: Option<String>,
     },
@@ -510,7 +513,7 @@ fn stream_claude_with_hooks(
     let parent_metrics = parent.metrics();
     let subagents = children
         .iter()
-        .map(SessionMetricsAccumulator::metrics)
+        .map(|child| (child.metrics(), child.earliest_ts_ms().map(|ts| ts / 1000)))
         .collect();
     let merged = merge_metrics(parent, children);
     StreamOutcome::Published {
@@ -555,6 +558,16 @@ fn merge_parent_and_subagents(
         }
     }
     Some(merge_subagent_events(parent?, subagents))
+}
+
+/// Order the sub-agent roster earliest-first.
+///
+/// A member with no known start time sorts after every timed member. Ties —
+/// including every `None`, which tie with each other — keep `members`' own
+/// incoming order, because `sort_by_key` is stable and the roster already
+/// arrives sorted by transcript path.
+fn sort_members(members: &mut [SubagentMember]) {
+    members.sort_by_key(|member| (member.started_at_epoch.is_none(), member.started_at_epoch));
 }
 
 /// Analyze one session and, in the same pass, every sub-agent it launched.
@@ -668,7 +681,12 @@ pub async fn analyze(
         ComputedAnalysis::Published {
             parent: Box::new(parent),
             merged: Box::new(merged),
-            subagents: sessions,
+            // This path has no per-event accumulator to read a child's
+            // earliest timestamp from, so every child's start stays unknown.
+            subagents: sessions
+                .into_iter()
+                .map(|metrics| (metrics, None))
+                .collect(),
             started_at_epoch: None,
             parent_fingerprint: None,
         }
@@ -709,9 +727,11 @@ pub async fn analyze(
         }
     };
     let analyzed_generation = attributed_generation(&claimed, parent_fingerprint.as_deref());
-    let by_id: HashMap<String, SessionMetrics> = subagents
+    let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = subagents
         .into_iter()
-        .map(|metrics| (metrics.session_id.clone(), metrics))
+        .map(|(metrics, started_at_epoch)| {
+            (metrics.session_id.clone(), (metrics, started_at_epoch))
+        })
         .collect();
 
     // `metrics` is the session's headline view: buckets, token totals, and
@@ -731,7 +751,7 @@ pub async fn analyze(
     // from its own thread and is added to the parent's, not read off the
     // merged stream.
     let mut efficiency = parent_metrics.efficiency;
-    for child in by_id.values() {
+    for (child, _) in by_id.values() {
         efficiency.add(child.efficiency);
     }
     metrics.efficiency = efficiency;
@@ -741,14 +761,34 @@ pub async fn analyze(
     metrics.agent = agent_slug.clone();
     cap_skill_descriptions(&mut metrics.skill_uses);
 
-    let members: Vec<SubagentMember> = roster
+    let mut members: Vec<SubagentMember> = roster
         .into_iter()
-        .map(|(subagent_id, label)| SubagentMember {
-            agent: agent_slug.clone(),
-            subagent_id,
-            label,
+        .map(|(subagent_id, label)| {
+            // The roster and `by_id` both key on the sub-agent's own session
+            // id. A roster entry with no matching metrics means the child
+            // transcript could not be analyzed this pass, so its cost and
+            // tokens are `None` rather than a zeroed figure.
+            let child_metrics = by_id.get(&subagent_id);
+            let cost = child_metrics.and_then(|(child, _)| price_breakdown(&child.model_breakdown));
+            let tokens =
+                child_metrics.map(|(child, _)| sum_billable_tokens(&child.model_breakdown));
+            let model_runs = child_metrics
+                .map(|(child, _)| model_runs_for_metrics(child))
+                .unwrap_or_default();
+            let started_at_epoch =
+                child_metrics.and_then(|(_, started_at_epoch)| *started_at_epoch);
+            SubagentMember {
+                agent: agent_slug.clone(),
+                subagent_id,
+                label,
+                cost,
+                tokens,
+                model_runs,
+                started_at_epoch,
+            }
         })
         .collect();
+    sort_members(&mut members);
 
     let orchestration = (!members.is_empty()).then_some(OrchestrationStatus {
         orchestrating: members.len() as u32 >= MIN_ORCHESTRATED_SUBAGENTS,
@@ -764,8 +804,10 @@ pub async fn analyze(
     // sums to the same totals `top_level_cost` and `subagents_cost` would
     // combine to. `cost`/`inclusive_model_breakdown` read it directly instead
     // of re-merging the per-source breakdowns a second way.
-    let subagent_breakdowns: Vec<&HashMap<String, ModelTokens>> =
-        by_id.values().map(|child| &child.model_breakdown).collect();
+    let subagent_breakdowns: Vec<&HashMap<String, ModelTokens>> = by_id
+        .values()
+        .map(|(child, _)| &child.model_breakdown)
+        .collect();
     let has_subagents = !subagent_breakdowns.is_empty();
     let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
     let inclusive_model_breakdown = metrics.model_breakdown.clone();
@@ -774,7 +816,8 @@ pub async fn analyze(
     let subagents_cost = price_breakdown(&subagents_model_breakdown);
     let cost = metrics.cost;
     let models = sorted_models(&inclusive_model_breakdown);
-    let model_runs = model_runs_parent_first(&parent_metrics, by_id.values());
+    let model_runs =
+        model_runs_parent_first(&parent_metrics, by_id.values().map(|(child, _)| child));
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
     let skills = metrics.skill_uses.clone();
@@ -1092,6 +1135,41 @@ pub fn price_cached_breakdown(model_breakdown_json: &str) -> (Option<SessionCost
 mod tests {
     use super::*;
 
+    fn member_with_start(subagent_id: &str, started_at_epoch: Option<i64>) -> SubagentMember {
+        SubagentMember {
+            agent: "claude-code".to_string(),
+            subagent_id: subagent_id.to_string(),
+            label: "Sub-agent".to_string(),
+            cost: None,
+            tokens: None,
+            model_runs: Vec::new(),
+            started_at_epoch,
+        }
+    }
+
+    #[test]
+    fn sort_members_orders_earliest_first_and_puts_unknown_starts_last() {
+        let mut members = vec![
+            member_with_start("late", Some(200)),
+            member_with_start("unknown-first", None),
+            member_with_start("early", Some(100)),
+            member_with_start("unknown-second", None),
+        ];
+
+        sort_members(&mut members);
+
+        let ids: Vec<&str> = members
+            .iter()
+            .map(|member| member.subagent_id.as_str())
+            .collect();
+        // Timed members sort earliest-first; both `None` members follow,
+        // keeping their original relative order (a stable sort).
+        assert_eq!(
+            ids,
+            vec!["early", "late", "unknown-first", "unknown-second"]
+        );
+    }
+
     fn claude_record(id: &str, timestamp: i64) -> String {
         format!(
             concat!(
@@ -1276,8 +1354,8 @@ mod tests {
         assert_eq!(session.parent.session_id, "parent");
         assert_eq!(session.parent.event_count, 1);
         assert_eq!(session.subagents.len(), 1);
-        assert_eq!(session.subagents[0].session_id, "remaining");
-        assert_eq!(session.subagents[0].event_count, 1);
+        assert_eq!(session.subagents[0].0.session_id, "remaining");
+        assert_eq!(session.subagents[0].0.event_count, 1);
         assert_eq!(session.merged.event_count, 2);
     }
 

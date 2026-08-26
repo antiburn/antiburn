@@ -512,6 +512,15 @@ export function formatDuration(secs: number): string {
   return `${mins}m`
 }
 
+/** Whole seconds as a zero-padded `HH:MM:SS` clock offset. */
+export function formatTime(totalSecs: number): string {
+  const whole = Math.max(0, Math.floor(totalSecs))
+  const hrs = Math.floor(whole / 3600)
+  const mins = Math.floor((whole % 3600) / 60)
+  const secs = whole % 60
+  return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+}
+
 /** A 0..1 fraction as a whole percent. */
 export function formatPct(fraction: number): string {
   return `${Math.round(fraction * 100)}%`
