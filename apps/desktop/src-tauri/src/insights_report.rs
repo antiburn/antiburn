@@ -394,7 +394,7 @@ mod tests {
             assert_eq!(coverage.unknown_start, 1);
             assert_eq!(report.assessed_sessions, 1);
             assert!(coverage.is_consistent());
-            
+
             // Verify the cohort contains only the "ready" session, not the unknown-start sessions.
             // The "ready" session has all required capabilities, so any examples in capability
             // gaps must come from the assessed session. Check that examples identify "ready".
@@ -408,7 +408,7 @@ mod tests {
                 let first_example = all_examples[0];
                 assert_eq!(first_example.session_id, "ready");
             }
-            
+
             assert_eq!(
                 report
                     .detectors
