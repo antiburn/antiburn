@@ -256,18 +256,6 @@ interface SubagentModelRun {
   thinkingMode?: string
 }
 
-/** Sub-agent picture for one orchestrator session. */
-export interface LocalOrchestrationStatus {
-  /** True when the session launched two or more sub-agents. */
-  orchestrating: boolean
-  /** App slug of the orchestrator session. */
-  orchestratorAgent: string
-  /** The orchestrator's own session id. */
-  orchestratorSessionId: string
-  subagentCount: number
-  members: SubagentMember[]
-}
-
 /* -------------------------------------------------------------------------
  * Fork relations — local-transcript parent/child links between sessions.
  * ---------------------------------------------------------------------- */
