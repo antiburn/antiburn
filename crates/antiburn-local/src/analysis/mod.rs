@@ -50,8 +50,6 @@ pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
     ToolMix, aggregate_metrics, analyze_session,
 };
-#[cfg(debug_assertions)]
-pub use evidence::UnfinishedGroup;
 pub use evidence::{
     CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
     ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP, EligibilityEvidence,

@@ -255,8 +255,6 @@ fn effort_tiers_come_only_from_explicit_fields() {
             observed: models, ..
         } => models,
         EvidenceValue::Unsupported => panic!("Claude models must be supported"),
-        #[cfg(debug_assertions)]
-        EvidenceValue::Unimplemented => panic!("models must be implemented"),
     };
     assert_eq!(models.effort_tiers["high"].main_loop, 1);
     assert_eq!(models.effort_tiers["low"].delegated, 1);
@@ -274,8 +272,6 @@ fn fast_mode_counts_split_main_loop_from_delegated() {
             observed: models, ..
         } => models,
         EvidenceValue::Unsupported => panic!("Claude models must be supported"),
-        #[cfg(debug_assertions)]
-        EvidenceValue::Unimplemented => panic!("models must be implemented"),
     };
     assert_eq!(models.fast_modes["fast"].main_loop, 1);
     assert_eq!(models.fast_modes["fast"].delegated, 1);
@@ -293,8 +289,6 @@ fn delegated_turns_are_not_double_counted() {
             ..
         } => subagents,
         EvidenceValue::Unsupported => panic!("Claude subagents must be supported"),
-        #[cfg(debug_assertions)]
-        EvidenceValue::Unimplemented => panic!("subagents must be implemented"),
     };
     assert_eq!(subagents.delegated_turns, 1);
 }
@@ -310,8 +304,6 @@ fn a_skill_origin_is_unsupported_not_guessed() {
             observed: sources, ..
         } => sources,
         EvidenceValue::Unsupported => panic!("Claude sources must be supported"),
-        #[cfg(debug_assertions)]
-        EvidenceValue::Unimplemented => panic!("sources must be implemented"),
     };
     assert!(sources.skills.values().all(|source| {
         matches!(source.origin, EvidenceValue::Unsupported) && source.description.is_some()
@@ -329,13 +321,182 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
             observed: sources, ..
         } => sources,
         EvidenceValue::Unsupported => panic!("Claude sources must be supported"),
-        #[cfg(debug_assertions)]
-        EvidenceValue::Unimplemented => panic!("sources must be implemented"),
     };
     assert!(matches!(
         sources.tool_definitions,
         EvidenceValue::Unsupported
     ));
+}
+
+fn evidence_fixture_names() -> [&'static str; 13] {
+    [
+        "records_all_kinds",
+        "timestamps_repeated_and_out_of_order",
+        "malformed_between_valid",
+        "incomplete_final_record",
+        "unrecognized_type",
+        "parent_with_task_spawn",
+        "subagent_child",
+        "multi_model_session",
+        "compaction_with_cache_rehydration",
+        "inferred_cache_rehydration",
+        "mcp_and_skill_sources",
+        "reasoning_and_fast_mode",
+        "delegated_turns",
+    ]
+}
+
+fn collect_private_strings(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(value) if !value.is_empty() => output.push(value.clone()),
+        Value::Array(values) => {
+            for value in values {
+                collect_private_strings(value, output);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                collect_private_strings(value, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_tool_private_input(value: &Value, output: &mut Vec<String>) {
+    if let Value::Object(values) = value {
+        for (key, value) in values {
+            if !matches!(key.as_str(), "skill" | "name" | "skill_name" | "skillName") {
+                collect_private_strings(value, output);
+            }
+        }
+    } else {
+        collect_private_strings(value, output);
+    }
+}
+
+fn collect_private_message_content(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(value) if !value.is_empty() => output.push(value.clone()),
+        Value::Array(blocks) => {
+            for block in blocks {
+                for key in ["text", "thinking", "content"] {
+                    if let Some(value) = block.get(key) {
+                        collect_private_strings(value, output);
+                    }
+                }
+                for key in ["input", "arguments"] {
+                    if let Some(value) = block.get(key) {
+                        collect_tool_private_input(value, output);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn evidence_holds_no_prompt_or_message_text() {
+    for name in evidence_fixture_names() {
+        let evidence = stream_composite(&input(name))
+            .evidence()
+            .expect("evidence must publish");
+        let persisted = serde_json::to_value(&evidence).expect("evidence must serialize");
+        let mut persisted_strings = Vec::new();
+        collect_private_strings(&persisted, &mut persisted_strings);
+        for line in fixture(name).lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let mut private_strings = Vec::new();
+            if let Some(content) = record
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .or_else(|| record.get("content"))
+            {
+                collect_private_message_content(content, &mut private_strings);
+            }
+            if let Some(input) = record.get("input").or_else(|| record.get("arguments")) {
+                collect_tool_private_input(input, &mut private_strings);
+            }
+            for value in private_strings {
+                assert!(
+                    !persisted_strings.contains(&value),
+                    "fixture {name} persisted private transcript text: {value}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_subagent_child_carries_no_task_description_or_prompt() {
+    let evidence = stream_composite(&input("parent_with_task_spawn"))
+        .evidence()
+        .expect("evidence must publish");
+    let persisted = serde_json::to_string(&evidence).expect("evidence must serialize");
+    assert!(!persisted.contains("Inspect the fictional orbit module."));
+    assert!(!persisted.contains("Read the fictional module and report its shape."));
+}
+
+#[test]
+fn every_group_reports_a_three_state_value() {
+    let evidence = stream_composite(&input("records_all_kinds"))
+        .evidence()
+        .expect("evidence must publish");
+    let value = serde_json::to_value(evidence).expect("evidence must serialize");
+    for group in [
+        "timeRange",
+        "eligibility",
+        "context",
+        "models",
+        "tools",
+        "contextSources",
+        "subagents",
+        "cache",
+        "compactions",
+        "quotaIncidents",
+    ] {
+        let state = value[group]["state"].as_str().expect("group state");
+        assert!(matches!(state, "complete" | "partial" | "unsupported"));
+    }
+}
+
+#[test]
+fn the_capability_matrix_names_every_group_and_every_capability() {
+    let readme = include_str!("fixtures/claude_characterization/README.md");
+    for name in [
+        "time_range",
+        "eligibility",
+        "context",
+        "models",
+        "tools",
+        "context_sources",
+        "subagents",
+        "cache",
+        "compactions",
+        "quota_incidents",
+        "model_identity",
+        "token_classes",
+        "request_context_tokens",
+        "cache_write_tokens",
+        "timestamps_and_order",
+        "reasoning_effort_tier",
+        "fast_tier",
+        "tool_invocations",
+        "skill_mcp_attribution",
+        "compaction_boundaries",
+        "subagent_relationships",
+        "tool_definitions",
+        "service_tier",
+        "subagent_models",
+        "thread_identity",
+        "harness_version",
+    ] {
+        assert!(readme.contains(name), "matrix omits {name}");
+    }
+    assert!(readme.matches("Upgrade").count() >= 5);
 }
 
 #[test]
@@ -361,8 +522,6 @@ fn provider_eviction_is_unsupported_not_estimated() {
             observed: cache, ..
         } => cache,
         EvidenceValue::Unsupported => panic!("Claude cache evidence must be supported"),
-        #[cfg(debug_assertions)]
-        EvidenceValue::Unimplemented => panic!("cache must be implemented"),
     };
     assert!(matches!(
         cache.provider_eviction,
@@ -412,8 +571,6 @@ fn evidence_context_depth_equals_the_fixture_maximum() {
                 observed: context, ..
             } => context.max_request_context_tokens,
             EvidenceValue::Unsupported => panic!("Claude context evidence must be supported"),
-            #[cfg(debug_assertions)]
-            EvidenceValue::Unimplemented => panic!("context evidence must be implemented"),
         };
 
         assert_eq!(observed, expected, "fixture {name}");

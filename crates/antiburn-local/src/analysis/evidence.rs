@@ -24,14 +24,8 @@ pub const MAX_COMPACTION_BOUNDARIES: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "value", rename_all = "snake_case")]
 pub enum EvidenceValue<T> {
-    // TODO @agent: CH-009 will remove this.
-    #[cfg(debug_assertions)]
-    Unimplemented,
     Unsupported,
-    Partial {
-        observed: T,
-        reason: CoverageReason,
-    },
+    Partial { observed: T, reason: CoverageReason },
     Complete(T),
 }
 
@@ -395,8 +389,8 @@ pub(crate) fn cap_string(
     while !value.is_char_boundary(end) {
         end -= 1;
     }
-    if end < value.len() {
-        insert_diagnostic_field(&mut diagnostics.truncated_strings, field);
+    if end < value.len() && insert_diagnostic_field(&mut diagnostics.truncated_strings, field) {
+        record_diagnostic_set_cap(diagnostics, "diagnostics.truncated_strings");
     }
     value[..end].to_owned()
 }
@@ -412,6 +406,25 @@ pub(crate) fn insert_diagnostic_field(set: &mut BTreeSet<String>, field: &'stati
     false
 }
 
+pub(crate) fn record_diagnostic_set_cap(diagnostics: &mut ParseDiagnostics, field: &'static str) {
+    if diagnostics.capped_collections.contains(field) {
+        return;
+    }
+    if diagnostics.capped_collections.len() == MAX_DIAGNOSTIC_FIELDS {
+        diagnostics.capped_collections.pop_last();
+        diagnostics
+            .capped_collections
+            .insert("diagnostics.capped_collections".to_owned());
+        if field == "diagnostics.capped_collections" {
+            return;
+        }
+        if diagnostics.capped_collections.len() == MAX_DIAGNOSTIC_FIELDS {
+            diagnostics.capped_collections.pop_last();
+        }
+    }
+    diagnostics.capped_collections.insert(field.to_owned());
+}
+
 /// Contains the source facts that an accumulator needs at construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceSource {
@@ -420,11 +433,6 @@ pub struct EvidenceSource {
     pub kind: SourceKind,
     pub capabilities: SourceCapabilities,
 }
-
-// TODO @agent: CH-009 will remove this.
-#[cfg(debug_assertions)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnfinishedGroup;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -452,6 +460,96 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::analysis::SessionEvidenceAccumulator;
+
+    fn empty_evidence(session_id: &str) -> SessionEvidence {
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: session_id.to_owned(),
+            kind: SourceKind::File,
+            capabilities: SourceCapabilities::claude(),
+        })
+        .evidence()
+    }
+
+    fn expected_empty_evidence(
+        session_id: String,
+        coverage: serde_json::Value,
+        truncated_strings: serde_json::Value,
+    ) -> serde_json::Value {
+        json!({
+            "schemaRevision": 2,
+            "identity": {"agent": "claude", "sessionId": session_id},
+            "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
+            "capabilities": {
+                "requestContextTokens": true,
+                "cacheWriteTokens": true,
+                "timestampsAndOrder": true,
+                "toolInvocations": true,
+                "skillMcpAttribution": true,
+                "toolDefinitions": false,
+                "modelIdentity": true,
+                "tokenClasses": true,
+                "reasoningEffortTier": true,
+                "fastTier": true,
+                "serviceTier": false,
+                "subagentRelationships": true,
+                "subagentModels": false,
+                "compactionBoundaries": true,
+                "threadIdentity": false,
+                "quotaIncidents": false,
+                "harnessVersion": false
+            },
+            "coverage": coverage,
+            "provenance": {
+                "parserRevision": 1,
+                "analyzerRevision": 1,
+                "evidenceSchemaRevision": 2,
+                "sourceKind": "file",
+                "sourceAcceptance": "not_observed",
+                "ordering": "monotonic",
+                "harnessVersion": {"state": "unsupported"}
+            },
+            "diagnostics": {
+                "recordsObserved": 0,
+                "recordsUnusable": 0,
+                "unusableReasons": {},
+                "unrecognizedTypes": [],
+                "truncatedStrings": truncated_strings,
+                "cappedCollections": []
+            },
+            "timeRange": {"state": "complete", "value": {"firstTsMs": 0, "lastTsMs": 0, "timestampedTurns": 0}},
+            "eligibility": {"state": "complete", "value": {"turns": 0, "assistantTurns": 0, "toolTurns": 0, "depthEligibleTurns": 0}},
+            "tools": {"state": "complete", "value": {"byName": {}}},
+            "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
+            "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}}},
+            "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "children": [], "examples": []}},
+            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "unsupported"}, "providerEviction": {"state": "unsupported"}}},
+            "compactions": {"state": "complete", "value": {"boundaries": []}},
+            "quotaIncidents": {"state": "unsupported"}
+        })
+    }
+
+    #[test]
+    fn complete_session_evidence_serializes_to_the_exact_object() {
+        assert_eq!(
+            serde_json::to_value(empty_evidence("s1")).unwrap(),
+            expected_empty_evidence("s1".to_owned(), json!("complete"), json!([]))
+        );
+    }
+
+    #[test]
+    fn partial_session_evidence_serializes_to_the_exact_object() {
+        let long_id = "s".repeat(EVIDENCE_STRING_CAP + 1);
+        assert_eq!(
+            serde_json::to_value(empty_evidence(&long_id)).unwrap(),
+            expected_empty_evidence(
+                "s".repeat(EVIDENCE_STRING_CAP),
+                json!({"partial": "cap_exceeded"}),
+                json!(["identity.session_id"]),
+            )
+        );
+    }
 
     #[test]
     fn evidence_value_serde_shape_is_adjacently_tagged() {

@@ -14,6 +14,7 @@ use crate::analysis::evidence::{
     SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SourceAcceptance,
     SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
     ToolEvidence, ToolUse, TurnCounts, cap_string, insert_diagnostic_field,
+    record_diagnostic_set_cap,
 };
 use crate::analysis::interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RecordSink, SessionSummary,
@@ -405,8 +406,12 @@ impl SessionEvidenceAccumulator {
         provenance: crate::analysis::interface::RelationProvenance,
     ) {
         self.subagent_spawn_count = self.subagent_spawn_count.saturating_add(1);
-        let parent_model = parent_model.map(|model| {
-            let capped = cap_string("subagents.parent_model", model, &mut self.diagnostics);
+        let child_parent_model = parent_model.map(|model| {
+            let capped = cap_string(
+                "subagents.children.parent_model",
+                model,
+                &mut self.diagnostics,
+            );
             if capped.len() != model.len() {
                 self.subagents_cap_exceeded = true;
             }
@@ -418,20 +423,31 @@ impl SessionEvidenceAccumulator {
         } else {
             self.subagent_children.push(SubagentChild {
                 ordinal: u32::try_from(self.subagent_spawn_count).unwrap_or(u32::MAX),
-                parent_model: parent_model.clone(),
+                parent_model: child_parent_model,
                 child_model: EvidenceValue::Unsupported,
                 confidence: RelationConfidence::Observed,
                 provenance,
             });
         }
         if let Some(ts_ms) = ts_ms {
+            let example_parent_model = parent_model.map(|model| {
+                let capped = cap_string(
+                    "subagents.examples.parent_model",
+                    model,
+                    &mut self.diagnostics,
+                );
+                if capped.len() != model.len() {
+                    self.subagents_cap_exceeded = true;
+                }
+                capped
+            });
             if self.subagent_examples.len() == MAX_EVIDENCE_EXAMPLES {
                 self.subagents_cap_exceeded = true;
                 self.note_collection_cap("subagents.examples");
             } else {
                 self.subagent_examples.push(SubagentExample {
                     ts_ms,
-                    parent_model,
+                    parent_model: example_parent_model,
                 });
             }
         }
@@ -443,16 +459,24 @@ impl SessionEvidenceAccumulator {
         name: &str,
         description: Option<&str>,
     ) {
-        let (field, map) = match kind {
-            ContextSourceKind::Skill => ("context_sources.skills", &mut self.skills),
-            ContextSourceKind::McpServer => ("context_sources.mcp_servers", &mut self.mcp_servers),
+        let (field, description_field, map) = match kind {
+            ContextSourceKind::Skill => (
+                "context_sources.skills",
+                "context_sources.skills.description",
+                &mut self.skills,
+            ),
+            ContextSourceKind::McpServer => (
+                "context_sources.mcp_servers",
+                "context_sources.mcp_servers.description",
+                &mut self.mcp_servers,
+            ),
         };
         let capped_name = cap_string(field, name, &mut self.diagnostics);
         if capped_name.len() != name.len() {
             self.context_sources_cap_exceeded = true;
         }
         let capped_description = description.map(|value| {
-            let capped = cap_string("context_sources.description", value, &mut self.diagnostics);
+            let capped = cap_string(description_field, value, &mut self.diagnostics);
             if capped.len() != value.len() {
                 self.context_sources_cap_exceeded = true;
             }
@@ -480,6 +504,7 @@ impl SessionEvidenceAccumulator {
     fn note_collection_cap(&mut self, field: &'static str) {
         if insert_diagnostic_field(&mut self.diagnostics.capped_collections, field) {
             self.session_cap_exceeded = true;
+            record_diagnostic_set_cap(&mut self.diagnostics, "diagnostics.capped_collections");
         }
     }
 
@@ -544,9 +569,18 @@ impl SessionEvidenceAccumulator {
         let compactions = CompactionEvidence {
             boundaries: self.compaction_boundaries.clone(),
         };
-        let coverage_reason = self.record_loss_reason.or(self
-            .session_cap_exceeded
-            .then_some(CoverageReason::CapExceeded));
+        let diagnostic_cap_exceeded = self
+            .diagnostics
+            .capped_collections
+            .contains("diagnostics.truncated_strings")
+            || self
+                .diagnostics
+                .capped_collections
+                .contains("diagnostics.capped_collections");
+        let coverage_reason = self
+            .record_loss_reason
+            .or((self.session_cap_exceeded || diagnostic_cap_exceeded)
+                .then_some(CoverageReason::CapExceeded));
         let coverage =
             coverage_reason.map_or(EvidenceCoverage::Complete, EvidenceCoverage::Partial);
 
@@ -810,7 +844,7 @@ impl RecordSink for CompositeSink {
 mod tests {
     use super::*;
     use crate::analysis::model::{EventSource, Usage};
-    use crate::analysis::{PartialReason, RawSource, VendorAdapter};
+    use crate::analysis::{EVIDENCE_STRING_CAP, PartialReason, RawSource, VendorAdapter};
 
     fn accumulator(request_context_tokens: bool) -> SessionEvidenceAccumulator {
         let mut capabilities = SourceCapabilities::claude();
@@ -906,8 +940,48 @@ mod tests {
         );
     }
 
+    fn identity_string_overflow(long_agent: bool) -> SessionEvidence {
+        let source = EvidenceSource {
+            agent: if long_agent {
+                long_string()
+            } else {
+                "claude".to_owned()
+            },
+            session_id: if long_agent {
+                "s1".to_owned()
+            } else {
+                long_string()
+            },
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::claude(),
+        };
+        SessionEvidenceAccumulator::new(source).evidence()
+    }
+
     #[test]
-    fn record_loss_reason_outranks_session_cap_reason() {
+    fn identity_agent_overflows_to_partial() {
+        let evidence = identity_string_overflow(true);
+        assert_eq!(evidence.identity.agent.len(), EVIDENCE_STRING_CAP);
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_truncated_string(&evidence, "identity.agent");
+    }
+
+    #[test]
+    fn a_truncated_identity_string_degrades_session_coverage() {
+        let evidence = identity_string_overflow(false);
+        assert_eq!(evidence.identity.session_id.len(), EVIDENCE_STRING_CAP);
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_truncated_string(&evidence, "identity.session_id");
+    }
+
+    #[test]
+    fn a_record_loss_reason_outranks_a_cap_reason_in_coverage() {
         let source = EvidenceSource {
             agent: "a".repeat(512),
             session_id: "s1".to_owned(),
@@ -920,5 +994,575 @@ mod tests {
             accumulator.evidence().coverage,
             EvidenceCoverage::Partial(CoverageReason::MalformedRecord)
         );
+    }
+
+    fn assistant_event(index: usize) -> NormalizedEvent {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.ts_ms = Some(i64::try_from(index).unwrap());
+        event.model = Some(format!("model-{index}"));
+        event.usage.input_tokens = u64::try_from(index + 1).unwrap();
+        event
+    }
+
+    fn assert_cap_partial<T>(value: EvidenceValue<T>) -> T {
+        let EvidenceValue::Partial {
+            observed,
+            reason: CoverageReason::CapExceeded,
+        } = value
+        else {
+            panic!("cap owner must be partial");
+        };
+        observed
+    }
+
+    fn assert_capped_collection(evidence: &SessionEvidence, field: &str) {
+        assert!(
+            evidence.diagnostics.capped_collections.contains(field),
+            "missing capped collection diagnostic for {field}"
+        );
+    }
+
+    fn assert_truncated_string(evidence: &SessionEvidence, field: &str) {
+        assert!(
+            evidence.diagnostics.truncated_strings.contains(field),
+            "missing truncated string diagnostic for {field}"
+        );
+    }
+
+    #[test]
+    fn context_top_depth_examples_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_EVIDENCE_EXAMPLES * 2) {
+            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(assistant_event(
+                index,
+            ))));
+        }
+        let evidence = accumulator.evidence();
+        assert_capped_collection(&evidence, "context.top_depth_examples");
+        assert_eq!(
+            assert_cap_partial(evidence.context)
+                .top_depth_examples
+                .len(),
+            MAX_EVIDENCE_EXAMPLES
+        );
+    }
+
+    #[test]
+    fn models_by_model_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_MODELS * 2) {
+            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(assistant_event(
+                index,
+            ))));
+        }
+        let evidence = accumulator.evidence();
+        assert_capped_collection(&evidence, "models.by_model");
+        assert_eq!(
+            assert_cap_partial(evidence.models).by_model.len(),
+            MAX_MODELS
+        );
+    }
+
+    fn tier_labels_overflow(effort: bool) -> SessionEvidence {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_TIER_LABELS * 2) {
+            let mut event = assistant_event(index);
+            event.model = Some("model".to_owned());
+            if effort {
+                event.thinking_mode = Some(format!("tier-{index}"));
+            } else {
+                event.speed = Some(format!("speed-{index}"));
+            }
+            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        }
+        accumulator.evidence()
+    }
+
+    #[test]
+    fn models_effort_tiers_overflows_to_partial() {
+        let evidence = tier_labels_overflow(true);
+        assert_capped_collection(&evidence, "models.effort_tiers");
+        assert_eq!(
+            assert_cap_partial(evidence.models).effort_tiers.len(),
+            MAX_TIER_LABELS
+        );
+    }
+
+    #[test]
+    fn models_fast_modes_overflows_to_partial() {
+        let evidence = tier_labels_overflow(false);
+        assert_capped_collection(&evidence, "models.fast_modes");
+        assert_eq!(
+            assert_cap_partial(evidence.models).fast_modes.len(),
+            MAX_TIER_LABELS
+        );
+    }
+
+    #[test]
+    fn tools_by_name_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_TOOL_NAMES * 2) {
+            let mut event = assistant_event(index);
+            event.model = Some("model".to_owned());
+            event
+                .tools
+                .push(crate::analysis::ToolCall::new(format!("tool-{index}")));
+            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        }
+        let evidence = accumulator.evidence();
+        assert_capped_collection(&evidence, "tools.by_name");
+        assert_eq!(
+            assert_cap_partial(evidence.tools).by_name.len(),
+            MAX_TOOL_NAMES
+        );
+    }
+
+    fn context_sources_overflow(kind: ContextSourceKind) -> SessionEvidence {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_CONTEXT_SOURCES * 2) {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::ContextSource {
+                    kind,
+                    name: format!("source-{index}"),
+                    description: Some("Synthetic description.".to_owned()),
+                },
+            )));
+        }
+        accumulator.evidence()
+    }
+
+    #[test]
+    fn context_sources_skills_overflows_to_partial() {
+        let evidence = context_sources_overflow(ContextSourceKind::Skill);
+        assert_capped_collection(&evidence, "context_sources.skills");
+        assert_eq!(
+            assert_cap_partial(evidence.context_sources).skills.len(),
+            MAX_CONTEXT_SOURCES
+        );
+    }
+
+    #[test]
+    fn context_sources_mcp_servers_overflows_to_partial() {
+        let evidence = context_sources_overflow(ContextSourceKind::McpServer);
+        assert_capped_collection(&evidence, "context_sources.mcp_servers");
+        assert_eq!(
+            assert_cap_partial(evidence.context_sources)
+                .mcp_servers
+                .len(),
+            MAX_CONTEXT_SOURCES
+        );
+    }
+
+    fn subagents_overflow() -> SessionEvidence {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_SUBAGENT_CHILDREN * 2) {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::SubagentSpawn {
+                    ts_ms: Some(i64::try_from(index).unwrap()),
+                    parent_model: Some("model".to_owned()),
+                    provenance: crate::analysis::RelationProvenance::TaskToolUse,
+                },
+            )));
+        }
+        accumulator.evidence()
+    }
+
+    #[test]
+    fn subagents_children_overflows_to_partial() {
+        let evidence = subagents_overflow();
+        assert_capped_collection(&evidence, "subagents.children");
+        assert_eq!(
+            assert_cap_partial(evidence.subagents).children.len(),
+            MAX_SUBAGENT_CHILDREN
+        );
+    }
+
+    #[test]
+    fn subagents_examples_overflows_to_partial() {
+        let evidence = subagents_overflow();
+        assert_capped_collection(&evidence, "subagents.examples");
+        assert_eq!(
+            assert_cap_partial(evidence.subagents).examples.len(),
+            MAX_EVIDENCE_EXAMPLES
+        );
+    }
+
+    #[test]
+    fn cache_model_transitions_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        for index in 0..((MAX_MODEL_TRANSITIONS + 1) * 2) {
+            let mut event = assistant_event(index);
+            event.model = Some(format!("transition-{index}"));
+            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        }
+        let evidence = accumulator.evidence();
+        assert_capped_collection(&evidence, "cache.model_transitions");
+        assert_eq!(
+            assert_cap_partial(evidence.cache).model_transitions.len(),
+            MAX_MODEL_TRANSITIONS
+        );
+    }
+
+    #[test]
+    fn compactions_boundaries_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_COMPACTION_BOUNDARIES * 2) {
+            let mut event = assistant_event(index);
+            event.model = Some("model".to_owned());
+            event.is_compaction_boundary = true;
+            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        }
+        let evidence = accumulator.evidence();
+        assert_capped_collection(&evidence, "compactions.boundaries");
+        assert_eq!(
+            assert_cap_partial(evidence.compactions).boundaries.len(),
+            MAX_COMPACTION_BOUNDARIES
+        );
+    }
+
+    #[test]
+    fn diagnostics_unrecognized_types_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_UNRECOGNIZED_TYPES * 2) {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::UnrecognizedType {
+                    discriminator: format!("type-{index}"),
+                },
+            )));
+        }
+        let evidence = accumulator.evidence();
+        assert_eq!(
+            evidence.diagnostics.unrecognized_types.len(),
+            MAX_UNRECOGNIZED_TYPES
+        );
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_capped_collection(&evidence, "diagnostics.unrecognized_types");
+    }
+
+    #[test]
+    fn diagnostics_capped_collections_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        for field in [
+            "f00", "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10", "f11",
+            "f12", "f13", "f14", "f15", "f16",
+        ] {
+            accumulator.note_collection_cap(field);
+        }
+        let evidence = accumulator.evidence();
+        assert_eq!(
+            evidence.diagnostics.capped_collections.len(),
+            crate::analysis::evidence::MAX_DIAGNOSTIC_FIELDS
+        );
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_capped_collection(&evidence, "diagnostics.capped_collections");
+    }
+
+    #[test]
+    fn diagnostics_truncated_strings_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        let long = "x".repeat(EVIDENCE_STRING_CAP * 2);
+        for field in [
+            "f00", "f01", "f02", "f03", "f04", "f05", "f06", "f07", "f08", "f09", "f10", "f11",
+            "f12", "f13", "f14", "f15", "f16",
+        ] {
+            cap_string(field, &long, &mut accumulator.diagnostics);
+        }
+        let evidence = accumulator.evidence();
+        assert_eq!(
+            evidence.diagnostics.truncated_strings.len(),
+            crate::analysis::evidence::MAX_DIAGNOSTIC_FIELDS
+        );
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_capped_collection(&evidence, "diagnostics.truncated_strings");
+    }
+
+    fn long_string() -> String {
+        "x".repeat(EVIDENCE_STRING_CAP * 2)
+    }
+
+    #[test]
+    fn context_top_depth_example_model_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        let mut event = assistant_event(1);
+        event.model = Some(long_string());
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        let evidence = accumulator.evidence();
+        assert_truncated_string(&evidence, "context.top_depth_examples.model");
+        let context = assert_cap_partial(evidence.context);
+        assert_eq!(
+            context.top_depth_examples[0].model.as_ref().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn models_by_model_key_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        let mut event = assistant_event(1);
+        event.model = Some(long_string());
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        let evidence = accumulator.evidence();
+        assert_truncated_string(&evidence, "models.by_model");
+        let models = assert_cap_partial(evidence.models);
+        assert_eq!(
+            models.by_model.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    fn tier_string_overflow(effort: bool) -> SessionEvidence {
+        let mut accumulator = accumulator(true);
+        let mut event = assistant_event(1);
+        event.model = Some("model".to_owned());
+        if effort {
+            event.thinking_mode = Some(long_string());
+        } else {
+            event.speed = Some(long_string());
+        }
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        accumulator.evidence()
+    }
+
+    #[test]
+    fn models_effort_tier_key_overflows_to_partial() {
+        let evidence = tier_string_overflow(true);
+        assert_truncated_string(&evidence, "models.effort_tiers");
+        let models = assert_cap_partial(evidence.models);
+        assert_eq!(
+            models.effort_tiers.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn models_fast_mode_key_overflows_to_partial() {
+        let evidence = tier_string_overflow(false);
+        assert_truncated_string(&evidence, "models.fast_modes");
+        let models = assert_cap_partial(evidence.models);
+        assert_eq!(
+            models.fast_modes.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn tools_by_name_key_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        let mut event = assistant_event(1);
+        event.model = Some("model".to_owned());
+        event
+            .tools
+            .push(crate::analysis::ToolCall::new(long_string()));
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        let evidence = accumulator.evidence();
+        assert_truncated_string(&evidence, "tools.by_name");
+        let tools = assert_cap_partial(evidence.tools);
+        assert_eq!(
+            tools.by_name.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    fn source_string_overflow(kind: ContextSourceKind, long_description: bool) -> SessionEvidence {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::ContextSource {
+                kind,
+                name: if long_description {
+                    "source".to_owned()
+                } else {
+                    long_string()
+                },
+                description: Some(if long_description {
+                    long_string()
+                } else {
+                    "Synthetic description.".to_owned()
+                }),
+            },
+        )));
+        accumulator.evidence()
+    }
+
+    #[test]
+    fn context_sources_skill_name_overflows_to_partial() {
+        let evidence = source_string_overflow(ContextSourceKind::Skill, false);
+        assert_truncated_string(&evidence, "context_sources.skills");
+        let sources = assert_cap_partial(evidence.context_sources);
+        assert_eq!(
+            sources.skills.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn context_sources_skill_description_overflows_to_partial() {
+        let evidence = source_string_overflow(ContextSourceKind::Skill, true);
+        assert_truncated_string(&evidence, "context_sources.skills.description");
+        let sources = assert_cap_partial(evidence.context_sources);
+        assert_eq!(
+            sources
+                .skills
+                .values()
+                .next()
+                .unwrap()
+                .description
+                .as_ref()
+                .unwrap()
+                .len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn context_sources_mcp_server_name_overflows_to_partial() {
+        let evidence = source_string_overflow(ContextSourceKind::McpServer, false);
+        assert_truncated_string(&evidence, "context_sources.mcp_servers");
+        let sources = assert_cap_partial(evidence.context_sources);
+        assert_eq!(
+            sources.mcp_servers.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn context_sources_mcp_server_description_overflows_to_partial() {
+        let evidence = source_string_overflow(ContextSourceKind::McpServer, true);
+        assert_truncated_string(&evidence, "context_sources.mcp_servers.description");
+        let sources = assert_cap_partial(evidence.context_sources);
+        assert_eq!(
+            sources
+                .mcp_servers
+                .values()
+                .next()
+                .unwrap()
+                .description
+                .as_ref()
+                .unwrap()
+                .len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    fn subagent_string_overflow() -> SessionEvidence {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::SubagentSpawn {
+                ts_ms: Some(1),
+                parent_model: Some(long_string()),
+                provenance: crate::analysis::RelationProvenance::TaskToolUse,
+            },
+        )));
+        accumulator.evidence()
+    }
+
+    #[test]
+    fn subagents_child_parent_model_overflows_to_partial() {
+        let evidence = subagent_string_overflow();
+        assert_truncated_string(&evidence, "subagents.children.parent_model");
+        let subagents = assert_cap_partial(evidence.subagents);
+        assert_eq!(
+            subagents.children[0].parent_model.as_ref().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn subagents_example_parent_model_overflows_to_partial() {
+        let evidence = subagent_string_overflow();
+        assert_truncated_string(&evidence, "subagents.examples.parent_model");
+        let subagents = assert_cap_partial(evidence.subagents);
+        assert_eq!(
+            subagents.examples[0].parent_model.as_ref().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    fn transition_string_overflow(long_from: bool) -> SessionEvidence {
+        let mut accumulator = accumulator(true);
+        let mut first = assistant_event(1);
+        first.model = Some(if long_from {
+            long_string()
+        } else {
+            "from-model".to_owned()
+        });
+        let mut second = assistant_event(2);
+        second.model = Some(if long_from {
+            "to-model".to_owned()
+        } else {
+            long_string()
+        });
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(first)));
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(second)));
+        accumulator.evidence()
+    }
+
+    #[test]
+    fn cache_transition_from_model_overflows_to_partial() {
+        let evidence = transition_string_overflow(true);
+        assert_truncated_string(&evidence, "cache.model_transitions.from_model");
+        let cache = assert_cap_partial(evidence.cache);
+        assert_eq!(
+            cache.model_transitions[0].from_model.len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn cache_transition_to_model_overflows_to_partial() {
+        let evidence = transition_string_overflow(false);
+        assert_truncated_string(&evidence, "cache.model_transitions.to_model");
+        let cache = assert_cap_partial(evidence.cache);
+        assert_eq!(
+            cache.model_transitions[0].to_model.len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn diagnostics_unrecognized_type_string_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::UnrecognizedType {
+                discriminator: long_string(),
+            },
+        )));
+        let evidence = accumulator.evidence();
+        assert_eq!(
+            evidence
+                .diagnostics
+                .unrecognized_types
+                .iter()
+                .next()
+                .unwrap()
+                .len(),
+            EVIDENCE_STRING_CAP
+        );
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_truncated_string(&evidence, "diagnostics.unrecognized_types");
+    }
+
+    #[test]
+    fn an_unclassified_tool_is_not_called_built_in() {
+        let mut accumulator = accumulator(true);
+        let mut event = assistant_event(1);
+        event.tools.push(crate::analysis::ToolCall::new("Mystery"));
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        let EvidenceValue::Complete(tools) = accumulator.evidence().tools else {
+            panic!("tools must be complete");
+        };
+        assert_eq!(tools.by_name["Mystery"].class, ToolClass::Unclassified);
+        assert!(!serde_json::to_string(&tools).unwrap().contains("built_in"));
     }
 }

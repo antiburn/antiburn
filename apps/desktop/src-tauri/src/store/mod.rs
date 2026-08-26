@@ -888,6 +888,7 @@ impl Store {
                     SET status = 'failed', retry_count = retry_count + 1,
                         analyzed_generation = ?5, parser_revision = ?7,
                         analyzer_revision = ?8, evidence_schema_revision = ?9,
+                        evidence_json = NULL, diagnostics_json = NULL,
                         last_error = ?6, claimed_at_epoch = NULL,
                         lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL
                   WHERE evidence.environment_key = ?1

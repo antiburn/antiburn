@@ -137,6 +137,45 @@ fn seed_current_session_evidence(store: &Store, session_id: &str) -> SessionReco
     record
 }
 
+fn seed_revision_one_placeholder(store: &Store, session_id: &str) -> SessionRecord {
+    let record = seed_current_session_evidence(store, session_id);
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET evidence_json = '{\"state\":\"unimplemented\"}',
+                    diagnostics_json = '[\"stale\"]'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    record
+}
+
+fn published_evidence_pass(record: &SessionRecord) -> crate::analysis::EvidencePass {
+    let mut pass = crate::analysis::evidence_pass(
+        &[antiburn_local::analysis::SessionInput {
+            agent: "claude".into(),
+            session_id: record.key.session_id.clone(),
+            source: antiburn_local::analysis::RawSource::Jsonl(
+                r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}
+"#
+                .into(),
+            ),
+        }],
+        &|| false,
+    );
+    pass.analysis.fingerprint = record
+        .source_fingerprint
+        .clone()
+        .unwrap_or_else(|| crate::analysis::MISSING_FINGERPRINT.into());
+    pass
+}
+
 fn assert_unchanged_session_evidence(
     session_id: &str,
     status: &str,
@@ -1756,6 +1795,91 @@ fn a_revision_change_requeues_session_evidence_without_touching_the_generation()
         store.session_source_state(&record.key).unwrap().unwrap(),
         before
     );
+}
+
+#[tokio::test]
+async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidence_json() {
+    let store = store();
+    let record = seed_revision_one_placeholder(&store, "revision-placeholder-success");
+    let revisions = ProjectionRevisions {
+        evidence_schema_revision: 2,
+        ..projection_revisions()
+    };
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+    let pending = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(pending.status, EvidenceStatus::Pending);
+    assert_eq!(
+        pending.evidence_json.as_deref(),
+        Some("{\"state\":\"unimplemented\"}")
+    );
+
+    let runner = |record: &SessionRecord, _signal: crate::analysis::PassSignal| {
+        let pass = published_evidence_pass(record);
+        Box::pin(async move { pass }) as crate::insights_worker::PassFuture
+    };
+    assert!(
+        crate::insights_worker::process_next(
+            &store,
+            &crate::insights_worker::WorkerHandle::default(),
+            &|| 1_100,
+            &runner,
+            &|_| {},
+        )
+        .await
+        .unwrap()
+    );
+
+    let ready = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(ready.status, EvidenceStatus::Ready);
+    assert_eq!(ready.evidence_schema_revision, Some(2));
+    assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
+}
+
+#[tokio::test]
+async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
+    let store = store();
+    let record = seed_revision_one_placeholder(&store, "revision-placeholder-failed");
+    let revisions = ProjectionRevisions {
+        evidence_schema_revision: 2,
+        ..projection_revisions()
+    };
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+    let runner = |_record: &SessionRecord, _signal: crate::analysis::PassSignal| {
+        Box::pin(async {
+            crate::analysis::EvidencePass {
+                analysis: crate::analysis::SessionAnalysis::unavailable(),
+                evidence: None,
+                outcome: crate::analysis::PassOutcome::SourceMissing,
+            }
+        }) as crate::insights_worker::PassFuture
+    };
+    assert!(
+        crate::insights_worker::process_next(
+            &store,
+            &crate::insights_worker::WorkerHandle::default(),
+            &|| 1_100,
+            &runner,
+            &|_| {},
+        )
+        .await
+        .unwrap()
+    );
+
+    let failed = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(failed.status, EvidenceStatus::Failed);
+    assert_eq!(failed.evidence_schema_revision, Some(2));
+    assert!(failed.evidence_json.is_none());
+    assert!(failed.diagnostics_json.is_none());
 }
 
 #[test]
