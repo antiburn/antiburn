@@ -21,7 +21,7 @@ import type {
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
-import { liveAuthNote, liveForProvider } from "../../lib/presentation/liveUsage"
+import { liveAuthNote, liveForProvider, livePlanLabel } from "../../lib/presentation/liveUsage"
 import {
   providerWindow,
   rankByWindow,
@@ -216,6 +216,7 @@ function ProviderCard({
   const stale = stalenessNote(provider)
   const updated = updatedNote(provider)
   const usedToday = windowHasEvidence(providerWindow(provider, "today"))
+  const plan = live ? livePlanLabel(live) : null
 
   return (
     <li className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
@@ -230,6 +231,7 @@ function ProviderCard({
           <div className="flex items-center gap-1.5">
             <h3 className="truncate type-footnote font-medium text-label">
               {provider.displayName}
+              {plan && <span className="text-label-secondary"> · {plan}</span>}
             </h3>
             {usedToday && (
               <span className="shrink-0 rounded-full bg-system-green/15 px-1.5 py-px type-caption text-system-green">

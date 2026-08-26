@@ -150,6 +150,7 @@ describe("UsagePane", () => {
             windows: [],
             extraUsage: null,
             resetCredits: null,
+            plan: null,
           },
         ],
       }),

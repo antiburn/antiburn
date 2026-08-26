@@ -92,6 +92,10 @@ const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 /// state one directly.
 const ACCOUNT_CLAIM: &str = "https://api.openai.com/auth/chatgpt_account_id";
 
+/// The unsigned JWT claim that names the plan, used only when the usage
+/// response itself does not state one.
+const PLAN_CLAIM: &str = "https://api.openai.com/auth/chatgpt_plan_type";
+
 /// The credential file, at the one documented place it lives.
 pub fn default_auth_path() -> Option<PathBuf> {
     let dir = antiburn_local::paths::non_empty_env_path("CODEX_HOME")
@@ -104,6 +108,10 @@ struct CodexAuth {
     access_token: String,
     refresh_token: String,
     account_id: Option<String>,
+    /// The `chatgpt_plan_type` claim, decoded ahead of time so a later
+    /// missing `plan_type` in the usage response has something to fall back
+    /// to — see [`PLAN_CLAIM`].
+    plan_claim: Option<String>,
 }
 
 /// Read and parse `auth.json`. `None` covers both "no file" and "a file that
@@ -118,23 +126,27 @@ fn read_auth(path: &Path) -> Option<CodexAuth> {
     let tokens = value.get("tokens")?;
     let access_token = tokens.get("access_token")?.as_str()?.to_owned();
     let refresh_token = tokens.get("refresh_token")?.as_str()?.to_owned();
+    let id_token = tokens.get("id_token").and_then(Value::as_str);
     let account_id = tokens
         .get("account_id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
-        .or_else(|| decode_jwt_claim(&access_token, ACCOUNT_CLAIM))
-        .or_else(|| {
-            tokens
-                .get("id_token")
-                .and_then(Value::as_str)
-                .and_then(|token| decode_jwt_claim(token, ACCOUNT_CLAIM))
-        });
+        .or_else(|| claim_from_tokens(&access_token, id_token, ACCOUNT_CLAIM));
+    let plan_claim = claim_from_tokens(&access_token, id_token, PLAN_CLAIM);
     Some(CodexAuth {
         access_token,
         refresh_token,
         account_id,
+        plan_claim,
     })
+}
+
+/// Read one claim from the access token, falling back to the id token —
+/// the order every unsigned-JWT fallback in this source uses.
+fn claim_from_tokens(access_token: &str, id_token: Option<&str>, claim: &str) -> Option<String> {
+    decode_jwt_claim(access_token, claim)
+        .or_else(|| id_token.and_then(|token| decode_jwt_claim(token, claim)))
 }
 
 /// Read one claim out of a JWT's payload segment, without checking its
@@ -332,7 +344,7 @@ fn fetch_direct(
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
     let primary = effective_access_token(cached_refresh, auth);
     if let Ok(body) = transport.usage(&primary, auth.account_id.as_deref()) {
-        return build_snapshot(&body, auth.account_id.clone(), now);
+        return build_snapshot(&body, auth.account_id.clone(), auth.plan_claim.clone(), now);
     }
 
     let refreshed = transport.refresh(&auth.refresh_token)?;
@@ -346,7 +358,7 @@ fn fetch_direct(
         });
     }
     let body = transport.usage(&refreshed, auth.account_id.as_deref())?;
-    build_snapshot(&body, auth.account_id.clone(), now)
+    build_snapshot(&body, auth.account_id.clone(), auth.plan_claim.clone(), now)
 }
 
 /// The access token to try first: a still-applicable cached refresh, or
@@ -367,13 +379,18 @@ fn effective_access_token(
 fn build_snapshot(
     body: &str,
     account_id: Option<String>,
+    plan_claim: Option<String>,
     now: OffsetDateTime,
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
     let usage = codex::parse_wham_usage(body, now)?;
     Ok(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::OPENAI,
         account: account_id,
-        plan: usage.plan,
+        // The usage response's own `plan_type` wins; the JWT claim is only a
+        // fallback for a response shape that omits it.
+        plan: usage.plan.or(plan_claim),
+        // Codex does not report a finer-grained tier below the plan itself.
+        plan_tier: None,
         observed_at: now,
         source: UsageSource {
             id: super::CODEX_SOURCE_ID,
@@ -415,6 +432,7 @@ mod tests {
             access_token: "stale-token".into(),
             refresh_token: refresh_token.into(),
             account_id: Some("acct-123".into()),
+            plan_claim: None,
         }
     }
 
@@ -576,6 +594,61 @@ mod tests {
 
         let auth = read_auth(&path).expect("parses");
         assert_eq!(auth.account_id.as_deref(), Some("acct-from-jwt"));
+    }
+
+    /// Builds a JWT-shaped string carrying exactly the claims given, in the
+    /// `header.payload.signature` form this source's decoder expects.
+    fn jwt_with_claims(claims: serde_json::Value) -> String {
+        use base64::Engine as _;
+        let payload_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+        format!("header.{payload_b64}.signature")
+    }
+
+    #[test]
+    fn read_auth_decodes_the_plan_claim_off_the_access_token() {
+        let token = jwt_with_claims(serde_json::json!({
+            "https://api.openai.com/auth/chatgpt_plan_type": "pro"
+        }));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            format!(r#"{{"tokens": {{"access_token": "{token}", "refresh_token": "r"}}}}"#),
+        )
+        .expect("write");
+
+        let auth = read_auth(&path).expect("parses");
+        assert_eq!(auth.plan_claim.as_deref(), Some("pro"));
+    }
+
+    #[test]
+    fn a_snapshots_plan_falls_back_to_the_jwt_claim_when_the_usage_body_has_none() {
+        const WHAM_BODY_WITHOUT_PLAN: &str = r#"{"rate_limit": {
+          "primary_window": {"used_percent": 20, "limit_window_seconds": 18000},
+          "secondary_window": {"used_percent": 55, "limit_window_seconds": 604800}
+        }}"#;
+
+        struct WorksFirstTry;
+        impl CodexTransport for WorksFirstTry {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, ProviderUsageError> {
+                Ok(WHAM_BODY_WITHOUT_PLAN.to_string())
+            }
+            fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
+                unreachable!("a successful first attempt never refreshes")
+            }
+        }
+
+        let token = jwt_with_claims(serde_json::json!({
+            "https://api.openai.com/auth/chatgpt_plan_type": "team"
+        }));
+        let mut auth = auth("refresh-a");
+        auth.access_token = token;
+        auth.plan_claim = Some("team".into());
+
+        let cache = Mutex::new(None);
+        let snapshot = fetch_direct(&WorksFirstTry, &cache, &auth, now()).expect("ok");
+        assert_eq!(snapshot.plan.as_deref(), Some("team"));
     }
 
     #[test]

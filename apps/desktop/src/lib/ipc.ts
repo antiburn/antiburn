@@ -421,6 +421,12 @@ export interface LiveUsageResetCreditsPayload {
   availableCount: number
 }
 
+/** The account's subscription plan, in the provider's own raw strings. */
+export interface LiveUsagePlanPayload {
+  name: string
+  tier: string | null
+}
+
 /** One provider account's live usage. Mirrors Rust `LiveProviderUsage`. */
 export interface LiveProviderUsagePayload {
   /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
@@ -435,6 +441,8 @@ export interface LiveProviderUsagePayload {
   windows: LiveUsageWindowPayload[]
   extraUsage: LiveExtraUsagePayload | null
   resetCredits: LiveUsageResetCreditsPayload | null
+  /** The subscription plan, in the provider's own raw strings. Null when the source does not report one. */
+  plan: LiveUsagePlanPayload | null
 }
 
 /** A source that failed, in terms a reader can act on. */

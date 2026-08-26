@@ -23,6 +23,7 @@ import {
   liveUnavailableReason,
   liveWindowElapsed,
   liveWindowLabel,
+  livePlanLabel,
   liveMetricRows,
   liveWindowValueLabel,
   liveWindows,
@@ -84,6 +85,7 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
     windows: [window()],
     extraUsage: null,
     resetCredits: null,
+    plan: null,
     ...overrides,
   }
 }
@@ -114,6 +116,65 @@ describe("window labels", () => {
     expect(liveWindowValueLabel(window({ usedPercent: null }))).toBe("Unknown")
     expect(liveWindowValueLabel(window({ usedPercent: 0 }))).toBe("0%")
     expect(liveWindowValueLabel(window({ usedPercent: 80.6 }))).toBe("81%")
+  })
+})
+
+describe("plan labels", () => {
+  it("reads Claude's max tiers by the substring they carry", () => {
+    expect(
+      livePlanLabel(
+        provider({
+          provider: "anthropic",
+          plan: { name: "max", tier: "default_claude_max_5x" },
+        }),
+      ),
+    ).toBe("Max 5x")
+    expect(
+      livePlanLabel(
+        provider({
+          provider: "anthropic",
+          plan: { name: "max", tier: "default_claude_max_20x" },
+        }),
+      ),
+    ).toBe("Max 20x")
+  })
+
+  it("names a Claude max plan with no tier, and a plain pro plan", () => {
+    expect(
+      livePlanLabel(provider({ provider: "anthropic", plan: { name: "max", tier: null } })),
+    ).toBe("Max")
+    expect(
+      livePlanLabel(provider({ provider: "anthropic", plan: { name: "pro", tier: null } })),
+    ).toBe("Pro")
+  })
+
+  it("names Codex's plans, including the multi-word and business variants", () => {
+    expect(
+      livePlanLabel(provider({ provider: "openai", plan: { name: "prolite", tier: null } })),
+    ).toBe("Pro Lite")
+    expect(
+      livePlanLabel(
+        provider({
+          provider: "openai",
+          plan: { name: "self_serve_business_usage_based", tier: null },
+        }),
+      ),
+    ).toBe("Business")
+  })
+
+  it("passes an unrecognised name through rather than hiding it", () => {
+    expect(
+      livePlanLabel(provider({ provider: "openai", plan: { name: "unknown", tier: null } })),
+    ).toBe("unknown")
+    expect(
+      livePlanLabel(
+        provider({ provider: "openai", plan: { name: "some_future_plan", tier: null } }),
+      ),
+    ).toBe("some_future_plan")
+  })
+
+  it("reads a missing plan as null, not as a guess", () => {
+    expect(livePlanLabel(provider({ plan: null }))).toBeNull()
   })
 })
 

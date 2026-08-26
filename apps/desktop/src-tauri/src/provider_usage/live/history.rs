@@ -207,6 +207,7 @@ mod tests {
             provider: crate::provider_usage::providers::ANTHROPIC,
             account: Some("account-a".into()),
             plan: None,
+            plan_tier: None,
             observed_at: OffsetDateTime::from_unix_timestamp(observed).unwrap(),
             source: UsageSource {
                 id: "fixture",

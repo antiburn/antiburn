@@ -213,6 +213,9 @@ pub struct ProviderUsageSnapshot {
     pub account: Option<String>,
     /// The plan, when the source stated one. Never inferred.
     pub plan: Option<String>,
+    /// A finer-grained tier within `plan`, when the source stated one. For
+    /// example Claude's `rateLimitTier`. Never inferred.
+    pub plan_tier: Option<String>,
     /// When the underlying fact was observed — not when it was read.
     pub observed_at: OffsetDateTime,
     /// Provenance, confidence, and freshness.

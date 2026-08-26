@@ -103,6 +103,7 @@ function summary(): LiveUsageSummaryPayload {
         ],
         extraUsage: null,
         resetCredits: null,
+        plan: null,
       },
     ],
     errors: [],

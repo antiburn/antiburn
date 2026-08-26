@@ -126,6 +126,9 @@ pub fn fetch(now: OffsetDateTime) -> Result<Option<ProviderUsageSnapshot>, Provi
         provider: crate::provider_usage::providers::OPENAI,
         account: None,
         plan,
+        // The app-server does not report a finer-grained tier below the
+        // plan itself.
+        plan_tier: None,
         observed_at: now,
         source: UsageSource {
             id: CODEX_SOURCE_ID,
@@ -266,7 +269,7 @@ fn rpc_result(response: &Value) -> Result<&Value, ProviderUsageError> {
 /// ask about rate limits, and how.
 #[derive(Debug, PartialEq)]
 enum AccountVerdict {
-    /// An OAuth ChatGPT sign-in: proceed, with the plan label the account
+    /// An OAuth ChatGPT sign-in: proceed, with the raw `planType` slug the account
     /// stated, if it stated one.
     HasRateLimits(Option<String>),
     /// A real answer, but this account type has no plan allowance to report.
@@ -293,25 +296,8 @@ fn classify_account(account: &Value) -> Result<AccountVerdict, ProviderUsageErro
         .get("planType")
         .and_then(Value::as_str)
         .filter(|plan| !plan.is_empty())
-        .map(plan_label);
+        .map(str::to_string);
     Ok(AccountVerdict::HasRateLimits(plan))
-}
-
-/// The label a `planType` slug is shown under. An unrecognized slug keeps its
-/// own spelling rather than being dropped — the provider stated a plan, and
-/// showing it verbatim is more honest than showing nothing.
-fn plan_label(plan_type: &str) -> String {
-    match plan_type {
-        "free" => "ChatGPT Free".to_string(),
-        "plus" => "ChatGPT Plus".to_string(),
-        "pro" => "ChatGPT Pro".to_string(),
-        "team" => "ChatGPT Team".to_string(),
-        "business" => "ChatGPT Business".to_string(),
-        "enterprise" => "ChatGPT Enterprise".to_string(),
-        "edu" => "ChatGPT Edu".to_string(),
-        "go" => "ChatGPT Go".to_string(),
-        other => other.to_string(),
-    }
 }
 
 /// `account/rateLimits/read`'s result: `rateLimits` (the "default" bucket)
@@ -660,9 +646,7 @@ mod tests {
         let account = serde_json::json!({"type": "chatgpt", "planType": "plus"});
         assert_eq!(
             classify_account(&account),
-            Ok(AccountVerdict::HasRateLimits(Some(
-                "ChatGPT Plus".to_string()
-            )))
+            Ok(AccountVerdict::HasRateLimits(Some("plus".to_string())))
         );
     }
 
@@ -710,16 +694,5 @@ mod tests {
             rpc_result(&response),
             Err(ProviderUsageError::Schema(SchemaReason::MissingEnvelope))
         );
-    }
-
-    #[test]
-    fn plan_type_slugs_map_to_their_display_names() {
-        assert_eq!(plan_label("plus"), "ChatGPT Plus");
-        assert_eq!(plan_label("enterprise"), "ChatGPT Enterprise");
-    }
-
-    #[test]
-    fn an_unrecognized_plan_type_keeps_its_own_spelling() {
-        assert_eq!(plan_label("mystery-tier"), "mystery-tier");
     }
 }

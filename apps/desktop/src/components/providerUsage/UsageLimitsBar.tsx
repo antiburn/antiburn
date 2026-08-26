@@ -15,6 +15,7 @@ import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import type { UnavailableLiveProvider } from "../../lib/presentation/liveUsage"
 import {
   liveErrorNote,
+  livePlanLabel,
   liveResetLabel,
   liveUnavailableProviders,
   liveUnavailableReason,
@@ -224,17 +225,21 @@ function ProviderGroup({
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
 }) {
+  const plan = livePlanLabel(provider)
   return (
     <div
       role="group"
-      aria-label={provider.displayName}
+      aria-label={plan ? `${provider.displayName}, ${plan} plan` : provider.displayName}
       className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
     >
       {/* The same type size and color as the window labels and figures
-          below; the uppercase alone marks the grouping. */}
+          below; the uppercase alone marks the grouping. The plan, when the
+          source reports one, is a muted suffix on the same line rather than
+          a second line — it is context for the name, not its own fact. */}
       <div className="flex items-center justify-between gap-2 pb-1.5">
-        <h3 className="type-footnote font-medium tracking-wide uppercase text-label">
-          {provider.displayName}
+        <h3 className="type-footnote font-medium tracking-wide text-label">
+          <span className="uppercase">{provider.displayName}</span>
+          {plan && <span className="text-label-secondary"> · {plan}</span>}
         </h3>
         {action}
       </div>

@@ -201,6 +201,7 @@ mod tests {
             provider: crate::provider_usage::providers::ANTHROPIC,
             account: None,
             plan: None,
+            plan_tier: None,
             observed_at,
             source: UsageSource {
                 id: "fixture",

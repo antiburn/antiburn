@@ -54,6 +54,7 @@ function liveProvider(
     windows: [liveWindow()],
     extraUsage: null,
     resetCredits: null,
+    plan: null,
     ...overrides,
   }
 }
@@ -219,6 +220,32 @@ describe("UsageLimitsBar — the disclosure", () => {
     const codex = screen.getByRole("group", { name: "Codex" })
     expect(within(claude).getByText("5-hour limit")).toBeInTheDocument()
     expect(within(codex).getByText("5-hour limit")).toBeInTheDocument()
+  })
+
+  it("shows the plan as a muted suffix on the provider heading", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ plan: { name: "max", tier: "default_claude_max_5x" } })],
+      }),
+      expanded: true,
+    })
+    // The group's own aria-label carries the plan for a reader with no
+    // sight of the heading, and the heading itself carries it visibly.
+    const group = screen.getByRole("group", { name: "Claude, Max 5x plan" })
+    const heading = within(group).getByRole("heading")
+    expect(heading).toHaveTextContent("Claude · Max 5x")
+    const suffix = within(heading).getByText("· Max 5x")
+    expect(suffix.className).toContain("text-label-secondary")
+  })
+
+  it("omits the separator and suffix entirely when the source reports no plan", () => {
+    // The default fixture carries no plan. The heading stays the bare
+    // provider name, with no trailing separator left dangling.
+    bar({ live: liveSummary({ providers: [liveProvider({ plan: null })] }), expanded: true })
+    const group = screen.getByRole("group", { name: "Claude" })
+    const heading = within(group).getByRole("heading")
+    expect(heading).toHaveTextContent("Claude")
+    expect(heading.textContent).not.toContain("·")
   })
 })
 
