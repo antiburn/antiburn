@@ -75,7 +75,7 @@ function CostRowLine({
   totalUsd: number
 }) {
   return (
-    <div className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 mb-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+    <div className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
       <span className="text-label-tertiary">{label}</span>
       <span className="text-right text-label-tertiary tabular-nums">
         {formatTokensShort(tokens)}
@@ -191,7 +191,7 @@ function SubagentsSplitRow({
         type="button"
         onClick={toggleSubagentsExpanded}
         aria-expanded={expanded}
-        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 mb-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
+        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 my-1 px-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
       >
         <span className="min-w-0 flex items-center gap-x-1 text-label-tertiary">
           <Chevron size={12} aria-hidden="true" className="shrink-0" />
