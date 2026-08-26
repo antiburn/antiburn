@@ -37,6 +37,15 @@
   letter-spacing: -0.23px;
 }
 
+.type-body-large {
+  /* One step above type-body, for a list's primary line. The tracking
+     sits between type-body (-0.08px at 13px) and type-title-3 (-0.23px
+     at 15px). */
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: -0.15px;
+}
+
 .type-headline {
   font-size: 13px;
   font-weight: 600;

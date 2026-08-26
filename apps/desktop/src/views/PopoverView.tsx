@@ -74,16 +74,45 @@ function ActivitySkeleton() {
   return (
     <div aria-hidden data-testid="activity-skeleton" className="space-y-1 px-2 pt-10">
       {[0, 1, 2, 3].map((row) => (
-        <div key={row} className="flex items-start gap-3 px-2 py-2">
-          <Skeleton className="mt-0.5 h-[18px] w-[18px] shrink-0" />
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <Skeleton className="h-3.5 w-44" />
-            <Skeleton className="h-3 w-28" />
-          </div>
+        <div key={row} className="flex flex-col gap-1.5 px-2 py-2">
+          <Skeleton className="h-[var(--control-height-regular)] w-full" />
+          <Skeleton className="h-3.5 w-44" />
+          <Skeleton className="h-3 w-28" />
         </div>
       ))}
     </div>
   )
+}
+
+/**
+ * How far the list scrolls before the usage chart is fully folded away, in
+ * pixels.
+ */
+const USAGE_CHART_FOLD_RANGE = 96
+
+/**
+ * Fold the usage chart in step with the list scroll. The wrapper's height
+ * closes while the chart lifts, shrinks a little, and fades. At the top
+ * every override clears and the chart keeps its natural height.
+ *
+ * The values are scroll-linked, so no transition applies — each frame paints
+ * the offset the scroll position asks for.
+ */
+function foldUsageChart(wrap: HTMLDivElement | null, scrollTop: number) {
+  const chart = wrap?.firstElementChild
+  if (!wrap || !(chart instanceof HTMLElement)) return
+  const progress = Math.min(1, Math.max(0, scrollTop / USAGE_CHART_FOLD_RANGE))
+  if (progress === 0) {
+    wrap.style.height = ""
+    chart.style.transform = ""
+    chart.style.opacity = ""
+    return
+  }
+  const height = chart.offsetHeight
+  wrap.style.height = `${Math.round(height * (1 - progress))}px`
+  chart.style.transformOrigin = "top center"
+  chart.style.transform = `translateY(${Math.round(-height * progress * 0.35)}px) scale(${(1 - 0.04 * progress).toFixed(3)})`
+  chart.style.opacity = `${1 - progress}`
 }
 
 /** Placeholder while the session detail chunk loads on the first open. */
@@ -193,12 +222,18 @@ export function PopoverView() {
   // outlives the swap: each scroll records it, and the viewport takes it back
   // the moment the list mounts again.
   const listScrollTop = useRef(0)
+  // The usage chart's fold wrapper, driven from the list's scroll events.
+  const usageChartWrap = useRef<HTMLDivElement | null>(null)
   const restoreListScroll = useCallback((node: HTMLDivElement | null) => {
     if (!node) return
     node.scrollTop = listScrollTop.current
     const record = () => {
       listScrollTop.current = node.scrollTop
+      foldUsageChart(usageChartWrap.current, node.scrollTop)
     }
+    // The restored offset must fold the chart too, or the surface comes
+    // back with the chart at full height over a scrolled list.
+    record()
     node.addEventListener("scroll", record, { passive: true })
     return () => node.removeEventListener("scroll", record)
   }, [])
@@ -323,23 +358,27 @@ export function PopoverView() {
           </div>
         )}
 
-        <UsageLimitsBar
-          live={state.liveUsage}
-          expanded={limitsExpanded}
-          onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
-          refreshing={state.usageRefreshing}
-          onViewAll={() => {
-            // A provider pill is the one place the reader asks for the full
-            // Usage view from the activity surface. Counts and a three-value
-            // evidence label, never a per-provider list.
-            noteInteraction({
-              kind: "usageViewed",
-              providers: state.usage?.providers.length ?? 0,
-              evidence: usageEvidence(state.usage, state.liveUsage),
-            })
-            session.setShowUsage(true)
-          }}
-        />
+        {/* The wrapper clips the chart while `foldUsageChart` closes it in
+            step with the list scroll. */}
+        <div ref={usageChartWrap} className="shrink-0 overflow-hidden">
+          <UsageLimitsBar
+            live={state.liveUsage}
+            expanded={limitsExpanded}
+            onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
+            refreshing={state.usageRefreshing}
+            onViewAll={() => {
+              // A provider pill is the one place the reader asks for the full
+              // Usage view from the activity surface. Counts and a three-value
+              // evidence label, never a per-provider list.
+              noteInteraction({
+                kind: "usageViewed",
+                providers: state.usage?.providers.length ?? 0,
+                evidence: usageEvidence(state.usage, state.liveUsage),
+              })
+              session.setShowUsage(true)
+            }}
+          />
+        </div>
 
         <div className="min-h-0 flex-1">
           {state.entries == null ? (

@@ -14,12 +14,11 @@ import {
   modelRunShortNames,
   type PresentableModelRun,
 } from "../../lib/presentation/models"
-import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
-import { SessionHygieneBadges } from "./SessionHygieneBadges"
-import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
+import { SessionStatusBar } from "./SessionStatusBar"
+import { type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
 import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
@@ -95,8 +94,8 @@ function EmptySessionList({ title, description }: { title: string; description: 
         <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-secondary text-label-tertiary">
           <SquareTerminal size={20} strokeWidth={1.75} aria-hidden="true" />
         </div>
-        <p className="type-callout font-medium text-label-secondary">{title}</p>
-        <p className="mt-1.5 max-w-[230px] type-footnote text-label-tertiary">{description}</p>
+        <p className="type-body font-medium! text-label-secondary">{title}</p>
+        <p className="mt-1.5 max-w-[230px] type-callout text-label-tertiary">{description}</p>
       </div>
     </div>
   )
@@ -130,11 +129,14 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
   return (
     <div
       className={cn(
-        "session-row group relative flex items-start gap-3 py-4 px-2 w-full text-left rounded-md",
+        // The provider mark holds the first column, so every line of text
+        // starts on the verdict's left edge. The column equals the icon size.
+        "group relative grid w-full grid-cols-[14px_minmax(0,1fr)] gap-x-1.5 gap-y-1.5 text-left",
+        "rounded-[var(--radius-popover)] bg-surface-card px-3 py-3",
         "transition-colors duration-[var(--duration-fast)] ease-out",
         entry.isActive && "activity-row-active",
         clickable &&
-          "cursor-pointer hover:bg-surface-hover [&:has([data-state*=open])]:bg-surface-hover",
+          "cursor-pointer hover:bg-surface-secondary [&:has([data-state*=open])]:bg-surface-secondary",
       )}
       {...(clickable
         ? {
@@ -157,45 +159,24 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <div className="mt-5 shrink-0">{renderAgentIcon?.(entry.agent, 18, entry.surface)}</div>
+      <span className="flex h-[var(--control-height-regular)] items-center justify-center">
+        {renderAgentIcon?.(entry.agent, 14, entry.surface)}
+      </span>
 
-      <div className="min-w-0 flex-1 space-y-1">
-        <div className="flex items-end justify-between gap-x-1">
-          <div className="session-repo-names flex gap-x-2">
-            {hasRepo && (
-              <Tooltip
-                label={
-                  entry.additionalRepos?.length
-                    ? `Also observed: ${entry.additionalRepos.join(", ")}`
-                    : entry.repo
-                }
-              >
-                <span className="min-w-0 truncate text-sm text-label-secondary">
-                  {entry.repo}
-                  {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
-                </span>
-              </Tooltip>
-            )}
+      <SessionStatusBar
+        checks={hygieneChecks}
+        cost={entry.cost ?? null}
+        timestamp={entry.timestamp}
+      />
 
-            <WslOriginBadge distro={entry.wslDistro} {...(wslIcon ? { icon: wslIcon } : {})} />
-
-            {entry.branch && (
-              <TruncatedText
-                className="min-w-0 truncate type-footnote leading-[13px] tracking-wide text-label-secondary"
-                text={entry.branch}
-              />
-            )}
-          </div>
-
-          <div className="relative flex shrink-0 items-center gap-1.5">
-            <SessionHygieneBadges checks={hygieneChecks} />
-            {entry.cost && <SessionCostBadge {...entry.cost} />}
-          </div>
-        </div>
-
+      <div className="col-start-2 min-w-0 space-y-1.5">
+        {/* The title runs the full row width; the time lives in the
+            status line and shows on hover. */}
         <div className="flex min-w-0 items-center gap-1">
           <TruncatedText
-            className={cn("min-w-0 type-body", !entry.isActive && "text-label")}
+            // One ink for every title. The shimmer overlay is the only
+            // difference an active session shows.
+            className="min-w-0 type-body-large text-label"
             text={primary}
             lines={2}
             shimmer={entry.isActive}
@@ -226,22 +207,42 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
           )}
         </div>
 
-        <div className="flex w-full justify-between min-w-0 items-center gap-x-1.5">
+        {modelNames.length > 0 && (
           <div
-            className="min-w-0 type-footnote text-label-tertiary"
-            {...(modelNames.length > 0 ? { title: modelRunNames(modelRuns).join("\n") } : {})}
+            className="min-w-0 type-callout text-label-tertiary"
+            title={modelRunNames(modelRuns).join("\n")}
           >
-            {modelNames.length > 0 ? <TruncatedText text={modelNames.join(" · ")} /> : "\u00A0"}
+            <TruncatedText text={modelNames.join(" · ")} />
           </div>
+        )}
 
-          <time
-            dateTime={entry.timestamp}
-            aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-            className="text-sm text-label-secondary"
-          >
-            {relativeTime(entry.timestamp)}
-          </time>
-        </div>
+        {(hasRepo || entry.branch || entry.wslDistro) && (
+          <div className="flex min-w-0 items-baseline gap-x-2">
+            {hasRepo && (
+              <Tooltip
+                label={
+                  entry.additionalRepos?.length
+                    ? `Also observed: ${entry.additionalRepos.join(", ")}`
+                    : entry.repo
+                }
+              >
+                <span className="min-w-0 truncate type-callout text-label-tertiary">
+                  {entry.repo}
+                  {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
+                </span>
+              </Tooltip>
+            )}
+
+            <WslOriginBadge distro={entry.wslDistro} {...(wslIcon ? { icon: wslIcon } : {})} />
+
+            {entry.branch && (
+              <TruncatedText
+                className="min-w-0 truncate type-callout text-label-tertiary"
+                text={entry.branch}
+              />
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -294,7 +295,9 @@ export function SessionList({
         <div
           data-testid="activity-pinned-group-label"
           aria-hidden="true"
-          className="shrink-0 px-4 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+          // The inset matches the cards, so the label sits on their left
+          // edge. The type matches the usage view's group labels.
+          className="shrink-0 px-2 py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
         >
           {pinnedLabel}
         </div>
@@ -308,7 +311,7 @@ export function SessionList({
         {visibleCount === 0 ? (
           <EmptySessionList title={resolvedEmptyTitle} description={emptyDescription} />
         ) : (
-          <div className="space-y-3 pb-3">
+          <div className="space-y-2 pb-3">
             {groups.map((group, groupIndex) => {
               const headingId = `activity-${group.label.replaceAll(" ", "-").toLowerCase()}`
               return (
@@ -319,13 +322,13 @@ export function SessionList({
                     className={
                       groupIndex === 0
                         ? "sr-only"
-                        : "px-2 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+                        : "py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
                     }
                   >
                     {group.label}
                   </h3>
 
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     {group.items.map((item) => (
                       <SessionRow
                         key={item.key}

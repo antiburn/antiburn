@@ -108,12 +108,12 @@ colors:
   system-gold:
     light: "hsl(40.6 96% 40.4%)"
     dark: "hsl(48 100% 50%)"
-  shimmer: # the running-session title sweep. One value for both themes, sitting
-    # between the two text colors: it lights the near-black glyphs in light mode
-    # and dims the near-white ones in dark mode. Below 4.5:1 on a light row on
-    # purpose; the band is transient and the text under it is legible at rest.
-    light: "hsl(17.3 71% 50.2%)"
-    dark: "hsl(17.3 71% 50.2%)"
+  shimmer: # the running-session title sweep. One value for both themes: white
+    # lifts the near-white glyphs in dark mode and washes out the near-black
+    # ones in light mode. Below 4.5:1 on a light row on purpose; the band is
+    # transient and the text under it is legible at rest.
+    light: "hsl(0 0% 100%)"
+    dark: "hsl(0 0% 100%)"
   system-gold-text:
     light: "hsl(41 100% 28.6%)"
     dark: "hsl(43.5 88% 66%)"
@@ -161,6 +161,7 @@ typography:
   title-1: { fontSize: 22px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.35px" }
   title-2: { fontSize: 17px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.43px" }
   title-3: { fontSize: 15px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.23px" }
+  body-large: { fontSize: 14px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "-0.15px" } # a list's primary line
   headline: { fontSize: 13px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.08px" }
   body: { fontSize: 13px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "-0.08px" }
   callout: { fontSize: 12px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0" }
@@ -214,8 +215,6 @@ motion:
   progress-pulse: "1.5s loop"
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
-  session-hygiene-fan: "hover fan-out 240ms ease-out-quart + quick fade-in, 15ms outward stagger; hover-out fades 200ms in place (transform snap-back waits for the fade); the row's repository names crossfade to 20% opacity over 200ms; reduced motion fades only"
-  session-hygiene-mark: "check/cross marks rise in above their glyphs after a hover held 400ms, left to right at 50ms apart, each a 300ms ease-out-quart rise + scale + fade; off hover they drop and fade quick; reduced motion fades only"
 components:
   button-secondary:
     className: ui-push-button

@@ -27,16 +27,34 @@
 }
 
 .activity-row-title-shimmer {
-  /* A band of the brand orange sweeps across full-strength text. The band is
-     darker than the text in dark mode and lighter than it in light mode, so it
-     dims or lifts the glyphs it crosses. It never makes them brighter than the
-     text around them, which is what reads as a highlighter. */
+  /* A white band sweeps across the text and lifts the glyphs it crosses.
+     The band must stay brighter than the glyphs under it, or there is
+     nothing to see. Light mode keeps its full-strength ink, which the band
+     washes out against the card. Dark mode text is near-white already, so
+     the rules below step the resting glyphs down to make room. */
   --activity-row-shimmer-base: var(--color-text-primary);
   --activity-row-shimmer-highlight: var(--color-shimmer);
   position: relative;
   /* Contain the sweep's repaint to this box instead of invalidating the row. */
   contain: paint;
   color: var(--activity-row-shimmer-base);
+}
+
+/* Dark mode gives the band its headroom: the resting glyphs drop to the
+   secondary label while a title runs. The [data-theme] rules follow the media
+   query, and their higher specificity settles a conflict. */
+@media (prefers-color-scheme: dark) {
+  .activity-row-title-shimmer {
+    --activity-row-shimmer-base: var(--color-text-secondary);
+  }
+}
+
+:root[data-theme="light"] .activity-row-title-shimmer {
+  --activity-row-shimmer-base: var(--color-text-primary);
+}
+
+:root[data-theme="dark"] .activity-row-title-shimmer {
+  --activity-row-shimmer-base: var(--color-text-secondary);
 }
 
 .activity-row-title-shimmer::before {
@@ -78,134 +96,7 @@
   -webkit-line-clamp: var(--truncated-text-lines);
 }
 
-/* --- Hygiene glyph fan --- */
-
-/* The passing checks sit outside the flow. The rail is the positioned
-   ancestor, so `right: calc(100% + gap)` pins this box to the left edge of
-   the leftmost failed glyph, or of the cost pill when every check passes. */
-.session-hygiene-pass {
-  position: absolute;
-  top: 50%;
-  right: calc(100% + var(--space-xs));
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  transform: translateY(-50%);
-}
-
-/* At rest the glyphs are invisible and stacked at the anchor. The transform
-   snap-back waits for the fade to end: a pointer that leaves the row sees
-   the glyphs fade in place, never slide back in. */
-.session-hygiene-pass .session-hygiene-glyph {
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 200ms ease-out,
-    transform 0s 200ms;
-}
-
-/* The state mark floats above its glyph and never covers it. It is hidden at
-   rest. On a hover held for two seconds the marks rise in one at a time,
-   left to right, 200ms apart — about one second across a full row. The
-   component sets each mark's place with --hygiene-mark-index. Off hover
-   they drop and fade right away. */
-.session-hygiene-mark {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  margin-bottom: 1px;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-50%) translateY(4px) scale(0.5);
-  transition:
-    opacity var(--duration-quick) ease-out,
-    transform var(--duration-quick) ease-out;
-}
-
-.session-row:hover .session-hygiene-mark {
-  --hygiene-mark-delay: calc(400ms + var(--hygiene-mark-index, 0) * 50ms);
-  opacity: 1;
-  transform: translateX(-50%);
-  transition:
-    opacity var(--duration-slow) var(--ease-out-quart) var(--hygiene-mark-delay),
-    transform var(--duration-slow) var(--ease-out-quart) var(--hygiene-mark-delay);
-}
-
-.session-row:has(.session-hygiene-pass) .session-repo-names {
-  transition: opacity 200ms ease-out;
-}
-
-.session-row:has(.session-hygiene-pass):hover .session-repo-names {
-  opacity: 0.2;
-}
-
-/* Stack offsets: one glyph pitch (20px glyph + 4px gap) per position. */
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(2) {
-  transform: translateX(24px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(3) {
-  transform: translateX(48px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(4) {
-  transform: translateX(72px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(5) {
-  transform: translateX(96px);
-}
-
-.session-hygiene-pass .session-hygiene-glyph:nth-last-child(6) {
-  transform: translateX(120px);
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateX(0);
-  transition:
-    transform 240ms var(--ease-out-quart),
-    opacity var(--duration-quick) ease-out;
-}
-
-/* The delay grows with the distance, so the fan opens outward. */
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(2) {
-  transition-delay: 15ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(3) {
-  transition-delay: 30ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(4) {
-  transition-delay: 45ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(5) {
-  transition-delay: 60ms;
-}
-
-.session-row:hover .session-hygiene-pass .session-hygiene-glyph:nth-last-child(6) {
-  transition-delay: 75ms;
-}
-
 /* --- Reduced motion --- */
-
-/* The fan is an interaction response, not an ambient loop, but the slide is
-   decorative: with reduced motion the glyphs only fade, in both directions. */
-@media (prefers-reduced-motion: reduce) {
-  .session-hygiene-pass .session-hygiene-glyph {
-    transform: none !important;
-    transition: opacity var(--duration-quick) ease-out;
-  }
-
-  .session-hygiene-mark {
-    transform: translateX(-50%) !important;
-    transition: opacity var(--duration-quick) ease-out;
-  }
-}
 
 /* The global clamp in motion.css shortens transitions; the shimmer is an
    *ambient loop*, which no duration makes acceptable, so it stops outright.

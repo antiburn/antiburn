@@ -66,7 +66,8 @@ function stableHash(value: string): number {
 /** Build deterministic mock hygiene results for one session. */
 export function mockSessionHygiene(seed: string): MockSessionHygieneCheck[] {
   return CHECKS.map((check) => {
-    const passed = stableHash(`${seed}:${check.id}`) % 6 !== 0
+    // The modulus sets the mock failure rate. At 24, most sessions pass.
+    const passed = stableHash(`${seed}:${check.id}`) % 24 !== 0
     return {
       id: check.id,
       passed,
