@@ -503,7 +503,7 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 1,
-                "analyzerRevision": 2,
+                "analyzerRevision": 3,
                 "evidenceSchemaRevision": 2,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
