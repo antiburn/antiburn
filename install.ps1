@@ -15,7 +15,7 @@ $script:GitHubUrl = "https://github.com/$script:Repository"
 
 function Write-InstallerInfo {
     param([Parameter(Mandatory)][string] $Message)
-    Write-Host "antiburn: $Message"
+    Write-Information "antiburn: $Message" -InformationAction Continue
 }
 
 function Get-AntiburnRelease {
@@ -87,15 +87,15 @@ function Get-ExpectedChecksum {
         [Parameter(Mandatory)][string] $AssetName
     )
 
-    $matches = foreach ($line in Get-Content -LiteralPath $ChecksumFile) {
+    $checksumMatches = foreach ($line in Get-Content -LiteralPath $ChecksumFile) {
         if ($line -match '^([0-9A-Fa-f]{64})\s+\*?(.+)$' -and $Matches[2] -ceq $AssetName) {
             $Matches[1].ToLowerInvariant()
         }
     }
-    if (@($matches).Count -ne 1) {
+    if (@($checksumMatches).Count -ne 1) {
         throw "SHA256SUMS must contain exactly one valid entry for $AssetName."
     }
-    return $matches
+    return $checksumMatches
 }
 
 function Assert-InstallerIntegrity {
