@@ -40,7 +40,26 @@ pub struct SessionInput {
 /// One framed record's outcome, in transcript order.
 pub enum NormalizedRecord {
     MetricsEvent(Box<NormalizedEvent>),
+    Observation(Box<EvidenceObservation>),
     Unusable(PartialReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceObservation {
+    ContextSource {
+        kind: ContextSourceKind,
+        name: String,
+        description: Option<String>,
+    },
+    UnrecognizedType {
+        discriminator: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSourceKind {
+    Skill,
+    McpServer,
 }
 
 /// Session facts that an adapter can state only after the last record.
@@ -129,6 +148,7 @@ impl RecordSink for SessionCollector {
     fn record(&mut self, record: NormalizedRecord) {
         match record {
             NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
+            NormalizedRecord::Observation(_) => {}
             NormalizedRecord::Unusable(reason) => {
                 self.partial_reasons.insert(reason);
             }

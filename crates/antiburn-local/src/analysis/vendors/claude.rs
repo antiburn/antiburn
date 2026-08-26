@@ -19,7 +19,8 @@ use serde_json::Value;
 
 use super::jsonl::{
     SKILL_BASE_MARKER, collect_skill_base_names_from_text, command_names_in_text,
-    command_skill_name, parse_record, record_text,
+    command_skill_name, evidence_observations, is_recognized_eventless, parse_record,
+    record_discriminator, record_text,
 };
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
 use crate::analysis::initial_context::ClaudeContextAccumulator;
@@ -160,9 +161,19 @@ impl ClaudeAdapter {
                     }
 
                     let Some(mut event) = parse_record(&value) else {
-                        sink.record(NormalizedRecord::Unusable(
-                            crate::analysis::framing::PartialReason::UnrecognizedRecordType,
-                        ));
+                        for observation in evidence_observations(&value) {
+                            sink.record(NormalizedRecord::Observation(Box::new(observation)));
+                        }
+                        if !is_recognized_eventless(&value) {
+                            sink.record(NormalizedRecord::Observation(Box::new(
+                                crate::analysis::interface::EvidenceObservation::UnrecognizedType {
+                                    discriminator: record_discriminator(&value),
+                                },
+                            )));
+                            sink.record(NormalizedRecord::Unusable(
+                                crate::analysis::framing::PartialReason::UnrecognizedRecordType,
+                            ));
+                        }
                         continue;
                     };
 

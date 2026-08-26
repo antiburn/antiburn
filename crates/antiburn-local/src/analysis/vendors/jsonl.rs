@@ -18,6 +18,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use crate::analysis::interface::{ContextSourceKind, EvidenceObservation};
 use crate::analysis::model::{CompactionTrigger, NormalizedEvent, Role, ToolCall, Usage};
 
 /// Parse line-delimited JSON into normalized events, skipping blank/malformed
@@ -169,6 +170,79 @@ pub(super) fn command_skill_name(
     }
     let bare = command.rsplit(':').next().unwrap_or(command);
     skill_base_names.contains(bare).then(|| bare.to_string())
+}
+
+pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
+    let Some(attachment) = value.get("attachment") else {
+        return Vec::new();
+    };
+    match attachment.get("type").and_then(Value::as_str) {
+        Some("skill_listing") => attachment
+            .get("content")
+            .and_then(Value::as_str)
+            .into_iter()
+            .flat_map(|content| content.lines())
+            .filter_map(|line| {
+                let (name, description) = line.trim().strip_prefix("- ")?.split_once(':')?;
+                let name = name.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                let description = description.trim();
+                Some(EvidenceObservation::ContextSource {
+                    kind: ContextSourceKind::Skill,
+                    name: name.to_owned(),
+                    description: (!description.is_empty()).then(|| description.to_owned()),
+                })
+            })
+            .collect(),
+        Some("mcp_instructions_delta") => {
+            let names = attachment
+                .get("addedNames")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            let blocks = attachment
+                .get("addedBlocks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            names
+                .zip(blocks)
+                .filter_map(|(name, block)| {
+                    let name = name.as_str()?.trim();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    Some(EvidenceObservation::ContextSource {
+                        kind: ContextSourceKind::McpServer,
+                        name: name.to_owned(),
+                        description: block
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_owned),
+                    })
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+pub(super) fn is_recognized_eventless(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("attachment" | "summary" | "file-history-snapshot")
+    )
+}
+
+pub(super) fn record_discriminator(value: &Value) -> String {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("<missing>")
+        .to_owned()
 }
 
 /// Parse a single JSON record into a normalized event, or `None` if the record

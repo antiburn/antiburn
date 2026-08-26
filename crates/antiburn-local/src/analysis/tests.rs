@@ -89,8 +89,8 @@ fn the_ten_characterization_fixtures_report_their_expected_coverage() {
     let expected = vec![
         (
             "records_all_kinds".to_string(),
-            RecordCoverage::Partial,
-            BTreeSet::from([PartialReason::UnrecognizedRecordType]),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
         ),
         (
             "timestamps_repeated_and_out_of_order".to_string(),
