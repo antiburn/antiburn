@@ -48,7 +48,7 @@ mod vendors;
 pub use efficiency::{EfficiencyTotals, thread_efficiency};
 pub use engine::{
     ActiveSessionsSummary, BUCKETS, Bucket, CONTEXT_WINDOW, SessionCost, SessionMetrics, SkillUse,
-    ToolMix, aggregate_metrics, analyze_session,
+    aggregate_metrics, analyze_session,
 };
 #[cfg(debug_assertions)]
 pub use evidence::UnfinishedGroup;
