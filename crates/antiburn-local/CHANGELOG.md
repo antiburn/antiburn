@@ -21,6 +21,41 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-27
+
+### Added
+
+- `analysis::SessionEvidence`, `SessionEvidenceAccumulator`, and
+  `CompositeSink` collect bounded, versioned evidence about context depth,
+  tools, loaded skills and MCP servers, models, delegation, cache behavior,
+  compactions, source coverage, and parse diagnostics in the same streaming
+  pass that produces session metrics.
+- `insights::EfficiencyReportAccumulator` reduces ready session evidence into
+  a bounded report with explicit cohort, coverage, capability-gap, and
+  per-detector counts. The API includes the nine detector identifiers and the
+  evidence requirements for each detector; it does not yet implement detector
+  policy.
+- `analysis::tool_catalog` resolves the built-in tools and definition-token
+  costs for a recorded harness version and model. Initial-context rows now
+  include built-in tools, use counts, deferred-tool state, and known skill
+  origins.
+
+### Changed
+
+- **Breaking:** `InitialContextTokenSource` now represents `Skill`, `Mcp`, and
+  `BuiltinTool`; it no longer exposes agent-instruction, system-instruction, or
+  unattributed variants. `InitialContextBreakdown` no longer has
+  `tracking_status` or `total_tokens`, and each `InitialContextSourceCount` now
+  includes `use_count`, `origin`, and `deferred`.
+- **Breaking:** `SessionMetrics` no longer exposes the categorical `tool_mix`
+  totals. `NormalizedRecord` no longer carries `grep_count`, and
+  `SessionSummary` no longer carries `grep_total`. Callers can use the new
+  per-tool evidence and `tool_calls_by_name` data instead.
+- Claude metrics and evidence now share one record-by-record pass. The engine
+  records cache-routing misses, per-tool calls, MCP calls, model and effort
+  changes, delegation, compaction boundaries, and bounded context evidence
+  without rereading the transcript.
+
 ## [0.1.7] - 2026-08-25
 
 ### Changed
