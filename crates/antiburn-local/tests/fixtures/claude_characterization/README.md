@@ -21,7 +21,7 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | `multi_model_session.jsonl` | Assistant turns across three synthetic models attribute tokens to each model identity and aggregate repeated turns of the same model. |
 | `compaction_with_cache_rehydration.jsonl` | An explicit `compact_boundary` system record marks a compaction and its bucket reports zero context tokens. The cache-creation spike on the turn after the boundary records a rehydration. |
 | `inferred_cache_rehydration.jsonl` | Without cache-write tokens, a cache-read collapse on a retained context followed by a same-model recovery turn infers a rehydration. |
-| `mcp_and_skill_sources.jsonl` | Skill and MCP loading records retain bounded names and self-descriptions, match observed invocations, and leave origin and built-in definitions unsupported. |
+| `mcp_and_skill_sources.jsonl` | Skill loading records retain bounded names and one-line self-descriptions; MCP loading records retain names only (multi-line instruction blocks are never persisted). Both match observed invocations and leave origin and built-in definitions unsupported. |
 | `reasoning_and_fast_mode.jsonl` | Explicit effort and speed fields split main-loop turns from delegated turns without reading prompt text. |
 | `delegated_turns.jsonl` | Sidechain flags identify delegated turns once and preserve their explicit token quantities. |
 
