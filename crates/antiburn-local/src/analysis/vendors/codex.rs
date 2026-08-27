@@ -183,7 +183,7 @@ impl CodexAdapter {
             }
         }
 
-        Ok(state.finish())
+        Ok(state.finish(sink))
     }
 }
 
@@ -199,7 +199,8 @@ enum ForkOwnership {
 struct CodexStreamState {
     ownership: ForkOwnership,
     agent_path: Option<String>,
-    unresolved_fork_usage: bool,
+    pending_rows: Vec<Value>,
+    pending_owned_start: Option<usize>,
     previous_token_count_key: Option<TokenCountKey>,
     previous_event_was_boundary: bool,
     previous_boundary_ts: Option<i64>,
@@ -215,9 +216,13 @@ struct CodexStreamState {
 
 impl CodexStreamState {
     fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
+        if record_to_event(&value).is_some_and(|event| event.ts_ms.is_none()) {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            return;
+        }
+
         self.context.observe(&value);
         let record_type = value.get("type").and_then(Value::as_str);
-        let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
 
         if record_type == Some("session_meta") {
             if self.started_at_ms.is_none() {
@@ -239,20 +244,52 @@ impl CodexStreamState {
             }
         }
 
-        let addressed_to_child = self.ownership == ForkOwnership::Pending
-            && record_type == Some("response_item")
+        if self.ownership == ForkOwnership::Pending {
+            self.observe_pending(value, sink);
+        } else {
+            self.process_value(value, true, sink);
+        }
+    }
+
+    fn observe_pending(&mut self, value: Value, sink: &mut dyn RecordSink) {
+        let record_type = value.get("type").and_then(Value::as_str);
+        let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
+
+        if record_type == Some("event_msg") && payload_type == Some("task_started") {
+            self.pending_owned_start = Some(
+                self.pending_rows
+                    .len()
+                    .checked_sub(1)
+                    .filter(|index| is_developer_message(&self.pending_rows[*index]))
+                    .unwrap_or(self.pending_rows.len()),
+            );
+        }
+
+        let addressed_to_child = record_type == Some("response_item")
             && payload_type == Some("agent_message")
             && value
                 .pointer("/payload/recipient")
                 .and_then(Value::as_str)
                 .zip(self.agent_path.as_deref())
                 .is_some_and(|(recipient, path)| recipient == path);
-        if addressed_to_child {
-            self.ownership = ForkOwnership::Owned;
-            self.unresolved_fork_usage = false;
-        }
+        self.pending_rows.push(value);
 
-        let usage_is_owned = self.ownership != ForkOwnership::Pending;
+        if addressed_to_child {
+            let owned_start = self
+                .pending_owned_start
+                .unwrap_or(self.pending_rows.len() - 1);
+            let pending_rows = std::mem::take(&mut self.pending_rows);
+            for (index, value) in pending_rows.into_iter().enumerate() {
+                self.process_value(value, index >= owned_start, sink);
+            }
+            self.pending_owned_start = None;
+            self.ownership = ForkOwnership::Owned;
+        }
+    }
+
+    fn process_value(&mut self, value: Value, usage_is_owned: bool, sink: &mut dyn RecordSink) {
+        let record_type = value.get("type").and_then(Value::as_str);
+        let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
         let is_token_count =
             record_type == Some("event_msg") && payload_type == Some("token_count");
         if is_token_count {
@@ -264,7 +301,6 @@ impl CodexStreamState {
                 }
             }
             if !usage_is_owned {
-                self.unresolved_fork_usage = true;
                 return;
             }
         }
@@ -280,14 +316,9 @@ impl CodexStreamState {
         }
 
         if let Some(mut event) = record_to_event(&value) {
-            if event.ts_ms.is_none() {
-                sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
-            }
             if usage_is_owned {
                 event.model = event.model.or_else(|| self.current_model.clone());
-                if event.role == Role::Assistant {
-                    event.thinking_mode = self.current_thinking_mode.clone();
-                }
+                event.thinking_mode = self.current_thinking_mode.clone();
             }
             if is_token_count {
                 self.owned_token_count_seen = true;
@@ -360,16 +391,17 @@ impl CodexStreamState {
         duplicate
     }
 
-    fn finish(mut self) -> SessionSummary {
+    fn finish(mut self, sink: &mut dyn RecordSink) -> SessionSummary {
         if self.ownership == ForkOwnership::Pending {
-            self.unresolved_fork_usage = true;
+            for value in std::mem::take(&mut self.pending_rows) {
+                self.process_value(value, true, sink);
+            }
         }
-        let coverage_gaps =
-            if self.unresolved_fork_usage || (self.owned_token_count_seen && !self.effort_seen) {
-                vec![PartialReason::AttributionIncomplete]
-            } else {
-                Vec::new()
-            };
+        let coverage_gaps = if self.owned_token_count_seen && !self.effort_seen {
+            vec![PartialReason::AttributionIncomplete]
+        } else {
+            Vec::new()
+        };
         let (initial_context, skill_descriptions) = self.context.finish();
         SessionSummary {
             cache_write_tokens_available: false,
@@ -382,6 +414,12 @@ impl CodexStreamState {
             skill_descriptions,
         }
     }
+}
+
+fn is_developer_message(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("response_item")
+        && value.pointer("/payload/type").and_then(Value::as_str) == Some("message")
+        && value.pointer("/payload/role").and_then(Value::as_str) == Some("developer")
 }
 
 fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
@@ -957,9 +995,8 @@ type TokenCountKey = (Value, Value);
 
 /// Codex writes the last `token_count` row again when it resumes a rollout.
 /// The copy repeats both `last_token_usage` and `total_token_usage` exactly.
-/// A real turn always moves `total_token_usage`, so `parse_codex` drops a row
-/// whose pair equals the previous `token_count` row. This keeps a resume from
-/// adding a ghost turn with a second copy of the same context occupancy.
+/// Both Codex parsing paths drop a row when this pair matches the prior row.
+/// This prevents a resumed rollout from adding duplicate usage.
 fn token_count_key(value: &Value) -> Option<TokenCountKey> {
     if value.get("type").and_then(Value::as_str) != Some("event_msg")
         || value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count")
@@ -975,21 +1012,13 @@ fn token_count_key(value: &Value) -> Option<TokenCountKey> {
     ))
 }
 
-/// The largest gap between two compaction records that `parse_codex` still
-/// treats as one compaction, not two. Real, distinct compactions in the wild
-/// are separated by turns and are minutes to hours apart; the sibling
-/// records for one compaction land in the same instant. Five seconds gives a
-/// wide safety margin without risking a merge of two real compactions.
+/// Both Codex parsing paths treat compaction records within this window as one compaction.
+/// Distinct compactions have intervening turns and much larger gaps.
 const COMPACTION_DEDUPE_WINDOW_MS: i64 = 5_000;
 
-/// Codex marks a completed compaction two different ways, depending on
-/// rollout version: a top-level `{"type":"compacted","payload":{...}}`
-/// record (current rollouts), or `{"type":"event_msg","payload":
-/// {"type":"context_compacted"}}` (older rollouts). Some older rollouts write
-/// both, back-to-back, for the same compaction. `parse_codex` matches both
-/// shapes to this function and drops a second boundary event when the
-/// previous event it emitted was also a compaction boundary at (about) the
-/// same timestamp, so one compaction still produces exactly one boundary.
+/// Codex marks a completed compaction with a top-level `compacted` record or an `event_msg` `context_compacted` record.
+/// Some rollouts write both forms for one compaction.
+/// Both parsing paths deduplicate adjacent boundary events within `COMPACTION_DEDUPE_WINDOW_MS`.
 fn compaction_event(ts: Option<i64>) -> NormalizedEvent {
     let mut ev = NormalizedEvent::new(Role::System);
     ev.ts_ms = ts;
