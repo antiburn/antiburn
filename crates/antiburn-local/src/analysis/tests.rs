@@ -43,13 +43,12 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
     let evidence = claude_evidence(concat!(
         r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- orbit: Synthetic description."}}"#,
         "\n",
-        r#"{"type":"assistant","timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Task","input":{"description":"not retained","prompt":"not retained"}}]}}"#,
+        r#"{"type":"assistant","uuid":"33333333-3333-4333-8333-000000000001","parentUuid":null,"timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Task","input":{"description":"not retained","prompt":"not retained"}}]}}"#,
     ));
     let capabilities = evidence.capabilities;
     assert!(!capabilities.tool_definitions);
     assert!(!capabilities.service_tier);
     assert!(!capabilities.subagent_models);
-    assert!(!capabilities.thread_identity);
     assert!(!capabilities.quota_incidents);
     assert!(!capabilities.harness_version);
     assert!(matches!(
@@ -79,7 +78,10 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
     let EvidenceValue::Complete(cache) = evidence.cache else {
         panic!("cache must be complete");
     };
-    assert!(matches!(cache.previous_turn, EvidenceValue::Unsupported));
+    // `thread_identity` is evidenced now: the identified turn verifies
+    // `previous_turn`, while `provider_eviction` stays unsupported because
+    // no transcript record states an eviction.
+    assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));
     assert!(matches!(
         cache.provider_eviction,
         EvidenceValue::Unsupported

@@ -318,6 +318,18 @@ pub struct NormalizedEvent {
     /// wrapper in `tools` directly instead).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapper_tool: Option<String>,
+    /// The transcript's per-record identity (Claude's top-level `uuid`), when
+    /// the vendor records one. Together with [`Self::parent_uuid`] this lets
+    /// the evidence sink verify previous-turn adjacency per thread rather
+    /// than assuming record order. `None` for vendors without per-record
+    /// identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    /// The identity of the record this one continues from (Claude's
+    /// top-level `parentUuid`). `None` marks a thread root — the first
+    /// record of the main loop or of a sidechain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_uuid: Option<String>,
 }
 
 impl NormalizedEvent {
@@ -338,6 +350,8 @@ impl NormalizedEvent {
             compaction_pre_tokens: None,
             compaction_post_tokens: None,
             wrapper_tool: None,
+            uuid: None,
+            parent_uuid: None,
         }
     }
 }

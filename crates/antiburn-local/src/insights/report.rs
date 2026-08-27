@@ -558,11 +558,13 @@ mod tests {
         assert_eq!(
             eligible,
             vec![
+                DetectorId::SessionsOverDepth,
                 DetectorId::ModelOverthinking,
                 DetectorId::UnusedMcpServers,
                 DetectorId::UnusedSkills,
                 DetectorId::OldModelUsage,
                 DetectorId::OveruseOfFastMode,
+                DetectorId::CacheChurn,
             ]
         );
     }
@@ -653,11 +655,13 @@ mod tests {
         // Complete empty evidence proves absence for the eligible
         // detectors that can express their rule.
         for detector in [
+            DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
             DetectorId::UnusedMcpServers,
             DetectorId::UnusedSkills,
             DetectorId::OldModelUsage,
             DetectorId::OveruseOfFastMode,
+            DetectorId::CacheChurn,
         ] {
             assert_eq!(
                 report.detector_statuses[detector.index()],
@@ -666,10 +670,8 @@ mod tests {
         }
         // Capability gaps stay not assessed with a structured reason.
         for detector in [
-            DetectorId::SessionsOverDepth,
             DetectorId::OverpoweredSubagents,
             DetectorId::UnusedBuiltInTools,
-            DetectorId::CacheChurn,
         ] {
             assert_eq!(
                 report.detector_statuses[detector.index()],
@@ -972,7 +974,7 @@ mod tests {
             accumulator.observe_session(evidence(&format!("session-{index}")));
         }
         let report = accumulator.finish(context(CoverageCounts::default()));
-        let detector = DetectorId::SessionsOverDepth;
+        let detector = DetectorId::OverpoweredSubagents;
 
         assert_eq!(report.capability_gaps[&detector], 5);
         assert_eq!(report.capability_gap_examples[&detector].len(), 3);

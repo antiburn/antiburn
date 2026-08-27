@@ -57,6 +57,14 @@ pub enum EvidenceObservation {
     DelegatedTurn {
         is_sidechain: bool,
     },
+    /// One record's thread identity (Claude `uuid` / `parentUuid`), emitted
+    /// for every record that carries either field — including eventless
+    /// records — so the evidence sink can resolve parent links against every
+    /// identity the source declares, not only the counted turns.
+    ThreadLink {
+        uuid: Option<String>,
+        parent_uuid: Option<String>,
+    },
     UnrecognizedType {
         discriminator: String,
     },
