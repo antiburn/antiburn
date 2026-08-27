@@ -35,5 +35,7 @@ Only Model Overthinking and Old Model Usage have all capability prerequisites. E
 - `unrecognized_type.jsonl` records a fixed technical discriminator and reports partial coverage.
 - `absent_model_and_effort.jsonl` reports incomplete attribution instead of a clean model result.
 - `resolved_fork.jsonl` excludes replayed parent token counts and keeps child-owned usage.
-- `unresolved_fork.jsonl` excludes replayed usage and reports incomplete attribution.
+- `fork_developer_lookbehind.jsonl` includes the developer row immediately before the owned task boundary.
+- `fork_disputed_window.jsonl` keeps usage between the owned task boundary and its child discriminator.
+- `unresolved_fork.jsonl` attributes all usage when the child discriminator is absent.
 - `incomplete_final_record.jsonl` models an active writer stopped inside its final line.

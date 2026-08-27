@@ -107,7 +107,7 @@
         "effortTiers": {
           "medium": {
             "delegated": 0,
-            "mainLoop": 4
+            "mainLoop": 8
           }
         },
         "fastModes": {},
@@ -184,7 +184,7 @@
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tokensIn": 0,
         "tokensOut": 0,
         "userPrompts": 0
@@ -734,7 +734,7 @@
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tokensIn": 0,
         "tokensOut": 0,
         "userPrompts": 1
@@ -2428,7 +2428,7 @@
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tokensIn": 0,
         "tokensOut": 0,
         "userPrompts": 0
@@ -4122,7 +4122,7 @@
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tokensIn": 0,
         "tokensOut": 0,
         "userPrompts": 0
@@ -4194,7 +4194,7 @@
         "role": "system",
         "source": "parent",
         "speed": null,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tools": [],
         "tsMs": 1785578402000,
         "usage": {
@@ -4215,7 +4215,7 @@
         "role": "user",
         "source": "parent",
         "speed": null,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tools": [],
         "tsMs": 1785578403000,
         "usage": {
@@ -4283,7 +4283,7 @@
         "role": "tool",
         "source": "parent",
         "speed": null,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tools": [],
         "tsMs": 1785578406000,
         "usage": {
@@ -4351,7 +4351,7 @@
         "role": "system",
         "source": "parent",
         "speed": null,
-        "thinkingMode": null,
+        "thinkingMode": "medium",
         "tools": [],
         "tsMs": 1785578409000,
         "usage": {

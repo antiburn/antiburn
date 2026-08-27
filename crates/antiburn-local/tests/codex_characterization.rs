@@ -7,8 +7,8 @@ use antiburn_local::analysis::{
     AppendOnlyGuarantee, CompositeSink, CoverageReason, EvidenceCoverage, EvidenceSource,
     EvidenceValue, NormalizedSession, PartialReason, RawSource, RecordCoverage, SessionCollector,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceCapabilities, SourceClaim, SourceKind, VisitOutcome, adapter_for, append_only_guarantee,
-    normalize_source,
+    SourceCapabilities, SourceClaim, SourceKind, VisitOutcome, adapter_for, analyze_sources_with,
+    append_only_guarantee, normalize_source,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -31,6 +31,12 @@ fn fixture(name: &str) -> &'static str {
             include_str!("fixtures/codex_characterization/absent_model_and_effort.jsonl")
         }
         "resolved_fork" => include_str!("fixtures/codex_characterization/resolved_fork.jsonl"),
+        "fork_developer_lookbehind" => {
+            include_str!("fixtures/codex_characterization/fork_developer_lookbehind.jsonl")
+        }
+        "fork_disputed_window" => {
+            include_str!("fixtures/codex_characterization/fork_disputed_window.jsonl")
+        }
         "unresolved_fork" => {
             include_str!("fixtures/codex_characterization/unresolved_fork.jsonl")
         }
@@ -39,6 +45,20 @@ fn fixture(name: &str) -> &'static str {
         }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
+}
+
+fn fixture_names() -> [&'static str; 9] {
+    [
+        "records_all_kinds",
+        "malformed_between_valid",
+        "unrecognized_type",
+        "absent_model_and_effort",
+        "resolved_fork",
+        "fork_developer_lookbehind",
+        "fork_disputed_window",
+        "unresolved_fork",
+        "incomplete_final_record",
+    ]
 }
 
 fn input(name: &str) -> SessionInput {
@@ -106,6 +126,88 @@ fn check_golden(name: &str) {
 
 fn is_supported<T>(value: &EvidenceValue<T>) -> bool {
     !matches!(value, EvidenceValue::Unsupported)
+}
+
+fn collect_private_strings(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(value) if !value.is_empty() => output.push(value.clone()),
+        Value::Array(values) => {
+            for value in values {
+                collect_private_strings(value, output);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                collect_private_strings(value, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_tool_private_input(value: &Value, output: &mut Vec<String>) {
+    if let Value::Object(values) = value {
+        for (key, value) in values {
+            if !matches!(key.as_str(), "skill" | "name" | "skill_name" | "skillName") {
+                collect_private_strings(value, output);
+            }
+        }
+    } else {
+        collect_private_strings(value, output);
+    }
+}
+
+fn collect_private_message_content(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(value) if !value.is_empty() => output.push(value.clone()),
+        Value::Array(blocks) => {
+            for block in blocks {
+                for key in ["text", "thinking", "content"] {
+                    if let Some(value) = block.get(key) {
+                        collect_private_strings(value, output);
+                    }
+                }
+                for key in ["input", "arguments"] {
+                    if let Some(value) = block.get(key) {
+                        collect_tool_private_input(value, output);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn evidence_holds_no_prompt_or_message_text() {
+    for name in fixture_names() {
+        let (evidence, _) = composite(&input(name));
+        let persisted = serde_json::to_value(evidence).expect("evidence must serialize");
+        let mut persisted_strings = Vec::new();
+        collect_private_strings(&persisted, &mut persisted_strings);
+
+        for line in fixture(name).lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let payload = record.get("payload").unwrap_or(&record);
+            let mut private_strings = Vec::new();
+            if let Some(content) = payload.get("content") {
+                collect_private_message_content(content, &mut private_strings);
+            }
+            for key in ["input", "arguments", "output", "action", "command"] {
+                if let Some(value) = payload.get(key) {
+                    collect_tool_private_input(value, &mut private_strings);
+                }
+            }
+            for value in private_strings {
+                assert!(
+                    !persisted_strings.contains(&value),
+                    "fixture {name} persisted private transcript text: {value}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -247,21 +349,101 @@ fn resolved_fork_stream_matches_the_existing_parser_and_owns_only_child_usage() 
 }
 
 #[test]
-fn unresolved_fork_drops_inherited_usage_and_degrades_coverage() {
-    let (coverage, reasons, streamed) = collect(&input("unresolved_fork"));
-    let (evidence, metrics) = composite(&input("unresolved_fork"));
+fn fork_developer_lookbehind_matches_the_existing_parser() {
+    let input = input("fork_developer_lookbehind");
+    let parsed = normalize_source(&input).unwrap();
+    let (coverage, reasons, streamed) = collect(&input);
+
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(streamed, parsed);
+    assert_eq!(streamed.events.len(), 2);
+    assert_eq!(
+        streamed.events[0].role,
+        antiburn_local::analysis::Role::System
+    );
+    assert_eq!(streamed.events[1].usage.context_tokens(), 320);
+}
+
+#[test]
+fn fork_usage_between_task_start_and_discriminator_is_owned() {
+    let input = input("fork_disputed_window");
+    let parsed = normalize_source(&input).unwrap();
+    let (coverage, reasons, streamed) = collect(&input);
+
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(streamed, parsed);
+    assert_eq!(streamed.events.len(), 2);
+    assert_eq!(streamed.events[0].usage.context_tokens(), 450);
+    assert_eq!(streamed.events[1].usage.context_tokens(), 250);
+}
+
+#[test]
+fn unresolved_fork_matches_batch_and_attributes_all_usage() {
+    let input = input("unresolved_fork");
+    let parsed = normalize_source(&input).unwrap();
+    let (coverage, reasons, streamed) = collect(&input);
+    let (evidence, metrics) = composite(&input);
+
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(streamed, parsed);
+    assert_eq!(streamed.events.len(), 1);
+    assert_eq!(streamed.events[0].usage.context_tokens(), 700);
+    assert_eq!(metrics.metrics().tokens_in, 200);
+    assert_eq!(metrics.metrics().peak_context_tokens, 700);
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+}
+
+#[test]
+fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
+    for name in fixture_names() {
+        let input = input(name);
+        let parsed = normalize_source(&input).expect("fixture must normalize");
+        let (_, _, streamed) = collect(&input);
+        assert_eq!(streamed, parsed, "normalized fixture {name}");
+
+        let expected = analyze_sources_with(vec![input.clone()], true)
+            .sessions
+            .into_iter()
+            .next();
+        let (_, metrics) = composite(&input);
+        let actual = metrics.metrics();
+        if let Some(expected) = expected {
+            assert_eq!(actual, expected, "metrics fixture {name}");
+        } else {
+            assert!(parsed.events.is_empty(), "batch omitted fixture {name}");
+            assert_eq!(actual.event_count, 0, "metrics fixture {name}");
+        }
+    }
+}
+
+#[test]
+fn missing_event_timestamp_is_unusable_and_not_counted() {
+    let input = SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "missing-event-timestamp".to_owned(),
+        source: RawSource::Jsonl(
+            concat!(
+                r#"{"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-missing-timestamp","timestamp":"2026-08-09T10:00:00Z","source":"cli"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":"gpt-test","effort":"low"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":20,"total_tokens":320},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":20,"total_tokens":320},"model_context_window":100000}}}"#,
+                "\n"
+            )
+            .to_owned(),
+        ),
+    };
+    let (coverage, reasons, streamed) = collect(&input);
+    let (_, metrics) = composite(&input);
 
     assert_eq!(coverage, RecordCoverage::Partial);
-    assert_eq!(
-        reasons,
-        BTreeSet::from([PartialReason::AttributionIncomplete])
-    );
+    assert_eq!(reasons, BTreeSet::from([PartialReason::MalformedRecord]));
     assert!(streamed.events.is_empty());
+    assert_eq!(metrics.metrics().event_count, 0);
     assert_eq!(metrics.metrics().tokens_in, 0);
-    assert_eq!(
-        evidence.coverage,
-        EvidenceCoverage::Partial(CoverageReason::AttributionIncomplete)
-    );
 }
 
 #[test]
