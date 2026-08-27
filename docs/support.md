@@ -81,15 +81,19 @@ antiburn keeps its own local data under the application's data directory. Settin
 About shows the exact path. It may retain the session content and derived data it
 needs to provide visibility and analysis, including messages, tool activity, file
 content recorded in a transcript, session identity and locations, counts, durations,
-token totals, phase distributions, cost estimates, skill details, session
-relations, and the last successful plan-limit reading. This data stays on the
+token totals, phase distributions, cost estimates, skill details, derived session
+evidence — bounded facts about which models, tools, skills, and MCP servers a
+session used, and any quota limits it recorded hitting, never the transcript's
+text — session relations, and the last successful plan-limit reading. This data stays on the
 device and is never uploaded.
 
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.
 
 **There is no age-based retention limit.** Once a session is indexed, antiburn keeps
-its local data until the reader explicitly clears it. The agents' own files are never
+its local data until the reader explicitly clears it. Deleting a transcript from disk
+does not delete what antiburn derived from it: that data stays until the session is
+deleted in antiburn or the local index is cleared. The agents' own files are never
 touched. Settings → Privacy clears all locally stored session data at once.
 
 **Deletion.** antiburn removes only records it created itself. It cannot and will not
