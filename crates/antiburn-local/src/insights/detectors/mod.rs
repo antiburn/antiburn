@@ -111,6 +111,8 @@ pub struct ReportCatalogs {
     pub effort_tiers_above_cap: BTreeSet<String>,
     /// Curated deprecated models keyed by normalized model name.
     pub model_replacements: BTreeMap<String, ModelReplacement>,
+    /// Premium models keyed by normalized model name.
+    pub premium_models: BTreeSet<String>,
     /// Delegated fast-tier turns at or above this count are a finding.
     /// Zero observed delegated turns never fire, whatever the value.
     pub fast_mode_delegated_turns_threshold: u64,
@@ -121,13 +123,26 @@ pub struct ReportCatalogs {
 impl Default for ReportCatalogs {
     fn default() -> Self {
         Self {
-            revision: 1,
+            revision: 2,
             depth_cap_tokens: 160_000,
             effort_tiers_above_cap: ["max", "ultrathink", "xhigh"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
             model_replacements: BTreeMap::new(),
+            premium_models: [
+                "claude-3-opus",
+                "claude-opus-4",
+                "claude-opus-4-1",
+                "claude-opus-4-5",
+                "claude-opus-4-6",
+                "claude-opus-4-7",
+                "claude-opus-4-8",
+                "claude-opus-5",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
             fast_mode_delegated_turns_threshold: 1,
             cache_idle_expiry_ms: 300_000,
         }
@@ -143,7 +158,7 @@ pub(crate) fn evaluate(
     match detector {
         DetectorId::SessionsOverDepth => sessions_over_depth::evaluate(evidence, catalogs),
         DetectorId::ModelOverthinking => model_overthinking::evaluate(evidence, catalogs),
-        DetectorId::OverpoweredSubagents => overpowered_subagents::evaluate(evidence),
+        DetectorId::OverpoweredSubagents => overpowered_subagents::evaluate(evidence, catalogs),
         DetectorId::UnusedMcpServers => unused_mcp_servers::evaluate(evidence),
         DetectorId::UnusedBuiltInTools => unused_built_in_tools::evaluate(evidence),
         DetectorId::UnusedSkills => unused_skills::evaluate(evidence),

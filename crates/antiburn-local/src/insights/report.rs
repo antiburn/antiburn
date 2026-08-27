@@ -560,6 +560,7 @@ mod tests {
             vec![
                 DetectorId::SessionsOverDepth,
                 DetectorId::ModelOverthinking,
+                DetectorId::OverpoweredSubagents,
                 DetectorId::UnusedMcpServers,
                 DetectorId::UnusedSkills,
                 DetectorId::OldModelUsage,
@@ -657,6 +658,7 @@ mod tests {
         for detector in [
             DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
+            DetectorId::OverpoweredSubagents,
             DetectorId::UnusedMcpServers,
             DetectorId::UnusedSkills,
             DetectorId::OldModelUsage,
@@ -668,16 +670,11 @@ mod tests {
                 DetectorStatus::Clean
             );
         }
-        // Capability gaps stay not assessed with a structured reason.
-        for detector in [
-            DetectorId::OverpoweredSubagents,
-            DetectorId::UnusedBuiltInTools,
-        ] {
-            assert_eq!(
-                report.detector_statuses[detector.index()],
-                DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
-            );
-        }
+        // The capability gap stays not assessed with a structured reason.
+        assert_eq!(
+            report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
+            DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
+        );
     }
 
     #[test]
@@ -974,7 +971,7 @@ mod tests {
             accumulator.observe_session(evidence(&format!("session-{index}")));
         }
         let report = accumulator.finish(context(CoverageCounts::default()));
-        let detector = DetectorId::OverpoweredSubagents;
+        let detector = DetectorId::UnusedBuiltInTools;
 
         assert_eq!(report.capability_gaps[&detector], 5);
         assert_eq!(report.capability_gap_examples[&detector].len(), 3);

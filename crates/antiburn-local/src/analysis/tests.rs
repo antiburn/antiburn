@@ -48,7 +48,6 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
     let capabilities = evidence.capabilities;
     assert!(!capabilities.tool_definitions);
     assert!(!capabilities.service_tier);
-    assert!(!capabilities.subagent_models);
     assert!(!capabilities.quota_incidents);
     assert!(!capabilities.harness_version);
     assert!(matches!(

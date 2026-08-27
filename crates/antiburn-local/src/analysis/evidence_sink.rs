@@ -5,12 +5,12 @@ use crate::analysis::evidence::{
     ContextSourceEvidence, CoverageReason, DepthExample, EligibilityEvidence, EvidenceCoverage,
     EvidenceSource, EvidenceValue, LoadedSource, MAX_COMPACTION_BOUNDARIES, MAX_CONTEXT_SOURCES,
     MAX_EVIDENCE_EXAMPLES, MAX_MODEL_TRANSITIONS, MAX_MODELS, MAX_SUBAGENT_CHILDREN,
-    MAX_TIER_LABELS, MAX_TOOL_NAMES, MAX_UNRECOGNIZED_TYPES, ModelEvidence, ModelTokens,
-    ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence, SessionEvidence,
-    SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SourceAcceptance,
-    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
-    ToolEvidence, ToolUse, TurnCounts, cap_string, insert_diagnostic_field,
-    record_diagnostic_set_cap,
+    MAX_SUBAGENT_MODELS, MAX_TIER_LABELS, MAX_TOOL_NAMES, MAX_UNRECOGNIZED_TYPES, ModelEvidence,
+    ModelTokens, ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence,
+    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionTimeRange,
+    SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
+    SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts, cap_string,
+    insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RecordSink, SessionSummary,
@@ -54,6 +54,8 @@ pub struct SessionEvidenceAccumulator {
     models_cap_exceeded: bool,
     subagent_spawn_count: u64,
     delegated_turns: u64,
+    delegated_models: BTreeSet<String>,
+    delegated_model_missing: bool,
     subagent_children: Vec<SubagentChild>,
     subagent_examples: Vec<SubagentExample>,
     subagents_cap_exceeded: bool,
@@ -113,6 +115,8 @@ impl SessionEvidenceAccumulator {
             models_cap_exceeded: false,
             subagent_spawn_count: 0,
             delegated_turns: 0,
+            delegated_models: BTreeSet::new(),
+            delegated_model_missing: false,
             subagent_children: Vec::new(),
             subagent_examples: Vec::new(),
             subagents_cap_exceeded: false,
@@ -381,10 +385,14 @@ impl SessionEvidenceAccumulator {
                 parent_model,
                 provenance,
             } => self.observe_subagent_spawn(*ts_ms, parent_model.as_deref(), *provenance),
-            EvidenceObservation::DelegatedTurn { is_sidechain } => {
-                self.delegated_turns = self
-                    .delegated_turns
-                    .saturating_add(u64::from(*is_sidechain));
+            EvidenceObservation::DelegatedTurn {
+                is_sidechain,
+                is_assistant,
+                model,
+            } => {
+                if *is_sidechain {
+                    self.observe_delegated_turn(*is_assistant, model.as_deref());
+                }
             }
             EvidenceObservation::ThreadLink { uuid, parent_uuid } => {
                 // A parent link is verified only against identities this
@@ -419,6 +427,30 @@ impl SessionEvidenceAccumulator {
                     }
                 }
             }
+        }
+    }
+
+    fn observe_delegated_turn(&mut self, is_assistant: bool, model: Option<&str>) {
+        self.delegated_turns = self.delegated_turns.saturating_add(1);
+        if !is_assistant {
+            return;
+        }
+        let Some(model) = model else {
+            self.delegated_model_missing = true;
+            return;
+        };
+        let capped = cap_string("subagents.delegated_models", model, &mut self.diagnostics);
+        if capped.len() != model.len() {
+            self.subagents_cap_exceeded = true;
+        }
+        if self.delegated_models.contains(&capped) {
+            return;
+        }
+        if self.delegated_models.len() == MAX_SUBAGENT_MODELS {
+            self.subagents_cap_exceeded = true;
+            self.note_collection_cap("subagents.delegated_models");
+        } else {
+            self.delegated_models.insert(capped);
         }
     }
 
@@ -577,6 +609,7 @@ impl SessionEvidenceAccumulator {
         let subagents = SubagentEvidence {
             spawn_count: self.subagent_spawn_count,
             delegated_turns: self.delegated_turns,
+            delegated_models: self.delegated_models.clone(),
             children: self.subagent_children.clone(),
             examples: self.subagent_examples.clone(),
         };
@@ -687,11 +720,26 @@ impl SessionEvidenceAccumulator {
             } else {
                 EvidenceValue::Complete(models)
             },
-            subagents: self.supported_value(
-                subagents,
-                self.capabilities.subagent_relationships,
-                self.subagents_cap_exceeded,
-            ),
+            subagents: if !self.capabilities.subagent_relationships {
+                EvidenceValue::Unsupported
+            } else if let Some(reason) = self.record_loss_reason {
+                EvidenceValue::Partial {
+                    observed: subagents,
+                    reason,
+                }
+            } else if self.subagents_cap_exceeded {
+                EvidenceValue::Partial {
+                    observed: subagents,
+                    reason: CoverageReason::CapExceeded,
+                }
+            } else if self.capabilities.subagent_models && self.delegated_model_missing {
+                EvidenceValue::Partial {
+                    observed: subagents,
+                    reason: CoverageReason::AttributionIncomplete,
+                }
+            } else {
+                EvidenceValue::Complete(subagents)
+            },
             cache: if let Some(reason) = self.record_loss_reason {
                 EvidenceValue::Partial {
                     observed: cache,
@@ -1256,6 +1304,28 @@ mod tests {
     }
 
     #[test]
+    fn subagents_delegated_models_overflow_to_partial() {
+        let mut accumulator = accumulator(true);
+        for index in 0..(MAX_SUBAGENT_MODELS * 2) {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::DelegatedTurn {
+                    is_sidechain: true,
+                    is_assistant: true,
+                    model: Some(format!("model-{index}")),
+                },
+            )));
+        }
+        let evidence = accumulator.evidence();
+        assert_capped_collection(&evidence, "subagents.delegated_models");
+        assert_eq!(
+            assert_cap_partial(evidence.subagents)
+                .delegated_models
+                .len(),
+            MAX_SUBAGENT_MODELS
+        );
+    }
+
+    #[test]
     fn cache_model_transitions_overflows_to_partial() {
         let mut accumulator = accumulator(true);
         for index in 0..((MAX_MODEL_TRANSITIONS + 1) * 2) {
@@ -1551,6 +1621,25 @@ mod tests {
         let subagents = assert_cap_partial(evidence.subagents);
         assert_eq!(
             subagents.examples[0].parent_model.as_ref().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+    }
+
+    #[test]
+    fn subagents_delegated_model_overflows_to_partial() {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::DelegatedTurn {
+                is_sidechain: true,
+                is_assistant: true,
+                model: Some(long_string()),
+            },
+        )));
+        let evidence = accumulator.evidence();
+        assert_truncated_string(&evidence, "subagents.delegated_models");
+        let subagents = assert_cap_partial(evidence.subagents);
+        assert_eq!(
+            subagents.delegated_models.first().unwrap().len(),
             EVIDENCE_STRING_CAP
         );
     }
