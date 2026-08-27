@@ -25,13 +25,13 @@ for platform limits, discovery details, and local data storage.
 macOS or Linux:
 
 ```sh
-curl -fsSL https://github.com/antiburn/antiburn/releases/latest/download/install.sh | sh
+curl -fsSL http://antiburn.ai/install.sh | sh
 ```
 
 Windows 11 PowerShell:
 
 ```powershell
-irm https://github.com/antiburn/antiburn/releases/latest/download/install.ps1 | iex
+irm http://antiburn.ai/install.ps1 | iex
 ```
 
 The installers verify release checksums. macOS also verifies the application
