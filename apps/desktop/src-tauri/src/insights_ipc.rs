@@ -87,8 +87,13 @@ impl InsightsController {
             let mut slot = self.lock_slot();
             match slot.as_ref() {
                 // Deduplication: this request awaits the reduction that
-                // already runs. Its own reducer is never invoked.
-                Some(run) if !run.finished() => Arc::clone(run),
+                // already runs. Its own reducer is never invoked. A run
+                // with the cancel flag set is not joined: that flag came
+                // from a caller that already left, and a fresh request
+                // must not inherit its cancellation.
+                Some(run) if !run.finished() && !run.cancel.load(Ordering::SeqCst) => {
+                    Arc::clone(run)
+                }
                 _ => {
                     let cancel = Arc::new(AtomicBool::new(false));
                     let (done_tx, done_rx) = watch::channel(false);
@@ -251,6 +256,48 @@ mod tests {
         let result = task.await.unwrap();
         assert_eq!(result.unwrap_err(), REPORT_CANCELLED_ERROR);
         assert!(!controller.is_calculating());
+    }
+
+    #[tokio::test]
+    async fn a_request_after_a_cancel_does_not_join_the_cancelled_run() {
+        let controller = Arc::new(InsightsController::default());
+        let started = Arc::new(AtomicBool::new(false));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let doomed = {
+            let controller = Arc::clone(&controller);
+            let started = Arc::clone(&started);
+            tokio::spawn(async move {
+                controller
+                    .report_with(request(), move |_request, _cancel| async move {
+                        started.store(true, Ordering::SeqCst);
+                        // Hold the cancelled reduction open so the second
+                        // request arrives before it observes the flag.
+                        release_rx.await.unwrap();
+                        Err(anyhow::Error::new(ReportCancelled))
+                    })
+                    .await
+            })
+        };
+        while !started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+
+        controller.cancel();
+
+        // The fresh request must not join the cancelled run: it starts
+        // its own reduction and succeeds while the doomed run still runs.
+        let fresh = controller
+            .report_with(request(), move |request, cancel| async move {
+                assert!(!cancel.load(Ordering::SeqCst));
+                Ok(empty_report(&request))
+            })
+            .await;
+        assert!(fresh.is_ok());
+
+        release_tx.send(()).unwrap();
+        let doomed = doomed.await.unwrap();
+        assert_eq!(doomed.unwrap_err(), REPORT_CANCELLED_ERROR);
     }
 
     #[tokio::test]
