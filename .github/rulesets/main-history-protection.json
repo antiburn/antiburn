@@ -1,0 +1,10 @@
+{
+  "name": "main-history-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {
+    "ref_name": { "include": ["refs/heads/main"], "exclude": [] }
+  },
+  "rules": [{ "type": "deletion" }, { "type": "non_fast_forward" }]
+}

@@ -4,7 +4,7 @@ These fixtures freeze the Claude JSONL shapes that the first Local Insights slic
 
 **Every file here is synthetic.** Each file was authored by hand from format knowledge and the current parser. No real session, user, machine, organization, or repository is represented. The fictional user is `avery`. The fictional project is `/home/avery/projects/demo-app`. The `orbit-tracker` and `atlas-notes` skills are invented.
 
-The parser and these in-repository fixtures define the supported Claude record shapes. A private reference repository may inform future fixture work, but it is not accessible evidence for this payload.
+The parser and these in-repository fixtures define the supported Claude record shapes. Repeatable checks against public CLI versions can inform future fixture work.
 
 No captured provider session log ever enters this repository. Do not copy one. Do not redact one into a fixture. Redaction is not sufficient.
 

@@ -9,6 +9,8 @@ edition = "2024"
 description = "Self-contained, network-free local engine for antiburn: discovery, session analysis, repository identity, pricing, and versioned local persistence/export contracts."
 license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
+readme = "README.md"
+publish = false
 
 [lib]
 name = "antiburn_local"

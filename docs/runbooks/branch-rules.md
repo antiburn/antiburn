@@ -1,7 +1,7 @@
 # Branch rules
 
-This runbook defines the repository rule for `main`. It also gives the commands
-to apply, verify, and disable the rule.
+This runbook defines the repository rules for `main`. It also gives the commands
+to apply, verify, and disable the required-check rule.
 
 ## What the rule does
 
@@ -9,12 +9,16 @@ The rule requires the `ci-required` status check on `main`. It pins the check to
 the GitHub Actions app. A red or missing check prevents a merge or an unchecked
 branch update.
 
-The rule does not require pull requests or resolved conversations. It does not
-prevent force-pushes or deletion. GitHub can accept a local merge when the
-up-to-date branch already has a passing `ci-required` check.
+The required-check rule does not require pull requests or resolved
+conversations. The separate `main-history-protection` rule blocks force-pushes
+and deletion. GitHub can accept a local merge when the up-to-date branch already
+has a passing `ci-required` check.
 
 The condition names `refs/heads/main`. Edit the payload and reapply the ruleset
 if the repository renames the branch.
+
+The reviewed payloads are in `.github/rulesets/main-required-checks.json` and
+`.github/rulesets/main-history-protection.json`.
 
 ## Check the gate before the apply
 

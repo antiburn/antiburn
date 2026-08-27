@@ -12,8 +12,9 @@ release notes unless you prefer otherwise.
 
 ## Scope
 
-antiburn runs entirely on-device, as you: it needs no connection to any service
-of ours. Reports of particular interest:
+antiburn processes session data on-device and needs no account or backend.
+Optional analytics sends only the fields documented in
+[`docs/analytics.md`](docs/analytics.md). Reports of particular interest:
 
 - any code path that sends session content, credentials, or anything else
   about you to a service of ours, or to any third party — the one hard line

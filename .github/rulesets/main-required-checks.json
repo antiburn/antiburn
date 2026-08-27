@@ -3,7 +3,9 @@
   "target": "branch",
   "enforcement": "active",
   "bypass_actors": [],
-  "conditions": { "ref_name": { "include": ["refs/heads/main"], "exclude": [] } },
+  "conditions": {
+    "ref_name": { "include": ["refs/heads/main"], "exclude": [] }
+  },
   "rules": [
     {
       "type": "required_status_checks",

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Overuse of Fast Mode: explicit fast-tier usage in delegated work.
 //!
 //! The evidence separates main-loop from delegated fast-tier turns.

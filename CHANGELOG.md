@@ -323,12 +323,10 @@ shows its unidentified-developer warning.
   worth telling apart, app version, and operating system — and never
   sessions, prompts, titles, file paths, repository names, token counts, costs,
   or credentials. Settings → Privacy enumerates all of them, and
-  `docs/usage-analytics.md` carries the full catalog plus the commands to check
-  any of it yourself. Nothing is sent until the first run completes; in the EU,
-  the EEA, and the UK the control starts off rather than on; and a build with no
-  endpoint injected sends nothing at all. Recorded as D-027 in
-  `docs/oss/source-denylist.toml` and D-28 in `docs/deviations.md`, which also
-  resolves D-5.
+  `docs/analytics.md` carries the full catalog plus the commands to check any of
+  it yourself. Nothing is sent until the first run completes; in the EU, the
+  EEA, and the UK the control starts off rather than on; and a build with no
+  endpoint injected sends nothing at all.
 - **Launch antiburn when you sign in.** New installs opt in by default from the
   final setup step so the menu-bar or tray utility is available without being
   opened by hand. The same switch is available later in Settings → General,
@@ -520,9 +518,9 @@ clear its quarantine with
 
 ### Changed
 
-- Installing no longer shows a licence-agreement screen — neither on the
-  mounted macOS disk image nor in the Windows installer. The MPL-2.0 requires
-  no acceptance, and the full licence text is now readable inside the app.
+- Installing no longer shows a licence-agreement screen on the mounted macOS
+  disk image or in the Windows installer. The full licence text is readable
+  inside the app.
 
 ### Added
 

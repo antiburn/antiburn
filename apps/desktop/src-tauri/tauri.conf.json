@@ -13,7 +13,6 @@
   "app": {
     "macOSPrivateApi": true,
     "windows": [],
-    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
     }

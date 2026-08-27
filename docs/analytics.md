@@ -134,10 +134,8 @@ it sends, which is the list above. Retention and IP handling belong in the
 those open questions explicitly rather than leaving them unstated, and nothing
 in the application links to it until they are answered.
 
-This distinction is deliberate. A claim the client cannot keep is exactly the
-kind of drift the [deviations register](deviations.md) exists to catch, so the
-in-app copy and this document both stop at the boundary of what the code
-guarantees.
+This distinction is deliberate. The in-app copy and this document stop at the
+boundary of what the client code can guarantee.
 
 ## Verifying this yourself
 

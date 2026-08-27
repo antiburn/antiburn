@@ -104,7 +104,7 @@ engine. Release and dependency checks run through the required CI gate.
   highlight is momentary and lets go on mouse-up, so the shell drives it, and
   clears it again on every path that puts the popover away.
 - **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
-  It is created once at startup and anchored under its menu-bar item on each
+  It is created on demand and anchored under its menu-bar item on each
   open, flipping above the item and clamping to the display when there is no
   room below. It hides when it loses focus, when Escape is pressed, on a
   second click of the menu-bar item, and — on macOS — on a click anywhere
@@ -123,7 +123,7 @@ engine. Release and dependency checks run through the required CI gate.
   window can be reached again once something else takes focus. Finishing it
   puts the window away, drops the Dock icon, and posts the one notification
   that says where the app now lives, anchored under that glyph.
-- **Settings.** An ordinary decorated window, created on first use and reused.
+- **Settings.** An ordinary decorated window, created on demand.
   A source list on the left, one pane on the right; every control writes
   through immediately, so there is no Save button and no dirty state.
 - **Local store.** One SQLite database under the app data directory
@@ -166,7 +166,7 @@ engine. Release and dependency checks run through the required CI gate.
 
 Settings and onboarding have dedicated HTML and TypeScript entries. The
 resident shell uses URL fragments for the nudge and overlay, with the popover
-as its default. Each window owns one surface for its whole lifetime.
+as its default. Each window owns one surface until the shell releases it.
 
 ## Known gaps
 
@@ -175,12 +175,8 @@ These build-level limits affect desktop development:
 - The popover is opaque and square-cornered. Rounded, translucent chrome needs
   `macOSPrivateApi` plus transparent-window support, and arrives with the
   design system.
-- Updates are configured but inert. `plugins.updater.pubkey` in
-  `tauri.conf.json` is empty, so the app reports no update support and the
-  release workflow refuses to build until the key pair is minted (see
-  [`docs/runbooks/updater-key-recovery.md`](../../docs/runbooks/updater-key-recovery.md)).
-  The plugin is registered in release builds only, so development performs no
-  network requests at all.
+- The updater plugin is registered in release builds only, so development
+  performs no update checks or downloads.
 - `bundle.createUpdaterArtifacts` is `true`, which means a **bundle** build
   signs its updater artifact and therefore needs `TAURI_SIGNING_PRIVATE_KEY` in
   the environment. Nothing in CI or the everyday `cargo`/`pnpm` checks bundles,
@@ -196,5 +192,3 @@ These build-level limits affect desktop development:
 - Agent icons are a single neutral glyph for every agent. Vendor logos are the
   vendors' marks; original per-agent artwork is a later stream, and
   `src/lib/agentIcon.tsx` already carries the icon-name seam it will key off.
-- `icon.icns` / `icon.ico` are produced during release packaging rather than
-  checked in — nothing in the build or test path needs them yet.
