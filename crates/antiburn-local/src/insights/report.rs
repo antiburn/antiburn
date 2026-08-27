@@ -9,6 +9,8 @@ use crate::analysis::{
     SourceCapabilities,
 };
 
+use super::detectors::{self, DetectorFold, DetectorStatus, ReportCatalogs};
+use super::quota::{QuotaPressureAccumulator, QuotaPressureSection};
 use super::{CoverageBucket, DetectorId};
 
 pub const MAX_EXAMPLES_PER_DETECTOR: usize = 3;
@@ -249,6 +251,9 @@ pub struct EfficiencyReport {
     pub context: ReportContext,
     pub assessed_sessions: u64,
     pub detectors: [DetectorCounts; 9],
+    pub detector_statuses: [DetectorStatus; 9],
+    pub quota_pressure: QuotaPressureSection,
+    pub catalog_revision: i64,
     pub coverage_reasons: BTreeMap<CoverageReason, u64>,
     pub capability_gaps: BTreeMap<DetectorId, u64>,
     pub capability_gap_examples: BTreeMap<DetectorId, Vec<SessionExample>>,
@@ -257,6 +262,9 @@ pub struct EfficiencyReport {
 pub struct EfficiencyReportAccumulator {
     assessed_sessions: u64,
     detectors: [DetectorCounts; 9],
+    folds: [DetectorFold; 9],
+    quota: QuotaPressureAccumulator,
+    catalogs: ReportCatalogs,
     coverage_reasons: BTreeMap<CoverageReason, u64>,
     capability_gaps: BTreeMap<DetectorId, u64>,
     capability_gap_examples: BTreeMap<DetectorId, Vec<SessionExample>>,
@@ -271,12 +279,21 @@ impl Default for EfficiencyReportAccumulator {
 
 impl EfficiencyReportAccumulator {
     pub fn new() -> Self {
+        Self::with_catalogs(ReportCatalogs::default())
+    }
+
+    /// Builds an accumulator with report-time catalogs. Catalogs are
+    /// applied during reduction only and never touch stored evidence.
+    pub fn with_catalogs(catalogs: ReportCatalogs) -> Self {
         Self {
             assessed_sessions: 0,
             detectors: [DetectorCounts {
                 eligible: 0,
                 assessed: 0,
             }; 9],
+            folds: core::array::from_fn(|_| DetectorFold::default()),
+            quota: QuotaPressureAccumulator::default(),
+            catalogs,
             coverage_reasons: BTreeMap::new(),
             capability_gaps: BTreeMap::new(),
             capability_gap_examples: BTreeMap::new(),
@@ -296,6 +313,11 @@ impl EfficiencyReportAccumulator {
         ) {
             self.actively_growing += 1;
         }
+
+        // The quota section reads every cohort session. It stays
+        // outside the nine-category eligibility loop below.
+        self.quota
+            .observe_session(&evidence.identity, &evidence.quota_incidents);
 
         // Lazily allocate the identity example only if this session has a detector gap.
         let mut bounded_example: Option<SessionExample> = None;
@@ -322,6 +344,8 @@ impl EfficiencyReportAccumulator {
                 {
                     counts.assessed += 1;
                 }
+                let observation = detectors::evaluate(detector, &evidence, &self.catalogs);
+                self.folds[detector.index()].observe(observation, &evidence);
                 continue;
             }
 
@@ -339,10 +363,20 @@ impl EfficiencyReportAccumulator {
 
     pub fn finish(self, mut context: ReportContext) -> EfficiencyReport {
         context.coverage.actively_growing = self.actively_growing;
+        let detector_statuses = core::array::from_fn(|index| {
+            detectors::status(
+                self.detectors[index],
+                self.folds[index].clone(),
+                self.assessed_sessions,
+            )
+        });
         EfficiencyReport {
             context,
             assessed_sessions: self.assessed_sessions,
             detectors: self.detectors,
+            detector_statuses,
+            quota_pressure: self.quota.finish(),
+            catalog_revision: self.catalogs.revision,
             coverage_reasons: self.coverage_reasons,
             capability_gaps: self.capability_gaps,
             capability_gap_examples: self.capability_gap_examples,
@@ -355,8 +389,11 @@ mod tests {
     use super::*;
     use crate::analysis::{
         ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, PARSER_REVISION,
-        SessionEvidenceAccumulator, SourceKind,
+        QuotaConfidence, QuotaHitSeverity, QuotaIncident, QuotaLimitKind,
+        SessionEvidenceAccumulator, SessionQuotaEvidence, SourceKind, TurnCounts,
     };
+    use crate::insights::detectors::NotAssessedReason;
+    use crate::insights::quota::QuotaPressureSection;
 
     fn evidence(session_id: &str) -> SessionEvidence {
         SessionEvidenceAccumulator::new(EvidenceSource {
@@ -490,6 +527,188 @@ mod tests {
         assert_eq!(report.context.coverage.awaiting_provider_support, 2);
         assert!(report.context.coverage.actively_growing <= report.context.coverage.ready);
         assert!(report.context.coverage.is_consistent());
+    }
+
+    #[test]
+    fn an_empty_cohort_reports_every_status_as_not_assessed() {
+        let accumulator = EfficiencyReportAccumulator::new();
+        let mut coverage = CoverageCounts::default();
+        coverage.observe(CoverageBucket::UnknownStart, 2);
+        coverage.observe(CoverageBucket::Pending, 3);
+        let report = accumulator.finish(context(coverage));
+
+        for status in &report.detector_statuses {
+            assert_eq!(
+                *status,
+                DetectorStatus::NotAssessed(NotAssessedReason::NoSessionsInWindow)
+            );
+        }
+        assert_eq!(report.quota_pressure, QuotaPressureSection::NotAssessed);
+    }
+
+    #[test]
+    fn unknown_start_and_pending_rows_never_enter_a_detector_denominator() {
+        // Denominator-only rows reach the report through coverage
+        // counts and never through observe_session. This test pins
+        // that data-path property: the same cohort with and without
+        // the denominator-only rows must produce identical detector
+        // counts and statuses. The population-side exclusion is
+        // CH-010's job, proven by the population tests in
+        // apps/desktop/src-tauri/src/insights_report.rs.
+        let mut baseline = EfficiencyReportAccumulator::new();
+        baseline.observe_session(evidence("cohort-only"));
+        let mut baseline_coverage = CoverageCounts::default();
+        baseline_coverage.observe(CoverageBucket::Ready, 1);
+        let baseline_report = baseline.finish(context(baseline_coverage));
+
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence("cohort-only"));
+        let mut coverage = CoverageCounts::default();
+        coverage.observe(CoverageBucket::Ready, 1);
+        coverage.observe(CoverageBucket::UnknownStart, 4);
+        coverage.observe(CoverageBucket::Pending, 5);
+        let report = accumulator.finish(context(coverage));
+
+        assert_eq!(report.assessed_sessions, 1);
+        assert_eq!(report.detectors, baseline_report.detectors);
+        assert_eq!(report.detector_statuses, baseline_report.detector_statuses);
+        for detector in DetectorId::ALL {
+            let counts = report.detectors[detector.index()];
+            assert!(counts.eligible <= report.assessed_sessions);
+            assert!(counts.assessed <= counts.eligible);
+        }
+        assert_eq!(report.context.coverage.unknown_start, 4);
+        assert_eq!(report.context.coverage.pending, 5);
+    }
+
+    #[test]
+    fn each_detector_produces_exactly_one_status_for_the_claude_matrix() {
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence("matrix"));
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        // Complete empty evidence proves absence for the eligible
+        // detectors that can express their rule.
+        for detector in [
+            DetectorId::ModelOverthinking,
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedSkills,
+            DetectorId::OldModelUsage,
+            DetectorId::OveruseOfFastMode,
+        ] {
+            assert_eq!(
+                report.detector_statuses[detector.index()],
+                DetectorStatus::Clean
+            );
+        }
+        // Capability gaps stay not assessed with a structured reason.
+        for detector in [
+            DetectorId::SessionsOverDepth,
+            DetectorId::OverpoweredSubagents,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::CacheChurn,
+        ] {
+            assert_eq!(
+                report.detector_statuses[detector.index()],
+                DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_absence_never_yields_clean_at_report_level() {
+        // One of two eligible sessions carries only partial model
+        // evidence and shows no finding. Overthinking must not read
+        // clean from that incomplete absence.
+        let mut partial = evidence("partial");
+        partial.models = match partial.models {
+            EvidenceValue::Complete(observed) => EvidenceValue::Partial {
+                observed,
+                reason: CoverageReason::IncompleteTail,
+            },
+            _ => unreachable!(),
+        };
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence("complete"));
+        accumulator.observe_session(partial);
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        assert_eq!(
+            report.detector_statuses[DetectorId::ModelOverthinking.index()],
+            DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        );
+    }
+
+    #[test]
+    fn an_observed_finding_reaches_the_report_status_with_examples() {
+        let mut row = evidence("fast-delegation");
+        let EvidenceValue::Complete(models) = &mut row.models else {
+            unreachable!()
+        };
+        models.fast_modes.insert(
+            "fast".to_owned(),
+            TurnCounts {
+                main_loop: 0,
+                delegated: 2,
+            },
+        );
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(row);
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        let DetectorStatus::Findings(findings) =
+            &report.detector_statuses[DetectorId::OveruseOfFastMode.index()]
+        else {
+            panic!("expected findings");
+        };
+        assert_eq!(findings.finding_sessions, 1);
+        assert_eq!(findings.examples.len(), 1);
+        assert_eq!(findings.examples[0].session_id, "fast-delegation");
+        assert_eq!(report.catalog_revision, ReportCatalogs::default().revision);
+    }
+
+    #[test]
+    fn quota_section_is_not_assessed_without_transcript_quota_evidence() {
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence("no-quota"));
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        assert_eq!(report.quota_pressure, QuotaPressureSection::NotAssessed);
+    }
+
+    #[test]
+    fn quota_section_reports_deduplicated_transcript_incidents() {
+        let hit = QuotaIncident {
+            ts_ms: 700,
+            limit_kind: QuotaLimitKind::RollingWindow,
+            severity: QuotaHitSeverity::HardHit,
+            model: Some("model-a".to_owned()),
+            reset_ts_ms: Some(900),
+            utilization_pct: None,
+            confidence: QuotaConfidence::Observed,
+        };
+        let mut row = evidence("limited");
+        row.quota_incidents = EvidenceValue::Complete(SessionQuotaEvidence {
+            incidents: vec![hit.clone(), hit],
+        });
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(row);
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        let QuotaPressureSection::Findings(findings) = &report.quota_pressure else {
+            panic!("expected quota findings");
+        };
+        assert_eq!(findings.total_hits, 1);
+        assert_eq!(
+            findings.hits_by_limit_kind,
+            BTreeMap::from([(QuotaLimitKind::RollingWindow, 1)])
+        );
+        assert_eq!(findings.affected_session_count, 1);
+        assert_eq!(
+            findings.affected_models,
+            ["model-a".to_owned()].into_iter().collect()
+        );
+        assert_eq!(findings.observed_times_ms, vec![700]);
     }
 
     #[test]

@@ -86,9 +86,9 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 
 - **What was found:** The first production writer of `PublishedEvidence::Unsupported` needs the detector prerequisite sets before it can classify a provider.
 - **Found by seam:** GH-70 seam 0016.
-- **Why deferred:** CH-010 reads unsupported rows but does not own evidence publication policy.
+- **Why deferred:** CH-010 reads unsupported rows but does not own evidence publication policy. CH-011 shipped the detector prerequisite sets the writer needs but stayed engine-only; the writer lives in the desktop worker.
 - **Kind:** `deferred`
-- **Disposition:** `fold-into-later-seam` for CH-011.
+- **Disposition:** `fold-into-later-seam` for CH-011b.
 
 ## Report scope for hosts with WSL sessions
 

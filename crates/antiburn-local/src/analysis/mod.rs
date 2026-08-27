@@ -55,8 +55,9 @@ pub use evidence::{
     CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
     ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP, EligibilityEvidence,
     EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource, ModelEvidence, ModelTokens,
-    ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence, SessionEvidence,
-    SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SourceAcceptance,
+    ModelTransition, OrderingObservation, ParseDiagnostics, QuotaConfidence, QuotaHitSeverity,
+    QuotaIncident, QuotaLimitKind, RelationConfidence, SessionEvidence, SessionEvidenceIdentity,
+    SessionProvenance, SessionQuotaEvidence, SessionTimeRange, SourceAcceptance,
     SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
     ToolEvidence, ToolUse, TurnCounts,
 };
