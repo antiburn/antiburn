@@ -1,0 +1,81 @@
+# Contributing to antiburn
+
+Thank you for contributing.
+
+## Ground rules
+
+- The project uses the [MIT License](LICENSE). Contributions use the same
+  license. There is no CLA.
+- Every authored commit needs a
+  [Developer Certificate of Origin](https://developercertificate.org/)
+  sign-off. Use `git commit -s`. CI rejects unsigned commits.
+- Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+- Keep pull requests focused, reviewable, and reversible.
+- Follow the engineering constraints in [AGENTS.md](AGENTS.md).
+
+## Privacy and safety
+
+antiburn is a local application. It needs no project-operated account, server,
+or backend. It can read local coding-agent data and contact a provider with the
+credentials that provider issued to the user. It must not send session content,
+credentials, or other user data to the project or to an unrelated third party.
+
+The update check and anonymised application analytics are the only
+project-operated network channels. Neither is required for the app to work.
+Analytics must keep all properties documented in [docs/analytics.md](docs/analytics.md):
+the user sees the control before transmission, payloads contain no work or
+credentials, identifiers rotate, and builds without a configured endpoint send
+nothing.
+
+Take extra care with operations that modify files, stop processes, or can cost
+the user money. Require a clear user action, keep credentials in memory only,
+and state the cost and its bound in the pull request.
+
+Use synthetic test fixtures. Do not commit real transcripts, user names, home
+paths, repository names, credentials, or captured machine output. Redaction is
+not sufficient.
+
+antiburn is an always-running utility. Keep reads, allocations, concurrency,
+retained data, CPU work, and disk I/O bounded by the visible feature's needs.
+
+## Development checks
+
+Run the engine checks from its standalone workspace:
+
+```bash
+cd crates/antiburn-local
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Run desktop checks from the repository root:
+
+```bash
+pnpm install
+pnpm --filter @antiburn/desktop lint
+pnpm --filter @antiburn/desktop type-check
+pnpm --filter @antiburn/desktop test
+pnpm --filter @antiburn/desktop build
+```
+
+Run shell checks from its standalone workspace:
+
+```bash
+cd apps/desktop/src-tauri
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Run `pnpm run slop:all` and `pnpm run secrets` before you push. Pull-request CI
+also runs `pnpm run slop` against the changed files. See
+[docs/debugging.md](docs/debugging.md) for isolated desktop profiles, logs, and
+developer tools.
+
+## Pull requests
+
+Describe the user impact, tests, privacy or performance effects, and any known
+limits. Do not include credentials or private session content in issues, logs,
+screenshots, or pull requests. Use the confidential reporting channel in
+[SECURITY.md](SECURITY.md) for security problems.

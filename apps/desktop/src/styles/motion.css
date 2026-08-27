@@ -1,0 +1,98 @@
+/* ==========================================================================
+   Reduced-motion baseline.
+
+   One global clamp rather than per-component opt-ins: any animation or
+   transition added anywhere is neutralized by default, and a surface that
+   still needs a hint of movement re-states a short duration below.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  /* The one documented exception. Under reduced motion the segmented
+     control's sliding indicator is replaced by a per-segment fill
+     (`motion-reduce:block` in SegmentedControl), and an instant swap between
+     two filled segments reads as a flicker. A 60ms crossfade is short enough
+     to stay well inside "no motion" while keeping the change legible: it is a
+     color change, not movement. */
+  .ui-segmented-reduced-fill {
+    transition-duration: 60ms !important;
+  }
+}
+
+/* ==========================================================================
+   Panel entrance.
+
+   Played by the settings window when a section is selected: the panel is
+   remounted (keyed by pane) and steps in once. Short and one-way — there is
+   no exit animation, because the outgoing panel is gone the moment the key
+   changes. Neutralized by the reduced-motion clamp above.
+   ========================================================================== */
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-step-in {
+  animation: step-in 200ms ease-out;
+}
+
+/* ==========================================================================
+   Notification entrance and exit.
+
+   Played by the notification window as a nudge arrives and again as it
+   leaves. Unlike the panel entrance above, the exit is load-bearing: the view
+   defers the real dismiss (or the clicked CTA) to `animationend`, so these
+   rules must exist for the notification to ever close. The reduced-motion
+   clamp collapses both to ~0ms, which still fires that event — the action
+   simply runs immediately.
+
+   Transform-only, deliberately: the webview is prewarmed and hidden, and
+   WebKit can suspend an animation that begins while a window is off screen. A
+   suspended opacity keyframe would leave the notification blank; a suspended
+   transform only leaves it off by a few points, and the view's own watchdog
+   clears the state either way.
+   ========================================================================== */
+
+@keyframes nudge-in {
+  from {
+    transform: translateY(-8px) scale(0.98);
+  }
+
+  to {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes nudge-out {
+  from {
+    transform: translateY(0);
+  }
+
+  to {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-nudge-in {
+  animation: nudge-in 200ms ease-out;
+}
+
+.animate-nudge-out {
+  animation: nudge-out 160ms ease-in forwards;
+}

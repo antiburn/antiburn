@@ -1,0 +1,69 @@
+# Standalone workspace root: the engine never joins the private workspace and
+# resolves with its own lockfile.
+[workspace]
+
+[package]
+name = "antiburn-local"
+version = "0.1.8"
+edition = "2024"
+description = "Self-contained, network-free local engine for antiburn: discovery, session analysis, repository identity, pricing, and versioned local persistence/export contracts."
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+
+[lib]
+name = "antiburn_local"
+path = "src/lib.rs"
+
+[features]
+# This feature compiles the discovery counters for tests.
+# A consumer's dev-dependency keeps them out of release runtime builds.
+test-instrumentation = []
+
+# Local-dependence contract: this crate needs no service of ours and depends
+# on no private workspace packages. It uses only the network a feature
+# actually needs — none, today. Every dependency added here must pass the
+# dependency-license check against the crate's own lockfile.
+[dependencies]
+anyhow = "1"
+# Async trait methods on the per-agent discovery adapter contract.
+async-trait = "0.1"
+# Bounded-concurrency stream combinators for the discovery fan-out.
+futures-util = "0.3"
+# Held at the 0.32 line deliberately — do not bump without checking consumers.
+# `libsqlite3-sys` sets `links = "sqlite3"`, so a dependency graph may contain
+# exactly one version of it. That is a resolution-graph rule, not a build rule:
+# it binds even when the conflicting dependency's features are off. Embedders
+# that also use SQLx 0.8 (which requires `libsqlite3-sys ^0.30.1`) can therefore
+# only resolve alongside rusqlite 0.31 or 0.32; 0.33+ moves to a
+# `libsqlite3-sys` line SQLx 0.8 cannot accept, and the whole graph fails to
+# resolve. The engine uses no API newer than 0.32, so the newer line bought
+# nothing and cost every SQLx-embedding consumer a build. A bump needs SQLx to
+# widen its own requirement first. `.github/dependabot.yml` ignores this crate
+# for the same reason.
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+# Async runtime pieces used by local persistence and the bounded child-process
+# mechanism. Excludes `net`: nothing in the engine needs it yet, not that the
+# engine may not open a socket.
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+# Logging facade only. Emits nothing unless the embedding application installs
+# a subscriber, and performs no I/O of its own.
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+# Process-group signalling when a bounded child misses its deadline.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Durable renames, the kill-on-close process host, and windowless consoles.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+# Unforgeable per-spawn marker for the process host's PATH hand-off.
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# Deterministic file mtimes for discovery's recency-window tests.
+filetime = "0.2"
+serial_test = "4"
+tempfile = "3"

@@ -1,0 +1,63 @@
+/* ==========================================================================
+   Base element behavior: document typography, cursors, selection, and
+   overscroll. Everything here is unlayered on purpose, so it sits above
+   Tailwind's `base` layer without needing `!important`.
+   ========================================================================== */
+
+html,
+body,
+#root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  font-optical-sizing: auto;
+  text-rendering: optimizeLegibility;
+  /* Transparent by default so a window that opts into translucent material
+     shows it. A window that wants an opaque surface paints one itself. */
+  background: transparent;
+}
+
+/* Desktop convention: buttons keep the arrow cursor, not the pointer hand. */
+button,
+[role="button"] {
+  cursor: default;
+}
+
+input:not([type="range"]),
+textarea,
+[contenteditable] {
+  cursor: text;
+}
+
+[draggable="true"] {
+  cursor: grab;
+}
+
+/* Concrete accent hex, not the live system accent token: that token resolves
+   incorrectly when used as a background-color. */
+::selection {
+  background: var(--color-accent-fill);
+  color: white;
+}
+
+/* UI chrome is not selectable text; inputs and editable regions still are. */
+body {
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[contenteditable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* The app's windows are fixed-size surfaces: never let the document itself
+   rubber-band or scroll. Scrolling belongs to an explicit scroll container. */
+html,
+body {
+  overscroll-behavior: none;
+  overflow: hidden;
+}

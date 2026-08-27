@@ -1,0 +1,49 @@
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Australia/Melbourne"
+    open-pull-requests-limit: 5
+    groups:
+      pnpm-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "cargo"
+    directories:
+      - "/crates/antiburn-local"
+      - "/apps/desktop/src-tauri"
+      - "/apps/desktop/src-tauri/crates/nudge"
+      - "/apps/desktop/src-tauri/crates/sound"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Australia/Melbourne"
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # `libsqlite3-sys` sets `links = "sqlite3"`, so a dependency graph may
+      # contain exactly one version of it — a resolution rule that binds our
+      # embedders, not only us. Consumers on SQLx 0.8 need `libsqlite3-sys
+      # ^0.30.1`, which only rusqlite 0.31/0.32 satisfy. Bumping this crate
+      # breaks their resolve without breaking ours, so the failure surfaces
+      # downstream and late; that is exactly what happened once already.
+      # Revisit when SQLx widens its requirement. See the comment on the
+      # dependency in crates/antiburn-local/Cargo.toml.
+      - dependency-name: "rusqlite"
+      - dependency-name: "libsqlite3-sys"

@@ -1,0 +1,279 @@
+name: Release engine
+
+# Cuts a DRAFT GitHub Release for the `antiburn-local` engine crate from an
+# `antiburn-local-v<version>` tag.
+#
+# There is no crates.io publish, and that is the model rather than an omission:
+# the engine is consumed as a Git dependency pinned to a tag, so the release is
+# a reviewable source snapshot with a checksum, an inventory, and a provenance
+# record — not a registry upload that nobody can diff.
+#
+# As with the application, nothing here publishes. A person reads the draft and
+# presses Publish. Published tags and assets are immutable.
+
+on:
+  push:
+    tags: ['antiburn-local-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-engine-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+  RUST_TOOLCHAIN: '1.97.0'
+
+jobs:
+  verify:
+    name: Verify tag and manifest
+    if: github.repository == 'antiburn/antiburn'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      # Third-party actions are pinned by immutable commit SHA.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify the tag agrees with the crate manifest
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/verify-release-version.mjs engine "$TAG"
+
+      - name: Extract the release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes=$(awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ "\\[" ver "\\]") { found=1; next }
+            }
+            found { print }
+          ' crates/antiburn-local/CHANGELOG.md)
+          if [[ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]]; then
+            echo "::error file=crates/antiburn-local/CHANGELOG.md::No changelog section found for ${VERSION}. Add '## [${VERSION}] - <date>' and re-tag."
+            exit 1
+          fi
+          printf '%s\n' "$notes" > RELEASE-NOTES.md
+          cat RELEASE-NOTES.md
+
+      - name: Upload the release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine-release-notes
+          path: RELEASE-NOTES.md
+          if-no-files-found: error
+
+  trusted-main-ci:
+    name: Trust exact main CI
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_url: ${{ steps.ci.outputs.run_url }}
+      sha: ${{ steps.ci.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Wait for this exact SHA to pass main CI
+        id: ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/wait-for-main-ci.mjs "${{ github.repository }}" "${{ github.sha }}"
+
+      - name: Record the trusted gate
+        env:
+          RUN_URL: ${{ steps.ci.outputs.run_url }}
+          SHA: ${{ steps.ci.outputs.sha }}
+        run: |
+          {
+            echo "## Trusted main CI"
+            echo
+            echo "Release gate: [successful main run](${RUN_URL}) for \`${SHA}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  package:
+    name: Package and draft
+    needs: [verify, trusted-main-ci]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: Download the release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: engine-release-notes
+          path: notes
+
+      # The tarball is built from the tagged tree through `git archive`, so it
+      # holds exactly what the tag points at and nothing a runner left behind.
+      # It is assembled deterministically — fixed order, fixed timestamps, no
+      # owner — so two runs of this tag produce the same bytes and the same
+      # checksum.
+      - name: Package the source tarball
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="antiburn-local-${VERSION}"
+          stage="${RUNNER_TEMP}/stage/${name}"
+          mkdir -p "$stage" dist
+          # `HEAD` rather than "$TAG": the checkout is the tagged commit either
+          # way, and this does not depend on the tag ref surviving the fetch.
+          git archive --format=tar HEAD:crates/antiburn-local | tar -x -C "$stage"
+          # Include the project licence and notice in the source tarball.
+          cp LICENSE NOTICE THIRD_PARTY_NOTICES "$stage/"
+          test -f "$stage/Cargo.toml"
+          test -f "$stage/Cargo.lock"
+          tar --create --gzip \
+            --sort=name \
+            --mtime="$(git log -1 --format=%cI HEAD)" \
+            --owner=0 --group=0 --numeric-owner \
+            --directory "${RUNNER_TEMP}/stage" \
+            --file "dist/${name}.tar.gz" \
+            "$name"
+          # Listed to a file first: piping straight into `head` closes the pipe
+          # after 20 lines and, under pipefail, tar's resulting write error
+          # fails the step.
+          tar --list --file "dist/${name}.tar.gz" > "${RUNNER_TEMP}/tarball-listing.txt"
+          head -n 20 "${RUNNER_TEMP}/tarball-listing.txt"
+
+      - name: Inventory the engine dependency tree
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo cyclonedx \
+            --manifest-path crates/antiburn-local/Cargo.toml \
+            --format json \
+            --all \
+            --target all \
+            --spec-version 1.5 \
+            --override-filename "antiburn-local-${VERSION}"
+          produced=$(find crates/antiburn-local -maxdepth 1 -type f \
+            -name "antiburn-local-${VERSION}*.json" | sort | head -n 1)
+          if [[ -z "$produced" ]]; then
+            echo "::error::cargo-cyclonedx produced no inventory for the engine."
+            exit 1
+          fi
+          mv "$produced" "dist/antiburn-local-${VERSION}.cdx.json"
+
+      - name: Assemble the release directory
+        run: |
+          set -euo pipefail
+          cp notes/RELEASE-NOTES.md dist/
+          (cd dist && find . -maxdepth 1 -type f -printf '%f\0' | sort -z \
+            | xargs -0 sha256sum) > "${RUNNER_TEMP}/SHA256SUMS"
+          mv "${RUNNER_TEMP}/SHA256SUMS" dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+          ls -l dist
+
+      # Attestation persistence is plan-gated on private repositories, so while
+      # the repository is private these two steps skip themselves; they activate
+      # automatically the day the repository becomes public. No other step
+      # consumes their outputs.
+      - name: Attest the build provenance
+        id: attest
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Add the provenance bundle to the release
+        if: ${{ !github.event.repository.private }}
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: cp "$BUNDLE_PATH" "dist/antiburn-local-${VERSION}-provenance.intoto.jsonl"
+
+      # `--latest=false`, always and deliberately. "Latest" is a property of the
+      # repository, and the application's updater reads
+      # `releases/latest/download/latest.json`. An engine release that took the
+      # Latest badge would point every installed copy of the app at a release
+      # with no such file.
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          title="antiburn-local ${VERSION}"
+          if state=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [[ "$state" != "true" ]]; then
+              echo "::error::${TAG} is already published. Published assets are immutable — cut a corrective release instead. See docs/runbooks/rollback.md."
+              exit 1
+            fi
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$title" --notes-file dist/RELEASE-NOTES.md \
+              --draft=true --latest=false
+          elif [[ "$PRERELEASE" == "true" ]]; then
+            gh release create "$TAG" dist/* --draft --prerelease --verify-tag --latest=false \
+              --title "$title" --notes-file dist/RELEASE-NOTES.md
+          else
+            gh release create "$TAG" dist/* --draft --verify-tag --latest=false \
+              --title "$title" --notes-file dist/RELEASE-NOTES.md
+          fi
+
+      - name: Summarize what a reviewer has to check
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Draft engine release ${TAG}"
+            echo
+            echo "Nothing is published yet. Follow \`docs/runbooks/release.md\`."
+            echo
+            echo "The workflow verified this exact main SHA, the deterministic source archive, inventory, and checksums. Manual review remains responsible for extracting the archive, running its consumer test, and reading the release notes."
+            echo
+            echo "| Asset | SHA-256 |"
+            echo "| --- | --- |"
+            while read -r sum name; do
+              echo "| \`${name}\` | \`${sum}\` |"
+            done < dist/SHA256SUMS
+            echo
+            echo "Verify provenance locally with:"
+            echo
+            echo '```'
+            echo "gh attestation verify <downloaded asset> --repo ${REPOSITORY}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

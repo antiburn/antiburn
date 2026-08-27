@@ -1,0 +1,108 @@
+/* These styles show active sessions with a title shimmer. */
+
+.activity-row-active {
+  --activity-row-shimmer-cycle: 4000ms;
+}
+
+/* --- Running-session title shimmer --- */
+
+/* A highlight band sweeps across the title from left to right. The band is a
+   background gradient clipped to the glyphs, drawn on a `::before` overlay
+   that repeats the text through `attr(data-text)` — the real text stays in the
+   DOM underneath as the accessible, selectable copy, and the overlay is inert. */
+@keyframes activity-row-title-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: 0% 0;
+  }
+}
+
+.activity-row-title-shimmer {
+  /* A white band sweeps across the text and lifts the glyphs it crosses.
+     The band must stay brighter than the glyphs under it, or there is
+     nothing to see. Light mode keeps its full-strength ink, which the band
+     washes out against the card. Dark mode text is near-white already, so
+     the rules below step the resting glyphs down to make room. */
+  --activity-row-shimmer-base: var(--color-text-primary);
+  --activity-row-shimmer-highlight: var(--color-shimmer);
+  position: relative;
+  /* Contain the sweep's repaint to this box instead of invalidating the row. */
+  contain: paint;
+  color: var(--activity-row-shimmer-base);
+}
+
+/* Dark mode gives the band its headroom: the resting glyphs drop to the
+   secondary label while a title runs. The [data-theme] rules follow the media
+   query, and their higher specificity settles a conflict. */
+@media (prefers-color-scheme: dark) {
+  .activity-row-title-shimmer {
+    --activity-row-shimmer-base: var(--color-text-secondary);
+  }
+}
+
+:root[data-theme="light"] .activity-row-title-shimmer {
+  --activity-row-shimmer-base: var(--color-text-primary);
+}
+
+:root[data-theme="dark"] .activity-row-title-shimmer {
+  --activity-row-shimmer-base: var(--color-text-secondary);
+}
+
+.activity-row-title-shimmer::before {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  /* The band stays at the center of a background 300% as wide as the box, so
+     the box shows one third of the background at a time. Thus the visible
+     window is fully transparent at both ends of the sweep: the band goes off
+     the right edge before it comes in again from the left. The 35% and 65%
+     stops are the widest band that keeps this clearance. A wider band needs a
+     larger background-size, or it stays visible across the wrap and jumps. */
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 35%,
+    var(--activity-row-shimmer-highlight) 50%,
+    transparent 65%,
+    transparent 100%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: activity-row-title-shimmer var(--activity-row-shimmer-cycle) linear infinite;
+}
+
+.activity-row-title-shimmer.truncated-text-lines::before {
+  display: -webkit-box;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--truncated-text-lines);
+}
+
+/* --- Reduced motion --- */
+
+/* The global clamp in motion.css shortens transitions; the shimmer is an
+   *ambient loop*, which no duration makes acceptable, so it stops outright.
+   It keeps its resting meaning: the title drops the overlay and paints as
+   plain primary text rather than staying at the dimmed shimmer base. */
+@media (prefers-reduced-motion: reduce) {
+  .activity-row-title-shimmer {
+    color: var(--color-text-primary);
+  }
+
+  .activity-row-title-shimmer::before {
+    content: none;
+    animation: none !important;
+  }
+}

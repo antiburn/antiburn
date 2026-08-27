@@ -1,0 +1,88 @@
+/* ==========================================================================
+   Type scale. One class per step; the family and line-height come from the
+   base element rules, so a step only sets size, weight, and tracking.
+
+   Declared outside any `@layer`, which means these outrank Tailwind
+   utilities. That is deliberate — `type-title-3` sets its own weight, so a
+   call site that wants a different weight has to say `font-normal!`.
+   ========================================================================== */
+
+.type-large-title {
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.36px;
+}
+
+.type-title-1 {
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0.35px;
+}
+
+.type-title-2 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.43px;
+}
+
+.type-title-3 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.23px;
+}
+
+.type-body-large {
+  /* One step above type-body, for a list's primary line. The tracking
+     sits between type-body (-0.08px at 13px) and type-title-3 (-0.23px
+     at 15px). 13.5px, not 14px: at 14px the session titles overpowered
+     the card (review outcome, 2026-08-27). */
+  font-size: 13.5px;
+  font-weight: 400;
+  letter-spacing: -0.15px;
+}
+
+.type-headline {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.08px;
+}
+
+.type-body {
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: -0.08px;
+}
+
+.type-callout {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.type-footnote {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.12px;
+}
+
+.type-caption {
+  /* Raised from 10px. At 10px the popover captions read as unusably small,
+     and the review outcome was "we should never be using tiny text like
+     this". The size now equals type-footnote, and only the letter-spacing
+     separates the two. That makes them one step, not two: the scale should
+     lose a level, which is a change for every surface and not for this one
+     file. */
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.06px;
+}
+
+/* Limit the text to the selected number of lines. */
+.truncated-text-lines {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--truncated-text-lines);
+}

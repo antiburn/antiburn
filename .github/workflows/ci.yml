@@ -1,0 +1,727 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: "24"
+  RUST_TOOLCHAIN: "1.97.0"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  classify:
+    name: classify changes
+    runs-on: ubuntu-24.04
+    outputs:
+      docs_only: ${{ steps.changes.outputs.docs_only }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+      engine: ${{ steps.changes.outputs.engine }}
+      desktop_backend: ${{ steps.changes.outputs.desktop_backend }}
+      full: ${{ steps.changes.outputs.full }}
+      release_app: ${{ steps.changes.outputs.release_app }}
+      release_engine: ${{ steps.changes.outputs.release_engine }}
+    steps:
+      - name: Checkout with history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      # build-tool-catalog.test.mjs exercises the YAML parser the real
+      # catalogue build uses, so this job needs node_modules before it can
+      # run the control-plane tests.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test the CI control plane
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
+
+      # The drift guard runs here, not in a classified job. It reads the
+      # contract, the stylesheets, and the popover window's own corner
+      # constant, so a change to any one of them has to reach it — and a
+      # change under src-tauri classifies as backend, which never starts the
+      # frontend job. It needs no dependencies, so the cost is a few
+      # milliseconds on every run.
+      - name: Check design-contract drift
+        run: node scripts/check-design-drift.mjs
+
+      - name: Classify the diff
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/classify-ci-changes.mjs "$BASE_SHA" "$HEAD_SHA"
+
+  engine:
+    name: engine (${{ matrix.name }})
+    needs: classify
+    if: needs.classify.outputs.engine == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: crates/antiburn-local -> target
+          shared-key: engine-ci
+          key: ${{ matrix.name }}
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Install nextest
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
+        with:
+          tool: cargo-nextest
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        working-directory: crates/antiburn-local
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: crates/antiburn-local
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        working-directory: crates/antiburn-local
+        run: cargo nextest run --locked --lib --tests
+
+  desktop-frontend:
+    name: desktop app (frontend, ${{ matrix.name }})
+    needs: classify
+    if: needs.classify.outputs.frontend == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Linting, formatting, types, and the Vite build are host-independent.
+      # Windows earns a test leg for path handling, line endings, and modifier
+      # behavior, but does not repeat those four identical checks.
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: pnpm --filter @antiburn/desktop format
+
+      - name: Lint
+        if: runner.os == 'Linux'
+        run: pnpm --filter @antiburn/desktop lint
+
+      - name: Type-check
+        if: runner.os == 'Linux'
+        run: pnpm --filter @antiburn/desktop type-check
+
+      - name: Check for unused frontend code
+        if: runner.os == 'Linux'
+        run: pnpm --filter @antiburn/desktop knip
+
+      - name: Test
+        run: pnpm --filter @antiburn/desktop test
+
+      - name: Build
+        if: runner.os == 'Linux'
+        run: pnpm --filter @antiburn/desktop build
+
+  desktop-backend-format:
+    name: desktop app (backend formatting)
+    needs: classify
+    if: needs.classify.outputs.desktop_backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+
+      - name: Check formatting
+        working-directory: apps/desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: Check diagnostic crate formatting
+        working-directory: apps/desktop/src-tauri/crates/trace
+        run: cargo fmt --check
+
+      - name: Check HUD crate formatting
+        working-directory: apps/desktop/src-tauri/crates/hud
+        run: cargo fmt --check
+
+  desktop-backend-checks:
+    name: desktop app (backend, ${{ matrix.check.name }}, ${{ matrix.workspace.name }}, ${{ matrix.platform.name }})
+    needs: classify
+    if: needs.classify.outputs.desktop_backend == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+        check:
+          - name: Clippy
+            command: clippy --all-targets --locked -- -D warnings
+            save_cache: false
+          - name: Tests
+            command: test --locked
+            save_cache: true
+        workspace:
+          - name: shell
+            directory: apps/desktop/src-tauri
+            tauri: true
+          - name: diagnostic
+            directory: apps/desktop/src-tauri/crates/trace
+            tauri: false
+          - name: HUD
+            directory: apps/desktop/src-tauri/crates/hud
+            tauri: true
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Use Canonical Ubuntu package archive
+        if: runner.os == 'Linux' && matrix.workspace.tauri
+        run: |
+          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i \
+              -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              {} +
+
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux' && matrix.workspace.tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ matrix.workspace.directory }} -> target
+          shared-key: desktop-backend-ci
+          key: ${{ matrix.platform.name }}-${{ matrix.workspace.name }}
+          cache-bin: false
+          save-if: ${{ matrix.check.save_cache && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Run ${{ matrix.check.name }}
+        working-directory: ${{ matrix.workspace.directory }}
+        run: cargo ${{ matrix.check.command }}
+
+  desktop-backend:
+    name: desktop app (backend)
+    needs:
+      - classify
+      - desktop-backend-format
+      - desktop-backend-checks
+    if: always()
+    runs-on: ubuntu-24.04
+    env:
+      BACKEND_SELECTED: ${{ needs.classify.outputs.desktop_backend }}
+      FORMAT_RESULT: ${{ needs.desktop-backend-format.result }}
+      CHECKS_RESULT: ${{ needs.desktop-backend-checks.result }}
+    steps:
+      - name: Require every selected backend check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$BACKEND_SELECTED" != "true" ]]; then
+            exit 0
+          fi
+          failed=0
+          require_success() {
+            local name="$1" result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::${name} finished with ${result}, expected success."
+              failed=1
+            fi
+          }
+          require_success desktop-backend-format "$FORMAT_RESULT"
+          require_success desktop-backend-checks "$CHECKS_RESULT"
+          exit "$failed"
+
+  installer-tests:
+    name: installer scripts (${{ matrix.name }})
+    needs: classify
+    if: needs.classify.outputs.full == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: POSIX
+            os: ubuntu-24.04
+          - name: Windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Test the POSIX installer
+        if: runner.os == 'Linux'
+        run: node --test scripts/install-sh.test.mjs
+
+      - name: Check the POSIX installer
+        if: runner.os == 'Linux'
+        run: shellcheck --shell=sh install.sh
+
+      - name: Install PowerShell test tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+
+      - name: Test the PowerShell installer with PowerShell 7
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester scripts/install-ps1.test.ps1 -CI
+
+      - name: Install the Windows PowerShell test tool
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+
+      - name: Test the PowerShell installer with Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester scripts/install-ps1.test.ps1 -CI
+
+      - name: Check the PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0
+          $findings = @(Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error,Warning)
+          if ($findings.Count -gt 0) {
+            $findings | Format-Table -AutoSize
+            throw "PSScriptAnalyzer found $($findings.Count) issue(s)."
+          }
+
+  release-metadata:
+    name: release metadata
+    needs: classify
+    if: needs.classify.outputs.release_app == 'true' || needs.classify.outputs.release_engine == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Verify application release metadata
+        if: needs.classify.outputs.release_app == 'true'
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          node scripts/verify-release-version.mjs app "antiburn-v${version}"
+          node scripts/verify-app-engine-release.mjs
+          grep -q "^## \[${version}\] - " CHANGELOG.md
+          cargo metadata --locked --no-deps --format-version 1 \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml > /dev/null
+
+      - name: Verify engine release metadata
+        if: needs.classify.outputs.release_engine == 'true'
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
+            crates/antiburn-local/Cargo.toml)
+          node scripts/verify-release-version.mjs engine "antiburn-local-v${version}"
+          grep -q "^## \[${version}\] - " crates/antiburn-local/CHANGELOG.md
+          cargo metadata --locked --no-deps --format-version 1 \
+            --manifest-path crates/antiburn-local/Cargo.toml > /dev/null
+          cargo metadata --locked --no-deps --format-version 1 \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml > /dev/null
+
+  warm-release-cache:
+    name: warm release cache (${{ matrix.name }})
+    needs: classify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.classify.outputs.release_app == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macOS x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: Linux x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Use Canonical Ubuntu package archive
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i \
+              -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              {} +
+
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Restore and prepare release dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          shared-key: desktop-release
+          key: ${{ matrix.target }}
+          cache-bin: false
+          save-if: true
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Match the signed release job exactly so cached macOS objects cannot
+      # silently raise the application's deployment floor.
+      - name: Set the macOS deployment target
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Compile the release target without bundling or signing
+        # This matrix includes PowerShell on Windows and POSIX shells elsewhere.
+        # Let Actions substitute the value before either shell sees the command.
+        run: pnpm --filter @antiburn/desktop exec tauri build --features distribution --target "${{ matrix.target }}" --no-bundle
+
+  licenses:
+    name: dependency licenses
+    needs: classify
+    if: needs.classify.outputs.frontend == 'true' || needs.classify.outputs.engine == 'true' || needs.classify.outputs.desktop_backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust license tools
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
+        with:
+          tool: cargo-deny,cargo-about@0.9.2
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check engine licenses and dependency bans
+        working-directory: crates/antiburn-local
+        run: cargo deny --locked check bans licenses
+
+      - name: Check engine advisories
+        working-directory: crates/antiburn-local
+        run: cargo deny --locked check advisories
+
+      - name: Check desktop app licenses
+        working-directory: apps/desktop/src-tauri
+        run: cargo deny --locked check licenses
+
+      - name: Check desktop app advisories
+        working-directory: apps/desktop/src-tauri
+        run: cargo deny --locked check advisories
+
+      - name: Verify third-party notices
+        run: pnpm notices:check
+
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify every non-merge commit is signed off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r sha; do
+            if ! git log -1 --format=%B "$sha" | grep -qi '^Signed-off-by: .\+<.\+@.\+>'; then
+              echo "::error::commit $sha is missing a Signed-off-by trailer (git commit -s)"
+              missing=1
+            fi
+          done < <(git rev-list --no-merges "$BASE_SHA".."$HEAD_SHA")
+          exit "$missing"
+
+  aislop:
+    name: slop gate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout with history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Judge the changed files
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: pnpm run slop --base "$BASE_SHA"
+
+      - name: Judge the full tree
+        if: github.event_name == 'push'
+        run: pnpm run slop:all
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Scan the tree for secrets
+        run: pnpm run secrets
+
+  ci-required:
+    name: ci-required
+    if: always()
+    needs:
+      - classify
+      - engine
+      - desktop-frontend
+      - desktop-backend
+      - installer-tests
+      - release-metadata
+      - warm-release-cache
+      - licenses
+      - dco
+      - aislop
+      - secrets
+    runs-on: ubuntu-24.04
+    env:
+      CLASSIFY_RESULT: ${{ needs.classify.result }}
+      ENGINE_RESULT: ${{ needs.engine.result }}
+      FRONTEND_RESULT: ${{ needs.desktop-frontend.result }}
+      BACKEND_RESULT: ${{ needs.desktop-backend.result }}
+      INSTALLER_TESTS_RESULT: ${{ needs.installer-tests.result }}
+      RELEASE_METADATA_RESULT: ${{ needs.release-metadata.result }}
+      WARM_RELEASE_RESULT: ${{ needs.warm-release-cache.result }}
+      LICENSES_RESULT: ${{ needs.licenses.result }}
+      DCO_RESULT: ${{ needs.dco.result }}
+      AISLOP_RESULT: ${{ needs.aislop.result }}
+      SECRETS_RESULT: ${{ needs.secrets.result }}
+      EVENT_NAME: ${{ github.event_name }}
+      ENGINE_SELECTED: ${{ needs.classify.outputs.engine }}
+      FRONTEND_SELECTED: ${{ needs.classify.outputs.frontend }}
+      BACKEND_SELECTED: ${{ needs.classify.outputs.desktop_backend }}
+      INSTALLERS_SELECTED: ${{ needs.classify.outputs.full }}
+      RELEASE_APP_SELECTED: ${{ needs.classify.outputs.release_app }}
+      RELEASE_ENGINE_SELECTED: ${{ needs.classify.outputs.release_engine }}
+    steps:
+      - name: Require every selected gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          require_success() {
+            local name="$1" result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::${name} finished with ${result}, expected success."
+              failed=1
+            fi
+          }
+          allow_skip() {
+            local name="$1" result="$2"
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "::error::${name} finished with ${result}."
+              failed=1
+            fi
+          }
+          require_if_selected() {
+            local name="$1" selected="$2" result="$3"
+            if [[ "$selected" == "true" ]]; then
+              require_success "$name" "$result"
+            else
+              allow_skip "$name" "$result"
+            fi
+          }
+
+          require_success classify "$CLASSIFY_RESULT"
+          require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
+          require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
+          require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
+          require_if_selected installer-tests "$INSTALLERS_SELECTED" "$INSTALLER_TESTS_RESULT"
+          if [[ "$RELEASE_APP_SELECTED" == "true" || "$RELEASE_ENGINE_SELECTED" == "true" ]]; then
+            require_success release-metadata "$RELEASE_METADATA_RESULT"
+          else
+            allow_skip release-metadata "$RELEASE_METADATA_RESULT"
+          fi
+          if [[ "$EVENT_NAME" == "push" && "$RELEASE_APP_SELECTED" == "true" ]]; then
+            require_success warm-release-cache "$WARM_RELEASE_RESULT"
+          else
+            allow_skip warm-release-cache "$WARM_RELEASE_RESULT"
+          fi
+          if [[ "$ENGINE_SELECTED" == "true" || "$BACKEND_SELECTED" == "true" ]]; then
+            require_success licenses "$LICENSES_RESULT"
+          else
+            allow_skip licenses "$LICENSES_RESULT"
+          fi
+          require_success aislop "$AISLOP_RESULT"
+          require_success secrets "$SECRETS_RESULT"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            require_success dco "$DCO_RESULT"
+          else
+            allow_skip dco "$DCO_RESULT"
+          fi
+          exit "$failed"

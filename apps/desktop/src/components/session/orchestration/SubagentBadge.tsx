@@ -1,0 +1,42 @@
+import { Bot } from "lucide-react"
+
+import { CollapsibleOrchestrationCard } from "./CollapsibleOrchestrationCard"
+import { SubagentRosterRow, type AgentIconRenderer } from "./SubagentRosterRow"
+
+export interface SubagentBadgeProps {
+  /** Orchestrator (parent) agent slug — the icon for its session row. */
+  parentAgent: string
+  /** Title of the orchestrator session that launched this sub-agent, if known. */
+  parentTitle?: string
+  /** Open the launching orchestrator's analysis. */
+  onOpenOrchestrator: () => void
+  renderAgentIcon?: AgentIconRenderer | undefined
+}
+
+/**
+ * The banner at the top of a sub-agent's analysis, mirroring the orchestrator
+ * card. Collapsed it marks the view as a worker that something else launched,
+ * not a session the user drove; expanding it reveals the launching orchestrator
+ * as a row that links up to its analysis.
+ */
+export function SubagentBadge({
+  parentAgent,
+  parentTitle,
+  onOpenOrchestrator,
+  renderAgentIcon,
+}: SubagentBadgeProps) {
+  return (
+    <CollapsibleOrchestrationCard
+      icon={<Bot size={13} aria-hidden="true" className="shrink-0 text-system-indigo-text" />}
+      title="Autonomous sub-agent"
+    >
+      <div className="px-2 pb-0.5 type-caption text-label-tertiary">Launched by</div>
+      <SubagentRosterRow
+        agent={parentAgent}
+        label={parentTitle?.trim() || "Orchestrator session"}
+        onClick={onOpenOrchestrator}
+        renderAgentIcon={renderAgentIcon}
+      />
+    </CollapsibleOrchestrationCard>
+  )
+}

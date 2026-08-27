@@ -1,0 +1,119 @@
+@import "@fontsource-variable/bitcount-prop-single/index.css";
+
+@theme {
+  --font-bitcount:
+    "Bitcount Prop Single Variable", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    system-ui, sans-serif;
+  --color-burn: var(--color-burn-val);
+  --color-burn-muted: var(--color-burn-muted-val);
+  --color-bg-hud: var(--color-bg-hud-val);
+}
+
+:root {
+  --color-burn-val: hsl(18 100% 50%);
+  --color-burn-muted-val: hsl(18.1 88% 51.4%);
+  --color-bg-hud-val: hsl(0 0% 96.4%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-burn-val: hsl(25 100% 50%);
+    --color-burn-muted-val: hsl(23 88.8% 54%);
+    --color-bg-hud-val: hsl(0 0% 12.5%);
+  }
+}
+
+:root[data-theme="light"] {
+  --color-burn-val: hsl(18 100% 50%);
+  --color-burn-muted-val: hsl(18.1 88% 51.4%);
+  --color-bg-hud-val: hsl(0 0% 96.4%);
+}
+
+:root[data-theme="dark"] {
+  --color-burn-val: hsl(25 100% 50%);
+  --color-burn-muted-val: hsl(23 88.8% 54%);
+  --color-bg-hud-val: hsl(0 0% 12.5%);
+}
+
+/*
+ * The HUD window shows the desktop behind it, so it paints no surface. The
+ * shell paints the window surface on `#root`, so this must clear both: `body`
+ * keeps the canvas transparent, and `#root` drops the surface the shell gives
+ * every other window.
+ */
+body[data-transparent-window],
+body[data-transparent-window] #root {
+  background-color: transparent;
+}
+
+.stats-number {
+  font-family: var(--font-bitcount);
+  letter-spacing: 0.02em;
+}
+
+.led-caption {
+  font-family: var(--font-bitcount);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.led-blink {
+  animation: led-blink 3s steps(1, end) infinite;
+}
+
+@keyframes led-blink {
+  0%,
+  49.9% {
+    background-color: var(--led-on);
+  }
+
+  50%,
+  100% {
+    background-color: var(--color-surface-tertiary);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .led-blink {
+    animation: none;
+  }
+}
+
+/*
+ * The tooltip shadow (`shadow.tooltip` in design.md) as a filter, because
+ * `.bevel` owns `box-shadow` on the same element.
+ */
+.hud-detail-card {
+  filter: drop-shadow(0 2px 8px rgb(0 0 0 / 0.12)) drop-shadow(0 0.5px 2px rgb(0 0 0 / 0.06));
+}
+
+/* The show fade for the detail card. Hide is instant: the shell hides the window. */
+.hud-detail-in {
+  animation: hud-detail-in var(--duration-quick) ease-out;
+}
+
+@keyframes hud-detail-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.bevel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    inset 0 -1px 0 rgb(0 0 0 / 0.06);
+}
+
+:root[data-theme="dark"] .bevel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    inset 0 -1px 0 rgb(0 0 0 / 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .bevel {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.08),
+      inset 0 -1px 0 rgb(0 0 0 / 0.35);
+  }
+}

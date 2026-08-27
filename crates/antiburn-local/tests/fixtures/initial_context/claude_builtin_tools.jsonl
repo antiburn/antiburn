@@ -1,0 +1,5 @@
+{"type":"attachment","version":"2.1.246","cwd":"/home/avery/projects/demo-app","attachment":{"type":"deferred_tools_delta","addedNames":["Bash","CronCreate","CronDelete"]}}
+{"type":"assistant","version":"2.1.246","timestamp":"2026-03-04T14:02:18.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"assistant","version":"2.1.246","timestamp":"2026-03-04T14:02:20.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":40,"output_tokens":5},"content":[{"type":"tool_use","name":"Read","input":{"file_path":"report.rs"}}]}}
+{"type":"assistant","version":"2.1.246","timestamp":"2026-03-04T14:02:22.000Z","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}
+{"type":"assistant","version":"2.1.246","timestamp":"2026-03-04T14:02:24.000Z","message":{"role":"assistant","model":"sonnet","content":[{"type":"text","text":"Done."}]}}

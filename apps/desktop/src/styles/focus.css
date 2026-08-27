@@ -1,0 +1,23 @@
+/* ==========================================================================
+   Keyboard-only focus ring.
+
+   `html[data-keyboard]` is set on Tab and cleared on any pointer interaction
+   (see src/lib/focusModality.ts), so the ring paints for keyboard navigation
+   on every platform and never after a mouse click.
+   ========================================================================== */
+
+/* Suppress the engine's native focus ring. Some webviews paint their own
+   :focus-visible outline on programmatic or window-activation focus with no
+   Tab press at all — a window that restores focus to the last element when it
+   is shown again, for instance. That ring is NOT gated on `data-keyboard`, so
+   it would leak despite the keyboard-only rule below. Reset it here and let
+   the gated rule be the single source of truth. */
+:focus-visible {
+  outline: none;
+}
+
+:where(html[data-keyboard]) :focus-visible {
+  outline: 3px solid rgb(0 122 255 / 0.5);
+  outline-offset: -1px;
+  border-radius: var(--radius-control);
+}

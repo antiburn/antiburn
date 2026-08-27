@@ -1,0 +1,195 @@
+# Standalone workspace root. The shell is deliberately *not* a member of any
+# other workspace: the engine (`crates/antiburn-local`) resolves with its own
+# lockfile and its own local-dependence boundary (no service of ours; only
+# the network a feature needs), and joining the two would let the shell's
+# app-framework dependencies leak into that resolution.
+#
+# The in-tree crates below are path dependencies with their own `[workspace]`
+# roots and lockfiles, on the same reasoning. They sit inside this directory,
+# so cargo must be told they are not members — a nested workspace root that is
+# neither member nor excluded aborts resolution outright ("multiple workspace
+# roots found in the same workspace").
+[workspace]
+exclude = ["crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
+
+[package]
+name = "antiburn"
+version = "0.1.0-rc.10"
+edition = "2024"
+rust-version = "1.97"
+description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+publish = false
+
+[lib]
+# The Tauri entry point lives in the library so the binary is a thin launcher.
+name = "antiburn_desktop"
+path = "src/lib.rs"
+
+[features]
+# Set only by packaged distribution builds. Release-profile development runs
+# deliberately omit it so they cannot change the machine's login items.
+distribution = []
+
+[[bin]]
+name = "antiburn"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The local engine. The shell adds windows, tray, and IPC around it and owns
+# no analysis logic of its own.
+antiburn-local = { path = "../../../crates/antiburn-local" }
+# The notification window provides mechanism only. Every gating decision stays
+# in src/notifications.rs.
+antiburn-nudge = { path = "crates/nudge" }
+# The floating usage HUD window: mechanism only. The shell owns its session
+# activity policy and IPC commands.
+antiburn-hud = { path = "crates/hud" }
+# The notification chime uses samples synthesized in-process. It has no audio
+# assets or decoders.
+antiburn-sound = { path = "crates/sound" }
+# Installs the process subscriber and writes local diagnostic files. The shell
+# owns its lifetime and selects the bundle-specific directory.
+antiburn-trace = { path = "crates/trace" }
+# Error plumbing inside the shell's own modules; never crosses the IPC edge,
+# where errors become plain strings.
+anyhow = "1"
+# Required to implement the engine's async ConsentGrants trait; the engine
+# declares it with the same macro.
+async-trait = "0.1"
+# Already resolved transitively (`reqwest`'s own dependency tree); declared
+# directly so `provider_usage::live::sources::codex_fetch` can decode the
+# unsigned payload segment of Codex's own JWT to read the account id claim
+# when `auth.json` did not state one plainly. Decoding only — nothing here
+# verifies a signature or should be trusted as anything more than a hint the
+# provider's own response can still reject.
+base64 = "0.23"
+# Direct provider usage fetch (`provider_usage::live::sources`): a plain
+# HTTPS request to the provider's own endpoint, with the reader's own
+# credential — a `GET` for the usage reading itself, and, for Codex, the
+# occasional token-refresh `POST` (`form`, for its `application/`
+# `x-www-form-urlencoded` body). Blocking, so every source's `fetch` stays
+# the synchronous call the trait already declares. `rustls-no-provider`
+# rather than `rustls`: the latter drags in a second TLS cryptography stack
+# (`aws-lc-rs`) alongside the `ring` one `tauri-plugin-updater` already
+# resolves rustls to below; the explicit `rustls` dependency installs that
+# same provider instead of a competing one.
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
+# The app-owned local database. `bundled` compiles SQLite from source, so the
+# app never depends on a system library and CI needs no extra packages.
+# Held at 0.32 to match `antiburn-local`: `libsqlite3-sys` sets
+# `links = "sqlite3"`, so the app and the engine it path-depends on must agree
+# on one version. The engine's own pin carries the full reasoning.
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+# Only to install the process-wide crypto provider `reqwest`'s
+# `rustls-no-provider` feature leaves unset — `ring`, matching what
+# `tauri-plugin-updater`'s own rustls dependency already resolves to.
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+# Required by `tauri::generate_context!`, which expands to code in this crate.
+serde_json = "1"
+# `tray-icon` gives the menu-bar item; `image-png` lets the tray glyph be
+# decoded from the generated PNG.
+# Three windows need `macos-private-api`. The HUD and nudge crates build
+# transparent macOS windows, and the popover uses the window-effect builder for
+# its rounded material. Tauri's configuration check requires the shell manifest
+# to declare the feature.
+tauri = { version = "2", features = ["image-png", "tray-icon", "macos-private-api"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# The plugin prevents browser-only menus and shortcuts in application webviews.
+# The explicit policy in `src/webview_defaults.rs` keeps focus traversal intact.
+tauri-plugin-prevent-default = "5"
+# Emits structured shell events through the process subscriber.
+tracing = "0.1"
+# RFC 3339 stamps for the store's own timestamps.
+time = { version = "0.3", features = ["formatting", "parsing"] }
+# The scan scheduler, and the timer the consented-analytics flusher sleeps on.
+# Excludes `net` and `process`: this crate never opens a socket or spawns a
+# child directly. The direct-fetch usage sources and the analytics channel both
+# reach the network through `reqwest`'s own bundled runtime
+# instead, and the Codex app-server fallback spawns synchronously through
+# `std::process` — so this feature list still names only what this crate's own
+# async code needs.
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+# Sixteen unpredictable bytes for the rotating installation identifier. Already
+# in the tree via the TLS stack; declared directly so the use is visible.
+getrandom = "0.4"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Desktop-only: GitHub Releases update checks. Registered in release builds
+# only (see `src/lib.rs`), so development never contacts the network.
+tauri-plugin-updater = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS 13+ login-item registration for the main application. Unlike the
+# cross-platform plugin, this uses Apple's current System Settings-visible API.
+smappservice-rs = "0.1"
+# Three pieces of AppKit the shell reaches for directly: the menu-bar
+# free-space readout (`src/tray_title.rs`, `src/disk_monitor.rs`) — an
+# attributed-string title on the status item's button, and the startup volume's
+# available capacity as Finder reports it; the persistent highlight on that same
+# button (`src/tray.rs`); and the global click monitor that dismisses the
+# popover (`src/global_click.rs`). Feature lists are the exact set those files
+# touch.
+objc2 = "0.6"
+# Block construction for the global monitor and the resign-active observer
+# (the `block2` features below).
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSEvent", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Per-user Run-key registration. Kept in Rust so executable paths are quoted
+# correctly and stale entries can be refreshed after an update.
+winreg = "0.56"
+
+[dev-dependencies]
+# This dev-dependency resolves the engine counters for test builds only.
+# Release runtime builds exclude it.
+antiburn-local = { path = "../../../crates/antiburn-local", features = ["test-instrumentation"] }
+# Synthetic agent stores for the scan-pipeline tests.
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
+
+# Temporary, and the whole reason it exists is one line of AppKit.
+#
+# tray-icon attaches the status item's `NSMenu` once, at construction, and
+# leaves it attached. Through macOS 26 that is harmless — the item's primary
+# button still delivers its clicks and the menu only opens on the secondary
+# one. On **macOS 27** an always-attached menu swallows the primary click
+# outright, so antiburn's menu-bar item would stop opening the popover at all:
+# a menu-bar app with no way into it. The pinned revision moves the attachment
+# to the moment the menu is actually being shown and detaches it again straight
+# after (upstream https://github.com/tauri-apps/tray-icon/pull/341).
+#
+# The revision is 0.24.1 plus that change, and it is the *only* change: diffed
+# against the 0.24.2 this replaces, `platform_impl/macos/mod.rs` is the sole
+# differing file and this fix is its entire delta. So the version going
+# backwards costs nothing.
+#
+# Remove this — do not bump the rev — as soon as the fix ships in a release,
+# and keep whatever replaces it on the same major/minor line as Tauri's own
+# transitive tray-icon.
+#
+# One thing this deliberately does *not* fix. tray-icon's `mouseUp:` calls
+# `NSStatusBarButton.highlight(false)` unconditionally, before handing the
+# click on, so `tray::set_highlight` re-lights a button that went dark ~185µs
+# earlier — a single visible blink when the popover opens, because AppKit's
+# highlight drawing is flushed immediately rather than deferred to the next
+# frame. Removing it would mean carrying a fork rather than tracking upstream,
+# which is a bigger commitment than a one-frame blink is worth. Decided
+# knowingly; see the note on `tray::set_highlight` for the measurements and
+# for the two alternatives that were tried and did not work.
+[patch.crates-io]
+tray-icon = { git = "https://github.com/tauri-apps/tray-icon.git", rev = "0ada43072646fe4454b1f969f4f446dc401fa1aa" }

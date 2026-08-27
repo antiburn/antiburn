@@ -1,0 +1,23 @@
+/target
+**/target/
+node_modules/
+.DS_Store
+.*.sw?
+
+# Local agent worktrees and metadata are not repository content, except for
+# the two agent hook settings files below.
+/.claude/*
+!/.claude/settings.json
+/.codex/*
+!/.codex/hooks.json
+
+# Signing material must never enter the tree. The updater keypair is minted
+# with an absolute path outside the repository (see
+# docs/runbooks/updater-key-recovery.md); this is the backstop.
+*.key
+*.key.pub
+
+# The scanner writes local data under .aislop.
+# The repository keeps only config.yml from this directory.
+/.aislop/*
+!/.aislop/config.yml

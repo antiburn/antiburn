@@ -1,0 +1,347 @@
+/* ==========================================================================
+   Native-feeling styling for the headless control primitives.
+
+   Every block here styles an unstyled Radix UI primitive through its
+   `data-*` state attributes, so the markup stays accessible and the look
+   stays ours. Which package each block expects:
+
+     .ui-menu-*        @radix-ui/react-dropdown-menu
+     .ui-tooltip       @radix-ui/react-tooltip
+     .ui-radio-*       @radix-ui/react-radio-group
+     .ui-switch*       @radix-ui/react-switch
+     .ui-progress*     @radix-ui/react-progress
+     .ui-scroll*       @radix-ui/react-scroll-area
+
+   Only the switch and scroll-area packages are installed today, because those
+   are the only ones a shipped component uses. The remaining blocks are the
+   contract their surfaces will be built against; add the package with the
+   component, not ahead of it.
+   ========================================================================== */
+
+/* --- Menu (dropdown) --- */
+.ui-menu {
+  min-width: 120px;
+  padding: 4px;
+  background: rgb(235 235 235 / 0.92);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  box-shadow:
+    0 4px 12px rgb(0 0 0 / 0.15),
+    0 1px 3px rgb(0 0 0 / 0.08);
+  animation: ui-menu-in 120ms ease-out;
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin);
+  z-index: 50;
+}
+
+.ui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1.4;
+  /* The live system label token auto-adapts light/dark. */
+  color: var(--color-text-primary);
+  cursor: default;
+  user-select: none;
+  outline: none;
+}
+
+/* Menu items show their active state through [data-highlighted]; skip the
+   global button press dimming so the two treatments do not stack. */
+.ui-menu-item:active {
+  opacity: 1;
+  transform: none;
+}
+
+.ui-menu-shortcut {
+  margin-left: auto;
+  padding-left: 16px;
+  font-size: 11px;
+  opacity: 0.45;
+  letter-spacing: 0.03em;
+}
+
+.ui-menu-item[data-highlighted] .ui-menu-shortcut {
+  opacity: 0.8;
+}
+
+.ui-menu-item[data-highlighted] {
+  /* The live system accent token resolves incorrectly (transparent) in the
+     tray webview; use the default system blue directly so white text is
+     always readable. */
+  background: rgb(0 122 255);
+  color: white !important;
+}
+
+/* Prevent the global :focus-visible ring from leaking onto menu items. */
+.ui-menu-item:focus-visible {
+  outline: none;
+}
+
+.ui-menu-subtrigger {
+  justify-content: space-between;
+}
+
+.ui-menu-subtrigger::after {
+  content: "\203A"; /* right-pointing chevron */
+  font-size: 16px;
+  opacity: 0.5;
+  margin-left: auto;
+  padding-left: 12px;
+}
+
+.ui-menu-subtrigger[data-state="open"] {
+  background: rgb(0 122 255);
+  color: white !important;
+}
+
+.ui-menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--color-border);
+}
+
+@keyframes ui-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .ui-menu {
+    background: rgb(50 50 50 / 0.96);
+  }
+
+  .ui-menu-item[data-highlighted] {
+    background: rgb(10 132 255);
+  }
+
+  .ui-menu-subtrigger[data-state="open"] {
+    background: rgb(10 132 255);
+  }
+}
+
+/* --- Tooltip --- */
+.ui-tooltip {
+  padding: 3px 7px;
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 250px;
+  word-wrap: break-word;
+  white-space: normal;
+  color: var(--color-text-primary);
+  background: rgb(235 235 235 / 0.92);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 0.5px solid var(--color-border);
+  border-radius: 3px;
+  box-shadow:
+    0 2px 8px rgb(0 0 0 / 0.12),
+    0 0.5px 2px rgb(0 0 0 / 0.06);
+  animation: ui-tooltip-in 100ms ease-out;
+  user-select: none;
+  z-index: 100;
+}
+
+@keyframes ui-tooltip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .ui-tooltip {
+    background: rgb(50 50 50 / 0.96);
+  }
+}
+
+/* --- Radio group --- */
+.ui-radio-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 120ms ease-out;
+}
+
+.ui-radio-indicator[data-state="checked"] {
+  border-color: var(--color-accent-val);
+}
+
+.ui-radio-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent-val);
+  transform: scale(0);
+  transition: transform 120ms ease-out;
+}
+
+[data-state="checked"] .ui-radio-dot {
+  transform: scale(1);
+}
+
+/* --- Switch (pill) --- */
+.ui-switch {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border-radius: 9999px;
+  background: var(--color-bg-tertiary);
+  border: 0.5px solid var(--color-border);
+  transition:
+    background-color 180ms ease-out,
+    border-color 180ms ease-out;
+  flex-shrink: 0;
+}
+
+.ui-switch[data-state="checked"] {
+  background: var(--color-accent-fill);
+  border-color: transparent;
+}
+
+.ui-switch-thumb {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.15),
+    0 0 0 0.5px rgb(0 0 0 / 0.04);
+  transform: translateX(2px);
+  transition: transform 180ms ease-out;
+  will-change: transform;
+}
+
+.ui-switch[data-state="checked"] .ui-switch-thumb {
+  transform: translateX(14px);
+}
+
+/* --- Progress bar --- */
+.ui-progress {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: var(--color-bg-secondary);
+}
+
+.ui-progress-indicator {
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--color-accent-val);
+  transition: width 300ms ease-out;
+}
+
+.ui-progress-indicator[data-state="indeterminate"] {
+  width: 100% !important;
+  animation: ui-progress-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes ui-progress-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* --- Scroll area --- */
+.ui-scroll-viewport {
+  width: 100%;
+  height: 100%;
+}
+
+/* Opt-in scroll-edge treatment. Mask the scrolling pixels themselves instead
+   of painting a surface over them, so translucent window material remains
+   untouched. The first row stays fully visible until the viewport leaves its
+   top position. Keep the prefixed form for WebKit. */
+.scroll-edge-fade-top[data-scroll-edge-top="active"] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 0.25) 0,
+    rgb(0 0 0 / 0.75) 5px,
+    black 12px,
+    black 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 0.25) 0,
+    rgb(0 0 0 / 0.75) 5px,
+    black 12px,
+    black 100%
+  );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+html[data-platform="macos"] .ui-scroll-viewport {
+  /* Radix gates the viewport's inline overflow-y on a ResizeObserver
+     measurement (scrollbarYEnabled). On the macOS hide/show cycle that
+     measurement latches to "no overflow" and is not re-evaluated on reopen,
+     leaving the list unscrollable. Force native vertical scroll so
+     scrollability never depends on that measurement; Radix still manages the
+     custom thumb's visibility separately. */
+  overflow-y: scroll !important;
+}
+
+/* Radix wraps viewport children in <div style="min-width:100%; display:table">,
+   which expands to fit content and breaks flex truncation / text-overflow.
+   Force block layout so child widths are constrained by the viewport. */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+}
+
+.ui-scrollbar {
+  display: flex;
+  touch-action: none;
+  user-select: none;
+  padding: 1px;
+  transition: opacity 200ms ease-out;
+}
+
+.ui-scrollbar[data-orientation="vertical"] {
+  width: 6px;
+}
+
+.ui-scrollbar[data-orientation="horizontal"] {
+  height: 6px;
+  flex-direction: column;
+}
+
+.ui-scrollbar-thumb {
+  position: relative;
+  flex: 1;
+  border-radius: 9999px;
+  background: rgb(128 128 128 / 0.5);
+  transition: background 120ms ease-out;
+}
+
+.ui-scrollbar-thumb:hover {
+  background: rgb(128 128 128 / 0.7);
+}

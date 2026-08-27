@@ -1,0 +1,72 @@
+import * as ScrollArea from "@radix-ui/react-scroll-area"
+import { useCallback, type ReactNode, type Ref } from "react"
+
+import { cn } from "../../lib/cn"
+
+function syncTopEdgeFade(viewport: HTMLDivElement) {
+  const shouldFade = viewport.scrollTop > 1
+  if (shouldFade === viewport.hasAttribute("data-scroll-edge-top")) return
+
+  if (shouldFade) {
+    viewport.setAttribute("data-scroll-edge-top", "active")
+  } else {
+    viewport.removeAttribute("data-scroll-edge-top")
+  }
+}
+
+/** Assign a ref. A function ref may return a cleanup, which is passed on. */
+function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void | (() => void) {
+  if (typeof ref === "function") return ref(value)
+  if (ref) ref.current = value
+}
+
+/** A scroll container wired to the design foundation's scrollbar styling.
+ *
+ *  `ui-scroll-viewport` is load-bearing, not cosmetic: on macOS it forces
+ *  `overflow-y: scroll` (see styles/platform-controls.css) so scrollability
+ *  never depends on Radix's ResizeObserver measurement, which latches to "no
+ *  overflow" across a window hide/show cycle. */
+export function ScrollPane({
+  children,
+  className = "",
+  viewportClassName = "",
+  viewportRef,
+  topEdgeFade = false,
+}: {
+  children: ReactNode
+  className?: string
+  viewportClassName?: string
+  viewportRef?: Ref<HTMLDivElement>
+  /** Fade scrolling content into the viewport's top edge after it leaves the
+   *  initial position. The scrollbar remains outside the mask. */
+  topEdgeFade?: boolean
+}) {
+  // Stable so React attaches it once per viewport. A caller's ref cleanup
+  // must reach React, or the caller's listeners outlive the node.
+  const assignViewportRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (node && topEdgeFade) syncTopEdgeFade(node)
+      return assignRef(viewportRef, node)
+    },
+    [viewportRef, topEdgeFade],
+  )
+
+  return (
+    <ScrollArea.Root className={cn("flex-1 overflow-hidden", className)}>
+      <ScrollArea.Viewport
+        ref={assignViewportRef}
+        onScroll={topEdgeFade ? (event) => syncTopEdgeFade(event.currentTarget) : undefined}
+        className={cn(
+          "ui-scroll-viewport h-full",
+          topEdgeFade && "scroll-edge-fade-top",
+          viewportClassName,
+        )}
+      >
+        {children}
+      </ScrollArea.Viewport>
+      <ScrollArea.Scrollbar className="ui-scrollbar" orientation="vertical">
+        <ScrollArea.Thumb className="ui-scrollbar-thumb" />
+      </ScrollArea.Scrollbar>
+    </ScrollArea.Root>
+  )
+}

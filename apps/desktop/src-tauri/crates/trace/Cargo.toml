@@ -1,0 +1,29 @@
+# This package is a standalone workspace root. The shell does not list this
+# crate as a member, so this table prevents an invalid nested workspace.
+[workspace]
+
+[package]
+name = "antiburn-trace"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Local diagnostic output for the antiburn desktop app."
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+publish = false
+
+[lib]
+name = "antiburn_trace"
+path = "src/lib.rs"
+
+[dependencies]
+# Provides the structured event facade.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+# Installs filters and formats events for local outputs.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "json"] }
+# Supplies UTC components for hourly filenames.
+time = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Provides isolated directories for filesystem tests.
+tempfile = "3"

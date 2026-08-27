@@ -1,0 +1,1014 @@
+name: Release app
+
+# Cuts a DRAFT GitHub Release for the desktop application from an
+# `antiburn-v<version>` tag. Nothing here publishes: a person reads the draft,
+# checks the assets against docs/runbooks/release.md, and presses Publish.
+#
+# The shape of a release is fixed by that draft. Published tags and assets are
+# immutable — a mistake is corrected by a new version, never by replacing an
+# asset under an existing tag — so this workflow refuses to touch a release
+# that is already published.
+#
+# Order of the pipeline, and why:
+#
+#   verify  cheapest possible failure first: does the tag agree with every
+#           manifest in the tree, is there a changelog entry, is the updater
+#           actually configured to produce verifiable artifacts
+#   trusted-main-ci
+#           proves that this exact tag SHA passed the protected main-branch CI
+#           run; a release never spends another full matrix proving the same SHA
+#   sbom    dependency inventories, generated with no credentials in scope
+#   build   the only jobs that see signing credentials, one per release target
+#   draft   assembles, hashes, attests, and drafts — the only job that can
+#           write to the repository
+
+on:
+  push:
+    tags: ["antiburn-v*"]
+
+# Least privilege by default. `contents: write` is granted to exactly one job,
+# and the provenance token scopes are granted only where an attestation is
+# actually produced. This workflow has no `pull_request` trigger at all, so a
+# fork can never reach the `release` environment's credentials.
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel a release in flight: a half-uploaded draft is worse than a
+  # duplicated run, which is idempotent here.
+  group: release-app-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24"
+  RUST_TOOLCHAIN: "1.97.0"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  verify:
+    name: Verify tag, manifests, and notes
+    # Tags pushed in a fork must not start a release run. There are no
+    # credentials there to leak, but a fork producing "antiburn releases" is
+    # its own problem.
+    if: github.repository == 'antiburn/antiburn'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      # Third-party actions are pinned by immutable commit SHA.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify the tag agrees with every manifest
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/verify-release-version.mjs app "$TAG"
+
+      - name: Verify the embedded engine is a released source tree
+        run: node scripts/verify-app-engine-release.mjs
+
+      # The updater is the one network-capable surface in the application, and
+      # an update it cannot verify is worse than no update at all. Both halves
+      # are checked here, before a single byte is built.
+      - name: Verify the updater is configured to produce verifiable artifacts
+        run: |
+          set -euo pipefail
+          config=apps/desktop/src-tauri/tauri.conf.json
+          pubkey=$(jq -r '.plugins.updater.pubkey // ""' "$config")
+          artifacts=$(jq -r '.bundle.createUpdaterArtifacts // false' "$config")
+          failed=0
+          if [[ -z "${pubkey//[[:space:]]/}" ]]; then
+            echo "::error file=${config}::plugins.updater.pubkey is empty, so this build could not verify an update it downloaded. A release REQUIRES the real public key: mint the key pair, store the private half in the 'release' environment as TAURI_SIGNING_PRIVATE_KEY, and commit the public half here. See docs/runbooks/updater-key-recovery.md."
+            failed=1
+          fi
+          if [[ "$artifacts" != "true" ]]; then
+            echo "::error file=${config}::bundle.createUpdaterArtifacts must be true or the release produces no updater bundles for latest.json to point at."
+            failed=1
+          fi
+          exit "$failed"
+
+      - name: Extract the release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes=$(awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ "\\[" ver "\\]") { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md)
+          if [[ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]]; then
+            echo "::error file=CHANGELOG.md::No CHANGELOG.md section found for ${VERSION}. Add '## [${VERSION}] - <date>' and re-tag."
+            exit 1
+          fi
+          printf '%s\n' "$notes" > RELEASE-NOTES.md
+          echo "Release notes for ${VERSION}:"
+          cat RELEASE-NOTES.md
+
+      - name: Upload the release notes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: RELEASE-NOTES.md
+          if-no-files-found: error
+
+  trusted-main-ci:
+    name: Trust exact main CI
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_url: ${{ steps.ci.outputs.run_url }}
+      sha: ${{ steps.ci.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # A tag can be pushed as soon as the release PR merges. If the trusted
+      # main run is still in flight, wait for it rather than starting a second
+      # copy of the matrix or asking a maintainer to time the tag by hand.
+      - name: Wait for this exact SHA to pass main CI
+        id: ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/wait-for-main-ci.mjs "${{ github.repository }}" "${{ github.sha }}"
+
+      - name: Record the trusted gate
+        env:
+          RUN_URL: ${{ steps.ci.outputs.run_url }}
+          SHA: ${{ steps.ci.outputs.sha }}
+        run: |
+          {
+            echo "## Trusted main CI"
+            echo
+            echo "Release gate: [successful main run](${RUN_URL}) for \`${SHA}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  sbom:
+    name: Software bill of materials
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `--target all` covers every platform's conditional dependencies, so one
+      # inventory describes all four release targets rather than the host's.
+      # The engine appears in here as a component: it is a path dependency of
+      # the shell, which is what actually ships.
+      - name: Inventory the Rust dependency tree
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p sbom
+          cargo cyclonedx \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml \
+            --format json \
+            --all \
+            --target all \
+            --spec-version 1.5 \
+            --override-filename "antiburn-${VERSION}-rust"
+          # The generator decides the extension, so the file is located rather
+          # than assumed.
+          produced=$(find apps/desktop/src-tauri -maxdepth 1 -type f \
+            -name "antiburn-${VERSION}-rust*.json" | sort | head -n 1)
+          if [[ -z "$produced" ]]; then
+            echo "::error::cargo-cyclonedx produced no inventory for the desktop crate."
+            exit 1
+          fi
+          mv "$produced" "sbom/antiburn-${VERSION}-rust.cdx.json"
+
+      # Production dependencies only: the linter, the test runner, and the
+      # bundler are not in the shipped webview bundle.
+      - name: Inventory the frontend dependency tree
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          pnpm -C apps/desktop licenses list --json --prod > "${RUNNER_TEMP}/licenses.json"
+          node scripts/sbom-frontend.mjs \
+            --input "${RUNNER_TEMP}/licenses.json" \
+            --name @antiburn/desktop \
+            --version "$VERSION" \
+            --spec-version 1.5 \
+            --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output "sbom/antiburn-${VERSION}-frontend.cdx.json"
+
+      - name: Upload the inventories
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: sbom
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: [verify, trusted-main-ci]
+    # Every signing credential lives in this protected environment, and only a
+    # tag push in this repository can reach it. Restrict the environment's
+    # deployment branches/tags to `antiburn-v*` as well — see
+    # docs/runbooks/release.md.
+    environment: release
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            artifact: macos-arm64
+            arch_label: aarch64
+            updater_platform: darwin-aarch64
+          - name: macOS x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+            artifact: macos-x64
+            arch_label: x64
+            updater_platform: darwin-x86_64
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            artifact: windows-x64
+            arch_label: x64
+            updater_platform: windows-x86_64
+          # Pinned rather than `ubuntu-latest`: the build host's glibc is the
+          # floor for every Linux user, so it is a release decision and not a
+          # thing that should move when GitHub rolls a new default.
+          - name: Linux x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+            artifact: linux-x64
+            arch_label: x64
+            updater_platform: linux-x86_64-appimage
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Use Canonical Ubuntu package archive
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i \
+              -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              {} +
+
+      # WebKitGTK, GTK and the AppIndicator tray are the shell's Linux
+      # backend; desktop-file-utils, patchelf and file are what the AppImage
+      # and .deb bundlers shell out to.
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes \
+            build-essential \
+            desktop-file-utils \
+            file \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            wget
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      # The version-bump main run compiled this same target without access to
+      # signing credentials. Release jobs restore that dependency cache but
+      # never save after secrets have entered scope.
+      - name: Restore warmed release dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          shared-key: desktop-release
+          key: ${{ matrix.target }}
+          cache-bin: false
+          save-if: false
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The engine embeds the tool catalogue that ANTIBURN_TOOL_CATALOG names
+      # (crates/antiburn-local/build.rs). CI and dev builds leave it unset and
+      # get the committed fixture; a release builds the real catalogue from a
+      # systemprompts checkout. Each matrix leg checks the repository out
+      # itself: the legs are independent runners, and the checkout is small.
+      - name: Check out antiburn/systemprompts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: antiburn/systemprompts
+          path: systemprompts
+
+      - name: Build the tool catalog from antiburn/systemprompts
+        id: tool-catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run tool-catalog -- systemprompts --out "$RUNNER_TEMP/tool_catalog.json"
+          echo "ANTIBURN_TOOL_CATALOG=$RUNNER_TEMP/tool_catalog.json" >> "$GITHUB_ENV"
+          echo "commit=$(git -C systemprompts rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Record the systemprompts commit
+        shell: bash
+        env:
+          COMMIT: ${{ steps.tool-catalog.outputs.commit }}
+        run: |
+          {
+            echo "### Tool catalog (${{ matrix.name }})"
+            echo
+            echo "Built from [antiburn/systemprompts@${COMMIT}](https://github.com/antiburn/systemprompts/commit/${COMMIT})."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The bundle declares macOS 13 as its minimum; the compiler has to agree.
+      - name: Set the macOS deployment target
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      # A release that quietly ships unsigned binaries is the failure this step
+      # exists to prevent. The updater key is never optional: without it there
+      # are no detached signatures, and latest.json would point at downloads
+      # nothing can verify.
+      #
+      # Windows platform signing can be waived, but only deliberately and only
+      # loudly: set ALLOW_UNSIGNED_WINDOWS to `true`, and the draft says so in
+      # its own first line. macOS releases always require Developer ID signing
+      # and notarization. Nothing here ever fakes a signature.
+      - name: Check the signing credentials this build needs
+        id: signing
+        shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          ALLOW_UNSIGNED_WINDOWS: ${{ vars.ALLOW_UNSIGNED_WINDOWS }}
+        run: |
+          set -euo pipefail
+          missing=""
+          if [[ -z "${UPDATER_KEY:-}" ]]; then
+            missing="TAURI_SIGNING_PRIVATE_KEY"
+          fi
+          platform_signing=none
+          if [[ -n "$missing" ]]; then
+            echo "::error::Missing required release secret(s): ${missing}. They belong to the 'release' environment; see docs/runbooks/release.md."
+            exit 1
+          fi
+
+          case "${RUNNER_OS}" in
+            macOS)
+              if [[ -z "${APPLE_CERTIFICATE:-}" || -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_PROVISIONING_PROFILE:-}" ]]; then
+                echo "::error::APPLE_CERTIFICATE, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID and APPLE_PROVISIONING_PROFILE are required. Every macOS release uses Developer ID signing, notarization and the profile-backed Communication Notifications entitlement."
+                exit 1
+              fi
+              platform_signing=developer-id
+              ;;
+            Windows)
+              if [[ -n "${WINDOWS_CERTIFICATE:-}" ]]; then
+                platform_signing=authenticode
+              elif [[ "${ALLOW_UNSIGNED_WINDOWS:-}" == "true" ]]; then
+                echo "::warning::Building the Windows installer WITHOUT an Authenticode signature, because ALLOW_UNSIGNED_WINDOWS is true. SmartScreen will warn on download."
+                platform_signing=unsigned
+              else
+                echo "::error::No Authenticode credentials (WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD) are configured. Add them to the 'release' environment, or set the repository variable ALLOW_UNSIGNED_WINDOWS=true to deliberately ship an unsigned, clearly-labelled build."
+                exit 1
+              fi
+              ;;
+            *)
+              # Linux packages carry no platform code signature: neither the
+              # AppImage nor the .deb has a signing story antiburn can offer
+              # from a public runner. They are covered by the updater's own
+              # detached signature, the published SHA-256, and the build
+              # provenance attestation.
+              platform_signing=not-applicable
+              ;;
+          esac
+          echo "platform_signing=${platform_signing}" >> "$GITHUB_OUTPUT"
+
+      # Adapted from the private desktop release workflow's certificate stage:
+      # a throwaway keychain, the certificate imported into it, and the signing
+      # identity read back out rather than assumed.
+      - name: Import the Apple signing certificate
+        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain_path="${RUNNER_TEMP}/antiburn-signing.keychain-db"
+          keychain_password="$(uuidgen)-$(uuidgen)"
+          certificate="${RUNNER_TEMP}/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -t 3600 -u "$keychain_path"
+          security import "$certificate" -k "$keychain_path" \
+            -P "${APPLE_CERTIFICATE_PASSWORD:-}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain_path" > /dev/null
+          security list-keychains -d user -s "$keychain_path"
+          rm -f "$certificate"
+
+          identities=$(security find-identity -v -p codesigning "$keychain_path")
+          identity=$(printf '%s\n' "$identities" | grep 'Developer ID Application' || true)
+          if [[ -z "$identity" ]]; then
+            echo "::error::No 'Developer ID Application' identity in the imported certificate."
+            printf '%s\n' "$identities"
+            exit 1
+          fi
+          printf '%s\n' "APPLE_SIGNING_IDENTITY=$(printf '%s\n' "$identity" | head -n 1 | awk -F'"' '{print $2}')" >> "$GITHUB_ENV"
+
+      - name: Prepare the Apple provisioning profile
+        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id'
+        env:
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          profile="apps/desktop/src-tauri/antiburn.provisionprofile"
+          decoded="${RUNNER_TEMP}/antiburn.provisionprofile.plist"
+          printf '%s' "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$profile"
+          security cms -D -i "$profile" > "$decoded"
+
+          profile_team=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$decoded")
+          profile_app=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$decoded")
+          communication=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.usernotifications.communication' "$decoded")
+          declared_team=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.team-identifier' apps/desktop/src-tauri/Entitlements.plist)
+          declared_app=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' apps/desktop/src-tauri/Entitlements.plist)
+          all_devices=$(plutil -extract ProvisionsAllDevices raw -o - "$decoded")
+          expiration=$(plutil -extract ExpirationDate raw -o - "$decoded")
+
+          if [[ "$profile_team" != "$APPLE_TEAM_ID" ]]; then
+            echo "::error::Provisioning profile team ${profile_team} does not match APPLE_TEAM_ID."
+            exit 1
+          fi
+          if [[ "$declared_team" != "$APPLE_TEAM_ID" || "$declared_app" != "$profile_app" ]]; then
+            echo "::error::Entitlements.plist does not match the provisioning profile and APPLE_TEAM_ID."
+            exit 1
+          fi
+          if [[ "$profile_app" != "${APPLE_TEAM_ID}.ai.antiburn.desktop" ]]; then
+            echo "::error::Provisioning profile application identifier ${profile_app} does not match antiburn."
+            exit 1
+          fi
+          if [[ "$communication" != "true" ]]; then
+            echo "::error::Provisioning profile does not authorize Communication Notifications."
+            exit 1
+          fi
+          if [[ "$all_devices" != "true" ]]; then
+            echo "::error::Provisioning profile is not a Developer ID distribution profile."
+            exit 1
+          fi
+          if [[ "$expiration" < "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ]]; then
+            echo "::error::Provisioning profile expired at ${expiration}."
+            exit 1
+          fi
+          echo "TAURI_SIGNING_CONFIG=${GITHUB_WORKSPACE}/apps/desktop/src-tauri/tauri.release.conf.json" >> "$GITHUB_ENV"
+
+      - name: Import the Authenticode signing certificate
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pfx = Join-Path $env:RUNNER_TEMP "antiburn-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx -Force
+          if (-not $imported.Thumbprint) {
+            Write-Host "::error::The Authenticode certificate imported without a thumbprint."
+            exit 1
+          }
+          $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
+          if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
+            $timestampUrl = "http://timestamp.digicert.com"
+          }
+          # Tauri signs the installer with signtool when the bundle config
+          # names a certificate in the local store. Passing it as an overlay
+          # config keeps the thumbprint out of the committed configuration.
+          $config = @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $imported.Thumbprint
+                digestAlgorithm = "sha256"
+                timestampUrl = $timestampUrl
+              }
+            }
+          }
+          $configPath = Join-Path $env:RUNNER_TEMP "signing.conf.json"
+          $config | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding utf8
+          "TAURI_SIGNING_CONFIG=$configPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # `icon.icns` and `icon.ico` are the two platform containers that are not
+      # checked in (see src-tauri/icons/README.md). `tauri icon` also re-samples
+      # the PNGs from the 1024px master, so the analytically generated ones are
+      # restored afterwards: what ships should be what `pnpm icons` produced.
+      - name: Generate the platform icon containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @antiburn/desktop exec tauri icon src-tauri/icons/icon.png
+          git checkout -- apps/desktop/src-tauri/icons
+          test -f apps/desktop/src-tauri/icons/icon.icns
+          test -f apps/desktop/src-tauri/icons/icon.ico
+
+      - name: Build and sign
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BUNDLES: ${{ matrix.bundles }}
+          # The updater's detached signature. Required on every target.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Read by the bundler on macOS only, and empty everywhere else.
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_TEAM_ID || '' }}
+          # Release analytics stay disabled when these optional values are empty.
+          # Complete and link the public privacy policy before you configure them.
+          ANTIBURN_ANALYTICS_URL: ${{ secrets.ANTIBURN_ANALYTICS_URL }}
+          ANTIBURN_ANALYTICS_OPERATOR: ${{ secrets.ANTIBURN_ANALYTICS_OPERATOR }}
+          # linuxdeploy cannot mount a FUSE filesystem on a GitHub runner.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          # The bundler triggers its macOS signing path on the *presence* of
+          # APPLE_CERTIFICATE, so on an unsigned build these must be absent,
+          # not empty — an empty value reaches `security import`, which
+          # rejects it and fails the bundle (the rc.1 rehearsal failure).
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!var:-}" ]]; then
+              unset "$var"
+            fi
+          done
+          if [[ -n "${TAURI_SIGNING_CONFIG:-}" ]]; then
+            pnpm --filter @antiburn/desktop exec tauri build \
+              --features distribution --target "$TARGET" --bundles "$BUNDLES" --config "$TAURI_SIGNING_CONFIG"
+          else
+            pnpm --filter @antiburn/desktop exec tauri build \
+              --features distribution --target "$TARGET" --bundles "$BUNDLES"
+          fi
+
+      # Signing that is not verified is a claim, not a fact.
+      - name: Verify the macOS signature and notarization ticket
+        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id'
+        env:
+          TARGET: ${{ matrix.target }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          app="apps/desktop/src-tauri/target/${TARGET}/release/bundle/macos/antiburn.app"
+          test -d "$app"
+          test -f "$app/Contents/embedded.provisionprofile"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          executable="$app/Contents/MacOS/antiburn"
+          entitlements="${RUNNER_TEMP}/antiburn-entitlements.plist"
+          codesign -d --entitlements :- "$executable" > "$entitlements"
+          application_id=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.application-identifier' "$entitlements")
+          team_id=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.team-identifier' "$entitlements")
+          communication=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.usernotifications.communication' "$entitlements")
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+          test "$application_id" = "${APPLE_TEAM_ID}.ai.antiburn.desktop"
+          test "$team_id" = "$APPLE_TEAM_ID"
+          test "$communication" = "true"
+          test "$bundle_id" = "ai.antiburn.desktop"
+          # Gatekeeper's own answer, which is the one a reader's machine gives.
+          spctl --assess --type execute --verbose=4 "$app"
+          xcrun stapler validate "$app"
+
+      - name: Verify the Authenticode signature
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'authenticode'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bundle = "apps/desktop/src-tauri/target/$env:TARGET/release/bundle/nsis"
+          $installers = Get-ChildItem -Path $bundle -Filter *.exe
+          if ($installers.Count -eq 0) {
+            Write-Host "::error::No NSIS installer was produced."
+            exit 1
+          }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature $installer.FullName
+            if ($signature.Status -ne "Valid") {
+              Write-Host "::error::$($installer.Name) is not validly signed: $($signature.Status)"
+              exit 1
+            }
+            Write-Host "$($installer.Name): $($signature.SignerCertificate.Subject)"
+          }
+
+      # Collection is driven by the detached signatures rather than by a table
+      # of expected filenames: whatever the bundler decided to call the updater
+      # artifact, it is the file sitting next to the platform's updater-format
+      # `.sig`. That keeps this step correct across Tauri's own naming changes.
+      #
+      # The macOS updater bundle is the one name that must be rewritten: both
+      # architectures produce `antiburn.app.tar.gz`, and a release cannot hold
+      # two assets with one name.
+      - name: Collect the built artifacts
+        id: collect
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          ARCH_LABEL: ${{ matrix.arch_label }}
+          UPDATER_PLATFORM: ${{ matrix.updater_platform }}
+          ARTIFACT: ${{ matrix.artifact }}
+          PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bundle="apps/desktop/src-tauri/target/${TARGET}/release/bundle"
+          staging="release-artifacts"
+          mkdir -p "$staging"
+
+          # The bundler signs every bundle format it produces, but only one
+          # format per platform participates in the update flow — on Linux the
+          # AppImage updates while the .deb is install-only, so its signature
+          # is surplus. Select the platform's updater format first, then
+          # require exactly one.
+          case "$UPDATER_PLATFORM" in
+            linux-*) updater_sig_glob='*.AppImage.sig' ;;
+            darwin-*) updater_sig_glob='*.app.tar.gz.sig' ;;
+            *) updater_sig_glob='*.sig' ;;
+          esac
+          signatures=$(find "$bundle" -type f -name "$updater_sig_glob" | sort)
+          count=$(printf '%s' "$signatures" | grep -c . || true)
+          if [[ "$count" != "1" ]]; then
+            echo "::error::Expected exactly one signed updater artifact matching ${updater_sig_glob} for ${TARGET}, found ${count}."
+            find "$bundle" -type f -name '*.sig' | sort
+            exit 1
+          fi
+
+          signature_path="$signatures"
+          updater_path="${signature_path%.sig}"
+          test -f "$updater_path"
+          updater_name=$(basename "$updater_path")
+          case "$updater_name" in
+            *.app.tar.gz)
+              updater_name="antiburn_${VERSION}_${ARCH_LABEL}.app.tar.gz"
+              ;;
+          esac
+          cp "$updater_path" "${staging}/${updater_name}"
+          cp "$signature_path" "${staging}/${updater_name}.sig"
+
+          # The installers a person downloads by hand. Anything already copied
+          # as the updater artifact (the NSIS installer, the AppImage) is not
+          # copied twice.
+          while IFS= read -r installer; do
+            name=$(basename "$installer")
+            if [[ -f "${staging}/${name}" ]]; then
+              continue
+            fi
+            cp "$installer" "${staging}/${name}"
+          done < <(find "$bundle" -type f \
+            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) | sort)
+
+          # One fragment of latest.json, merged with the other targets' in the
+          # draft job. The URL is the immutable, tag-specific download path —
+          # never `releases/latest`, which would make an old build's manifest
+          # point at a newer build's bytes.
+          jq -n \
+            --arg platform "$UPDATER_PLATFORM" \
+            --arg signature "$(cat "$signature_path")" \
+            --arg url "https://github.com/${REPOSITORY}/releases/download/${TAG}/${updater_name}" \
+            '{($platform): {signature: $signature, url: $url}}' \
+            > "${staging}/updater-${ARTIFACT}.json"
+
+          # Review evidence is consumed by the draft job, not published as an
+          # asset. It turns log-diving for signing mode and produced filenames
+          # into a table while keeping the install checks human-owned.
+          files=$(find "$staging" -maxdepth 1 -type f ! -name 'updater-*.json' -print \
+            | while IFS= read -r file; do basename "$file"; done | sort)
+          jq -n \
+            --arg artifact "$ARTIFACT" \
+            --arg target "$TARGET" \
+            --arg platform "$UPDATER_PLATFORM" \
+            --arg signing "$PLATFORM_SIGNING" \
+            --arg files "$files" \
+            '{artifact: $artifact, target: $target, platform: $platform, signing: $signing, files: ($files | split("\n") | map(select(length > 0)))}' \
+            > "${staging}/evidence-${ARTIFACT}.json"
+
+          echo "Collected for ${ARTIFACT}:"
+          ls -l "$staging"
+
+      - name: Upload the built artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: app-${{ matrix.artifact }}
+          path: release-artifacts
+          if-no-files-found: error
+
+  draft:
+    name: Draft the release
+    needs: [verify, sbom, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      # The only write in the whole workflow: create the draft and its assets.
+      contents: write
+      # Build provenance: an OIDC identity to sign the attestation with, and
+      # permission to record it against this repository.
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download the built artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: app-*
+          path: incoming
+
+      - name: Download the release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes
+          path: notes
+
+      - name: Download the inventories
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: incoming/sbom
+
+      - name: Assemble the release directory
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find incoming -type f ! -name 'updater-*.json' ! -name 'evidence-*.json' \
+            -exec cp {} dist/ \;
+          cp notes/RELEASE-NOTES.md dist/
+          cp install.sh install.ps1 dist/
+
+          mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
+          if [[ "${#manifests[@]}" -ne 4 ]]; then
+            echo "::error::Expected 4 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
+            exit 1
+          fi
+
+          mapfile -t evidence < <(find incoming -type f -name 'evidence-*.json' | sort)
+          if [[ "${#evidence[@]}" -ne 4 ]]; then
+            echo "::error::Expected 4 build-evidence records, found ${#evidence[@]}."
+            exit 1
+          fi
+          jq -e -s '
+            (map(.platform) | sort) ==
+              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"] and
+            all(.[]; (.signing | length) > 0 and (.files | length) >= 2)
+          ' "${evidence[@]}" > /dev/null
+          require_count() {
+            local pattern="$1" expected="$2" found
+            found=$(find dist -maxdepth 1 -type f -name "$pattern" | wc -l | tr -d ' ')
+            if [[ "$found" != "$expected" ]]; then
+              echo "::error::Expected ${expected} release asset(s) matching ${pattern}, found ${found}."
+              exit 1
+            fi
+          }
+          require_count '*.dmg' 2
+          require_count '*.exe' 1
+          require_count '*.AppImage' 1
+          require_count '*.deb' 1
+          require_count '*.app.tar.gz' 2
+          require_count '*.sig' 4
+          require_count '*.cdx.json' 2
+          require_count 'install.sh' 1
+          require_count 'install.ps1' 1
+
+          platforms=$(jq -s 'add' "${manifests[@]}")
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --rawfile notes notes/RELEASE-NOTES.md \
+            --argjson platforms "$platforms" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' \
+            > dist/latest.json
+
+          jq -e '
+            (.platforms | keys | sort) ==
+              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"]
+          ' dist/latest.json > /dev/null
+
+          # Every URL the manifest advertises must be immutable, point at this
+          # tag, and name a file that is actually in this release.
+          while IFS= read -r url; do
+            prefix="https://github.com/${REPOSITORY}/releases/download/${TAG}/"
+            if [[ "$url" != "$prefix"* ]]; then
+              echo "::error::latest.json advertises ${url}, which is not an immutable asset URL for ${TAG}."
+              exit 1
+            fi
+            if [[ ! -f "dist/${url#"$prefix"}" ]]; then
+              echo "::error::latest.json advertises ${url}, which is not among the built assets."
+              exit 1
+            fi
+            asset="${url#"$prefix"}"
+            signature=$(jq -r --arg url "$url" '.platforms[] | select(.url == $url) | .signature' \
+              dist/latest.json)
+            if [[ -z "$signature" || "$signature" != "$(cat "dist/${asset}.sig")" ]]; then
+              echo "::error::latest.json does not carry the detached signature for ${asset}."
+              exit 1
+            fi
+            printf '%s' "$signature" | base64 --decode > /dev/null
+          done < <(jq -r '.platforms[].url' dist/latest.json)
+
+          # Two identical macOS updater bundles means one architecture was
+          # built twice and half the readers would be handed the wrong binary.
+          arm64="dist/antiburn_${VERSION}_aarch64.app.tar.gz"
+          x64="dist/antiburn_${VERSION}_x64.app.tar.gz"
+          if [[ -f "$arm64" && -f "$x64" ]]; then
+            if [[ "$(sha256sum "$arm64" | cut -d' ' -f1)" == "$(sha256sum "$x64" | cut -d' ' -f1)" ]]; then
+              echo "::error::The macOS ARM64 and x64 updater bundles are byte-identical."
+              exit 1
+            fi
+          fi
+
+          # Every asset except the checksum file itself — which is why it is
+          # written outside `dist` first and moved in. The provenance bundle is
+          # added after this step and is self-verifying (`gh attestation
+          # verify`), so it is deliberately not listed here either.
+          (cd dist && find . -maxdepth 1 -type f -printf '%f\0' | sort -z \
+            | xargs -0 sha256sum) > "${RUNNER_TEMP}/SHA256SUMS"
+          mv "${RUNNER_TEMP}/SHA256SUMS" dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+          echo "Release contents:"
+          ls -l dist
+
+      # Attestation persistence is plan-gated on private repositories, so while
+      # the repository is private these two steps skip themselves; they activate
+      # automatically the day the repository becomes public. No other step
+      # consumes their outputs.
+      - name: Attest the build provenance
+        id: attest
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Add the provenance bundle to the release
+        if: ${{ !github.event.repository.private }}
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: cp "$BUNDLE_PATH" "dist/antiburn-${VERSION}-provenance.intoto.jsonl"
+
+      # Drafts are re-runnable; published releases are not. That is the whole
+      # retention rule, enforced here rather than only written down.
+      #
+      # `--latest` is not decoration. The application's updater endpoint is
+      # `releases/latest/download/latest.json`, and "latest" is a property of
+      # the *repository*, not of a tag prefix — the engine releases from here
+      # too. An engine release that inherited the Latest badge would point every
+      # installed copy of the app at a release that has no latest.json. So each
+      # workflow states which one it is: this one claims it, the engine's
+      # declines it, and a pre-release claims nothing.
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          title="antiburn ${VERSION}"
+          if state=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [[ "$state" != "true" ]]; then
+              echo "::error::${TAG} is already published. Published assets are immutable — cut a corrective release instead. See docs/runbooks/rollback.md."
+              exit 1
+            fi
+            gh release upload "$TAG" dist/* --clobber
+            if [[ "$PRERELEASE" == "true" ]]; then
+              gh release edit "$TAG" --title "$title" --notes-file dist/RELEASE-NOTES.md \
+                --draft=true --prerelease=true --latest=false
+            else
+              gh release edit "$TAG" --title "$title" --notes-file dist/RELEASE-NOTES.md \
+                --draft=true --prerelease=false --latest=true
+            fi
+          else
+            if [[ "$PRERELEASE" == "true" ]]; then
+              gh release create "$TAG" dist/* --draft --prerelease --verify-tag --latest=false \
+                --title "$title" --notes-file dist/RELEASE-NOTES.md
+            else
+              gh release create "$TAG" dist/* --draft --verify-tag --latest=true \
+                --title "$title" --notes-file dist/RELEASE-NOTES.md
+            fi
+          fi
+
+      - name: Summarize what a reviewer has to check
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Draft release ${TAG}"
+            echo
+            echo "Nothing is published yet. Follow \`docs/runbooks/release.md\` and, when the checks below pass, press **Publish**."
+            echo
+            echo "### Automated evidence"
+            echo
+            echo "The workflow verified the exact main CI SHA, four updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
+            echo
+            echo "| Platform | Target | Signing mode |"
+            echo "| --- | --- | --- |"
+            jq -s -r 'sort_by(.platform)[] | "| `\(.platform)` | `\(.target)` | `\(.signing)` |"' \
+              incoming/*/evidence-*.json
+            echo
+            echo "| Asset | SHA-256 |"
+            echo "| --- | --- |"
+            while read -r sum name; do
+              echo "| \`${name}\` | \`${sum}\` |"
+            done < dist/SHA256SUMS
+            echo
+            echo "Verify provenance locally with:"
+            echo
+            echo '```'
+            echo "gh attestation verify <downloaded asset> --repo ${REPOSITORY}"
+            echo '```'
+            echo
+            echo "### Manual acceptance"
+            echo
+            echo "- Install and launch on every reachable platform."
+            echo "- Run install.sh on macOS and Linux, and install.ps1 on Windows."
+            echo "- Confirm Gatekeeper or SmartScreen behavior matches the signing mode above."
+            echo "- Confirm a previous version can discover this update."
+            echo "- Read the release notes and confirm the Latest/prerelease setting before publishing."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,80 @@
+/* ==========================================================================
+   Session-analysis sub-palette.
+
+   A small, self-contained set of theme-adaptive presentation tokens for the
+   session-analysis surface, kept out of tokens.css so the core design tokens
+   stay the ones every surface uses. Values are deepened in light mode to hold
+   contrast on a light surface and kept vivid in dark mode, where saturated
+   hues read well on a dark card.
+
+   The palette supplies context colors, token colors, and one context warning
+   hue.
+
+   Every token is presentation only: nothing here knows what a value means,
+   only what it looks like. Tailwind v4 processes `@theme` in any file the
+   build imports.
+   ========================================================================== */
+
+@theme {
+  /* Vertical area fill: the same blue as --color-token-in, with the alpha
+     baked in per theme so each sets its own contrast, fading out toward the
+     baseline. */
+  --color-context-fill-top: var(--color-context-fill-top-val);
+  --color-context-fill-base: var(--color-context-fill-base-val);
+
+  /* The series colors use blue for parent input, violet for parent output,
+     and green for combined sub-agent tokens. */
+  --color-token-in: var(--color-token-in-val);
+  --color-token-out: var(--color-token-out-val);
+  --color-token-subagent: var(--color-token-subagent-val);
+
+  /* The one alert hue in this palette, shared by every surface that needs an
+     attention step between neutral and critical states. Its own
+     token rather than --color-system-orange-tint so light mode can calm the
+     vivid system orange down to a legible amber while dark mode keeps the
+     saturated value. */
+  --color-context-warning: var(--color-context-warning-val);
+
+  /* The critical end of the context heat ramp, above the warning amber. Used
+     only past 400k tokens, where the amber-to-red gradient reaches red at the
+     1M context window. */
+  --color-context-critical: var(--color-context-critical-val);
+}
+
+/* --- Light (default and explicit) --- */
+:root,
+:root[data-theme="light"] {
+  --color-context-fill-top-val: hsl(217.2 91% 59.8% / 0.6); /* blue-500 */
+  --color-context-fill-base-val: hsl(217.2 91% 59.8% / 0.2);
+  --color-token-in-val: hsl(217.2 91% 59.8%); /* blue-500 */
+  --color-token-out-val: hsl(255 91% 76.2%); /* violet-400 */
+  --color-token-subagent-val: hsl(161.3 93% 30.4%); /* emerald-600 */
+  --color-context-warning-val: hsl(32 95% 43.72%); /* amber-600 */
+  --color-context-critical-val: hsl(0 72% 50.5%); /* red-600 */
+}
+
+/* --- Dark ---
+   `@media` cannot share a selector list with a plain `:root` rule, so the
+   system-preference branch and the explicit [data-theme='dark'] branch are
+   written separately, mirroring how tokens.css duplicates its dark palette. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-context-fill-top-val: hsl(213 94% 67.8% / 0.75); /* blue-400 */
+    --color-context-fill-base-val: hsl(213 94% 67.8% / 0.25);
+    --color-token-in-val: hsl(213 94% 67.8%); /* blue-400 */
+    --color-token-out-val: hsl(253 94% 85%); /* violet-300 */
+    --color-token-subagent-val: hsl(158 64% 51.56%); /* emerald-400 */
+    --color-context-warning-val: hsl(36.4 100% 52%); /* vivid amber */
+    --color-context-critical-val: hsl(0 90% 70.7%); /* red-400 */
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-context-fill-top-val: hsl(213 94% 67.8% / 0.75);
+  --color-context-fill-base-val: hsl(213 94% 67.8% / 0.25);
+  --color-token-in-val: hsl(213 94% 67.8%);
+  --color-token-out-val: hsl(253 94% 85%);
+  --color-token-subagent-val: hsl(158 64% 51.56%);
+  --color-context-warning-val: hsl(36.4 100% 52%);
+  --color-context-critical-val: hsl(0 90% 70.7%);
+}

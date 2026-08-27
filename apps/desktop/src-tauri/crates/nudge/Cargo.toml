@@ -1,0 +1,76 @@
+# Standalone package. The shell (`src-tauri`) is its own workspace root and does
+# not list this crate as a member, so declaring an empty workspace table here
+# keeps `cargo check` inside this directory from claiming to belong to a
+# workspace that has never heard of it. The crate is a mechanism with no
+# app-specific dependencies, so it resolves on its own.
+[workspace]
+
+[package]
+name = "antiburn-nudge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Cross-platform floating notification nudges for the antiburn desktop app. Mechanism only — the app owns when/why a nudge fires."
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+publish = false
+
+[lib]
+name = "antiburn_nudge"
+path = "src/lib.rs"
+
+[dependencies]
+# The macOS notification uses a transparent window and a rounded Popover
+# material. Tauri gates both builder methods behind this feature.
+tauri = { version = "2", features = ["macos-private-api"] }
+serde = { version = "1", features = ["derive"] }
+# Facade only — the app installs the subscriber. Lets display resolution report
+# which signal picked the screen, so a misplaced notification is diagnosable from
+# a user's log rather than guessed at.
+tracing = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Subclasses the notification window into a non-activating floating NSPanel so
+# it never steals key focus from the user's frontmost app. Not published to
+# crates.io; pinned to a v2.1 commit for reproducibility.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
+# Finds the display showing the frontmost window (`CGWindowListCopyWindowInfo` +
+# `CGDisplay`), so the notification appears where the user is actually looking
+# rather than always on the primary display.
+core-foundation = "0.10"
+core-graphics = "0.25"
+# The Focus/DND gate reads `INFocusStatusCenter` before an automated nudge
+# shows, so a notification does not interrupt Focus. UserNotifications carries
+# the modern authorization request the Focus status depends on. The feature
+# lists name the exact types gate.rs touches. Versions match the shell's
+# objc2 family, so this adds no second copy.
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSError"] }
+objc2-intents = { version = "0.3", default-features = false, features = ["INFocusStatus", "INFocusStatusCenter", "block2"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["UNUserNotificationCenter", "block2"] }
+
+[target.'cfg(windows)'.dependencies]
+# `ShowWindow(SW_SHOWNOACTIVATE)` on the notification's HWND, so revealing it
+# never activates the window or pulls key focus from the user's frontmost app.
+# Version matches what `tauri`'s own `hwnd()` returns (`windows::Win32::Foundation::HWND`),
+# so this doesn't add a second incompatible copy of the `windows` crate.
+# Shell and Registry carry the Focus/DND gate's probes:
+# `SHQueryUserNotificationState` for fullscreen/presentation/locked states and
+# one registry read for the global toasts switch.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `gtk_window.set_focus_on_map(false)` before showing the notification, so it
+# never takes input focus from the user's frontmost app. Version matches what
+# `tauri` itself pulls in for `gtk_window()`, so this doesn't add a second copy.
+gtk = { version = "0.18", features = ["v3_24"] }
+# The Focus/DND gate reads GNOME's `show-banners` setting through gio (the
+# same GLib family as gtk 0.18) and Plasma's `Inhibited` property over a
+# bounded, no-auto-start D-Bus call through zbus. Both probes run on demand
+# and hold no connection at idle.
+gio = "0.18"
+zbus = "5"
+
+[dev-dependencies]
+serde_json = "1"

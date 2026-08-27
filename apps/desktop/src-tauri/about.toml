@@ -1,0 +1,40 @@
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "MIT-0",
+    "Unlicense",
+    "LGPL-2.1-or-later",
+]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+ignore-build-dependencies = false
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+[tauri-nspanel.clarify]
+license = "MIT OR Apache-2.0"
+
+[[tauri-nspanel.clarify.git]]
+path = "LICENSE_MIT"
+checksum = "35e740d8a0d71739293b136b9f289c6b05f21ff6b0584b9b691dd5de5233d7e8"
+license = "MIT"
+
+[[tauri-nspanel.clarify.git]]
+path = "LICENSE_APACHE-2.0"
+checksum = "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+license = "Apache-2.0"
