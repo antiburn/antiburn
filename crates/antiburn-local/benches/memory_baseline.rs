@@ -119,6 +119,44 @@ fn normalized(serialized: &str) -> serde_json::Value {
     value
 }
 
+/// Measures the 500 MiB tier and splits the peak between the accumulators.
+///
+/// The generator materializes the source on demand. The repository does not
+/// store a large transcript-shaped blob.
+fn large_session_split() {
+    println!("\n== 500 MiB tier: accumulator split ==");
+    let directory = TempDir::new().expect("tempdir");
+    let session = generate_session_of_bytes(211, 0, 500 * MIB);
+    let source_bytes = session.jsonl.len();
+    let path = write_session(&directory, &session);
+    let session_id = session.session_id.clone();
+    drop(session);
+
+    let input = file_input(&session_id, &path);
+
+    let (metrics_peak, (retained_turns, retained_bytes)) = measure_peak(|| {
+        let mut metrics =
+            SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+        adapter_for("claude")
+            .visit(&input, &mut metrics)
+            .expect("synthetic source must stream");
+        (metrics.retained_turns(), metrics.retained_bytes())
+    });
+
+    let (composite_peak, evidence) = measure_peak(|| run_pipeline(&input));
+
+    println!(
+        "source {source_bytes} bytes | metrics-only peak {metrics_peak} bytes ({:.2}x source), \
+         retained {retained_bytes} bytes over {retained_turns} turns | composite peak \
+         {composite_peak} bytes ({:.2}x source) | evidence adds {} bytes to the peak | \
+         serialized evidence {} bytes",
+        metrics_peak as f64 / source_bytes as f64,
+        composite_peak as f64 / source_bytes as f64,
+        composite_peak as i64 - metrics_peak as i64,
+        evidence.len()
+    );
+}
+
 fn main() {
     println!("== peak heap: streaming vs whole-file materialization ==");
     println!("(peak growth over the live baseline; the source file stays on disk)");
@@ -160,4 +198,6 @@ fn main() {
             inline_peak as f64 / streaming_peak.max(1) as f64,
         );
     }
+
+    large_session_split();
 }

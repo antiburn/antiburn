@@ -132,6 +132,26 @@ constant in ratio and growing in absolute bytes (57 MB saved at 50 MiB); the
 next memory win, if one is ever needed, is accumulator retention, not
 framing.
 
+### 500 MiB tier: which accumulator owns the peak
+
+The same binary runs a 500 MiB tier (generated on demand; the repository
+stores no large blob) and measures the metrics accumulator alone against the
+full composite:
+
+| Measurement | Value |
+|---|---|
+| Metrics-only peak | 797.0 MB (1.40× source) |
+| Composite (metrics + evidence) peak | 797.0 MB — evidence adds 5,825 bytes |
+| Metrics retained at end of stream | 525.6 MB over 1,722,451 turns (~305 bytes/turn, ≈0.92× source) |
+| Serialized evidence | 4,497 bytes — flat from 1 MiB to 500 MiB |
+
+The peak multiplier improves with scale (1.75–1.84× at 10–50 MiB, 1.40× at
+500 MiB): parse transients amortize and metrics retention is what remains.
+The evidence caps bound its memory the same way they bound its output, so
+the whole pipeline reduces to: peak ≈ metrics retention plus bounded
+transients; the reader and evidence are both effectively free. A 500 MiB
+session is ~10× the largest session in the issue #222 field cohort.
+
 ## Active-writer `SourceChanged` rates
 
 2 MiB source (~13 ms read window), full-reprocess claim, `Absent` guarantee,
