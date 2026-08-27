@@ -1,7 +1,3 @@
-<!-- This Source Code Form is subject to the terms of the Mozilla Public
-     License, v. 2.0. If a copy of the MPL was not distributed with this
-     file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
-
 # CI and release efficiency: before and after
 
 Status: baseline measured 2026-08-17; the "after" figures are a conservative

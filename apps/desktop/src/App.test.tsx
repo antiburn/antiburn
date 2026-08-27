@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -71,8 +67,8 @@ describe("App", () => {
 
   it("renders the popover for an unknown fragment, not the first-run flow", async () => {
     // The default route is the popover on purpose, so a fragment nothing
-    // recognizes lands somewhere real. Since onboarding moved to its own
-    // window (D-25) that fallback must not draw the flow, whatever the
+    // recognizes lands somewhere real. Since onboarding has its own window,
+    // that fallback must not draw the flow, whatever the
     // onboarding flag says.
     window.location.hash = "#/not-a-window"
 

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The records the store reads and writes.
 //!
 //! These are storage shapes, not wire shapes: the IPC layer maps them into the
@@ -558,8 +554,8 @@ pub struct AppSettings {
     /// [`AppSettings::live_usage_active`] for the second, unconditional gate
     /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
-    /// The consented analytics channel (D-027, deviations D-28). On by
-    /// default for a new install, which meets the control on the Ready
+    /// The consented analytics channel. On by default for a new install, which
+    /// meets the control on the Ready
     /// screen before anything is sent; off for a store that finished
     /// onboarding under copy that promised no analytics at all.
     pub analytics_enabled: bool,

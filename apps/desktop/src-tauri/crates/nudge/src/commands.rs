@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Tauri commands the notification webview invokes. Kept in their own module (not
 //! at the crate root) so the `#[tauri::command]` helper macros don't collide with
 //! their own re-exports under edition-2024 macro hygiene.

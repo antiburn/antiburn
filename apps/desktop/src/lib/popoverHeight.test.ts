@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
@@ -27,8 +23,7 @@ describe("popover heights", () => {
   })
 
   it("gives only the surface that outgrew the contract more than the contract", () => {
-    // D-22: the ceiling is above the contract's height, and exactly one
-    // surface uses it. Everything else stays where it was.
+    // The ceiling is above the default height, and exactly one surface uses it.
     expect(MAX_POPOVER_HEIGHT).toBeGreaterThan(DEFAULT_POPOVER_HEIGHT)
     expect(popoverHeightFor("usage")).toBe(MAX_POPOVER_HEIGHT)
     expect(popoverHeightFor("activity")).toBe(DEFAULT_POPOVER_HEIGHT)
@@ -36,8 +31,8 @@ describe("popover heights", () => {
   })
 
   it("has no surface left that wants less than the contract", () => {
-    // The short one was the first-run flow, and it has its own window now
-    // (D-25). Nothing else in this popover is a centred screen, so a height
+    // The short one was the first-run flow, and it has its own window now.
+    // Nothing else in this popover is a centred screen, so a height
     // below the resting size would mean a surface is being under-served
     // rather than deliberately compact.
     for (const height of Object.values(POPOVER_HEIGHTS)) {

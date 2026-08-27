@@ -1,22 +1,7 @@
 antiburn
-Copyright (c) 2026 Cadence
+Copyright (c) 2026 Cadence AI (Vic) Pty Ltd
 
-This repository's source code is licensed under the Mozilla Public License,
-v. 2.0 (see LICENSE). It begins from a fresh Git root containing only the
-approved public subset of a previously private implementation, admitted under
-the source-boundary manifests in docs/oss/ and published by an authorized
-MPL-2.0 commit of the Cadence legal entity.
+The project source code is licensed under the MIT License. See LICENSE.
 
-Third-party material
---------------------
-
-Vendor brand marks on agent rows are drawn from path data published under
-CC0-1.0: most from the simple-icons project (https://simpleicons.org), which
-is a declared dependency, and OpenAI's mark from Gil Barbara's SVG Logos
-(https://github.com/gilbarbara/logos), whose collection is too large to depend
-on for a single icon and whose path is therefore inlined in
-apps/desktop/src/lib/brandMarks.ts with its source recorded alongside it.
-
-These marks remain the trademarks of their respective owners. They appear
-nominatively — to identify which tool produced a session — and imply no
-affiliation with or endorsement by those owners.
+Third-party software and asset notices, including their separate license terms,
+are in THIRD_PARTY_NOTICES.

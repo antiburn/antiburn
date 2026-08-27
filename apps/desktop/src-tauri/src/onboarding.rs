@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The standalone first-run window.
 //!
 //! Onboarding used to be a surface of the popover, sized at 380×520. Two things
@@ -21,8 +17,7 @@
 //! read. 680×480 gives the same step about 130pt of list under a notice that no
 //! longer wraps, and every other step more room than it had.
 //!
-//! Recorded as a deviation (`docs/deviations.md`, D-25): the ratified row is a
-//! per-view bounded-height popover surface, and this is a window.
+//! The first-run flow uses a window instead of a bounded-height popover surface.
 //!
 //! Chrome follows [`crate::settings`] rather than inventing a second pattern:
 //! fixed size, non-resizable, and on macOS an overlay title bar with the

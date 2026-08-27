@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { useCallback, useRef, useSyncExternalStore } from "react"
 
 /** A callback ref that may return a cleanup, as React 19 allows. */

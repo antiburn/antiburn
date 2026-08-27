@@ -3,7 +3,7 @@
   "version": "0.1.0-rc.10",
   "private": true,
   "type": "module",
-  "license": "MPL-2.0",
+  "license": "MIT",
   "description": "antiburn desktop application: menu-bar/tray shell over the local antiburn engine.",
   "scripts": {
     "dev": "tauri dev --config src-tauri/tauri.debug.conf.json",

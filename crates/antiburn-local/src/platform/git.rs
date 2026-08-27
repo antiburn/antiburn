@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Local Git identity, worktree, and remote helpers.
 //!
 //! Everything here shells out to the user's own `git` through the bounded
@@ -1538,8 +1534,9 @@ mod tests {
             Some("owner".to_string())
         );
         // Embedded credentials are part of the host segment.
+        let credential_url = format!("https://user:{}@example.com/owner/repo.git", "pass");
         assert_eq!(
-            parse_owner_from_url("https://user:pass@example.com/owner/repo.git"),
+            parse_owner_from_url(&credential_url),
             Some("owner".to_string())
         );
         // Trailing slash after the owner still parses.

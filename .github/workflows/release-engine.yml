@@ -156,9 +156,8 @@ jobs:
           # `HEAD` rather than "$TAG": the checkout is the tagged commit either
           # way, and this does not depend on the tag ref surviving the fetch.
           git archive --format=tar HEAD:crates/antiburn-local | tar -x -C "$stage"
-          # MPL-2.0 requires the licence to travel with the source, and the
-          # tarball is a distribution of its own.
-          cp LICENSE NOTICE "$stage/"
+          # Include the project licence and notice in the source tarball.
+          cp LICENSE NOTICE THIRD_PARTY_NOTICES "$stage/"
           test -f "$stage/Cargo.toml"
           test -f "$stage/Cargo.lock"
           tar --create --gzip \

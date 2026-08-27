@@ -1,7 +1,3 @@
-<!-- This Source Code Form is subject to the terms of the Mozilla Public
-     License, v. 2.0. If a copy of the MPL was not distributed with this
-     file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
-
 # Rolling back a published release
 
 A version is out and it is bad: it crashes on launch, it loses the local index,

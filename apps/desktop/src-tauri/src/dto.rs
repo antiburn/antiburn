@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The shapes that cross the IPC boundary.
 //!
 //! Every type here serializes as camelCase and mirrors a type the webview
@@ -405,7 +401,7 @@ pub struct AppInfo {
     pub analytics_supported: bool,
     /// Who receives those events, in the reader's own words. `None` when the
     /// build has no endpoint. Injected with the endpoint, never a literal in
-    /// this repository (D-027).
+    /// this repository.
     pub analytics_operator: Option<String>,
 }
 

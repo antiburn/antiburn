@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 /**
  * How tall the popover is for each of its surfaces.
  *
@@ -11,14 +7,13 @@
  * breakdown asks for more.
  *
  * There was a fourth, shorter than all of them, for the first-run flow. That
- * flow has its own window now (`src-tauri/src/onboarding.rs`, D-25) and is no
+ * flow has its own window now (`src-tauri/src/onboarding.rs`) and is no
  * longer a popover surface at all.
  *
  * Two ceilings, not one, and the difference matters. [`DEFAULT_POPOVER_HEIGHT`]
  * is the app-shell contract's 700 — the size the window is created at and the
  * size it rests at. [`MAX_POPOVER_HEIGHT`] is 780, which only the Usage surface
- * asks for, and which exceeds the contract: that is a recorded deviation
- * (`docs/deviations.md`, D-22) rather than a quiet change. The shell clamps to
+ * asks for, and which exceeds the default contract. The shell clamps to
  * the same pair, so these values are a request, not an instruction.
  */
 

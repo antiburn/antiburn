@@ -1,12 +1,8 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { StrictMode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { NOTICE_TEXT } from "../lib/legalNotices"
+import { NOTICE_TEXT, THIRD_PARTY_NOTICES_TEXT } from "../lib/legalNotices"
 import { SettingsView } from "./SettingsView"
 
 /**
@@ -750,8 +746,8 @@ describe("SettingsView", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "About" }))
 
-    expect(await screen.findByText("MPL-2.0")).toBeInTheDocument()
-    expect(screen.getByText(/Mozilla Public License 2\.0/)).toBeInTheDocument()
+    expect(await screen.findByText("MIT")).toBeInTheDocument()
+    expect(screen.getByText(/free software under the MIT License/)).toBeInTheDocument()
     // This repository is not public yet, so About carries no external link at
     // all rather than links that would open a browser at a 404.
     expect(document.querySelectorAll("a")).toHaveLength(0)
@@ -765,7 +761,7 @@ describe("SettingsView", () => {
 
     // A phrase from the licence body proper, not from any label or summary.
     expect(
-      await screen.findByText(/means Covered Software of a particular Contributor/),
+      await screen.findByText(/Permission is hereby granted, free of charge/),
     ).toBeInTheDocument()
     // The licence text contains bare URLs; none may become an anchor.
     expect(document.querySelectorAll("a")).toHaveLength(0)
@@ -785,7 +781,7 @@ describe("SettingsView", () => {
     expect(document.querySelectorAll("a")).toHaveLength(0)
   })
 
-  it("names the bundled third-party material in its own view", async () => {
+  it("shows complete third-party notices in its own view", async () => {
     render(<SettingsView />)
 
     fireEvent.click(screen.getByRole("tab", { name: "About" }))
@@ -793,9 +789,11 @@ describe("SettingsView", () => {
       await screen.findByRole("button", { name: "Open third-party attributions" }),
     )
 
-    expect(await screen.findByText("Agent brand marks")).toBeInTheDocument()
-    expect(screen.getByText(/simple-icons/)).toBeInTheDocument()
-    expect(screen.getByText(/CC0-1\.0/)).toBeInTheDocument()
+    const notices = await screen.findByText(/antiburn third-party notices/)
+    expect(notices.textContent).toBe(THIRD_PARTY_NOTICES_TEXT.trim())
+    expect(notices).toHaveTextContent("Copyright 2024 The Bitcount Project Authors")
+    expect(notices).toHaveTextContent("SIL OPEN FONT LICENSE Version 1.1")
+    expect(notices).toHaveTextContent("simple-icons")
     expect(document.querySelectorAll("a")).toHaveLength(0)
   })
 
@@ -1085,7 +1083,7 @@ describe("SettingsView — notifications", () => {
     expect(
       screen.getByRole("group", { name: "Weekly milestone thresholds" }),
     ).toBeInTheDocument()
-    // The milestone rows say plainly that no live source ships yet (D-20).
+    // The milestone rows state when live refresh permits notifications.
     expect(
       screen.getByText(/fire only while Settings → Usage is set to refresh/i),
     ).toBeInTheDocument()

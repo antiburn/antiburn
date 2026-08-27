@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 // CycloneDX 1.6 SBOM for the desktop frontend's production dependency tree.
 //
 // Why this is a script here rather than an off-the-shelf generator: the
@@ -144,7 +140,7 @@ function main() {
         name: args.name,
         version: args.version,
         purl: rootPurl,
-        licenses: [{ license: { id: 'MPL-2.0' } }],
+        licenses: [{ license: { id: 'MIT' } }],
         description: 'antiburn desktop application frontend bundle (production dependencies)',
       },
     },

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Whether the local database is still accepting writes.
 //!
 //! Everything antiburn knows lives in one SQLite file, and the ways that file
@@ -16,7 +12,7 @@
 //! - **Only writes.** Opening the database is not tracked, because a failure
 //!   there is fatal at launch: there is no useful antiburn without a store, and
 //!   an app that starts into a permanent error banner is worse than one that
-//!   refuses to start. See `docs/deviations.md`.
+//!   refuses to start.
 //! - **Only changes are announced.** The status is emitted when it *changes*,
 //!   so a machine whose disk is full does not generate one event per scan tick.
 

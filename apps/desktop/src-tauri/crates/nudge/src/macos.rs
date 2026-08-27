@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! macOS: subclass the notification window into a **non-activating floating
 //! NSPanel** via `tauri-nspanel`, so showing it (and clicking its CTAs) never
 //! steals key focus from the user's frontmost app or activates antiburn.

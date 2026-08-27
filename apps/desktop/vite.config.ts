@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { fileURLToPath, URL } from "node:url"
 
 import tailwindcss from "@tailwindcss/vite"
@@ -71,8 +67,6 @@ export default defineConfig(({ command, mode }) => ({
     // The label helpers format wall-clock times. Keep their output equal on all CI hosts.
     env: { TZ: "UTC" },
     setupFiles: ["./src/test/setup.ts"],
-    // `tests/` holds checks that must not live inside the tree they check
-    // (see tests/no-exfiltration.test.ts).
     include: ["src/**/*.{test,spec}.{ts,tsx}", "tests/**/*.{test,spec}.ts"],
   },
 }))

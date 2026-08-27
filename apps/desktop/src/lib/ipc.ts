@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 /**
  * The typed edge of the shell's IPC surface.
  *
@@ -14,10 +10,8 @@
  * where no shell is attached. Every wrapper therefore reports *absence* rather
  * than throwing, so views render a degraded state instead of crashing.
  *
- * None of these payloads comes from a service of ours. They are produced on
- * this machine by the local engine — see `tests/no-exfiltration.test.ts`,
- * which enforces that no code in this app's webview opens a network
- * connection on its own account.
+ * None of these payloads comes from a service of ours. The local engine
+ * produces them on this machine.
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
@@ -105,7 +99,7 @@ export interface AppSettings {
    */
   liveUsageEnabled: boolean
   /**
-   * The consented analytics channel (D-027, deviations register D-28).
+   * The consented analytics channel.
    *
    * On by default for a new install, which meets the control on the first-run
    * Ready screen before anything can be sent; off for a store that finished
@@ -333,11 +327,9 @@ export interface ProviderUsageSummaryPayload {
  * that it carries no percentage, allowance, or reset, and a test proves it.
  * The views layer the two.
  *
- * Still nothing is fetched here, in the webview. These figures were fetched
- * by the *agent* (optionally at antiburn's request — see Settings → Usage),
- * which cached them on this machine; the shell reads that file and this
- * module receives it over IPC like everything else. See
- * `tests/no-exfiltration.test.ts`.
+ * Still nothing is fetched here, in the webview. The agent fetched these
+ * figures and cached them on this machine. The shell reads that file and this
+ * module receives it over IPC like everything else.
  * ---------------------------------------------------------------------- */
 
 /** Marks figures stated directly by a provider. Mirrors Rust `LiveUsageSupport`. */

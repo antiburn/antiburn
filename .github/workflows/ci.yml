@@ -50,7 +50,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test the CI control plane
-        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/verify-app-engine-release.test.mjs scripts/verify-workflow-portability.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
 
       # The drift guard runs here, not in a classified job. It reads the
       # contract, the stylesheets, and the popover window's own corner
@@ -116,7 +116,7 @@ jobs:
         working-directory: crates/antiburn-local
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Tests (including source-boundary suite)
+      - name: Tests
         working-directory: crates/antiburn-local
         run: cargo nextest run --locked --lib --tests
 
@@ -512,25 +512,10 @@ jobs:
         # Let Actions substitute the value before either shell sees the command.
         run: pnpm --filter @antiburn/desktop exec tauri build --features distribution --target "${{ matrix.target }}" --no-bundle
 
-  boundary:
-    name: whole-tree source boundary
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Scan the tree for prohibited concepts
-        run: node scripts/check-boundary.mjs
-
   licenses:
     name: dependency licenses
     needs: classify
-    if: needs.classify.outputs.engine == 'true' || needs.classify.outputs.desktop_backend == 'true'
+    if: needs.classify.outputs.frontend == 'true' || needs.classify.outputs.engine == 'true' || needs.classify.outputs.desktop_backend == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -540,6 +525,17 @@ jobs:
         uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
         with:
           tool: cargo-deny
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Check engine licenses and dependency bans
         working-directory: crates/antiburn-local
@@ -556,6 +552,9 @@ jobs:
       - name: Check desktop app advisories
         working-directory: apps/desktop/src-tauri
         run: cargo deny --locked check advisories
+
+      - name: Verify third-party notices
+        run: pnpm notices:check
 
   dco:
     name: DCO sign-off
@@ -584,7 +583,6 @@ jobs:
 
   aislop:
     name: slop gate
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout with history
@@ -604,10 +602,36 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Judge the changed files
+        if: github.event_name == 'pull_request'
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: pnpm run slop --base "$BASE_SHA"
+
+      - name: Judge the full tree
+        if: github.event_name == 'push'
+        run: pnpm run slop:all
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Scan the tree for secrets
+        run: pnpm run secrets
 
   ci-required:
     name: ci-required
@@ -620,10 +644,10 @@ jobs:
       - installer-tests
       - release-metadata
       - warm-release-cache
-      - boundary
       - licenses
       - dco
       - aislop
+      - secrets
     runs-on: ubuntu-24.04
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
@@ -633,10 +657,10 @@ jobs:
       INSTALLER_TESTS_RESULT: ${{ needs.installer-tests.result }}
       RELEASE_METADATA_RESULT: ${{ needs.release-metadata.result }}
       WARM_RELEASE_RESULT: ${{ needs.warm-release-cache.result }}
-      BOUNDARY_RESULT: ${{ needs.boundary.result }}
       LICENSES_RESULT: ${{ needs.licenses.result }}
       DCO_RESULT: ${{ needs.dco.result }}
       AISLOP_RESULT: ${{ needs.aislop.result }}
+      SECRETS_RESULT: ${{ needs.secrets.result }}
       EVENT_NAME: ${{ github.event_name }}
       ENGINE_SELECTED: ${{ needs.classify.outputs.engine }}
       FRONTEND_SELECTED: ${{ needs.classify.outputs.frontend }}
@@ -674,7 +698,6 @@ jobs:
           }
 
           require_success classify "$CLASSIFY_RESULT"
-          require_success boundary "$BOUNDARY_RESULT"
           require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
           require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
           require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
@@ -694,11 +717,8 @@ jobs:
           else
             allow_skip licenses "$LICENSES_RESULT"
           fi
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            require_success aislop "$AISLOP_RESULT"
-          else
-            allow_skip aislop "$AISLOP_RESULT"
-          fi
+          require_success aislop "$AISLOP_RESULT"
+          require_success secrets "$SECRETS_RESULT"
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             require_success dco "$DCO_RESULT"
           else

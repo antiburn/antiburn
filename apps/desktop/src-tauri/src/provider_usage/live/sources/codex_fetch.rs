@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Ask Codex directly for the reader's own plan usage, refreshing its token
 //! once if the provider says no, and falling back to the Codex app's own
 //! process ([`super::codex_app_server`]) if a direct request never succeeds.
@@ -78,14 +74,14 @@ use super::http;
 /// defensively rather than trust that.
 const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
 
-// aislop-ignore-next-line ai-slop/hardcoded-url -- Issue #90 owns this standing finding.
+// aislop-ignore-next-line ai-slop/hardcoded-url -- Codex uses this fixed endpoint for plan usage.
 const WHAM_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN_ENDPOINT: &str = "https://auth.openai.com/oauth/token";
 
 /// Codex CLI's own public OAuth client id. Public in the sense every install
 /// of the CLI carries it; it identifies the client application to the
 /// authorization server, not the reader.
-// aislop-ignore-next-line ai-slop/hardcoded-id -- Issue #90 owns this standing finding.
+// aislop-ignore-next-line ai-slop/hardcoded-id -- Codex uses this public client ID for each CLI installation.
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /// The unsigned JWT claim that names the account, when `auth.json` did not

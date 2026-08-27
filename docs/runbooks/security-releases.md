@@ -1,7 +1,3 @@
-<!-- This Source Code Form is subject to the terms of the Mozilla Public
-     License, v. 2.0. If a copy of the MPL was not distributed with this
-     file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
-
 # Shipping a security fix
 
 A vulnerability report has arrived and a fix has to reach people. This runbook
@@ -51,17 +47,13 @@ Keep the fix as small as the fault. A security release is the worst possible
 place to also land a refactor: the reviewers are working under time pressure and
 the reader has to take the whole thing.
 
-Write a test that fails without the fix. If the fault crossed one of the
-mechanical boundaries this repository already enforces — the engine's
-`tests/boundary.rs`, the whole-tree `scripts/check-boundary.mjs`, the frontend's
-`tests/no-exfiltration.test.ts` — extend that check as part of the fix. A
-boundary that was crossed once had a gap in it, and the test is what closes
-the gap rather than the patch.
+Write a test that fails without the fix. Test the behavior at the narrowest
+stable interface. A boundary that was crossed once had a gap in it, and the
+test closes the gap rather than only covering the patch.
 
 One distinction to make before you harden anything: antiburn has **one**
-sanctioned outbound channel besides the update check — the anonymised
-analytics publisher in `src-tauri/src/analytics`, recorded as D-027
-and deviations D-28. Traffic from it is not a breach. What *would* be a breach
+outbound channel besides the update check — the anonymised analytics publisher
+in `src-tauri/src/analytics`. Traffic from it is not a breach. What _would_ be a breach
 is that channel carrying a field its event schema does not name, reaching an
 endpoint the build did not inject, or sending while the reader's consent is
 off. Check the schema and the gate before concluding the boundary held.

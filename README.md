@@ -1,140 +1,81 @@
 # antiburn
 
+[![CI](https://github.com/antiburn/antiburn/actions/workflows/ci.yml/badge.svg)](https://github.com/antiburn/antiburn/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/antiburn/antiburn?include_prereleases&sort=semver)](https://github.com/antiburn/antiburn/releases/latest)
+[![License](https://img.shields.io/github/license/antiburn/antiburn)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/antiburn/antiburn)](https://github.com/antiburn/antiburn/stargazers)
+[![aislop score](https://badges.scanaislop.com/score/antiburn/antiburn.svg)](https://scanaislop.com/antiburn/antiburn)
+[![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)](docs/support.md)
+
 Local-first visibility into your AI coding-agent sessions.
 
-antiburn discovers the coding-agent sessions already on your machine, analyzes the
-transcripts locally, and shows you activity, session analysis, and API-equivalent
-cost estimates. Everything runs on your device.
+antiburn discovers sessions already on your machine, analyzes transcripts
+locally, and shows activity, session analysis, provider usage, and
+API-equivalent cost estimates. Your session content stays on your device.
 
-**Supported agents.** Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode,
-Kiro, and Amp are discovered from their documented local files on every supported
-platform. Three carry qualifications:
-
-- **Antigravity** and **Windsurf** read only documented local files: their live
-  language-server APIs aren't read, so a session that exists only in that live
-  state won't appear.
-- **Pi** is not supported on Windows.
-- **WSL** discovery covers **Claude Code, Codex, and OpenCode** only. Other agents are
-  found in the native environment only.
-
-Supported platforms are macOS 13 or later, Windows 11, and mainstream x86-64 Linux
-desktops. See [`docs/support.md`](docs/support.md) for the full matrix and for what
-antiburn stores.
+It supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro,
+Amp, Antigravity, Windsurf, and Pi. See the [support matrix](docs/support.md)
+for platform limits, discovery details, and local data storage.
 
 ## Install
 
-On macOS or Linux:
+macOS or Linux:
 
 ```sh
 curl -fsSL https://github.com/antiburn/antiburn/releases/latest/download/install.sh | sh
 ```
 
-On Windows 11 in PowerShell:
+Windows 11 PowerShell:
 
 ```powershell
 irm https://github.com/antiburn/antiburn/releases/latest/download/install.ps1 | iex
 ```
 
-The scripts resolve one release, download its package from an immutable tag URL,
-and require the package's entry in `SHA256SUMS`. macOS also verifies the application
-signature with Gatekeeper. Windows releases are not required to have an Authenticode
-signature yet, so SmartScreen can warn. Rerunning a script upgrades the existing
-installation.
-
-To inspect a script before it runs, download it first and read it. For a reproducible
-install, pass `--version <version>` to `install.sh` or `-Version <version>` to
-`install.ps1`. Set `ANTIBURN_VERIFY_ATTESTATION=1` to also require GitHub release
-attestation verification with `gh`. Manual packages remain available on the
+The installers verify release checksums. macOS also verifies the application
+signature with Gatekeeper. Manual packages are available from the
 [latest release](https://github.com/antiburn/antiburn/releases/latest).
 
-The GitHub release URLs remain the canonical public URLs when this repository opens.
-A future short URL can redirect to them without changing the installer or release
-trust model.
+## Development
 
-**Local boundary:** antiburn needs no connection to any service of ours — no antiburn
-account, server, or backend, ever. Everything runs on this machine, as you. The
-connections it makes beyond that are yours: it can read your provider's own current
-usage figures with your own credentials — traffic between this machine and a provider
-you already use, never us. The one call antiburn makes to a service of ours is the update check, against
-GitHub Releases, and the app never depends on it. Released builds also send
-anonymised analytics about the application itself — on by default,
-switchable off in Settings → Privacy, and never carrying your sessions, prompts,
-file paths, or repository names. Every field and every event is listed in
-[docs/analytics.md](docs/analytics.md), along with the commands to
-verify it on your own machine. The endpoint is
-injected at build time, so a build from a clean checkout of this repository sends
-nothing at all. Beyond that, antiburn hands your data to no one who doesn't
-already have it.
-
-**Resource boundary:** antiburn is a background utility, so CPU, memory, and disk I/O
-are product constraints. Work must be lazy, bounded, and no more frequent or
-memory-intensive than the visible feature requires. It should not materially load a
-reader's machine merely because it is running.
-
-## Repository layout
-
-```text
-crates/antiburn-local/   The engine: discovery, session analysis, repository
-                         identity, pricing, and local persistence contracts.
-                         Standalone workspace with its own lockfile.
-apps/desktop/            The desktop application: a Tauri 2 menu-bar shell
-                         (React 19 + TypeScript) over the engine. Its Rust
-                         crate is a standalone workspace of its own.
-docs/oss/                Approved source-boundary manifests; the engine's
-                         mechanical boundary tests validate against them.
-docs/support.md          The v1 platform and agent support matrix, and what
-                         antiburn stores about your sessions.
-docs/debugging.md        Desktop development modes, isolated data, logs, and
-                         focused debug tools.
-docs/deviations.md       Every deliberate difference from the ratified feature
-                         matrix, with its reason and revisit milestone.
-docs/macos-folder-access.md
-                         How antiburn asks for the folders macOS guards, and
-                         why discovery is shaped around never surprising you
-                         with a permission dialog.
-```
-
-See the [desktop debugging guide](docs/debugging.md) for development modes and
-focused debug tools.
-
-## Build and test
-
-### Engine
-
-Requires Rust (see `rust-toolchain.toml`).
+The repository contains the Rust engine in `crates/antiburn-local` and the
+Tauri desktop app in `apps/desktop`. Rust uses the toolchain in
+`rust-toolchain.toml`. Desktop development also needs Node 22+, pnpm, and the
+[Tauri platform dependencies](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
-cd crates/antiburn-local
-cargo build
-cargo test
-```
-
-The test suite includes mechanical source-boundary checks (`tests/boundary.rs`)
-that enforce the engine's local contract: no dependency on any service of ours,
-prohibited concepts (telemetry, commercial identifiers), and manifest integrity
-all fail the build.
-
-### Desktop application
-
-Additionally requires Node 22+ with pnpm (`corepack enable`) and the Tauri
-platform dependencies. See [`apps/desktop/README.md`](apps/desktop/README.md).
-
-```bash
+corepack enable
 pnpm install
 pnpm --filter @antiburn/desktop dev
 ```
 
-## Provenance
+Run the engine checks:
 
-This repository starts from a fresh Git root containing only the approved public
-subset of the original private implementation, admitted under the source manifests
-in `docs/oss/`. See `NOTICE` and `LICENSE` (MPL-2.0).
+```bash
+cd crates/antiburn-local
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
 
-## Contributing
+See the [desktop guide](apps/desktop/README.md) for app commands and the
+[debugging guide](docs/debugging.md) for isolated profiles and developer tools.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions require a
-Developer Certificate of Origin sign-off (`git commit -s`); there is no CLA.
+## Privacy
 
-## Security
+antiburn needs no account, server, or backend operated by the project. It can
+contact coding-agent providers with credentials already held by your tools to
+read current usage. Release builds also check GitHub Releases for updates and
+can send anonymised application events. Analytics can be disabled in
+Settings > Privacy and never include sessions, prompts, file paths, repository
+names, or credentials. Builds from a clean checkout have no analytics endpoint.
+See the complete [analytics contract](docs/analytics.md).
 
-See [SECURITY.md](SECURITY.md) for how to report vulnerabilities privately.
+## Project links
+
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md)
+- [MIT License](LICENSE)
+- [Copyright notice](NOTICE)
+- [Third-party notices](THIRD_PARTY_NOTICES)

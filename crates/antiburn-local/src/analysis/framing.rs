@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Bounded newline framing for JSONL transcript records.
 //!
 //! The reader retains at most [`MAX_RECORD_BYTES`] for one record. It drains an

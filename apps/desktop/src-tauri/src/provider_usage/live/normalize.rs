@@ -1,11 +1,6 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Strict normalization into the consumed-capacity percentage domain.
 //!
-//! Ported from the private app under D-023 (allowlist rule
-//! `usage-limit-domain`). Every function here fails closed: a value outside
+//! Every function here fails closed: a value outside
 //! its domain returns an error rather than a clamp. That choice is the point
 //! of the module. Clamping 140% to 100% produces a full meter that looks
 //! exactly like a real one, and the reader has no way to tell that the

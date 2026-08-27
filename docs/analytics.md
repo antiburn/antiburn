@@ -11,10 +11,8 @@ it before anything is sent. It is on by default — except in the EU, the EEA,
 and the UK, where it starts **off**, because there analytics are something you
 opt into rather than out of. That is decided from the locale and time zone your
 machine already reports; nothing is looked up, and neither is ever sent. That
-default diverges from the ratified feature matrix, which specifies default-off,
-and the divergence is recorded as **D-28** in [`deviations.md`](deviations.md)
-rather than left implicit. The channel itself is permitted by **D-027** in
-[`oss/source-denylist.toml`](oss/source-denylist.toml).
+default differs from the general default-off policy so consent is collected
+before analytics starts in those regions.
 
 ## The short version
 
@@ -36,21 +34,21 @@ Thirteen fields, and this is the whole list. The payload is a closed Rust struct
 with no map and no free-form string, so there is nowhere for anything else to
 be put.
 
-| Field | What it is | Example |
-|---|---|---|
-| `platform` | Constant. The surface class the collector partitions on. | `desktop` |
-| `messageId` | Random per-event id, so a redelivered event is not counted twice. | `9f2c…` |
-| `anonymousId` | The rotating installation identifier. | `4b81…` |
-| `sessionId` | Identifies one run of the application. Held in memory only, never written to disk, replaced after 30 minutes of inactivity and whenever antiburn restarts. | `7d10…` |
-| `event` | The event name, from the closed catalog below. | `antiburn.scan_completed` |
-| `originalTimestamp` | When it happened, UTC. | `2026-08-19T09:14:02Z` |
-| `sentAt` | When it was delivered. Added at send, not at capture. | `2026-08-19T09:15:02Z` |
-| `properties.arch` | CPU architecture. | `aarch64` |
-| `properties.bucket` | A count rounded into a range. Never exact. | `10-49` |
-| `properties.label` | A key from a closed vocabulary — which setting changed, which agent's session was opened, or which kind of failure. Never the value. | `live_usage` |
-| `properties.detail` | A second value from a closed vocabulary, where one event has two things worth telling apart. | `native` |
-| `context.appVersion` | The application version. | `antiburn:0.1.0` |
-| `context.os` | Operating-system family. | `macos` |
+| Field                | What it is                                                                                                                                                 | Example                   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `platform`           | Constant. The surface class the collector partitions on.                                                                                                   | `desktop`                 |
+| `messageId`          | Random per-event id, so a redelivered event is not counted twice.                                                                                          | `9f2c…`                   |
+| `anonymousId`        | The rotating installation identifier.                                                                                                                      | `4b81…`                   |
+| `sessionId`          | Identifies one run of the application. Held in memory only, never written to disk, replaced after 30 minutes of inactivity and whenever antiburn restarts. | `7d10…`                   |
+| `event`              | The event name, from the closed catalog below.                                                                                                             | `antiburn.scan_completed` |
+| `originalTimestamp`  | When it happened, UTC.                                                                                                                                     | `2026-08-19T09:14:02Z`    |
+| `sentAt`             | When it was delivered. Added at send, not at capture.                                                                                                      | `2026-08-19T09:15:02Z`    |
+| `properties.arch`    | CPU architecture.                                                                                                                                          | `aarch64`                 |
+| `properties.bucket`  | A count rounded into a range. Never exact.                                                                                                                 | `10-49`                   |
+| `properties.label`   | A key from a closed vocabulary — which setting changed, which agent's session was opened, or which kind of failure. Never the value.                       | `live_usage`              |
+| `properties.detail`  | A second value from a closed vocabulary, where one event has two things worth telling apart.                                                               | `native`                  |
+| `context.appVersion` | The application version.                                                                                                                                   | `antiburn:0.1.0`          |
+| `context.os`         | Operating-system family.                                                                                                                                   | `macos`                   |
 
 ### What the two timestamps make possible
 
@@ -58,7 +56,7 @@ Each event is timestamped and the installation identifier lasts up to 30 days,
 so these events show roughly **when** antiburn is used within that window. The
 `sessionId` additionally groups the events of a single run together, so a run
 can be seen as one visit rather than as scattered events. Neither can show what
-antiburn was used *on*. This is stated because an enumeration that lists fields
+antiburn was used _on_. This is stated because an enumeration that lists fields
 without saying what they enable is not really an enumeration.
 
 ### Why there are two identifiers
@@ -96,24 +94,23 @@ address, your locale, and your hostname or username.
 
 There is also **no third-party analytics, telemetry, or crash-reporting SDK** in
 antiburn — no crash reporter, no session replay, no product-metrics vendor. The
-channel described here is first-party and is the only one. That exclusion is
-enforced mechanically by [`scripts/check-boundary.mjs`](../scripts/check-boundary.mjs),
-[`apps/desktop/tests/no-exfiltration.test.ts`](../apps/desktop/tests/no-exfiltration.test.ts),
-and the engine's own `tests/boundary.rs`.
+channel described here is first-party and is the only one. Dependency policy,
+the Tauri content security policy, and analytics behavior tests protect this
+design.
 
 ## The event catalog
 
 Event names are namespaced `antiburn.*`.
 
-| Event | When it fires | Carries |
-|---|---|---|
-| `antiburn.app_launched` | The application starts. | — |
-| `antiburn.onboarding_finished` | The first run completes. | — |
-| `antiburn.scan_completed` | A discovery pass finishes **and finds a different number of sessions than the last one reported**. antiburn rescans about once a minute while the popover is open; a repeat of the same answer is not sent. | `bucket` — how many sessions |
-| `antiburn.setting_toggled` | A preference changes. | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value. |
-| `antiburn.session_opened` | You open a session from the activity list. | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native` or `wsl`. **Not** the session, its title, its repository, or the name of your WSL distribution. |
-| `antiburn.usage_viewed` | You open the usage view. | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
-| `antiburn.error_occurred` | Something failed, and the previous pass had not already reported the same failure. | `label` — a category, currently `scan_failed`. No message, no path, no backtrace. |
+| Event                          | When it fires                                                                                                                                                                                               | Carries                                                                                                                                                                                                     |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `antiburn.app_launched`        | The application starts.                                                                                                                                                                                     | —                                                                                                                                                                                                           |
+| `antiburn.onboarding_finished` | The first run completes.                                                                                                                                                                                    | —                                                                                                                                                                                                           |
+| `antiburn.scan_completed`      | A discovery pass finishes **and finds a different number of sessions than the last one reported**. antiburn rescans about once a minute while the popover is open; a repeat of the same answer is not sent. | `bucket` — how many sessions                                                                                                                                                                                |
+| `antiburn.setting_toggled`     | A preference changes.                                                                                                                                                                                       | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value.                                                                                       |
+| `antiburn.session_opened`      | You open a session from the activity list.                                                                                                                                                                  | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native` or `wsl`. **Not** the session, its title, its repository, or the name of your WSL distribution.               |
+| `antiburn.usage_viewed`        | You open the usage view.                                                                                                                                                                                    | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
+| `antiburn.error_occurred`      | Something failed, and the previous pass had not already reported the same failure.                                                                                                                          | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                           |
 
 Two of those are deliberately not sent once per occurrence. A scan result that
 repeats the last one is dropped, so a machine left running does not report the
@@ -188,10 +185,10 @@ identity that cannot be linked to the old one.
 
 ## Where this lives in the code
 
-| Concern | File |
-|---|---|
-| Consent gate, queue, delivery | [`analytics/mod.rs`](../apps/desktop/src-tauri/src/analytics/mod.rs) |
-| The payload, and the closed field set | [`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs) |
+| Concern                                                   | File                                                                       |
+| --------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Consent gate, queue, delivery                             | [`analytics/mod.rs`](../apps/desktop/src-tauri/src/analytics/mod.rs)       |
+| The payload, and the closed field set                     | [`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs)   |
 | Endpoint configuration, and why a clean checkout is inert | [`analytics/config.rs`](../apps/desktop/src-tauri/src/analytics/config.rs) |
-| The setting, and the upgrade rule for existing installs | [`store/mod.rs`](../apps/desktop/src-tauri/src/store/mod.rs) |
-| The reader-facing copy | [`PrivacyPane.tsx`](../apps/desktop/src/views/settings/PrivacyPane.tsx) |
+| The setting, and the upgrade rule for existing installs   | [`store/mod.rs`](../apps/desktop/src-tauri/src/store/mod.rs)               |
+| The reader-facing copy                                    | [`PrivacyPane.tsx`](../apps/desktop/src/views/settings/PrivacyPane.tsx)    |

@@ -11,7 +11,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 description = "Cross-platform floating notification nudges for the antiburn desktop app. Mechanism only — the app owns when/why a nudge fires."
-license = "MPL-2.0"
+license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
 publish = false
 

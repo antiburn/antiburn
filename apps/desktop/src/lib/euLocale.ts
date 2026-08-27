@@ -1,13 +1,9 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 /**
  * Whether this machine looks like it is in a jurisdiction where analytics need
  * consent *before* they start, rather than a control the reader can find.
  *
- * antiburn ships analytics on by default (deviations register D-28). In
- * the EU, the EEA, and the UK that default is the wrong way round: ePrivacy
+ * antiburn ships analytics on by default. In the EU, the EEA, and the UK that
+ * default is the wrong way round: ePrivacy
  * Article 5(3) and the GDPR treat non-essential analytics as something a reader
  * opts *into*. So in those places the first-run control still appears in
  * exactly the same spot — it just starts off.

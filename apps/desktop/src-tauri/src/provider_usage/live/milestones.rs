@@ -1,15 +1,9 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Live usage windows and the milestone-selection engine.
 //!
 //! Everything local in this app estimates what was *spent*; a milestone is a
 //! statement about what *remains*, which only a provider can answer. This
 //! module holds the shape of that answer ([`LiveUsageSnapshot`]) and the
-//! engine that decides when a crossing deserves a notification. The engine is
-//! adapted from the private app under D-023 (allowlist rule
-//! `usage-milestone-engine`).
+//! engine that decides when a crossing deserves a notification.
 //!
 //! What fills it is [`super::sources`], narrowed by
 //! `usage_alerts::milestone_snapshot` down to the two window classes and the

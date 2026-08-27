@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The app database's schema and its migration ladder.
 //!
 //! Migrations are embedded, ordered, and applied inside one transaction each.
@@ -193,7 +189,7 @@ ALTER TABLE session ADD COLUMN activity_source TEXT NOT NULL DEFAULT 'mtime';
 ALTER TABLE session ADD COLUMN activity_cursor TEXT NOT NULL DEFAULT '';
 "#;
 
-/// v5 — the anonymised application-event queue (D-027, deviations D-28).
+/// v5 — the anonymised application-event queue.
 ///
 /// Numbered 4 on its own branch until this merge, where the activity migration
 /// above had already taken that index on `main`. Renumbering is only safe

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The signal path, ported from `prototypes/sound-lab`.
 //!
 //! [`Voice`] mirrors the browser lab's parameter panel one-to-one: three detuned
@@ -149,7 +145,7 @@ fn note_layer(v: &Voice, f: f32, gain: f32) -> Wave {
             }
         });
     }
-    acc.unwrap()
+    acc.expect("the fixed three-voice array always produces a wave")
 }
 
 /// Render one voice at its own root — the "nobody in particular" sound.

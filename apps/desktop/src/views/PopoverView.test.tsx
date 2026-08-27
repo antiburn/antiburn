@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -735,7 +731,7 @@ describe("PopoverView", () => {
   })
 
   it("never renders the first-run flow, whatever the flag says", async () => {
-    // The flow has its own window now (D-25, `views/OnboardingView.tsx`), and
+    // The flow has its own window now (`views/OnboardingView.tsx`), and
     // the shell sends the tray click there instead of here. A popover that
     // could still draw it would be a second, unreachable copy.
     mockCommands({ get_settings: { ...SETTINGS, onboardingCompleted: false } })
@@ -908,8 +904,8 @@ describe("PopoverView — window behaviour", () => {
       }),
     )
 
-    // Nothing exceeds the ceiling, which is now above the contract's 700 for
-    // the Usage surface alone (D-22). The shell clamps to the same number.
+    // Nothing exceeds the ceiling, which is above the default 700 for the
+    // Usage surface alone. The shell clamps to the same number.
     const heights = invoke.mock.calls
       .filter(([command]) => command === "set_popover_height")
       .map(([, args]) => (args as { height: number }).height)

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Where the app's ordinary windows go when they open.
 //!
 //! The popover has its own placement (it hangs off the menu-bar item, see

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The antiburn desktop shell.
 //!
 //! The shell owns windows, the menu-bar item, local persistence, and the IPC
@@ -44,12 +40,12 @@
 //! by default once first-run setup is complete, runs that agent so it
 //! refreshes the file — the agent goes online on its own account, exactly as
 //! it would if the reader ran it, and this crate still only reads the file it
-//! leaves behind (`docs/deviations.md`, D-20 and D-21). Notifications are antiburn's own
+//! leaves behind. Notifications are antiburn's own
 //! window, fed by a local event; nothing about one leaves the machine. The one
 //! call this crate makes to a service of ours is the updater plugin —
 //! registered in release builds only, so a development run makes no such
-//! request at all — and the app never depends on it. The webview side is held
-//! to the same boundary by a test (`apps/desktop/tests/no-exfiltration.test.ts`).
+//! request at all — and the app never depends on it. The content security
+//! policy limits the webview to local application and IPC connections.
 
 mod agents;
 mod analysis;
@@ -287,8 +283,7 @@ pub fn run() {
             // automatic check can see whether there is anything to check with.
             install_updater(app.handle());
 
-            // The consented analytics channel (D-027, deviations D-28). Both
-            // calls are inert unless this build injected an endpoint AND the
+            // Both analytics calls are inert unless this build injects an endpoint and the
             // reader has finished onboarding with the switch on — see
             // `analytics::allowed`, which is the single gate both go through.
             analytics::install(app.handle());

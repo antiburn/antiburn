@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Windows-only: order the notification window front without activating it.
 //! Named `win`, not `windows`, so this module doesn't shadow the `windows`
 //! crate it depends on at the crate root.

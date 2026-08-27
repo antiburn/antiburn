@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { useState } from "react"
 
 import { Card } from "../../components/ui/Card"
@@ -32,20 +28,8 @@ const PLATFORM_LABELS: Record<Platform, string> = {
  * will not tell you where it keeps your data is asking for trust it has not
  * earned.
  *
- * # Why there are no external links here
- *
- * The matrix's About row lists release-notes, source, security, and support
- * links. They are deliberately absent: this repository is not public yet, so
- * every one of those would be a link that opens a browser at a 404. A dead link
- * in the pane whose job is to establish provenance is worse than an honest
- * silence, so what is here instead is the material that genuinely ships with
- * the app — the licence it is under, and the privacy pane that says what it
- * does with your data. The deferral is recorded in `docs/deviations.md` and the
- * links land with publication.
- *
- * Every one of those destinations is reached the same way: a row with an `Open`
- * button. Three of them push an `AboutDocumentView` over this pane; the fourth
- * moves the window to the Privacy pane, which is a section in its own right.
+ * Each destination uses a row with an `Open` button. Three rows push an
+ * `AboutDocumentView` over this pane. The fourth opens the Privacy pane.
  */
 export interface AboutPaneProps extends AppSettingsController {
   info: AppInfo | null
@@ -129,8 +113,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
 
       {/* Four peer rows, every one of them a door. The two legal documents were
           disclosures here until it became clear what that meant in practice:
-          expanding the licence dropped seventeen kilobytes of MPL into the
-          middle of the pane and pushed Data past the fold. Each `Open` carries
+          expanding the licence pushed Data past the fold. Each `Open` carries
           its own accessible name — four buttons all called "Open" is a list a
           screen-reader user cannot navigate. */}
       <SectionGroup title="Licence and data handling">
@@ -141,10 +124,10 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
             // the app makes it checkable without a browser — which matters for
             // a local app that a reader may want to check without going
             // online at all.
-            description="antiburn is free software under the Mozilla Public License 2.0. The full text is readable here, and every source file carries its header."
+            description="antiburn is free software under the MIT License. The full text is readable here."
             trailing={
               <div className="flex items-center gap-2">
-                <span className="type-body tabular-nums text-label-secondary">MPL-2.0</span>
+                <span className="type-body tabular-nums text-label-secondary">MIT</span>
                 <PushButton
                   id={OPEN_BUTTON_ID.licence}
                   ariaLabel="Open licence text"
@@ -172,7 +155,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
           )}
           <Row
             label="Legal notices"
-            description="Who holds the copyright in antiburn and where the work came from."
+            description="Who holds the copyright in antiburn and where to find third-party terms."
             trailing={
               <PushButton
                 id={OPEN_BUTTON_ID.notices}

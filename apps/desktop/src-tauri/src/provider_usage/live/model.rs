@@ -1,14 +1,6 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The value types a provider-reported usage snapshot is made of.
 //!
-//! Adapted from the private app under D-023 (allowlist rule
-//! `usage-limit-domain`), which authorizes the domain model and its quality
-//! semantics but not the credential, account-proving, or probe-registry
-//! contracts that surrounded them there. What is left is deliberately inert:
-//! every type here is data, and the only behaviour is classification.
+//! Every type here is data, and the only behavior is classification.
 //!
 //! Two invariants carry the whole module:
 //!

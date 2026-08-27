@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 /**
  * Brand marks that `simple-icons` does not carry.
  *
@@ -11,9 +7,7 @@
  * artwork inlined by hand because no runtime dependency can supply it at a
  * sane cost.
  *
- * The boundary rule for anything inlined here (`docs/oss/source-denylist.toml`,
- * rule `unsafe-links-and-binary-artifacts`) is that vendored artwork carries
- * source and licence evidence. Each entry below therefore records its
+ * Vendored artwork must carry source and licence evidence. Each entry below records its
  * collection, author, licence, and upstream icon name, and `brandMarks.test.ts`
  * asserts the inlined path is byte-identical to the one the recorded package
  * publishes. If upstream changes the mark, the test fails rather than letting
@@ -24,8 +18,8 @@
  * would put the whole collection in the bundle to draw one mark. It is a
  * devDependency — present for the provenance test, absent from the app.
  *
- * Marks remain their owners' trademarks; use here is nominative, the same
- * footing as the `simple-icons` marks. See docs/deviations.md D-18.
+ * Marks remain their owners' trademarks. This nominative use has the same
+ * footing as the `simple-icons` marks.
  */
 
 import type { SimpleIcon } from "simple-icons"

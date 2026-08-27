@@ -2,7 +2,7 @@
   "name": "antiburn-workspace",
   "version": "0.1.0",
   "private": true,
-  "license": "MPL-2.0",
+  "license": "MIT",
   "description": "pnpm workspace root for the antiburn desktop application.",
   "repository": {
     "type": "git",
@@ -14,11 +14,17 @@
   },
   "scripts": {
     "desktop": "pnpm --filter @antiburn/desktop",
+    "notices": "node scripts/third-party-notices.mjs",
+    "notices:check": "node scripts/third-party-notices.mjs --check",
+    "secrets": "secretlint --secretlintignore .gitignore \"**/*\"",
     "slop": "aislop ci --changes --base origin/main",
+    "slop:all": "aislop ci .",
     "tool-catalog": "node scripts/build-tool-catalog.mjs"
   },
   "devDependencies": {
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
     "aislop": "0.14.1",
+    "secretlint": "13.0.5",
     "yaml": "^2.9.0"
   }
 }

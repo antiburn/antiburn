@@ -1,59 +1,53 @@
-# Agent instructions
+# Repository instructions
 
 These instructions apply to the entire repository.
 
-## React useEffect
+## React
 
-There should be no `useEffect`. Prefer deriving values during render, handling work in the event that caused it, or moving synchronization to the external-system boundary.
+Do not add `useEffect`. Derive values during render, handle work in the event
+that caused it, or move synchronization to the external-system boundary.
 
-Only add a `useEffect` when it is _strictly_ necessary because no simpler design works. Before adding it, explain why and get explicit agreement from the dev.
+Only add `useEffect` when no simpler design works. Explain why and get explicit
+maintainer agreement first.
 
-## Rust dead and deprecated code
+## Rust
 
-There should be no Rust lint suppressions for dead or deprecated code.
+Do not suppress dead-code or deprecated-code lints. Remove dead code and replace
+deprecated APIs instead.
 
-Only add a suppression when it is _strictly_ necessary. Before adding it, explain why and get explicit agreement from the dev.
+Only add a suppression when it is strictly necessary. Explain why and get
+explicit maintainer agreement first.
 
-## Desktop design system
+## Desktop design
 
-Read `apps/desktop/design.md` before you do styling work in `apps/desktop`. Its YAML front matter is the token reference, and the stylesheets it names are the source of truth.
+Read `apps/desktop/design.md` before styling work in `apps/desktop`. Its YAML
+front matter defines the tokens, and its listed stylesheets are the source of
+truth.
 
-Use the semantic utilities the contract documents (`bg-/text-/border-<token>`, the `type-*` scale, `rounded-control`, `duration-*`). Do not hard-code a color, a type size, a radius, or a duration.
+Use the documented semantic utilities: `bg-/text-/border-<token>`, the `type-*`
+scale, `rounded-control`, and `duration-*`. Do not hard-code colors, type sizes,
+radii, or durations.
 
-CI runs `scripts/check-design-drift.mjs`. When you change a token or a stylesheet, update `design.md` in the same change, and add a new stylesheet to its `sources:` list.
-
-For a review of a surface against the wider interface rules, use the `design-review` skill.
+When a token or stylesheet changes, update `apps/desktop/design.md` in the same
+change. Add each new stylesheet to its `sources:` list. CI checks this contract
+with `scripts/check-design-drift.mjs`.
 
 ## Comments
 
-Write all code comments in ASD-STE100 (Simplified Technical English). The rules that matter most for comments:
+Write code comments in ASD-STE100 Simplified Technical English:
 
-- Use the active voice and the present tense. Write "The scanner reads the file", not "The file is read".
-- Write short sentences. Keep instructions to 20 words or fewer, and descriptions to 25 words or fewer. Put one idea in each sentence.
-- Use simple approved words: "use" not "utilize", "start" not "initiate", "do" not "perform". Use each word with one meaning only.
-- Keep articles ("the", "a") — do not write telegraphic fragments.
-- Do not use idioms, humor, or slang.
-- Keep identifiers, API names, and other technical names exactly as they appear in the code.
+- Use the active voice and present tense.
+- Keep instructions to 20 words or fewer and descriptions to 25 words or fewer.
+- Put one idea in each sentence.
+- Use simple words and keep articles such as "the" and "a".
+- Do not use idioms, humor, slang, or telegraphic fragments.
+- Keep identifiers and API names unchanged.
+- Add a comment only when it states important information the code cannot show.
 
-The main reason for a comment:
+## Tests and commits
 
-- it states something important that the code cannot show.
+Run the relevant formatter, linter, type checks, and tests for every change. Use
+the commands in `CONTRIBUTING.md` and `apps/desktop/README.md`.
 
-Reasons a comment shouldn't exist:
-
-- if it restates the code.
-- if it's out of date.
-- if it's code commented out for later.
-
-Machine-read directives (`eslint-disable`, `@ts-expect-error`, `#[allow(...)]`, etc.) are not prose; keep them, but write their explanation text in STE.
-
-## Agent slop feedback
-
-Fix every aislop finding your own change caused before you finish the turn. Do not fix a standing finding that issue #90 owns. If you must change a legacy file and cannot fix its standing finding, suppress it with `<comment marker> aislop-ignore-next-line <rule id…> -- <justification naming #90>`. Run `pnpm run slop` before you finish; the hook scan is narrower and is not authoritative.
-Do not run `aislop hook install` in this repository. Read `CONTRIBUTING.md` for the hook mechanics.
-
-## Commits
-
-Every commit must carry a DCO sign-off: run `git commit -s` (or add `Signed-off-by: Name <email>` to the message by hand).
-
-The DCO check fails the whole PR on any commit that is missing one — it does not average out across the branch. Sign off from the first commit to avoid rework.
+Every commit must include a Developer Certificate of Origin sign-off. Use
+`git commit -s`. CI rejects a pull request if any authored commit lacks it.

@@ -1,7 +1,3 @@
-<!-- This Source Code Form is subject to the terms of the Mozilla Public
-     License, v. 2.0. If a copy of the MPL was not distributed with this
-     file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
-
 # macOS folder access
 
 How antiburn asks for `~/Documents`, `~/Desktop`, and `~/Downloads`, and why the
@@ -46,8 +42,8 @@ as one needing permission.
 is attributed to antiburn, not to `git`. Handing the path to another program
 does not launder it.
 
-**There are three states, not two.** A folder is *allowed*, *refused*, or *never
-asked*. Only the third produces a dialog. A refusal is remembered, and the system
+**There are three states, not two.** A folder is _allowed_, _refused_, or _never
+asked_. Only the third produces a dialog. A refusal is remembered, and the system
 answers from that memory instantly and silently — so a second request after a
 refusal looks, from inside the app, exactly like an immediate denial with no user
 present. That distinction is the whole reason probe timings are recorded.
@@ -64,12 +60,12 @@ folder as readable long after it stopped being so.
 Every working directory is classified before any filesystem call:
 `partition_cwds_by_grants` splits them into admitted and deferred using the
 recorded grant set. A path under a protected folder that is not covered by a grant
-is *deferred* — never read, never `stat`-ed for repository markers, never handed
+is _deferred_ — never read, never `stat`-ed for repository markers, never handed
 to `git`. Deferred entries carry the folder name responsible, so the interface can
 ask for exactly that grant.
 
 The engine's resolution path is gated the same way. `resolve_repo_root_with_fallbacks`
-checks consent before *every* strategy, including resolving the working directory
+checks consent before _every_ strategy, including resolving the working directory
 itself. An earlier version gated only its third fallback and relied on callers to
 pre-filter — which is a convention, not a guarantee, and conventions are how the
 original bug happened.
@@ -80,7 +76,7 @@ original bug happened.
 in it are load-bearing and easy to delete by accident:
 
 1. **The window is focused first**, and the popover is held open across the call.
-   An accessory application with no visible window can raise a dialog *behind*
+   An accessory application with no visible window can raise a dialog _behind_
    everything else, leaving the user waiting on a prompt they cannot see.
 2. **The elapsed time is measured around the probe alone.** Opening a settings
    pane or writing to the database first would inflate the one number that
@@ -94,7 +90,7 @@ every pass and trusted as-is.
 
 It is **never** verified by probing. Confirming a grant means reading the folder,
 and reading a folder with no recorded decision is precisely what prompts. So
-staleness is discovered *reactively*: `verify_dir_access` performs a read the code
+staleness is discovered _reactively_: `verify_dir_access` performs a read the code
 wanted to do anyway, and if it comes back denied, records the probe and drops the
 grant. The next pass then defers the folder normally.
 
@@ -104,7 +100,7 @@ exact failure the whole feature exists to prevent. **Do not add a "just check if
 the grants are still valid" pass.**
 
 The corollary is that eviction only happens where a read happens. That is why a
-repository already known from a previous pass is *verified* rather than assumed
+repository already known from a previous pass is _verified_ rather than assumed
 when it sits inside a protected folder: without that read there is no denial to
 observe, the grant is never dropped, and the row keeps claiming to be readable.
 Roots outside protected folders skip the check, so the steady-state cost is one
@@ -131,11 +127,11 @@ for the others.
 
 ### Who may prompt
 
-| Path | May prompt? |
-| --- | --- |
-| Scheduled background pass | Never |
-| Popover-open and timer passes | Never |
-| `request_folder_access` (the notice's button) | Yes — that is its purpose |
+| Path                                                    | May prompt?                            |
+| ------------------------------------------------------- | -------------------------------------- |
+| Scheduled background pass                               | Never                                  |
+| Popover-open and timer passes                           | Never                                  |
+| `request_folder_access` (the notice's button)           | Yes — that is its purpose              |
 | `recheck_folder_permissions` (the "Check again" button) | Yes, but only from that explicit click |
 
 Anything reachable without a click belongs in the first two rows. If you add a
@@ -145,34 +141,32 @@ control the user pressed.
 ### Why there is no Full Disk Access shortcut
 
 Every blocked state antiburn can reach is recoverable through the per-folder
-control in Files and Folders. A recorded refusal *creates* that row, and the state
+control in Files and Folders. A recorded refusal _creates_ that row, and the state
 with no row — after a permissions reset — has no recorded decision either, so
 asking again produces a real dialog. Full Disk Access would grant mail, messages,
-browsing history, and every other application's private data, to an application
-that wants three folders and says so on screen. Recorded as D-24 in
-`docs/deviations.md`.
+browsing history, and every other application's private data to an application
+that wants three folders and says so on screen.
 
 ## Where the code lives
 
-The split follows the engine's `ConsentGrants` seam: the engine decides *when*
+The split follows the engine's `ConsentGrants` seam: the engine decides _when_
 consent matters, the application decides where the answer is kept and how it is
 asked for.
 
-| Concern | Location |
-| --- | --- |
-| Protected-folder list, `cwd_resolution_blocked` | `crates/antiburn-local/src/paths/protected.rs` |
-| `ConsentGrants` trait, `partition_cwds_by_grants` | `crates/antiburn-local/src/repositories/consent.rs` |
-| `verify_dir_access`, non-prompting existence check | `crates/antiburn-local/src/repositories/access.rs` |
-| Consent-gated resolution | `crates/antiburn-local/src/platform/git.rs` |
-| Grant storage, probe history, timing classification | `apps/desktop/src-tauri/src/consent.rs` |
-| Commands (`request_folder_access`, re-check, diagnostics) | `apps/desktop/src-tauri/src/commands.rs` |
-| Partitioning and eviction in the pass | `apps/desktop/src-tauri/src/repositories.rs` |
-| Sequential request flow | `apps/desktop/src/lib/useFolderPermissionFlow.ts` |
-| The pre-prompt notice | `apps/desktop/src/components/repositories/FolderPermissionNotice.tsx` |
-| Dialog text macOS shows | `apps/desktop/src-tauri/Info.plist` |
+| Concern                                                   | Location                                                              |
+| --------------------------------------------------------- | --------------------------------------------------------------------- |
+| Protected-folder list, `cwd_resolution_blocked`           | `crates/antiburn-local/src/paths/protected.rs`                        |
+| `ConsentGrants` trait, `partition_cwds_by_grants`         | `crates/antiburn-local/src/repositories/consent.rs`                   |
+| `verify_dir_access`, non-prompting existence check        | `crates/antiburn-local/src/repositories/access.rs`                    |
+| Consent-gated resolution                                  | `crates/antiburn-local/src/platform/git.rs`                           |
+| Grant storage, probe history, timing classification       | `apps/desktop/src-tauri/src/consent.rs`                               |
+| Commands (`request_folder_access`, re-check, diagnostics) | `apps/desktop/src-tauri/src/commands.rs`                              |
+| Partitioning and eviction in the pass                     | `apps/desktop/src-tauri/src/repositories.rs`                          |
+| Sequential request flow                                   | `apps/desktop/src/lib/useFolderPermissionFlow.ts`                     |
+| The pre-prompt notice                                     | `apps/desktop/src/components/repositories/FolderPermissionNotice.tsx` |
+| Dialog text macOS shows                                   | `apps/desktop/src-tauri/Info.plist`                                   |
 
-The grant store is written against the engine's public trait rather than ported
-from the private implementation, which is why no source-allowlist rule covers it.
+The grant store implements the engine's public trait.
 
 ## Testing it
 

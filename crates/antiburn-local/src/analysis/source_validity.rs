@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Source validation for one file handle.
 //!
 //! The head hash covers only the configured head region. It does not prove that the full prefix is append-only.

@@ -25,7 +25,12 @@
     "category": "DeveloperTool",
     "shortDescription": "Local-first visibility into your AI coding-agent sessions.",
     "longDescription": "antiburn discovers the coding-agent sessions already on your machine, analyzes the transcripts locally, and shows activity, session analysis, and API-equivalent cost estimates. Everything runs on your device.",
-    "copyright": "antiburn contributors",
+    "copyright": "Copyright (c) 2026 Cadence AI (Vic) Pty Ltd",
+    "resources": {
+      "../../../LICENSE": "LICENSE",
+      "../../../NOTICE": "NOTICE",
+      "../../../THIRD_PARTY_NOTICES": "THIRD_PARTY_NOTICES"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

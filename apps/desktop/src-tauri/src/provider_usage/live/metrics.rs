@@ -1,11 +1,4 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! What the history of a window says that any single reading cannot.
-//!
-//! Adapted from the private app under D-023 (allowlist rule
-//! `usage-limit-domain`): the arithmetic only.
 //!
 //! A percentage answers "how much is gone". These functions answer the two
 //! questions a reader actually has — *how fast* is it going, and *will it
@@ -41,15 +34,13 @@
 //! needs a span long enough for the underlying figure to have plausibly
 //! moved.
 //!
-//! # Two deliberate omissions from the adapted source
+//! # Deliberate data model choices
 //!
-//! - **Account and plan fields on a sample.** The private app carries both
-//!   because its samples span accounts. Here a sample's key already contains
+//! - **No account and plan fields on a sample.** A sample's key already contains
 //!   the provider, the account, and the window id, so two samples in one
 //!   series cannot differ in either — a field that can only hold one value is
 //!   not a guard, it is furniture.
-//! - **`usage_samples_cross_reset`.** Its only consumer there is a live
-//!   anomaly engine. This application deliberately has no anomaly engine
+//! - **No reset-crossing helper.** This application has no anomaly engine
 //!   because usage rates are not predictable or steady enough. The simpler
 //!   percentage-drop test below is what the forecast actually needs.
 

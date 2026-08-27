@@ -1,15 +1,8 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The registered sources of provider-reported usage, and the rule for
 //! picking between them.
 //!
-//! Every source in this module is independently authored for this
-//! application. The private app's collectors, credential capture, loopback
-//! probes, and API clients are denied by `docs/oss/source-denylist.toml`
-//! (rule `provider-usage`); what is shared with it is the domain model those
-//! sources produce, which is a separate, allowlisted slice.
+//! Each source uses the domain model in the parent module. Source-specific
+//! credential access, probes, and API clients stay in this module.
 //!
 //! # What is registered
 //!

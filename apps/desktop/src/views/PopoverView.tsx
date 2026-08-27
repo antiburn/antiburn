@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { lazy, Suspense, useCallback, useRef, useState, useSyncExternalStore } from "react"
 
 import { AlertTriangle, Settings } from "lucide-react"
@@ -42,7 +38,7 @@ const SessionPane = lazy(() =>
  * needs.
  *
  * There used to be a fourth. The first-run flow now has its own window
- * (`views/OnboardingView.tsx`, `src-tauri/src/onboarding.rs`, D-25), and with
+ * (`views/OnboardingView.tsx`, `src-tauri/src/onboarding.rs`), and with
  * it went the scan roots, folder permissions, and repository toggling this
  * component carried for one surface out of four. What is left of that here is
  * only what the attention banners genuinely read.

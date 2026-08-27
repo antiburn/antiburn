@@ -18,7 +18,7 @@ version = "0.1.0-rc.10"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
-license = "MPL-2.0"
+license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
 publish = false
 
@@ -43,14 +43,14 @@ tauri-build = { version = "2", features = [] }
 # The local engine. The shell adds windows, tray, and IPC around it and owns
 # no analysis logic of its own.
 antiburn-local = { path = "../../../crates/antiburn-local" }
-# The notification window: mechanism only — every gating decision stays in
-# src/notifications.rs. Ported under D-023 (docs/oss/source-allowlist.toml).
+# The notification window provides mechanism only. Every gating decision stays
+# in src/notifications.rs.
 antiburn-nudge = { path = "crates/nudge" }
 # The floating usage HUD window: mechanism only. The shell owns its session
-# activity policy and IPC commands. Ported under D-026.
+# activity policy and IPC commands.
 antiburn-hud = { path = "crates/hud" }
-# The notification chime: samples synthesized in-process, no audio assets, no
-# decoders. Ported under D-023 (docs/oss/source-allowlist.toml).
+# The notification chime uses samples synthesized in-process. It has no audio
+# assets or decoders.
 antiburn-sound = { path = "crates/sound" }
 # Installs the process subscriber and writes local diagnostic files. The shell
 # owns its lifetime and selects the bundle-specific directory.
@@ -110,8 +110,8 @@ tracing = "0.1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # The scan scheduler, and the timer the consented-analytics flusher sleeps on.
 # Excludes `net` and `process`: this crate never opens a socket or spawns a
-# child directly. The direct-fetch usage sources and the analytics channel
-# (D-027) both reach the network through `reqwest`'s own bundled runtime
+# child directly. The direct-fetch usage sources and the analytics channel both
+# reach the network through `reqwest`'s own bundled runtime
 # instead, and the Codex app-server fallback spawns synchronously through
 # `std::process` — so this feature list still names only what this crate's own
 # async code needs.

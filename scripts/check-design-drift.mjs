@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 // Design-contract drift guard (dependency-free; no install required).
 //
 // `apps/desktop/design.md` is the design contract an agent reads before it

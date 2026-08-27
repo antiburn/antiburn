@@ -6,12 +6,7 @@ engines:
   ai-slop: true
   architecture: false
   security: false
-# These limits are loose for the current tree. Issue #90 owns their reduction.
-# GH-89 does not reduce these limits.
-# The complexity rules set severity. They do not set sensitivity.
-# The Rust file cap is 3750 lines. opencode.rs has 3515 lines.
-# The TypeScript file cap is 1500 lines. ipc.ts has 1309 lines.
-# The Rust function budget is 1500 lines.
+# These limits permit large cohesive parsers and typed IPC modules.
 quality:
   maxFileLoc: 1500
   maxFunctionLoc: 1000
@@ -27,7 +22,7 @@ security:
   audit: false
   auditTimeout: 25000
 ci:
-  failBelow: 10
+  failBelow: 100
   format: json
 telemetry:
   enabled: false

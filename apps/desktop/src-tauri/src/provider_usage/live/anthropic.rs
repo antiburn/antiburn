@@ -1,12 +1,6 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The Anthropic usage payload, read strictly.
 //!
-//! Adapted from the private app under D-023 (allowlist rule
-//! `usage-limit-domain`): the quota parsers only. The attribution parsers,
-//! the status-line parser, and every pricing-signal coupling stay behind.
+//! This module contains only the quota parsers.
 //!
 //! # What this parses
 //!

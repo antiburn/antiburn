@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The tray-anchored popover window.
 //!
 //! The popover is created lazily on the first tray click. After dismissal it
@@ -80,8 +76,7 @@ const CORNER_RADIUS: f64 = 10.0;
 
 /// Tallest the popover may ever get, in logical pixels.
 ///
-/// Above the app-shell contract's 700, and recorded as such in the deviations
-/// register (D-22). The Usage surface asks for it: a provider card now carries
+/// Above the app-shell contract's 700. The Usage surface asks for it because a provider card carries
 /// the provider's own limits above the local estimates, and two vendors no
 /// longer fit in a window sized before that block existed.
 pub const MAX_HEIGHT: f64 = 780.0;
@@ -94,8 +89,7 @@ pub const MAX_HEIGHT: f64 = 780.0;
 /// has not been made.
 pub const DEFAULT_HEIGHT: f64 = 700.0;
 
-// D-22, as a build error rather than a test: the ceiling is a ceiling, and a
-// resting height above it would mean the window opens already clamped.
+// This build check prevents the window from opening above its height ceiling.
 const _: () = assert!(MAX_HEIGHT >= DEFAULT_HEIGHT);
 const _: () = assert!(DEFAULT_HEIGHT >= MIN_HEIGHT);
 

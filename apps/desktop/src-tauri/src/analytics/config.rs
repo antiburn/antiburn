@@ -1,14 +1,8 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Where consented events go — and, in every build of this repository as it
 //! stands, the fact that they go nowhere.
 //!
 //! The endpoint and the operator's display name are injected at build time and
-//! appear nowhere in this tree. That is a governance requirement (D-027) rather
-//! than a style preference: this repository is public, and the private
-//! application it reports to may not be named in it.
+//! appear nowhere in this tree.
 //!
 //! It also buys a property worth more than the secrecy. A clone of this
 //! repository, built by anyone, has no endpoint — so it transmits nothing at

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The event payload: every field that may ever leave this machine, named once.
 //!
 //! This module is the enforcement point for the promise the Privacy pane makes.
@@ -78,13 +74,8 @@ impl EventName {
 
 /// One event, in the collector's wire envelope.
 ///
-/// The shape is the first-party collector's documented `POST /v1/track`
-/// contract, implemented from that contract rather than ported from its
-/// client — no source crossed into this repository, and the fields below are
-/// the whole of what antiburn fills in. Two halves of that contract are
-/// deliberately *not* implemented: there is no `identify` call and no
-/// `userId`/`orgId`, because antiburn has no account, no organisation, and
-/// nothing to stitch a pre-login history to.
+/// The shape matches the collector's documented `POST /v1/track` contract.
+/// antiburn does not send `identify`, `userId`, or `orgId` values.
 ///
 /// `sentAt` is absent here on purpose. It is stamped at delivery, not at
 /// capture, so the server can correct for clock skew against
@@ -102,9 +93,8 @@ pub struct Event {
     /// machine fact, and replaced every [`super::IDENTITY_LIFETIME_DAYS`].
     ///
     /// The contract's own client keeps this stable and shares it with device
-    /// telemetry so rows join across surfaces. antiburn rotates it instead:
-    /// joining a history is the thing the register's D-28 promises it cannot
-    /// do, and that promise is worth more here than the join.
+    /// telemetry so rows join across surfaces. antiburn rotates it instead to
+    /// prevent a long-term history from joining across rotation periods.
     pub anonymous_id: String,
     /// The run identifier the contract requires on every track call.
     ///
@@ -115,8 +105,7 @@ pub struct Event {
     /// when the process exits, and replaced after
     /// [`super::SESSION_TIMEOUT`] of inactivity. It cannot outlive a run, so
     /// it cannot join one to another; the rotating [`Event::anonymous_id`]
-    /// remains the longest-lived identifier here, which is the property
-    /// D-28 turns on.
+    /// remains the longest-lived identifier here.
     pub session_id: String,
     /// Event name, in antiburn's own namespace.
     pub event: String,

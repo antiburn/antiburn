@@ -87,22 +87,10 @@ notifications, and the updater simulator.
 
 ## What keeps the app local
 
-Three independent checks, none of which relies on review:
-
-1. The engine's own `tests/boundary.rs` keeps `antiburn-local` free of any
-   dependency on a service of ours — it opens no network or socket connection
-   of its own.
-2. The repository-wide [`scripts/check-boundary.mjs`](../../scripts/check-boundary.mjs)
-   scans every file for prohibited concepts, including telemetry SDKs,
-   commercial identifiers, and raw socket types.
-3. [`tests/no-exfiltration.test.ts`](tests/no-exfiltration.test.ts) walks
-   `src/` and fails on any imported telemetry, analytics, or crash-reporting
-   SDK, and on any hardcoded reporting host. Browser networking APIs are
-   permitted — the renderer may call a provider with the reader's own
-   credentials — and the analytics channel is Rust-side, so the renderer
-   still imports no reporting client. It lives outside `src/` on purpose: it
-   names every API it bans, so a guard inside the tree it checks would trip
-   its own check.
+The Tauri content security policy limits renderer connections to the local app
+and IPC. The Rust analytics module tests consent, endpoint injection, and the
+payload schema. `cargo-deny` rejects known telemetry dependencies in the local
+engine. Release and dependency checks run through the required CI gate.
 
 ## Shell behavior
 
@@ -129,7 +117,7 @@ Three independent checks, none of which relies on review:
   took focus away from it in the first place.
 - **First run.** A 680×480 decorated window of its own, opened at launch while
   onboarding is unfinished — a fresh install should not have to discover the
-  menu-bar glyph before it is told anything (`docs/deviations.md`, D-25). While
+  menu-bar glyph before it is told anything. While
   it is unfinished the tray click goes here rather than to the popover, which
   has nothing to show yet, and antiburn is an ordinary Dock application so the
   window can be reached again once something else takes focus. Finishing it
@@ -182,11 +170,7 @@ as its default. Each window owns one surface for its whole lifetime.
 
 ## Known gaps
 
-Every deliberate difference from the ratified feature matrix — the deferred
-update-install flow, the absent external links, the omitted panes, and the CI
-coverage choices — is recorded with its reason and its revisit milestone in
-[`docs/deviations.md`](../../docs/deviations.md). The list below is the
-build-level subset that a developer working in this directory runs into first:
+These build-level limits affect desktop development:
 
 - The popover is opaque and square-cornered. Rounded, translucent chrome needs
   `macOSPrivateApi` plus transparent-window support, and arrives with the

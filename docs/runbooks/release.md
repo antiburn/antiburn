@@ -1,7 +1,3 @@
-<!-- This Source Code Form is subject to the terms of the Mozilla Public
-     License, v. 2.0. If a copy of the MPL was not distributed with this
-     file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
-
 # Cutting a release
 
 How a version of antiburn gets from a commit to something a reader can install.
@@ -12,10 +8,10 @@ post-merge ratification thresholds live in
 
 There are two release trains, tagged separately and released separately:
 
-| Train               | Tag                         | Workflow                                                           | What it produces                                                                           |
-| ------------------- | --------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Train               | Tag                         | Workflow                                                           | What it produces                                                                                              |
+| ------------------- | --------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
 | Desktop application | `antiburn-v<version>`       | [`release-app.yml`](../../.github/workflows/release-app.yml)       | Installers, bootstrap scripts, updater bundles, signatures, checksums, inventories, provenance, `latest.json` |
-| Engine crate        | `antiburn-local-v<version>` | [`release-engine.yml`](../../.github/workflows/release-engine.yml) | A source tarball, checksums, an inventory, provenance                                      |
+| Engine crate        | `antiburn-local-v<version>` | [`release-engine.yml`](../../.github/workflows/release-engine.yml) | A source tarball, checksums, an inventory, provenance                                                         |
 
 Both are **draft-first**. The workflow builds, signs, hashes, attests, and
 drafts; a person reads the draft and presses Publish. There is no auto-publish
@@ -66,7 +62,7 @@ Placeholders below show the shape, never a real value.
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | If the key has one        | The passphrase for the above. Give the key a passphrase.                                                                  | Chosen when generating the key. Placeholder: `<passphrase>`                                                                                                                                                                          |
 | `APPLE_CERTIFICATE`                  | For signed macOS builds   | Base64 of the **Developer ID Application** certificate and its private key, exported as `.p12`.                           | `base64 -i DeveloperID.p12 \| pbcopy`. Placeholder: `MIIM…`                                                                                                                                                                          |
 | `APPLE_CERTIFICATE_PASSWORD`         | If the `.p12` has one     | The `.p12` export passphrase.                                                                                             | Chosen during export. Leave this secret unset when the export has no passphrase. Placeholder: `<passphrase>`                                                                                                                         |
-| `APPLE_PROVISIONING_PROFILE`         | For signed macOS builds   | Base64 of the Developer ID profile for `ai.antiburn.desktop`, with Communication Notifications enabled.                  | Download `antiburn.provisionprofile` from Apple Developer, then run `base64 -i antiburn.provisionprofile \| pbcopy`.                                                                                                                 |
+| `APPLE_PROVISIONING_PROFILE`         | For signed macOS builds   | Base64 of the Developer ID profile for `ai.antiburn.desktop`, with Communication Notifications enabled.                   | Download `antiburn.provisionprofile` from Apple Developer, then run `base64 -i antiburn.provisionprofile \| pbcopy`.                                                                                                                 |
 | `APPLE_ID`                           | For notarization          | The Apple ID that owns the notarization submission.                                                                       | Placeholder: `releases@example.org`                                                                                                                                                                                                  |
 | `APPLE_PASSWORD`                     | For notarization          | An **app-specific password** for that Apple ID — never the account password.                                              | appleid.apple.com → Sign-In and Security → App-Specific Passwords. Placeholder: `abcd-efgh-ijkl-mnop`                                                                                                                                |
 | `APPLE_TEAM_ID`                      | For notarization          | The ten-character Apple Developer team identifier.                                                                        | Apple Developer → Membership. Placeholder: `ABCDE12345`                                                                                                                                                                              |
@@ -109,21 +105,19 @@ identifier, capability, distribution type, and expiration before embedding it.
 
 Variables (Settings → Secrets and variables → Actions → Variables), not secrets:
 
-| Variable                 | Default when unset                              | Effect                                                                                                                                                                                                                                                                                                                                           |
-| ------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate)     | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download.                                                                                                                                                                                                                                        |
-| `WINDOWS_TIMESTAMP_URL`  | `http://timestamp.digicert.com`                 | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate.                                                                                                                                                                                                                                             |
+| Variable                 | Default when unset                          | Effect                                                                                                    |
+| ------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `ALLOW_UNSIGNED_WINDOWS` | unset (= build fails without a certificate) | `true` builds the Windows installer **without** an Authenticode signature. SmartScreen warns on download. |
+| `WINDOWS_TIMESTAMP_URL`  | `http://timestamp.digicert.com`             | RFC 3161 timestamp authority used when signing the installer, so signatures outlive the certificate.      |
 
 macOS releases always require Developer ID signing and notarization.
-`ALLOW_UNSIGNED_WINDOWS` remains set under D-16 until an Authenticode certificate
-exists. It produces a build that says it is unsigned; it never fakes a platform
-signature.
+`ALLOW_UNSIGNED_WINDOWS` remains set until an Authenticode certificate exists.
+It produces a build that says it is unsigned; it never fakes a platform signature.
 
 #### Enabling Windows installer signature enforcement
 
 The PowerShell bootstrap installer requires SHA-256 verification today but permits
-the unsigned Windows mode recorded in D-16. When an Authenticode certificate is
-available:
+unsigned Windows packages. When an Authenticode certificate is available:
 
 1. Configure `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` in the
    `release` environment.
@@ -390,13 +384,6 @@ application release.
    two provenance steps skip themselves — attestation persistence is plan-gated
    on private repositories — and activate automatically once the repository is
    public; a private-phase draft has no provenance bundle to verify.)
-
-   When running `cargo test` inside the extracted tarball, set
-   `ANTIBURN_OSS_MANIFEST_DIR` to a repository checkout's `docs/oss/`
-   directory. The boundary suite's manifest test reads the governance
-   manifests, which deliberately do not ship in the tarball; without the
-   variable, that one test fails with a "must ship with the repository"
-   error while everything else passes.
 
 5. Publish. **Leave "Set as the latest release" unchecked** — the workflow
    already sets `--latest=false`, and for good reason: "latest" is a property of

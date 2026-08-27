@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -110,8 +106,8 @@ describe("BRAND_MARKS", () => {
 
   it("has no entry for Amp", () => {
     // `simple-icons`' AMP is Google's web framework, a name collision that
-    // would put the wrong vendor's mark on an Amp row. Pinned here because the
-    // decision is otherwise only a comment (docs/deviations.md D-18).
+    // would put the wrong vendor's mark on an Amp row. This test keeps that
+    // choice explicit.
     expect(BRAND_MARKS[agentIconName("amp-code")]).toBeUndefined()
   })
 

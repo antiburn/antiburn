@@ -1,6 +1,4 @@
-<!-- This Source Code Form is subject to the terms of the Mozilla Public
-     License, v. 2.0. If a copy of the MPL was not distributed with this
-     file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
+<!-- SPDX-License-Identifier: MIT -->
 
 # antiburn design principles — the design-review rulebook
 
@@ -28,9 +26,6 @@ Paths in this file are relative to `apps/desktop/`.
 - `scripts/check-design-drift.mjs` keeps the contract and those stylesheets
   equal. So a value in `design.md` that disagrees with the CSS is a CI failure,
   not a design finding. Report it, and stop there.
-- `docs/deviations.md` records every knowing difference from the ratified
-  feature matrix. Check it before you report something as a mistake. A recorded
-  deviation is a decision, not a finding.
 - Cite a rule number from this file, plus the token, class, or file it breaks.
   A finding with no citation is an opinion.
 
@@ -50,12 +45,12 @@ Paths in this file are relative to `apps/desktop/`.
 There is no router. Each window opens with a URL fragment and keeps one route
 for its whole life (`src/lib/route.ts`).
 
-| Route | Window | Size | What it owns |
-|---|---|---|---|
-| default | Tray popover | 380 wide; 700 tall, 780 on Usage | The reading surfaces: what happened, and what it cost |
-| `#/settings` | Settings | 960 × 680 | Every choice the reader makes, and every explanation |
-| `#/onboarding` | Onboarding | 680 × 480 | First run only |
-| `#/nudge` | Notification | 344 wide | One alert, always on top |
+| Route          | Window       | Size                             | What it owns                                          |
+| -------------- | ------------ | -------------------------------- | ----------------------------------------------------- |
+| default        | Tray popover | 380 wide; 700 tall, 780 on Usage | The reading surfaces: what happened, and what it cost |
+| `#/settings`   | Settings     | 960 × 680                        | Every choice the reader makes, and every explanation  |
+| `#/onboarding` | Onboarding   | 680 × 480                        | First run only                                        |
+| `#/nudge`      | Notification | 344 wide                         | One alert, always on top                              |
 
 **RULE 2.1 — put content in the window that owns it.** The popover reads. The
 settings window decides and explains. The notification alerts. A control that
@@ -71,8 +66,8 @@ record. **[High]**
 
 **RULE 2.3 — respect the popover height contract.** 700 is the height the
 window is created at and rests at. 780 is a ceiling that exactly one surface
-uses, and that use is a recorded deviation (D-22). A new surface that asks for
-780 is a finding until a deviation records it. **[High]**
+uses. A new surface that asks for 780 is a finding unless the design contract
+changes. **[High]**
 
 **RULE 2.4 — the settings pane order is deliberate.** General, Privacy,
 Notifications, Usage, Sources, Appearance, About (`src/views/SettingsView.tsx`).
@@ -265,7 +260,7 @@ must never silently vanish from the list. **[High]**
 **RULE 7.5 — first run.** The onboarding window owns first run: five linear
 steps (welcome, sources, repositories, scan, ready), a "Step N of M" text label
 beside the step dots, and no step that cannot be reached by keyboard. First run
-is not a popover surface, and it must not be rebuilt as one (D-25). **[High]**
+is not a popover surface, and it must not be rebuilt as one. **[High]**
 
 **RULE 7.6 — freshness is a state.** A local-first app has to say when it last
 looked. `ScanStatusBar` answers two questions on sight: is it looking, and how
@@ -435,7 +430,7 @@ screen-reader user should not sit through it twice. **[Medium]**
 **RULE 12.7 — say what the app cannot see.** A gap, a blocked folder, and a
 paused scan are stated plainly; never imply completeness the app does not have.
 The same holds for a figure the app worked out itself: where an estimate stands
-in for a provider's own number, the reader needs *some* way to tell. A tooltip
+in for a provider's own number, the reader needs _some_ way to tell. A tooltip
 is usually the right amount — `SessionCostBadge` leads with the number and
 explains it on hover. Raise this only when there is no way to find out at all;
 a figure without a visible label is not a finding, and labelling every one of

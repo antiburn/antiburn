@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Shared "retry after a cooldown, but never blank a good reading" state for
 //! the direct-fetch sources.
 //!
@@ -305,9 +301,6 @@ mod tests {
         });
 
         assert_eq!(outcome.error, Some(ProviderUsageError::Unavailable));
-        // aislop-ignore-next-line ai-slop/meta-comment -- Issue #90 owns this standing finding.
-        // The stale snapshot is still there — a failed refresh must never
-        // blank a reading that used to be good.
         assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(40.0));
     }
 

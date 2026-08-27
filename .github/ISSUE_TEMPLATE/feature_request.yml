@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a focused improvement to antiburn.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, private session content, real transcripts, repository names, or private file paths.
+  - type: textarea
+    id: need
+    attributes:
+      label: User need
+      description: What user problem should antiburn solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior and any alternatives.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and performance
+      description: State any new data access, network access, retained data, or background work.
+    validations:
+      required: true

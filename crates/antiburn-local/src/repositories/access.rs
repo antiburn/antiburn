@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Deciding whether a directory is really readable, and reacting when it is not.
 //!
 //! `stat()` is not enough: macOS TCC allows `metadata()` on a path inside a

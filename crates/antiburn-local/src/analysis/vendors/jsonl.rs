@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Shared JSON-record parsing used by the JSONL-family adapters and, for cells
 //! that contain embedded JSON, by the generic SQLite adapter.
 //!

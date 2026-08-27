@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 /**
  * The recurring shape behind the app's `onXxx` IPC helpers (see
  * `lib/ipc.ts`): fetch a value once, then subscribe to a push channel that

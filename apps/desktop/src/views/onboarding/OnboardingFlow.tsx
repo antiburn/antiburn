@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { Check, FolderPlus, Lock, X } from "lucide-react"
 
 import appIcon from "../../assets/app-icon.png"
@@ -34,8 +30,7 @@ import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
  * ## The window
  *
  * This runs in its own 680×480 window (`src-tauri/src/onboarding.rs`), not in
- * the popover it used to be a surface of — recorded as D-25 in
- * `docs/deviations.md`. Two consequences show up in the markup below. The
+ * the popover it used to be a surface of. Two consequences show up in the markup below. The
  * centred screens cap their copy column rather than running to 680pt, and the
  * header carries a `data-tauri-drag-region` strip on macOS, where the window's
  * title bar is an overlay and the webview covers its area.
@@ -46,9 +41,8 @@ import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
  * and to put the opt-in somewhere separate. That is the shape here: Welcome
  * names the channel and says it is optional, and the switch itself is on the
  * Ready step in its own card, which points at Settings → Privacy for later.
- * The matrix specifies default-off while this build ships default-on — a real
- * divergence, recorded as D-28 rather than smoothed over. D-5 tracks the
- * channel itself.
+ * The matrix specifies default-off while this build ships default-on outside
+ * the EU, the EEA, and the UK.
  *
  * The switch is on the *last* step rather than the first because this flow
  * writes nothing until its final button. A reader who turns analytics off on

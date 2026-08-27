@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Provider-reported usage limits: the half of the picture local evidence
 //! cannot supply.
 //!
@@ -73,7 +69,7 @@ use crate::dto::{
 /// A source of provider-reported usage snapshots.
 ///
 /// Implementations either read a local artefact another application wrote, or
-/// — under the D-023 network policy, per-feature and gated on
+/// per feature and gated on
 /// [`crate::store::AppSettings::live_usage_active`] (an opt-out switch, on
 /// by default, and onboarding having finished) — call a provider endpoint
 /// directly with a credential the reader's own tooling already stored, or

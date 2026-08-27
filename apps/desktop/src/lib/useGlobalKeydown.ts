@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { useCallback, useRef } from "react"
 
 import { useExternalSubscription } from "./useExternalSubscription"
@@ -37,7 +33,7 @@ export function useGlobalKeydown(
 
   useExternalSubscription(
     useCallback(() => {
-      if (!active) return () => {}
+      if (!active) return () => undefined
       const source = target === "window" ? window : document
       // `source`'s static type is the `Document | Window` union, which only
       // has the untyped `EventListener` overload of `addEventListener` — the

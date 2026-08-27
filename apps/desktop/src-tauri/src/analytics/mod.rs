@@ -1,14 +1,7 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Anonymised events about the application, behind the reader's consent.
 //!
 //! This is the one place antiburn sends anything of its own beyond the update
-//! check, and it exists under a specific governance record — D-027 in
-//! `docs/oss/source-denylist.toml`, D-28 in `docs/deviations.md`. Both name the
-//! properties below, and both are the thing to change first if any of them
-//! stops being true here.
+//! check. The properties below define its privacy boundary.
 //!
 //! - **The reader is shown the control before a single event is sent.** The
 //!   switch is on by default, but the gate in [`allowed`] also requires

@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Watches free space on the startup volume, shows it beside the tray glyph,
 //! and notifies once when it drops under the reader's threshold.
 //!

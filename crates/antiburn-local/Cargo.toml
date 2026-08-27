@@ -7,7 +7,7 @@ name = "antiburn-local"
 version = "0.1.8"
 edition = "2024"
 description = "Self-contained, network-free local engine for antiburn: discovery, session analysis, repository identity, pricing, and versioned local persistence/export contracts."
-license = "MPL-2.0"
+license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
 
 [lib]
@@ -22,7 +22,7 @@ test-instrumentation = []
 # Local-dependence contract: this crate needs no service of ours and depends
 # on no private workspace packages. It uses only the network a feature
 # actually needs — none, today. Every dependency added here must pass the
-# D-010 license check against the crate's own lockfile.
+# dependency-license check against the crate's own lockfile.
 [dependencies]
 anyhow = "1"
 # Async trait methods on the per-agent discovery adapter contract.
@@ -67,5 +67,3 @@ uuid = { version = "1", features = ["v4"] }
 filetime = "0.2"
 serial_test = "4"
 tempfile = "3"
-# Manifest parsing for the mechanical source-boundary test.
-toml = "1.1"

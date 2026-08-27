@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Aggregation over synthetic store rows.
 //!
 //! Every case fixes `now` at a real instant and builds the rows by hand, so

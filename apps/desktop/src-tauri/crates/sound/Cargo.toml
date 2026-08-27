@@ -8,7 +8,7 @@ name = "antiburn-sound"
 version = "0.1.0"
 edition = "2024"
 description = "Programmatic notification sounds for the antiburn desktop app. Mechanism only — the app owns when and why a sound plays."
-license = "MPL-2.0"
+license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
 publish = false
 

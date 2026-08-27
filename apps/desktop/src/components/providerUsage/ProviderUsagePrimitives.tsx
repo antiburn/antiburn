@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import {
   siClaude,
   siCursor,
@@ -31,8 +27,7 @@ import {
 
 /**
  * Canonical provider id → brand mark, from the CC0-licensed `simple-icons`
- * package. The same treatment, and the same rules, as the agent icons in
- * `lib/agentIcon` (deviations register D-18).
+ * package. These use the same treatment and rules as `lib/agentIcon`.
  *
  * **Where a vendor already has a mark on the session cards, this table uses
  * the same one.** Anthropic is drawn with the Claude mark rather than the
@@ -48,7 +43,7 @@ import {
  * One absence is deliberate rather than pending:
  *
  * - **xAI.** `siX` is the social network, not the model provider, and wearing
- *   it would be the same mistake D-18 already refuses for Amp, where the
+ *   it would be the same mistake avoided for Amp, where the
  *   package's `AMP` is Google's web framework. xAI keeps its letter.
  *
  * Marks render in `currentColor` so the set reads as one in both themes, and

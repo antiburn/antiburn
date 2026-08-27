@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! Finding the repositories a developer actually works in, on this machine.
 //!
 //! Discovery answers one question: *which repositories belonging to `owner` are

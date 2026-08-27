@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { indexOfSession, toActivityEntries, toActivityEntry } from "../../lib/activityEntries"
 import { applyTheme } from "../../lib/appearance"
@@ -576,9 +572,6 @@ export class PopoverSession {
     await openOverlayWindow().catch(() => {})
   }
 
-  // aislop-ignore-next-line ai-slop/narrative-comment -- Issue #90 owns this standing finding.
-  // A refresh from any window replaces the cached value in this one. This
-  // also lets the shell publish this window's own refresh before IPC returns.
   private listenLiveUsage = async (generation: number): Promise<void> => {
     const unlisten = await onLiveUsageChanged((liveUsage) => {
       if (generation !== this.generation) return

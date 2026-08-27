@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 //! The app's local database.
 //!
 //! One SQLite file under the app data directory holds everything antiburn
@@ -354,9 +350,7 @@ impl Store {
         Ok(())
     }
 
-    /* -----------------------------------------------------------------
-     * Anonymised application events (D-027, deviations D-28)
-     * ----------------------------------------------------------------- */
+    /* Anonymised application events. */
 
     /// Queue one event for delivery. Callers hold the consent check; this is
     /// storage, and a queue that decided policy for itself would be a second

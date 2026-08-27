@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -10,8 +6,8 @@ import { OnboardingView } from "./OnboardingView"
 /**
  * The first-run window, driven entirely through the mocked command layer.
  *
- * These moved here from `PopoverView.test.tsx` when the flow moved out of the
- * popover (D-25). They assert the same things they always did — every step
+ * These moved here from `PopoverView.test.tsx` with the standalone flow. They
+ * assert the same things they always did — every step
  * appears, each is announced and takes focus, and the two settings writes go
  * out with the arguments the shell expects — because none of that changed;
  * only which window it happens in.

@@ -1,13 +1,6 @@
-<!--
-  This Source Code Form is subject to the terms of the Mozilla Public
-  License, v. 2.0. If a copy of the MPL was not distributed with this
-  file, You can obtain one at https://mozilla.org/MPL/2.0/.
--->
-
 # antiburn HUD: states and positioning
 
-_Behavior reference for the floating HUD. Source-governance D-026 authorizes
-the port, and deviations-register D-30 records its platform and resource costs._
+_Behavior reference for the floating HUD and its platform and resource costs._
 
 The HUD is a small always-on-top window that shows usage bars outside the menu.
 Its native frame follows the visible bar panel and does not change on hover. A

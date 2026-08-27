@@ -1,7 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 /**
  * Filling the presentation layer's agent-icon slot.
  *
@@ -28,7 +24,7 @@
  * set in both themes; a mark whose identity *is* its colour opts into
  * {@link BRAND_COLORED} and renders in the hex the package records for it,
  * never a hex chosen here. Use is nominative — identifying which vendor's
- * agent produced a session — and is recorded in docs/deviations.md.
+ * agent produced a session.
  */
 
 import { Bot, PanelsTopLeft, SquareTerminal, type LucideIcon } from "lucide-react"
