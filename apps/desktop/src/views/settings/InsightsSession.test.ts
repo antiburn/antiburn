@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { InsightsReportPayload } from "../../lib/ipc"
+import type { InsightsReportPayload } from "../../lib/insightsIpc"
 import { InsightsSession } from "./InsightsSession"
 
 /**

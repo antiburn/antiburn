@@ -8,7 +8,7 @@ import {
   getInsightsStatus,
   type InsightsReportPayload,
   type InsightsStatusPayload,
-} from "../../lib/ipc"
+} from "../../lib/insightsIpc"
 
 /** Where the report fetch stands. `ready` with a null report means the
  *  shell is absent (browser mode), which the pane names explicitly. */

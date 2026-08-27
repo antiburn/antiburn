@@ -19,7 +19,7 @@ import type {
   InsightsQuotaPressurePayload,
   InsightsReportPayload,
   InsightsStatusPayload,
-} from "../../lib/ipc"
+} from "../../lib/insightsIpc"
 import { InsightsSession, type InsightsSnapshot } from "./InsightsSession"
 
 /**

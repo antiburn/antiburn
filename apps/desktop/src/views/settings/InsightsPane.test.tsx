@@ -9,7 +9,7 @@ import type {
   InsightsCategoryPayload,
   InsightsCoveragePayload,
   InsightsReportPayload,
-} from "../../lib/ipc"
+} from "../../lib/insightsIpc"
 import { InsightsPane } from "./InsightsPane"
 
 /**
