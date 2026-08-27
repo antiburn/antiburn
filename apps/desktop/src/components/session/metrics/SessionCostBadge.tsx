@@ -117,9 +117,11 @@ export function SessionCostBadge({
           // Every figure keeps one size, in the mono face that marks a
           // price. Color, weight, and the pill are what separate a hot
           // figure: it goes one weight above the plain 400 that
-          // .type-footnote bakes in. The important modifier is necessary
-          // because .type-footnote is unlayered CSS.
-          "font-mono type-footnote",
+          // .type-footnote bakes in. The important modifiers are
+          // necessary because .type-footnote is unlayered CSS. The
+          // tighter tracking removes the spacing that opens up the sans
+          // face; the monospace face is already wide enough.
+          "font-mono type-footnote tracking-tight!",
           isHighCost && "font-medium!",
           appearance === "pill" && COST_PILL_SHAPE,
           appearance === "pill" &&

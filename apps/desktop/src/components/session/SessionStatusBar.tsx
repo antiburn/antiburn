@@ -62,10 +62,12 @@ export function SessionStatusBar({ checks, cost, timestamp }: SessionStatusBarPr
     <div className="flex h-4 w-full items-center gap-1.5 text-label-secondary">
       <Tooltip label={tooltip} delayMs={150}>
         <span
-          // The important modifier beats the weight baked into
-          // .type-footnote.
+          // The important modifiers beat the weight and the letter
+          // spacing baked into .type-footnote. That spacing opens the
+          // text up for the sans face; the monospace face is already
+          // wide enough.
           aria-label={verdictLabel}
-          className="font-mono type-footnote font-medium! leading-[13px] tabular-nums"
+          className="font-mono type-footnote font-medium! tracking-tight! leading-[13px] tabular-nums"
           style={{ color: verdictInk(failedShare) }}
         >
           {passedCount}/{checks.length} checks pass
