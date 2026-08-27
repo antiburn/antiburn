@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn badges_and_report_folds_share_one_rule_result() {
+    fn badges_and_report_folds_agree_when_session_coverage_is_complete() {
         let catalogs = ReportCatalogs::default();
         let cohort = [
             claude_evidence("synthetic-clean"),
@@ -258,6 +258,33 @@ mod tests {
                 };
                 assert_eq!(statuses[&id], expected, "{id:?}");
             }
+        }
+    }
+
+    /// The badge is a session-scope integrity signal. The report is
+    /// detector-scope. A truncated group that no detector reads keeps the
+    /// report Clean for that detector. The badge for the same session stays
+    /// NotAssessed. This asymmetry is intentional. Issue #229 tracks the
+    /// report-wide coverage policy.
+    #[test]
+    fn session_wide_partial_coverage_diverges_from_report_by_design() {
+        let mut evidence = claude_evidence("synthetic-divergent");
+        evidence.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
+
+        for badge in session_badges(&evidence, &ReportCatalogs::default()) {
+            assert_eq!(
+                badge.status,
+                BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+                "{:?}",
+                badge.id
+            );
+        }
+        for id in BadgeId::ALL {
+            assert_eq!(
+                report_status(evidence.clone(), id.detector()),
+                DetectorStatus::Clean,
+                "{id:?}"
+            );
         }
     }
 }
