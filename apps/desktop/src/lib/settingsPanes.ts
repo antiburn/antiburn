@@ -18,6 +18,7 @@ const SETTINGS_PANE_IDS = [
   "privacy",
   "notifications",
   "usage",
+  "insights",
   "about",
 ] as const
 
