@@ -64,29 +64,26 @@ pub(crate) enum PermitKind {
     ProviderDb,
 }
 
+fn run_record_pass(record: &SessionRecord, signal: PassSignal) -> PassFuture {
+    let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
+        return Box::pin(async { analysis::unsupported_evidence_pass() });
+    };
+    let session_id = record.key.session_id.clone();
+    let wsl_distro = record.wsl_distro.clone();
+    let claimed = analysis::ClaimedSource {
+        fingerprint: record.source_fingerprint.clone(),
+        generation: 0,
+    };
+    Box::pin(async move {
+        analysis::analyze_for_evidence(agent, &session_id, wsl_distro.as_deref(), claimed, signal)
+            .await
+    })
+}
+
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let run_pass = |record: &SessionRecord, signal: PassSignal| {
-            let agent =
-                crate::agents::kind_from_slug(&record.key.agent).unwrap_or(AgentKind::Claude);
-            let session_id = record.key.session_id.clone();
-            let wsl_distro = record.wsl_distro.clone();
-            let claimed = analysis::ClaimedSource {
-                fingerprint: record.source_fingerprint.clone(),
-                generation: 0,
-            };
-            Box::pin(async move {
-                analysis::analyze_for_evidence(
-                    agent,
-                    &session_id,
-                    wsl_distro.as_deref(),
-                    claimed,
-                    signal,
-                )
-                .await
-            }) as PassFuture
-        };
+        let run_pass = |record: &SessionRecord, signal: PassSignal| run_record_pass(record, signal);
         let announce_app = app.clone();
         let announce = move |entry: ActivityEntry| {
             let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
@@ -118,10 +115,10 @@ pub(crate) fn permit_for(source: &SessionSource) -> PermitKind {
     }
 }
 
-fn source_for_record(record: &SessionRecord) -> SessionSource {
+fn source_for_record(record: &SessionRecord, agent: AgentKind) -> SessionSource {
     match record.source_kind.as_str() {
         "providerDb" => SessionSource::ProviderDb {
-            agent: crate::agents::kind_from_slug(&record.key.agent).unwrap_or(AgentKind::Claude),
+            agent,
             db_path: PathBuf::from(&record.source_label),
             session_id: record.key.session_id.clone(),
         },
@@ -269,7 +266,12 @@ pub(crate) async fn process_next(
     let Some(record) = store.session(&claim.key)? else {
         return Ok(true);
     };
-    let source = source_for_record(&record);
+    let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
+        let pass = analysis::unsupported_evidence_pass();
+        apply_outcome(store, &claim, &pass, clock())?;
+        return Ok(true);
+    };
+    let source = source_for_record(&record, agent);
     let _cpu = handle
         .permits
         .cpu
@@ -474,6 +476,18 @@ mod tests {
             quota_incidents: false,
             harness_version: false,
         }
+    }
+
+    #[tokio::test]
+    async fn unknown_store_slug_is_rejected_instead_of_routing_to_claude() {
+        let mut unknown = record("unknown");
+        unknown.key.agent = "unknown-agent".to_owned();
+
+        let pass = run_record_pass(&unknown, PassSignal::new()).await;
+
+        assert_eq!(pass.outcome, PassOutcome::Unsupported);
+        assert!(pass.evidence.is_none());
+        assert!(pass.analysis.metrics.is_none());
     }
 
     #[test]
