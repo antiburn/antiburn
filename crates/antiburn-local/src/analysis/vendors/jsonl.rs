@@ -228,7 +228,26 @@ pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
         .get("isSidechain")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    observations.push(EvidenceObservation::DelegatedTurn { is_sidechain });
+    let message = value.get("message");
+    let is_assistant = message
+        .and_then(|message| message.get("role"))
+        .and_then(Value::as_str)
+        == Some("assistant");
+    let delegated_model = (is_sidechain && is_assistant)
+        .then(|| {
+            message
+                .and_then(|message| message.get("model"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty() && *model != "<synthetic>")
+                .map(str::to_owned)
+        })
+        .flatten();
+    observations.push(EvidenceObservation::DelegatedTurn {
+        is_sidechain,
+        is_assistant,
+        model: delegated_model,
+    });
 
     // Per-record thread identity (Claude's top-level `uuid` / `parentUuid`).
     // Emitted for every record that carries either field, so the evidence

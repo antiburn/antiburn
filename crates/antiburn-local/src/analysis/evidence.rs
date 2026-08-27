@@ -14,6 +14,7 @@ pub const MAX_DIAGNOSTIC_FIELDS: usize = 16;
 pub const MAX_MODELS: usize = 32;
 pub const MAX_TIER_LABELS: usize = 16;
 pub const MAX_SUBAGENT_CHILDREN: usize = 64;
+pub const MAX_SUBAGENT_MODELS: usize = 32;
 pub const MAX_MODEL_TRANSITIONS: usize = 64;
 pub const MAX_COMPACTION_BOUNDARIES: usize = 64;
 
@@ -178,6 +179,8 @@ pub struct SubagentExample {
 pub struct SubagentEvidence {
     pub spawn_count: u64,
     pub delegated_turns: u64,
+    #[serde(default)]
+    pub delegated_models: BTreeSet<String>,
     pub children: Vec<SubagentChild>,
     pub examples: Vec<SubagentExample>,
 }
@@ -311,7 +314,7 @@ impl SourceCapabilities {
             fast_tier: true,
             service_tier: false,
             subagent_relationships: true,
-            subagent_models: false,
+            subagent_models: true,
             compaction_boundaries: true,
             thread_identity: true,
             quota_incidents: false,
@@ -539,7 +542,7 @@ mod tests {
                 "fastTier": true,
                 "serviceTier": false,
                 "subagentRelationships": true,
-                "subagentModels": false,
+                "subagentModels": true,
                 "compactionBoundaries": true,
                 "threadIdentity": true,
                 "quotaIncidents": false,
@@ -548,7 +551,7 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 3,
-                "analyzerRevision": 4,
+                "analyzerRevision": 5,
                 "evidenceSchemaRevision": 2,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
@@ -568,7 +571,7 @@ mod tests {
             "tools": {"state": "complete", "value": {"byName": {}}},
             "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
             "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}}},
-            "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "children": [], "examples": []}},
+            "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
             "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
             "quotaIncidents": {"state": "unsupported"}
@@ -594,6 +597,19 @@ mod tests {
                 json!(["identity.session_id"]),
             )
         );
+    }
+
+    #[test]
+    fn subagent_evidence_defaults_delegated_models_for_older_rows() {
+        let evidence: SubagentEvidence = serde_json::from_value(json!({
+            "spawnCount": 0,
+            "delegatedTurns": 0,
+            "children": [],
+            "examples": []
+        }))
+        .unwrap();
+
+        assert!(evidence.delegated_models.is_empty());
     }
 
     #[test]

@@ -56,6 +56,8 @@ pub enum EvidenceObservation {
     },
     DelegatedTurn {
         is_sidechain: bool,
+        is_assistant: bool,
+        model: Option<String>,
     },
     /// One record's thread identity (Claude `uuid` / `parentUuid`), emitted
     /// for every record that carries either field — including eventless
