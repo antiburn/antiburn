@@ -14,21 +14,36 @@
 //!   a deprecated model prove presence.
 //! - Partial model evidence prevents clean. A missed record may hide
 //!   deprecated usage.
+//! - Catalogued turns without an observed timestamp report the
+//!   contract gap: the rule cannot place the usage relative to the
+//!   replacement's availability, so the session never supports clean.
+//!   An observed finding elsewhere in the session still wins.
 
 use crate::analysis::SessionEvidence;
 
 use super::{Observation, ReportCatalogs, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> Observation {
+    let mut missing_timestamp = false;
     if let Some(models) = observed(&evidence.models) {
         for (model, tokens) in &models.by_model {
-            if let Some(replacement) = catalogs.model_replacements.get(model)
-                && tokens.turns > 0
-                && tokens.last_ts_ms >= replacement.available_since_ts_ms
-            {
+            let Some(replacement) = catalogs.model_replacements.get(model) else {
+                continue;
+            };
+            if tokens.turns == 0 {
+                continue;
+            }
+            if tokens.last_ts_ms == 0 {
+                missing_timestamp = true;
+                continue;
+            }
+            if tokens.last_ts_ms >= replacement.available_since_ts_ms {
                 return Observation::Finding;
             }
         }
+    }
+    if missing_timestamp {
+        return Observation::ContractIncomplete;
     }
     Observation::NoFinding
 }
@@ -49,7 +64,28 @@ mod tests {
                 available_since_ts_ms: 100,
             },
         );
+        catalogs.model_replacements.insert(
+            "old-model-3".to_owned(),
+            ModelReplacement {
+                replacement: "new-model-4".to_owned(),
+                available_since_ts_ms: 100,
+            },
+        );
         catalogs
+    }
+
+    fn insert_model(evidence: &mut SessionEvidence, model: &str, last_ts_ms: i64) {
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.by_model.insert(
+            model.to_owned(),
+            ModelTokens {
+                turns: 4,
+                last_ts_ms,
+                ..ModelTokens::default()
+            },
+        );
     }
 
     fn with_model(model: &str, last_ts_ms: i64, partial: bool) -> SessionEvidence {
@@ -102,5 +138,29 @@ mod tests {
             evaluate(&with_model("new-model-2", 200, false), &catalogs()),
             Observation::NoFinding
         );
+    }
+
+    #[test]
+    fn timestampless_catalogued_turns_report_the_contract_gap() {
+        assert_eq!(
+            evaluate(&with_model("old-model-1", 0, false), &catalogs()),
+            Observation::ContractIncomplete
+        );
+    }
+
+    #[test]
+    fn timestampless_uncatalogued_turns_are_no_finding() {
+        assert_eq!(
+            evaluate(&with_model("new-model-2", 0, false), &catalogs()),
+            Observation::NoFinding
+        );
+    }
+
+    #[test]
+    fn a_finding_wins_over_a_timestampless_catalogued_model() {
+        let mut evidence = with_model("old-model-1", 0, false);
+        insert_model(&mut evidence, "old-model-3", 200);
+
+        assert_eq!(evaluate(&evidence, &catalogs()), Observation::Finding);
     }
 }

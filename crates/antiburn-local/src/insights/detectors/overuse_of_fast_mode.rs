@@ -13,12 +13,24 @@
 //!   delegated fast-tier turns prove presence.
 //! - Partial model evidence prevents clean. A missed record may hide
 //!   delegated fast-tier work.
+//! - A source without the fast-tier capability reports the contract
+//!   gap: the eligibility clause admits a session on service-tier
+//!   alone, but `ModelEvidence::service_tiers` is a bare marker the
+//!   rule cannot read, so neither a finding nor clean is expressible.
 
 use crate::analysis::SessionEvidence;
 
 use super::{Observation, ReportCatalogs, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> Observation {
+    // The eligibility clause accepts service-tier as an alternative to
+    // fast-tier, but the rule reads only `models.fast_modes`;
+    // `ModelEvidence::service_tiers` is a bare marker it cannot read.
+    // Mirror the Overpowered Subagents guard: report the contract gap
+    // instead of a verdict the evidence cannot support.
+    if !evidence.capabilities.fast_tier {
+        return Observation::ContractIncomplete;
+    }
     if let Some(models) = observed(&evidence.models) {
         let delegated: u64 = models
             .fast_modes
@@ -82,6 +94,19 @@ mod tests {
         assert_eq!(
             evaluate(&with_fast_turns(5, 0, false), &catalogs),
             Observation::NoFinding
+        );
+    }
+
+    #[test]
+    fn a_service_tier_only_source_reports_the_contract_gap() {
+        let catalogs = ReportCatalogs::default();
+        let mut evidence = claude_evidence("service-tier-only");
+        evidence.capabilities.fast_tier = false;
+        evidence.capabilities.service_tier = true;
+
+        assert_eq!(
+            evaluate(&evidence, &catalogs),
+            Observation::ContractIncomplete
         );
     }
 }

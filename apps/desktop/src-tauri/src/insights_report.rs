@@ -408,13 +408,18 @@ mod tests {
                 assert_eq!(example.session_id, "ready");
             }
 
+            // The cohort session carries no assistant turns, so the
+            // zero-work denominator exclusion (CH-011b) keeps it out of
+            // the Unused MCP Servers and Unused Skills denominators:
+            // five capability-eligible detectors minus the two absence
+            // detectors an idle session cannot support.
             assert_eq!(
                 report
                     .detectors
                     .iter()
                     .map(|counts| counts.eligible)
                     .sum::<u64>(),
-                5
+                3
             );
             assert_eq!(
                 report
@@ -422,7 +427,7 @@ mod tests {
                     .iter()
                     .map(|counts| counts.assessed)
                     .sum::<u64>(),
-                5
+                3
             );
         }
 

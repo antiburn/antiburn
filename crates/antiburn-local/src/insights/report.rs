@@ -334,6 +334,10 @@ impl EfficiencyReportAccumulator {
                 .iter()
                 .all(|group| group.state(&evidence) != GroupState::Unsupported);
             let eligible = capabilities_hold && groups_supported;
+            if eligible && !detectors::in_denominator(detector, &evidence) {
+                // A zero-work session is neither eligible nor a capability gap.
+                continue;
+            }
             if eligible {
                 let counts = &mut self.detectors[detector.index()];
                 counts.eligible += 1;
@@ -388,11 +392,11 @@ impl EfficiencyReportAccumulator {
 mod tests {
     use super::*;
     use crate::analysis::{
-        ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, PARSER_REVISION,
+        ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, ModelTokens, PARSER_REVISION,
         QuotaConfidence, QuotaHitSeverity, QuotaIncident, QuotaLimitKind,
         SessionEvidenceAccumulator, SessionQuotaEvidence, SourceKind, TurnCounts,
     };
-    use crate::insights::detectors::NotAssessedReason;
+    use crate::insights::detectors::{ModelReplacement, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
 
     fn evidence(session_id: &str) -> SessionEvidence {
@@ -403,6 +407,18 @@ mod tests {
             capabilities: SourceCapabilities::claude(),
         })
         .evidence()
+    }
+
+    /// The same claude evidence with one observed assistant turn, so
+    /// the zero-work denominator exclusion does not remove the session
+    /// from the absence detectors' eligible denominators.
+    fn evidence_with_work(session_id: &str) -> SessionEvidence {
+        let mut row = evidence(session_id);
+        let EvidenceValue::Complete(eligibility) = &mut row.eligibility else {
+            unreachable!()
+        };
+        eligibility.assistant_turns = 1;
+        row
     }
 
     fn context(coverage: CoverageCounts) -> ReportContext {
@@ -443,7 +459,19 @@ mod tests {
 
     #[test]
     fn any_capability_clause_accepts_either_flag() {
-        for (fast_tier, service_tier) in [(true, false), (false, true)] {
+        // Either flag admits the session, but only a fast-tier source
+        // can read the evidence the rule needs: a service-tier-only
+        // source is eligible yet reports the contract gap instead of
+        // a verdict the evidence cannot support.
+        let cases = [
+            (true, false, DetectorStatus::Clean),
+            (
+                false,
+                true,
+                DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
+            ),
+        ];
+        for (fast_tier, service_tier, expected_status) in cases {
             let mut row = evidence("mode");
             row.capabilities.fast_tier = fast_tier;
             row.capabilities.service_tier = service_tier;
@@ -455,7 +483,46 @@ mod tests {
                 report.detectors[DetectorId::OveruseOfFastMode.index()].eligible,
                 1
             );
+            assert_eq!(
+                report.detector_statuses[DetectorId::OveruseOfFastMode.index()],
+                expected_status
+            );
         }
+    }
+
+    #[test]
+    fn timestampless_catalogued_turns_report_the_contract_gap_at_report_level() {
+        // Catalogued-model turns without an observed timestamp cannot
+        // be placed relative to the replacement's availability, so
+        // Old Model Usage must surface the contract gap, never clean.
+        let mut catalogs = ReportCatalogs::default();
+        catalogs.model_replacements.insert(
+            "old-model-1".to_owned(),
+            ModelReplacement {
+                replacement: "new-model-2".to_owned(),
+                available_since_ts_ms: 100,
+            },
+        );
+        let mut row = evidence("timestampless");
+        let EvidenceValue::Complete(models) = &mut row.models else {
+            unreachable!()
+        };
+        models.by_model.insert(
+            "old-model-1".to_owned(),
+            ModelTokens {
+                turns: 4,
+                last_ts_ms: 0,
+                ..ModelTokens::default()
+            },
+        );
+        let mut accumulator = EfficiencyReportAccumulator::with_catalogs(catalogs);
+        accumulator.observe_session(row);
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        assert_eq!(
+            report.detector_statuses[DetectorId::OldModelUsage.index()],
+            DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
+        );
     }
 
     #[test]
@@ -485,7 +552,7 @@ mod tests {
     #[test]
     fn claude_matrix_has_the_exact_eligible_detector_set() {
         let mut accumulator = EfficiencyReportAccumulator::new();
-        accumulator.observe_session(evidence("matrix"));
+        accumulator.observe_session(evidence_with_work("matrix"));
         let report = accumulator.finish(context(CoverageCounts::default()));
         let eligible: Vec<_> = DetectorId::ALL
             .into_iter()
@@ -584,7 +651,7 @@ mod tests {
     #[test]
     fn each_detector_produces_exactly_one_status_for_the_claude_matrix() {
         let mut accumulator = EfficiencyReportAccumulator::new();
-        accumulator.observe_session(evidence("matrix"));
+        accumulator.observe_session(evidence_with_work("matrix"));
         let report = accumulator.finish(context(CoverageCounts::default()));
 
         // Complete empty evidence proves absence for the eligible
@@ -612,6 +679,197 @@ mod tests {
                 report.detector_statuses[detector.index()],
                 DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
             );
+        }
+    }
+
+    #[test]
+    fn an_all_idle_cohort_cannot_read_clean_for_the_absence_detectors() {
+        // Every session carries zero assistant turns: none can support
+        // a finding, so none may support absence either. The sessions
+        // stay out of the eligible denominator entirely.
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence("idle-1"));
+        accumulator.observe_session(evidence("idle-2"));
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
+            assert_eq!(report.detectors[detector.index()].eligible, 0);
+            assert_eq!(
+                report.detector_statuses[detector.index()],
+                DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
+            );
+        }
+    }
+
+    #[test]
+    fn a_partial_zero_turn_session_blocks_clean_for_the_absence_detectors() {
+        // The session's work-bearing records were lost: eligibility
+        // degraded to partial and the surviving records observe zero
+        // assistant turns. Absence read from partial evidence is
+        // untrustworthy, so the session must stay in the eligible
+        // denominator as unassessed and block clean — it must not
+        // vanish and let the cohort read clean.
+        let mut degraded = evidence("partial-idle");
+        degraded.eligibility = match degraded.eligibility {
+            EvidenceValue::Complete(observed) => EvidenceValue::Partial {
+                observed,
+                reason: CoverageReason::IncompleteTail,
+            },
+            _ => unreachable!(),
+        };
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence_with_work("working"));
+        accumulator.observe_session(degraded);
+        let report = accumulator.finish(context(CoverageCounts::default()));
+
+        for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
+            let counts = report.detectors[detector.index()];
+            assert_eq!(counts.eligible, 2, "{detector:?}");
+            assert_eq!(counts.assessed, 1, "{detector:?}");
+            assert_eq!(
+                report.detector_statuses[detector.index()],
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+                "{detector:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn degrading_any_required_group_never_reads_clean() {
+        use EvidenceGroup as Group;
+
+        // A deliberate duplicate of each detector's required groups as
+        // they exist in `requirements()` today. Silently dropping a
+        // group from `requirements()` fails the table comparison below.
+        const EXPECTED_GROUPS: [(DetectorId, &[EvidenceGroup]); 9] = [
+            (DetectorId::SessionsOverDepth, &[Group::Context]),
+            (
+                DetectorId::ModelOverthinking,
+                &[Group::Models, Group::Eligibility],
+            ),
+            (
+                DetectorId::OverpoweredSubagents,
+                &[Group::Subagents, Group::Models],
+            ),
+            (
+                DetectorId::UnusedMcpServers,
+                &[Group::ContextSources, Group::Tools, Group::Eligibility],
+            ),
+            (
+                DetectorId::UnusedBuiltInTools,
+                &[Group::ContextSources, Group::Tools],
+            ),
+            (
+                DetectorId::UnusedSkills,
+                &[Group::ContextSources, Group::Tools, Group::Eligibility],
+            ),
+            (
+                DetectorId::OldModelUsage,
+                &[Group::Models, Group::TimeRange],
+            ),
+            (
+                DetectorId::OveruseOfFastMode,
+                &[Group::Models, Group::Subagents],
+            ),
+            (
+                DetectorId::CacheChurn,
+                &[Group::Cache, Group::Compactions, Group::Models],
+            ),
+        ];
+
+        /// Complete claude evidence with every capability force-set
+        /// and one observed assistant turn, so every detector is
+        /// eligible and fully assessed before degradation.
+        fn complete_row(session_id: &str) -> SessionEvidence {
+            let mut row = evidence_with_work(session_id);
+            row.capabilities = SourceCapabilities {
+                request_context_tokens: true,
+                cache_write_tokens: true,
+                timestamps_and_order: true,
+                tool_invocations: true,
+                skill_mcp_attribution: true,
+                tool_definitions: true,
+                model_identity: true,
+                token_classes: true,
+                reasoning_effort_tier: true,
+                fast_tier: true,
+                service_tier: true,
+                subagent_relationships: true,
+                subagent_models: true,
+                compaction_boundaries: true,
+                thread_identity: true,
+                quota_incidents: true,
+                harness_version: true,
+            };
+            row
+        }
+
+        fn degrade(row: &mut SessionEvidence, group: EvidenceGroup) {
+            fn to_partial<T>(slot: &mut EvidenceValue<T>) {
+                let value = std::mem::replace(slot, EvidenceValue::Unsupported);
+                let EvidenceValue::Complete(observed) = value else {
+                    panic!("the complete row must carry complete evidence");
+                };
+                *slot = EvidenceValue::Partial {
+                    observed,
+                    reason: CoverageReason::MalformedRecord,
+                };
+            }
+            match group {
+                EvidenceGroup::Context => to_partial(&mut row.context),
+                EvidenceGroup::Eligibility => to_partial(&mut row.eligibility),
+                EvidenceGroup::Tools => to_partial(&mut row.tools),
+                EvidenceGroup::ContextSources => to_partial(&mut row.context_sources),
+                EvidenceGroup::Models => to_partial(&mut row.models),
+                EvidenceGroup::Subagents => to_partial(&mut row.subagents),
+                EvidenceGroup::Cache => to_partial(&mut row.cache),
+                EvidenceGroup::Compactions => to_partial(&mut row.compactions),
+                EvidenceGroup::TimeRange => to_partial(&mut row.time_range),
+            }
+        }
+
+        fn status_for(row: SessionEvidence, detector: DetectorId) -> DetectorStatus {
+            let mut accumulator = EfficiencyReportAccumulator::new();
+            accumulator.observe_session(row);
+            let report = accumulator.finish(context(CoverageCounts::default()));
+            report.detector_statuses[detector.index()].clone()
+        }
+
+        for (detector, groups) in EXPECTED_GROUPS {
+            assert_eq!(
+                requirements(detector).groups,
+                groups,
+                "the requirements() groups changed for {detector:?}"
+            );
+
+            let baseline = status_for(complete_row("complete"), detector);
+            if detector == DetectorId::UnusedBuiltInTools {
+                // The rule is a permanent marker-contract gap until
+                // CH-009 carries built-in definition payloads: even the
+                // undegrated baseline cannot read clean.
+                assert_eq!(
+                    baseline,
+                    DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
+                    "baseline for {detector:?}"
+                );
+            } else {
+                assert_eq!(
+                    baseline,
+                    DetectorStatus::Clean,
+                    "baseline for {detector:?} must read clean so the degraded assertion distinguishes"
+                );
+            }
+
+            for group in groups {
+                let mut row = complete_row("degraded");
+                degrade(&mut row, *group);
+                let status = status_for(row, detector);
+                assert_ne!(
+                    status,
+                    DetectorStatus::Clean,
+                    "degrading {group:?} for {detector:?} must not read clean"
+                );
+            }
         }
     }
 
