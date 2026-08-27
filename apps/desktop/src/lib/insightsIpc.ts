@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 
 import { hasShell } from "./ipc"
+import type { LocalSessionIdentity } from "./types/session"
 
 /* -------------------------------------------------------------------------
  * Local insights report — mirrors of the `Insights*Payload` types in
@@ -121,17 +122,17 @@ export async function getInsightsStatus(): Promise<InsightsStatusPayload | null>
   return invoke<InsightsStatusPayload>("get_insights_status")
 }
 
-/** The three hygiene badges reduced from one stored evidence row. */
+/** The hygiene badges reduced from a bounded set of stored evidence rows. */
 export async function getSessionHygiene(
-  agent: string,
-  sessionId: string,
-  wslDistro?: string | null,
-): Promise<SessionHygienePayload | null> {
+  sessions: readonly LocalSessionIdentity[],
+): Promise<SessionHygienePayload[] | null> {
   if (!hasShell()) return null
-  return invoke<SessionHygienePayload>("get_session_hygiene", {
-    agent,
-    sessionId,
-    wslDistro: wslDistro ?? null,
+  return invoke<SessionHygienePayload[]>("get_session_hygiene", {
+    sessions: sessions.map((session) => ({
+      agent: session.agent,
+      sessionId: session.sessionId,
+      wslDistro: session.wslDistro ?? null,
+    })),
   })
 }
 

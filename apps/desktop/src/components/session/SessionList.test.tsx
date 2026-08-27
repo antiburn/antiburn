@@ -1,7 +1,20 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type * as InsightsIpc from "../../lib/insightsIpc"
 import { SessionList, type SessionListEntry, type SessionListProps } from "./SessionList"
+
+const getSessionHygiene = vi.hoisted(() => vi.fn())
+
+vi.mock("../../lib/insightsIpc", async (importOriginal) => ({
+  ...(await importOriginal<typeof InsightsIpc>()),
+  getSessionHygiene,
+}))
+
+beforeEach(() => {
+  getSessionHygiene.mockReset()
+  getSessionHygiene.mockResolvedValue(null)
+})
 
 afterEach(cleanup)
 
@@ -150,6 +163,45 @@ describe("SessionList — rows", () => {
     expect(verdict.textContent).toBe("Computing checks")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
     expect(screen.queryByLabelText("All checks pass")).toBeNull()
+  })
+
+  it("renders finding and clean statuses returned by the batched IPC path", async () => {
+    getSessionHygiene.mockResolvedValueOnce([
+      {
+        evidenceState: "ready",
+        badges: [
+          {
+            id: "reasoningOverkill",
+            status: "finding",
+            notAssessedReason: null,
+          },
+          {
+            id: "excessCacheRehydration",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "bloatedInitialContext",
+            status: "clean",
+            notAssessedReason: null,
+          },
+        ],
+      },
+    ])
+    list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("1 of 3 assessed checks failed").textContent).toBe(
+        "2/3 checks pass",
+      )
+    })
+    expect(getSessionHygiene).toHaveBeenCalledWith([
+      {
+        agent: "claude-code",
+        sessionId: "synthetic-hygiene-result",
+        wslDistro: null,
+      },
+    ])
   })
 
   it("states the last-activity time", () => {

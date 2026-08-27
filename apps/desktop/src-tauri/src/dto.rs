@@ -497,6 +497,15 @@ pub struct InsightsStatusPayload {
     pub processing: u64,
 }
 
+/// One session identity requested for a hygiene badge reduction.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHygieneRequest {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+}
+
 /// One session hygiene status on the IPC boundary.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]

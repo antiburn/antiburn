@@ -73,7 +73,8 @@ describe("SessionStatusBar", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
     const verdict = screen.getByLabelText("1 of 2 assessed checks failed; 1 not assessed")
     expect(verdict.textContent).toBe("1/2 checks pass · 1 not assessed")
-    expect(verdict.parentElement?.getAttribute("data-state")).toBeDefined()
+    expect(verdict.style.color).toContain("--color-system-red-text) 50%")
+    expect(verdict.style.color).toContain("--color-system-orange")
   })
 
   it("reaches full red ink when every assessed check fails", () => {

@@ -33,8 +33,8 @@ use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, InsightsReportPayload,
     InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus, ProviderUsageSummary,
-    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionIdentity,
-    SessionRelation, SessionRelations, SubagentMember,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
+    SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
 use crate::insights_ipc::InsightsController;
@@ -1167,27 +1167,45 @@ pub fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatu
     })
 }
 
-/// The hygiene badges for one stored session evidence row.
+/// The hygiene badges for a bounded set of stored session evidence rows.
 #[tauri::command]
-pub fn get_session_hygiene(
+pub async fn get_session_hygiene(
     app: tauri::AppHandle,
-    agent: String,
-    session_id: String,
-    wsl_distro: Option<String>,
-) -> CommandResult<SessionHygienePayload> {
-    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let row = app.state::<Store>().evidence(&key).map_err(fail)?;
-    session_hygiene_payload(row)
+    sessions: Vec<SessionHygieneRequest>,
+) -> CommandResult<Vec<SessionHygienePayload>> {
+    if sessions.len() > MAX_ACTIVITY_ROWS {
+        return Err("too many session hygiene requests".to_owned());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let keys = sessions
+            .iter()
+            .map(|session| {
+                SessionKey::for_session(
+                    &session.agent,
+                    &session.session_id,
+                    session.wsl_distro.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let rows = app.state::<Store>().evidence_batch(&keys).map_err(fail)?;
+        Ok(session_hygiene_payloads(rows))
+    })
+    .await
+    .map_err(fail)?
 }
 
-fn session_hygiene_payload(
-    row: Option<crate::store::EvidenceRow>,
-) -> CommandResult<SessionHygienePayload> {
+fn session_hygiene_payloads(
+    rows: Vec<Option<crate::store::EvidenceRow>>,
+) -> Vec<SessionHygienePayload> {
+    rows.into_iter().map(session_hygiene_payload).collect()
+}
+
+fn session_hygiene_payload(row: Option<crate::store::EvidenceRow>) -> SessionHygienePayload {
     let Some(row) = row else {
-        return Ok(SessionHygienePayload::not_assessed(
+        return SessionHygienePayload::not_assessed(
             "pending",
             NotAssessedReason::IncompleteEvidence,
-        ));
+        );
     };
 
     match row.status {
@@ -1196,19 +1214,23 @@ fn session_hygiene_payload(
                 && row.analyzer_revision == Some(ANALYZER_REVISION)
                 && row.evidence_schema_revision == Some(EVIDENCE_SCHEMA_REVISION);
             if !revisions_are_current {
-                return Ok(SessionHygienePayload::not_assessed(
+                return SessionHygienePayload::not_assessed(
                     "stale",
                     NotAssessedReason::IncompleteEvidence,
-                ));
+                );
             }
             let Some(evidence_json) = row.evidence_json else {
-                return Ok(SessionHygienePayload::not_assessed(
+                return SessionHygienePayload::not_assessed(
                     "failed",
                     NotAssessedReason::IncompleteEvidence,
-                ));
+                );
             };
-            let evidence: SessionEvidence = serde_json::from_str(&evidence_json)
-                .map_err(|_| "stored session evidence is invalid".to_owned())?;
+            let Ok(evidence) = serde_json::from_str::<SessionEvidence>(&evidence_json) else {
+                return SessionHygienePayload::not_assessed(
+                    "failed",
+                    NotAssessedReason::IncompleteEvidence,
+                );
+            };
             let evidence_state = if matches!(
                 evidence.provenance.source_acceptance,
                 SourceAcceptance::AcceptedPrefix { .. }
@@ -1217,19 +1239,18 @@ fn session_hygiene_payload(
             } else {
                 "ready"
             };
-            Ok(SessionHygienePayload::from_badges(
+            SessionHygienePayload::from_badges(
                 session_badges(&evidence, &ReportCatalogs::default()),
                 evidence_state,
-            ))
+            )
         }
-        crate::store::EvidenceStatus::Unsupported => Ok(SessionHygienePayload::not_assessed(
-            "unsupported",
-            NotAssessedReason::CapabilityMissing,
-        )),
-        status => Ok(SessionHygienePayload::not_assessed(
+        crate::store::EvidenceStatus::Unsupported => {
+            SessionHygienePayload::not_assessed("unsupported", NotAssessedReason::CapabilityMissing)
+        }
+        status => SessionHygienePayload::not_assessed(
             status.as_str(),
             NotAssessedReason::IncompleteEvidence,
-        )),
+        ),
     }
 }
 
@@ -1983,7 +2004,8 @@ mod tests {
             parser_revision: Some(PARSER_REVISION),
             analyzer_revision: Some(ANALYZER_REVISION),
             evidence_schema_revision: Some(EVIDENCE_SCHEMA_REVISION),
-            evidence_json: evidence.map(|value| serde_json::to_string(&value).unwrap()),
+            evidence_json: evidence
+                .map(|value| serde_json::to_string(&value).expect("synthetic evidence serializes")),
             diagnostics_json: None,
             retry_count: 0,
             claim_fence: 0,
@@ -1995,7 +2017,7 @@ mod tests {
         }
     }
 
-    fn synthetic_evidence() -> SessionEvidence {
+    fn synthetic_evidence_accumulator() -> antiburn_local::analysis::SessionEvidenceAccumulator {
         antiburn_local::analysis::SessionEvidenceAccumulator::new(
             antiburn_local::analysis::EvidenceSource {
                 agent: "claude-code".to_owned(),
@@ -2004,12 +2026,15 @@ mod tests {
                 capabilities: antiburn_local::analysis::SourceCapabilities::claude(),
             },
         )
-        .evidence()
+    }
+
+    fn synthetic_evidence() -> SessionEvidence {
+        synthetic_evidence_accumulator().evidence()
     }
 
     #[test]
     fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
-        let missing = session_hygiene_payload(None).unwrap();
+        let missing = session_hygiene_payload(None);
         assert_eq!(missing.evidence_state, "pending");
         assert!(
             missing
@@ -2021,8 +2046,7 @@ mod tests {
         let processing = session_hygiene_payload(Some(evidence_row(
             crate::store::EvidenceStatus::Processing,
             None,
-        )))
-        .unwrap();
+        )));
         assert_eq!(processing.evidence_state, "processing");
     }
 
@@ -2034,7 +2058,7 @@ mod tests {
         );
         row.parser_revision = Some(PARSER_REVISION - 1);
 
-        let payload = session_hygiene_payload(Some(row)).unwrap();
+        let payload = session_hygiene_payload(Some(row));
         assert_eq!(payload.evidence_state, "stale");
         assert!(
             payload
@@ -2045,19 +2069,45 @@ mod tests {
     }
 
     #[test]
+    fn session_hygiene_batches_preserve_order_and_isolate_invalid_rows() {
+        let mut invalid = evidence_row(crate::store::EvidenceStatus::Ready, None);
+        invalid.evidence_json = Some("{".to_owned());
+        let payloads = session_hygiene_payloads(vec![
+            None,
+            Some(invalid),
+            Some(evidence_row(
+                crate::store::EvidenceStatus::Ready,
+                Some(synthetic_evidence()),
+            )),
+        ]);
+
+        assert_eq!(payloads.len(), 3);
+        assert_eq!(payloads[0].evidence_state, "pending");
+        assert_eq!(payloads[1].evidence_state, "failed");
+        assert_eq!(payloads[2].evidence_state, "ready");
+    }
+
+    #[test]
     fn session_hygiene_marks_an_accepted_prefix_as_still_growing() {
-        let mut evidence = synthetic_evidence();
-        evidence.provenance.source_acceptance = SourceAcceptance::AcceptedPrefix { boundary: 1 };
+        let mut accumulator = synthetic_evidence_accumulator();
+        accumulator.observe_source_outcome(
+            antiburn_local::analysis::VisitOutcome::AcceptedPrefix { boundary: 1 },
+        );
+        let evidence = accumulator.evidence();
+        assert!(matches!(
+            evidence.coverage,
+            antiburn_local::analysis::EvidenceCoverage::Partial(
+                antiburn_local::analysis::CoverageReason::PinnedPrefix
+            )
+        ));
         let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
 
-        let payload = session_hygiene_payload(Some(row)).unwrap();
+        let payload = session_hygiene_payload(Some(row));
         assert_eq!(payload.evidence_state, "activelyGrowing");
-        assert!(
-            payload
-                .badges
-                .iter()
-                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::Clean))
-        );
+        assert!(payload.badges.iter().all(|badge| {
+            matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)
+                && badge.not_assessed_reason == Some("incompleteEvidence")
+        }));
     }
 
     #[test]

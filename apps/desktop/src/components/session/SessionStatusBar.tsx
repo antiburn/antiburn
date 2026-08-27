@@ -24,11 +24,15 @@ export interface SessionStatusBarProps {
  * The verdict line across the top of a session row: the pass count, the
  * last-activity time, and the session cost.
  *
- * The verdict is always plain monospace text. Severity lives in the ink.
+ * The verdict uses plain monospace text without badge chrome. Severity lives
+ * in the ink. The ink moves from green through orange to red as findings rise.
  * The tooltip names each finding and each check that was not assessed.
  */
 
-/** Return the semantic ink for the assessed failure share. */
+/**
+ * Return the ink for the assessed finding share. A clean result is green.
+ * Findings mix orange with red in proportion to their share.
+ */
 function verdictInk(failedShare: number, assessedCount: number): string {
   if (assessedCount === 0) return "var(--color-label-tertiary)"
   if (failedShare === 0) return "var(--color-system-green)"
@@ -66,9 +70,13 @@ export function SessionStatusBar({
 
   return (
     // The row matches the provider mark height in the adjacent column.
+    // It keeps both vertical glyph gaps at the measured 9.3 px.
     <div className="flex h-[14px] w-full items-center gap-1.5 text-label-secondary">
       <Tooltip label={tooltip} delayMs={150}>
         <span
+          // The modifiers remove the wider sans spacing from type-footnote.
+          // Monospace text already adds enough space between characters.
+          // Negative word spacing keeps the count together.
           aria-label={verdictLabel}
           className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
           style={{ color: verdictInk(failedShare, assessedCount) }}
@@ -91,6 +99,7 @@ export function SessionStatusBar({
       {cost && (
         <SessionCostBadge
           {...cost}
+          // A usual cost stays bare. Only a high cost uses the pill.
           appearance={cost.isHighCost ? "pill" : "bare"}
           className={cn(!timestamp && "ml-auto")}
         />
