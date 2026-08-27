@@ -20,6 +20,25 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-27
+
+The first supported public release. The macOS app is Developer ID signed and
+notarized. The Windows installer is unsigned, so Windows can show a SmartScreen
+warning.
+
+### Added
+
+- Local-first discovery and analysis for supported AI coding-agent sessions,
+  with session content kept on the device.
+- Provider usage, activity, session insights, and API-equivalent cost estimates
+  in a desktop menu-bar or tray application.
+- Signed in-app updates and checksum-verified installers for macOS, Linux, and
+  Windows.
+
+### Changed
+
+- The source repository and release line are now public under the MIT License.
+
 ## [0.1.0-rc.10] - 2026-08-27
 
 A release-candidate rehearsal build, not a supported release. The macOS app is

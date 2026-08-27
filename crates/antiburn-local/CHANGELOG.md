@@ -17,6 +17,12 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-27
+
+This release starts the public engine release line under the MIT License. It has
+the same API and behavior as `0.1.8`. Git consumers must update their pinned
+commit SHA.
+
 ## [0.1.8] - 2026-08-27
 
 ### Added
