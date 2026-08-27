@@ -72,7 +72,7 @@ const SessionPane = lazy(() =>
 /** Placeholder rows while the first list load is in flight. */
 function ActivitySkeleton() {
   return (
-    <div aria-hidden data-testid="activity-skeleton" className="space-y-1 px-2 pt-10">
+    <div aria-hidden data-testid="activity-skeleton" className="space-y-1 px-3 pt-10">
       {[0, 1, 2, 3].map((row) => (
         <div key={row} className="flex flex-col gap-1.5 px-2 py-2">
           <Skeleton className="h-[var(--control-height-regular)] w-full" />

@@ -159,7 +159,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <span className="flex h-4 items-center justify-center">
+      <span className="flex h-[14px] items-center justify-center">
         {renderAgentIcon?.(entry.agent, 14, entry.surface)}
       </span>
 
@@ -317,7 +317,7 @@ export function SessionList({
           aria-hidden="true"
           // The inset matches the cards, so the label sits on their left
           // edge. The type matches the usage view's group labels.
-          className="shrink-0 px-2 py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+          className="shrink-0 px-3 py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
         >
           {pinnedLabel}
         </div>
@@ -326,7 +326,7 @@ export function SessionList({
       <ScrollPane
         topEdgeFade
         viewportRef={assignViewportRef}
-        viewportClassName={cn("px-2", visibleCount === 0 && "[&>div]:h-full")}
+        viewportClassName={cn("px-3", visibleCount === 0 && "[&>div]:h-full")}
       >
         {visibleCount === 0 ? (
           <EmptySessionList title={resolvedEmptyTitle} description={emptyDescription} />

@@ -57,17 +57,20 @@ export function SessionStatusBar({ checks, cost, timestamp }: SessionStatusBarPr
     : `${verdictLabel}: ${failed.map((check) => check.title).join(", ")}`
 
   return (
-    // 16px, not the 22px control height: the taller line box read as
-    // extra leading above the title (review outcome, 2026-08-27).
-    <div className="flex h-4 w-full items-center gap-1.5 text-label-secondary">
+    // The row is exactly as tall as the provider mark in the column beside
+    // it. That height also equalizes the two gaps in the card: the gap under
+    // the verdict and the gap under the title both measure 9.3px from the
+    // lowest glyph to the next cap (measured 2026-08-27).
+    <div className="flex h-[14px] w-full items-center gap-1.5 text-label-secondary">
       <Tooltip label={tooltip} delayMs={150}>
         <span
           // The important modifiers beat the weight and the letter
           // spacing baked into .type-footnote. That spacing opens the
           // text up for the sans face; the monospace face is already
-          // wide enough.
+          // wide enough. The monospace space is as wide as a digit, so
+          // the negative word spacing keeps the count as one unit.
           aria-label={verdictLabel}
-          className="font-mono type-footnote font-medium! tracking-tight! leading-[13px] tabular-nums"
+          className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
           style={{ color: verdictInk(failedShare) }}
         >
           {passedCount}/{checks.length} checks pass
