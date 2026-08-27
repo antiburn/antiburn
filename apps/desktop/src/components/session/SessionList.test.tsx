@@ -58,6 +58,24 @@ describe("SessionList — rows", () => {
     expect(screen.getByText("A long session title").className).toContain("truncated-text-lines")
   })
 
+  it("marks a hot spend with the brand pill, and a usual cost without one", () => {
+    list({
+      entries: [
+        entry({
+          sessionId: "hot",
+          cost: { totalUsd: 24, figureLabel: "Estimated cost", isHighCost: true },
+        }),
+        entry({ sessionId: "usual", cost: { totalUsd: 2.4, figureLabel: "Estimated cost" } }),
+      ],
+    })
+    expect(
+      screen.getByLabelText("Estimated cost $24.00, higher than usual").className,
+    ).toContain("bg-brand-tint")
+    expect(screen.getByLabelText("Estimated cost $2.40").className).not.toContain(
+      "bg-brand-tint",
+    )
+  })
+
   it("shows the repository, extra repositories, and branch", () => {
     list({
       entries: [
@@ -120,8 +138,9 @@ describe("SessionList — rows", () => {
         }),
       ],
     })
-    const models = screen.getByText("5.6-sol/xhigh · fable-5/high")
-    expect(models.parentElement?.title).toBe("gpt-5.6-sol/xhigh\nclaude-fable-5/high")
+    const models = screen.getByText("5.6-sol").closest("[title]")
+    expect(models?.getAttribute("title")).toBe("gpt-5.6-sol/xhigh\nclaude-fable-5/high")
+    expect(models?.textContent).toBe("5.6-sol xhigh · fable-5 high")
   })
 
   it("includes the relative-time suffix", () => {
@@ -129,26 +148,19 @@ describe("SessionList — rows", () => {
     expect(screen.getByText(/ ago$/)).toBeTruthy()
   })
 
-  it("shows six deterministic mock hygiene checks", () => {
+  it("shows a deterministic mock hygiene verdict", () => {
+    // The status bar names the verdict and shows the pass count as text.
+    const verdictOf = () => screen.getByLabelText(/All checks pass|checks failed$/)
+
     const first = list({ entries: [entry({ sessionId: "mock-0" })] })
-    const labels = [
-      /session overdepth/i,
-      /model overthinking/i,
-      /overpowered subagents/i,
-      /obsolete model/i,
-      /fast mode overuse/i,
-      /excess cache rehydration/i,
-    ]
-    // The glyph color names the state: brand orange fails, tertiary passes.
-    const stateOf = (label: RegExp) =>
-      screen.getByLabelText(label).className.includes("text-brand-tint") ? "fail" : "pass"
-    const firstResults = labels.map(stateOf)
-    expect(firstResults).toContain("pass")
-    expect(firstResults).toContain("fail")
+    const firstVerdict = verdictOf().getAttribute("aria-label")
+    // The seed produces a mixed result, so the bar shows a failure count.
+    expect(firstVerdict).toMatch(/of 6 checks failed$/)
+    expect(verdictOf().textContent).toMatch(/^[0-5]\/6 checks pass$/)
 
     first.unmount()
     list({ entries: [entry({ sessionId: "mock-0" })] })
-    expect(labels.map(stateOf)).toEqual(firstResults)
+    expect(verdictOf().getAttribute("aria-label")).toBe(firstVerdict)
   })
 
   it("states the last-activity time", () => {
@@ -188,7 +200,7 @@ describe("SessionList — navigation", () => {
   it("renders an agent icon only from the injected renderer", () => {
     const renderAgentIcon = vi.fn(() => <span data-testid="agent-icon" />)
     list({ entries: [entry({ surface: "cli" })], renderAgentIcon })
-    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 18, "cli")
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14, "cli")
     expect(screen.getByTestId("agent-icon")).toBeTruthy()
   })
 })

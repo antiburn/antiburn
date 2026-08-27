@@ -23,7 +23,8 @@ describe("mockSessionHygiene", () => {
   })
 
   it("gives the prototype a mix of passing and failing sessions", () => {
-    const results = ["session-1", "session-2", "session-3"].flatMap(mockSessionHygiene)
+    // The seed "session-7" fails one check at the current failure rate.
+    const results = ["session-1", "session-2", "session-7"].flatMap(mockSessionHygiene)
     expect(results.some((check) => check.passed)).toBe(true)
     expect(results.some((check) => !check.passed)).toBe(true)
   })
