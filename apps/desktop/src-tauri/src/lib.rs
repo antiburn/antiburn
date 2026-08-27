@@ -61,6 +61,7 @@ mod dto;
 mod export;
 mod global_click;
 mod hud;
+mod insights_ipc;
 mod insights_report;
 mod insights_worker;
 mod notifications;
@@ -74,12 +75,11 @@ mod settings;
 mod startup_registration;
 mod storage_health;
 mod store;
-// This bridge keeps CH-007 evidence readers reachable until the evidence pane calls them.
-// TODO @agent: CH-012 will remove this re-export.
+// This bridge keeps the CH-007 evidence readers reachable. The insights
+// commands consume the backlog reader, but `Store::evidence` still has no
+// production caller outside tests, so the re-export stays until CH-013's
+// privacy review reads rows through it or retires it.
 pub use store::Store;
-// This bridge keeps the CH-010 report reducer reachable until the Insights pane calls it.
-// TODO @agent: CH-012 will remove this re-export.
-pub use insights_report::{ReportRequest, reduce_report};
 mod tray;
 mod tray_title;
 mod updates;
@@ -151,6 +151,9 @@ pub fn run() {
             commands::get_latest_session_activity,
             commands::refresh_live_usage,
             commands::get_scan_status,
+            commands::get_insights_report,
+            commands::get_insights_status,
+            commands::cancel_insights_report,
             commands::get_folder_permissions,
             commands::request_folder_access,
             commands::restart_onboarding,
@@ -220,6 +223,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
             app.manage(insights_worker::WorkerHandle::default());
+            app.manage(insights_ipc::InsightsController::default());
             if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
                 &agents::evidence_cohort(),
                 analysis::projection_revisions(),
@@ -345,6 +349,12 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
+            // Ask a running report reduction to stop at its next probe.
+            // The reduction is read-only, so even a task that never sees
+            // the flag cannot corrupt durable evidence state.
+            if let Some(insights) = app.try_state::<insights_ipc::InsightsController>() {
+                insights.cancel();
+            }
             abort_schedulers(app.try_state::<Schedulers>().as_deref());
             finish_retention_cleanup(&mut retention_cleanup);
             if let Some(mut guard) = trace_guard.take() {
