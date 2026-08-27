@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-02T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-malformed","timestamp":"2026-08-02T10:00:00Z","source":"cli"}}
+{"timestamp":"2026-08-02T10:00:01Z","type":"turn_context","payload":{"model":"gpt-test","effort":"low"}}
+{"timestamp":"broken"
+{"timestamp":"2026-08-02T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":235},"total_token_usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":235},"model_context_window":200000}}}

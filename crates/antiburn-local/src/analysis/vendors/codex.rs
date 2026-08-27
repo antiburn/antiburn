@@ -28,13 +28,22 @@
 //! `payload` and the top-level `type` is `response_item`. This adapter unwraps
 //! the envelope.
 
+use std::fs::File;
+use std::io::{BufRead, BufReader, Cursor, Read};
+
 use anyhow::Context;
 use serde_json::{Map, Value};
 
 use super::jsonl::{parse_ts, tool_call_from_input};
 use super::read_source;
-use crate::analysis::interface::{SessionInput, VendorAdapter};
+use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
+use crate::analysis::initial_context::CodexContextAccumulator;
+use crate::analysis::interface::{
+    EvidenceObservation, NormalizedRecord, RawSource, RecordSink, SessionInput, SessionSummary,
+    VendorAdapter, VisitOutcome,
+};
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
+use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
 pub struct CodexAdapter;
 
@@ -56,6 +65,348 @@ impl VendorAdapter for CodexAdapter {
             model,
         })
     }
+
+    fn visit(
+        &self,
+        input: &SessionInput,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        (|| -> anyhow::Result<VisitOutcome> {
+            let summary = match &input.source {
+                RawSource::File(path) => {
+                    self.visit_reader(BufReader::new(File::open(path)?), &|| false, sink)?
+                }
+                RawSource::Jsonl(content) => {
+                    let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
+                    let source = Cursor::new(content.as_bytes()).chain(suffix);
+                    self.visit_reader(BufReader::new(source), &|| false, sink)?
+                }
+                RawSource::Sqlite(path) => {
+                    anyhow::bail!(
+                        "sqlite source must be handled by the sqlite adapter: {}",
+                        path.display()
+                    )
+                }
+            };
+            sink.finish(summary);
+            Ok(VisitOutcome::Unvalidated)
+        })()
+        .with_context(|| format!("reading codex session {}", input.session_id))
+    }
+
+    fn visit_claimed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        guarantee: AppendOnlyGuarantee,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        CodexAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+    }
+}
+
+impl CodexAdapter {
+    pub fn visit_claimed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        guarantee: AppendOnlyGuarantee,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        (|| -> anyhow::Result<VisitOutcome> {
+            let RawSource::File(path) = &input.source else {
+                anyhow::bail!("a claimed Codex source must be a file");
+            };
+            let mut pinned = match PinnedSource::open(path, claim.clone())? {
+                Ok(pinned) => pinned,
+                Err(reason) => return Ok(VisitOutcome::SourceChanged(reason)),
+            };
+            let limit = match guarantee {
+                AppendOnlyGuarantee::Evidenced => claim.boundary,
+                AppendOnlyGuarantee::Absent => u64::MAX,
+            };
+            let summary = self.visit_reader(BufReader::new(pinned.reader(limit)), cancel, sink)?;
+            let outcome = match guarantee {
+                AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
+                    Some(reason) => VisitOutcome::SourceChanged(reason),
+                    None => VisitOutcome::AcceptedPrefix {
+                        boundary: claim.boundary,
+                    },
+                },
+                AppendOnlyGuarantee::Absent => match pinned.recheck_full()? {
+                    Some(reason) => VisitOutcome::SourceChanged(reason),
+                    None => VisitOutcome::AcceptedFull,
+                },
+            };
+            if matches!(outcome, VisitOutcome::SourceChanged(_)) {
+                return Ok(outcome);
+            }
+            sink.finish(summary);
+            Ok(outcome)
+        })()
+        .with_context(|| format!("reading claimed Codex session {}", input.session_id))
+    }
+
+    fn visit_reader(
+        &self,
+        reader: impl BufRead,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<SessionSummary> {
+        let mut reader = BoundedJsonlReader::new(reader);
+        let mut state = CodexStreamState::default();
+
+        while let Some(record) = reader.next_record(cancel) {
+            match record {
+                FramedRecord::Skipped(skip) => match skip {
+                    RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
+                        sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+                    }
+                    RecordSkip::ReadFailed { index, kind } => {
+                        anyhow::bail!("Codex record {index} read failed: {kind:?}");
+                    }
+                    RecordSkip::Cancelled { index } => {
+                        anyhow::bail!("Codex record {index} read was cancelled");
+                    }
+                },
+                FramedRecord::Complete { bytes, .. } => {
+                    let record = std::str::from_utf8(bytes)
+                        .context("Codex transcript record is not valid UTF-8")?;
+                    let Ok(value) = serde_json::from_str::<Value>(record) else {
+                        sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+                        continue;
+                    };
+                    state.observe(value, sink);
+                }
+            }
+        }
+
+        Ok(state.finish())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ForkOwnership {
+    #[default]
+    TopLevel,
+    Pending,
+    Owned,
+}
+
+#[derive(Default)]
+struct CodexStreamState {
+    ownership: ForkOwnership,
+    agent_path: Option<String>,
+    unresolved_fork_usage: bool,
+    previous_token_count_key: Option<TokenCountKey>,
+    previous_event_was_boundary: bool,
+    previous_boundary_ts: Option<i64>,
+    context_window: Option<u64>,
+    model: Option<String>,
+    current_model: Option<String>,
+    current_thinking_mode: Option<String>,
+    started_at_ms: Option<i64>,
+    owned_token_count_seen: bool,
+    effort_seen: bool,
+    context: CodexContextAccumulator,
+}
+
+impl CodexStreamState {
+    fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
+        self.context.observe(&value);
+        let record_type = value.get("type").and_then(Value::as_str);
+        let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
+
+        if record_type == Some("session_meta") {
+            if self.started_at_ms.is_none() {
+                self.started_at_ms = value
+                    .pointer("/payload/timestamp")
+                    .and_then(parse_ts)
+                    .or_else(|| value.get("timestamp").and_then(parse_ts));
+            }
+            if value
+                .pointer("/payload/thread_source")
+                .and_then(Value::as_str)
+                == Some("subagent")
+            {
+                self.ownership = ForkOwnership::Pending;
+                self.agent_path = value
+                    .pointer("/payload/agent_path")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
+        }
+
+        let addressed_to_child = self.ownership == ForkOwnership::Pending
+            && record_type == Some("response_item")
+            && payload_type == Some("agent_message")
+            && value
+                .pointer("/payload/recipient")
+                .and_then(Value::as_str)
+                .zip(self.agent_path.as_deref())
+                .is_some_and(|(recipient, path)| recipient == path);
+        if addressed_to_child {
+            self.ownership = ForkOwnership::Owned;
+            self.unresolved_fork_usage = false;
+        }
+
+        let usage_is_owned = self.ownership != ForkOwnership::Pending;
+        let is_token_count =
+            record_type == Some("event_msg") && payload_type == Some("token_count");
+        if is_token_count {
+            if let Some(key) = token_count_key(&value) {
+                let duplicate = self.previous_token_count_key.as_ref() == Some(&key);
+                self.previous_token_count_key = Some(key);
+                if duplicate {
+                    return;
+                }
+            }
+            if !usage_is_owned {
+                self.unresolved_fork_usage = true;
+                return;
+            }
+        }
+
+        if usage_is_owned {
+            self.observe_model_and_effort(&value);
+            if self.context_window.is_none() {
+                self.context_window = value
+                    .pointer("/payload/info/model_context_window")
+                    .and_then(Value::as_u64)
+                    .filter(|window| *window > 0);
+            }
+        }
+
+        if let Some(mut event) = record_to_event(&value) {
+            if event.ts_ms.is_none() {
+                sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+            }
+            if usage_is_owned {
+                event.model = event.model.or_else(|| self.current_model.clone());
+                if event.role == Role::Assistant {
+                    event.thinking_mode = self.current_thinking_mode.clone();
+                }
+            }
+            if is_token_count {
+                self.owned_token_count_seen = true;
+            }
+            if self.is_duplicate_boundary(&event) {
+                return;
+            }
+            sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        } else if !is_recognized_eventless(record_type, payload_type) {
+            sink.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::UnrecognizedType {
+                    discriminator: "codex.unrecognized".to_owned(),
+                },
+            )));
+            sink.record(NormalizedRecord::Unusable(
+                PartialReason::UnrecognizedRecordType,
+            ));
+        }
+    }
+
+    fn observe_model_and_effort(&mut self, value: &Value) {
+        if let Some(next_model) = [
+            "/payload/model",
+            "/payload/info/model",
+            "/payload/turn_context/model",
+        ]
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        {
+            self.current_model = Some(next_model.to_owned());
+            if self.model.is_none() {
+                self.model = self.current_model.clone();
+            }
+        }
+        if let Some(next_mode) = [
+            "/payload/effort",
+            "/payload/reasoning_effort",
+            "/payload/turn_context/effort",
+            "/payload/turn_context/reasoning_effort",
+            "/payload/thread_settings/reasoning_effort",
+            "/payload/collaboration_mode/settings/reasoning_effort",
+        ]
+        .iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        {
+            self.current_thinking_mode = Some(next_mode.to_owned());
+            self.effort_seen = true;
+        }
+    }
+
+    fn is_duplicate_boundary(&mut self, event: &NormalizedEvent) -> bool {
+        let duplicate = event.is_compaction_boundary
+            && self.previous_event_was_boundary
+            && event
+                .ts_ms
+                .zip(self.previous_boundary_ts)
+                .is_none_or(|(current, previous)| {
+                    (current - previous).abs() <= COMPACTION_DEDUPE_WINDOW_MS
+                });
+        if !duplicate {
+            self.previous_event_was_boundary = event.is_compaction_boundary;
+            if event.is_compaction_boundary {
+                self.previous_boundary_ts = event.ts_ms;
+            }
+        }
+        duplicate
+    }
+
+    fn finish(mut self) -> SessionSummary {
+        if self.ownership == ForkOwnership::Pending {
+            self.unresolved_fork_usage = true;
+        }
+        let coverage_gaps =
+            if self.unresolved_fork_usage || (self.owned_token_count_seen && !self.effort_seen) {
+                vec![PartialReason::AttributionIncomplete]
+            } else {
+                Vec::new()
+            };
+        let (initial_context, skill_descriptions) = self.context.finish();
+        SessionSummary {
+            cache_write_tokens_available: false,
+            context_window: self.context_window,
+            model: self.model,
+            started_at_ms: self.started_at_ms,
+            coverage_gaps,
+            late_tools: Vec::new(),
+            initial_context,
+            skill_descriptions,
+        }
+    }
+}
+
+fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
+    matches!(
+        record_type,
+        Some("session_meta" | "turn_context" | "world_state")
+    ) || matches!(
+        (record_type, payload_type),
+        (
+            Some("event_msg"),
+            Some(
+                "task_started"
+                    | "task_complete"
+                    | "turn_started"
+                    | "turn_complete"
+                    | "user_message"
+                    | "agent_message"
+                    | "turn_aborted"
+                    | "thread_settings_applied"
+            )
+        )
+    ) || matches!(
+        (record_type, payload_type),
+        (Some("response_item"), Some("agent_message"))
+    )
 }
 
 fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<String>) {
@@ -247,10 +598,23 @@ fn record_to_event(record: &Value) -> Option<NormalizedEvent> {
         ("response_item", "message") => message_event(payload, ts),
         ("response_item", "reasoning") => Some(reasoning_event(payload, ts)),
         ("response_item", "function_call_output")
-        | ("response_item", "custom_tool_call_output") => Some(tool_output_event(payload, ts)),
+        | ("response_item", "custom_tool_call_output")
+        | ("response_item", "tool_search_output")
+        | ("response_item", "mcp_tool_call_output") => Some(tool_output_event(payload, ts)),
         ("response_item", "custom_tool_call") => custom_tool_call_event(payload, ts),
-        // Any other response_item that names a tool is an invocation
-        // (function_call, local_shell_call, …).
+        ("response_item", "local_shell_call") => {
+            Some(named_tool_event("local_shell", payload.get("action"), ts))
+        }
+        ("response_item", "tool_search_call") => Some(named_tool_event(
+            "tool_search",
+            payload.get("arguments"),
+            ts,
+        )),
+        ("response_item", "web_search_call") => Some(named_tool_event("web_search", None, ts)),
+        ("response_item", "image_generation_call") => {
+            Some(named_tool_event("image_generation", None, ts))
+        }
+        ("response_item", "compaction" | "context_compaction") => Some(compaction_event(ts)),
         ("response_item", _) if payload.contains_key("name") => function_call_event(payload, ts),
         ("event_msg", "token_count") => token_count_event(payload, ts),
         ("event_msg", "context_compacted") => Some(compaction_event(ts)),
@@ -552,6 +916,13 @@ fn balanced_object_end(bytes: &[u8], start: usize) -> Option<usize> {
         index += 1;
     }
     None
+}
+
+fn named_tool_event(name: &str, input: Option<&Value>, ts: Option<i64>) -> NormalizedEvent {
+    let mut event = NormalizedEvent::new(Role::Assistant);
+    event.ts_ms = ts;
+    event.tools.push(tool_call_from_input(name, input));
+    event
 }
 
 fn tool_output_event(_payload: &Map<String, Value>, ts: Option<i64>) -> NormalizedEvent {
