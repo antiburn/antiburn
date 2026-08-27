@@ -4,12 +4,13 @@ import type { ReactNode } from "react"
 import { cn } from "../../lib/cn"
 import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
-import { mockSessionHygiene } from "../../lib/presentation/mockSessionHygiene"
+import { sessionHygieneChecks } from "../../lib/presentation/sessionHygiene"
 import {
   modelRunNames,
   modelRunShortPairs,
   type PresentableModelRun,
 } from "../../lib/presentation/models"
+import { useSessionHygiene } from "../../lib/useSessionHygiene"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
@@ -117,10 +118,8 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
   const hasRepo = entry.repo !== ""
   const modelRuns = entry.modelRuns ?? []
   const modelPairs = modelRunShortPairs(modelRuns)
-  const hygieneSeed = entry.sessionId
-    ? localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
-    : `${entry.agent}|${entry.repo}|${entry.timestamp}`
-  const hygieneChecks = mockSessionHygiene(hygieneSeed)
+  const hygiene = useSessionHygiene(entry.agent, entry.sessionId, entry.wslDistro)
+  const hygieneChecks = sessionHygieneChecks(hygiene)
 
   return (
     <div
@@ -161,6 +160,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
 
       <SessionStatusBar
         checks={hygieneChecks}
+        evidenceState={hygiene.evidenceState}
         cost={entry.cost ?? null}
         timestamp={entry.timestamp}
       />

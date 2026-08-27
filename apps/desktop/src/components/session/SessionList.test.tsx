@@ -144,19 +144,12 @@ describe("SessionList — rows", () => {
     expect(screen.getByText(/ ago$/)).toBeTruthy()
   })
 
-  it("shows a deterministic mock hygiene verdict", () => {
-    // The status bar names the verdict and shows the pass count as text.
-    const verdictOf = () => screen.getByLabelText(/All checks pass|checks failed$/)
-
-    const first = list({ entries: [entry({ sessionId: "mock-0" })] })
-    const firstVerdict = verdictOf().getAttribute("aria-label")
-    // The seed produces a mixed result, so the bar shows a failure count.
-    expect(firstVerdict).toMatch(/of 6 checks failed$/)
-    expect(verdictOf().textContent).toMatch(/^[0-5]\/6 checks pass$/)
-
-    first.unmount()
-    list({ entries: [entry({ sessionId: "mock-0" })] })
-    expect(verdictOf().getAttribute("aria-label")).toBe(firstVerdict)
+  it("shows evidence computation instead of a synthetic hygiene verdict", () => {
+    list({ entries: [entry({ sessionId: "session-pending" })] })
+    const verdict = screen.getByLabelText("Computing session hygiene checks")
+    expect(verdict.textContent).toBe("Computing checks")
+    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
+    expect(screen.queryByLabelText("All checks pass")).toBeNull()
   })
 
   it("states the last-activity time", () => {

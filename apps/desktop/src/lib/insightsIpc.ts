@@ -86,6 +86,23 @@ export interface InsightsStatusPayload {
   processing: number
 }
 
+export type SessionHygieneBadgeId =
+  "reasoningOverkill" | "excessCacheRehydration" | "bloatedInitialContext"
+
+export interface SessionHygieneBadgePayload {
+  id: SessionHygieneBadgeId
+  status: "finding" | "clean" | "notAssessed"
+  notAssessedReason: InsightsNotAssessedReason | null
+}
+
+export type SessionHygieneEvidenceState =
+  "pending" | "processing" | "ready" | "unsupported" | "failed" | "stale" | "activelyGrowing"
+
+export interface SessionHygienePayload {
+  badges: SessionHygieneBadgePayload[]
+  evidenceState: SessionHygieneEvidenceState
+}
+
 /**
  * The thirty-day insights report, computed on this machine.
  *
@@ -102,6 +119,20 @@ export async function getInsightsReport(): Promise<InsightsReportPayload | null>
 export async function getInsightsStatus(): Promise<InsightsStatusPayload | null> {
   if (!hasShell()) return null
   return invoke<InsightsStatusPayload>("get_insights_status")
+}
+
+/** The three hygiene badges reduced from one stored evidence row. */
+export async function getSessionHygiene(
+  agent: string,
+  sessionId: string,
+  wslDistro?: string | null,
+): Promise<SessionHygienePayload | null> {
+  if (!hasShell()) return null
+  return invoke<SessionHygienePayload>("get_session_hygiene", {
+    agent,
+    sessionId,
+    wslDistro: wslDistro ?? null,
+  })
 }
 
 /**

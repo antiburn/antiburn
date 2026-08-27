@@ -14,6 +14,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use antiburn_local::analysis::{
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence, SourceAcceptance,
+};
+use antiburn_local::insights::{NotAssessedReason, ReportCatalogs, session_badges};
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
@@ -29,8 +33,8 @@ use crate::consent;
 use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, InsightsReportPayload,
     InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus, ProviderUsageSummary,
-    RepositoryItem, ScanStatus, SessionAnalysis, SessionIdentity, SessionRelation,
-    SessionRelations, SubagentMember,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionIdentity,
+    SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
 use crate::insights_ipc::InsightsController;
@@ -1163,6 +1167,72 @@ pub fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatu
     })
 }
 
+/// The hygiene badges for one stored session evidence row.
+#[tauri::command]
+pub fn get_session_hygiene(
+    app: tauri::AppHandle,
+    agent: String,
+    session_id: String,
+    wsl_distro: Option<String>,
+) -> CommandResult<SessionHygienePayload> {
+    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
+    let row = app.state::<Store>().evidence(&key).map_err(fail)?;
+    session_hygiene_payload(row)
+}
+
+fn session_hygiene_payload(
+    row: Option<crate::store::EvidenceRow>,
+) -> CommandResult<SessionHygienePayload> {
+    let Some(row) = row else {
+        return Ok(SessionHygienePayload::not_assessed(
+            "pending",
+            NotAssessedReason::IncompleteEvidence,
+        ));
+    };
+
+    match row.status {
+        crate::store::EvidenceStatus::Ready => {
+            let revisions_are_current = row.parser_revision == Some(PARSER_REVISION)
+                && row.analyzer_revision == Some(ANALYZER_REVISION)
+                && row.evidence_schema_revision == Some(EVIDENCE_SCHEMA_REVISION);
+            if !revisions_are_current {
+                return Ok(SessionHygienePayload::not_assessed(
+                    "stale",
+                    NotAssessedReason::IncompleteEvidence,
+                ));
+            }
+            let Some(evidence_json) = row.evidence_json else {
+                return Ok(SessionHygienePayload::not_assessed(
+                    "failed",
+                    NotAssessedReason::IncompleteEvidence,
+                ));
+            };
+            let evidence: SessionEvidence = serde_json::from_str(&evidence_json)
+                .map_err(|_| "stored session evidence is invalid".to_owned())?;
+            let evidence_state = if matches!(
+                evidence.provenance.source_acceptance,
+                SourceAcceptance::AcceptedPrefix { .. }
+            ) {
+                "activelyGrowing"
+            } else {
+                "ready"
+            };
+            Ok(SessionHygienePayload::from_badges(
+                session_badges(&evidence, &ReportCatalogs::default()),
+                evidence_state,
+            ))
+        }
+        crate::store::EvidenceStatus::Unsupported => Ok(SessionHygienePayload::not_assessed(
+            "unsupported",
+            NotAssessedReason::CapabilityMissing,
+        )),
+        status => Ok(SessionHygienePayload::not_assessed(
+            status.as_str(),
+            NotAssessedReason::IncompleteEvidence,
+        )),
+    }
+}
+
 /// Stop the running report reduction, when one runs.
 ///
 /// The pane fires this when it closes; shutdown fires it too. The
@@ -1898,6 +1968,95 @@ mod tests {
             resolved,
             revealable_path(&file.to_string_lossy()).unwrap(),
             "the opener sees the resolved path, never the one that was typed"
+        );
+    }
+
+    fn evidence_row(
+        status: crate::store::EvidenceStatus,
+        evidence: Option<SessionEvidence>,
+    ) -> crate::store::EvidenceRow {
+        crate::store::EvidenceRow {
+            key: SessionKey::new("native", "claude-code", "synthetic-hygiene"),
+            status,
+            analyzed_generation: Some(1),
+            processed_fingerprint: Some("synthetic-fingerprint".to_owned()),
+            parser_revision: Some(PARSER_REVISION),
+            analyzer_revision: Some(ANALYZER_REVISION),
+            evidence_schema_revision: Some(EVIDENCE_SCHEMA_REVISION),
+            evidence_json: evidence.map(|value| serde_json::to_string(&value).unwrap()),
+            diagnostics_json: None,
+            retry_count: 0,
+            claim_fence: 0,
+            claimed_at_epoch: None,
+            lease_expires_at_epoch: None,
+            next_attempt_at_epoch: None,
+            analyzed_at_epoch: Some(1),
+            last_error: None,
+        }
+    }
+
+    fn synthetic_evidence() -> SessionEvidence {
+        antiburn_local::analysis::SessionEvidenceAccumulator::new(
+            antiburn_local::analysis::EvidenceSource {
+                agent: "claude-code".to_owned(),
+                session_id: "synthetic-hygiene".to_owned(),
+                kind: antiburn_local::analysis::SourceKind::File,
+                capabilities: antiburn_local::analysis::SourceCapabilities::claude(),
+            },
+        )
+        .evidence()
+    }
+
+    #[test]
+    fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
+        let missing = session_hygiene_payload(None).unwrap();
+        assert_eq!(missing.evidence_state, "pending");
+        assert!(
+            missing
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed))
+        );
+
+        let processing = session_hygiene_payload(Some(evidence_row(
+            crate::store::EvidenceStatus::Processing,
+            None,
+        )))
+        .unwrap();
+        assert_eq!(processing.evidence_state, "processing");
+    }
+
+    #[test]
+    fn session_hygiene_marks_old_ready_evidence_as_stale() {
+        let mut row = evidence_row(
+            crate::store::EvidenceStatus::Ready,
+            Some(synthetic_evidence()),
+        );
+        row.parser_revision = Some(PARSER_REVISION - 1);
+
+        let payload = session_hygiene_payload(Some(row)).unwrap();
+        assert_eq!(payload.evidence_state, "stale");
+        assert!(
+            payload
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed))
+        );
+    }
+
+    #[test]
+    fn session_hygiene_marks_an_accepted_prefix_as_still_growing() {
+        let mut evidence = synthetic_evidence();
+        evidence.provenance.source_acceptance = SourceAcceptance::AcceptedPrefix { boundary: 1 };
+        let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
+
+        let payload = session_hygiene_payload(Some(row)).unwrap();
+        assert_eq!(payload.evidence_state, "activelyGrowing");
+        assert!(
+            payload
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::Clean))
         );
     }
 

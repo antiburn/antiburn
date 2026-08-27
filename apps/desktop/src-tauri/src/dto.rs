@@ -14,7 +14,8 @@ use antiburn_local::analysis::{
     ActiveSessionsSummary, EfficiencyTotals, ModelRun, QuotaLimitKind, SessionCost,
 };
 use antiburn_local::insights::{
-    DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason, QuotaPressureSection,
+    BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
+    QuotaPressureSection, SessionBadge,
 };
 use serde::{Deserialize, Serialize};
 
@@ -494,6 +495,80 @@ pub struct InsightsStatusPayload {
     pub pending: u64,
     /// Evidence rows a worker is processing now, in this report's scope.
     pub processing: u64,
+}
+
+/// One session hygiene status on the IPC boundary.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionHygieneStatus {
+    Finding,
+    Clean,
+    NotAssessed,
+}
+
+/// One session hygiene badge with identifiers only.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHygieneBadgePayload {
+    pub id: &'static str,
+    pub status: SessionHygieneStatus,
+    pub not_assessed_reason: Option<&'static str>,
+}
+
+/// The session badge set and its stored evidence state.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHygienePayload {
+    pub badges: Vec<SessionHygieneBadgePayload>,
+    pub evidence_state: &'static str,
+}
+
+fn badge_id_str(id: BadgeId) -> &'static str {
+    match id {
+        BadgeId::ReasoningOverkill => "reasoningOverkill",
+        BadgeId::ExcessCacheRehydration => "excessCacheRehydration",
+        BadgeId::BloatedInitialContext => "bloatedInitialContext",
+    }
+}
+
+impl SessionHygieneBadgePayload {
+    fn from_badge(badge: SessionBadge) -> Self {
+        let (status, not_assessed_reason) = match badge.status {
+            BadgeStatus::Finding => (SessionHygieneStatus::Finding, None),
+            BadgeStatus::Clean => (SessionHygieneStatus::Clean, None),
+            BadgeStatus::NotAssessed(reason) => (
+                SessionHygieneStatus::NotAssessed,
+                Some(not_assessed_reason_str(reason)),
+            ),
+        };
+        Self {
+            id: badge_id_str(badge.id),
+            status,
+            not_assessed_reason,
+        }
+    }
+}
+
+impl SessionHygienePayload {
+    pub fn from_badges(badges: [SessionBadge; 3], evidence_state: &'static str) -> Self {
+        Self {
+            badges: badges
+                .into_iter()
+                .map(SessionHygieneBadgePayload::from_badge)
+                .collect(),
+            evidence_state,
+        }
+    }
+
+    pub fn not_assessed(evidence_state: &'static str, reason: NotAssessedReason) -> Self {
+        Self::from_badges(
+            BadgeId::ALL.map(|id| SessionBadge {
+                id,
+                status: BadgeStatus::NotAssessed(reason),
+            }),
+            evidence_state,
+        )
+    }
 }
 
 fn detector_id_str(id: DetectorId) -> &'static str {
@@ -993,6 +1068,44 @@ mod tests {
                 .map(String::as_str)
                 .collect();
             assert_eq!(keys, ["calculating", "pending", "processing"]);
+        }
+
+        /// The badge wire shape carries identifiers only.
+        #[test]
+        fn the_session_hygiene_payload_contains_no_free_text() {
+            let payload = SessionHygienePayload::from_badges(
+                [
+                    SessionBadge {
+                        id: BadgeId::ReasoningOverkill,
+                        status: BadgeStatus::Finding,
+                    },
+                    SessionBadge {
+                        id: BadgeId::ExcessCacheRehydration,
+                        status: BadgeStatus::Clean,
+                    },
+                    SessionBadge {
+                        id: BadgeId::BloatedInitialContext,
+                        status: BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+                    },
+                ],
+                "ready",
+            );
+
+            assert_eq!(
+                serde_json::to_value(payload).unwrap(),
+                serde_json::json!({
+                    "badges": [
+                        {"id": "reasoningOverkill", "status": "finding", "notAssessedReason": null},
+                        {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null},
+                        {
+                            "id": "bloatedInitialContext",
+                            "status": "notAssessed",
+                            "notAssessedReason": "incompleteEvidence"
+                        }
+                    ],
+                    "evidenceState": "ready"
+                })
+            );
         }
     }
 

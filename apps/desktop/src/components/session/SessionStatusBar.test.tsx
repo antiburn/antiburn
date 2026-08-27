@@ -1,16 +1,50 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
-import type { MockSessionHygieneCheck } from "../../lib/presentation/mockSessionHygiene"
+import type { SessionHygieneCheck } from "../../lib/presentation/sessionHygiene"
 import { SessionStatusBar } from "./SessionStatusBar"
 
-const CHECKS: MockSessionHygieneCheck[] = [
-  { id: "sessionOverdepth", passed: false, title: "Session overdepth detected" },
-  { id: "modelOverthinking", passed: true, title: "No model overthinking detected" },
-  { id: "excessCacheRehydration", passed: true, title: "No excess cache rehydration detected" },
+const CHECKS: SessionHygieneCheck[] = [
+  {
+    id: "bloatedInitialContext",
+    status: "finding",
+    notAssessedReason: null,
+    title: "Bloated initial context detected",
+    ink: "system-red-text",
+  },
+  {
+    id: "reasoningOverkill",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No reasoning overkill detected",
+    ink: "system-green",
+  },
+  {
+    id: "excessCacheRehydration",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No excess cache rehydration detected",
+    ink: "system-green",
+  },
 ]
 
-const ALL_PASSED = CHECKS.map((check) => ({ ...check, passed: true }))
+const ALL_PASSED = CHECKS.map((check) => ({
+  ...check,
+  status: "clean" as const,
+  ink: "system-green" as const,
+}))
+
+const WITH_NOT_ASSESSED: SessionHygieneCheck[] = [
+  CHECKS[0]!,
+  CHECKS[1]!,
+  {
+    ...CHECKS[2]!,
+    status: "notAssessed",
+    notAssessedReason: "incompleteEvidence",
+    title: "Excess cache rehydration not assessed",
+    ink: "label-tertiary",
+  },
+]
 
 afterEach(cleanup)
 
@@ -26,23 +60,44 @@ describe("SessionStatusBar", () => {
 
   it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
-    const verdict = screen.getByLabelText("1 of 3 checks failed")
+    const verdict = screen.getByLabelText("1 of 3 assessed checks failed")
     expect(verdict.textContent).toBe("2/3 checks pass")
-    // Severity lives in the ink only — the verdict is never a badge.
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
-    // One failure of three is a third of the way from orange to red.
     expect(verdict.style.color).toContain("--color-system-red-text) 33%")
     expect(verdict.style.color).toContain("--color-system-orange")
-    // The line behind the verdict stays fill-free.
     expect(verdict.parentElement?.className).not.toContain("bg-")
   })
 
-  it("reaches full red ink when every check fails", () => {
-    const allFailed = CHECKS.map((check) => ({ ...check, passed: false }))
+  it("counts findings, clean checks, and unassessed checks separately", () => {
+    render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
+    const verdict = screen.getByLabelText("1 of 2 assessed checks failed; 1 not assessed")
+    expect(verdict.textContent).toBe("1/2 checks pass · 1 not assessed")
+    expect(verdict.parentElement?.getAttribute("data-state")).toBeDefined()
+  })
+
+  it("reaches full red ink when every assessed check fails", () => {
+    const allFailed = CHECKS.map((check) => ({
+      ...check,
+      status: "finding" as const,
+      ink: "system-red-text" as const,
+    }))
     render(<SessionStatusBar checks={allFailed} />)
-    const verdict = screen.getByLabelText("3 of 3 checks failed")
+    const verdict = screen.getByLabelText("3 of 3 assessed checks failed")
     expect(verdict.style.color).toContain("--color-system-red-text) 100%")
+  })
+
+  it("shows a computing state instead of claiming a clean result", () => {
+    const notAssessed = WITH_NOT_ASSESSED.map((check) => ({
+      ...check,
+      status: "notAssessed" as const,
+      notAssessedReason: "incompleteEvidence" as const,
+      ink: "label-tertiary" as const,
+    }))
+    render(<SessionStatusBar checks={notAssessed} evidenceState="processing" />)
+    const verdict = screen.getByLabelText("Computing session hygiene checks")
+    expect(verdict.textContent).toBe("Computing checks")
+    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
   })
 
   it("shows a usual cost figure without pill chrome", () => {

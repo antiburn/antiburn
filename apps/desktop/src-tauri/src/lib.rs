@@ -149,6 +149,7 @@ pub fn run() {
             commands::get_scan_status,
             commands::get_insights_report,
             commands::get_insights_status,
+            commands::get_session_hygiene,
             commands::cancel_insights_report,
             commands::get_folder_permissions,
             commands::request_folder_access,
