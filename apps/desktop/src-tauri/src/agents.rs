@@ -44,8 +44,8 @@ pub fn kind_from_slug(slug: &str) -> Option<AgentKind> {
 }
 
 /// Return the agents that use the durable evidence queue.
-pub fn evidence_cohort() -> [&'static str; 1] {
-    [AgentKind::Claude.slug()]
+pub fn evidence_cohort() -> [&'static str; 2] {
+    [AgentKind::Claude.slug(), AgentKind::Codex.slug()]
 }
 
 #[cfg(test)]
@@ -99,7 +99,11 @@ mod tests {
 
     #[test]
     fn the_evidence_cohort_uses_the_discovery_slug() {
-        assert_eq!(evidence_cohort(), [AgentKind::Claude.slug()]);
+        assert_eq!(
+            evidence_cohort(),
+            [AgentKind::Claude.slug(), AgentKind::Codex.slug()]
+        );
+        assert_eq!(AgentKind::Codex.slug(), vendor_label(AgentKind::Codex));
     }
 
     #[test]
