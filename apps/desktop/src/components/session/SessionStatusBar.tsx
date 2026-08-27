@@ -1,10 +1,10 @@
-import { cn } from "../../lib/cn"
+import { Fragment } from "react"
+
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
 import {
   sessionHygieneStateLabel,
   type SessionHygieneCheck,
 } from "../../lib/presentation/sessionHygiene"
-import { relativeTime } from "../../lib/presentation/relativeTime"
 import { Tooltip } from "../presentation/Tooltip"
 import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 
@@ -13,20 +13,14 @@ export interface SessionStatusBarProps {
   evidenceState?: SessionHygieneEvidenceState
   /** Display values for the cost figure; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
-  /**
-   * ISO timestamp of the session's most recent activity. It shows only
-   * while the pointer is over the host `group` row.
-   */
-  timestamp?: string | undefined
 }
 
 /**
- * The verdict line across the top of a session row: the pass count, the
- * last-activity time, and the session cost.
+ * The verdict line shows the pass count and the session cost.
  *
  * The verdict uses plain monospace text without badge chrome. Severity lives
  * in the ink. The ink moves from green through orange to red as findings rise.
- * The tooltip names each finding and each check that was not assessed.
+ * The tooltip lists each check with its result.
  */
 
 /**
@@ -40,11 +34,50 @@ function verdictInk(failedShare: number, assessedCount: number): string {
   return `color-mix(in oklch, var(--color-system-red-text) ${pct}%, var(--color-system-orange))`
 }
 
+const CHECK_MARK: Record<SessionHygieneCheck["status"], string> = {
+  finding: "✘",
+  clean: "✔",
+  notAssessed: "–",
+}
+
+const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
+  "system-red-text": "text-system-red-text",
+  "system-green": "text-system-green",
+  "label-tertiary": "text-label-tertiary",
+}
+
+function renderTooltip(
+  failed: SessionHygieneCheck[],
+  passed: SessionHygieneCheck[],
+  notAssessed: SessionHygieneCheck[],
+) {
+  const groups = [failed, passed, notAssessed].filter((group) => group.length > 0)
+  return (
+    <div className="grid grid-cols-[1fr_max-content] gap-x-2.5 gap-y-0 items-center font-mono [word-spacing:-2px]">
+      {groups.map((group, index) => (
+        <Fragment key={group[0]!.status}>
+          {index > 0 && <div className="col-span-full border-b border-separator" />}
+          {group.map((check) => (
+            <Fragment key={check.id}>
+              <span className={INK_CLASS[check.ink]}>{check.title}</span>
+              <span className={`${INK_CLASS[check.ink]} text-lg`}>
+                {CHECK_MARK[check.status]}
+              </span>
+            </Fragment>
+          ))}
+        </Fragment>
+      ))}
+      <span className="col-span-full mt-2.5 text-label-secondary">
+        Open the session for details
+      </span>
+    </div>
+  )
+}
+
 export function SessionStatusBar({
   checks,
   evidenceState = "ready",
   cost,
-  timestamp,
 }: SessionStatusBarProps) {
   const failed = checks.filter((check) => check.status === "finding")
   const passed = checks.filter((check) => check.status === "clean")
@@ -53,7 +86,7 @@ export function SessionStatusBar({
   const failedShare = assessedCount === 0 ? 0 : failed.length / assessedCount
   const allPassed = passed.length === checks.length && checks.length > 0
   const stateLabel = sessionHygieneStateLabel(evidenceState)
-  const countText = `${passed.length}/${assessedCount} checks pass${
+  const countText = `${passed.length}/${assessedCount} burn checks${
     notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
   }`
   const verdictLabel = stateLabel
@@ -65,13 +98,10 @@ export function SessionStatusBar({
             notAssessed.length > 0 ? `; ${notAssessed.length} not assessed` : ""
           }`
         : `${passed.length} of ${assessedCount} assessed checks pass; ${notAssessed.length} not assessed`
-  const details = [...failed, ...notAssessed].map((check) => check.title).join(", ")
-  const tooltip = details ? `${verdictLabel}: ${details}` : verdictLabel
+  const tooltip = stateLabel ? verdictLabel : renderTooltip(failed, passed, notAssessed)
 
   return (
-    // The row matches the provider mark height in the adjacent column.
-    // It keeps both vertical glyph gaps at the measured 9.3 px.
-    <div className="flex h-[14px] w-full items-center gap-1.5 text-label-secondary">
+    <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
       <Tooltip label={tooltip} delayMs={150}>
         <span
           // The modifiers remove the wider sans spacing from type-footnote.
@@ -85,25 +115,7 @@ export function SessionStatusBar({
         </span>
       </Tooltip>
 
-      {timestamp && (
-        <time
-          dateTime={timestamp}
-          aria-label={`Last activity ${relativeTime(timestamp)}`}
-          // The host row reveals the reserved time label on hover.
-          className="ml-auto shrink-0 type-callout tabular-nums text-label-tertiary opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100"
-        >
-          {relativeTime(timestamp)}
-        </time>
-      )}
-
-      {cost && (
-        <SessionCostBadge
-          {...cost}
-          // A usual cost stays bare. Only a high cost uses the pill.
-          appearance={cost.isHighCost ? "pill" : "bare"}
-          className={cn(!timestamp && "ml-auto")}
-        />
-      )}
+      {cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />}
     </div>
   )
 }

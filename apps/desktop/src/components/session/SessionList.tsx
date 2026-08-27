@@ -14,6 +14,7 @@ import {
   modelRunShortPairs,
   type PresentableModelRun,
 } from "../../lib/presentation/models"
+import { relativeTime } from "../../lib/presentation/relativeTime"
 import { sessionHygieneFor, useSessionHygiene } from "../../lib/useSessionHygiene"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
@@ -128,9 +129,9 @@ function SessionRow({ entry, hygiene, onOpen, renderAgentIcon, wslIcon }: Sessio
   return (
     <div
       className={cn(
-        // The provider mark holds the first column, so every line of text
-        // starts on the verdict's left edge. The column equals the icon size.
-        "group relative grid w-full grid-cols-[14px_minmax(0,1fr)] gap-x-1.5 gap-y-1 text-left",
+        "group relative",
+        "w-full grid grid-cols-[14px_1fr] gap-x-2 gap-y-1",
+        "items-center",
         "rounded-[var(--radius-popover)] bg-surface-card px-3 py-3",
         "transition-colors duration-[var(--duration-fast)] ease-out",
         entry.isActive && "activity-row-active",
@@ -158,112 +159,117 @@ function SessionRow({ entry, hygiene, onOpen, renderAgentIcon, wslIcon }: Sessio
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <span className="flex h-[14px] items-center justify-center">
+      <div className="row-1 col-2">
+        <SessionStatusBar
+          checks={hygieneChecks}
+          evidenceState={hygiene.evidenceState}
+          cost={entry.cost ?? null}
+        />
+      </div>
+
+      <span className="row-2 col-1 h-full pt-[3px]">
         {renderAgentIcon?.(entry.agent, 14, entry.surface)}
       </span>
 
-      <SessionStatusBar
-        checks={hygieneChecks}
-        evidenceState={hygiene.evidenceState}
-        cost={entry.cost ?? null}
-        timestamp={entry.timestamp}
-      />
+      <div className="col-2 flex min-w-0 items-center gap-x-1">
+        <TruncatedText
+          // One ink for every title. The shimmer overlay is the only
+          // difference an active session shows.
+          className="min-w-0 my-0.5 type-body-large text-label"
+          text={primary}
+          lines={2}
+          shimmer={entry.isActive}
+        />
 
-      <div className="col-start-2 min-w-0 space-y-1">
-        {/* The title runs the full row width; the time lives in the
-            status line and shows on hover. */}
-        <div className="flex min-w-0 items-center gap-1">
-          <TruncatedText
-            // One ink for every title. The shimmer overlay is the only
-            // difference an active session shows.
-            className="min-w-0 type-body-large text-label"
-            text={primary}
-            lines={2}
-            shimmer={entry.isActive}
-          />
-
-          {entry.hasForkParent && (
-            <Tooltip label="Forked from another session" delayMs={500}>
-              <span
-                className="inline-flex shrink-0 text-label-tertiary"
-                aria-label="Forked from another session"
-              >
-                <GitFork size={12} strokeWidth={2} aria-hidden="true" />
-              </span>
-            </Tooltip>
-          )}
-          {!!entry.forkChildCount && (
-            <Tooltip
-              label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-              delayMs={500}
+        {entry.hasForkParent && (
+          <Tooltip label="Forked from another session" delayMs={500}>
+            <span
+              className="inline-flex shrink-0 text-label-tertiary"
+              aria-label="Forked from another session"
             >
-              <span
-                className="inline-flex shrink-0 text-label-tertiary"
-                aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-              >
-                <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
-              </span>
-            </Tooltip>
-          )}
-        </div>
-
-        {(modelPairs.length > 0 || hasRepo || entry.branch || entry.wslDistro) && (
-          // The models and the repo lines read as one metadata unit, so
-          // they sit closer to each other than to the title.
-          <div className="space-y-px">
-            {modelPairs.length > 0 && (
-              <div
-                // The name anchors each unit at 500; the thinking mode sits a
-                // size down after a space. Type does the separating, not a
-                // slash.
-                className="min-w-0 truncate type-callout text-label-tertiary"
-                title={modelRunNames(modelRuns).join("\n")}
-              >
-                {modelPairs.map((pair, index) => (
-                  <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                    {index > 0 && " · "}
-                    <span className="font-medium">{pair.model}</span>
-                    {pair.thinkingMode && (
-                      <span className="type-caption"> {pair.thinkingMode}</span>
-                    )}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {(hasRepo || entry.branch || entry.wslDistro) && (
-              <div className="flex min-w-0 items-baseline gap-x-2">
-                {hasRepo && (
-                  <Tooltip
-                    label={
-                      entry.additionalRepos?.length
-                        ? `Also observed: ${entry.additionalRepos.join(", ")}`
-                        : entry.repo
-                    }
-                  >
-                    <span className="min-w-0 truncate type-callout text-label-tertiary">
-                      {entry.repo}
-                      {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
-                    </span>
-                  </Tooltip>
-                )}
-
-                <WslOriginBadge
-                  distro={entry.wslDistro}
-                  {...(wslIcon ? { icon: wslIcon } : {})}
-                />
-
-                {entry.branch && (
-                  <TruncatedText
-                    className="min-w-0 truncate type-callout text-label-tertiary"
-                    text={entry.branch}
-                  />
-                )}
-              </div>
-            )}
-          </div>
+              <GitFork size={12} strokeWidth={2} aria-hidden="true" />
+            </span>
+          </Tooltip>
+        )}
+        {!!entry.forkChildCount && (
+          <Tooltip
+            label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+            delayMs={500}
+          >
+            <span
+              className="inline-flex shrink-0 text-label-tertiary"
+              aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+            >
+              <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
+            </span>
+          </Tooltip>
         )}
       </div>
+
+      {modelPairs.length > 0 && (
+        <div className="col-2 space-y-px">
+          <div
+            className="min-w-0 truncate type-callout text-label-tertiary"
+            title={modelRunNames(modelRuns).join("\n")}
+          >
+            {modelPairs.map((pair, index) => (
+              <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                {index > 0 && " · "}
+                <span className="font-medium">{pair.model}</span>
+                {pair.thinkingMode && (
+                  <span className="type-caption"> {pair.thinkingMode}</span>
+                )}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(entry.timestamp || hasRepo || entry.branch || entry.wslDistro) && (
+        <div className="col-2 w-full flex justify-between">
+          {(hasRepo || entry.branch || entry.wslDistro) && (
+            <div className="flex min-w-0 items-baseline gap-x-2">
+              {hasRepo && (
+                <Tooltip
+                  label={
+                    entry.additionalRepos?.length
+                      ? `Also observed: ${entry.additionalRepos.join(", ")}`
+                      : entry.repo
+                  }
+                >
+                  <span className="min-w-0 truncate type-callout text-label-tertiary">
+                    {entry.repo}
+                    {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
+                  </span>
+                </Tooltip>
+              )}
+
+              <WslOriginBadge
+                distro={entry.wslDistro}
+                {...(wslIcon ? { icon: wslIcon } : {})}
+              />
+
+              {entry.branch && (
+                <TruncatedText
+                  className="min-w-0 truncate type-callout text-label-tertiary"
+                  text={entry.branch}
+                />
+              )}
+            </div>
+          )}
+
+          {entry.timestamp && (
+            <time
+              dateTime={entry.timestamp}
+              aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+              // The host row reveals the timestamp on hover.
+              className="tabular-nums type-footnote font-mono text-label-tertiary opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100"
+            >
+              {relativeTime(entry.timestamp)}
+            </time>
+          )}
+        </div>
+      )}
     </div>
   )
 }

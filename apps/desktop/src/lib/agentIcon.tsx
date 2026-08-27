@@ -119,12 +119,8 @@ export function renderAgentIcon(slug: string, size: number, surface?: AgentSurfa
   const Glyph = glyphFor(surface)
   return (
     <span
-      // The seam: the registry's icon name for this slug, so artwork can be
-      // swapped later without every call site learning about it.
       data-agent-icon={iconName}
-      className="inline-flex items-center justify-center text-agent-mark"
-      // Decorative on its own — the row's title carries the session's name —
-      // but the agent is not otherwise stated, so it gets a label.
+      className="text-agent-mark"
       role="img"
       aria-label={agentDisplayName(slug)}
     >
