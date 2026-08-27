@@ -39,10 +39,11 @@ use crate::dto::DeferredPermissionDir;
 
 pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceCompletion,
-    EvidenceFailure, EvidenceRow, EvidenceStatus, MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS,
-    MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions, PublishedEvidence,
-    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState,
-    SessionKey, SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, MAX_ACTIVITY_DAYS,
+    MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions,
+    PublishedEvidence, RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey,
+    SessionActivityState, SessionKey, SessionRecord, SourceVersionState, ThemePreference,
+    UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -1515,6 +1516,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
+        live_usage_hidden_providers: stored
+            .get("liveUsageHiddenProviders")
+            .map(|value| HiddenMeters::parse(value))
+            .unwrap_or(defaults.live_usage_hidden_providers.clone()),
         // No stored answer means this database predates the setting. A fresh
         // install takes the default and meets the control on the Ready screen;
         // one that already finished onboarding was told analytics did not
@@ -1606,6 +1611,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "liveUsageEnabled",
         bool_text(settings.live_usage_enabled)
+    ])?;
+    put.execute(params![
+        "liveUsageHiddenProviders",
+        settings.live_usage_hidden_providers.as_str()
     ])?;
     put.execute(params![
         "analyticsEnabled",

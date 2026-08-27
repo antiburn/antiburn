@@ -702,17 +702,28 @@ pub fn get_live_usage(
     app: tauri::AppHandle,
     _utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
-    let active = app
+    let settings = app
         .try_state::<Store>()
-        .and_then(|store| store.settings().ok())
+        .and_then(|store| store.settings().ok());
+    let active = settings
+        .as_ref()
         .is_some_and(|settings| settings.live_usage_active());
+    let live = app.try_state::<crate::usage_alerts::LiveUsage>();
     if !active {
-        return Ok(LiveUsageSummary::default());
+        // No readings, but keep the roster: Settings shows one switch for each
+        // provider antiburn can meter, and the master switch does not remove
+        // them. A roster is a list of capabilities, not a reading.
+        let hidden = settings
+            .map(|settings| settings.live_usage_hidden_providers)
+            .unwrap_or_default();
+        return Ok(LiveUsageSummary {
+            meters: live
+                .map(|live| provider_usage::live::roster(&live.sources, &hidden))
+                .unwrap_or_default(),
+            ..LiveUsageSummary::default()
+        });
     }
-    Ok(app
-        .try_state::<crate::usage_alerts::LiveUsage>()
-        .map(|live| live.snapshot())
-        .unwrap_or_default())
+    Ok(live.map(|live| live.snapshot()).unwrap_or_default())
 }
 
 /// Refresh the provider's own limit figures and publish the new snapshot.

@@ -99,6 +99,14 @@ export interface AppSettings {
    */
   liveUsageEnabled: boolean
   /**
+   * Canonical ids of the providers whose meter the reader turned off.
+   *
+   * A narrower form of the switch above: that one stops every provider, this
+   * one stops the named provider. Both stop requests, so a hidden provider
+   * also stops its milestone notifications.
+   */
+  liveUsageHiddenProviders: string[]
+  /**
    * The consented analytics channel.
    *
    * On by default for a new install, which meets the control on the first-run
@@ -463,7 +471,31 @@ export interface LiveUsageSourceErrorPayload {
 export interface LiveUsageSummaryPayload {
   providers: LiveProviderUsagePayload[]
   errors: LiveUsageSourceErrorPayload[]
+  /**
+   * Every provider antiburn can meter, shown or hidden, ordered by id.
+   *
+   * Says which kind of empty `providers` is. A roster whose entries are all
+   * hidden means the reader turned the meters off. A roster with entries
+   * still shown means antiburn found nothing to report.
+   */
+  meters: LiveUsageMeterPayload[]
   generatedAt: string
+}
+
+/**
+ * One provider antiburn can meter. Mirrors Rust `LiveUsageMeter`.
+ *
+ * The roster comes from the registered sources, not from the readings: a
+ * hidden provider is never asked, so it is absent from `providers`. This list
+ * is what keeps its switch on screen.
+ */
+export interface LiveUsageMeterPayload {
+  /** The canonical provider id, for example `anthropic`. */
+  provider: string
+  /** The provider's display name, for example "Claude". */
+  displayName: string
+  /** False when the reader turned this meter off. */
+  shown: boolean
 }
 
 /** One repository row. Mirrors Rust `RepositoryItem`. */
@@ -637,6 +669,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
+  liveUsageHiddenProviders: [],
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
 }
@@ -1033,6 +1066,7 @@ export async function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
 export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   providers: [],
   errors: [],
+  meters: [],
   generatedAt: "",
 }
 
@@ -1059,6 +1093,13 @@ export interface HudDetailState {
   bars: HudDetailBar[]
   /** Epoch milliseconds the reset labels are computed against. */
   now: number
+  /**
+   * True when `bars` is empty because the reader turned every meter off.
+   *
+   * Separates a choice from a shortage: the card says which, instead of
+   * reporting a reader's own setting as something antiburn cannot find.
+   */
+  noMeterSelected: boolean
 }
 
 /** Request the hover detail window with the newest usage payload. */

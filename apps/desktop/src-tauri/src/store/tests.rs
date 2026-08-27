@@ -412,6 +412,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
 
     let saved = store
         .save_settings(&AppSettings {
+            live_usage_hidden_providers: HiddenMeters::parse("openai"),
             theme: ThemePreference::Dark,
             activity_window_days: 14,
             onboarding_completed: true,
