@@ -50,7 +50,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
    */
   const handleClear = useCallback(async () => {
     const proceed = await confirm(
-      "This removes every session, analysis, and scan record antiburn has stored on this machine. Your agents’ own transcript files are not touched, and antiburn will rediscover them the next time it scans.",
+      "This removes every session, analysis, evidence, and scan record antiburn has stored on this machine. Your agents’ own transcript files are not touched, and antiburn will rediscover them the next time it scans.",
       { title: "Clear the local index?", kind: "warning", okLabel: "Clear index" },
     )
     if (!proceed) return
@@ -268,7 +268,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
         <Card>
           <Row
             label="Clear the local index"
-            description="Forget every session, analysis, and scan record antiburn has stored. Your agents’ transcripts are untouched, so a later scan finds them again. Your preferences, scan folders, and repository choices are kept."
+            description="Forget every session, analysis, evidence, and scan record antiburn has stored. Your agents’ transcripts are untouched, so a later scan finds them again. Your preferences, scan folders, and repository choices are kept."
             trailing={
               <PushButton
                 onClick={() => void handleClear()}

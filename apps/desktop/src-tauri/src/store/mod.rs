@@ -1807,6 +1807,14 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         parameters,
     )?;
+    // The v11 `ON DELETE CASCADE` also covers this row, but the cascade rides
+    // on the per-connection `foreign_keys` pragma; deleting explicitly keeps
+    // session deletion pragma-independent.
+    connection.execute(
+        "DELETE FROM session_evidence
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+        parameters,
+    )?;
     let removed = connection.execute(
         "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         parameters,

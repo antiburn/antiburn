@@ -8,7 +8,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** The join needs a separate consent review and is not part of transcript evidence.
 - **Kind:** `enhancement`
-- **Disposition:** `file-issue` after the consent boundary is defined.
+- **Disposition:** `file-issue` after the consent boundary is defined. **No issue yet:** the consent-boundary question was posted for product discussion; an issue follows only if it gains momentum.
 
 ## Session-level hygiene badges
 
@@ -16,7 +16,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** A second session-level reducer needs product scope, but it needs no new parsing, evidence, or schema.
 - **Kind:** `enhancement`
-- **Disposition:** `file-issue` after the report reducer ships.
+- **Disposition:** `file-issue` after the report reducer ships. **Filed as antiburn#221.**
 
 ## Additional Claude JSONL row types
 
@@ -24,7 +24,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** The first release must collect evidence before the parser adds unused record types. A new parser revision can reparse them.
 - **Kind:** `enhancement`
-- **Disposition:** `file-issue` after release data supports specific row types.
+- **Disposition:** `file-issue` after release data supports specific row types. **Filed as antiburn#222** (fix in flight as PR antiburn#231). The best-effort policy for sessions with unrecognized record types is antiburn#229, and the three missing Claude capabilities are antiburn#226 (part 1 in flight).
 
 ## Migration ladder squash
 
@@ -32,7 +32,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** An appended migration updates `user_version` during branch switches. An edited migration does not update an existing developer database. Release-candidate tags exist through `antiburn-v0.1.0-rc.6`.
 - **Kind:** `enhancement`
-- **Disposition:** `file-issue` as antiburn#76 after release-candidate distribution is checked.
+- **Disposition:** `file-issue` as antiburn#76 after release-candidate distribution is checked. **antiburn#76 remains open** after the repository history squash.
 
 ## Slow discovery while the popover is hidden
 
@@ -40,7 +40,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** A 15-to-30-minute tick would refresh metrics that no reader sees. It would reverse the current pause and require Locked Decision 15 to change. CH-008 drains only work that discovery already queued.
 - **Kind:** `enhancement`
-- **Disposition:** `fold-into-later-seam` for CH-013 measurement and review. This work is a natural prerequisite for session-level badges.
+- **Disposition:** `fold-into-later-seam` for CH-013 measurement and review. This work is a natural prerequisite for session-level badges. **Folded into antiburn#224**, where the measurement and review now live.
 
 ## Second provider
 
@@ -48,7 +48,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** Source Phase 12 is outside GH-70.
 - **Kind:** `deferred`
-- **Disposition:** `file-issue` after the first provider ships.
+- **Disposition:** `file-issue` after the first provider ships. **Filed as antiburn#227** (Codex).
 
 ## Deleted transcript reconciliation
 
@@ -56,7 +56,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** Evidence cascades only when the session row is deleted. Current deletion paths cover gate rejection, ignored paths, and explicit user deletion, but not a missing file.
 - **Kind:** `deferred`
-- **Disposition:** `file-issue` with a privacy review before CH-013 completes.
+- **Disposition:** `file-issue` with a privacy review before CH-013 completes. **Filed as antiburn#223.**
 
 ## Phase 13 optimizations
 
@@ -64,7 +64,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** Each optimization needs measurements from the first provider path.
 - **Kind:** `enhancement`
-- **Disposition:** `file-issue` only when CH-013 measurements justify a specific optimization.
+- **Disposition:** `file-issue` only when CH-013 measurements justify a specific optimization. **Folded into antiburn#224**; the measurement ticket resolves it per the numbers.
 
 ## Evidence for the Claude append-only guarantee
 
@@ -72,7 +72,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0007, confirmed at the seam 0008 Tier 3 human review.
 - **Why deferred:** The guarantee is a property of how the Claude CLI writes its transcript. Evidence must come from repeatable checks against pinned CLI versions. `CONTRIBUTING.md` requires synthetic fixtures, and a repository fixture cannot prove the behavior of a third-party writer. No captured session file may enter this repository.
 - **Kind:** `deferred`
-- **Disposition:** `file-issue`, gated on CH-013's measurement of impact while a representative Claude session is actively written. If the observed rejection rate is near zero, the work may never be justified. To flip Claude to `Evidenced` is a one-function change and needs no change to the streaming code.
+- **Disposition:** `file-issue`, gated on CH-013's measurement of impact while a representative Claude session is actively written. If the observed rejection rate is near zero, the work may never be justified. To flip Claude to `Evidenced` is a one-function change and needs no change to the streaming code. **Folded into antiburn#224**; the measurement ticket resolves it per the numbers.
 
 ## Fork-job transcript materialization during discovery
 
@@ -80,7 +80,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0008.
 - **Why deferred:** The read occurs upstream of the CH-005 analysis boundary. Removing it requires a discovery source contract change.
 - **Kind:** `deferred`
-- **Disposition:** `file-issue` after CH-013 measures the affected source volume.
+- **Disposition:** `file-issue` after CH-013 measures the affected source volume. **Folded into antiburn#224**; the measurement ticket resolves it per the numbers.
 
 ## Unsupported evidence publication trigger
 
@@ -88,7 +88,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0016.
 - **Why deferred:** CH-010 reads unsupported rows but does not own evidence publication policy. CH-011 shipped the detector prerequisite sets the writer needs but stayed engine-only; the writer lives in the desktop worker.
 - **Kind:** `deferred`
-- **Disposition:** `fold-into-later-seam` for CH-011b.
+- **Disposition:** `fold-into-later-seam` for CH-011b. **Resolved:** CH-011b shipped the writer; this entry is closed.
 
 ## Report scope for hosts with WSL sessions
 
@@ -96,7 +96,7 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0016.
 - **Why deferred:** CH-012 owns the IPC request and the reader-facing scope.
 - **Kind:** `enhancement`
-- **Disposition:** `fold-into-later-seam` for CH-012. **Decided in CH-012:** one environment key per report; the host report covers the native scope only and never combines native and WSL scopes. The reduction queries are pinned to single-scope semantics and detector statuses cannot be recombined from two finished reports. The decision is documented at the request construction site (`apps/desktop/src-tauri/src/commands.rs`, `insights_report_request`), and the pane's scope wording names the native environment explicitly. Per-environment reports for Windows hosts with WSL sessions are the entry below.
+- **Disposition:** `fold-into-later-seam` for CH-012. **Decided in CH-012:** one environment key per report; the host report covers the native scope only and never combines native and WSL scopes. The reduction queries are pinned to single-scope semantics and detector statuses cannot be recombined from two finished reports. The decision is documented at the request construction site (`apps/desktop/src-tauri/src/commands.rs`, `insights_report_request`), and the pane's scope wording names the native environment explicitly. Per-environment reports for Windows hosts with WSL sessions are the entry below, filed as antiburn#225.
 
 ## Per-environment insights reports on Windows hosts with WSL
 
@@ -104,4 +104,4 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0017 (CH-012).
 - **Why deferred:** A scope selector or per-environment report list is new product surface. Combining scopes inside one reduction would reopen CH-010's population queries and their tests.
 - **Kind:** `enhancement`
-- **Disposition:** `file-issue` after CH-013, when the first Windows+WSL usage is confirmed.
+- **Disposition:** `file-issue` after CH-013, when the first Windows+WSL usage is confirmed. **Filed as antiburn#225.**
