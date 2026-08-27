@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::analysis::evidence::{
     CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
@@ -67,6 +67,9 @@ pub struct SessionEvidenceAccumulator {
     idle_gap_ms_total: i64,
     manual_compactions: u64,
     cache_cap_exceeded: bool,
+    seen_thread_uuids: HashSet<String>,
+    thread_identity_missing: bool,
+    thread_parent_unresolved: bool,
     compaction_boundaries: Vec<CompactionBoundary>,
     compactions_cap_exceeded: bool,
     summary_observed: bool,
@@ -123,6 +126,9 @@ impl SessionEvidenceAccumulator {
             idle_gap_ms_total: 0,
             manual_compactions: 0,
             cache_cap_exceeded: false,
+            seen_thread_uuids: HashSet::new(),
+            thread_identity_missing: false,
+            thread_parent_unresolved: false,
             compaction_boundaries: Vec::new(),
             compactions_cap_exceeded: false,
             summary_observed: false,
@@ -193,6 +199,13 @@ impl SessionEvidenceAccumulator {
                     model,
                 });
             }
+        }
+
+        // A counted turn without a per-record identity breaks verified
+        // previous-turn linkage for the whole session. Only sources whose
+        // capability set claims thread identity read this flag back out.
+        if event.uuid.is_none() {
+            self.thread_identity_missing = true;
         }
 
         self.observe_model(event);
@@ -372,6 +385,20 @@ impl SessionEvidenceAccumulator {
                 self.delegated_turns = self
                     .delegated_turns
                     .saturating_add(u64::from(*is_sidechain));
+            }
+            EvidenceObservation::ThreadLink { uuid, parent_uuid } => {
+                // A parent link is verified only against identities this
+                // source already declared. An unresolved link (a resumed
+                // session pointing into another file, or a lost record)
+                // degrades the linkage claim rather than fabricating it.
+                if let Some(parent) = parent_uuid
+                    && !self.seen_thread_uuids.contains(parent)
+                {
+                    self.thread_parent_unresolved = true;
+                }
+                if let Some(uuid) = uuid {
+                    self.seen_thread_uuids.insert(uuid.clone());
+                }
             }
             EvidenceObservation::UnrecognizedType { discriminator } => {
                 let original_len = discriminator.len();
@@ -553,6 +580,26 @@ impl SessionEvidenceAccumulator {
             children: self.subagent_children.clone(),
             examples: self.subagent_examples.clone(),
         };
+        // Verified previous-turn linkage: complete only when every counted
+        // turn carried its own identity and every parent link resolved to an
+        // identity this source declared earlier. `provider_eviction` stays
+        // unsupported — no transcript record states an eviction.
+        let thread_identity_gap = self.thread_identity_missing || self.thread_parent_unresolved;
+        let previous_turn = if !self.capabilities.thread_identity {
+            EvidenceValue::Unsupported
+        } else if let Some(reason) = self.record_loss_reason {
+            EvidenceValue::Partial {
+                observed: (),
+                reason,
+            }
+        } else if thread_identity_gap {
+            EvidenceValue::Partial {
+                observed: (),
+                reason: CoverageReason::AttributionIncomplete,
+            }
+        } else {
+            EvidenceValue::Complete(())
+        };
         let cache = CacheEvidence {
             cache_read_tokens: self.cache_read_tokens,
             cache_creation_tokens: self.cache_creation_tokens,
@@ -563,7 +610,7 @@ impl SessionEvidenceAccumulator {
             user_controlled_churn: ChurnCounts {
                 manual_compactions: self.manual_compactions,
             },
-            previous_turn: EvidenceValue::Unsupported,
+            previous_turn,
             provider_eviction: EvidenceValue::Unsupported,
         };
         let compactions = CompactionEvidence {
@@ -645,7 +692,28 @@ impl SessionEvidenceAccumulator {
                 self.capabilities.subagent_relationships,
                 self.subagents_cap_exceeded,
             ),
-            cache: self.supported_value(cache, true, self.cache_cap_exceeded),
+            cache: if let Some(reason) = self.record_loss_reason {
+                EvidenceValue::Partial {
+                    observed: cache,
+                    reason,
+                }
+            } else if self.cache_cap_exceeded {
+                EvidenceValue::Partial {
+                    observed: cache,
+                    reason: CoverageReason::CapExceeded,
+                }
+            } else if self.capabilities.thread_identity && thread_identity_gap {
+                // The source promised per-record identity but a counted turn
+                // lacked it (or a parent link did not resolve): the cache
+                // group's linkage claim is incomplete, so the group degrades
+                // and Cache Churn cannot read clean from it (no false clean).
+                EvidenceValue::Partial {
+                    observed: cache,
+                    reason: CoverageReason::AttributionIncomplete,
+                }
+            } else {
+                EvidenceValue::Complete(cache)
+            },
             compactions: self.supported_value(
                 compactions,
                 self.capabilities.compaction_boundaries,
@@ -1552,6 +1620,99 @@ mod tests {
             EvidenceCoverage::Partial(CoverageReason::CapExceeded)
         );
         assert_truncated_string(&evidence, "diagnostics.unrecognized_types");
+    }
+
+    fn thread_record(
+        uuid: Option<&str>,
+        parent_uuid: Option<&str>,
+        index: usize,
+    ) -> Vec<NormalizedRecord> {
+        let mut records = Vec::new();
+        if uuid.is_some() || parent_uuid.is_some() {
+            records.push(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::ThreadLink {
+                    uuid: uuid.map(str::to_owned),
+                    parent_uuid: parent_uuid.map(str::to_owned),
+                },
+            )));
+        }
+        let mut event = assistant_event(index);
+        event.model = Some("model".to_owned());
+        event.uuid = uuid.map(str::to_owned);
+        event.parent_uuid = parent_uuid.map(str::to_owned);
+        records.push(NormalizedRecord::MetricsEvent(Box::new(event)));
+        records
+    }
+
+    fn previous_turn_for(chain: &[(Option<&str>, Option<&str>)]) -> EvidenceValue<()> {
+        let mut accumulator = accumulator(true);
+        for (index, (uuid, parent_uuid)) in chain.iter().enumerate() {
+            for record in thread_record(*uuid, *parent_uuid, index) {
+                accumulator.record(record);
+            }
+        }
+        match accumulator.evidence().cache {
+            EvidenceValue::Complete(cache)
+            | EvidenceValue::Partial {
+                observed: cache, ..
+            } => cache.previous_turn,
+            EvidenceValue::Unsupported => panic!("Claude cache evidence must be supported"),
+        }
+    }
+
+    #[test]
+    fn a_resolved_uuid_chain_completes_previous_turn() {
+        assert_eq!(
+            previous_turn_for(&[
+                (Some("u-1"), None),
+                (Some("u-2"), Some("u-1")),
+                (Some("u-3"), Some("u-2")),
+            ]),
+            EvidenceValue::Complete(())
+        );
+    }
+
+    #[test]
+    fn an_unresolved_parent_link_degrades_previous_turn() {
+        // A parent pointing outside this source (a resumed session) is
+        // unresolved, not fabricated: the linkage claim degrades.
+        assert_eq!(
+            previous_turn_for(&[(Some("u-1"), Some("u-absent")), (Some("u-2"), Some("u-1")),]),
+            EvidenceValue::Partial {
+                observed: (),
+                reason: CoverageReason::AttributionIncomplete,
+            }
+        );
+    }
+
+    #[test]
+    fn a_counted_turn_without_a_uuid_degrades_previous_turn() {
+        assert_eq!(
+            previous_turn_for(&[(Some("u-1"), None), (None, None)]),
+            EvidenceValue::Partial {
+                observed: (),
+                reason: CoverageReason::AttributionIncomplete,
+            }
+        );
+    }
+
+    #[test]
+    fn a_source_without_thread_identity_keeps_previous_turn_unsupported() {
+        let mut capabilities = SourceCapabilities::claude();
+        capabilities.thread_identity = false;
+        let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: "s1".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities,
+        });
+        for record in thread_record(Some("u-1"), None, 1) {
+            accumulator.record(record);
+        }
+        let EvidenceValue::Complete(cache) = accumulator.evidence().cache else {
+            panic!("cache must be complete");
+        };
+        assert_eq!(cache.previous_turn, EvidenceValue::Unsupported);
     }
 
     #[test]

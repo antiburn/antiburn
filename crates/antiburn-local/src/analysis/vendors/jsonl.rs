@@ -230,6 +230,15 @@ pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
         .unwrap_or(false);
     observations.push(EvidenceObservation::DelegatedTurn { is_sidechain });
 
+    // Per-record thread identity (Claude's top-level `uuid` / `parentUuid`).
+    // Emitted for every record that carries either field, so the evidence
+    // sink can verify parent links even through eventless records.
+    let uuid = thread_identity_field(value, "uuid");
+    let parent_uuid = thread_identity_field(value, "parentUuid");
+    if uuid.is_some() || parent_uuid.is_some() {
+        observations.push(EvidenceObservation::ThreadLink { uuid, parent_uuid });
+    }
+
     let parent_model = value
         .get("message")
         .and_then(|message| message.get("model"))
@@ -264,6 +273,18 @@ pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
         }
     }
     observations
+}
+
+/// A top-level thread-identity field (`uuid` / `parentUuid`), when present
+/// and non-empty. A JSON `null` (Claude's explicit thread-root marker) reads
+/// as `None`, exactly like an absent field.
+fn thread_identity_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
 }
 
 pub(super) fn is_recognized_eventless(value: &Value) -> bool {
@@ -360,6 +381,11 @@ pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
         .map(str::trim)
         .filter(|mode| !mode.is_empty())
         .map(str::to_string);
+
+    // Per-record thread identity (Claude's top-level `uuid` / `parentUuid`).
+    // `parentUuid: null` marks a thread root and stays `None`.
+    ev.uuid = thread_identity_field(value, "uuid");
+    ev.parent_uuid = thread_identity_field(value, "parentUuid");
 
     // Provider message id (Anthropic `message.id`), used by the Claude adapter to
     // de-duplicate re-logged copies of the same assistant message.

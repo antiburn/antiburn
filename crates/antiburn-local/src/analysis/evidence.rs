@@ -313,7 +313,7 @@ impl SourceCapabilities {
             subagent_relationships: true,
             subagent_models: false,
             compaction_boundaries: true,
-            thread_identity: false,
+            thread_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -541,14 +541,14 @@ mod tests {
                 "subagentRelationships": true,
                 "subagentModels": false,
                 "compactionBoundaries": true,
-                "threadIdentity": false,
+                "threadIdentity": true,
                 "quotaIncidents": false,
                 "harnessVersion": false
             },
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 3,
-                "analyzerRevision": 3,
+                "analyzerRevision": 4,
                 "evidenceSchemaRevision": 2,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
@@ -569,7 +569,7 @@ mod tests {
             "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
             "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}}},
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "children": [], "examples": []}},
-            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "unsupported"}, "providerEviction": {"state": "unsupported"}}},
+            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
             "quotaIncidents": {"state": "unsupported"}
         })
