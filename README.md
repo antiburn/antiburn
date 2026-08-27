@@ -20,6 +20,9 @@ It supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro,
 Amp, Antigravity, Windsurf, and Pi. See the [support matrix](docs/support.md)
 for platform limits, discovery details, and local data storage.
 
+<img width="792" height="1132" alt="antiburn_mac_dark@2x" src="https://github.com/user-attachments/assets/0f182e1e-0857-4f0d-97cc-7527179ddb16" />
+
+
 ## Install
 
 macOS or Linux:
