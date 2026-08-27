@@ -36,6 +36,11 @@ const STATUS_POLL_MS = 5_000
  * and the last unsubscribe stops it and asks the shell to cancel a report
  * reduction still in flight, so closing the pane never leaves the shell
  * computing for nobody.
+ *
+ * The shell hides the settings window on close instead of destroying it,
+ * so a close does not unmount the pane. The session therefore also pauses
+ * on `visibilitychange`: a hidden window stops the status poll and cancels
+ * report work, and a shown window starts both again (FR-16).
  */
 export class InsightsSession {
   private listeners = new Set<() => void>()
@@ -70,20 +75,37 @@ export class InsightsSession {
 
   private start(): void {
     this.started = true
+    document.addEventListener("visibilitychange", this.handleVisibility)
+    if (document.visibilityState !== "hidden") this.startWork()
+  }
+
+  private stop(): void {
+    this.started = false
+    document.removeEventListener("visibilitychange", this.handleVisibility)
+    this.pauseWork()
+  }
+
+  private handleVisibility = (): void => {
+    if (!this.started) return
+    if (document.visibilityState === "hidden") this.pauseWork()
+    else this.startWork()
+  }
+
+  private startWork(): void {
     const generation = ++this.generation
     void this.pollStatus(generation)
     void this.loadReport(generation)
   }
 
-  private stop(): void {
-    this.started = false
+  private pauseWork(): void {
     this.generation += 1
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer)
       this.pollTimer = null
     }
-    // Closing the pane cancels report work in the shell (FR-16). The
-    // reduction is read-only, so this can never lose stored evidence.
+    // Closing or hiding the pane cancels report work in the shell
+    // (FR-16). The reduction is read-only, so this can never lose
+    // stored evidence.
     void cancelInsightsReport()
   }
 
