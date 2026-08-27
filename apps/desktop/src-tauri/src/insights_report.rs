@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
@@ -73,9 +75,44 @@ pub struct ReportRequest {
     pub computed_at_epoch: i64,
 }
 
+/// Marks a reduction that stopped because its caller cancelled it.
+///
+/// The reduction reads one snapshot and writes nothing, so a cancelled
+/// run leaves the durable evidence state untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportCancelled;
+
+impl std::fmt::Display for ReportCancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the insights report reduction was cancelled")
+    }
+}
+
+impl std::error::Error for ReportCancelled {}
+
+/// Tells whether an error marks a cancelled reduction.
+pub fn is_cancelled(error: &anyhow::Error) -> bool {
+    error.is::<ReportCancelled>()
+}
+
+fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<()> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(anyhow::Error::new(ReportCancelled));
+    }
+    Ok(())
+}
+
 /// Reduces one report without blocking the async runtime.
-pub async fn reduce_report(data_dir: PathBuf, request: ReportRequest) -> Result<EfficiencyReport> {
-    tokio::task::spawn_blocking(move || reduce_on_snapshot(&data_dir, request, &mut || {}))
+///
+/// The cancel flag is a cooperative probe: `spawn_blocking` tasks cannot
+/// be aborted, so the reduction checks the flag between phases and per
+/// cohort row, and returns [`ReportCancelled`] when it is set.
+pub async fn reduce_report(
+    data_dir: PathBuf,
+    request: ReportRequest,
+    cancel: Arc<AtomicBool>,
+) -> Result<EfficiencyReport> {
+    tokio::task::spawn_blocking(move || reduce_on_snapshot(&data_dir, request, &mut || {}, &cancel))
         .await
         .context("report reduction task failed")?
 }
@@ -84,7 +121,9 @@ fn reduce_on_snapshot(
     data_dir: &Path,
     request: ReportRequest,
     after_denominator: &mut dyn FnMut(),
+    cancel: &AtomicBool,
 ) -> Result<EfficiencyReport> {
+    ensure_not_cancelled(cancel)?;
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
     let mut coverage = CoverageCounts::default();
@@ -113,6 +152,7 @@ fn reduce_on_snapshot(
     );
 
     after_denominator();
+    ensure_not_cancelled(cancel)?;
 
     let mut accumulator = EfficiencyReportAccumulator::new();
     let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
@@ -127,6 +167,7 @@ fn reduce_on_snapshot(
             EVIDENCE_SCHEMA_REVISION,
         ])?;
         while let Some(row) = rows.next()? {
+            ensure_not_cancelled(cancel)?;
             let evidence_json: String = row.get(0)?;
             let evidence: SessionEvidence = serde_json::from_str(&evidence_json)
                 .context("stored session evidence is invalid")?;
@@ -294,18 +335,29 @@ mod tests {
             });
             let mut release_tx = Some(release_tx);
 
-            let first = reduce_on_snapshot(data_dir.path(), request(), &mut || {
-                release_tx.take().unwrap().send(()).unwrap();
-                committed_rx
-                    .recv_timeout(REPORT_BUSY_TIMEOUT)
-                    .expect("the writer must commit while the reader holds its snapshot");
-            })
+            let first = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {
+                    release_tx.take().unwrap().send(()).unwrap();
+                    committed_rx
+                        .recv_timeout(REPORT_BUSY_TIMEOUT)
+                        .expect("the writer must commit while the reader holds its snapshot");
+                },
+                &AtomicBool::new(false),
+            )
             .unwrap();
             writer_thread.join().unwrap();
 
             assert_eq!(first.context.coverage.discovered, 1);
             assert_eq!(first.assessed_sessions, 1);
-            let second = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+            let second = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
             assert_eq!(second.context.coverage.discovered, 2);
             assert_eq!(second.assessed_sessions, 2);
         }
@@ -316,12 +368,70 @@ mod tests {
             let store = Store::open(data_dir.path()).unwrap();
             publish_ready(&store, "ready", 120);
 
-            let report = reduce_report(data_dir.path().to_path_buf(), request())
-                .await
-                .unwrap();
+            let report = reduce_report(
+                data_dir.path().to_path_buf(),
+                request(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
 
             assert_eq!(report.context.coverage.discovered, 1);
             assert_eq!(report.assessed_sessions, 1);
+        }
+    }
+
+    mod cancellation {
+        use super::*;
+
+        #[test]
+        fn a_cancel_between_phases_stops_the_reduction_and_keeps_evidence_intact() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+            let key = SessionKey::new("native", "claude-code", "ready");
+            let before = store.evidence(&key).unwrap().unwrap();
+
+            let cancel = AtomicBool::new(false);
+            let error = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || cancel.store(true, Ordering::SeqCst),
+                &cancel,
+            )
+            .unwrap_err();
+            assert!(is_cancelled(&error));
+
+            // The durable evidence state is untouched: the store still
+            // opens and the row reads back unchanged.
+            let after = store.evidence(&key).unwrap().unwrap();
+            assert_eq!(after.status, before.status);
+            assert_eq!(after.evidence_json, before.evidence_json);
+            assert_eq!(after.claim_fence, before.claim_fence);
+
+            // A fresh reduction succeeds after the cancelled one.
+            let report = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(report.assessed_sessions, 1);
+        }
+
+        #[test]
+        fn an_already_cancelled_request_stops_before_it_opens_a_snapshot() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_ready(&store, "ready", 120);
+
+            // The flag is set before the call, so the first probe stops
+            // the reduction.
+            let cancel = AtomicBool::new(true);
+            let error =
+                reduce_on_snapshot(data_dir.path(), request(), &mut || {}, &cancel).unwrap_err();
+            assert!(is_cancelled(&error));
         }
     }
 
@@ -381,7 +491,13 @@ mod tests {
             publish_ready(&store, "pending", 122);
             change_source(&store, "pending", &["claude-code"]);
 
-            let report = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+            let report = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
             let coverage = &report.context.coverage;
 
             assert_eq!(coverage.discovered, 7);
@@ -440,7 +556,13 @@ mod tests {
             let active = session("unknown-active", 150, "sv1:unknown-active");
             active_store.upsert_sessions(&[active], &[]).unwrap();
 
-            let report = reduce_on_snapshot(active_dir.path(), request(), &mut || {}).unwrap();
+            let report = reduce_on_snapshot(
+                active_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
             let coverage = &report.context.coverage;
             assert_eq!(coverage.discovered, 1);
             assert_eq!(coverage.unknown_start, 1);
@@ -460,7 +582,13 @@ mod tests {
             let inactive = session("unknown-inactive", 99, "sv1:unknown-inactive");
             inactive_store.upsert_sessions(&[inactive], &[]).unwrap();
 
-            let report = reduce_on_snapshot(inactive_dir.path(), request(), &mut || {}).unwrap();
+            let report = reduce_on_snapshot(
+                inactive_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
             let coverage = &report.context.coverage;
             assert_eq!(coverage.discovered, 0);
             assert_eq!(coverage.unknown_start, 0);
@@ -484,7 +612,13 @@ mod tests {
             other.key.environment_key = "wsl:ubuntu".to_owned();
             store.upsert_sessions(&[other], &[]).unwrap();
 
-            let report = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+            let report = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
 
             assert_eq!(report.context.coverage.discovered, 0);
             assert_eq!(report.assessed_sessions, 0);
@@ -505,7 +639,13 @@ mod tests {
             publish_ready(&store, &format!("ready-{index}"), 120 + index);
         }
 
-        let report = reduce_on_snapshot(data_dir.path(), request(), &mut || {}).unwrap();
+        let report = reduce_on_snapshot(
+            data_dir.path(),
+            request(),
+            &mut || {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
         assert!(report.capability_gaps.len() <= 9);
         assert!(report.capability_gap_examples.len() <= 9);

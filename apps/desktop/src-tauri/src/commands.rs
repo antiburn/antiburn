@@ -16,6 +16,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::scan_roots as engine_scan_roots;
@@ -30,16 +31,20 @@ use crate::agents::kind_from_slug;
 use crate::analysis;
 use crate::consent;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, LiveUsageSummary,
-    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
-    SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
+    ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, InsightsReportPayload,
+    InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionIdentity, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
+use crate::insights_ipc::InsightsController;
+use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
 use crate::repositories;
 use crate::scan::{self, ScanController};
 use crate::settings;
+use crate::store::model::environment_key;
 use crate::store::{
     AnalysisRecord, AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
     SessionRecord, Store, iso_from_epoch,
@@ -1091,6 +1096,88 @@ pub fn get_scan_status(app: tauri::AppHandle) -> ScanStatus {
 }
 
 /* -------------------------------------------------------------------------
+ * Insights
+ * ---------------------------------------------------------------------- */
+
+/// Days of history the insights report covers.
+const INSIGHTS_WINDOW_DAYS: i64 = 30;
+
+fn epoch_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Builds the one report request the pane can ask for.
+fn insights_report_request(now_epoch: i64) -> ReportRequest {
+    // One environment key per report, and the host report covers the
+    // native scope only. It does not combine native and WSL scopes: the
+    // reduction queries are pinned to single-scope semantics, and
+    // detector statuses cannot be recombined from two finished reports
+    // (clean and not-assessed do not merge). On macOS and Linux the
+    // native scope is total, so nothing is excluded there. Per-environment
+    // reports for Windows hosts with WSL sessions are a recorded
+    // follow-up in docs/plans/local-insights-followups.md.
+    ReportRequest {
+        environment_key: environment_key(None),
+        window: antiburn_local::insights::ReportWindow {
+            start_epoch: now_epoch - INSIGHTS_WINDOW_DAYS * 86_400,
+            // The end bound is exclusive, so one past now keeps a session
+            // that started this very second inside the window.
+            end_epoch: now_epoch + 1,
+        },
+        computed_at_epoch: now_epoch,
+    }
+}
+
+/// The thirty-day insights report for this machine's native environment.
+///
+/// Concurrent calls share one reduction (see [`InsightsController`]);
+/// none of them cancels a running one. Cancellation is only the explicit
+/// [`cancel_insights_report`] signal.
+#[tauri::command]
+pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<InsightsReportPayload> {
+    // Opening the Insights pane asks for a scan pass now instead of
+    // waiting out a tick. This is a further call site of the shipped
+    // on-demand trigger — the same kick the popover and the other
+    // commands fire — not a new trigger class and not queue reordering.
+    app.state::<ScanController>().request();
+    let data_dir = app.state::<Store>().state_dir().to_path_buf();
+    let request = insights_report_request(epoch_now());
+    let report = app
+        .state::<InsightsController>()
+        .report(data_dir, request)
+        .await?;
+    Ok(report.into())
+}
+
+/// Report calculation state plus the evidence backlog for the report's scope.
+#[tauri::command]
+pub fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatusPayload> {
+    let calculating = app.state::<InsightsController>().is_calculating();
+    let backlog = app
+        .state::<Store>()
+        .evidence_backlog_counts(&environment_key(None))
+        .map_err(fail)?;
+    Ok(InsightsStatusPayload {
+        calculating,
+        pending: backlog.pending,
+        processing: backlog.processing,
+    })
+}
+
+/// Stop the running report reduction, when one runs.
+///
+/// The pane fires this when it closes; shutdown fires it too. The
+/// reduction is read-only, so a cancelled run leaves the durable
+/// evidence state untouched.
+#[tauri::command]
+pub fn cancel_insights_report(app: tauri::AppHandle) {
+    app.state::<InsightsController>().cancel();
+}
+
+/* -------------------------------------------------------------------------
  * Sources
  * ---------------------------------------------------------------------- */
 
@@ -1535,6 +1622,20 @@ mod tests {
             wsl_distro: None,
             enabled: true,
         }
+    }
+
+    /// The report request covers thirty days, ends one past now (the end
+    /// bound is exclusive), and asks for the native scope only.
+    #[test]
+    fn the_insights_request_spans_thirty_days_of_the_native_scope() {
+        let request = insights_report_request(1_000_000_000);
+        assert_eq!(request.environment_key, "native");
+        assert_eq!(request.computed_at_epoch, 1_000_000_000);
+        assert_eq!(request.window.end_epoch, 1_000_000_001);
+        assert_eq!(
+            request.window.end_epoch - request.window.start_epoch,
+            30 * 86_400 + 1
+        );
     }
 
     #[test]

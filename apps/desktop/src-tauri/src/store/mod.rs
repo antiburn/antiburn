@@ -49,6 +49,13 @@ pub use model::{
     SessionKey, SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
+/// Evidence rows that still wait for, or sit in, processing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EvidenceBacklogCounts {
+    pub pending: u64,
+    pub processing: u64,
+}
+
 /// Internal-scalar key holding the protected directories the last pass declined
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
@@ -649,6 +656,33 @@ impl Store {
                 evidence_from_row,
             )
             .optional()?)
+    }
+
+    /// Count the evidence backlog for one environment.
+    ///
+    /// The counts feed the Insights pane's processing status. They are
+    /// scoped to one environment key so they describe the same population
+    /// as the report for that scope.
+    pub fn evidence_backlog_counts(&self, environment_key: &str) -> Result<EvidenceBacklogCounts> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT status, COUNT(*)
+               FROM session_evidence
+              WHERE environment_key = ?1 AND status IN ('pending', 'processing')
+              GROUP BY status",
+        )?;
+        let mut rows = statement.query(params![environment_key])?;
+        let mut counts = EvidenceBacklogCounts::default();
+        while let Some(row) = rows.next()? {
+            let status: String = row.get(0)?;
+            let count = u64::try_from(row.get::<_, i64>(1)?)?;
+            match status.as_str() {
+                "pending" => counts.pending = count,
+                "processing" => counts.processing = count,
+                _ => {}
+            }
+        }
+        Ok(counts)
     }
 
     /// Enroll missing evidence rows and requeue stale transcript projections.
