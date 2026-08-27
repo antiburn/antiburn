@@ -11,6 +11,8 @@
 //! housekeeping/eventless types), with entirely fictional values.
 #![allow(dead_code)]
 
+use std::path::Path;
+
 use serde_json::{Value, json};
 
 /// Fictional models rotated at fixed session fractions (cap-safe at any scale).
@@ -448,6 +450,30 @@ fn oversized_record(ts: i64, index: usize, bytes: usize) -> String {
 fn push_record(jsonl: &mut String, value: &Value) {
     jsonl.push_str(&value.to_string());
     jsonl.push('\n');
+}
+
+/// Writes one synthetic provider-DB (SQLite) session for the generic
+/// schema-agnostic table walk: one JSON record per row in a `turns` table,
+/// plus a non-JSON `housekeeping` table the walk must skip. Content comes
+/// from the same deterministic generator as the JSONL tiers.
+pub fn write_provider_db(path: &Path, session: &GeneratedSession) -> anyhow::Result<()> {
+    let mut connection = rusqlite::Connection::open(path)?;
+    connection.execute_batch(
+        "CREATE TABLE turns (id INTEGER PRIMARY KEY, recorded_at INTEGER, payload TEXT);\n         CREATE TABLE housekeeping (id INTEGER PRIMARY KEY, note TEXT);",
+    )?;
+    let transaction = connection.transaction()?;
+    {
+        let mut insert =
+            transaction.prepare("INSERT INTO turns (recorded_at, payload) VALUES (?1, ?2)")?;
+        for (index, line) in session.jsonl.lines().enumerate() {
+            insert.execute(rusqlite::params![index as i64, line])?;
+        }
+        let mut note = transaction.prepare("INSERT INTO housekeeping (note) VALUES (?1)")?;
+        note.execute(["vacuum sweep of the fictional shelf index"])?;
+        note.execute(["synthetic retention note for the demo app"])?;
+    }
+    transaction.commit()?;
+    Ok(())
 }
 
 /// Fixed session-fraction positions, e.g. `&[2, 4]` of denominator 5 →

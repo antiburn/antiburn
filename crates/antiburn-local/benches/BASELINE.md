@@ -18,11 +18,15 @@ content only; nothing reads a real transcript).
 ## Stage coverage
 
 In-crate stages measured: source reading, framing, parsing/normalization,
-metrics accumulation, evidence accumulation, report reduction. The remaining
-stages the master plan names (discovery, queue wait, persistence, report
-query, IPC) live in the desktop app (`apps/desktop/src-tauri`) and need a
-desktop-side harness — they are out of reach of this standalone crate and are
-left as the desktop-side half of the measurement follow-up.
+metrics accumulation, evidence accumulation, report reduction. Provider-DB-
+backed sources are also in-crate: a raw `RawSource::Sqlite` resolves to the
+generic schema-agnostic SQLite table walk (`vendors/sqlite.rs`, the OpenCode
+fallback), covered functionally in `tests/pipeline_corpus.rs` and timed
+below over a synthetic seeded database. The remaining stages the master plan
+names (discovery, queue wait, persistence, report query, IPC) live in the
+desktop app (`apps/desktop/src-tauri`) and need a desktop-side harness —
+those stages (not the provider-DB read path) are the desktop-side half of
+the measurement follow-up.
 
 ## Timing baseline
 
@@ -69,6 +73,21 @@ adapter); both accumulators together add only ~2–3 % on top.
 
 Materializing the whole transcript first costs ~6 % extra time plus one
 transient full-source allocation (10 MiB here).
+
+### Provider-DB-backed source (generic SQLite walk)
+
+Raw `RawSource::Sqlite` through the composite metrics+evidence sink. This
+path is batch, not streaming: the walk materializes every extracted event
+before the sink sees them, so retained memory here is proportional to the
+session, like the metrics accumulator itself.
+
+| Rows (records) | DB size | Time (median) | Throughput |
+|---|---|---|---|
+| 2,000 | ~0.6 MiB | 2.98 ms | ~214 MiB/s |
+| 20,000 | ~6.2 MiB | 30.7 ms | ~205 MiB/s |
+
+Linear, and slightly faster per byte than the JSONL path (SQLite hands the
+walk whole text cells; no newline scanning).
 
 ### Report reduction vs cohort size (`EfficiencyReportAccumulator`)
 

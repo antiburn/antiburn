@@ -33,7 +33,9 @@ use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, h
 use antiburn_local::insights::{
     CoverageBucket, CoverageCounts, EfficiencyReportAccumulator, ReportContext, ReportWindow,
 };
-use corpus::{GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes};
+use corpus::{
+    GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes, write_provider_db,
+};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use tempfile::TempDir;
 
@@ -307,6 +309,43 @@ fn materialization(criterion: &mut Criterion) {
     group.finish();
 }
 
+/// Provider-DB-backed source: the generic schema-agnostic SQLite walk
+/// (the raw-`RawSource::Sqlite` fallback path), through the composite sink.
+fn provider_db(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("provider_db_walk");
+    group.sample_size(10);
+
+    let directory = TempDir::new().expect("tempdir");
+    for &records in &[2_000_usize, 20_000] {
+        let session = generate_session(&SessionSpec::tier_s(151, records, records));
+        let db_path = directory.path().join(format!("provider-{records}.db"));
+        write_provider_db(&db_path, &session).expect("write synthetic provider DB");
+        let db_bytes = std::fs::metadata(&db_path).expect("stat provider DB").len();
+        let input = SessionInput {
+            agent: "opencode".to_string(),
+            session_id: session.session_id.clone(),
+            source: RawSource::Sqlite(db_path),
+        };
+        group.throughput(Throughput::Bytes(db_bytes));
+        group.bench_with_input(
+            BenchmarkId::new("visit_composite", format!("{records}_rows")),
+            &records,
+            |bencher, _| {
+                bencher.iter(|| {
+                    let mut composite = composite_for(&input);
+                    let outcome = adapter_for(&input.agent)
+                        .visit(&input, &mut composite)
+                        .expect("synthetic provider DB must be readable");
+                    composite.observe_source_outcome(outcome);
+                    black_box(composite.evidence())
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 /// Report reduction cost against cohort size (the 30-day accumulator).
 fn report_reduction(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("report_reduction");
@@ -480,6 +519,7 @@ fn main() {
     full_reparse(&mut criterion);
     stage_split(&mut criterion);
     materialization(&mut criterion);
+    provider_db(&mut criterion);
     report_reduction(&mut criterion);
     criterion.final_summary();
     memory_probes();

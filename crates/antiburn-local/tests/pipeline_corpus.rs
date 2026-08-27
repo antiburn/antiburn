@@ -25,7 +25,9 @@ use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, h
 use antiburn_local::insights::{
     CoverageBucket, CoverageCounts, EfficiencyReportAccumulator, ReportContext, ReportWindow,
 };
-use corpus::{GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes};
+use corpus::{
+    GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes, write_provider_db,
+};
 use tempfile::TempDir;
 
 fn file_input(session_id: &str, path: &Path) -> SessionInput {
@@ -293,6 +295,55 @@ fn housekeeping_tail_with_unrecognized_types_degrades_coverage_only() {
         eligibility.assistant_turns,
         session.tallies.assistant_records as u64
     );
+}
+
+#[test]
+fn provider_db_backed_source_flows_end_to_end_into_a_report() {
+    let directory = TempDir::new().expect("tempdir");
+    let session = generate_session(&SessionSpec::tier_s(37, 0, 300));
+    let db_path = directory.path().join("provider.db");
+    write_provider_db(&db_path, &session).expect("write synthetic provider DB");
+
+    // A raw provider DB handed straight in resolves to the generic
+    // schema-agnostic SQLite walk (the OpenCode fallback path).
+    let input = SessionInput {
+        agent: "opencode".to_string(),
+        session_id: session.session_id.clone(),
+        source: RawSource::Sqlite(db_path),
+    };
+    let mut composite = composite_for(&input);
+    let outcome = adapter_for(&input.agent)
+        .visit(&input, &mut composite)
+        .expect("synthetic provider DB must be readable");
+    assert_eq!(outcome, VisitOutcome::Unvalidated);
+    composite.observe_source_outcome(outcome);
+
+    let evidence = composite
+        .evidence()
+        .expect("provider-DB session must publish");
+    let metrics = composite
+        .metrics()
+        .expect("provider-DB session must publish");
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    let eligibility = observed(&evidence.eligibility);
+    // The walk feeds every JSON text cell through the shared record parser:
+    // conversational records become events, the eventless housekeeping tail
+    // and the non-JSON housekeeping table are skipped without loss.
+    assert_eq!(
+        eligibility.assistant_turns,
+        session.tallies.assistant_records as u64
+    );
+    assert!(eligibility.turns >= eligibility.assistant_turns);
+    assert_eq!(evidence.diagnostics.records_unusable, 0);
+    assert_eq!(metrics.session_id, session.session_id);
+    assert!(metrics.event_count >= session.tallies.assistant_records);
+    assert!(metrics.tokens_in > 0 && metrics.tokens_out > 0);
+
+    let mut report = EfficiencyReportAccumulator::new();
+    report.observe_session(evidence);
+    let report = report.finish(report_context(1));
+    assert_eq!(report.assessed_sessions, 1);
+    assert!(report.coverage_reasons.is_empty());
 }
 
 /// Forwards to a composite sink and appends to the source file mid-read,
