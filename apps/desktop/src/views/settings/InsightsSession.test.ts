@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { InsightsReportPayload } from "../../lib/ipc"
 import { InsightsSession } from "./InsightsSession"
@@ -70,9 +70,28 @@ async function flush() {
   await Promise.resolve()
 }
 
+function callsTo(command: string): number {
+  return invoke.mock.calls.filter(([name]) => name === command).length
+}
+
+/** Simulate the shell hiding or showing the settings window. */
+function setWindowVisibility(state: DocumentVisibilityState) {
+  Object.defineProperty(document, "visibilityState", {
+    value: state,
+    configurable: true,
+  })
+  document.dispatchEvent(new Event("visibilitychange"))
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockCommands()
+})
+
+afterEach(() => {
+  // Restore the prototype getter that the visibility tests shadow.
+  delete (document as unknown as Record<string, unknown>)["visibilityState"]
+  vi.useRealTimers()
 })
 
 describe("InsightsSession", () => {
@@ -166,6 +185,99 @@ describe("InsightsSession", () => {
     ).toBe(calls + 1)
     expect(phases).toContain("loading")
     expect(session.getSnapshot().phase).toBe("ready")
+    unsubscribe()
+  })
+
+  it("keeps polling the processing status while subscribed", async () => {
+    vi.useFakeTimers()
+    const session = new InsightsSession()
+    const unsubscribe = session.subscribe(() => {})
+    await flush()
+    expect(callsTo("get_insights_status")).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(callsTo("get_insights_status")).toBe(2)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(callsTo("get_insights_status")).toBe(3)
+    unsubscribe()
+  })
+
+  it("stops the status poll when the last subscriber leaves", async () => {
+    vi.useFakeTimers()
+    const session = new InsightsSession()
+    const unsubscribe = session.subscribe(() => {})
+    await flush()
+    unsubscribe()
+
+    const polls = callsTo("get_insights_status")
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(callsTo("get_insights_status")).toBe(polls)
+  })
+
+  it("reloads the report once when the backlog drains, without looping", async () => {
+    vi.useFakeTimers()
+    let statusCalls = 0
+    invoke.mockImplementation((command: string) => {
+      if (command === "get_insights_report") return Promise.resolve(report())
+      if (command === "get_insights_status") {
+        statusCalls += 1
+        // The first read sees a backlog; every later read sees it drained.
+        const pending = statusCalls === 1 ? 2 : 0
+        return Promise.resolve({ calculating: false, pending, processing: 0 })
+      }
+      return Promise.resolve(null)
+    })
+
+    const session = new InsightsSession()
+    const unsubscribe = session.subscribe(() => {})
+    await flush()
+    expect(callsTo("get_insights_report")).toBe(1)
+
+    // The backlog drains between the first and the second poll: the
+    // session recomputes the report once.
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(callsTo("get_insights_report")).toBe(2)
+
+    // Later polls stay drained, so the refresh does not loop.
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(callsTo("get_insights_report")).toBe(2)
+    unsubscribe()
+  })
+
+  it("pauses the poll and cancels report work when the window hides", async () => {
+    vi.useFakeTimers()
+    const session = new InsightsSession()
+    const unsubscribe = session.subscribe(() => {})
+    await flush()
+    expect(invoke).not.toHaveBeenCalledWith("cancel_insights_report")
+
+    // The shell hides the settings window on close; the pane stays
+    // mounted, so the session must pause on visibility alone.
+    setWindowVisibility("hidden")
+    expect(invoke).toHaveBeenCalledWith("cancel_insights_report")
+
+    const polls = callsTo("get_insights_status")
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(callsTo("get_insights_status")).toBe(polls)
+    unsubscribe()
+  })
+
+  it("resumes the poll and reloads the report when the window shows again", async () => {
+    vi.useFakeTimers()
+    const session = new InsightsSession()
+    const unsubscribe = session.subscribe(() => {})
+    await flush()
+    setWindowVisibility("hidden")
+    const polls = callsTo("get_insights_status")
+    const reports = callsTo("get_insights_report")
+
+    setWindowVisibility("visible")
+    await flush()
+    expect(callsTo("get_insights_status")).toBe(polls + 1)
+    expect(callsTo("get_insights_report")).toBe(reports + 1)
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(callsTo("get_insights_status")).toBe(polls + 2)
     unsubscribe()
   })
 
