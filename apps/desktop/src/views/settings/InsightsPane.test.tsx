@@ -118,14 +118,15 @@ describe("InsightsPane loading", () => {
     mockCommands({ get_insights_report: new Error("synthetic failure") })
     render(<InsightsPane />)
 
+    expect(await screen.findByText("Couldn't check this device")).toBeInTheDocument()
     expect(
-      await screen.findByText("The report could not be computed. Nothing was assessed."),
+      screen.getByText(/could not compute the report just now\. Nothing was assessed/),
     ).toBeInTheDocument()
     expect(screen.queryByText(/clean across/i)).not.toBeInTheDocument()
 
     mockCommands()
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
-    expect(await screen.findByText("Categories")).toBeInTheDocument()
+    expect(await screen.findByText("What we checked")).toBeInTheDocument()
   })
 })
 
@@ -321,5 +322,16 @@ describe("InsightsPane freshness", () => {
     ).toBeInTheDocument()
     expect(screen.getByText(/Nothing leaves this device/)).toBeInTheDocument()
     expect(screen.getByText(/native environment/)).toBeInTheDocument()
+  })
+
+  it("stamps the report with when it was computed and the window it covers", async () => {
+    render(<InsightsPane />)
+
+    expect(
+      await screen.findByText(/Updated at .+ · 30 days to .+ · Computed on/),
+    ).toBeInTheDocument()
+    // The intro and the machine-scope label are always visible.
+    expect(screen.getByText(/Nothing is uploaded/)).toBeInTheDocument()
+    expect(screen.getByText("This machine, live")).toBeInTheDocument()
   })
 })

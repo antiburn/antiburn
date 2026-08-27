@@ -8,6 +8,7 @@ import { useState, useSyncExternalStore } from "react"
 import { Card } from "../../components/ui/Card"
 import { PaneHeader } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
+import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { Skeleton } from "../../components/ui/Skeleton"
 import { StatusText } from "../../components/ui/StatusText"
@@ -16,6 +17,7 @@ import type {
   InsightsCoveragePayload,
   InsightsNotAssessedReason,
   InsightsQuotaPressurePayload,
+  InsightsReportPayload,
   InsightsStatusPayload,
 } from "../../lib/ipc"
 import { InsightsSession, type InsightsSnapshot } from "./InsightsSession"
@@ -36,9 +38,13 @@ import { InsightsSession, type InsightsSnapshot } from "./InsightsSession"
  * processing, failed, unsupported, stale, or missing a start time is named
  * as exactly that, and never allowed to read as assessed or as clean.
  *
- * The prior Insights pane the master plan cites as a visual reference
- * lives in a private repository and is not available in this tree, so the
- * layout here derives from the acceptance criteria alone.
+ * The layout, the states, and the wording lift from the prior Insights
+ * pane the master plan cites as a visual reference: the intro paragraph,
+ * the header's freshness label and recheck control, the per-check status
+ * list, and the trailing updated-at stamp. Its behavior is not ported —
+ * dismissals, fix snippets, and savings figures stay out of this item's
+ * scope, and every class is re-expressed in the design system's semantic
+ * utilities.
  */
 
 /** Reader-facing names for the nine category identifiers. */
@@ -80,17 +86,61 @@ export function InsightsPane() {
 
   return (
     <>
-      <PaneHeader title="Insights" />
+      <PaneHeader
+        title="Insights"
+        trailing={
+          <div className="flex shrink-0 items-center gap-2">
+            <StatusText className="whitespace-nowrap" tone="secondary">
+              This machine, live
+            </StatusText>
+            <PushButton
+              className="gap-1.5"
+              disabled={snapshot.phase === "loading"}
+              onClick={() => void session.refresh()}
+            >
+              <RefreshCw size={12} aria-hidden="true" />
+              Check again
+            </PushButton>
+          </div>
+        }
+      />
       <div className="space-y-6">
-        <InsightsBody snapshot={snapshot} onRecalculate={() => void session.refresh()} />
-        <p className="type-footnote text-label-secondary">
-          Computed on this device from local session transcripts covering the last 30 days of
-          this machine&apos;s native environment. Nothing leaves this device. The report
-          reflects evidence processed so far; sessions still waiting are counted above, never
-          assessed silently.
+        <p className="type-body text-label-secondary">
+          antiburn reads the coding sessions already on this device and looks for context you
+          pay for but never use: MCP servers and skills loaded into every session, models with a
+          cheaper current replacement, sessions deep enough to need compacting. It runs here, on
+          files you already have. Nothing is uploaded.
         </p>
+        <InsightsBody snapshot={snapshot} onRecalculate={() => void session.refresh()} />
+        <InsightsFreshnessFooter report={snapshot.report} />
       </div>
     </>
+  )
+}
+
+/** The local-only promise plus the reference's updated-at stamp: every
+ *  number above travels with when it was taken and the window it covers. */
+function InsightsFreshnessFooter({ report }: { report: InsightsReportPayload | null }) {
+  const stamp = report
+    ? new Date(report.computedAtEpoch * 1000).toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null
+  const windowEnd = report
+    ? new Date(report.windowEndEpoch * 1000).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      })
+    : null
+  return (
+    <p className="type-footnote text-label-secondary">
+      {stamp ? `Updated at ${stamp} · 30 days to ${windowEnd} · ` : ""}
+      Computed on this device from local session transcripts covering the last 30 days of this
+      machine&apos;s native environment. Nothing leaves this device. The report reflects
+      evidence processed so far; sessions still waiting are counted above, never assessed
+      silently.
+    </p>
   )
 }
 
@@ -124,15 +174,11 @@ function InsightsBody({
     return (
       <SectionGroup title="Coverage">
         <Card>
-          <div className="flex items-center justify-between gap-3 px-4 py-3">
-            <StatusText icon={CircleAlert} iconClassName="text-system-red" tone="secondary">
-              The report could not be computed. Nothing was assessed.
-            </StatusText>
-            <PushButton className="shrink-0 gap-1.5" onClick={onRecalculate}>
-              <RefreshCw size={12} aria-hidden="true" />
-              Try again
-            </PushButton>
-          </div>
+          <Row
+            label="Couldn't check this device"
+            description="antiburn could not compute the report just now. Nothing was assessed. Try again in a moment."
+            trailing={<PushButton onClick={onRecalculate}>Try again</PushButton>}
+          />
         </Card>
       </SectionGroup>
     )
@@ -161,7 +207,6 @@ function InsightsBody({
         assessedSessions={report.assessedSessions}
         status={snapshot.status}
         nothingProcessedYet={nothingProcessedYet}
-        onRecalculate={onRecalculate}
       />
       <CategoriesSection categories={report.categories} />
       <QuotaPressureSection quota={report.quotaPressure} />
@@ -189,13 +234,11 @@ function CoverageSection({
   assessedSessions,
   status,
   nothingProcessedYet,
-  onRecalculate,
 }: {
   coverage: InsightsCoveragePayload
   assessedSessions: number
   status: InsightsStatusPayload | null
   nothingProcessedYet: boolean
-  onRecalculate: () => void
 }) {
   const backlog = status ? status.pending + status.processing : 0
   return (
@@ -241,19 +284,13 @@ function CoverageSection({
               </li>
             ))}
           </ul>
-          <div className="flex items-center justify-between gap-3">
-            <StatusText tone="secondary">
-              {status?.calculating
-                ? "Recomputing the report…"
-                : backlog > 0
-                  ? `${status?.pending ?? 0} waiting and ${status?.processing ?? 0} processing now`
-                  : "Evidence processing is caught up"}
-            </StatusText>
-            <PushButton className="shrink-0 gap-1.5" onClick={onRecalculate}>
-              <RefreshCw size={12} aria-hidden="true" />
-              Recalculate
-            </PushButton>
-          </div>
+          <StatusText tone="secondary">
+            {status?.calculating
+              ? "Recomputing the report…"
+              : backlog > 0
+                ? `${status?.pending ?? 0} waiting and ${status?.processing ?? 0} processing now`
+                : "Evidence processing is caught up"}
+          </StatusText>
         </div>
       </Card>
     </SectionGroup>
@@ -262,7 +299,7 @@ function CoverageSection({
 
 function CategoriesSection({ categories }: { categories: InsightsCategoryPayload[] }) {
   return (
-    <SectionGroup title="Categories">
+    <SectionGroup title="What we checked">
       <Card>
         {categories.map((category) => (
           <div
