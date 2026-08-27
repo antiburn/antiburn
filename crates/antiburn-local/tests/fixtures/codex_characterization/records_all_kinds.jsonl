@@ -1,0 +1,11 @@
+{"timestamp":"2026-08-01T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-session","timestamp":"2026-08-01T09:59:58Z","cwd":"/home/avery/projects/demo-app","cli_version":"0.0.0-test","source":"cli"}}
+{"timestamp":"2026-08-01T10:00:01Z","type":"turn_context","payload":{"model":"gpt-test","effort":"medium"}}
+{"timestamp":"2026-08-01T10:00:02Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"## Skills\n- verify: Checks synthetic output. (file: /home/avery/.codex/skills/verify/SKILL.md)"}]}}
+{"timestamp":"2026-08-01T10:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Run the synthetic check."}]}}
+{"timestamp":"2026-08-01T10:00:04Z","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":null}}
+{"timestamp":"2026-08-01T10:00:05Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cargo test\"}","call_id":"call-test"}}
+{"timestamp":"2026-08-01T10:00:06Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-test","output":"synthetic success"}}
+{"timestamp":"2026-08-01T10:00:07Z","type":"response_item","payload":{"type":"local_shell_call","call_id":"shell-test","status":"completed","action":{"type":"exec","command":["printf","synthetic"]}}}
+{"timestamp":"2026-08-01T10:00:08Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":80,"reasoning_output_tokens":20,"total_tokens":1100},"total_token_usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":80,"reasoning_output_tokens":20,"total_tokens":1100},"model_context_window":200000}}}
+{"timestamp":"2026-08-01T10:00:09Z","type":"event_msg","payload":{"type":"context_compacted"}}
+{"timestamp":"2026-08-01T10:00:10Z","type":"compacted","payload":{"message":"synthetic summary"}}

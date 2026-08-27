@@ -570,6 +570,9 @@ impl SessionEvidenceAccumulator {
     /// Folds the end-of-stream facts without taking them.
     pub fn observe_summary(&mut self, summary: &SessionSummary) {
         self.capabilities.cache_write_tokens = summary.cache_write_tokens_available;
+        for reason in &summary.coverage_gaps {
+            self.set_record_loss_reason(CoverageReason::from(*reason));
+        }
         self.summary_observed = true;
     }
 

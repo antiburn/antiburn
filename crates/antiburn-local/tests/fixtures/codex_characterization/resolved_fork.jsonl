@@ -1,0 +1,7 @@
+{"timestamp":"2026-08-05T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-child","timestamp":"2026-08-05T10:00:00Z","thread_source":"subagent","agent_path":"worker","source":"cli"}}
+{"timestamp":"2026-08-05T10:00:01Z","type":"turn_context","payload":{"model":"gpt-parent","effort":"high"}}
+{"timestamp":"2026-08-05T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"cached_input_tokens":700,"output_tokens":60,"reasoning_output_tokens":10,"total_tokens":970},"total_token_usage":{"input_tokens":900,"cached_input_tokens":700,"output_tokens":60,"reasoning_output_tokens":10,"total_tokens":970},"model_context_window":200000}}}
+{"timestamp":"2026-08-05T10:00:03Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-08-05T10:00:04Z","type":"response_item","payload":{"type":"agent_message","author":"parent","recipient":"worker","content":[{"type":"input_text","text":"Handle the synthetic task."}]}}
+{"timestamp":"2026-08-05T10:00:05Z","type":"turn_context","payload":{"model":"gpt-child","effort":"low"}}
+{"timestamp":"2026-08-05T10:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"reasoning_output_tokens":5,"total_tokens":345},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"reasoning_output_tokens":5,"total_tokens":345},"model_context_window":100000}}}
