@@ -65,7 +65,14 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+# Bench harness for the pipeline measurement baseline (issue #224). Kept
+# lean: no plotters/rayon, console output only.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 # Deterministic file mtimes for discovery's recency-window tests.
 filetime = "0.2"
 serial_test = "4"
 tempfile = "3"
+
+[[bench]]
+name = "pipeline_baseline"
+harness = false
