@@ -20,6 +20,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- Pi sessions now receive dedicated local analysis and Insights on supported
+  macOS and Linux installations.
+
 ## [0.1.0] - 2026-08-27
 
 The first supported public release. The macOS app is Developer ID signed and

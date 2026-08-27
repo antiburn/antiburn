@@ -1,0 +1,1 @@
+{"type":"message","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":2,"cacheRead":3,"cacheWrite":4},"content":[{"type":"futureBlock","payload":"unknown"},{"type":"futureBlockTwo","payload":"unknown"},{"type":"futureBlockThree","payload":"unknown"}]}}

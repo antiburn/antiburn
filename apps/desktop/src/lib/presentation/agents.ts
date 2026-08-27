@@ -101,7 +101,7 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "Pi",
     icon: "pi",
     defaultSurface: "cli",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
 }
 

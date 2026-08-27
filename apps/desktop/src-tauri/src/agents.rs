@@ -44,8 +44,12 @@ pub fn kind_from_slug(slug: &str) -> Option<AgentKind> {
 }
 
 /// Return the agents that use the durable evidence queue.
-pub fn evidence_cohort() -> [&'static str; 2] {
-    [AgentKind::Claude.slug(), AgentKind::Codex.slug()]
+pub fn evidence_cohort() -> [&'static str; 3] {
+    [
+        AgentKind::Claude.slug(),
+        AgentKind::Codex.slug(),
+        AgentKind::Pi.slug(),
+    ]
 }
 
 #[cfg(test)]
@@ -62,6 +66,7 @@ mod tests {
             AgentKind::Codex,
             AgentKind::Cursor,
             AgentKind::OpenCode,
+            AgentKind::Pi,
             AgentKind::Antigravity,
         ];
         for kind in dedicated {
@@ -91,7 +96,6 @@ mod tests {
             AgentKind::Kiro,
             AgentKind::AmpCode,
             AgentKind::Windsurf,
-            AgentKind::Pi,
         ] {
             assert!(!supports_analysis(kind), "{kind:?}");
         }
@@ -101,9 +105,14 @@ mod tests {
     fn the_evidence_cohort_uses_the_discovery_slug() {
         assert_eq!(
             evidence_cohort(),
-            [AgentKind::Claude.slug(), AgentKind::Codex.slug()]
+            [
+                AgentKind::Claude.slug(),
+                AgentKind::Codex.slug(),
+                AgentKind::Pi.slug(),
+            ]
         );
         assert_eq!(AgentKind::Codex.slug(), vendor_label(AgentKind::Codex));
+        assert_eq!(AgentKind::Pi.slug(), vendor_label(AgentKind::Pi));
     }
 
     #[test]

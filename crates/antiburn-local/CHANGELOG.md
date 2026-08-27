@@ -17,6 +17,16 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- `analysis::PiAdapter` and `SourceCapabilities::pi()` provide bounded,
+  source-validated metrics and evidence for Pi JSONL sessions.
+
+### Changed
+
+- `adapter_for("pi")` now selects the dedicated Pi adapter instead of the
+  generic JSONL fallback.
+
 ## [0.1.9] - 2026-08-27
 
 This release starts the public engine release line under the MIT License. It has
