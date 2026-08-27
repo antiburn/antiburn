@@ -110,6 +110,28 @@ not milliseconds.
 | Metrics accumulator, 10 MiB source | 34,361 turns, 10.4 MB retained (~303 bytes/turn) | CH-005's "proportional growth" quantified: ≈ 1.0× source bytes for a dense transcript |
 | Serialized evidence per session (report query row proxy) | ~4.5 KB | a 500-session reduction reads ~2.2 MB of evidence rows; the accumulator itself holds only capped folds and examples |
 
+### Peak heap: streaming vs whole-file materialization
+
+Measured with a counting global allocator in `benches/memory_baseline.rs`
+(`cargo bench --bench memory_baseline`). Peak growth over the live baseline
+for the full pipeline (parse → metrics → evidence → serialize) on the same
+on-disk session, streamed vs `read_to_string` first:
+
+| Source | Streaming peak | Inline peak | Inline / streaming |
+|---|---|---|---|
+| 1 MiB | 1.66 MB (1.49× source) | 2.68 MB (2.40× source) | 1.61× |
+| 10 MiB | 20.7 MB (1.84× source) | 32.0 MB (2.84× source) | 1.54× |
+| 50 MiB | 98.9 MB (1.75× source) | 155.6 MB (2.75× source) | 1.57× |
+
+What this says: the streaming reader itself is nearly free (446-byte
+high-water above), so the streaming floor of ~1.5–1.8× source is the metrics
+accumulator's proportional retention plus parse transients — not the reader.
+Materializing first adds one full source copy on top, so inline peaks at
+~1.55× the streaming peak at every size. Streaming keeps its advantage
+constant in ratio and growing in absolute bytes (57 MB saved at 50 MiB); the
+next memory win, if one is ever needed, is accumulator retention, not
+framing.
+
 ## Active-writer `SourceChanged` rates
 
 2 MiB source (~13 ms read window), full-reprocess claim, `Absent` guarantee,

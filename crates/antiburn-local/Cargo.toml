@@ -76,3 +76,7 @@ tempfile = "3"
 [[bench]]
 name = "pipeline_baseline"
 harness = false
+
+[[bench]]
+name = "memory_baseline"
+harness = false
