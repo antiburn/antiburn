@@ -20,6 +20,15 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- Analysing a very large session now uses far less memory. Long charts group
+  nearby activity, while crowded detail tables prioritize useful entries and
+  summarize overflow.
+- Delegated and sidechain turns recorded inside a session transcript now count
+  as sub-agent tokens instead of main-thread tokens. This can correct the
+  reported context-window tier for affected sessions.
+
 ## [0.1.0] - 2026-08-27
 
 The first supported public release. The macOS app is Developer ID signed and

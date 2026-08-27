@@ -16,10 +16,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceKind, adapter_for,
+    CompositeSink, EvidenceSource, NormalizedEvent, NormalizedRecord, RawSource, RecordSink, Role,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceKind, ToolCall, Usage, adapter_for, merge_metrics,
 };
-use corpus::{GeneratedSession, generate_session_of_bytes};
+use corpus::{
+    GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes,
+    generate_session_of_bytes_with_identity,
+};
 use tempfile::TempDir;
 
 /// Wraps the system allocator and tracks live bytes and the peak.
@@ -126,7 +130,7 @@ fn normalized(serialized: &str) -> serde_json::Value {
 fn large_session_split() {
     println!("\n== 500 MiB tier: accumulator split ==");
     let directory = TempDir::new().expect("tempdir");
-    let session = generate_session_of_bytes(211, 0, 500 * MIB);
+    let session = generate_session_of_bytes_with_identity(211, 0, 500 * MIB, None);
     let source_bytes = session.jsonl.len();
     let path = write_session(&directory, &session);
     let session_id = session.session_id.clone();
@@ -134,26 +138,148 @@ fn large_session_split() {
 
     let input = file_input(&session_id, &path);
 
-    let (metrics_peak, (retained_turns, retained_bytes)) = measure_peak(|| {
-        let mut metrics =
-            SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
-        adapter_for("claude")
-            .visit(&input, &mut metrics)
-            .expect("synthetic source must stream");
-        (metrics.retained_turns(), metrics.retained_bytes())
-    });
+    let live_before = LIVE_BYTES.load(Ordering::Relaxed);
+    let (metrics_peak, (observed_turns, retained_bytes, allocator_live_bytes)) =
+        measure_peak(|| {
+            let mut metrics =
+                SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+            adapter_for("claude")
+                .visit(&input, &mut metrics)
+                .expect("synthetic source must stream");
+            let allocator_live_bytes = LIVE_BYTES
+                .load(Ordering::Relaxed)
+                .saturating_sub(live_before);
+            (
+                metrics.observed_turns(),
+                metrics.retained_bytes(),
+                allocator_live_bytes,
+            )
+        });
 
     let (composite_peak, evidence) = measure_peak(|| run_pipeline(&input));
 
+    let repeated = generate_session_of_bytes_with_identity(223, 0, 500 * MIB, Some(64));
+    let repeated_path = write_session(&directory, &repeated);
+    let repeated_input = file_input(&repeated.session_id, &repeated_path);
+    let (repeated_peak, _) = measure_peak(|| {
+        let mut metrics = SessionMetricsAccumulator::new(
+            repeated_input.agent.clone(),
+            repeated_input.session_id.clone(),
+        );
+        adapter_for("claude")
+            .visit(&repeated_input, &mut metrics)
+            .expect("synthetic source must stream");
+        metrics.retained_bytes()
+    });
+
     println!(
         "source {source_bytes} bytes | metrics-only peak {metrics_peak} bytes ({:.2}x source), \
-         retained {retained_bytes} bytes over {retained_turns} turns | composite peak \
-         {composite_peak} bytes ({:.2}x source) | evidence adds {} bytes to the peak | \
-         serialized evidence {} bytes",
+         retained {retained_bytes} bytes after {observed_turns} turns | allocator live \
+         {allocator_live_bytes} bytes | residual {} bytes | composite peak {composite_peak} bytes \
+         ({:.2}x source) | evidence adds {} bytes to the peak | serialized evidence {} bytes | \
+         repeated-id peak {repeated_peak} bytes | unique-id delta {} bytes",
         metrics_peak as f64 / source_bytes as f64,
+        metrics_peak.saturating_sub(allocator_live_bytes),
         composite_peak as f64 / source_bytes as f64,
         composite_peak as i64 - metrics_peak as i64,
-        evidence.len()
+        evidence.len(),
+        metrics_peak.saturating_sub(repeated_peak)
+    );
+}
+
+fn saturated_metrics(record_count: usize) -> SessionMetricsAccumulator {
+    let mut accumulator = SessionMetricsAccumulator::new("synthetic", "saturated");
+    for index in 0..record_count {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.ts_ms = Some(index as i64 * 1_000);
+        event.model = Some(format!("model-{}", index.min(100)));
+        event.thinking_mode = Some(format!("thinking-{}", index.min(100)));
+        event.speed = Some(format!("speed-{}", index.min(100)));
+        event.usage = Usage {
+            input_tokens: 2,
+            output_tokens: 3,
+            cache_read_tokens: 20_000,
+            cache_creation_tokens: 2,
+        };
+        let mut skill = ToolCall::new("Skill");
+        skill.detail = Some(format!("skill-{}", index.min(300)));
+        event.tools.push(skill);
+        event.tools.push(ToolCall::new(format!(
+            "mcp__server-{}__tool",
+            index.min(200)
+        )));
+        event
+            .tools
+            .push(ToolCall::new(format!("tool-{}", index.min(300))));
+        event.may_resolve_late_tool = true;
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+    }
+    accumulator.finish(SessionSummary::default());
+    accumulator
+}
+
+fn saturation_measurement() {
+    println!("\n== saturated metrics state ==");
+    for records in [40_000, 400_000] {
+        let live_before = LIVE_BYTES.load(Ordering::Relaxed);
+        let (_, (retained, live)) = measure_peak(|| {
+            let accumulator = saturated_metrics(records);
+            let retained = accumulator.retained_bytes();
+            let live = LIVE_BYTES
+                .load(Ordering::Relaxed)
+                .saturating_sub(live_before);
+            (retained, live)
+        });
+        println!("{records} records: retained {retained} bytes | allocator live {live} bytes");
+    }
+}
+
+fn session_tree_measurement() {
+    println!("\n== bounded session tree ==");
+    let parent = generate_session_of_bytes(227, 0, 10 * MIB);
+    let parent_input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: parent.session_id,
+        source: RawSource::Jsonl(parent.jsonl),
+    };
+    let child_inputs = (0..20)
+        .map(|index| {
+            let child = generate_session(&SessionSpec::tier_s(229, index + 1, 50));
+            SessionInput {
+                agent: "claude".to_string(),
+                session_id: child.session_id,
+                source: RawSource::Jsonl(child.jsonl),
+            }
+        })
+        .collect::<Vec<_>>();
+    let live_before = LIVE_BYTES.load(Ordering::Relaxed);
+    let (peak, (retained, live)) = measure_peak(|| {
+        let mut parent_metrics = SessionMetricsAccumulator::new("claude", "tree-parent");
+        adapter_for("claude")
+            .visit(&parent_input, &mut parent_metrics)
+            .expect("synthetic parent streams");
+        let mut children = Vec::new();
+        for input in &child_inputs {
+            let mut child = SessionMetricsAccumulator::new("claude", &input.session_id);
+            adapter_for("claude")
+                .visit(input, &mut child)
+                .expect("synthetic child streams");
+            children.push(child);
+        }
+        black_box(merge_metrics(&parent_metrics, &children));
+        let retained = parent_metrics.retained_bytes()
+            + children
+                .iter()
+                .map(SessionMetricsAccumulator::retained_bytes)
+                .sum::<usize>();
+        let live = LIVE_BYTES
+            .load(Ordering::Relaxed)
+            .saturating_sub(live_before);
+        (retained, live)
+    });
+    println!(
+        "one 10 MiB parent plus 20 50-turn children: retained {retained} bytes | allocator live \
+         {live} bytes | peak {peak} bytes"
     );
 }
 
@@ -200,4 +326,6 @@ fn main() {
     }
 
     large_session_split();
+    saturation_measurement();
+    session_tree_measurement();
 }

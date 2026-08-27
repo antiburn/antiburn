@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-07-11T10:00:00Z","message":{"role":"user","content":"<command-name>/orbit-tracker</command-name>"}}
+{"type":"assistant","timestamp":"2026-07-11T10:00:05Z","message":{"id":"msg-late-skill-1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"Synthetic skill work."}]}}
+{"type":"attachment","message":{"content":"Base directory for this skill: /tmp/orbit-tracker/SKILL.md"}}

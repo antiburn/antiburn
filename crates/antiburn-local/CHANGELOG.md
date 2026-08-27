@@ -17,6 +17,48 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- `NormalizedEvent::may_resolve_late_tool` identifies events whose tool call is
+  available only in the final session summary. The hidden public field
+  `NormalizedEvent::late_tool_candidate_is_builtin` identifies provisional
+  built-in command candidates for bounded late-tool resolution.
+
+### Changed
+
+- `SessionMetricsAccumulator` now retains bounded derived state instead of one
+  entry per metric event. Large sessions merge facts on an active-position
+  quantum, so continuous values can move between progress buckets. Additive
+  totals remain exact outside documented collection caps.
+- `merge_metrics` uses one shared active-time axis, adds efficiency per thread,
+  honors parent source tags, and projects retained cache facts on the shared axis.
+- `skill_uses` is capped at 256 entries, `tool_calls_by_name` at 256,
+  `mcp_tool_calls` at 128, and model breakdowns and runs at 32. The export format
+  remains version 2 because no field shape changed. Efficiency keeps 1,440
+  ordered cost contributions. Beyond that cap, priced contributions can change
+  floating-point accumulation order. The aggregate fallback fresh-token split
+  remains per-turn exact. Efficiency also keeps 64 open
+  fragmented messages and a 32-turn timestamp reorder window.
+- `retained_turns()` is replaced by `observed_turns()`, and `retained_bytes()`
+  reports reducer-owned derived state. `RETAINED_METRICS_BYTES_BOUND` publishes
+  a 640 KiB derived-state contract. Exact caller-provided identity strings are
+  additional.
+- Summary models, skill descriptions, and initial-context details now use
+  explicit bounds inside the metrics accumulator. Initial context keeps the 61
+  largest named rows and up to three named source-total rows. Descriptions for
+  invoked skills keep 300 characters and end with an ellipsis when shortened.
+  Session identity strings remain exact.
+- Tool, MCP, model, thinking-mode, speed, last-tool, and skill names use
+  separate bounded stores. The limits are 256 tools, 128 MCP servers, 32
+  normalized models, 32 bucket-display models, 64 thinking modes, 64 speeds,
+  256 last-tool names, and 64 distinct skill names. Skill names keep 192 bytes;
+  other names keep 64 bytes. Every shortened name uses a hash suffix.
+- More than 1,024 active-time intervals merge a new interval with its nearer
+  neighbour. This makes active duration and positions approximate inside the
+  compacted span.
+- `PARSER_REVISION` remains 3 because normalized serialization is unchanged.
+  `ANALYZER_REVISION` is 6, so cached analyses recompute once.
+
 ## [0.1.9] - 2026-08-27
 
 This release starts the public engine release line under the MIT License. It has

@@ -168,14 +168,9 @@ enum ComputedAnalysis {
 
 /// Longest a skill description may be once it leaves this module.
 ///
-/// A skill's description is lifted verbatim from the line the transcript's own
-/// skill listing carries, and the engine puts no bound on it — a listing that
-/// inlined a paragraph would put that paragraph in the local store and in every
-/// export. That is a *derived excerpt*, and an excerpt with no ceiling is just
-/// the text. One line of prose is what the tooltip renders and what the
-/// contract in [`crate::store::schema`] and [`crate::export`] promises, so the
-/// ceiling is applied here, at the app's boundary, before the value can reach
-/// either.
+/// A skill's description comes from the transcript's skill listing.
+/// The engine applies this limit before metrics leave its accumulator.
+/// The app applies it again before values reach the store or an export.
 pub const SKILL_DESCRIPTION_MAX_CHARS: usize = 300;
 
 /// The character appended to a description this module had to shorten, so a
