@@ -160,12 +160,16 @@ fn claude_characterization_fixture(name: &str) -> &'static str {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/claude_characterization/inferred_cache_rehydration.jsonl"
         )),
+        "housekeeping_records" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/claude_characterization/housekeeping_records.jsonl"
+        )),
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
 
 #[test]
-fn the_ten_characterization_fixtures_report_their_expected_coverage() {
+fn the_characterization_fixtures_report_their_expected_coverage() {
     let expected = vec![
         (
             "records_all_kinds".to_string(),
@@ -214,6 +218,11 @@ fn the_ten_characterization_fixtures_report_their_expected_coverage() {
         ),
         (
             "inferred_cache_rehydration".to_string(),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
+        ),
+        (
+            "housekeeping_records".to_string(),
             RecordCoverage::Complete,
             BTreeSet::new(),
         ),

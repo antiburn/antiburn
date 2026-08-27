@@ -272,7 +272,26 @@ pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
 pub(super) fn is_recognized_eventless(value: &Value) -> bool {
     matches!(
         value.get("type").and_then(Value::as_str),
-        Some("attachment" | "summary" | "file-history-snapshot")
+        Some(
+            "attachment"
+                | "summary"
+                | "file-history-snapshot"
+                // Harness housekeeping records: session bookkeeping lines that
+                // carry no usage data (no tokens, models, tools, or timing).
+                | "permission-mode"
+                | "mode"
+                | "last-prompt"
+                | "ai-title"
+                | "queue-operation"
+                | "file-history-delta"
+                | "pr-link"
+                | "atis-latch"
+                | "worktree-state"
+                | "relocated"
+                | "frame-link"
+                | "cost-state"
+                | "agent-name"
+        )
     )
 }
 

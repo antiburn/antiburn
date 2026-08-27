@@ -1,0 +1,15 @@
+{"type":"user","timestamp":"2026-08-01T09:00:00Z","message":{"role":"user","content":"Summarize the fictional orbit status."}}
+{"type":"permission-mode","timestamp":"2026-08-01T09:00:01Z","mode":"default"}
+{"type":"mode","timestamp":"2026-08-01T09:00:02Z","mode":"normal"}
+{"type":"last-prompt","timestamp":"2026-08-01T09:00:03Z","prompt":"Summarize the fictional orbit status."}
+{"type":"ai-title","timestamp":"2026-08-01T09:00:04Z","title":"Fictional orbit status summary"}
+{"type":"queue-operation","timestamp":"2026-08-01T09:00:05Z","operation":"dequeue"}
+{"type":"file-history-delta","timestamp":"2026-08-01T09:00:06Z","delta":{"added":1,"removed":0}}
+{"type":"pr-link","timestamp":"2026-08-01T09:00:07Z","url":"https://example.invalid/avery/demo-app/pull/7"}
+{"type":"atis-latch","timestamp":"2026-08-01T09:00:08Z","latched":true}
+{"type":"worktree-state","timestamp":"2026-08-01T09:00:09Z","path":"/home/avery/projects/demo-app"}
+{"type":"relocated","timestamp":"2026-08-01T09:00:10Z","from":"/home/avery/projects/demo-app-old","to":"/home/avery/projects/demo-app"}
+{"type":"frame-link","timestamp":"2026-08-01T09:00:11Z","frame":"frame-0001"}
+{"type":"cost-state","timestamp":"2026-08-01T09:00:12Z","totalCostUsd":0.0123}
+{"type":"agent-name","timestamp":"2026-08-01T09:00:13Z","name":"orbit-helper"}
+{"type":"assistant","timestamp":"2026-08-01T09:00:14Z","message":{"id":"msg-housekeeping-1","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":24,"output_tokens":12},"content":[{"type":"text","text":"The fictional orbit is stable."}]}}

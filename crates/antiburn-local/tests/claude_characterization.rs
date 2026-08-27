@@ -41,6 +41,9 @@ fn fixture(name: &str) -> &'static str {
         "inferred_cache_rehydration" => {
             include_str!("fixtures/claude_characterization/inferred_cache_rehydration.jsonl")
         }
+        "housekeeping_records" => {
+            include_str!("fixtures/claude_characterization/housekeeping_records.jsonl")
+        }
         "mcp_and_skill_sources" => {
             include_str!("fixtures/claude_characterization/mcp_and_skill_sources.jsonl")
         }
@@ -192,7 +195,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
     composite
 }
 
-fn fixture_names() -> [&'static str; 10] {
+fn fixture_names() -> [&'static str; 11] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -204,6 +207,7 @@ fn fixture_names() -> [&'static str; 10] {
         "multi_model_session",
         "compaction_with_cache_rehydration",
         "inferred_cache_rehydration",
+        "housekeeping_records",
     ]
 }
 
@@ -328,7 +332,7 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 13] {
+fn evidence_fixture_names() -> [&'static str; 14] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -343,6 +347,7 @@ fn evidence_fixture_names() -> [&'static str; 13] {
         "mcp_and_skill_sources",
         "reasoning_and_fast_mode",
         "delegated_turns",
+        "housekeeping_records",
     ]
 }
 
@@ -637,6 +642,7 @@ fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
         "multi_model_session",
         "compaction_with_cache_rehydration",
         "inferred_cache_rehydration",
+        "housekeeping_records",
     ] {
         let input = input(name);
         let expected = analyze_sources_with(vec![input.clone()], true)
@@ -659,6 +665,7 @@ fn streaming_metrics_match_every_golden() {
         "multi_model_session",
         "compaction_with_cache_rehydration",
         "inferred_cache_rehydration",
+        "housekeeping_records",
     ] {
         let expected_text = fs::read_to_string(golden_path(name)).expect("golden must exist");
         let expected: Value = serde_json::from_str(&expected_text).expect("golden must be valid");
@@ -752,6 +759,26 @@ fn golden_compaction_with_cache_rehydration() {
 #[test]
 fn golden_inferred_cache_rehydration() {
     check_fixture_golden("inferred_cache_rehydration");
+}
+
+#[test]
+fn golden_housekeeping_records() {
+    check_fixture_golden("housekeeping_records");
+}
+
+#[test]
+fn housekeeping_records_keep_complete_coverage_and_no_unrecognized_diagnostics() {
+    let input = input("housekeeping_records");
+    let (coverage, reasons, session) = collect_claude(&input);
+    assert_eq!(coverage, RecordCoverage::Complete);
+    assert!(reasons.is_empty());
+    assert_eq!(session.events.len(), 2);
+
+    let evidence = stream_composite(&input)
+        .evidence()
+        .expect("evidence must publish");
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    assert!(evidence.diagnostics.unrecognized_types.is_empty());
 }
 
 #[test]

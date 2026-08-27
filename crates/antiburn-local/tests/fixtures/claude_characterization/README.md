@@ -15,8 +15,12 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | `malformed_between_valid.jsonl` | The parser skips one malformed line and keeps valid records on both sides. CH-004 must also assert `Partial` coverage because the current API exposes no coverage value. |
 | `incomplete_final_record.jsonl` | The parser does not commit the truncated final record. The next source generation can pick up the record after its terminating newline arrives. |
 | `unrecognized_type.jsonl` | A `telemetry_ping` record without a role or message produces no event. A record with the same type and a recognized assistant role produces one event. Valid neighbours survive both records. |
+| `housekeeping_records.jsonl` | The thirteen recognized housekeeping record types (`permission-mode`, `mode`, `last-prompt`, `ai-title`, `queue-operation`, `file-history-delta`, `pr-link`, `atis-latch`, `worktree-state`, `relocated`, `frame-link`, `cost-state`, `agent-name`) produce no events. The session keeps `Complete` coverage and records no unrecognized discriminators. |
 | `parent_with_task_spawn.jsonl` | A parent transcript records a `Task` tool spawn without adding child events to the parent. |
 | `subagent_child.jsonl` | The child source has its own session ID and metrics. An analysis call over both files does not count either source twice. |
+| `multi_model_session.jsonl` | Assistant turns across three synthetic models attribute tokens to each model identity and aggregate repeated turns of the same model. |
+| `compaction_with_cache_rehydration.jsonl` | An explicit `compact_boundary` system record marks a compaction and its bucket reports zero context tokens. The cache-creation spike on the turn after the boundary records a rehydration. |
+| `inferred_cache_rehydration.jsonl` | Without cache-write tokens, a cache-read collapse on a retained context followed by a same-model recovery turn infers a rehydration. |
 | `mcp_and_skill_sources.jsonl` | Skill and MCP loading records retain bounded names and self-descriptions, match observed invocations, and leave origin and built-in definitions unsupported. |
 | `reasoning_and_fast_mode.jsonl` | Explicit effort and speed fields split main-loop turns from delegated turns without reading prompt text. |
 | `delegated_turns.jsonl` | Sidechain flags identify delegated turns once and preserve their explicit token quantities. |
