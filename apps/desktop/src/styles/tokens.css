@@ -72,11 +72,9 @@
   /* Legible gold for *text/glyphs* on the gold tint — same split again. */
   --color-system-gold-text: var(--color-system-gold-text-val);
 
-  /* The band that sweeps across a running session title. The same value in
-     every theme branch: it sits between the two text colors, so it moves away
-     from the glyphs in each. Light mode lights its near-black text, dark mode
-     dims its near-white text. Each branch restates it because the design
-     contract reads the explicit palettes. */
+  /* The band that sweeps across a running session title. White in every
+     theme branch. Each branch restates it because the design contract reads
+     the explicit palettes. */
   --color-shimmer: var(--color-shimmer-val);
 
   /* Ink for vendor brand marks on agent rows. Deliberately firmer than
@@ -155,7 +153,7 @@
   --color-system-indigo-val: hsl(241 61% 58.8%);
   --color-system-indigo-text-val: hsl(241 61% 58.8%);
   --color-system-gold-val: hsl(40.6 96% 40.4%);
-  --color-shimmer-val: hsl(17.3 71% 50.2%);
+  --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(41 100% 28.6%);
 
   /* Brand-mark ink */
@@ -249,7 +247,7 @@
     --color-system-indigo-val: hsl(241 73% 63%);
     --color-system-indigo-text-val: hsl(241 100% 79%);
     --color-system-gold-val: hsl(48 100% 50%);
-    --color-shimmer-val: hsl(17.3 71% 50.2%);
+    --color-shimmer-val: hsl(0 0% 100%);
     --color-system-gold-text-val: hsl(43.5 88% 66%);
     --color-agent-mark-val: hsl(60 15% 96.2%);
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
@@ -303,7 +301,7 @@
   --color-system-indigo-val: hsl(241 61% 58.8%);
   --color-system-indigo-text-val: hsl(241 61% 58.8%);
   --color-system-gold-val: hsl(40.6 96% 40.4%);
-  --color-shimmer-val: hsl(17.3 71% 50.2%);
+  --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(41 100% 28.6%);
   --color-agent-mark-val: hsl(52 11% 13.3%);
 }
@@ -357,7 +355,7 @@
   --color-system-indigo-val: hsl(241 73% 63%);
   --color-system-indigo-text-val: hsl(241 100% 79%);
   --color-system-gold-val: hsl(48 100% 50%);
-  --color-shimmer-val: hsl(17.3 71% 50.2%);
+  --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(43.5 88% 66%);
   --color-agent-mark-val: hsl(60 15% 96.2%);
 }

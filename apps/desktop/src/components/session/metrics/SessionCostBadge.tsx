@@ -9,8 +9,8 @@ import {
 import { Tooltip } from "../../presentation/Tooltip"
 import { TextRoll } from "../../ui/TextRoll"
 
-const COST_PILL_CLASS =
-  "flex items-center gap-0.5 shrink-0 px-1.5 py-px rounded-full type-caption tabular-nums font-medium leading-[13px]"
+const COST_BADGE_BASE = "flex items-center gap-0.5 shrink-0 tabular-nums leading-[13px]"
+const COST_PILL_SHAPE = "px-1.5 py-px rounded-full"
 
 export interface SessionCostBadgeProps {
   /** The headline figure, in USD. */
@@ -23,10 +23,19 @@ export interface SessionCostBadgeProps {
   figureLabel: string
   /** Every model that contributed billable tokens, as a muted subtitle. */
   models?: string[]
-  /** Unusually expensive against comparable sessions. Paints the pill solid brand orange with a flame. */
+  /**
+   * Unusually expensive against comparable sessions. Paints the pill solid
+   * brand orange with a flame, and sets the heavier figure weight.
+   */
   isHighCost?: boolean
   /** Billable component rows (input / output / cache read / cache write). */
   breakdownRows?: CostRow[]
+  /**
+   * How the figure paints. "pill" is the standalone rounded chip. "bare"
+   * drops the fill and inherits the host's text color, for a figure that
+   * sits on a colored bar.
+   */
+  appearance?: "pill" | "bare"
   /**
    * Extra classes for the pill — a `relative top-px` nudge to optically align
    * with adjacent baseline text in a row, say. Omit on a centered flex line.
@@ -47,6 +56,7 @@ export function SessionCostBadge({
   models = [],
   isHighCost = false,
   breakdownRows = [],
+  appearance = "pill",
   className = "",
 }: SessionCostBadgeProps) {
   return (
@@ -99,11 +109,26 @@ export function SessionCostBadge({
             : `${figureLabel} ${formatCost(totalUsd)}`
         }
         className={cn(
-          COST_PILL_CLASS,
-          isHighCost ? "bg-brand-tint text-white" : "bg-label-tertiary/15 text-label-secondary",
+          COST_BADGE_BASE,
+          // Every figure keeps one size, in the mono face that marks a
+          // price. Color, weight, and the pill are what separate a hot
+          // figure: it goes one weight above the plain 400 that
+          // .type-footnote bakes in. The important modifiers are
+          // necessary because .type-footnote is unlayered CSS. The
+          // tighter tracking removes the spacing that opens up the sans
+          // face; the monospace face is already wide enough.
+          "font-mono type-footnote tracking-tight!",
+          isHighCost && "font-medium!",
+          appearance === "pill" && COST_PILL_SHAPE,
+          appearance === "pill" &&
+            (isHighCost
+              ? "bg-brand-tint text-white"
+              : "bg-label-tertiary/15 text-label-secondary"),
           className,
         )}
       >
+        {/* The glyph stays under the 13px line box, so a hot figure is no
+            taller than a usual one. */}
         {isHighCost && <Flame size={11} className="shrink-0" aria-hidden="true" />}
         <TextRoll text={formatCost(totalUsd)} />
       </span>
