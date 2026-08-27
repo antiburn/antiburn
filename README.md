@@ -1,5 +1,7 @@
 # antiburn
 
+![antiburn — stop hitting your token limits](docs/images/social-preview.png)
+
 [![CI](https://github.com/antiburn/antiburn/actions/workflows/ci.yml/badge.svg)](https://github.com/antiburn/antiburn/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/antiburn/antiburn?include_prereleases&sort=semver)](https://github.com/antiburn/antiburn/releases/latest)
 [![License](https://img.shields.io/github/license/antiburn/antiburn)](LICENSE)
