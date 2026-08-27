@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { INITIAL_SESSION_HYGIENE } from "../../lib/presentation/sessionHygiene"
 import {
   inclusiveCostSubject,
   type LocalSessionCost,
@@ -107,6 +108,14 @@ function presentationProps(
   return {
     summary: summary(),
     loading: false,
+    hygiene: {
+      badges: INITIAL_SESSION_HYGIENE.badges.map((badge) => ({
+        ...badge,
+        status: "clean",
+        notAssessedReason: null,
+      })),
+      evidenceState: "ready",
+    },
     error: false,
     onBack: () => {},
     session: {
@@ -142,6 +151,38 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.getByText("Cost")).toBeTruthy()
+  })
+
+  it("renders a distinct not-assessed hygiene pip with an accessible label", () => {
+    view({
+      hygiene: {
+        badges: [
+          {
+            id: "reasoningOverkill",
+            status: "notAssessed",
+            notAssessedReason: "incompleteEvidence",
+          },
+          {
+            id: "excessCacheRehydration",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "bloatedInitialContext",
+            status: "finding",
+            notAssessedReason: null,
+          },
+        ],
+        evidenceState: "ready",
+      },
+    })
+
+    const pip = screen.getByLabelText("Reasoning overkill not assessed")
+    expect(pip.textContent).toBe("?")
+    expect(pip.className).toContain("border-dashed")
+    expect(pip.className).toContain("text-label-tertiary")
+    expect(screen.getByLabelText("No excess cache rehydration detected").textContent).toBe("✓")
+    expect(screen.getByLabelText("Bloated initial context detected").textContent).toBe("×")
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -225,7 +266,11 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(detailRow).toHaveTextContent("30m active")
     expect(detailRow).toHaveTextContent("last 11m ago")
     expect(detailRow).toHaveTextContent("5.6-sol/high")
-    expect(screen.getByLabelText("Session hygiene checks").children).toHaveLength(6)
+    const hygiene = screen.getByLabelText("Session hygiene checks")
+    expect(hygiene.children).toHaveLength(3)
+    expect(screen.getByLabelText("No reasoning overkill detected")).toBeTruthy()
+    expect(screen.getByLabelText("No excess cache rehydration detected")).toBeTruthy()
+    expect(screen.getByLabelText("No bloated initial context detected")).toBeTruthy()
   })
 
   it("names the back control for what it does, not for the view it leaves", () => {

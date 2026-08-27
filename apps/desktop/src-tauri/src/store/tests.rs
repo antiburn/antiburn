@@ -232,6 +232,23 @@ fn a_fresh_database_is_migrated_to_the_latest_version() {
 }
 
 #[test]
+fn evidence_batch_preserves_keys_and_missing_rows_in_request_order() {
+    let store = store();
+    let first = seed_current_session_evidence(&store, "synthetic-batch-first");
+    let second = seed_current_session_evidence(&store, "synthetic-batch-second");
+    let missing = SessionKey::new("native", "claude-code", "synthetic-batch-missing");
+
+    let rows = store
+        .evidence_batch(&[second.key.clone(), missing, first.key.clone()])
+        .unwrap();
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].as_ref().map(|row| &row.key), Some(&second.key));
+    assert!(rows[1].is_none());
+    assert_eq!(rows[2].as_ref().map(|row| &row.key), Some(&first.key));
+}
+
+#[test]
 fn a_fresh_database_selects_every_ten_percent_milestone() {
     let settings = store().settings().unwrap();
 

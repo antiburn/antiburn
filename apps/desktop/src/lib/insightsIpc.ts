@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 
 import { hasShell } from "./ipc"
+import type { LocalSessionIdentity } from "./types/session"
 
 /* -------------------------------------------------------------------------
  * Local insights report — mirrors of the `Insights*Payload` types in
@@ -86,6 +87,23 @@ export interface InsightsStatusPayload {
   processing: number
 }
 
+export type SessionHygieneBadgeId =
+  "reasoningOverkill" | "excessCacheRehydration" | "bloatedInitialContext"
+
+export interface SessionHygieneBadgePayload {
+  id: SessionHygieneBadgeId
+  status: "finding" | "clean" | "notAssessed"
+  notAssessedReason: InsightsNotAssessedReason | null
+}
+
+export type SessionHygieneEvidenceState =
+  "pending" | "processing" | "ready" | "unsupported" | "failed" | "stale" | "activelyGrowing"
+
+export interface SessionHygienePayload {
+  badges: SessionHygieneBadgePayload[]
+  evidenceState: SessionHygieneEvidenceState
+}
+
 /**
  * The thirty-day insights report, computed on this machine.
  *
@@ -102,6 +120,20 @@ export async function getInsightsReport(): Promise<InsightsReportPayload | null>
 export async function getInsightsStatus(): Promise<InsightsStatusPayload | null> {
   if (!hasShell()) return null
   return invoke<InsightsStatusPayload>("get_insights_status")
+}
+
+/** The hygiene badges reduced from a bounded set of stored evidence rows. */
+export async function getSessionHygiene(
+  sessions: readonly LocalSessionIdentity[],
+): Promise<SessionHygienePayload[] | null> {
+  if (!hasShell()) return null
+  return invoke<SessionHygienePayload[]>("get_session_hygiene", {
+    sessions: sessions.map((session) => ({
+      agent: session.agent,
+      sessionId: session.sessionId,
+      wslDistro: session.wslDistro ?? null,
+    })),
+  })
 }
 
 /**

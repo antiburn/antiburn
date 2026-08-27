@@ -56,6 +56,15 @@ pub struct EvidenceBacklogCounts {
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
 
+const EVIDENCE_BY_KEY_SQL: &str = "SELECT environment_key, agent, session_id, status,
+            analyzed_generation, processed_fingerprint,
+            parser_revision, analyzer_revision, evidence_schema_revision,
+            evidence_json, diagnostics_json, retry_count, claim_fence,
+            claimed_at_epoch, lease_expires_at_epoch,
+            next_attempt_at_epoch, analyzed_at_epoch, last_error
+       FROM session_evidence
+      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3";
+
 /// How many undelivered analytics events are kept before the oldest are
 /// dropped. At the flusher's 50-per-15-minutes this is several hours of
 /// backlog, which is more than an ordinary outage needs and far less than an
@@ -638,18 +647,28 @@ impl Store {
         let connection = self.lock();
         Ok(connection
             .query_row(
-                "SELECT environment_key, agent, session_id, status,
-                        analyzed_generation, processed_fingerprint,
-                        parser_revision, analyzer_revision, evidence_schema_revision,
-                        evidence_json, diagnostics_json, retry_count, claim_fence,
-                        claimed_at_epoch, lease_expires_at_epoch,
-                        next_attempt_at_epoch, analyzed_at_epoch, last_error
-                   FROM session_evidence
-                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                EVIDENCE_BY_KEY_SQL,
                 params![key.environment_key, key.agent, key.session_id],
                 evidence_from_row,
             )
             .optional()?)
+    }
+
+    /// Persisted evidence for each key, in request order.
+    pub fn evidence_batch(&self, keys: &[SessionKey]) -> Result<Vec<Option<EvidenceRow>>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(EVIDENCE_BY_KEY_SQL)?;
+        keys.iter()
+            .map(|key| {
+                statement
+                    .query_row(
+                        params![key.environment_key, key.agent, key.session_id],
+                        evidence_from_row,
+                    )
+                    .optional()
+                    .map_err(Into::into)
+            })
+            .collect()
     }
 
     /// Count the evidence backlog for one environment.
