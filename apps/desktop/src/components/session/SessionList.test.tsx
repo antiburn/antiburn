@@ -152,7 +152,7 @@ describe("SessionList — rows", () => {
     const firstVerdict = verdictOf().getAttribute("aria-label")
     // The seed produces a mixed result, so the bar shows a failure count.
     expect(firstVerdict).toMatch(/of 6 checks failed$/)
-    expect(verdictOf().textContent).toMatch(/^[0-5]\/6 checks pass$/)
+    expect(verdictOf().textContent).toMatch(/^[0-5]\/6 burn checks$/)
 
     first.unmount()
     list({ entries: [entry({ sessionId: "mock-0" })] })

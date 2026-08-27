@@ -19,33 +19,33 @@ interface HygieneCheckDefinition {
 const CHECKS: readonly HygieneCheckDefinition[] = [
   {
     id: "sessionOverdepth",
-    passedTitle: "No session overdepth detected",
-    failedTitle: "Session overdepth detected",
+    passedTitle: "No session overdepth",
+    failedTitle: "Session overdepth",
   },
   {
     id: "modelOverthinking",
-    passedTitle: "No model overthinking detected",
-    failedTitle: "Model overthinking detected",
+    passedTitle: "No model overthinking",
+    failedTitle: "Model overthinking",
   },
   {
     id: "overpoweredSubagents",
-    passedTitle: "No overpowered subagents detected",
-    failedTitle: "Overpowered subagents detected",
+    passedTitle: "No overpowered subagents",
+    failedTitle: "Overpowered subagents",
   },
   {
     id: "obsoleteModel",
-    passedTitle: "No obsolete model detected",
-    failedTitle: "Obsolete model detected",
+    passedTitle: "No obsolete model",
+    failedTitle: "Obsolete model",
   },
   {
     id: "fastModeOveruse",
-    passedTitle: "No fast mode overuse detected",
-    failedTitle: "Fast mode overuse detected",
+    passedTitle: "No fast mode overuse",
+    failedTitle: "Fast mode overuse",
   },
   {
     id: "excessCacheRehydration",
-    passedTitle: "No excess cache rehydration detected",
-    failedTitle: "Excess cache rehydration detected",
+    passedTitle: "No excess cache rehydration",
+    failedTitle: "Excess cache rehydration",
   },
 ]
 

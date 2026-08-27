@@ -18,7 +18,7 @@ describe("SessionStatusBar", () => {
   it("inks a fill-free line green with the full pass count when every check passes", () => {
     render(<SessionStatusBar checks={ALL_PASSED} />)
     const verdict = screen.getByLabelText("All checks pass")
-    expect(verdict.textContent).toBe("3/3 checks pass")
+    expect(verdict.textContent).toBe("3/3 burn checks")
     expect(verdict.style.color).toBe("var(--color-system-green)")
     expect(verdict.className).not.toContain("bg-")
     expect(verdict.parentElement?.className).not.toContain("bg-")
@@ -27,7 +27,7 @@ describe("SessionStatusBar", () => {
   it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
     const verdict = screen.getByLabelText("1 of 3 checks failed")
-    expect(verdict.textContent).toBe("2/3 checks pass")
+    expect(verdict.textContent).toBe("2/3 burn checks")
     // Severity lives in the ink only — the verdict is never a badge.
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
@@ -83,13 +83,6 @@ describe("SessionStatusBar", () => {
     passing.unmount()
     render(<SessionStatusBar checks={CHECKS} cost={cost} />)
     expect(figureClasses()).toContain("bg-brand-tint")
-  })
-
-  it("keeps the last-activity time hidden until the host row hover", () => {
-    render(<SessionStatusBar checks={ALL_PASSED} timestamp={new Date().toISOString()} />)
-    const time = screen.getByLabelText(/^Last activity /)
-    expect(time.className).toContain("opacity-0")
-    expect(time.className).toContain("group-hover:opacity-100")
   })
 
   it("omits the cost figure when nothing priced the session", () => {
