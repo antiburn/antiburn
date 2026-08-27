@@ -19,6 +19,7 @@ import {
 } from "../lib/ipc"
 import type { PopoverSurface } from "../lib/popoverHeight"
 import { PopoverSession, sessionKey } from "./popover/PopoverSession"
+import { foldUsageChart } from "./popover/usageChartFold"
 import { UsageView } from "./popover/UsageView"
 import type { SessionSubject } from "./popover/SessionPane"
 
@@ -78,37 +79,6 @@ function ActivitySkeleton() {
       ))}
     </div>
   )
-}
-
-/**
- * How far the list scrolls before the usage chart is fully folded away, in
- * pixels.
- */
-const USAGE_CHART_FOLD_RANGE = 96
-
-/**
- * Fold the usage chart in step with the list scroll. The wrapper's height
- * closes while the chart lifts, shrinks a little, and fades. At the top
- * every override clears and the chart keeps its natural height.
- *
- * The values are scroll-linked, so no transition applies — each frame paints
- * the offset the scroll position asks for.
- */
-function foldUsageChart(wrap: HTMLDivElement | null, scrollTop: number) {
-  const chart = wrap?.firstElementChild
-  if (!wrap || !(chart instanceof HTMLElement)) return
-  const progress = Math.min(1, Math.max(0, scrollTop / USAGE_CHART_FOLD_RANGE))
-  if (progress === 0) {
-    wrap.style.height = ""
-    chart.style.transform = ""
-    chart.style.opacity = ""
-    return
-  }
-  const height = chart.offsetHeight
-  wrap.style.height = `${Math.round(height * (1 - progress))}px`
-  chart.style.transformOrigin = "top center"
-  chart.style.transform = `translateY(${Math.round(-height * progress * 0.35)}px) scale(${(1 - 0.04 * progress).toFixed(3)})`
-  chart.style.opacity = `${1 - progress}`
 }
 
 /** Placeholder while the session detail chunk loads on the first open. */
@@ -225,7 +195,7 @@ export function PopoverView() {
     node.scrollTop = listScrollTop.current
     const record = () => {
       listScrollTop.current = node.scrollTop
-      foldUsageChart(usageChartWrap.current, node.scrollTop)
+      foldUsageChart(usageChartWrap.current, node)
     }
     // The restored offset must fold the chart too, or the surface comes
     // back with the chart at full height over a scrolled list.
