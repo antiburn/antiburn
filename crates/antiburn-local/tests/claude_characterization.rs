@@ -3,11 +3,16 @@ use std::fs;
 use std::path::PathBuf;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, CompositeSink, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
-    EvidenceValue, MAX_RECORD_BYTES, NormalizedSession, OrderingObservation, PARSER_REVISION,
-    PartialReason, RawSource, RecordCoverage, SessionCollector, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, adapter_for,
-    analyze_session, analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
+    ANALYZER_REVISION, CompositeSink, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage,
+    EvidenceSource, EvidenceValue, MAX_RECORD_BYTES, NormalizedSession, OrderingObservation,
+    PARSER_REVISION, PartialReason, RawSource, RecordCoverage, SessionCollector,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
+    SourceKind, adapter_for, analyze_session, analyze_sources_with, merge_metrics,
+    merge_subagent_events, normalize_source,
+};
+use antiburn_local::insights::{
+    CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator,
+    NotAssessedReason, ReportContext, ReportWindow,
 };
 use serde_json::{Value, json};
 
@@ -52,6 +57,12 @@ fn fixture(name: &str) -> &'static str {
         }
         "delegated_turns" => {
             include_str!("fixtures/claude_characterization/delegated_turns.jsonl")
+        }
+        "thread_identity_chain" => {
+            include_str!("fixtures/claude_characterization/thread_identity_chain.jsonl")
+        }
+        "thread_identity_missing_uuid" => {
+            include_str!("fixtures/claude_characterization/thread_identity_missing_uuid.jsonl")
         }
         _ => panic!("unknown characterization fixture: {name}"),
     }
@@ -195,7 +206,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
     composite
 }
 
-fn fixture_names() -> [&'static str; 11] {
+fn fixture_names() -> [&'static str; 13] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -208,6 +219,8 @@ fn fixture_names() -> [&'static str; 11] {
         "compaction_with_cache_rehydration",
         "inferred_cache_rehydration",
         "housekeeping_records",
+        "thread_identity_chain",
+        "thread_identity_missing_uuid",
     ]
 }
 
@@ -358,7 +371,7 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 14] {
+fn evidence_fixture_names() -> [&'static str; 16] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -374,6 +387,8 @@ fn evidence_fixture_names() -> [&'static str; 14] {
         "reasoning_and_fast_mode",
         "delegated_turns",
         "housekeeping_records",
+        "thread_identity_chain",
+        "thread_identity_missing_uuid",
     ]
 }
 
@@ -542,6 +557,107 @@ fn quota_incidents_are_unsupported_for_claude() {
     ));
 }
 
+fn fixture_cache(name: &str) -> antiburn_local::analysis::CacheEvidence {
+    let evidence = stream_composite(&input(name))
+        .evidence()
+        .expect("evidence must publish");
+    match evidence.cache {
+        EvidenceValue::Complete(cache)
+        | EvidenceValue::Partial {
+            observed: cache, ..
+        } => cache,
+        EvidenceValue::Unsupported => panic!("Claude cache evidence must be supported"),
+    }
+}
+
+fn fixture_report(name: &str) -> EfficiencyReport {
+    let evidence = stream_composite(&input(name))
+        .evidence()
+        .expect("evidence must publish");
+    let mut accumulator = EfficiencyReportAccumulator::new();
+    accumulator.observe_session(evidence);
+    accumulator.finish(ReportContext {
+        environment_key: "native".to_owned(),
+        window: ReportWindow {
+            start_epoch: 0,
+            end_epoch: 1,
+        },
+        computed_at_epoch: 1,
+        parser_revision: PARSER_REVISION,
+        analyzer_revision: ANALYZER_REVISION,
+        evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+        coverage: CoverageCounts::default(),
+    })
+}
+
+#[test]
+fn a_verified_uuid_chain_completes_previous_turn() {
+    let evidence = stream_composite(&input("thread_identity_chain"))
+        .evidence()
+        .expect("evidence must publish");
+    assert!(evidence.capabilities.thread_identity);
+    let EvidenceValue::Complete(cache) = evidence.cache else {
+        panic!("a fully identified chain must keep the cache group complete");
+    };
+    assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));
+    assert!(matches!(
+        cache.provider_eviction,
+        EvidenceValue::Unsupported
+    ));
+}
+
+#[test]
+fn a_counted_turn_without_identity_degrades_previous_turn_and_the_cache_group() {
+    let evidence = stream_composite(&input("thread_identity_missing_uuid"))
+        .evidence()
+        .expect("evidence must publish");
+    let EvidenceValue::Partial {
+        observed: cache,
+        reason: CoverageReason::AttributionIncomplete,
+    } = evidence.cache
+    else {
+        panic!("a missing record identity must degrade the cache group");
+    };
+    assert!(matches!(
+        cache.previous_turn,
+        EvidenceValue::Partial {
+            observed: (),
+            reason: CoverageReason::AttributionIncomplete,
+        }
+    ));
+}
+
+#[test]
+fn thread_identity_unblocks_sessions_over_depth_and_cache_churn() {
+    let report = fixture_report("thread_identity_chain");
+    // Depth stays under the report-time cap: a real clean verdict, not
+    // CapabilityMissing.
+    assert_eq!(
+        report.detector_statuses[DetectorId::SessionsOverDepth.index()],
+        DetectorStatus::Clean
+    );
+    // The chain switches models next to paid cache writes: a real finding.
+    assert!(matches!(
+        report.detector_statuses[DetectorId::CacheChurn.index()],
+        DetectorStatus::Findings(_)
+    ));
+    let cache = fixture_cache("thread_identity_chain");
+    assert!(!cache.model_transitions.is_empty());
+    assert!(cache.cache_creation_tokens > 0);
+}
+
+#[test]
+fn missing_identity_blocks_a_clean_cache_churn_claim() {
+    let report = fixture_report("thread_identity_missing_uuid");
+    let counts = report.detectors[DetectorId::CacheChurn.index()];
+    assert_eq!(counts.eligible, 1);
+    assert_eq!(counts.assessed, 0);
+    assert_eq!(
+        report.detector_statuses[DetectorId::CacheChurn.index()],
+        DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+    );
+}
+
 #[test]
 fn provider_eviction_is_unsupported_not_estimated() {
     let evidence = stream_composite(&input("compaction_with_cache_rehydration"))
@@ -657,19 +773,7 @@ fn fixture_provenance_records_the_source_kind_and_ordering() {
 
 #[test]
 fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
-    for name in [
-        "records_all_kinds",
-        "timestamps_repeated_and_out_of_order",
-        "malformed_between_valid",
-        "incomplete_final_record",
-        "unrecognized_type",
-        "parent_with_task_spawn",
-        "subagent_child",
-        "multi_model_session",
-        "compaction_with_cache_rehydration",
-        "inferred_cache_rehydration",
-        "housekeeping_records",
-    ] {
+    for name in fixture_names() {
         let input = input(name);
         let expected = analyze_sources_with(vec![input.clone()], true)
             .sessions
@@ -680,19 +784,7 @@ fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
 
 #[test]
 fn streaming_metrics_match_every_golden() {
-    for name in [
-        "records_all_kinds",
-        "timestamps_repeated_and_out_of_order",
-        "malformed_between_valid",
-        "incomplete_final_record",
-        "unrecognized_type",
-        "parent_with_task_spawn",
-        "subagent_child",
-        "multi_model_session",
-        "compaction_with_cache_rehydration",
-        "inferred_cache_rehydration",
-        "housekeeping_records",
-    ] {
+    for name in fixture_names() {
         let expected_text = fs::read_to_string(golden_path(name)).expect("golden must exist");
         let expected: Value = serde_json::from_str(&expected_text).expect("golden must be valid");
         let rendered = serde_json::to_string_pretty(&stream_claude(&input(name)).metrics())
@@ -805,6 +897,16 @@ fn housekeeping_records_keep_complete_coverage_and_no_unrecognized_diagnostics()
         .expect("evidence must publish");
     assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
     assert!(evidence.diagnostics.unrecognized_types.is_empty());
+}
+
+#[test]
+fn golden_thread_identity_chain() {
+    check_fixture_golden("thread_identity_chain");
+}
+
+#[test]
+fn golden_thread_identity_missing_uuid() {
+    check_fixture_golden("thread_identity_missing_uuid");
 }
 
 #[test]
