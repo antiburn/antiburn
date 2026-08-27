@@ -58,6 +58,12 @@ fn fixture(name: &str) -> &'static str {
         "delegated_turns" => {
             include_str!("fixtures/claude_characterization/delegated_turns.jsonl")
         }
+        "delegated_models" => {
+            include_str!("fixtures/claude_characterization/delegated_models.jsonl")
+        }
+        "delegated_model_missing" => {
+            include_str!("fixtures/claude_characterization/delegated_model_missing.jsonl")
+        }
         "thread_identity_chain" => {
             include_str!("fixtures/claude_characterization/thread_identity_chain.jsonl")
         }
@@ -206,7 +212,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
     composite
 }
 
-fn fixture_names() -> [&'static str; 13] {
+fn fixture_names() -> [&'static str; 15] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -219,6 +225,8 @@ fn fixture_names() -> [&'static str; 13] {
         "compaction_with_cache_rehydration",
         "inferred_cache_rehydration",
         "housekeeping_records",
+        "delegated_models",
+        "delegated_model_missing",
         "thread_identity_chain",
         "thread_identity_missing_uuid",
     ]
@@ -371,7 +379,7 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 16] {
+fn evidence_fixture_names() -> [&'static str; 18] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -386,6 +394,8 @@ fn evidence_fixture_names() -> [&'static str; 16] {
         "mcp_and_skill_sources",
         "reasoning_and_fast_mode",
         "delegated_turns",
+        "delegated_models",
+        "delegated_model_missing",
         "housekeeping_records",
         "thread_identity_chain",
         "thread_identity_missing_uuid",
@@ -543,6 +553,65 @@ fn the_capability_matrix_names_every_group_and_every_capability() {
         assert!(readme.contains(name), "matrix omits {name}");
     }
     assert!(readme.matches("Upgrade").count() >= 5);
+}
+
+#[test]
+fn delegated_models_come_from_sidechain_assistant_records() {
+    let evidence = stream_composite(&input("delegated_models"))
+        .evidence()
+        .expect("evidence must publish");
+    assert!(evidence.capabilities.subagent_models);
+    let EvidenceValue::Complete(subagents) = evidence.subagents else {
+        panic!("explicit delegated models must keep subagent evidence complete");
+    };
+    assert_eq!(subagents.delegated_turns, 2);
+    assert_eq!(
+        subagents.delegated_models,
+        BTreeSet::from(["claude-opus-4-6".to_owned(), "claude-sonnet-4-6".to_owned(),])
+    );
+    assert!(
+        subagents
+            .children
+            .iter()
+            .all(|child| matches!(child.child_model, EvidenceValue::Unsupported))
+    );
+}
+
+#[test]
+fn a_delegated_turn_without_a_model_degrades_subagent_evidence() {
+    let evidence = stream_composite(&input("delegated_model_missing"))
+        .evidence()
+        .expect("evidence must publish");
+    let EvidenceValue::Partial {
+        observed: subagents,
+        reason: CoverageReason::AttributionIncomplete,
+    } = evidence.subagents
+    else {
+        panic!("a missing delegated model must degrade subagent evidence");
+    };
+    assert_eq!(subagents.delegated_turns, 1);
+    assert!(subagents.delegated_models.is_empty());
+}
+
+#[test]
+fn delegated_models_unblock_overpowered_subagents() {
+    let report = fixture_report("delegated_models");
+    assert!(matches!(
+        report.detector_statuses[DetectorId::OverpoweredSubagents.index()],
+        DetectorStatus::Findings(_)
+    ));
+}
+
+#[test]
+fn a_missing_delegated_model_blocks_a_clean_overpowered_subagents_claim() {
+    let report = fixture_report("delegated_model_missing");
+    let counts = report.detectors[DetectorId::OverpoweredSubagents.index()];
+    assert_eq!(counts.eligible, 1);
+    assert_eq!(counts.assessed, 0);
+    assert_eq!(
+        report.detector_statuses[DetectorId::OverpoweredSubagents.index()],
+        DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+    );
 }
 
 #[test]
@@ -897,6 +966,16 @@ fn housekeeping_records_keep_complete_coverage_and_no_unrecognized_diagnostics()
         .expect("evidence must publish");
     assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
     assert!(evidence.diagnostics.unrecognized_types.is_empty());
+}
+
+#[test]
+fn golden_delegated_models() {
+    check_fixture_golden("delegated_models");
+}
+
+#[test]
+fn golden_delegated_model_missing() {
+    check_fixture_golden("delegated_model_missing");
 }
 
 #[test]

@@ -1,7 +1,20 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type * as InsightsIpc from "../../lib/insightsIpc"
 import { SessionList, type SessionListEntry, type SessionListProps } from "./SessionList"
+
+const getSessionHygiene = vi.hoisted(() => vi.fn())
+
+vi.mock("../../lib/insightsIpc", async (importOriginal) => ({
+  ...(await importOriginal<typeof InsightsIpc>()),
+  getSessionHygiene,
+}))
+
+beforeEach(() => {
+  getSessionHygiene.mockReset()
+  getSessionHygiene.mockResolvedValue(null)
+})
 
 afterEach(cleanup)
 
@@ -144,19 +157,51 @@ describe("SessionList — rows", () => {
     expect(screen.getByText(/ ago$/)).toBeTruthy()
   })
 
-  it("shows a deterministic mock hygiene verdict", () => {
-    // The status bar names the verdict and shows the pass count as text.
-    const verdictOf = () => screen.getByLabelText(/All checks pass|checks failed$/)
+  it("shows evidence computation instead of a synthetic hygiene verdict", () => {
+    list({ entries: [entry({ sessionId: "session-pending" })] })
+    const verdict = screen.getByLabelText("Computing session hygiene checks")
+    expect(verdict.textContent).toBe("Computing checks")
+    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
+    expect(screen.queryByLabelText("All checks pass")).toBeNull()
+  })
 
-    const first = list({ entries: [entry({ sessionId: "mock-0" })] })
-    const firstVerdict = verdictOf().getAttribute("aria-label")
-    // The seed produces a mixed result, so the bar shows a failure count.
-    expect(firstVerdict).toMatch(/of 6 checks failed$/)
-    expect(verdictOf().textContent).toMatch(/^[0-5]\/6 burn checks$/)
+  it("renders finding and clean statuses returned by the batched IPC path", async () => {
+    getSessionHygiene.mockResolvedValueOnce([
+      {
+        evidenceState: "ready",
+        badges: [
+          {
+            id: "reasoningOverkill",
+            status: "finding",
+            notAssessedReason: null,
+          },
+          {
+            id: "excessCacheRehydration",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "bloatedInitialContext",
+            status: "clean",
+            notAssessedReason: null,
+          },
+        ],
+      },
+    ])
+    list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
-    first.unmount()
-    list({ entries: [entry({ sessionId: "mock-0" })] })
-    expect(verdictOf().getAttribute("aria-label")).toBe(firstVerdict)
+    await waitFor(() => {
+      expect(screen.getByLabelText("1 of 3 assessed checks failed").textContent).toBe(
+        "2/3 burn checks",
+      )
+    })
+    expect(getSessionHygiene).toHaveBeenCalledWith([
+      {
+        agent: "claude-code",
+        sessionId: "synthetic-hygiene-result",
+        wslDistro: null,
+      },
+    ])
   })
 
   it("states the last-activity time", () => {

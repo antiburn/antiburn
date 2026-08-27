@@ -508,9 +508,8 @@ mod tests {
             assert!(coverage.is_consistent());
 
             // Only the "ready" session is in the cohort, so every capability gap
-            // example must name it. The Claude capability set blocks two detectors
-            // (Overpowered Subagents and Unused Built-In Tools), so the example
-            // list cannot be empty.
+            // example must name it. The Claude capability set blocks only
+            // Unused Built-In Tools, so the example list cannot be empty.
             let all_examples: Vec<_> = report
                 .capability_gap_examples
                 .values()
@@ -524,7 +523,7 @@ mod tests {
             // The cohort session carries no assistant turns, so the
             // zero-work denominator exclusion (CH-011b) keeps it out of
             // the Unused MCP Servers and Unused Skills denominators:
-            // seven capability-eligible detectors minus the two absence
+            // Eight capability-eligible detectors minus the two absence
             // detectors an idle session cannot support.
             assert_eq!(
                 report
@@ -532,7 +531,7 @@ mod tests {
                     .iter()
                     .map(|counts| counts.eligible)
                     .sum::<u64>(),
-                5
+                6
             );
             assert_eq!(
                 report
@@ -540,7 +539,7 @@ mod tests {
                     .iter()
                     .map(|counts| counts.assessed)
                     .sum::<u64>(),
-                5
+                6
             );
         }
 

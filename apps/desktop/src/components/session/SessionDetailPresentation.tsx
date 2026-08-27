@@ -14,8 +14,12 @@ import { useCallback, useState, useSyncExternalStore, type ReactNode } from "rea
 
 import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
+import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
-import { mockSessionHygiene } from "../../lib/presentation/mockSessionHygiene"
+import {
+  sessionHygieneChecks,
+  sessionHygieneStateLabel,
+} from "../../lib/presentation/sessionHygiene"
 import {
   modelRunNames,
   modelRunShortNames,
@@ -84,6 +88,8 @@ export interface SessionDetailPresentationProps {
   summary: ActiveSessionsSummary | null
   /** Whether the analysis is still being produced. */
   loading: boolean
+  /** The hygiene reduction for this session's stored evidence. */
+  hygiene: SessionHygienePayload
   /** Whether a newer analysis is on its way while `summary` stays on screen. */
   refreshing?: boolean
   /** Whether producing it failed. */
@@ -398,6 +404,7 @@ function useSkeletonVisible(loading: boolean): boolean {
 export function SessionDetailPresentation({
   summary,
   loading,
+  hygiene,
   refreshing = false,
   error,
   session,
@@ -421,7 +428,8 @@ export function SessionDetailPresentation({
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
   const modelNames = modelRunShortNames(modelRuns)
-  const hygieneChecks = mockSessionHygiene(sessionIdentityKey(session))
+  const hygieneChecks = sessionHygieneChecks(hygiene)
+  const hygieneStateLabel = sessionHygieneStateLabel(hygiene.evidenceState)
 
   // Left and right arrows traverse adjacent sessions, mirroring the header
   // chevrons. A missing handler is a no-op, matching the chevrons' own state.
@@ -719,21 +727,24 @@ export function SessionDetailPresentation({
               </div>
 
               <div className="flex items-center gap-x-2">
-                <span className="type-footnote text-label-tertiary">Hygiene Checks:</span>
+                <span className="type-footnote text-label-tertiary">
+                  Hygiene checks{hygieneStateLabel ? ` · ${hygieneStateLabel}` : ""}:
+                </span>
                 <div className="flex items-center gap-x-2" aria-label="Session hygiene checks">
                   {hygieneChecks.map((check) => (
                     <span
                       key={check.id}
                       className={cn(
-                        "inline-flex h-5 w-5 items-center justify-center rounded-full text-[0.75rem] leading-none text-white",
-                        check.passed
-                          ? "bg-(--color-system-green) opacity-30 hover:opacity-80"
-                          : "bg-(--color-system-red) opacity-50 hover:opacity-80",
+                        "inline-flex size-5 items-center justify-center rounded-control bg-surface-secondary type-footnote leading-none transition-opacity duration-[var(--duration-fast)] hover:opacity-80",
+                        check.status === "clean" && "text-system-green opacity-50",
+                        check.status === "finding" && "text-system-red-text opacity-70",
+                        check.status === "notAssessed" &&
+                          "border border-dashed border-separator text-label-tertiary opacity-70",
                       )}
                       title={check.title}
                       aria-label={check.title}
                     >
-                      {check.passed ? "✓" : "×"}
+                      {check.status === "clean" ? "✓" : check.status === "finding" ? "×" : "?"}
                     </span>
                   ))}
                 </div>

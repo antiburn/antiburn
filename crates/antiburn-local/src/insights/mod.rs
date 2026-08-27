@@ -1,10 +1,12 @@
 //! Provider-neutral local insights report contracts and reduction.
 
+mod badges;
 mod detectors;
 mod quota;
 mod report;
 mod status;
 
+pub use badges::{BadgeId, BadgeStatus, SessionBadge, session_badges};
 pub use detectors::{
     DetectorFindings, DetectorStatus, ModelReplacement, NotAssessedReason, ReportCatalogs,
 };

@@ -2,15 +2,20 @@ import { GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
 import type { ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
+import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
-import { mockSessionHygiene } from "../../lib/presentation/mockSessionHygiene"
+import {
+  INITIAL_SESSION_HYGIENE,
+  sessionHygieneChecks,
+} from "../../lib/presentation/sessionHygiene"
 import {
   modelRunNames,
   modelRunShortPairs,
   type PresentableModelRun,
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
+import { sessionHygieneFor, useSessionHygiene } from "../../lib/useSessionHygiene"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
@@ -100,6 +105,7 @@ function EmptySessionList({ title, description }: { title: string; description: 
 
 interface SessionRowProps {
   entry: SessionListEntry
+  hygiene: SessionHygienePayload
   onOpen?: () => void
   renderAgentIcon?: SessionAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
@@ -112,16 +118,13 @@ interface SessionRowProps {
  * The whole card opens the session analysis. Unsupported agents open an empty
  * analysis state that explains why no data is available.
  */
-function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps) {
+function SessionRow({ entry, hygiene, onOpen, renderAgentIcon, wslIcon }: SessionRowProps) {
   const clickable = !!entry.sessionId && !!onOpen
   const primary = primaryLine(entry)
   const hasRepo = entry.repo !== ""
   const modelRuns = entry.modelRuns ?? []
   const modelPairs = modelRunShortPairs(modelRuns)
-  const hygieneSeed = entry.sessionId
-    ? localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
-    : `${entry.agent}|${entry.repo}|${entry.timestamp}`
-  const hygieneChecks = mockSessionHygiene(hygieneSeed)
+  const hygieneChecks = sessionHygieneChecks(hygiene)
 
   return (
     <div
@@ -157,7 +160,11 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
       {entry.isActive && <span className="sr-only">Active session</span>}
 
       <div className="row-1 col-2">
-        <SessionStatusBar checks={hygieneChecks} cost={entry.cost ?? null} />
+        <SessionStatusBar
+          checks={hygieneChecks}
+          evidenceState={hygiene.evidenceState}
+          cost={entry.cost ?? null}
+        />
       </div>
 
       <span className="row-2 col-1 h-full pt-[3px]">
@@ -295,6 +302,20 @@ export function SessionList({
 
   const groups = groupActivityByDay(items, { days, ...(now ? { now } : {}) })
   const visibleCount = countGroupedItems(groups)
+  const hygieneSessions = groups.flatMap((group) =>
+    group.items.flatMap(({ entry }) =>
+      entry.sessionId
+        ? [
+            {
+              agent: entry.agent,
+              sessionId: entry.sessionId,
+              wslDistro: entry.wslDistro ?? null,
+            },
+          ]
+        : [],
+    ),
+  )
+  const hygieneBySession = useSessionHygiene(hygieneSessions)
 
   const { assignViewportRef, registerHeading, pinnedLabel } = useActivityGroupPinning(
     groups.map((group) => group.label),
@@ -352,6 +373,15 @@ export function SessionList({
                       <SessionRow
                         key={item.key}
                         entry={item.entry}
+                        hygiene={
+                          item.entry.sessionId
+                            ? sessionHygieneFor(hygieneBySession, {
+                                agent: item.entry.agent,
+                                sessionId: item.entry.sessionId,
+                                wslDistro: item.entry.wslDistro ?? null,
+                              })
+                            : INITIAL_SESSION_HYGIENE
+                        }
                         {...(onOpenSession ? { onOpen: () => onOpenSession(item.entry) } : {})}
                         {...(renderAgentIcon ? { renderAgentIcon } : {})}
                         {...(wslIcon ? { wslIcon } : {})}

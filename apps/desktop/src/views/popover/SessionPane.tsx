@@ -18,6 +18,7 @@ import {
   topLevelCostSubject,
   type LocalSessionCost,
 } from "../../lib/presentation/sessionCosts"
+import { sessionHygieneFor, useSessionHygiene } from "../../lib/useSessionHygiene"
 import type {
   BillableTokens,
   LocalSessionRelation,
@@ -264,6 +265,13 @@ export function SessionPane({
     void revealSource(sourcePath)
   }, [sourcePath])
 
+  const hygieneIdentity = {
+    agent: subject.agent,
+    sessionId: subject.sessionId,
+    wslDistro: subject.wslDistro ?? null,
+  }
+  const hygieneBySession = useSessionHygiene([hygieneIdentity])
+  const hygiene = sessionHygieneFor(hygieneBySession, hygieneIdentity)
   const { cost, costSplit } = payload
     ? toLocalCost(subject, payload)
     : { cost: null, costSplit: null }
@@ -327,6 +335,7 @@ export function SessionPane({
     <SessionDetailPresentation
       summary={payload?.summary ?? null}
       loading={loading}
+      hygiene={hygiene}
       refreshing={refreshing}
       error={error}
       session={{
