@@ -114,11 +114,12 @@ export function SessionCostBadge({
         }
         className={cn(
           COST_BADGE_BASE,
-          // Every figure keeps one size. Color, weight, and the pill are
-          // what separate a hot figure: it goes one weight above the plain
-          // 400 that .type-callout bakes in. The important modifier is
-          // necessary because .type-callout is unlayered CSS.
-          "type-callout",
+          // Every figure keeps one size, in the mono face that marks a
+          // price. Color, weight, and the pill are what separate a hot
+          // figure: it goes one weight above the plain 400 that
+          // .type-footnote bakes in. The important modifier is necessary
+          // because .type-footnote is unlayered CSS.
+          "font-mono type-footnote",
           isHighCost && "font-medium!",
           appearance === "pill" && COST_PILL_SHAPE,
           appearance === "pill" &&

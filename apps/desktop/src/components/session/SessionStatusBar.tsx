@@ -23,16 +23,32 @@ export interface SessionStatusBarProps {
  * The verdict line across the top of a session row: the pass count, the
  * last-activity time, and the session cost.
  *
- * The line never paints a fill. Attention lives on the element that
- * earns it: a failing verdict sits in a solid brand pill, and a hot cost
- * sits in the same pill. The verdict is the text "N/M Pass". The tooltip
- * names each failed check. The host row places the provider mark in a
- * column of its own, left of this line.
+ * The verdict is always plain monospace text — never a badge. Severity
+ * lives in the ink, on a traffic-light ramp: green when every check
+ * passes, then orange at the first failure, and on to red as the
+ * failures accumulate. The mix runs in oklch, so the ramp keeps its
+ * saturation across the hue travel. The tooltip names each failed
+ * check. The host row places the provider mark in a column of its own,
+ * left of this line.
  */
+
+/**
+ * The verdict ink for a failure share. A passing row is green. A
+ * failing row mixes the legible red into the legible orange in
+ * proportion to the failures, so one failure of six reads orange and a
+ * full sweep reads red.
+ */
+function verdictInk(failedShare: number): string {
+  if (failedShare === 0) return "var(--color-system-green)"
+  const pct = Math.round(failedShare * 100)
+  return `color-mix(in oklch, var(--color-system-red-text) ${pct}%, var(--color-system-orange))`
+}
+
 export function SessionStatusBar({ checks, cost, timestamp }: SessionStatusBarProps) {
   const failed = checks.filter((check) => !check.passed)
   const allPassed = failed.length === 0
   const passedCount = checks.length - failed.length
+  const failedShare = checks.length === 0 ? 0 : failed.length / checks.length
   const verdictLabel = allPassed
     ? "All checks pass"
     : `${failed.length} of ${checks.length} checks failed`
@@ -41,17 +57,16 @@ export function SessionStatusBar({ checks, cost, timestamp }: SessionStatusBarPr
     : `${verdictLabel}: ${failed.map((check) => check.title).join(", ")}`
 
   return (
-    <div className="flex h-[var(--control-height-regular)] w-full items-center gap-1.5 text-label-secondary">
+    // 16px, not the 22px control height: the taller line box read as
+    // extra leading above the title (review outcome, 2026-08-27).
+    <div className="flex h-4 w-full items-center gap-1.5 text-label-secondary">
       <Tooltip label={tooltip} delayMs={150}>
         <span
-          // The verdict matches the cost figure's size, and the important
-          // modifier beats the weight baked into .type-callout.
+          // The important modifier beats the weight baked into
+          // .type-footnote.
           aria-label={verdictLabel}
-          className={cn(
-            "type-callout font-medium! leading-[13px] tabular-nums",
-            // The padding matches the cost pill, so the two share a height.
-            !allPassed && "rounded-full bg-brand-tint px-1.5 py-px text-white",
-          )}
+          className="font-mono type-footnote font-medium! leading-[13px] tabular-nums"
+          style={{ color: verdictInk(failedShare) }}
         >
           {passedCount}/{checks.length} checks pass
         </span>

@@ -49,3 +49,24 @@ export function modelRunNames(runs: readonly PresentableModelRun[]): string[] {
 export function modelRunShortNames(runs: readonly PresentableModelRun[]): string[] {
   return modelRunNames(runs.map((run) => ({ ...run, model: modelShortName(run.model) })))
 }
+
+/**
+ * Shorten model runs and keep the name and the thinking mode apart, for a
+ * caller that styles the two differently. Order and duplicate removal
+ * match modelRunShortNames.
+ */
+export function modelRunShortPairs(
+  runs: readonly PresentableModelRun[],
+): { model: string; thinkingMode?: string | undefined }[] {
+  const seen = new Set<string>()
+  const pairs: { model: string; thinkingMode?: string | undefined }[] = []
+  for (const run of runs) {
+    const shortened = { ...run, model: modelShortName(run.model) }
+    const name = modelRunName(shortened)
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    const mode = shortened.thinkingMode?.trim()
+    pairs.push({ model: shortened.model.trim(), ...(mode ? { thinkingMode: mode } : {}) })
+  }
+  return pairs
+}

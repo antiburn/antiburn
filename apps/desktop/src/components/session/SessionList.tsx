@@ -11,7 +11,7 @@ import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { mockSessionHygiene } from "../../lib/presentation/mockSessionHygiene"
 import {
   modelRunNames,
-  modelRunShortNames,
+  modelRunShortPairs,
   type PresentableModelRun,
 } from "../../lib/presentation/models"
 import { Tooltip } from "../presentation/Tooltip"
@@ -120,7 +120,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
   const primary = primaryLine(entry)
   const hasRepo = entry.repo !== ""
   const modelRuns = entry.modelRuns ?? []
-  const modelNames = modelRunShortNames(modelRuns)
+  const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneSeed = entry.sessionId
     ? localSessionKey(entry.agent, entry.sessionId, entry.wslDistro)
     : `${entry.agent}|${entry.repo}|${entry.timestamp}`
@@ -131,7 +131,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
       className={cn(
         // The provider mark holds the first column, so every line of text
         // starts on the verdict's left edge. The column equals the icon size.
-        "group relative grid w-full grid-cols-[14px_minmax(0,1fr)] gap-x-1.5 gap-y-1.5 text-left",
+        "group relative grid w-full grid-cols-[14px_minmax(0,1fr)] gap-x-1.5 gap-y-1 text-left",
         "rounded-[var(--radius-popover)] bg-surface-card px-3 py-3",
         "transition-colors duration-[var(--duration-fast)] ease-out",
         entry.isActive && "activity-row-active",
@@ -159,7 +159,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <span className="flex h-[var(--control-height-regular)] items-center justify-center">
+      <span className="flex h-4 items-center justify-center">
         {renderAgentIcon?.(entry.agent, 14, entry.surface)}
       </span>
 
@@ -169,7 +169,7 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
         timestamp={entry.timestamp}
       />
 
-      <div className="col-start-2 min-w-0 space-y-1.5">
+      <div className="col-start-2 min-w-0 space-y-1">
         {/* The title runs the full row width; the time lives in the
             status line and shows on hover. */}
         <div className="flex min-w-0 items-center gap-1">
@@ -207,39 +207,59 @@ function SessionRow({ entry, onOpen, renderAgentIcon, wslIcon }: SessionRowProps
           )}
         </div>
 
-        {modelNames.length > 0 && (
-          <div
-            className="min-w-0 type-callout text-label-tertiary"
-            title={modelRunNames(modelRuns).join("\n")}
-          >
-            <TruncatedText text={modelNames.join(" · ")} />
-          </div>
-        )}
-
-        {(hasRepo || entry.branch || entry.wslDistro) && (
-          <div className="flex min-w-0 items-baseline gap-x-2">
-            {hasRepo && (
-              <Tooltip
-                label={
-                  entry.additionalRepos?.length
-                    ? `Also observed: ${entry.additionalRepos.join(", ")}`
-                    : entry.repo
-                }
+        {(modelPairs.length > 0 || hasRepo || entry.branch || entry.wslDistro) && (
+          // The models and the repo lines read as one metadata unit, so
+          // they sit closer to each other than to the title.
+          <div className="space-y-px">
+            {modelPairs.length > 0 && (
+              <div
+                // The name anchors each unit at 500; the thinking mode sits a
+                // size down after a space. Type does the separating, not a
+                // slash.
+                className="min-w-0 truncate type-callout text-label-tertiary"
+                title={modelRunNames(modelRuns).join("\n")}
               >
-                <span className="min-w-0 truncate type-callout text-label-tertiary">
-                  {entry.repo}
-                  {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
-                </span>
-              </Tooltip>
+                {modelPairs.map((pair, index) => (
+                  <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                    {index > 0 && " · "}
+                    <span className="font-medium">{pair.model}</span>
+                    {pair.thinkingMode && (
+                      <span className="type-caption"> {pair.thinkingMode}</span>
+                    )}
+                  </span>
+                ))}
+              </div>
             )}
 
-            <WslOriginBadge distro={entry.wslDistro} {...(wslIcon ? { icon: wslIcon } : {})} />
+            {(hasRepo || entry.branch || entry.wslDistro) && (
+              <div className="flex min-w-0 items-baseline gap-x-2">
+                {hasRepo && (
+                  <Tooltip
+                    label={
+                      entry.additionalRepos?.length
+                        ? `Also observed: ${entry.additionalRepos.join(", ")}`
+                        : entry.repo
+                    }
+                  >
+                    <span className="min-w-0 truncate type-callout text-label-tertiary">
+                      {entry.repo}
+                      {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
+                    </span>
+                  </Tooltip>
+                )}
 
-            {entry.branch && (
-              <TruncatedText
-                className="min-w-0 truncate type-callout text-label-tertiary"
-                text={entry.branch}
-              />
+                <WslOriginBadge
+                  distro={entry.wslDistro}
+                  {...(wslIcon ? { icon: wslIcon } : {})}
+                />
+
+                {entry.branch && (
+                  <TruncatedText
+                    className="min-w-0 truncate type-callout text-label-tertiary"
+                    text={entry.branch}
+                  />
+                )}
+              </div>
             )}
           </div>
         )}

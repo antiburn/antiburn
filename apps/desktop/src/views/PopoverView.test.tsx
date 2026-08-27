@@ -309,7 +309,7 @@ describe("PopoverView", () => {
       modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
     })
 
-    expect(await screen.findByText("fable-5/high")).toBeInTheDocument()
+    expect(await screen.findByTitle("claude-fable-5/high")).toBeInTheDocument()
     expect(
       invoke.mock.calls.filter(([command]) => command === "list_recent_sessions"),
     ).toHaveLength(listCallsBefore)
@@ -343,7 +343,7 @@ describe("PopoverView", () => {
       modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
     })
 
-    expect(await screen.findByText("fable-5/high")).toBeInTheDocument()
+    expect(await screen.findByTitle("claude-fable-5/high")).toBeInTheDocument()
     // The row is rebuilt from the pushed payload alone, so its high-cost flag
     // must be recomputed against the cohort rather than defaulting to false.
     expect(screen.getByLabelText(/higher than usual/i)).toBeInTheDocument()

@@ -4,7 +4,13 @@
 
 import { describe, expect, it } from "vitest"
 
-import { modelRunName, modelRunNames, modelRunShortNames, modelShortName } from "./models"
+import {
+  modelRunName,
+  modelRunNames,
+  modelRunShortNames,
+  modelRunShortPairs,
+  modelShortName,
+} from "./models"
 
 describe("modelShortName", () => {
   it("removes the Claude and GPT family prefixes", () => {
@@ -43,5 +49,16 @@ describe("modelRunNames", () => {
         { model: "claude-fable-5", thinkingMode: "high" },
       ]),
     ).toEqual(["5.6-sol/xhigh", "fable-5/high"])
+  })
+
+  it("keeps names and modes apart in short pairs, with the same duplicate removal", () => {
+    expect(
+      modelRunShortPairs([
+        { model: "gpt-5.6-sol", thinkingMode: "xhigh" },
+        { model: "gpt-5.6-sol", thinkingMode: "xhigh" },
+        { model: "claude-fable-5" },
+        { model: "claude-fable-5", thinkingMode: " " },
+      ]),
+    ).toEqual([{ model: "5.6-sol", thinkingMode: "xhigh" }, { model: "fable-5" }])
   })
 })

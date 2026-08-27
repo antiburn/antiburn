@@ -19,24 +19,34 @@ const ALL_PASSED = CHECKS.map((check) => ({ ...check, passed: true }))
 afterEach(cleanup)
 
 describe("SessionStatusBar", () => {
-  it("shows a quiet fill-free line with the full pass count when every check passes", () => {
+  it("inks a fill-free line green with the full pass count when every check passes", () => {
     render(<SessionStatusBar checks={ALL_PASSED} />)
     const verdict = screen.getByLabelText("All checks pass")
     expect(verdict.textContent).toBe("3/3 checks pass")
+    expect(verdict.style.color).toBe("var(--color-system-green)")
     expect(verdict.className).not.toContain("bg-")
     expect(verdict.parentElement?.className).not.toContain("bg-")
-    expect(verdict.parentElement?.className).toContain("text-label-secondary")
   })
 
-  it("wraps the verdict in a solid brand pill when any check fails", () => {
+  it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
     const verdict = screen.getByLabelText("1 of 3 checks failed")
     expect(verdict.textContent).toBe("2/3 checks pass")
-    expect(verdict.className).toContain("rounded-full")
-    expect(verdict.className).toContain("bg-brand-tint")
-    expect(verdict.className).toContain("text-white")
-    // The line behind the pill stays fill-free.
+    // Severity lives in the ink only — the verdict is never a badge.
+    expect(verdict.className).not.toContain("rounded-full")
+    expect(verdict.style.backgroundColor).toBe("")
+    // One failure of three is a third of the way from orange to red.
+    expect(verdict.style.color).toContain("--color-system-red-text) 33%")
+    expect(verdict.style.color).toContain("--color-system-orange")
+    // The line behind the verdict stays fill-free.
     expect(verdict.parentElement?.className).not.toContain("bg-")
+  })
+
+  it("reaches full red ink when every check fails", () => {
+    const allFailed = CHECKS.map((check) => ({ ...check, passed: false }))
+    render(<SessionStatusBar checks={allFailed} />)
+    const verdict = screen.getByLabelText("3 of 3 checks failed")
+    expect(verdict.style.color).toContain("--color-system-red-text) 100%")
   })
 
   it("shows a usual cost figure without pill chrome", () => {
@@ -59,7 +69,8 @@ describe("SessionStatusBar", () => {
       />,
     )
     const figure = screen.getByLabelText("Estimated cost $24.00, higher than usual")
-    expect(figure.className).toContain("type-callout")
+    expect(figure.className).toContain("type-footnote")
+    expect(figure.className).toContain("font-mono")
     expect(figure.className).toContain("font-medium")
     expect(figure.className).toContain("rounded-full")
     expect(figure.className).toContain("bg-brand-tint")

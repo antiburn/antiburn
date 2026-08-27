@@ -138,8 +138,9 @@ describe("SessionList — rows", () => {
         }),
       ],
     })
-    const models = screen.getByText("5.6-sol/xhigh · fable-5/high")
-    expect(models.parentElement?.title).toBe("gpt-5.6-sol/xhigh\nclaude-fable-5/high")
+    const models = screen.getByText("5.6-sol").closest("[title]")
+    expect(models?.getAttribute("title")).toBe("gpt-5.6-sol/xhigh\nclaude-fable-5/high")
+    expect(models?.textContent).toBe("5.6-sol xhigh · fable-5 high")
   })
 
   it("includes the relative-time suffix", () => {
