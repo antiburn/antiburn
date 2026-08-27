@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use antiburn_local::analysis::SessionEvidence;
 use antiburn_local::discovery::SessionSource;
+use antiburn_local::insights::{DetectorId, requirements};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Notify, Semaphore};
@@ -131,6 +133,26 @@ fn source_for_record(record: &SessionRecord) -> SessionSource {
     }
 }
 
+/// Classifies a provider against the shipped detector prerequisite
+/// sets. A source whose capability set satisfies no detector's
+/// capability clauses publishes Unsupported: its rows can never
+/// join an assessed cohort, and the report's coverage denominator
+/// shows the session as unsupported instead of ready.
+fn published_status(evidence: &SessionEvidence) -> PublishedEvidence {
+    let supported = DetectorId::ALL.into_iter().any(|detector| {
+        requirements(detector).capabilities.iter().all(|clause| {
+            clause
+                .iter()
+                .any(|flag| flag.is_set(&evidence.capabilities))
+        })
+    });
+    if supported {
+        PublishedEvidence::Ready
+    } else {
+        PublishedEvidence::Unsupported
+    }
+}
+
 pub(crate) fn completion_entry(store: &Store, key: &SessionKey, now: i64) -> Option<ActivityEntry> {
     let session = store.session(key).ok()??;
     let repositories = store.repositories().ok()?;
@@ -171,7 +193,7 @@ pub(crate) fn apply_outcome(
                 .unwrap_or_default();
             let completion = EvidenceCompletion {
                 claim_fence: claim.claim_fence,
-                status: PublishedEvidence::Ready,
+                status: published_status(evidence),
                 evidence_schema_revision: evidence.schema_revision,
                 evidence_json: serde_json::to_string(evidence)?,
                 diagnostics_json: Some(serde_json::to_string(&evidence.diagnostics)?),
@@ -330,7 +352,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use antiburn_local::analysis::{RawSource, SessionInput};
+    use antiburn_local::analysis::{
+        EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput, SourceCapabilities,
+        SourceKind,
+    };
 
     use super::*;
     use crate::store::EvidenceStatus;
@@ -417,6 +442,70 @@ mod tests {
         })
         .await
         .expect("the worker reaches the expected state");
+    }
+
+    fn evidence_with(capabilities: SourceCapabilities) -> SessionEvidence {
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: "caps".to_owned(),
+            kind: SourceKind::File,
+            capabilities,
+        })
+        .evidence()
+    }
+
+    fn no_capabilities() -> SourceCapabilities {
+        SourceCapabilities {
+            request_context_tokens: false,
+            cache_write_tokens: false,
+            timestamps_and_order: false,
+            tool_invocations: false,
+            skill_mcp_attribution: false,
+            tool_definitions: false,
+            model_identity: false,
+            token_classes: false,
+            reasoning_effort_tier: false,
+            fast_tier: false,
+            service_tier: false,
+            subagent_relationships: false,
+            subagent_models: false,
+            compaction_boundaries: false,
+            thread_identity: false,
+            quota_incidents: false,
+            harness_version: false,
+        }
+    }
+
+    #[test]
+    fn published_status_classifies_capability_sets_against_detector_prerequisites() {
+        assert_eq!(
+            published_status(&evidence_with(SourceCapabilities::claude())),
+            PublishedEvidence::Ready
+        );
+        assert_eq!(
+            published_status(&evidence_with(no_capabilities())),
+            PublishedEvidence::Unsupported
+        );
+    }
+
+    #[test]
+    fn a_capability_free_source_publishes_as_unsupported() {
+        let store = store();
+        let claim = claim(&store, "unsupported-caps", 100);
+        let source = store.session(&claim.key).unwrap().unwrap();
+        let mut published = published_pass(&source);
+        published.analysis.analyzed_generation = claim.source_generation;
+        published
+            .evidence
+            .as_mut()
+            .expect("a published pass carries evidence")
+            .capabilities = no_capabilities();
+
+        assert!(apply_outcome(&store, &claim, &published, 100).unwrap());
+        assert_eq!(
+            store.evidence(&claim.key).unwrap().unwrap().status,
+            EvidenceStatus::Unsupported
+        );
     }
 
     #[test]

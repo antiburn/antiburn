@@ -2674,3 +2674,43 @@ fn internal_values_round_trip_and_stay_out_of_settings() {
     // Internal rows share the table but never surface as preferences.
     assert_eq!(store.settings().unwrap(), AppSettings::default());
 }
+
+#[test]
+fn evidence_backlog_counts_split_pending_from_processing_within_one_environment() {
+    let store = store();
+    for session_id in ["backlog-one", "backlog-two", "backlog-three"] {
+        let mut record = session(session_id, 1_000);
+        record.source_fingerprint = Some(format!("sv1:{session_id}"));
+        store
+            .upsert_sessions(
+                std::slice::from_ref(&record),
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+    }
+    // One claim moves one native row from pending to processing.
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 10, 60)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claim.key.environment_key, "native");
+
+    // A backlog in another environment must not leak into the native counts.
+    let mut other = session("backlog-wsl", 1_000);
+    other.key.environment_key = "wsl:ubuntu".into();
+    other.source_fingerprint = Some("sv1:backlog-wsl".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&other),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let native = store.evidence_backlog_counts("native").unwrap();
+    assert_eq!(native.pending, 2);
+    assert_eq!(native.processing, 1);
+
+    let wsl = store.evidence_backlog_counts("wsl:ubuntu").unwrap();
+    assert_eq!(wsl.pending, 1);
+    assert_eq!(wsl.processing, 0);
+}

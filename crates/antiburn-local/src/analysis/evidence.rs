@@ -210,6 +210,55 @@ pub struct CacheEvidence {
     pub provider_eviction: EvidenceValue<()>,
 }
 
+/// Names the limit family that a transcript-observed quota incident reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaLimitKind {
+    RollingWindow,
+    Weekly,
+    ModelSpecific,
+    WeightedUsage,
+    RateLimit,
+}
+
+/// Distinguishes a hard limit hit from an advance warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaHitSeverity {
+    Warning,
+    HardHit,
+}
+
+/// Records how the parser knows about an incident.
+/// Only direct transcript observation is a valid source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaConfidence {
+    Observed,
+}
+
+/// One transcript-observed quota or rate-limit incident.
+/// The session identity carries the provider attribution.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaIncident {
+    pub ts_ms: i64,
+    pub limit_kind: QuotaLimitKind,
+    pub severity: QuotaHitSeverity,
+    pub model: Option<String>,
+    pub reset_ts_ms: Option<i64>,
+    pub utilization_pct: Option<u8>,
+    pub confidence: QuotaConfidence,
+}
+
+/// Transcript-attributable quota incidents for one session.
+/// The parser bounds the collection and overflows to `Partial`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQuotaEvidence {
+    pub incidents: Vec<QuotaIncident>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionBoundary {
@@ -448,7 +497,7 @@ pub struct SessionEvidence {
     pub subagents: EvidenceValue<SubagentEvidence>,
     pub cache: EvidenceValue<CacheEvidence>,
     pub compactions: EvidenceValue<CompactionEvidence>,
-    pub quota_incidents: EvidenceValue<()>,
+    pub quota_incidents: EvidenceValue<SessionQuotaEvidence>,
 }
 
 #[cfg(test)]

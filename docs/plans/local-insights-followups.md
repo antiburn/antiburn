@@ -86,9 +86,9 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 
 - **What was found:** The first production writer of `PublishedEvidence::Unsupported` needs the detector prerequisite sets before it can classify a provider.
 - **Found by seam:** GH-70 seam 0016.
-- **Why deferred:** CH-010 reads unsupported rows but does not own evidence publication policy.
+- **Why deferred:** CH-010 reads unsupported rows but does not own evidence publication policy. CH-011 shipped the detector prerequisite sets the writer needs but stayed engine-only; the writer lives in the desktop worker.
 - **Kind:** `deferred`
-- **Disposition:** `fold-into-later-seam` for CH-011.
+- **Disposition:** `fold-into-later-seam` for CH-011b.
 
 ## Report scope for hosts with WSL sessions
 
@@ -96,4 +96,12 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0016.
 - **Why deferred:** CH-012 owns the IPC request and the reader-facing scope.
 - **Kind:** `enhancement`
-- **Disposition:** `fold-into-later-seam` for CH-012.
+- **Disposition:** `fold-into-later-seam` for CH-012. **Decided in CH-012:** one environment key per report; the host report covers the native scope only and never combines native and WSL scopes. The reduction queries are pinned to single-scope semantics and detector statuses cannot be recombined from two finished reports. The decision is documented at the request construction site (`apps/desktop/src-tauri/src/commands.rs`, `insights_report_request`), and the pane's scope wording names the native environment explicitly. Per-environment reports for Windows hosts with WSL sessions are the entry below.
+
+## Per-environment insights reports on Windows hosts with WSL
+
+- **What was found:** CH-012 scoped the insights report to the native environment. A Windows host with WSL sessions has `wsl:<distro>` scopes the pane does not report on.
+- **Found by seam:** GH-70 seam 0017 (CH-012).
+- **Why deferred:** A scope selector or per-environment report list is new product surface. Combining scopes inside one reduction would reopen CH-010's population queries and their tests.
+- **Kind:** `enhancement`
+- **Disposition:** `file-issue` after CH-013, when the first Windows+WSL usage is confirmed.

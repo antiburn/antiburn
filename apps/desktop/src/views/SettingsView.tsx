@@ -1,6 +1,7 @@
 import {
   Bell,
   Info,
+  Lightbulb,
   LogOut,
   Palette,
   ShieldCheck,
@@ -19,6 +20,7 @@ import { isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
 import { AboutPane } from "./settings/AboutPane"
 import { AppearancePane } from "./settings/AppearancePane"
 import { GeneralPane } from "./settings/GeneralPane"
+import { InsightsPane } from "./settings/InsightsPane"
 import { NotificationsPane } from "./settings/NotificationsPane"
 import { PrivacyPane } from "./settings/PrivacyPane"
 import { SettingsWindowSession } from "./settings/SettingsWindowSession"
@@ -56,6 +58,7 @@ const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
   { id: "privacy", label: "Privacy", icon: ShieldCheck },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "usage", label: "Usage", icon: Gauge },
+  { id: "insights", label: "Insights", icon: Lightbulb },
   { id: "sources", label: "Sources", icon: FolderGit2 },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "about", label: "About", icon: Info },
@@ -164,6 +167,7 @@ export function SettingsView() {
             {pane === "privacy" && <PrivacyPane {...controller} info={info} />}
             {pane === "notifications" && <NotificationsPane {...controller} />}
             {pane === "usage" && <UsagePane {...controller} />}
+            {pane === "insights" && <InsightsPane />}
             {pane === "about" && (
               <AboutPane {...controller} info={info} onOpenPane={session.setPane} />
             )}
