@@ -315,6 +315,32 @@ fn a_skill_origin_is_unsupported_not_guessed() {
 }
 
 #[test]
+fn mcp_sources_keep_names_but_never_instruction_blocks() {
+    let evidence = stream_composite(&input("mcp_and_skill_sources"))
+        .evidence()
+        .expect("evidence must publish");
+    let persisted = serde_json::to_string(&evidence).expect("evidence must serialize");
+    let sources = match evidence.context_sources {
+        EvidenceValue::Complete(sources)
+        | EvidenceValue::Partial {
+            observed: sources, ..
+        } => sources,
+        EvidenceValue::Unsupported => panic!("Claude sources must be supported"),
+    };
+    assert!(sources.mcp_servers.contains_key("nebula-docs"));
+    assert!(sources.mcp_servers.contains_key("lunar-data"));
+    assert!(
+        sources
+            .mcp_servers
+            .values()
+            .all(|source| source.description.is_none()),
+        "MCP instruction blocks must never persist as descriptions"
+    );
+    assert!(!persisted.contains("Search synthetic nebula documentation."));
+    assert!(!persisted.contains("Read synthetic lunar measurements."));
+}
+
+#[test]
 fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     let evidence = stream_composite(&input("mcp_and_skill_sources"))
         .evidence()

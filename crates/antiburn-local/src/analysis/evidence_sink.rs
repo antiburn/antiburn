@@ -458,25 +458,29 @@ impl SessionEvidenceAccumulator {
         let (field, description_field, map) = match kind {
             ContextSourceKind::Skill => (
                 "context_sources.skills",
-                "context_sources.skills.description",
+                Some("context_sources.skills.description"),
                 &mut self.skills,
             ),
-            ContextSourceKind::McpServer => (
-                "context_sources.mcp_servers",
-                "context_sources.mcp_servers.description",
-                &mut self.mcp_servers,
-            ),
+            // MCP "descriptions" came from server-injected instruction
+            // blocks, which are broader than descriptions and read by
+            // nothing downstream, so the sink refuses them outright
+            // (#228, Option B).
+            ContextSourceKind::McpServer => {
+                ("context_sources.mcp_servers", None, &mut self.mcp_servers)
+            }
         };
         let capped_name = cap_string(field, name, &mut self.diagnostics);
         if capped_name.len() != name.len() {
             self.context_sources_cap_exceeded = true;
         }
-        let capped_description = description.map(|value| {
-            let capped = cap_string(description_field, value, &mut self.diagnostics);
-            if capped.len() != value.len() {
-                self.context_sources_cap_exceeded = true;
-            }
-            capped
+        let capped_description = description_field.and_then(|description_field| {
+            description.map(|value| {
+                let capped = cap_string(description_field, value, &mut self.diagnostics);
+                if capped.len() != value.len() {
+                    self.context_sources_cap_exceeded = true;
+                }
+                capped
+            })
         });
         if let Some(existing) = map.get_mut(&capped_name) {
             if existing.description.is_none() {
@@ -1430,22 +1434,23 @@ mod tests {
     }
 
     #[test]
-    fn context_sources_mcp_server_description_overflows_to_partial() {
+    fn context_sources_mcp_server_description_is_dropped_not_capped() {
         let evidence = source_string_overflow(ContextSourceKind::McpServer, true);
-        assert_truncated_string(&evidence, "context_sources.mcp_servers.description");
-        let sources = assert_cap_partial(evidence.context_sources);
-        assert_eq!(
-            sources
-                .mcp_servers
-                .values()
-                .next()
-                .unwrap()
-                .description
-                .as_ref()
-                .unwrap()
-                .len(),
-            EVIDENCE_STRING_CAP
+        assert!(
+            !evidence
+                .diagnostics
+                .truncated_strings
+                .contains("context_sources.mcp_servers.description"),
+            "a dropped description must not record a truncation diagnostic"
         );
+        let EvidenceValue::Complete(sources) = evidence.context_sources else {
+            panic!("dropping the MCP description must not degrade coverage");
+        };
+        let source = sources
+            .mcp_servers
+            .get("source")
+            .expect("name must persist");
+        assert_eq!(source.description, None);
     }
 
     fn subagent_string_overflow() -> SessionEvidence {

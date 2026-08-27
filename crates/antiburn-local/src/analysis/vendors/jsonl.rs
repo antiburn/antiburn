@@ -202,24 +202,21 @@ pub(super) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten();
-                let blocks = attachment
-                    .get("addedBlocks")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten();
-                observations.extend(names.zip(blocks).filter_map(|(name, block)| {
+                observations.extend(names.filter_map(|name| {
                     let name = name.as_str()?.trim();
                     if name.is_empty() {
                         return None;
                     }
+                    // Only the server name is kept (#228, Option B). The
+                    // paired `addedBlocks` entry is the server's full injected
+                    // instruction text, not a description: persisting a prefix
+                    // of it stretched the "names and descriptions" evidence
+                    // invariant, and nothing downstream reads MCP descriptions
+                    // (the Unused MCP Servers detector only needs `invoked`).
                     Some(EvidenceObservation::ContextSource {
                         kind: ContextSourceKind::McpServer,
                         name: name.to_owned(),
-                        description: block
-                            .as_str()
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                            .map(str::to_owned),
+                        description: None,
                     })
                 }));
             }
