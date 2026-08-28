@@ -60,7 +60,7 @@ describe("SessionStatusBar", () => {
 
   it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
-    const verdict = screen.getByLabelText("1 of 3 assessed checks failed")
+    const verdict = screen.getByLabelText("2 of 3 burn checks pass")
     expect(verdict.textContent).toBe("2/3 burn checks")
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
@@ -69,22 +69,22 @@ describe("SessionStatusBar", () => {
     expect(verdict.parentElement?.className).not.toContain("bg-")
   })
 
-  it("counts findings, clean checks, and unassessed checks separately", () => {
+  it("keeps the denominator on every check, so it never contradicts the tail", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    const verdict = screen.getByLabelText("1 of 2 assessed checks failed; 1 not assessed")
-    expect(verdict.textContent).toBe("1/2 burn checks · 1 not assessed")
-    expect(verdict.style.color).toContain("--color-system-red-text) 50%")
+    const verdict = screen.getByLabelText("1 of 3 burn checks pass; 1 not assessed")
+    expect(verdict.textContent).toBe("1/3 burn checks · 1 not assessed")
+    expect(verdict.style.color).toContain("--color-system-red-text) 33%")
     expect(verdict.style.color).toContain("--color-system-orange")
   })
 
-  it("reaches full red ink when every assessed check fails", () => {
+  it("reaches full red ink only when every check fails", () => {
     const allFailed = CHECKS.map((check) => ({
       ...check,
       status: "finding" as const,
       ink: "system-red-text" as const,
     }))
     render(<SessionStatusBar checks={allFailed} />)
-    const verdict = screen.getByLabelText("3 of 3 assessed checks failed")
+    const verdict = screen.getByLabelText("0 of 3 burn checks pass")
     expect(verdict.style.color).toContain("--color-system-red-text) 100%")
   })
 
@@ -97,7 +97,43 @@ describe("SessionStatusBar", () => {
     }))
     render(<SessionStatusBar checks={notAssessed} evidenceState="processing" />)
     const verdict = screen.getByLabelText("Computing session hygiene checks")
-    expect(verdict.textContent).toBe("Computing checks")
+    expect(verdict.textContent).toBe("Computing checks…")
+    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
+  })
+
+  it("keeps the ellipsis off settled evidence states", () => {
+    render(<SessionStatusBar checks={[]} evidenceState="unsupported" />)
+    const verdict = screen.getByLabelText("Unsupported session hygiene checks")
+    expect(verdict.textContent).toBe("Unsupported checks")
+  })
+
+  it("never shows a denominator smaller than the not-assessed tail", () => {
+    const oneAssessed: SessionHygieneCheck[] = [
+      CHECKS[0]!,
+      { ...WITH_NOT_ASSESSED[2]! },
+      {
+        ...CHECKS[1]!,
+        status: "notAssessed",
+        notAssessedReason: "incompleteEvidence",
+        title: "Reasoning overkill not assessed",
+        ink: "label-tertiary",
+      },
+    ]
+    render(<SessionStatusBar checks={oneAssessed} />)
+    const verdict = screen.getByLabelText("0 of 3 burn checks pass; 2 not assessed")
+    expect(verdict.textContent).toBe("0/3 burn checks · 2 not assessed")
+  })
+
+  it("replaces a zero-over-zero fraction with a plain not-assessed verdict", () => {
+    const noneAssessed = CHECKS.map((check) => ({
+      ...check,
+      status: "notAssessed" as const,
+      notAssessedReason: "capabilityMissing" as const,
+      ink: "label-tertiary" as const,
+    }))
+    render(<SessionStatusBar checks={noneAssessed} evidenceState="ready" />)
+    const verdict = screen.getByLabelText("No checks assessed")
+    expect(verdict.textContent).toBe("Not assessed")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
   })
 

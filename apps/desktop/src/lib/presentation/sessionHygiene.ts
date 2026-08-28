@@ -102,3 +102,32 @@ export function sessionHygieneStateLabel(state: SessionHygieneEvidenceState): st
       return null
   }
 }
+
+/** True while the engine still works and the verdict can change on its own. */
+export function sessionHygieneStateIsTransient(state: SessionHygieneEvidenceState): boolean {
+  switch (state) {
+    case "pending":
+    case "processing":
+    case "stale":
+    case "activelyGrowing":
+      return true
+    case "unsupported":
+    case "failed":
+    case "ready":
+      return false
+  }
+}
+
+/** Reader wording for why one check was not assessed. */
+export function notAssessedReasonLabel(reason: InsightsNotAssessedReason): string {
+  switch (reason) {
+    case "capabilityMissing":
+      return "this agent's logs don't record what this check needs"
+    case "incompleteEvidence":
+      return "couldn't read the whole session log"
+    case "evidenceContractIncomplete":
+      return "the log is missing data this check needs"
+    case "noSessionsInWindow":
+      return "no sessions in the window"
+  }
+}

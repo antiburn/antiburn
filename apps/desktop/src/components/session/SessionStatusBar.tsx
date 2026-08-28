@@ -2,6 +2,8 @@ import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
 import {
+  notAssessedReasonLabel,
+  sessionHygieneStateIsTransient,
   sessionHygieneStateLabel,
   type SessionHygieneCheck,
 } from "../../lib/presentation/sessionHygiene"
@@ -59,7 +61,12 @@ function renderTooltip(
           {index > 0 && <div className="col-span-full border-b border-separator" />}
           {group.map((check) => (
             <Fragment key={check.id}>
-              <span className={INK_CLASS[check.ink]}>{check.title}</span>
+              <span className={INK_CLASS[check.ink]}>
+                {check.title}
+                {check.status === "notAssessed" && check.notAssessedReason
+                  ? ` — ${notAssessedReasonLabel(check.notAssessedReason)}`
+                  : ""}
+              </span>
               <span className={`${INK_CLASS[check.ink]} text-lg`}>
                 {CHECK_MARK[check.status]}
               </span>
@@ -83,21 +90,31 @@ export function SessionStatusBar({
   const passed = checks.filter((check) => check.status === "clean")
   const notAssessed = checks.filter((check) => check.status === "notAssessed")
   const assessedCount = passed.length + failed.length
-  const failedShare = assessedCount === 0 ? 0 : failed.length / assessedCount
+  // The denominator is every check the session has, not only the assessed
+  // ones. A denominator that moves with the assessed count contradicts the
+  // not-assessed tail beside it.
+  const failedShare = checks.length === 0 ? 0 : failed.length / checks.length
   const allPassed = passed.length === checks.length && checks.length > 0
   const stateLabel = sessionHygieneStateLabel(evidenceState)
-  const countText = `${passed.length}/${assessedCount} burn checks${
-    notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
-  }`
+  // A transient state ends on its own, so its label carries an ellipsis.
+  const stateText = stateLabel
+    ? `${stateLabel} checks${sessionHygieneStateIsTransient(evidenceState) ? "…" : ""}`
+    : null
+  const checkNoun = checks.length === 1 ? "burn check" : "burn checks"
+  const notAssessedText = notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
+  const countText =
+    assessedCount === 0
+      ? "Not assessed"
+      : `${passed.length}/${checks.length} ${checkNoun}${notAssessedText}`
   const verdictLabel = stateLabel
     ? `${stateLabel} session hygiene checks`
     : allPassed
       ? "All checks pass"
-      : failed.length > 0
-        ? `${failed.length} of ${assessedCount} assessed checks failed${
+      : assessedCount === 0
+        ? "No checks assessed"
+        : `${passed.length} of ${checks.length} ${checkNoun} pass${
             notAssessed.length > 0 ? `; ${notAssessed.length} not assessed` : ""
           }`
-        : `${passed.length} of ${assessedCount} assessed checks pass; ${notAssessed.length} not assessed`
   const tooltip = stateLabel ? verdictLabel : renderTooltip(failed, passed, notAssessed)
 
   return (
@@ -111,7 +128,7 @@ export function SessionStatusBar({
           className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
           style={{ color: verdictInk(failedShare, assessedCount) }}
         >
-          {stateLabel ? `${stateLabel} checks` : countText}
+          {stateText ?? countText}
         </span>
       </Tooltip>
 

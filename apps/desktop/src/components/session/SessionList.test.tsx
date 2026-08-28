@@ -160,7 +160,7 @@ describe("SessionList — rows", () => {
   it("shows evidence computation instead of a synthetic hygiene verdict", () => {
     list({ entries: [entry({ sessionId: "session-pending" })] })
     const verdict = screen.getByLabelText("Computing session hygiene checks")
-    expect(verdict.textContent).toBe("Computing checks")
+    expect(verdict.textContent).toBe("Computing checks…")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
     expect(screen.queryByLabelText("All checks pass")).toBeNull()
   })
@@ -191,7 +191,7 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("1 of 3 assessed checks failed").textContent).toBe(
+      expect(screen.getByLabelText("2 of 3 burn checks pass").textContent).toBe(
         "2/3 burn checks",
       )
     })
