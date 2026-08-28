@@ -595,7 +595,7 @@ jobs:
           APPLE_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_TEAM_ID || '' }}
-          # Release analytics stay disabled when these optional values are empty.
+          # Release analytics stay disabled when this optional pair is empty.
           # Complete and link the public privacy policy before you configure them.
           ANTIBURN_ANALYTICS_URL: ${{ secrets.ANTIBURN_ANALYTICS_URL }}
           ANTIBURN_ANALYTICS_OPERATOR: ${{ secrets.ANTIBURN_ANALYTICS_OPERATOR }}
@@ -612,12 +612,17 @@ jobs:
               unset "$var"
             fi
           done
+          if { [[ -n "${ANTIBURN_ANALYTICS_URL:-}" ]] && [[ -z "${ANTIBURN_ANALYTICS_OPERATOR:-}" ]]; } || \
+             { [[ -z "${ANTIBURN_ANALYTICS_URL:-}" ]] && [[ -n "${ANTIBURN_ANALYTICS_OPERATOR:-}" ]]; }; then
+            echo "ANTIBURN_ANALYTICS_URL and ANTIBURN_ANALYTICS_OPERATOR must be configured together." >&2
+            exit 1
+          fi
           if [[ -n "${TAURI_SIGNING_CONFIG:-}" ]]; then
             pnpm --filter @antiburn/desktop exec tauri build \
-              --features distribution --target "$TARGET" --bundles "$BUNDLES" --config "$TAURI_SIGNING_CONFIG"
+              --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES" --config "$TAURI_SIGNING_CONFIG"
           else
             pnpm --filter @antiburn/desktop exec tauri build \
-              --features distribution --target "$TARGET" --bundles "$BUNDLES"
+              --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES"
           fi
 
       # Signing that is not verified is a claim, not a fact.

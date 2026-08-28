@@ -15,6 +15,7 @@ import { OnboardingView } from "./OnboardingView"
 
 const invoke = vi.hoisted(() => vi.fn())
 const openDialog = vi.hoisted(() => vi.fn())
+const clipboardWrite = vi.hoisted(() => vi.fn())
 const listeners = vi.hoisted(() => new Map<string, ((event: { payload: unknown }) => void)[]>())
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
@@ -41,15 +42,14 @@ const SETTINGS = {
   analyticsEnabled: true,
 }
 
-/// A build that *can* transmit, so the consent control renders as a live
-/// switch. The unsupported case has its own test below, because "no endpoint
-/// injected" is the state every clean checkout is in.
+/// An analytics-capable official build. Source builds use the unsupported case.
 const APP_INFO = {
   appVersion: "0.1.0",
   debugBuild: false,
   arch: "aarch64",
   updatesSupported: false,
   analyticsSupported: true,
+  analyticsEnvironmentDisabled: false,
   analyticsOperator: "the antiburn team",
 }
 
@@ -112,6 +112,12 @@ describe("OnboardingView", () => {
     invoke.mockReset()
     openDialog.mockReset()
     listeners.clear()
+    clipboardWrite.mockReset()
+    clipboardWrite.mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    })
     mockCommands()
   })
 
@@ -161,10 +167,7 @@ describe("OnboardingView", () => {
       await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
     ).toBeInTheDocument()
     expect(screen.getByText(/nothing from your sessions is ever uploaded/i)).toBeInTheDocument()
-    // Welcome *mentions* the analytics control and says where it lives; the
-    // switch itself is on the last step, which is the shape the matrix asks
-    // for. `APP_INFO` reports a supported build, so this is the branch that
-    // claims analytics — see below for the build that cannot send them.
+    // Welcome names the permanent opt-out before setup continues.
     expect(
       screen.getByText(/only goes online for.*You can opt out of the analytics/i),
     ).toBeInTheDocument()
@@ -193,78 +196,83 @@ describe("OnboardingView", () => {
     expect(await screen.findByRole("heading", { name: "Ready" })).toBeInTheDocument()
     expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument()
     expect(screen.getByRole("switch", { name: "Launch antiburn on startup" })).toBeChecked()
-    // What the switch commits to, at the moment it is committed to. The
-    // recipient is deliberately not named here — Settings → Privacy does that,
-    // and this row points at it.
     expect(
-      screen.getByText(/only sends which features are used, and what breaks/i),
+      screen.getByText(/Never prompts, sessions, source code, filenames, or paths/i),
     ).toBeInTheDocument()
+    expect(screen.getByText(/check what leaves your computer/i)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 14,
         launchAtLogin: true,
-        analyticsEnabled: true,
       }),
     )
   })
 
-  /// The consent control ships on by default, and the reader meets it here
-  /// before anything can be sent — the flow writes nothing until Finish.
-  it("offers the analytics control on the last step, on by default", async () => {
+  it("records each fixed onboarding step once", async () => {
     render(<OnboardingView />)
     await advanceToReady()
 
-    const analytics = screen.getByRole("switch", {
-      name: "Send anonymised analytics",
-    })
-    expect(analytics).toBeChecked()
-    // Nothing has been written yet: the whole point of putting this on the
-    // step that commits is that declining here means never recorded.
-    expect(invoke).not.toHaveBeenCalledWith("finish_onboarding", expect.anything())
+    for (const step of ["welcome", "sources", "repositories", "historical_scan", "ready"]) {
+      expect(invoke).toHaveBeenCalledWith("note_interaction", {
+        interaction: { kind: "onboardingStepViewed", step },
+      })
+    }
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "note_interaction"),
+    ).toHaveLength(5)
   })
 
-  /// A build with no endpoint injected cannot send anything, so the row says
-  /// so rather than offering a switch over nothing.
-  it("disables the analytics control in a build with no endpoint", async () => {
+  it("omits analytics disclosure from a build without analytics", async () => {
     mockCommands({ app_info: { ...APP_INFO, analyticsSupported: false } })
     render(<OnboardingView />)
 
-    // Welcome first, because it is the screen that used to overstate this.
-    // Its analytics sentence was unconditional, so a build with no endpoint
-    // opened by announcing a transmission it could not make.
     expect(
       await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
     ).toBeInTheDocument()
-    expect(screen.getByText(/it sends nothing about itself/i)).toBeInTheDocument()
-    expect(screen.queryByText(/anonymised analytics about the app/i)).not.toBeInTheDocument()
 
     await advanceToReady()
 
-    const analytics = screen.getByRole("switch", {
-      name: "Send anonymised analytics",
-    })
-    expect(analytics).toBeDisabled()
-    expect(analytics).not.toBeChecked()
-    expect(screen.getByText(/this build has no analytics endpoint/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Never prompts, sessions/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).not.toBeInTheDocument()
   })
 
-  /// Turning it off on the Ready screen must reach the shell as part of the
-  /// same commit, not as a later correction.
-  it("carries an analytics opt-out into the finish call", async () => {
+  it("explains the process override without hiding analytics support", async () => {
+    mockCommands({
+      app_info: { ...APP_INFO, analyticsEnvironmentDisabled: true },
+    })
+    render(<OnboardingView />)
+
+    expect(
+      await screen.findByText(/Analytics is disabled for this launch by/i),
+    ).toHaveTextContent("ANTIBURN_ANALYTICS_ENABLED=false")
+    expect(screen.queryByText(/This build has no analytics endpoint/i)).not.toBeInTheDocument()
+
+    await advanceToReady()
+
+    expect(screen.getByText(/Off for this launch/i)).toHaveTextContent(
+      "ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use the setting in Settings → Privacy.",
+    )
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "note_interaction"),
+    ).toHaveLength(0)
+  })
+
+  it("copies the optional privacy prompt for an AI agent", async () => {
     render(<OnboardingView />)
     await advanceToReady()
 
-    fireEvent.click(screen.getByRole("switch", { name: "Send anonymised analytics" }))
-    fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }))
 
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
-        activityWindowDays: 7,
-        launchAtLogin: true,
-        analyticsEnabled: false,
-      }),
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument()
+    expect(clipboardWrite).toHaveBeenCalledWith(
+      expect.stringContaining("Explain in plain language what stays on my computer"),
+    )
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument(),
+      { timeout: 3_000 },
     )
   })
 
@@ -283,7 +291,6 @@ describe("OnboardingView", () => {
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 7,
         launchAtLogin: false,
-        analyticsEnabled: true,
       }),
     )
   })

@@ -1,12 +1,10 @@
 # cargo-deny configuration for the antiburn desktop app crate.
 #
-# CI runs `cargo deny --locked check licenses` and
+# CI runs `cargo deny --locked check bans licenses` and
 # `cargo deny --locked check advisories` against this crate's own lockfile;
-# every dependency must carry one of the allowed permissive licenses. Unlike the
-# engine's deny.toml, there is no telemetry-SDK ban here: the app shell
-# links Tauri and its updater plugin freely, since neither is a telemetry or
-# analytics SDK — antiburn is local in that it needs no service of ours, not
-# that it opens no network connection.
+# every dependency must carry one of the allowed permissive licenses. The app's
+# small first-party client must not be replaced or supplemented by a telemetry,
+# analytics, or crash-reporting SDK.
 
 [advisories]
 # These dependencies are unavoidable transitive parts of the current Tauri
@@ -56,4 +54,13 @@ allow = [
     "MIT-0",
     "CDLA-Permissive-2.0",
     "MPL-2.0",
+]
+
+[bans]
+deny = [
+    { crate = "sentry" },
+    { crate = "opentelemetry" },
+    { crate = "posthog" },
+    { crate = "segment" },
+    { crate = "datadog" },
 ]

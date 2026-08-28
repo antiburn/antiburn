@@ -280,6 +280,14 @@ jobs:
         working-directory: ${{ matrix.workspace.directory }}
         run: cargo ${{ matrix.check.command }}
 
+      - name: Test the analytics-enabled shell
+        if: matrix.platform.name == 'linux' && matrix.workspace.name == 'shell' && matrix.check.name == 'Tests'
+        working-directory: apps/desktop/src-tauri
+        env:
+          ANTIBURN_ANALYTICS_URL: http://127.0.0.1:8787
+          ANTIBURN_ANALYTICS_OPERATOR: Local development
+        run: cargo test --locked --features analytics
+
   desktop-backend:
     name: desktop app (backend)
     needs:
@@ -510,7 +518,7 @@ jobs:
       - name: Compile the release target without bundling or signing
         # This matrix includes PowerShell on Windows and POSIX shells elsewhere.
         # Let Actions substitute the value before either shell sees the command.
-        run: pnpm --filter @antiburn/desktop exec tauri build --features distribution --target "${{ matrix.target }}" --no-bundle
+        run: pnpm --filter @antiburn/desktop exec tauri build --features distribution,analytics --target "${{ matrix.target }}" --no-bundle
 
   licenses:
     name: dependency licenses
@@ -545,9 +553,9 @@ jobs:
         working-directory: crates/antiburn-local
         run: cargo deny --locked check advisories
 
-      - name: Check desktop app licenses
+      - name: Check desktop app licenses and dependency bans
         working-directory: apps/desktop/src-tauri
-        run: cargo deny --locked check licenses
+        run: cargo deny --locked check bans licenses
 
       - name: Check desktop app advisories
         working-directory: apps/desktop/src-tauri
