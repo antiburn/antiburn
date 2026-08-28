@@ -70,6 +70,13 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
 pub fn record_scan(_app: &tauri::AppHandle, _sessions: Option<u64>) {}
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_unrecognized_records(
+    _app: &tauri::AppHandle,
+    _summary: &antiburn_local::insights::UnrecognizedRecords,
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn handle_settings_transition(
     _app: &tauri::AppHandle,
     _previous: &crate::store::AppSettings,
@@ -82,6 +89,7 @@ mod enabled {
 
     use std::time::Duration;
 
+    use antiburn_local::insights::UnrecognizedRecords;
     use tauri::Manager as _;
 
     use super::event::{Event, EventName, Facts, Interaction};
@@ -204,6 +212,32 @@ mod enabled {
     /// hint, not a fact about the reader, and it has no business on their disk.
     static LAST_SCAN: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
+    /// The last unknown-record outcome reported in this run.
+    static LAST_UNRECOGNIZED: std::sync::Mutex<Option<UnrecognizedOutcome>> =
+        std::sync::Mutex::new(None);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum UnrecognizedOutcome {
+        None,
+        Observed {
+            label: &'static str,
+            bucket: &'static str,
+        },
+    }
+
+    impl UnrecognizedOutcome {
+        fn facts(self) -> Option<Facts> {
+            let Self::Observed { label, bucket } = self else {
+                return None;
+            };
+            Some(Facts {
+                bucket: Some(bucket),
+                label: Some(label),
+                detail: None,
+            })
+        }
+    }
+
     /// Record a discovery pass, if it says anything the previous one did not.
     ///
     /// `Some(count)` is a completed pass; `None` is a failed one.
@@ -263,6 +297,59 @@ mod enabled {
         }
         *guard = outcome;
         true
+    }
+
+    /// Record a safe summary when an Insights cohort contains unknown types.
+    pub fn record_unrecognized_records(app: &tauri::AppHandle, summary: &UnrecognizedRecords) {
+        if !allowed(app) {
+            return;
+        }
+        let outcome = unrecognized_records_outcome(summary);
+        if !unrecognized_outcome_is_new(outcome) {
+            return;
+        }
+        let Some(facts) = outcome.facts() else {
+            return;
+        };
+        record(app, EventName::UnrecognizedRecordsObserved, facts);
+    }
+
+    fn unrecognized_records_outcome(summary: &UnrecognizedRecords) -> UnrecognizedOutcome {
+        if summary.sessions_with_types == 0 {
+            return UnrecognizedOutcome::None;
+        }
+        let label = if summary.evidence_bearing_sessions > 0 {
+            "evidence_bearing"
+        } else if summary.capped_sessions > 0 || summary.truncated_sessions > 0 {
+            "inert_capped"
+        } else {
+            "inert_only"
+        };
+        UnrecognizedOutcome::Observed {
+            label,
+            bucket: event::bucket(summary.sessions_with_types),
+        }
+    }
+
+    fn unrecognized_outcome_is_new(outcome: UnrecognizedOutcome) -> bool {
+        let mut guard = LAST_UNRECOGNIZED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *guard == Some(outcome) {
+            return false;
+        }
+        *guard = Some(outcome);
+        true
+    }
+
+    /// Clear all in-memory suppression hints after consent withdrawal.
+    fn reset_suppression() {
+        *LAST_SCAN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *LAST_UNRECOGNIZED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     /// The identifier to stamp on an event, minting or rotating it as needed.
@@ -374,6 +461,7 @@ mod enabled {
             return;
         }
         let Some(store) = app.try_state::<Store>() else {
+            reset_suppression();
             return;
         };
         clear_local_state(&store);
@@ -388,12 +476,7 @@ mod enabled {
         // the session that was just withdrawn.
         let _ = store.clear_analytics();
         reset_session();
-        // Withdrawal leaves no in-memory residue of the consented period either,
-        // so opting back in starts from a clean comparison rather than silently
-        // suppressing the first scan it would otherwise report.
-        *LAST_SCAN
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        reset_suppression();
     }
 
     /// Install the TLS crypto provider this crate's client needs.
@@ -522,6 +605,23 @@ mod enabled {
     mod tests {
         use super::*;
 
+        static SUPPRESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        fn unrecognized_summary(
+            sessions: u64,
+            evidence_bearing: u64,
+            capped: u64,
+            truncated: u64,
+        ) -> UnrecognizedRecords {
+            UnrecognizedRecords {
+                sessions_with_types: sessions,
+                evidence_bearing_sessions: evidence_bearing,
+                capped_sessions: capped,
+                truncated_sessions: truncated,
+                ..UnrecognizedRecords::default()
+            }
+        }
+
         /// The delivery client must actually build.
         ///
         /// `flush_once` swallows a builder error and returns, so a TLS
@@ -558,6 +658,7 @@ mod enabled {
 
         #[test]
         fn an_environment_opt_out_clears_local_analytics_state() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
             let directory = tempfile::tempdir().unwrap();
             let store = Store::open_in_memory(directory.path()).unwrap();
             store
@@ -624,6 +725,7 @@ mod enabled {
         /// failure counts as a change.
         #[test]
         fn only_a_changed_scan_outcome_is_worth_an_event() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
             *LAST_SCAN.lock().unwrap() = None;
 
             assert!(
@@ -638,6 +740,67 @@ mod enabled {
             assert!(scan_outcome_is_new(Some("50-199")), "out of failure");
 
             *LAST_SCAN.lock().unwrap() = None;
+        }
+
+        #[test]
+        fn an_unrecognized_records_report_becomes_a_bucketed_event() {
+            let inert = unrecognized_records_outcome(&unrecognized_summary(7, 0, 0, 0))
+                .facts()
+                .unwrap();
+            assert_eq!(inert.label, Some("inert_only"));
+            assert_eq!(inert.bucket, Some("1-9"));
+
+            let capped = unrecognized_records_outcome(&unrecognized_summary(12, 0, 1, 0))
+                .facts()
+                .unwrap();
+            assert_eq!(capped.label, Some("inert_capped"));
+            assert_eq!(capped.bucket, Some("10-49"));
+
+            let evidence = unrecognized_records_outcome(&unrecognized_summary(200, 1, 1, 1))
+                .facts()
+                .unwrap();
+            assert_eq!(evidence.label, Some("evidence_bearing"));
+            assert_eq!(evidence.bucket, Some("200-999"));
+            assert!(
+                unrecognized_records_outcome(&unrecognized_summary(0, 0, 0, 0))
+                    .facts()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn only_a_changed_unrecognized_outcome_is_worth_an_event() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_suppression();
+            let inert = UnrecognizedOutcome::Observed {
+                label: "inert_only",
+                bucket: "1-9",
+            };
+
+            assert!(unrecognized_outcome_is_new(inert));
+            assert!(!unrecognized_outcome_is_new(inert));
+            assert!(unrecognized_outcome_is_new(UnrecognizedOutcome::None));
+            assert!(!unrecognized_outcome_is_new(UnrecognizedOutcome::None));
+            assert!(unrecognized_outcome_is_new(inert));
+            reset_suppression();
+        }
+
+        #[test]
+        fn withdrawing_consent_clears_every_suppression_hint() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            reset_suppression();
+            let inert = UnrecognizedOutcome::Observed {
+                label: "inert_only",
+                bucket: "1-9",
+            };
+            assert!(scan_outcome_is_new(Some("1-9")));
+            assert!(unrecognized_outcome_is_new(inert));
+
+            reset_suppression();
+
+            assert!(scan_outcome_is_new(Some("1-9")));
+            assert!(unrecognized_outcome_is_new(inert));
+            reset_suppression();
         }
 
         #[test]
