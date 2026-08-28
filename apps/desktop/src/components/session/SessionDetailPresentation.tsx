@@ -17,8 +17,11 @@ import { agentDisplayName } from "../../lib/presentation/agents"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
 import {
+  SESSION_HYGIENE_CHECKING_ROWS,
+  SESSION_HYGIENE_NOT_ASSESSED_NOTE,
   sessionHygieneChecks,
-  sessionHygieneStateLabel,
+  sessionHygieneDisplay,
+  type SessionHygieneCheck,
 } from "../../lib/presentation/sessionHygiene"
 import {
   modelRunNames,
@@ -236,6 +239,96 @@ function RelationControl({
   )
 }
 
+/** The state dot beside one hygiene check row. */
+function HygieneDot({ status }: { status: SessionHygieneCheck["status"] }) {
+  return (
+    <span
+      aria-hidden="true"
+      // The 7px dot matches the footnote cap height beside it.
+      className={cn(
+        "size-[7px] shrink-0 rounded-full",
+        status === "clean" && "bg-system-green",
+        status === "finding" && "bg-system-red",
+        status === "notAssessed" && "border border-dashed border-label-tertiary",
+      )}
+    />
+  )
+}
+
+/** The tooltip body: what the check examined, and the burn it prevents. */
+function HygieneTooltipBody({ check }: { check: SessionHygieneCheck }) {
+  return (
+    <div className="flex flex-col gap-y-1 text-left">
+      <span className="font-semibold">{check.tooltip.heading}</span>
+      <span>{check.tooltip.body}</span>
+      <span>
+        <span className="font-semibold text-brand">Why it burns: </span>
+        {check.tooltip.burn}
+      </span>
+      {check.status === "notAssessed" && check.notAssessedReason && (
+        <span>
+          <span className="font-semibold">Not assessed: </span>
+          {SESSION_HYGIENE_NOT_ASSESSED_NOTE[check.notAssessedReason]}
+        </span>
+      )}
+    </div>
+  )
+}
+
+interface HygieneChecksProps {
+  checks: SessionHygieneCheck[]
+  display: ReturnType<typeof sessionHygieneDisplay>
+}
+
+function HygieneChecks({ checks, display }: HygieneChecksProps) {
+  if (display.kind === "notice") {
+    return (
+      <div aria-label="Session hygiene checks" className="type-footnote text-label-tertiary">
+        {display.text}
+      </div>
+    )
+  }
+  if (display.kind === "checking") {
+    return (
+      <div aria-label="Session hygiene checks" className="flex animate-pulse flex-col gap-y-1">
+        {SESSION_HYGIENE_CHECKING_ROWS.map((row) => (
+          <div
+            key={row}
+            className="flex items-center gap-x-2 type-footnote text-label-tertiary"
+          >
+            <HygieneDot status="notAssessed" />
+            {row}
+          </div>
+        ))}
+      </div>
+    )
+  }
+  return (
+    <div aria-label="Session hygiene checks" className="flex flex-col gap-y-1">
+      {checks.map((check) => (
+        <Tooltip
+          key={check.id}
+          label={<HygieneTooltipBody check={check} />}
+          side="bottom"
+          delayMs={150}
+        >
+          <div
+            className={cn(
+              "flex w-fit items-center gap-x-2 type-footnote",
+              check.status === "finding" && "text-system-red-text",
+              check.status === "clean" && "text-label-secondary",
+              check.status === "notAssessed" && "text-label-tertiary",
+            )}
+          >
+            <HygieneDot status={check.status} />
+            {check.title}
+          </div>
+        </Tooltip>
+      ))}
+    </div>
+  )
+}
+
 function Card({
   title,
   subtitle,
@@ -429,7 +522,7 @@ export function SessionDetailPresentation({
   const subagent = session.subagent
   const modelNames = modelRunShortNames(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
-  const hygieneStateLabel = sessionHygieneStateLabel(hygiene.evidenceState)
+  const hygieneDisplay = sessionHygieneDisplay(hygiene.evidenceState)
 
   // Left and right arrows traverse adjacent sessions, mirroring the header
   // chevrons. A missing handler is a no-op, matching the chevrons' own state.
@@ -718,37 +811,13 @@ export function SessionDetailPresentation({
                 </div>
               </div>
 
-              <div className="flex items-center gap-1 bg-(--color-bg-secondary) border-dashed border-1 border-(--color-border) px-3 py-2 rounded-md">
-                <TruncatedText
-                  className="min-w-0 flex-1 text-sm break-all"
-                  text={relations?.title?.trim() || session.title?.trim() || "Session"}
-                  lines={3}
-                />
-              </div>
+              <TruncatedText
+                className="min-w-0 type-title-3 break-all text-label"
+                text={relations?.title?.trim() || session.title?.trim() || "Session"}
+                lines={3}
+              />
 
-              <div className="flex items-center gap-x-2">
-                <span className="type-footnote text-label-tertiary">
-                  Hygiene checks{hygieneStateLabel ? ` · ${hygieneStateLabel}` : ""}:
-                </span>
-                <div className="flex items-center gap-x-2" aria-label="Session hygiene checks">
-                  {hygieneChecks.map((check) => (
-                    <span
-                      key={check.id}
-                      className={cn(
-                        "inline-flex size-5 items-center justify-center rounded-control bg-surface-secondary type-footnote leading-none transition-opacity duration-[var(--duration-fast)] hover:opacity-80",
-                        check.status === "clean" && "text-system-green opacity-50",
-                        check.status === "finding" && "text-system-red-text opacity-70",
-                        check.status === "notAssessed" &&
-                          "border border-dashed border-separator text-label-tertiary opacity-70",
-                      )}
-                      title={check.title}
-                      aria-label={check.title}
-                    >
-                      {check.status === "clean" ? "✓" : check.status === "finding" ? "×" : "?"}
-                    </span>
-                  ))}
-                </div>
-              </div>
+              <HygieneChecks checks={hygieneChecks} display={hygieneDisplay} />
             </div>
 
             {/* Provenance: mark a sub-agent view as an autonomous worker and

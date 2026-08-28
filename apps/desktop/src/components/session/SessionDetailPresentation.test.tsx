@@ -149,11 +149,12 @@ describe("SessionDetailPresentation — chrome", () => {
   it("renders the useful card hierarchy for a settled session", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
+    expect(screen.getByText("No reasoning overkill")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.getByText("Cost")).toBeTruthy()
   })
 
-  it("renders a distinct not-assessed hygiene pip with an accessible label", () => {
+  it("renders one labeled row per hygiene check with distinct state inks", () => {
     view({
       hygiene: {
         badges: [
@@ -177,12 +178,33 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
-    const pip = screen.getByLabelText("Reasoning overkill not assessed")
-    expect(pip.textContent).toBe("?")
-    expect(pip.className).toContain("border-dashed")
-    expect(pip.className).toContain("text-label-tertiary")
-    expect(screen.getByLabelText("No excess cache rehydration").textContent).toBe("✓")
-    expect(screen.getByLabelText("Bloated initial context").textContent).toBe("×")
+    const notAssessed = screen.getByText("Reasoning overkill not assessed")
+    expect(notAssessed.className).toContain("text-label-tertiary")
+    expect(notAssessed.querySelector("[aria-hidden]")?.className).toContain("border-dashed")
+    expect(screen.getByText("No excess cache rehydration").className).toContain(
+      "text-label-secondary",
+    )
+    expect(screen.getByText("Bloated initial context").className).toContain(
+      "text-system-red-text",
+    )
+  })
+
+  it("shows pulsing checking rows instead of results while the engine computes", () => {
+    view({
+      hygiene: { badges: INITIAL_SESSION_HYGIENE.badges, evidenceState: "processing" },
+    })
+    const block = screen.getByLabelText("Session hygiene checks")
+    expect(block.className).toContain("animate-pulse")
+    expect(screen.getByText("Checking reasoning effort…")).toBeTruthy()
+    expect(screen.queryByText("Reasoning overkill not assessed")).toBeNull()
+  })
+
+  it("replaces the hygiene rows with a notice for an unsupported agent", () => {
+    view({
+      hygiene: { badges: INITIAL_SESSION_HYGIENE.badges, evidenceState: "unsupported" },
+    })
+    expect(screen.getByText("Hygiene checks are not supported for this agent.")).toBeTruthy()
+    expect(screen.queryByText("Checking reasoning effort…")).toBeNull()
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -225,7 +247,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.queryByText("Efficiency")).toBeNull()
   })
 
-  it("shows the session title on no more than three lines", () => {
+  it("shows the session title on no more than three lines, without box chrome", () => {
     view({
       session: {
         agent: "claude-code",
@@ -240,6 +262,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(title.className).toContain("truncated-text-lines")
     expect(title.className).toContain("break-all")
     expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("3")
+    expect(title.parentElement?.className).not.toContain("border-dashed")
   })
 
   it("arranges list metadata around the session title", () => {
@@ -268,9 +291,9 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(detailRow).toHaveTextContent("5.6-sol/high")
     const hygiene = screen.getByLabelText("Session hygiene checks")
     expect(hygiene.children).toHaveLength(3)
-    expect(screen.getByLabelText("No reasoning overkill")).toBeTruthy()
-    expect(screen.getByLabelText("No excess cache rehydration")).toBeTruthy()
-    expect(screen.getByLabelText("No bloated initial context")).toBeTruthy()
+    expect(screen.getByText("No reasoning overkill")).toBeTruthy()
+    expect(screen.getByText("No excess cache rehydration")).toBeTruthy()
+    expect(screen.getByText("No bloated initial context")).toBeTruthy()
   })
 
   it("names the back control for what it does, not for the view it leaves", () => {

@@ -4,6 +4,12 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { SessionHygieneCheck } from "../../lib/presentation/sessionHygiene"
 import { SessionStatusBar } from "./SessionStatusBar"
 
+const TOOLTIP = {
+  heading: "Synthetic check",
+  body: "What the check examined.",
+  burn: "Why it burns tokens.",
+}
+
 const CHECKS: SessionHygieneCheck[] = [
   {
     id: "bloatedInitialContext",
@@ -11,6 +17,7 @@ const CHECKS: SessionHygieneCheck[] = [
     notAssessedReason: null,
     title: "Bloated initial context",
     ink: "system-red-text",
+    tooltip: TOOLTIP,
   },
   {
     id: "reasoningOverkill",
@@ -18,6 +25,7 @@ const CHECKS: SessionHygieneCheck[] = [
     notAssessedReason: null,
     title: "No reasoning overkill",
     ink: "system-green",
+    tooltip: TOOLTIP,
   },
   {
     id: "excessCacheRehydration",
@@ -25,6 +33,7 @@ const CHECKS: SessionHygieneCheck[] = [
     notAssessedReason: null,
     title: "No excess cache rehydration",
     ink: "system-green",
+    tooltip: TOOLTIP,
   },
 ]
 
