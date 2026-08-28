@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog"
 import { applyTheme } from "../../lib/appearance"
 import {
   addScanRoot,
+  appInfo,
   defaultScanRoots,
   finishOnboarding,
   getFolderPermissions,
@@ -10,12 +11,14 @@ import {
   getSettings,
   listRepositories,
   listScanRoots,
+  noteInteraction,
   onScanEvent,
   recheckFolderPermissions,
   removeScanRoot,
   requestFolderAccess,
   scanNow,
   setRepositoryEnabled,
+  type Interaction,
   type RepositoryItemPayload,
   type ScanStatus,
 } from "../../lib/ipc"
@@ -38,11 +41,17 @@ const EMPTY_PERMISSIONS: FolderPermissions = {
 
 const BETWEEN_FOLDERS_MS = 800
 
+export type OnboardingStep = Extract<Interaction, { kind: "onboardingStepViewed" }>["step"]
+
 export type OnboardingSnapshot = {
   loadState: "loading" | "ready" | "error"
   loadError: string | null
   activityWindowDays: number
   launchAtLogin: boolean
+  /** Whether this build includes an active analytics client. */
+  analyticsSupported: boolean
+  /** Whether the process environment disables analytics for this launch. */
+  analyticsEnvironmentDisabled: boolean
   scanRoots: string[]
   defaultRoots: string[]
   permissions: FolderPermissions
@@ -87,6 +96,7 @@ export class OnboardingSession {
   private permissionTimer: ReturnType<typeof setTimeout> | null = null
   private rescanInFlight = false
   private rescanQueued = false
+  private analyticsSteps = new Set<OnboardingStep>()
 
   private snapshot: OnboardingSnapshot
 
@@ -96,6 +106,8 @@ export class OnboardingSession {
       loadError: null,
       activityWindowDays: 7,
       launchAtLogin: true,
+      analyticsSupported: false,
+      analyticsEnvironmentDisabled: false,
       scanRoots: [],
       defaultRoots: [],
       permissions: EMPTY_PERMISSIONS,
@@ -127,6 +139,17 @@ export class OnboardingSession {
 
   setLaunchAtLogin = (enabled: boolean): void => {
     this.update({ launchAtLogin: enabled, finishError: null })
+  }
+
+  noteOnboardingStep = (step: OnboardingStep): void => {
+    if (
+      !this.snapshot.analyticsSupported ||
+      this.snapshot.analyticsEnvironmentDisabled ||
+      this.analyticsSteps.has(step)
+    )
+      return
+    this.analyticsSteps.add(step)
+    noteInteraction({ kind: "onboardingStepViewed", step })
   }
 
   addScanRoot = async (): Promise<void> => {
@@ -212,9 +235,10 @@ export class OnboardingSession {
       }
 
       const scanVersion = this.scanEventVersion
-      const [settings, scanRoots, defaultRoots, scanStatus, permissions, repositories] =
+      const [settings, info, scanRoots, defaultRoots, scanStatus, permissions, repositories] =
         await Promise.all([
           getSettings(),
+          appInfo().catch(() => null),
           listScanRoots().catch(() => []),
           defaultScanRoots().catch(() => []),
           getScanStatus().catch(() => null),
@@ -231,12 +255,15 @@ export class OnboardingSession {
         loadError: null,
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
+        analyticsSupported: info?.analyticsSupported ?? false,
+        analyticsEnvironmentDisabled: info?.analyticsEnvironmentDisabled ?? false,
         scanRoots,
         defaultRoots,
         permissions,
         repositories: toRepositories(repositories),
         ...(scanVersion === this.scanEventVersion ? { scanStatus } : {}),
       })
+      this.noteOnboardingStep("welcome")
     } catch (error) {
       if (generation !== this.generation) return
       this.update({

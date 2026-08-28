@@ -31,6 +31,9 @@ path = "src/lib.rs"
 # Set only by packaged distribution builds. Release-profile development runs
 # deliberately omit it so they cannot change the machine's login items.
 distribution = []
+# Include the first-party analytics client. Source builds omit it unless the
+# builder selects this feature explicitly.
+analytics = ["dep:getrandom"]
 
 [[bin]]
 name = "antiburn"
@@ -118,7 +121,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
-getrandom = "0.4"
+getrandom = { version = "0.4", optional = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds

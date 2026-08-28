@@ -5,6 +5,7 @@ import { OnboardingView } from "./OnboardingView"
 
 const invoke = vi.hoisted(() => vi.fn())
 const openDialog = vi.hoisted(() => vi.fn())
+const clipboardWrite = vi.hoisted(() => vi.fn())
 const listeners = vi.hoisted(() => new Map<string, ((event: { payload: unknown }) => void)[]>())
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
@@ -29,6 +30,17 @@ const SETTINGS = {
   autoUpdate: true,
   discoveryPaused: false,
   analyticsEnabled: true,
+}
+
+/** An analytics-capable official build. Source builds use the unsupported case. */
+const APP_INFO = {
+  appVersion: "0.1.0",
+  debugBuild: false,
+  arch: "aarch64",
+  updatesSupported: false,
+  analyticsSupported: true,
+  analyticsEnvironmentDisabled: false,
+  analyticsOperator: "the antiburn team",
 }
 
 const SCAN_STATUS = {
@@ -73,8 +85,9 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
     switch (command) {
       case "get_settings":
         return Promise.resolve(SETTINGS)
+      case "app_info":
+        return Promise.resolve(APP_INFO)
       case "scan_now":
-      case "cancel_scan":
         return Promise.resolve(SCAN_STATUS)
       // A fresh install: nothing has been scanned, so the repository step has
       // to ask for a pass before it has anything to show.
@@ -113,6 +126,12 @@ describe("OnboardingView", () => {
     invoke.mockReset()
     openDialog.mockReset()
     listeners.clear()
+    clipboardWrite.mockReset()
+    clipboardWrite.mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    })
     mockCommands()
   })
 
@@ -189,13 +208,80 @@ describe("OnboardingView", () => {
     )
   })
 
-  it("leaves analytics out of the onboarding choices", async () => {
+  it("discloses analytics on the Ready step without offering a switch", async () => {
     render(<OnboardingView />)
     await advanceToReady()
 
+    expect(screen.queryByRole("switch", { name: /analytics/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/Never prompts, sessions/i)).toBeInTheDocument()
+    expect(screen.getByText(/check what leaves your computer/i)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument()
+  })
+
+  it("records each onboarding step once", async () => {
+    render(<OnboardingView />)
+    await advanceToReady()
+    fireEvent.click(screen.getByRole("button", { name: "Back" }))
+    await screen.findByRole("heading", { name: "Repo search locations" })
+
+    for (const step of ["welcome", "sources_and_repos", "ready"]) {
+      expect(invoke).toHaveBeenCalledWith("note_interaction", {
+        interaction: { kind: "onboardingStepViewed", step },
+      })
+    }
     expect(
-      screen.queryByRole("switch", { name: "Send anonymised analytics" }),
-    ).not.toBeInTheDocument()
+      invoke.mock.calls.filter(([command]) => command === "note_interaction"),
+    ).toHaveLength(3)
+  })
+
+  it("omits analytics disclosure from a build without analytics", async () => {
+    mockCommands({ app_info: { ...APP_INFO, analyticsSupported: false } })
+    render(<OnboardingView />)
+
+    expect(await screen.findByText(/This build has no analytics endpoint/i)).toBeInTheDocument()
+
+    await advanceToReady()
+
+    expect(screen.queryByText(/Never prompts, sessions/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).not.toBeInTheDocument()
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "note_interaction"),
+    ).toHaveLength(0)
+  })
+
+  it("explains the process override without hiding analytics support", async () => {
+    mockCommands({ app_info: { ...APP_INFO, analyticsEnvironmentDisabled: true } })
+    render(<OnboardingView />)
+
+    expect(
+      await screen.findByText(/Analytics is disabled for this launch by/i),
+    ).toHaveTextContent("ANTIBURN_ANALYTICS_ENABLED=false")
+    expect(screen.queryByText(/This build has no analytics endpoint/i)).not.toBeInTheDocument()
+
+    await advanceToReady()
+
+    expect(screen.getByText(/Off for this launch/i)).toHaveTextContent(
+      "ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use the setting in Settings → Privacy.",
+    )
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "note_interaction"),
+    ).toHaveLength(0)
+  })
+
+  it("copies the optional privacy prompt for an AI agent", async () => {
+    render(<OnboardingView />)
+    await advanceToReady()
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }))
+
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument()
+    expect(clipboardWrite).toHaveBeenCalledWith(
+      expect.stringContaining("Explain in plain language what stays on my computer"),
+    )
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument(),
+      { timeout: 3_000 },
+    )
   })
 
   it("persists a startup opt-out before finishing onboarding", async () => {

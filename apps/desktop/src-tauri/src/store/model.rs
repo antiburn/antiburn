@@ -606,9 +606,8 @@ pub struct AppSettings {
     /// provider, this one stops the named provider. Both stop requests, so a
     /// hidden provider also stops its milestone notifications.
     pub live_usage_hidden_providers: HiddenMeters,
-    /// The analytics channel. On automatically after setup for a new install;
-    /// Settings → Privacy provides the opt-out. A store that finished setup
-    /// under copy promising no analytics remains off.
+    /// The analytics opt-out. On by default for a new install and preserved
+    /// when an existing install has explicitly disabled it.
     pub analytics_enabled: bool,
     /// Whether the popover's usage-limits section is expanded to its
     /// per-provider rows, rather than collapsed to the chip row. Purely a
@@ -650,9 +649,9 @@ impl Default for AppSettings {
             // Empty: every provider antiburn can meter is metered. A reader
             // who wants fewer meters says so one provider at a time.
             live_usage_hidden_providers: HiddenMeters::default(),
-            // On automatically after setup. The onboarding gate prevents an
-            // event before setup finishes, and Settings → Privacy provides the
-            // opt-out. `read_settings` keeps older completed installs off.
+            // Official analytics-capable builds start enabled. Source builds
+            // omit the client unless the builder selects its Cargo feature.
+            // `settings_from` keeps older completed installs disabled.
             analytics_enabled: true,
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.

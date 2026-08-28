@@ -6,15 +6,15 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Platforms
 
-| Platform                                              | v1 support                                                                                                                                                                                                           |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS 13 or later (Apple silicon and Intel)           | Supported                                                                                                                                                                                                            |
-| macOS 12 or earlier                                   | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                           |
-| Windows 11 (x86-64)                                   | Supported                                                                                                                                                                                                            |
-| Windows 10                                            | Not tested; no support claimed                                                                                                                                                                                       |
-| Linux, mainstream x86-64 desktops with a system tray  | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session with no X server leaves that placement to the compositor |
-| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application                                                                                                                                                                       |
-| Mobile                                                | Out of scope                                                                                                                                                                                                         |
+| Platform | v1 support |
+| --- | --- |
+| macOS 13 or later (Apple silicon and Intel) | Supported |
+| macOS 12 or earlier | Not supported; the bundle declares macOS 13 as its minimum |
+| Windows 11 (x86-64) | Supported |
+| Windows 10 | Not tested; no support claimed |
+| Linux, mainstream x86-64 desktops with a system tray | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session with no X server leaves that placement to the compositor |
+| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application |
+| Mobile | Out of scope |
 
 ## Agents
 
@@ -22,19 +22,19 @@ antiburn reads session data that a coding agent has already written to disk.
 Plan limits are separate: antiburn can ask a provider for those figures as
 described in [Network](#network).
 
-| Agent          | Native (macOS / Windows / Linux) | WSL           | Notes                                           |
-| -------------- | -------------------------------- | ------------- | ----------------------------------------------- |
-| Claude Code    | Supported                        | Supported     |                                                 |
-| Codex          | Supported                        | Supported     |                                                 |
-| OpenCode       | Supported                        | Supported     |                                                 |
-| Cursor         | Supported                        | Not supported |                                                 |
-| GitHub Copilot | Supported                        | Not supported |                                                 |
-| Cline          | Supported                        | Not supported |                                                 |
-| Kiro           | Supported                        | Not supported |                                                 |
-| Amp            | Supported                        | Not supported |                                                 |
-| Pi             | macOS and Linux only             | Not supported | Dedicated session analysis; excluded on Windows |
-| Antigravity    | Supported, **disk-only**         | Not supported | Documented local files only                     |
-| Windsurf       | Supported, **disk-only**         | Not supported | Documented local files only                     |
+| Agent | Native (macOS / Windows / Linux) | WSL | Notes |
+| --- | --- | --- | --- |
+| Claude Code | Supported | Supported | |
+| Codex | Supported | Supported | |
+| OpenCode | Supported | Supported | |
+| Cursor | Supported | Not supported | |
+| GitHub Copilot | Supported | Not supported | |
+| Cline | Supported | Not supported | |
+| Kiro | Supported | Not supported | |
+| Amp | Supported | Not supported | |
+| Pi | macOS and Linux only | Not supported | Dedicated session analysis; excluded on Windows |
+| Antigravity | Supported, **disk-only** | Not supported | Documented local files only |
+| Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
 
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
@@ -56,7 +56,7 @@ transcript recorded. They are **API-equivalent estimates**, not a bill:
   and the provider's total is then labelled as a floor;
 - work done on another machine is not counted, because antiburn cannot see it.
 
-Provider Usage shows what was _spent_ on this machine. It never shows a percentage,
+Provider Usage shows what was *spent* on this machine. It never shows a percentage,
 an allowance, a remaining balance, or a reset time: a transcript records spend, and a
 denominator would have to be invented.
 
@@ -116,13 +116,13 @@ the next time it looks.
 
 ## Network
 
-antiburn needs no connection to any service of ours — no antiburn account, server,
-or backend, ever. The connections it makes beyond that are yours, not ours: reading
+antiburn needs no account or backend for its main work. The connections it makes
+beyond analytics and updates are yours, not ours: reading
 a provider's own figures with your own credentials is traffic between this machine
 and a provider you already use. The application's own connection to a service of
-ours is exactly one kind: the updater, which asks GitHub Releases whether a newer
+ours are analytics and the updater. The updater asks GitHub Releases whether a newer
 version exists and downloads its signed bundle only after you select Install. The
-app never depends on this connection.
+app never depends on either connection.
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can
@@ -134,9 +134,9 @@ app never depends on this connection.
 - Linux AppImage releases update in the app. Debian packages remain install-only
   and require the next package to be installed manually.
 - **Anonymised analytics** are the one thing antiburn reports about itself.
-  They start automatically after first-run setup in every locale, and the switch
-  is in Settings → Privacy. Each event carries thirteen fields and no others:
-  the constant `desktop`; a random per-message id used to discard
+  Official release builds start with it on, including during onboarding. The Ready
+  screen explains it, and the switch is in Settings → Privacy. Each event carries thirteen fields and
+  no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
@@ -149,9 +149,9 @@ app never depends on this connection.
   the full event catalog, and how to verify all of it yourself.
   Never sent: sessions, transcripts, prompts, titles, file paths, repository or
   branch names, token counts, costs, or credentials. Switching it off deletes
-  the identifier and anything still queued. A build with no endpoint configured
-  — every development build, and every build from a clean checkout of the public
-  repository — sends nothing at all.
+  the identifier and anything still queued. The endpoint also stores the request
+  IP address and user-agent. Raw events are retained until the operator deletes
+  them. Default source and development builds exclude the analytics client.
 - There is **no third-party analytics, telemetry, or crash-reporting SDK** in this
   application. The channel above is first-party and is the only one.
 

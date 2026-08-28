@@ -270,6 +270,7 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         // running rather than from a `cfg!`, so no copy downstream can offer
         // a control this binary cannot honour.
         analytics_supported: crate::analytics::available(),
+        analytics_environment_disabled: crate::analytics::environment_disabled(),
         analytics_operator: crate::analytics::operator().map(str::to_string),
     })
 }
@@ -368,8 +369,7 @@ pub fn finish_onboarding(
         })
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
-    // After the transition, so the gate this event reads sees onboarding as
-    // complete. An explicit restart records a new completion for a new setup.
+    // An explicit restart records a new completion because it is a new setup run.
     crate::analytics::record(
         &app,
         crate::analytics::event::EventName::OnboardingFinished,
@@ -444,8 +444,11 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // transition edge needs to be computed here.
     crate::notifications::maybe_initialize_authorization(app);
 
-    // Turning analytics off clears the queue and the installation identifier.
-    // This transition hub keeps those effects aligned with the saved setting.
+    // Consent changing is the queue's business: turning it off withdraws
+    // whatever is already queued rather than merely pausing it, and destroys
+    // the installation identifier so a later opt-in cannot be joined to this
+    // one. Routed through the same hub as every other consequence so the two
+    // can never drift apart.
     crate::analytics::handle_settings_transition(app, previous, saved);
 
     // Which switch moved, never what it moved to, and only from this closed
@@ -1604,6 +1607,28 @@ pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
         .map_err(fail)
 }
 
+/// Open the public analytics documentation in the system browser.
+#[tauri::command]
+pub fn open_analytics_documentation(app: tauri::AppHandle) -> CommandResult<()> {
+    let url = analytics_documentation_url(&app.package_info().version.to_string());
+    app.opener().open_url(url, None::<&str>).map_err(fail)
+}
+
+fn analytics_documentation_url(version: &str) -> String {
+    format!("https://github.com/antiburn/antiburn/blob/antiburn-v{version}/docs/analytics.md")
+}
+
+/// Open the public privacy policy in the system browser.
+#[tauri::command]
+pub fn open_privacy_policy(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url(
+            "https://github.com/antiburn/antiburn/blob/main/docs/privacy-policy.md",
+            None::<&str>,
+        )
+        .map_err(fail)
+}
+
 /// Probe outcomes from this run, for the reader to copy into a bug report.
 ///
 /// Every entry uses the same vocabulary — `granted`, `denied`, `recorded-denial`
@@ -1696,6 +1721,14 @@ fn presentable(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analytics_documentation_matches_the_installed_release() {
+        assert_eq!(
+            analytics_documentation_url("0.1.0-rc.5"),
+            "https://github.com/antiburn/antiburn/blob/antiburn-v0.1.0-rc.5/docs/analytics.md"
+        );
+    }
 
     fn repository(key: &str, name: &str, root: &str) -> RepositoryRecord {
         RepositoryRecord {

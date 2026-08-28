@@ -65,6 +65,7 @@ const SETTINGS = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: false,
+  analyticsEnabled: true,
 }
 
 const INFO = {
@@ -77,6 +78,9 @@ const INFO = {
   indexedSessions: 42,
   databaseBytes: 3_670_016,
   updatesSupported: false,
+  analyticsSupported: true,
+  analyticsEnvironmentDisabled: false,
+  analyticsOperator: "Cadence AI (Vic) Pty Ltd",
 }
 
 let updateRevision = 0
@@ -628,8 +632,11 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
     expect(
-      await screen.findByRole("switch", { name: "Send anonymised analytics" }),
+      await screen.findByRole("switch", { name: "Share product analytics" }),
     ).toBeInTheDocument()
+    expect(screen.getByText(/Sends app launches, onboarding progress/i)).toHaveTextContent(
+      "Never prompts, sessions, source code, filenames, or paths.",
+    )
 
     // What a reader sees without clicking anything: four headlines and
     // nothing else. Collapsed disclosures are unmounted, so this is the
@@ -639,7 +646,7 @@ describe("SettingsView", () => {
     for (const headline of [
       "Exactly what is sent",
       "The two identifiers",
-      "How analytics starts",
+      "How the starting default works",
       "What happens after it arrives",
     ]) {
       expect(screen.getByRole("button", { name: headline })).toBeInTheDocument()
@@ -702,32 +709,61 @@ describe("SettingsView", () => {
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument()
     expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument()
     expect(screen.getByText(/quitting antiburn ends it/i)).toBeInTheDocument()
-    open("How analytics starts")
+    open("How the starting default works")
     expect(
-      screen.getByText(/enabled automatically when first-run setup finishes/i),
+      screen.getByText(/official release builds start with analytics on/i),
     ).toBeInTheDocument()
-    expect(screen.getByText(/the same in every locale/i)).toBeInTheDocument()
     // Retention is the operator's, and the pane says so rather than promising
     // something this build cannot keep.
     open("What happens after it arrives")
     expect(
-      screen.getByText(/are the operator’s decisions rather than the app’s/i),
+      screen.getByText(/raw events are retained until the operator deletes them/i),
     ).toBeInTheDocument()
   })
 
-  /// A build with no injected endpoint cannot transmit, and the row says so
-  /// rather than offering a live switch over nothing. `app_info` in these
-  /// tests reports the shell's real answer, which for a test build is false.
-  it("disables the analytics switch in a build that has no endpoint", async () => {
+  it("omits analytics settings from a build without analytics", async () => {
+    mockCommands({ app_info: { ...INFO, analyticsSupported: false } })
     render(<SettingsView />)
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
-    const toggle = await screen.findByRole("switch", {
-      name: "Send anonymised analytics",
+    await screen.findByRole("heading", { name: "Privacy" })
+    expect(
+      screen.queryByRole("switch", { name: "Share product analytics" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Analytics documentation")).not.toBeInTheDocument()
+  })
+
+  it("persists an analytics opt-out from Settings", async () => {
+    render(<SettingsView />)
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+
+    const toggle = await screen.findByRole("switch", { name: "Share product analytics" })
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ analyticsEnabled: false }),
+      }),
+    )
+    expect(
+      await screen.findByText(/Antiburn deleted its analytics identifier/i),
+    ).toBeInTheDocument()
+  })
+
+  it("shows the process-level analytics opt-out", async () => {
+    mockCommands({
+      app_info: { ...INFO, analyticsEnvironmentDisabled: true },
     })
+    render(<SettingsView />)
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+
+    const toggle = await screen.findByRole("switch", { name: "Share product analytics" })
     expect(toggle).toBeDisabled()
     expect(toggle).not.toBeChecked()
-    expect(screen.getByText(/this build has no analytics endpoint/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false/i),
+    ).toBeInTheDocument()
   })
 
   it("adds a scan folder through the directory picker", async () => {

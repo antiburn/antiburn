@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, FolderPlus, Lock, X } from "lucide-react"
+import { AlertTriangle, Check, Copy, FolderPlus, Lock, X } from "lucide-react"
 
 import appIcon from "../../assets/app-icon.png"
 import { useState } from "react"
@@ -10,11 +10,13 @@ import { FolderPermissionNotice } from "../../components/repositories/FolderPerm
 import { LocalRepositoryList } from "../../components/repositories/LocalRepositoryList"
 import { Card } from "../../components/ui/Card"
 import { PushButton } from "../../components/ui/PushButton"
+import { Row } from "../../components/ui/Row"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { getConsentDiagnostics, openFolderAccessSettings, type ScanStatus } from "../../lib/ipc"
 import type { FolderPermissions, LocalRepositoryItem } from "../../lib/types/repository"
 import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
+import type { OnboardingStep } from "./OnboardingSession"
 
 export interface OnboardingFlowProps {
   /** Directories the engine searches without being asked. */
@@ -48,6 +50,13 @@ export interface OnboardingFlowProps {
   /** Whether the installed app should start after the reader signs in. */
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
+  /** Whether this build can send analytics at all. False in development and
+   *  in any build from a clean checkout. */
+  analyticsSupported: boolean
+  /** Whether the process environment disables analytics for this launch. */
+  analyticsEnvironmentDisabled: boolean
+  /** Count one step. The session deduplicates repeated navigation. */
+  onStepViewed: (step: OnboardingStep) => void
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void
   finishing: boolean
@@ -56,6 +65,15 @@ export interface OnboardingFlowProps {
 
 const STEPS = ["welcome", "sourcesAndRepos", "ready"] as const
 type Step = (typeof STEPS)[number]
+
+const ANALYTICS_STEP: Record<Step, OnboardingStep> = {
+  welcome: "welcome",
+  sourcesAndRepos: "sources_and_repos",
+  ready: "ready",
+}
+
+const PRIVACY_REVIEW_PROMPT =
+  "Review Antiburn's public source code: https://github.com/antiburn/antiburn. Explain in plain language what stays on my computer, what data leaves it, when analytics starts, and how I can turn analytics off. Cite the files that support each answer."
 
 function focusHeading(heading: HTMLHeadingElement | null): void {
   heading?.focus()
@@ -80,7 +98,21 @@ function StepDots({ step }: { step: Step }) {
 
 const CENTRED_COLUMN = "mx-auto flex max-w-[440px] flex-col items-center"
 
-function Welcome() {
+function Welcome({
+  analyticsSupported,
+  analyticsEnvironmentDisabled,
+}: {
+  analyticsSupported: boolean
+  analyticsEnvironmentDisabled: boolean
+}) {
+  // This sentence is part of the network surface. A new outbound call means
+  // a change here. Settings → Privacy is the long form.
+  const networkCopy = !analyticsSupported
+    ? "It only goes online for your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself."
+    : analyticsEnvironmentDisabled
+      ? "It only goes online for your provider’s usage figures and a version check. Analytics is disabled for this launch by ANTIBURN_ANALYTICS_ENABLED=false."
+      : "It only goes online for your provider’s usage figures, a version check, and anonymised analytics about the app. You can opt out of the analytics."
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center overflow-y-auto">
       <div className={CENTRED_COLUMN}>
@@ -102,6 +134,7 @@ function Welcome() {
         <p className="mt-2 text-balance type-callout text-label-secondary">
           No account needed, and nothing from your sessions is ever uploaded.
         </p>
+        <p className="mt-2 text-balance type-callout text-label-secondary">{networkCopy}</p>
       </div>
     </div>
   )
@@ -301,13 +334,29 @@ function Ready({
   sessions,
   launchAtLogin,
   onLaunchAtLoginChange,
+  analyticsSupported,
+  analyticsEnvironmentDisabled,
   finishError,
 }: {
   sessions: number
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
+  analyticsSupported: boolean
+  analyticsEnvironmentDisabled: boolean
   finishError: string | null
 }) {
+  const [copied, setCopied] = useState(false)
+
+  const copyReviewPrompt = () => {
+    void navigator.clipboard
+      .writeText(PRIVACY_REVIEW_PROMPT)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2_000)
+      })
+      .catch(() => setCopied(false))
+  }
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
@@ -337,6 +386,30 @@ function Ready({
             onChange={onLaunchAtLoginChange}
           />
         </Card>
+        {analyticsSupported ? (
+          <Card className="mt-3 w-full text-left">
+            <Row
+              label="Anonymised analytics"
+              description={
+                analyticsEnvironmentDisabled
+                  ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use the setting in Settings → Privacy."
+                  : "Sends app launches, onboarding progress, feature use, and error categories. Never prompts, sessions, source code, filenames, or paths. Turn it off in Settings → Privacy."
+              }
+            />
+            <Row
+              label="Review the source code"
+              trailing={
+                <PushButton onClick={copyReviewPrompt} trailingIcon={Copy} disabled={copied}>
+                  {copied ? "Copied" : "Copy prompt"}
+                </PushButton>
+              }
+            >
+              <p className="mt-1 type-footnote text-label-secondary">
+                Copy a prompt for your AI agent to check what leaves your computer.
+              </p>
+            </Row>
+          </Card>
+        ) : null}
         {finishError ? (
           <p className="mt-3 type-footnote text-system-red" role="alert">
             {finishError}
@@ -363,6 +436,9 @@ export function OnboardingFlow({
   scanStatus,
   launchAtLogin,
   onLaunchAtLoginChange,
+  analyticsSupported,
+  analyticsEnvironmentDisabled,
+  onStepViewed,
   onFinish,
   finishing,
   finishError,
@@ -381,7 +457,14 @@ export function OnboardingFlow({
       setDiscoveryRequested(true)
       onDiscover()
     }
+    onStepViewed(ANALYTICS_STEP[next])
     setStep(next)
+  }
+
+  const goBack = () => {
+    const previous = STEPS[index - 1] ?? "welcome"
+    onStepViewed(ANALYTICS_STEP[previous])
+    setStep(previous)
   }
 
   return (
@@ -418,7 +501,12 @@ export function OnboardingFlow({
       </header>
 
       <div className={cn("min-h-0", step != "sourcesAndRepos" && "self-center")}>
-        {step === "welcome" && <Welcome />}
+        {step === "welcome" && (
+          <Welcome
+            analyticsSupported={analyticsSupported}
+            analyticsEnvironmentDisabled={analyticsEnvironmentDisabled}
+          />
+        )}
         {step === "sourcesAndRepos" && (
           <SourcesAndRepos
             blockedRoots={blockedRoots}
@@ -443,16 +531,14 @@ export function OnboardingFlow({
             launchAtLogin={launchAtLogin}
             sessions={scanStatus?.sessions ?? 0}
             onLaunchAtLoginChange={onLaunchAtLoginChange}
+            analyticsSupported={analyticsSupported}
+            analyticsEnvironmentDisabled={analyticsEnvironmentDisabled}
           />
         )}
       </div>
 
       <footer className="grid grid-cols-[1fr_max-content_1fr] items-center gap-2 border-t border-separator px-4 py-3">
-        <div>
-          {index > 0 && (
-            <PushButton onClick={() => setStep(STEPS[index - 1] ?? "welcome")}>Back</PushButton>
-          )}
-        </div>
+        <div>{index > 0 && <PushButton onClick={goBack}>Back</PushButton>}</div>
         <StepDots step={step} />
         <PushButton
           className="justify-self-end"

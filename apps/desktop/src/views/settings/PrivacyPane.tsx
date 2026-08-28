@@ -9,7 +9,12 @@ import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { StatusText } from "../../components/ui/StatusText"
 import { ToggleRow } from "../../components/ui/ToggleRow"
-import { clearLocalIndex, type AppInfo } from "../../lib/ipc"
+import {
+  clearLocalIndex,
+  openAnalyticsDocumentation,
+  openPrivacyPolicy,
+  type AppInfo,
+} from "../../lib/ipc"
 import type { AppSettingsController } from "./useAppSettings"
 
 /**
@@ -41,6 +46,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
   // with no injected endpoint cannot send anything, and this pane's whole job
   // is to not overstate what the application does.
   const analyticsSupported = info?.analyticsSupported ?? false
+  const analyticsEnvironmentDisabled = info?.analyticsEnvironmentDisabled ?? false
   const operator = info?.analyticsOperator ?? null
 
   /**
@@ -77,7 +83,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
           it.{" "}
           {analyticsSupported
             ? "The one thing antiburn reports about itself is anonymised analytics, which you can turn off below."
-            : "This build sends no analytics at all — see below."}{" "}
+            : "This build sends no analytics at all."}{" "}
           Each promise opens into the specifics a reader could reasonably want to check.
         </p>
         {/* Disclosures rather than Card rows: this is explanatory prose, and a
@@ -135,35 +141,38 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
         </DisclosureGroup>
       </div>
 
-      <SectionGroup title="Anonymised analytics">
-        <Card>
-          <ToggleRow
-            label="Send anonymised analytics"
-            description={
-              analyticsSupported
-                ? `Enabled automatically after setup. Reports which features get used and what breaks${
-                    operator ? `, sent to ${operator}` : ""
-                  }. Turn it off here at any time.`
-                : "This build has no analytics endpoint, so nothing can be sent from it. The switch is shown so the setting is visible, not because it currently does anything."
-            }
-            // Gated on `loaded` as well as support. The controller starts from
-            // DEFAULT_SETTINGS, where this is on, so an unguarded row would
-            // paint "on" for an upgraded install whose stored answer is off —
-            // and a click in that window would write the default back as
-            // though the reader had chosen it.
-            checked={analyticsSupported && loaded && settings.analyticsEnabled}
-            onChange={(next) => void update({ analyticsEnabled: next })}
-            dimmed={!analyticsSupported || !loaded}
-            disabled={!analyticsSupported || !loaded}
-          />
-        </Card>
-        {/* The switch's terms sit below the card rather than inside it, which
+      {analyticsSupported ? (
+        <SectionGroup title="Analytics">
+          <Card>
+            <ToggleRow
+              label="Share product analytics"
+              description={
+                analyticsEnvironmentDisabled
+                  ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
+                  : loaded && !settings.analyticsEnabled
+                    ? "Off. Antiburn deleted its analytics identifier and anything waiting to be sent."
+                    : `Sends app launches, onboarding progress, feature use, and error categories${
+                        operator ? ` to ${operator}` : ""
+                      }. Never prompts, sessions, source code, filenames, or paths.`
+              }
+              // Gated on `loaded` as well as support. The controller starts from
+              // DEFAULT_SETTINGS, where this is on, so an unguarded row would
+              // paint "on" for an upgraded install whose stored answer is off —
+              // and a click in that window would write the default back as
+              // though the reader had chosen it.
+              checked={!analyticsEnvironmentDisabled && loaded && settings.analyticsEnabled}
+              onChange={(next) => void update({ analyticsEnabled: next })}
+              dimmed={!loaded}
+              disabled={analyticsEnvironmentDisabled || !loaded}
+            />
+          </Card>
+          {/* The switch's terms sit below the card rather than inside it, which
             is the same shape the Privacy group above uses. A `Disclosure`
             owns its own hairline and its own 4px inset; nesting the group in
             a `Card` lands a second border directly on the card's own. */}
-        <DisclosureGroup>
-          <Disclosure label="Exactly what is sent">
-            {/* Every field, including the plumbing ones. An enumeration that
+          <DisclosureGroup>
+            <Disclosure label="Exactly what is sent">
+              {/* Every field, including the plumbing ones. An enumeration that
                   quietly omits the dull fields is worth less than no
                   enumeration, because it reads as complete.
                   `analytics::event::Event` is the source of truth; if a
@@ -173,89 +182,98 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   A list rather than one long sentence: a reader auditing this
                   is counting items against that struct, and thirteen clauses
                   separated by semicolons cannot be counted. */}
-            <p>Thirteen fields, and these are all of them:</p>
-            {/* `pl-7`, not the `pl-4` this started as. Root font-size here
+              <p>Thirteen fields, and these are all of them:</p>
+              {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
                   4.5px *left* of the paragraph above and reading as an
                   unindented list. 22.75px clears the marker and indents it. */}
-            <ul className="mt-2 list-disc space-y-0.5 pl-7">
-              <li>The word &ldquo;desktop&rdquo;.</li>
-              <li>A random id for the message, so a retry is not counted twice.</li>
-              <li>A random installation id.</li>
-              <li>A random id for this run of the app.</li>
-              <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
-              <li>When it happened.</li>
-              <li>When it was delivered.</li>
-              <li>Your processor architecture.</li>
-              <li>A count rounded to a range, when the event has one.</li>
-              <li>
-                A short label &mdash; which setting you changed, which agent recorded a session,
-                what kind of thing failed. The name only, never the value.
-              </li>
-              <li>
-                A second such label when an event has two things to tell apart, such as native
-                versus WSL.
-              </li>
-              <li>The app version.</li>
-              <li>Your operating system.</li>
-            </ul>
-            {/* The complement belongs here rather than in a row of its own.
+              <ul className="mt-2 list-disc space-y-0.5 pl-7">
+                <li>The word &ldquo;desktop&rdquo;.</li>
+                <li>A random id for the message, so a retry is not counted twice.</li>
+                <li>A random installation id.</li>
+                <li>A random id for this run of the app.</li>
+                <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
+                <li>When it happened.</li>
+                <li>When it was delivered.</li>
+                <li>Your processor architecture.</li>
+                <li>A count rounded to a range, when the event has one.</li>
+                <li>
+                  A short label &mdash; which setting you changed, which agent recorded a
+                  session, what kind of thing failed. The name only, never the value.
+                </li>
+                <li>
+                  A second such label when an event has two things to tell apart, such as native
+                  versus WSL.
+                </li>
+                <li>The app version.</li>
+                <li>Your operating system.</li>
+              </ul>
+              {/* The complement belongs here rather than in a row of its own.
                   A reader checking the list against their own worry is asking
                   one question, and answering it two accordions apart made them
                   open both to find out. */}
-            <p className="mt-2">
-              Never your sessions, transcripts, prompts, titles, file paths, repository or
-              branch names, token counts, costs, credentials, name, or email address. Not even
-              exact counts: a precise number, repeated week after week, identifies a machine on
-              its own.
-            </p>
-          </Disclosure>
-          {/* Both identifiers in one place, with what the timestamps add.
+              <p className="mt-2">
+                Never your sessions, transcripts, prompts, titles, file paths, repository or
+                branch names, token counts, costs, credentials, name, or email address. Not even
+                exact counts: a precise number, repeated week after week, identifies a machine
+                on its own.
+              </p>
+            </Disclosure>
+            {/* Both identifiers in one place, with what the timestamps add.
                 They were three rows, but the honest claim only holds when all
                 three facts are read together: a 30-day id plus a time on every
                 event is a coarse picture of when the app gets used, and saying
                 so is cheaper than being caught not having said it. */}
-          <Disclosure label="The two identifiers">
-            <p>Both are random. Neither is derived from anything about you or your machine.</p>
-            <p className="mt-2">
-              The <strong className="font-medium text-label">installation id</strong> is
-              replaced every 30 days, so events cannot be joined into a history longer than
-              that. Since every event also carries a time, they do show roughly when antiburn is
-              used within those 30 days &mdash; never what you were working on. Switching
-              analytics off deletes the id and anything still queued, so switching back on
-              starts a new id that cannot be linked to the old one.
-            </p>
-            <p className="mt-2">
-              The <strong className="font-medium text-label">run id</strong> is required by the
-              receiving server. It exists only in memory: quitting antiburn ends it, nothing on
-              your machine remembers it, and it is replaced after 30 minutes of inactivity. It
-              groups one run&rsquo;s events and cannot connect one run to another.
-            </p>
-          </Disclosure>
-          <Disclosure label="How analytics starts">
-            <p>
-              Analytics is enabled automatically when first-run setup finishes. The default is
-              the same in every locale, and no event can be sent before setup is complete.
-            </p>
-            <p className="mt-2">
-              Turn the switch above off at any time to discard queued events and delete the
-              installation identifier.
-            </p>
-          </Disclosure>
-          {/* Deliberately not claimed by the app. Retention and IP handling
+            <Disclosure label="The two identifiers">
+              <p>
+                Both are random. Neither is derived from anything about you or your machine.
+              </p>
+              <p className="mt-2">
+                The <strong className="font-medium text-label">installation id</strong> is
+                replaced every 30 days, so events cannot be joined into a history longer than
+                that. Since every event also carries a time, they do show roughly when antiburn
+                is used within those 30 days &mdash; never what you were working on. Switching
+                analytics off deletes the id and anything still queued, so switching back on
+                starts a new id that cannot be linked to the old one.
+              </p>
+              <p className="mt-2">
+                The <strong className="font-medium text-label">run id</strong> is required by
+                the receiving server. It exists only in memory: quitting antiburn ends it,
+                nothing on your machine remembers it, and it is replaced after 30 minutes of
+                inactivity. It groups one run&rsquo;s events and cannot connect one run to
+                another.
+              </p>
+            </Disclosure>
+            <Disclosure label="How the starting default works">
+              <p>
+                Official release builds start with analytics on. Source builds do not include
+                the analytics client unless the builder selects its Cargo feature and configures
+                an endpoint and operator name.
+              </p>
+              <p className="mt-2">
+                Set <code>ANTIBURN_ANALYTICS_ENABLED=false</code> in the app&rsquo;s launch
+                environment for a process-level opt-out that takes priority over this switch.
+              </p>
+            </Disclosure>
+            {/* Deliberately not claimed by the app. Retention and IP handling
                 belong to whoever operates the endpoint, and a promise this
                 binary cannot keep is the exact drift the deviations register
                 exists to catch — so point at the party who can make it. */}
-          <Disclosure label="What happens after it arrives">
-            How long these events are kept, and whether the receiving server records the IP
-            address that every internet request carries, are the operator&rsquo;s decisions
-            rather than the app&rsquo;s. antiburn can only promise what it sends, which is the
-            list above. The project&rsquo;s docs/analytics.md has the full event catalog and the
-            commands to check any of this yourself.
-          </Disclosure>
-        </DisclosureGroup>
-      </SectionGroup>
+            <Disclosure label="What happens after it arrives">
+              The first-party endpoint stores the request IP address and user-agent with the raw
+              event. Raw events are retained until the operator deletes them. The privacy policy
+              explains this processing in full.
+            </Disclosure>
+          </DisclosureGroup>
+          <div className="flex gap-2 px-1">
+            <PushButton onClick={() => void openAnalyticsDocumentation()}>
+              Analytics documentation
+            </PushButton>
+            <PushButton onClick={() => void openPrivacyPolicy()}>Privacy policy</PushButton>
+          </div>
+        </SectionGroup>
+      ) : null}
 
       <SectionGroup title="Local data">
         <Card>

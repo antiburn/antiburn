@@ -5,10 +5,8 @@
 //! appear nowhere in this tree.
 //!
 //! It also buys a property worth more than the secrecy. A clone of this
-//! repository, built by anyone, has no endpoint — so it transmits nothing at
-//! all, and the Privacy pane can say so truthfully rather than describing a
-//! capability the reader cannot verify. [`configured`] is what every surface
-//! downstream asks, and it answers from the build it is actually running in.
+//! repository, built by anyone, has no endpoint or operator — so it transmits
+//! nothing at all. [`configured`] checks the complete build configuration.
 
 /// The collector's base URL; request paths are appended to it. `None` in
 /// every build that did not inject one.
@@ -25,12 +23,9 @@ const OPERATOR: Option<&str> = option_env!("ANTIBURN_ANALYTICS_OPERATOR");
 
 /// Whether this build can transmit at all.
 ///
-/// Three things must all be true, and the `cfg!` is deliberately one of them:
-/// `updates.rs` learned the hard way that a compile-time answer alone will
-/// claim a capability a misconfigured build does not have, so this pairs the
-/// build flag with the configuration it depends on.
+/// The feature, endpoint, and operator name must all be present.
 pub fn configured() -> bool {
-    cfg!(feature = "distribution") && endpoint().is_some()
+    cfg!(feature = "analytics") && endpoint().is_some() && operator().is_some()
 }
 
 /// The endpoint, if this build has a usable one.

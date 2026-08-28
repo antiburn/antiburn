@@ -67,6 +67,9 @@ export function OnboardingView() {
         scanStatus={state.scanStatus}
         launchAtLogin={state.launchAtLogin}
         onLaunchAtLoginChange={session.setLaunchAtLogin}
+        analyticsSupported={state.analyticsSupported}
+        analyticsEnvironmentDisabled={state.analyticsEnvironmentDisabled}
+        onStepViewed={session.noteOnboardingStep}
         finishing={state.finishing}
         finishError={state.finishError}
         onFinish={session.finish}
