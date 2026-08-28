@@ -9,13 +9,16 @@ import {
 
 const PAYLOAD: SessionHygienePayload = {
   badges: [
-    { id: "reasoningOverkill", status: "finding", notAssessedReason: null },
-    { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
+    { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
+    { id: "modelOverthinking", status: "clean", notAssessedReason: null },
     {
-      id: "bloatedInitialContext",
+      id: "overpoweredSubagents",
       status: "notAssessed",
       notAssessedReason: "incompleteEvidence",
     },
+    { id: "obsoleteModel", status: "clean", notAssessedReason: null },
+    { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
+    { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
   ],
   evidenceState: "ready",
 }
@@ -23,23 +26,29 @@ const PAYLOAD: SessionHygienePayload = {
 describe("sessionHygieneChecks", () => {
   it("maps every engine identifier to reader copy in a stable order", () => {
     expect(sessionHygieneChecks(PAYLOAD).map(({ id, title }) => ({ id, title }))).toEqual([
-      { id: "reasoningOverkill", title: "Reasoning overkill" },
+      { id: "sessionOverdepth", title: "Session overdepth detected" },
+      { id: "modelOverthinking", title: "No model overthinking detected" },
+      {
+        id: "overpoweredSubagents",
+        title: "Overpowered subagents not assessed",
+      },
+      { id: "obsoleteModel", title: "No obsolete model detected" },
+      { id: "fastModeOveruse", title: "No fast mode overuse detected" },
       {
         id: "excessCacheRehydration",
-        title: "No excess cache rehydration",
-      },
-      {
-        id: "bloatedInitialContext",
-        title: "Bloated initial context not assessed",
+        title: "No excess cache rehydration detected",
       },
     ])
   })
 
   it("names every check without a verdict, whatever the status", () => {
     expect(sessionHygieneChecks(PAYLOAD).map((check) => check.name)).toEqual([
-      "Reasoning overkill",
-      "Excess cache rehydration",
-      "Bloated initial context",
+      "Session overdepth detected",
+      "Model overthinking detected",
+      "Overpowered subagents detected",
+      "Obsolete model detected",
+      "Fast mode overuse detected",
+      "Excess cache rehydration detected",
     ])
   })
 
@@ -48,12 +57,15 @@ describe("sessionHygieneChecks", () => {
       "system-red-text",
       "system-green",
       "label-tertiary",
+      "system-green",
+      "system-green",
+      "system-green",
     ])
   })
 
   it("starts every badge as not assessed while evidence is pending", () => {
     const checks = sessionHygieneChecks(INITIAL_SESSION_HYGIENE)
-    expect(checks).toHaveLength(3)
+    expect(checks).toHaveLength(6)
     expect(checks.every((check) => check.status === "notAssessed")).toBe(true)
     expect(sessionHygieneStateLabel(INITIAL_SESSION_HYGIENE.evidenceState)).toBe("Computing")
   })

@@ -6,27 +6,51 @@ import { SessionStatusBar } from "./SessionStatusBar"
 
 const CHECKS: SessionHygieneCheck[] = [
   {
-    id: "bloatedInitialContext",
+    id: "sessionOverdepth",
     status: "finding",
     notAssessedReason: null,
-    title: "Bloated initial context",
-    name: "Bloated initial context",
+    title: "Session overdepth detected",
+    name: "Session overdepth detected",
     ink: "system-red-text",
   },
   {
-    id: "reasoningOverkill",
+    id: "modelOverthinking",
     status: "clean",
     notAssessedReason: null,
-    title: "No reasoning overkill",
-    name: "Reasoning overkill",
+    title: "No model overthinking detected",
+    name: "Model overthinking detected",
+    ink: "system-green",
+  },
+  {
+    id: "overpoweredSubagents",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No overpowered subagents detected",
+    name: "Overpowered subagents detected",
+    ink: "system-green",
+  },
+  {
+    id: "obsoleteModel",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No obsolete model detected",
+    name: "Obsolete model detected",
+    ink: "system-green",
+  },
+  {
+    id: "fastModeOveruse",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No fast mode overuse detected",
+    name: "Fast mode overuse detected",
     ink: "system-green",
   },
   {
     id: "excessCacheRehydration",
     status: "clean",
     notAssessedReason: null,
-    title: "No excess cache rehydration",
-    name: "Excess cache rehydration",
+    title: "No excess cache rehydration detected",
+    name: "Excess cache rehydration detected",
     ink: "system-green",
   },
 ]
@@ -44,9 +68,12 @@ const WITH_NOT_ASSESSED: SessionHygieneCheck[] = [
     ...CHECKS[2]!,
     status: "notAssessed",
     notAssessedReason: "incompleteEvidence",
-    title: "Excess cache rehydration not assessed",
+    title: "Overpowered subagents not assessed",
     ink: "label-tertiary",
   },
+  CHECKS[3]!,
+  CHECKS[4]!,
+  CHECKS[5]!,
 ]
 
 afterEach(cleanup)
@@ -55,7 +82,7 @@ describe("SessionStatusBar", () => {
   it("inks a fill-free line green with the full pass count when every check passes", () => {
     render(<SessionStatusBar checks={ALL_PASSED} />)
     const verdict = screen.getByLabelText("All checks pass")
-    expect(verdict.textContent).toBe("3/3 burn checks")
+    expect(verdict.textContent).toBe("6/6 burn checks")
     expect(verdict.style.color).toBe("var(--color-system-green)")
     expect(verdict.className).not.toContain("bg-")
     expect(verdict.parentElement?.className).not.toContain("bg-")
@@ -63,20 +90,20 @@ describe("SessionStatusBar", () => {
 
   it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
-    const verdict = screen.getByLabelText("2 of 3 burn checks pass")
-    expect(verdict.textContent).toBe("2/3 burn checks")
+    const verdict = screen.getByLabelText("5 of 6 burn checks pass")
+    expect(verdict.textContent).toBe("5/6 burn checks")
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
-    expect(verdict.style.color).toContain("--color-system-red-text) 33%")
+    expect(verdict.style.color).toContain("--color-system-red-text) 17%")
     expect(verdict.style.color).toContain("--color-system-orange")
     expect(verdict.parentElement?.className).not.toContain("bg-")
   })
 
   it("keeps the denominator on every check, so it never contradicts the tail", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    const verdict = screen.getByLabelText("1 of 3 burn checks pass; 1 not assessed")
-    expect(verdict.textContent).toBe("1/3 burn checks · 1 not assessed")
-    expect(verdict.style.color).toContain("--color-system-red-text) 33%")
+    const verdict = screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed")
+    expect(verdict.textContent).toBe("4/6 burn checks · 1 not assessed")
+    expect(verdict.style.color).toContain("--color-system-red-text) 17%")
     expect(verdict.style.color).toContain("--color-system-orange")
   })
 
@@ -87,7 +114,7 @@ describe("SessionStatusBar", () => {
       ink: "system-red-text" as const,
     }))
     render(<SessionStatusBar checks={allFailed} />)
-    const verdict = screen.getByLabelText("0 of 3 burn checks pass")
+    const verdict = screen.getByLabelText("0 of 6 burn checks pass")
     expect(verdict.style.color).toContain("--color-system-red-text) 100%")
   })
 
@@ -118,7 +145,7 @@ describe("SessionStatusBar", () => {
         ...CHECKS[1]!,
         status: "notAssessed",
         notAssessedReason: "incompleteEvidence",
-        title: "Reasoning overkill not assessed",
+        title: "Model overthinking not assessed",
         ink: "label-tertiary",
       },
     ]
@@ -142,10 +169,10 @@ describe("SessionStatusBar", () => {
 
   it("splits a not-assessed check into a bare name and its reason", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    fireEvent.focus(screen.getByLabelText("1 of 3 burn checks pass; 1 not assessed"))
+    fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
 
     // The name carries no verdict, so it does not repeat the reason below it.
-    const name = await screen.findByText("Excess cache rehydration")
+    const name = await screen.findByText("Overpowered subagents")
     expect(name.textContent).not.toContain("not assessed")
     const reason = await screen.findByText("couldn't read the whole session log")
     // The reason shares the name's column and never runs under the mark.
@@ -156,7 +183,7 @@ describe("SessionStatusBar", () => {
 
   it("marks every check status with a named icon, not a text glyph", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    fireEvent.focus(screen.getByLabelText("1 of 3 burn checks pass; 1 not assessed"))
+    fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
 
     for (const label of ["Finding", "Pass", "Not assessed"]) {
       const mark = await screen.findByLabelText(label)

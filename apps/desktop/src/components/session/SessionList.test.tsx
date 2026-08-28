@@ -171,17 +171,32 @@ describe("SessionList — rows", () => {
         evidenceState: "ready",
         badges: [
           {
-            id: "reasoningOverkill",
+            id: "sessionOverdepth",
             status: "finding",
             notAssessedReason: null,
           },
           {
-            id: "excessCacheRehydration",
+            id: "modelOverthinking",
             status: "clean",
             notAssessedReason: null,
           },
           {
-            id: "bloatedInitialContext",
+            id: "overpoweredSubagents",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "obsoleteModel",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "fastModeOveruse",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "excessCacheRehydration",
             status: "clean",
             notAssessedReason: null,
           },
@@ -191,8 +206,8 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("2 of 3 burn checks pass").textContent).toBe(
-        "2/3 burn checks",
+      expect(screen.getByLabelText("5 of 6 burn checks pass").textContent).toBe(
+        "5/6 burn checks",
       )
     })
     expect(getSessionHygiene).toHaveBeenCalledWith([

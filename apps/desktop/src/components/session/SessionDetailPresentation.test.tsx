@@ -158,18 +158,33 @@ describe("SessionDetailPresentation — chrome", () => {
       hygiene: {
         badges: [
           {
-            id: "reasoningOverkill",
+            id: "sessionOverdepth",
             status: "notAssessed",
             notAssessedReason: "incompleteEvidence",
           },
           {
-            id: "excessCacheRehydration",
+            id: "modelOverthinking",
             status: "clean",
             notAssessedReason: null,
           },
           {
-            id: "bloatedInitialContext",
+            id: "overpoweredSubagents",
             status: "finding",
+            notAssessedReason: null,
+          },
+          {
+            id: "obsoleteModel",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "fastModeOveruse",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "excessCacheRehydration",
+            status: "clean",
             notAssessedReason: null,
           },
         ],
@@ -177,12 +192,12 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
-    const pip = screen.getByLabelText("Reasoning overkill not assessed")
+    const pip = screen.getByLabelText("Session overdepth not assessed")
     expect(pip.textContent).toBe("?")
     expect(pip.className).toContain("border-dashed")
     expect(pip.className).toContain("text-label-tertiary")
-    expect(screen.getByLabelText("No excess cache rehydration").textContent).toBe("✓")
-    expect(screen.getByLabelText("Bloated initial context").textContent).toBe("×")
+    expect(screen.getByLabelText("No model overthinking detected").textContent).toBe("✓")
+    expect(screen.getByLabelText("Overpowered subagents detected").textContent).toBe("×")
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -267,10 +282,13 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(detailRow).toHaveTextContent("last 11m ago")
     expect(detailRow).toHaveTextContent("5.6-sol/high")
     const hygiene = screen.getByLabelText("Session hygiene checks")
-    expect(hygiene.children).toHaveLength(3)
-    expect(screen.getByLabelText("No reasoning overkill")).toBeTruthy()
-    expect(screen.getByLabelText("No excess cache rehydration")).toBeTruthy()
-    expect(screen.getByLabelText("No bloated initial context")).toBeTruthy()
+    expect(hygiene.children).toHaveLength(6)
+    expect(screen.getByLabelText("No session overdepth detected")).toBeTruthy()
+    expect(screen.getByLabelText("No model overthinking detected")).toBeTruthy()
+    expect(screen.getByLabelText("No overpowered subagents detected")).toBeTruthy()
+    expect(screen.getByLabelText("No obsolete model detected")).toBeTruthy()
+    expect(screen.getByLabelText("No fast mode overuse detected")).toBeTruthy()
+    expect(screen.getByLabelText("No excess cache rehydration detected")).toBeTruthy()
   })
 
   it("names the back control for what it does, not for the view it leaves", () => {

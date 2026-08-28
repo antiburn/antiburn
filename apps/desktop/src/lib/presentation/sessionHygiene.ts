@@ -30,27 +30,45 @@ interface HygieneCheckDefinition {
 
 const CHECKS: readonly HygieneCheckDefinition[] = [
   {
-    id: "reasoningOverkill",
-    cleanTitle: "No reasoning overkill",
-    findingTitle: "Reasoning overkill",
-    notAssessedTitle: "Reasoning overkill not assessed",
+    id: "sessionOverdepth",
+    cleanTitle: "No session overdepth detected",
+    findingTitle: "Session overdepth detected",
+    notAssessedTitle: "Session overdepth not assessed",
+  },
+  {
+    id: "modelOverthinking",
+    cleanTitle: "No model overthinking detected",
+    findingTitle: "Model overthinking detected",
+    notAssessedTitle: "Model overthinking not assessed",
+  },
+  {
+    id: "overpoweredSubagents",
+    cleanTitle: "No overpowered subagents detected",
+    findingTitle: "Overpowered subagents detected",
+    notAssessedTitle: "Overpowered subagents not assessed",
+  },
+  {
+    id: "obsoleteModel",
+    cleanTitle: "No obsolete model detected",
+    findingTitle: "Obsolete model detected",
+    notAssessedTitle: "Obsolete model not assessed",
+  },
+  {
+    id: "fastModeOveruse",
+    cleanTitle: "No fast mode overuse detected",
+    findingTitle: "Fast mode overuse detected",
+    notAssessedTitle: "Fast mode overuse not assessed",
   },
   {
     id: "excessCacheRehydration",
-    cleanTitle: "No excess cache rehydration",
-    findingTitle: "Excess cache rehydration",
+    cleanTitle: "No excess cache rehydration detected",
+    findingTitle: "Excess cache rehydration detected",
     notAssessedTitle: "Excess cache rehydration not assessed",
-  },
-  {
-    id: "bloatedInitialContext",
-    cleanTitle: "No bloated initial context",
-    findingTitle: "Bloated initial context",
-    notAssessedTitle: "Bloated initial context not assessed",
   },
 ]
 
 const NOT_ASSESSED: SessionHygieneBadgePayload = {
-  id: "reasoningOverkill",
+  id: "sessionOverdepth",
   status: "notAssessed",
   notAssessedReason: "incompleteEvidence",
 }
