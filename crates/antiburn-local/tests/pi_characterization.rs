@@ -885,31 +885,33 @@ fn pi_capabilities_match_published_evidence_and_session_cache_support() {
 fn pi_badges_follow_the_merged_session_coverage_policy() {
     let (complete, _) = composite(&input("minimal_session"));
     let complete_badges = session_badges(&complete, &ReportCatalogs::default());
-    assert_eq!(complete_badges[0].id, BadgeId::ReasoningOverkill);
-    assert_eq!(complete_badges[0].status, BadgeStatus::Clean);
-    for badge in &complete_badges[1..] {
-        assert_eq!(
-            badge.status,
+    assert_eq!(complete_badges.map(|badge| badge.id), BadgeId::ALL);
+    assert_eq!(
+        complete_badges.map(|badge| badge.status),
+        [
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            "{:?}",
-            badge.id
-        );
-    }
+            BadgeStatus::Clean,
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            BadgeStatus::Clean,
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+        ]
+    );
 
     let (partial, _) = composite(&input("unknown_row_type"));
     let partial_badges = session_badges(&partial, &ReportCatalogs::default());
+    assert_eq!(partial_badges.map(|badge| badge.id), BadgeId::ALL);
     assert_eq!(
-        partial_badges[0].status,
-        BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
-    );
-    for badge in &partial_badges[1..] {
-        assert_eq!(
-            badge.status,
+        partial_badges.map(|badge| badge.status),
+        [
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            "{:?}",
-            badge.id
-        );
-    }
+            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+        ]
+    );
 }
 
 #[test]

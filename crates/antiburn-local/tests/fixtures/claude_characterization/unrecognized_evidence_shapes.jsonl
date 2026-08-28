@@ -1,0 +1,7 @@
+{"type":"assistant","timestamp":"2026-05-03T08:00:00Z","message":{"id":"known-shape-neighbour","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":8,"output_tokens":4},"content":[{"type":"text","text":"Synthetic neighbour."}]}}
+{"type":"unknown_tool_calls","tool_calls":[]}
+{"type":"unknown_thinking","payload":{"content":[{"type":"thinking"}]}}
+{"type":"unknown_compaction","compactMetadata":{}}
+{"type":"unknown_model","model":"claude-fictional","usage":{}}
+{"type":"unknown_function","payload":{"name":"Bash"},"arguments":{"command":"echo synthetic"}}
+{"type":"cost-state","message":{"usage":{"input_tokens":4}}}

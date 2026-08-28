@@ -7,23 +7,32 @@ use super::report::{GroupState, requirements};
 /// Identifies one session-level hygiene badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BadgeId {
-    ReasoningOverkill,
+    SessionOverdepth,
+    ModelOverthinking,
+    OverpoweredSubagents,
+    ObsoleteModel,
+    FastModeOveruse,
     ExcessCacheRehydration,
-    BloatedInitialContext,
 }
 
 impl BadgeId {
-    pub const ALL: [Self; 3] = [
-        Self::ReasoningOverkill,
+    pub const ALL: [Self; 6] = [
+        Self::SessionOverdepth,
+        Self::ModelOverthinking,
+        Self::OverpoweredSubagents,
+        Self::ObsoleteModel,
+        Self::FastModeOveruse,
         Self::ExcessCacheRehydration,
-        Self::BloatedInitialContext,
     ];
 
     const fn detector(self) -> DetectorId {
         match self {
-            Self::ReasoningOverkill => DetectorId::ModelOverthinking,
+            Self::SessionOverdepth => DetectorId::SessionsOverDepth,
+            Self::ModelOverthinking => DetectorId::ModelOverthinking,
+            Self::OverpoweredSubagents => DetectorId::OverpoweredSubagents,
+            Self::ObsoleteModel => DetectorId::OldModelUsage,
+            Self::FastModeOveruse => DetectorId::OveruseOfFastMode,
             Self::ExcessCacheRehydration => DetectorId::CacheChurn,
-            Self::BloatedInitialContext => DetectorId::SessionsOverDepth,
         }
     }
 }
@@ -43,8 +52,8 @@ pub struct SessionBadge {
     pub status: BadgeStatus,
 }
 
-/// Reduces one session's stored evidence into the three v1 badges.
-pub fn session_badges(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> [SessionBadge; 3] {
+/// Reduces one session's stored evidence into the six v1 badges.
+pub fn session_badges(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> [SessionBadge; 6] {
     BadgeId::ALL.map(|id| SessionBadge {
         id,
         status: badge_status(id.detector(), evidence, catalogs),
@@ -95,7 +104,8 @@ mod tests {
 
     use crate::analysis::{
         ANALYZER_REVISION, ContextEvidence, CoverageReason, EVIDENCE_SCHEMA_REVISION,
-        EvidenceValue, ModelTransition, PARSER_REVISION, SessionEvidence, TurnCounts,
+        EvidenceValue, ModelTokens, ModelTransition, PARSER_REVISION, RelationConfidence,
+        RelationProvenance, SessionEvidence, SubagentChild, TurnCounts,
     };
     use crate::insights::detectors::test_support::claude_evidence;
     use crate::insights::{
@@ -117,7 +127,16 @@ mod tests {
     fn finding_evidence(id: BadgeId, partial: bool) -> SessionEvidence {
         let mut evidence = claude_evidence("synthetic-badge");
         match id {
-            BadgeId::ReasoningOverkill => {
+            BadgeId::SessionOverdepth => {
+                evidence.context = EvidenceValue::Complete(ContextEvidence {
+                    max_request_context_tokens: ReportCatalogs::default().depth_cap_tokens + 1,
+                    top_depth_examples: Vec::new(),
+                });
+                if partial {
+                    evidence.context = make_partial(evidence.context);
+                }
+            }
+            BadgeId::ModelOverthinking => {
                 let EvidenceValue::Complete(models) = &mut evidence.models else {
                     unreachable!()
                 };
@@ -126,6 +145,57 @@ mod tests {
                     TurnCounts {
                         main_loop: 1,
                         delegated: 0,
+                    },
+                );
+                if partial {
+                    evidence.models = make_partial(evidence.models);
+                }
+            }
+            BadgeId::OverpoweredSubagents => {
+                let EvidenceValue::Complete(subagents) = &mut evidence.subagents else {
+                    unreachable!()
+                };
+                subagents.spawn_count = 1;
+                subagents.delegated_turns = 1;
+                subagents
+                    .delegated_models
+                    .insert("claude-opus-4-6".to_owned());
+                subagents.children.push(SubagentChild {
+                    ordinal: 1,
+                    parent_model: Some("claude-opus-4-6".to_owned()),
+                    child_model: EvidenceValue::Unsupported,
+                    confidence: RelationConfidence::Observed,
+                    provenance: RelationProvenance::TaskToolUse,
+                });
+                if partial {
+                    evidence.subagents = make_partial(evidence.subagents);
+                }
+            }
+            BadgeId::ObsoleteModel => {
+                let EvidenceValue::Complete(models) = &mut evidence.models else {
+                    unreachable!()
+                };
+                models.by_model.insert(
+                    "old-model".to_owned(),
+                    ModelTokens {
+                        turns: 1,
+                        last_ts_ms: 1,
+                        ..ModelTokens::default()
+                    },
+                );
+                if partial {
+                    evidence.models = make_partial(evidence.models);
+                }
+            }
+            BadgeId::FastModeOveruse => {
+                let EvidenceValue::Complete(models) = &mut evidence.models else {
+                    unreachable!()
+                };
+                models.fast_modes.insert(
+                    "fast".to_owned(),
+                    TurnCounts {
+                        main_loop: 0,
+                        delegated: 1,
                     },
                 );
                 if partial {
@@ -146,15 +216,6 @@ mod tests {
                     evidence.cache = make_partial(evidence.cache);
                 }
             }
-            BadgeId::BloatedInitialContext => {
-                evidence.context = EvidenceValue::Complete(ContextEvidence {
-                    max_request_context_tokens: ReportCatalogs::default().depth_cap_tokens + 1,
-                    top_depth_examples: Vec::new(),
-                });
-                if partial {
-                    evidence.context = make_partial(evidence.context);
-                }
-            }
         }
         if partial {
             evidence.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
@@ -162,8 +223,20 @@ mod tests {
         evidence
     }
 
+    fn test_catalogs() -> ReportCatalogs {
+        let mut catalogs = ReportCatalogs::default();
+        catalogs.model_replacements.insert(
+            "old-model".to_owned(),
+            super::super::detectors::ModelReplacement {
+                replacement: "new-model".to_owned(),
+                available_since_ts_ms: 0,
+            },
+        );
+        catalogs
+    }
+
     fn badge(evidence: &SessionEvidence, id: BadgeId) -> SessionBadge {
-        session_badges(evidence, &ReportCatalogs::default())
+        session_badges(evidence, &test_catalogs())
             .into_iter()
             .find(|badge| badge.id == id)
             .unwrap()
@@ -195,7 +268,11 @@ mod tests {
     #[test]
     fn a_missing_capability_is_not_assessed() {
         let mut evidence = claude_evidence("synthetic-capability");
+        evidence.capabilities.request_context_tokens = false;
         evidence.capabilities.model_identity = false;
+        evidence.capabilities.reasoning_effort_tier = false;
+        evidence.capabilities.fast_tier = false;
+        evidence.capabilities.subagent_models = false;
 
         for id in BadgeId::ALL {
             assert_eq!(
@@ -214,8 +291,12 @@ mod tests {
         }
     }
 
-    fn report_status(evidence: SessionEvidence, detector: DetectorId) -> DetectorStatus {
-        let mut accumulator = EfficiencyReportAccumulator::new();
+    fn report_status(
+        evidence: SessionEvidence,
+        detector: DetectorId,
+        catalogs: &ReportCatalogs,
+    ) -> DetectorStatus {
+        let mut accumulator = EfficiencyReportAccumulator::with_catalogs(catalogs.clone());
         accumulator.observe_session(evidence);
         accumulator
             .finish(ReportContext {
@@ -236,12 +317,15 @@ mod tests {
 
     #[test]
     fn badges_and_report_folds_agree_when_session_coverage_is_complete() {
-        let catalogs = ReportCatalogs::default();
+        let catalogs = test_catalogs();
         let cohort = [
             claude_evidence("synthetic-clean"),
-            finding_evidence(BadgeId::ReasoningOverkill, false),
+            finding_evidence(BadgeId::SessionOverdepth, false),
+            finding_evidence(BadgeId::ModelOverthinking, false),
+            finding_evidence(BadgeId::OverpoweredSubagents, false),
+            finding_evidence(BadgeId::ObsoleteModel, false),
+            finding_evidence(BadgeId::FastModeOveruse, false),
             finding_evidence(BadgeId::ExcessCacheRehydration, false),
-            finding_evidence(BadgeId::BloatedInitialContext, false),
         ];
 
         for evidence in cohort {
@@ -250,7 +334,7 @@ mod tests {
                 .into_iter()
                 .collect();
             for id in BadgeId::ALL {
-                let report = report_status(evidence.clone(), id.detector());
+                let report = report_status(evidence.clone(), id.detector(), &catalogs);
                 let expected = match report {
                     DetectorStatus::Findings(_) => BadgeStatus::Finding,
                     DetectorStatus::Clean => BadgeStatus::Clean,
@@ -264,8 +348,8 @@ mod tests {
     /// The badge is a session-scope integrity signal. The report is
     /// detector-scope. A truncated group that no detector reads keeps the
     /// report Clean for that detector. The badge for the same session stays
-    /// NotAssessed. This asymmetry is intentional. Issue #229 tracks the
-    /// report-wide coverage policy.
+    /// NotAssessed. This asymmetry is intentional. Issue #229 keeps the
+    /// detector-scope report rule.
     #[test]
     fn session_wide_partial_coverage_diverges_from_report_by_design() {
         let mut evidence = claude_evidence("synthetic-divergent");
@@ -281,7 +365,7 @@ mod tests {
         }
         for id in BadgeId::ALL {
             assert_eq!(
-                report_status(evidence.clone(), id.detector()),
+                report_status(evidence.clone(), id.detector(), &ReportCatalogs::default()),
                 DetectorStatus::Clean,
                 "{id:?}"
             );

@@ -76,6 +76,7 @@ pub enum EvidenceObservation {
     InheritedRecord,
     UnrecognizedType {
         discriminator: String,
+        inert: bool,
     },
 }
 

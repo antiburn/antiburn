@@ -295,6 +295,7 @@ impl PiStreamState {
             sink.record(NormalizedRecord::Observation(Box::new(
                 EvidenceObservation::UnrecognizedType {
                     discriminator: discriminator.clone(),
+                    inert: false,
                 },
             )));
         }
@@ -406,6 +407,7 @@ fn unrecognized(discriminator: &str, sink: &mut dyn RecordSink) {
     sink.record(NormalizedRecord::Observation(Box::new(
         EvidenceObservation::UnrecognizedType {
             discriminator: discriminator.to_owned(),
+            inert: false,
         },
     )));
     sink.record(NormalizedRecord::Unusable(

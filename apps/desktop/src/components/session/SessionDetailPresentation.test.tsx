@@ -149,7 +149,7 @@ describe("SessionDetailPresentation — chrome", () => {
   it("renders the useful card hierarchy for a settled session", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
-    expect(screen.getByText("No reasoning overkill")).toBeTruthy()
+    expect(screen.getByText("No model overthinking detected")).toBeTruthy()
     expect(screen.getByText("Context")).toBeTruthy()
     expect(screen.getByText("Cost")).toBeTruthy()
   })
@@ -159,18 +159,33 @@ describe("SessionDetailPresentation — chrome", () => {
       hygiene: {
         badges: [
           {
-            id: "reasoningOverkill",
+            id: "sessionOverdepth",
             status: "notAssessed",
             notAssessedReason: "incompleteEvidence",
           },
           {
-            id: "excessCacheRehydration",
+            id: "modelOverthinking",
             status: "clean",
             notAssessedReason: null,
           },
           {
-            id: "bloatedInitialContext",
+            id: "overpoweredSubagents",
             status: "finding",
+            notAssessedReason: null,
+          },
+          {
+            id: "obsoleteModel",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "fastModeOveruse",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "excessCacheRehydration",
+            status: "clean",
             notAssessedReason: null,
           },
         ],
@@ -178,13 +193,13 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
-    const notAssessed = screen.getByText("Reasoning overkill not assessed")
+    const notAssessed = screen.getByText("Session overdepth not assessed")
     expect(notAssessed.className).toContain("text-label-tertiary")
     expect(notAssessed.querySelector("[aria-hidden]")?.className).toContain("border-dashed")
-    expect(screen.getByText("No excess cache rehydration").className).toContain(
+    expect(screen.getByText("No model overthinking detected").className).toContain(
       "text-label-secondary",
     )
-    expect(screen.getByText("Bloated initial context").className).toContain(
+    expect(screen.getByText("Overpowered subagents detected").className).toContain(
       "text-system-red-text",
     )
   })
@@ -196,7 +211,7 @@ describe("SessionDetailPresentation — chrome", () => {
     const block = screen.getByLabelText("Session hygiene checks")
     expect(block.className).toContain("animate-pulse")
     expect(screen.getByText("Checking reasoning effort…")).toBeTruthy()
-    expect(screen.queryByText("Reasoning overkill not assessed")).toBeNull()
+    expect(screen.queryByText("Session overdepth not assessed")).toBeNull()
   })
 
   it("replaces the hygiene rows with a notice for an unsupported agent", () => {
@@ -290,10 +305,13 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(detailRow).toHaveTextContent("last 11m ago")
     expect(detailRow).toHaveTextContent("5.6-sol/high")
     const hygiene = screen.getByLabelText("Session hygiene checks")
-    expect(hygiene.children).toHaveLength(3)
-    expect(screen.getByText("No reasoning overkill")).toBeTruthy()
-    expect(screen.getByText("No excess cache rehydration")).toBeTruthy()
-    expect(screen.getByText("No bloated initial context")).toBeTruthy()
+    expect(hygiene.children).toHaveLength(6)
+    expect(screen.getByText("No session overdepth detected")).toBeTruthy()
+    expect(screen.getByText("No model overthinking detected")).toBeTruthy()
+    expect(screen.getByText("No overpowered subagents detected")).toBeTruthy()
+    expect(screen.getByText("No obsolete model detected")).toBeTruthy()
+    expect(screen.getByText("No fast mode overuse detected")).toBeTruthy()
+    expect(screen.getByText("No excess cache rehydration detected")).toBeTruthy()
   })
 
   it("names the back control for what it does, not for the view it leaves", () => {

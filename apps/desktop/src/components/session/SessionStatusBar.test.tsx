@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import type { SessionHygieneCheck } from "../../lib/presentation/sessionHygiene"
@@ -12,18 +12,47 @@ const TOOLTIP = {
 
 const CHECKS: SessionHygieneCheck[] = [
   {
-    id: "bloatedInitialContext",
+    id: "sessionOverdepth",
     status: "finding",
     notAssessedReason: null,
-    title: "Bloated initial context",
+    title: "Session overdepth detected",
+    name: "Session overdepth detected",
     ink: "system-red-text",
     tooltip: TOOLTIP,
   },
   {
-    id: "reasoningOverkill",
+    id: "modelOverthinking",
     status: "clean",
     notAssessedReason: null,
-    title: "No reasoning overkill",
+    title: "No model overthinking detected",
+    name: "Model overthinking detected",
+    ink: "system-green",
+    tooltip: TOOLTIP,
+  },
+  {
+    id: "overpoweredSubagents",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No overpowered subagents detected",
+    name: "Overpowered subagents detected",
+    ink: "system-green",
+    tooltip: TOOLTIP,
+  },
+  {
+    id: "obsoleteModel",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No obsolete model detected",
+    name: "Obsolete model detected",
+    ink: "system-green",
+    tooltip: TOOLTIP,
+  },
+  {
+    id: "fastModeOveruse",
+    status: "clean",
+    notAssessedReason: null,
+    title: "No fast mode overuse detected",
+    name: "Fast mode overuse detected",
     ink: "system-green",
     tooltip: TOOLTIP,
   },
@@ -31,7 +60,8 @@ const CHECKS: SessionHygieneCheck[] = [
     id: "excessCacheRehydration",
     status: "clean",
     notAssessedReason: null,
-    title: "No excess cache rehydration",
+    title: "No excess cache rehydration detected",
+    name: "Excess cache rehydration detected",
     ink: "system-green",
     tooltip: TOOLTIP,
   },
@@ -50,9 +80,12 @@ const WITH_NOT_ASSESSED: SessionHygieneCheck[] = [
     ...CHECKS[2]!,
     status: "notAssessed",
     notAssessedReason: "incompleteEvidence",
-    title: "Excess cache rehydration not assessed",
+    title: "Overpowered subagents not assessed",
     ink: "label-tertiary",
   },
+  CHECKS[3]!,
+  CHECKS[4]!,
+  CHECKS[5]!,
 ]
 
 afterEach(cleanup)
@@ -61,7 +94,7 @@ describe("SessionStatusBar", () => {
   it("inks a fill-free line green with the full pass count when every check passes", () => {
     render(<SessionStatusBar checks={ALL_PASSED} />)
     const verdict = screen.getByLabelText("All checks pass")
-    expect(verdict.textContent).toBe("3/3 burn checks")
+    expect(verdict.textContent).toBe("6/6 burn checks")
     expect(verdict.style.color).toBe("var(--color-system-green)")
     expect(verdict.className).not.toContain("bg-")
     expect(verdict.parentElement?.className).not.toContain("bg-")
@@ -69,31 +102,31 @@ describe("SessionStatusBar", () => {
 
   it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
-    const verdict = screen.getByLabelText("1 of 3 assessed checks failed")
-    expect(verdict.textContent).toBe("2/3 burn checks")
+    const verdict = screen.getByLabelText("5 of 6 burn checks pass")
+    expect(verdict.textContent).toBe("5/6 burn checks")
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
-    expect(verdict.style.color).toContain("--color-system-red-text) 33%")
+    expect(verdict.style.color).toContain("--color-system-red-text) 17%")
     expect(verdict.style.color).toContain("--color-system-orange")
     expect(verdict.parentElement?.className).not.toContain("bg-")
   })
 
-  it("counts findings, clean checks, and unassessed checks separately", () => {
+  it("keeps the denominator on every check, so it never contradicts the tail", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    const verdict = screen.getByLabelText("1 of 2 assessed checks failed; 1 not assessed")
-    expect(verdict.textContent).toBe("1/2 burn checks · 1 not assessed")
-    expect(verdict.style.color).toContain("--color-system-red-text) 50%")
+    const verdict = screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed")
+    expect(verdict.textContent).toBe("4/6 burn checks · 1 not assessed")
+    expect(verdict.style.color).toContain("--color-system-red-text) 17%")
     expect(verdict.style.color).toContain("--color-system-orange")
   })
 
-  it("reaches full red ink when every assessed check fails", () => {
+  it("reaches full red ink only when every check fails", () => {
     const allFailed = CHECKS.map((check) => ({
       ...check,
       status: "finding" as const,
       ink: "system-red-text" as const,
     }))
     render(<SessionStatusBar checks={allFailed} />)
-    const verdict = screen.getByLabelText("3 of 3 assessed checks failed")
+    const verdict = screen.getByLabelText("0 of 6 burn checks pass")
     expect(verdict.style.color).toContain("--color-system-red-text) 100%")
   })
 
@@ -106,8 +139,68 @@ describe("SessionStatusBar", () => {
     }))
     render(<SessionStatusBar checks={notAssessed} evidenceState="processing" />)
     const verdict = screen.getByLabelText("Computing session hygiene checks")
-    expect(verdict.textContent).toBe("Computing checks")
+    expect(verdict.textContent).toBe("Computing checks…")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
+  })
+
+  it("keeps the ellipsis off settled evidence states", () => {
+    render(<SessionStatusBar checks={[]} evidenceState="unsupported" />)
+    const verdict = screen.getByLabelText("Unsupported session hygiene checks")
+    expect(verdict.textContent).toBe("Unsupported checks")
+  })
+
+  it("never shows a denominator smaller than the not-assessed tail", () => {
+    const oneAssessed: SessionHygieneCheck[] = [
+      CHECKS[0]!,
+      { ...WITH_NOT_ASSESSED[2]! },
+      {
+        ...CHECKS[1]!,
+        status: "notAssessed",
+        notAssessedReason: "incompleteEvidence",
+        title: "Model overthinking not assessed",
+        ink: "label-tertiary",
+      },
+    ]
+    render(<SessionStatusBar checks={oneAssessed} />)
+    const verdict = screen.getByLabelText("0 of 3 burn checks pass; 2 not assessed")
+    expect(verdict.textContent).toBe("0/3 burn checks · 2 not assessed")
+  })
+
+  it("replaces a zero-over-zero fraction with a plain not-assessed verdict", () => {
+    const noneAssessed = CHECKS.map((check) => ({
+      ...check,
+      status: "notAssessed" as const,
+      notAssessedReason: "capabilityMissing" as const,
+      ink: "label-tertiary" as const,
+    }))
+    render(<SessionStatusBar checks={noneAssessed} evidenceState="ready" />)
+    const verdict = screen.getByLabelText("No checks assessed")
+    expect(verdict.textContent).toBe("Not assessed")
+    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
+  })
+
+  it("splits a not-assessed check into a bare name and its reason", async () => {
+    render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
+    fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
+
+    // The name carries no verdict, so it does not repeat the reason below it.
+    const name = await screen.findByText("Overpowered subagents detected")
+    expect(name.textContent).not.toContain("not assessed")
+    const reason = await screen.findByText("couldn't read the whole session log")
+    // The reason shares the name's column and never runs under the mark.
+    expect(reason.className).toContain("col-start-1")
+    expect(reason.className).not.toContain("col-span-full")
+    expect(reason.className).toContain("text-label-tertiary")
+  })
+
+  it("marks every check status with a named icon, not a text glyph", async () => {
+    render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
+    fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
+
+    for (const label of ["Finding", "Pass", "Not assessed"]) {
+      const marks = await screen.findAllByLabelText(label)
+      expect(marks.every((mark) => mark.tagName.toLowerCase() === "svg")).toBe(true)
+    }
   })
 
   it("shows a usual cost figure without pill chrome", () => {

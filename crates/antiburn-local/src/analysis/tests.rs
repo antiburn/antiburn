@@ -194,8 +194,8 @@ fn the_characterization_fixtures_report_their_expected_coverage() {
         ),
         (
             "unrecognized_type".to_string(),
-            RecordCoverage::Partial,
-            BTreeSet::from([PartialReason::UnrecognizedRecordType]),
+            RecordCoverage::Complete,
+            BTreeSet::new(),
         ),
         (
             "parent_with_task_spawn".to_string(),
