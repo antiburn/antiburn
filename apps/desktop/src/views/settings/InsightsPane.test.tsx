@@ -69,6 +69,15 @@ function report(overrides: Partial<InsightsReportPayload> = {}): InsightsReportP
     assessedSessions: 0,
     categories: notAssessedCategories(),
     quotaPressure: { assessed: false, findings: null },
+    unrecognizedRecords: {
+      types: [],
+      typesTruncated: false,
+      sessionsWithTypes: 0,
+      inertSessions: 0,
+      evidenceBearingSessions: 0,
+      cappedSessions: 0,
+      truncatedSessions: 0,
+    },
     catalogRevision: 1,
     ...overrides,
   }
@@ -194,6 +203,178 @@ describe("InsightsPane coverage (FR-12)", () => {
     expect(
       screen.getByText("1 have no trustworthy start time — not assessed"),
     ).toBeInTheDocument()
+  })
+})
+
+describe("InsightsPane unrecognized records", () => {
+  it("names inert types even when every category has a result", async () => {
+    const categories = notAssessedCategories().map((category) => ({
+      ...category,
+      eligible: 2,
+      assessed: 2,
+      status: "clean" as const,
+      notAssessedReason: null,
+    }))
+    const longType = "x".repeat(256)
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 2, ready: 2 }),
+        assessedSessions: 2,
+        categories,
+        unrecognizedRecords: {
+          types: ["<missing>", "relay_probe", longType],
+          typesTruncated: true,
+          sessionsWithTypes: 1,
+          inertSessions: 1,
+          evidenceBearingSessions: 0,
+          cappedSessions: 0,
+          truncatedSessions: 0,
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    const lead = await screen.findByText(/1 of the 2 sessions in the assessed cohort/)
+    expect(lead).toHaveTextContent("records with no type, relay_probe")
+    expect(lead).toHaveTextContent(longType)
+    expect(lead).toHaveTextContent("and more")
+    expect(lead.closest("ul")).toBeNull()
+    expect(
+      screen.getByText("These records do not themselves block results for those sessions."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/can still report results/)).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Clean across 2 assessed sessions/)).toHaveLength(9)
+  })
+
+  it("does not claim results exist when unrelated evidence is incomplete", async () => {
+    const categories = notAssessedCategories().map((category) => ({
+      ...category,
+      eligible: 1,
+      notAssessedReason: "incompleteEvidence" as const,
+    }))
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 1, ready: 1 }),
+        assessedSessions: 1,
+        categories,
+        unrecognizedRecords: {
+          types: ["relay_probe"],
+          typesTruncated: false,
+          sessionsWithTypes: 1,
+          inertSessions: 1,
+          evidenceBearingSessions: 0,
+          cappedSessions: 0,
+          truncatedSessions: 0,
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    expect(
+      await screen.findByText(
+        "These records do not themselves block results for those sessions.",
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getAllByText(/evidence is incomplete/)).toHaveLength(9)
+    expect(screen.queryByText(/can still report results/)).not.toBeInTheDocument()
+  })
+
+  it("calls out evidence-bearing and capped sessions", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 3, ready: 3 }),
+        assessedSessions: 3,
+        unrecognizedRecords: {
+          types: ["relay_probe"],
+          typesTruncated: false,
+          sessionsWithTypes: 2,
+          inertSessions: 1,
+          evidenceBearingSessions: 2,
+          cappedSessions: 2,
+          truncatedSessions: 0,
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    const evidence = await screen.findByText(/could carry usage data/)
+    const capped = screen.getByText(/more unrecognised types than antiburn records/)
+    expect(evidence).toHaveTextContent("some checks cannot report a result for them")
+    expect(evidence).not.toHaveTextContent("assessed")
+    expect(capped).toHaveTextContent("some checks cannot report a result for them")
+    expect(screen.queryByText(/do not themselves block results/)).not.toBeInTheDocument()
+  })
+
+  it("uses the unknown-session count independently of the cohort size", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 12, ready: 12 }),
+        assessedSessions: 12,
+        unrecognizedRecords: {
+          types: ["relay_probe"],
+          typesTruncated: false,
+          sessionsWithTypes: 1,
+          inertSessions: 1,
+          evidenceBearingSessions: 0,
+          cappedSessions: 0,
+          truncatedSessions: 0,
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    expect(
+      await screen.findByText(/1 of the 12 sessions in the assessed cohort/),
+    ).toBeInTheDocument()
+  })
+
+  it("calls out a capped inert session without an evidence-bearing session", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 1, ready: 1 }),
+        assessedSessions: 1,
+        unrecognizedRecords: {
+          types: ["relay_probe"],
+          typesTruncated: true,
+          sessionsWithTypes: 1,
+          inertSessions: 1,
+          evidenceBearingSessions: 0,
+          cappedSessions: 1,
+          truncatedSessions: 0,
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    const capped = await screen.findByText(/more unrecognised types than antiburn records/)
+    expect(capped).toHaveTextContent("some checks cannot report a result for it")
+    expect(await screen.findByText(/and more/)).toBeInTheDocument()
+    expect(screen.queryByText(/could carry usage data/)).not.toBeInTheDocument()
+  })
+
+  it("distinguishes one truncated type from a capped type set", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 1, ready: 1 }),
+        assessedSessions: 1,
+        unrecognizedRecords: {
+          types: ["x".repeat(256)],
+          typesTruncated: false,
+          sessionsWithTypes: 1,
+          inertSessions: 1,
+          evidenceBearingSessions: 0,
+          cappedSessions: 0,
+          truncatedSessions: 1,
+        },
+      }),
+    })
+    render(<InsightsPane />)
+
+    const truncated = await screen.findByText(/could not record in full/)
+    expect(truncated).toHaveTextContent("some checks cannot report a result for it.")
+    expect(
+      screen.queryByText(/more unrecognised types than antiburn records/),
+    ).not.toBeInTheDocument()
   })
 })
 

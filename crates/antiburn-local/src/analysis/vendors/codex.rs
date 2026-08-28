@@ -331,6 +331,7 @@ impl CodexStreamState {
             sink.record(NormalizedRecord::Observation(Box::new(
                 EvidenceObservation::UnrecognizedType {
                     discriminator: "codex.unrecognized".to_owned(),
+                    inert: false,
                 },
             )));
             sink.record(NormalizedRecord::Unusable(

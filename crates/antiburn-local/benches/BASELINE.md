@@ -64,6 +64,14 @@ The cost curve is linear at ~150 MiB/s end to end.
 The pipeline is dominated by JSON parsing (serde deserialization inside the
 adapter); both accumulators together add only ~2–3 % on top.
 
+### Issue #229 remeasurement
+
+The structural unknown-record scan was remeasured before the issue #229 commit.
+The 10 MiB full reparse median was 72.8 ms, compared with 72.5 ms above.
+Criterion detected no change for the 10 MiB metrics-and-evidence stage against
+the immediately preceding run. The eventless-record walk caused no measurable
+pipeline regression.
+
 ### Fork-job `Inline` materialization proxy at 10 MiB
 
 | Path | Time (median) |

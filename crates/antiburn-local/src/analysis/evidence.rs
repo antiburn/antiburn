@@ -411,11 +411,16 @@ pub struct SessionProvenance {
     pub harness_version: EvidenceValue<()>,
 }
 
+/// Bounded diagnostics for observed records, including inert unknown records that keep coverage complete.
+///
+/// `records_observed` counts metrics events, unusable records, and observed inert unknowns.
+/// It excludes known eventless records when their parser-readable shapes are inert.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseDiagnostics {
     pub records_observed: u64,
     pub records_unusable: u64,
+    pub records_unrecognized_inert: u64,
     pub unusable_reasons: BTreeMap<CoverageReason, u64>,
     pub unrecognized_types: BTreeSet<String>,
     pub truncated_strings: BTreeSet<String>,
@@ -427,6 +432,7 @@ impl ParseDiagnostics {
         Self {
             records_observed: 0,
             records_unusable: 0,
+            records_unrecognized_inert: 0,
             unusable_reasons: BTreeMap::new(),
             unrecognized_types: BTreeSet::new(),
             truncated_strings: BTreeSet::new(),
@@ -549,7 +555,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 2,
+            "schemaRevision": 3,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -573,9 +579,9 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 3,
+                "parserRevision": 4,
                 "analyzerRevision": 5,
-                "evidenceSchemaRevision": 2,
+                "evidenceSchemaRevision": 3,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -584,6 +590,7 @@ mod tests {
             "diagnostics": {
                 "recordsObserved": 0,
                 "recordsUnusable": 0,
+                "recordsUnrecognizedInert": 0,
                 "unusableReasons": {},
                 "unrecognizedTypes": [],
                 "truncatedStrings": truncated_strings,

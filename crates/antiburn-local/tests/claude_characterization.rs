@@ -33,6 +33,18 @@ fn fixture(name: &str) -> &'static str {
         "unrecognized_type" => {
             include_str!("fixtures/claude_characterization/unrecognized_type.jsonl")
         }
+        "unrecognized_role_with_usage" => {
+            include_str!("fixtures/claude_characterization/unrecognized_role_with_usage.jsonl")
+        }
+        "unrecognized_evidence_shapes" => {
+            include_str!("fixtures/claude_characterization/unrecognized_evidence_shapes.jsonl")
+        }
+        "unrecognized_inert_records" => {
+            include_str!("fixtures/claude_characterization/unrecognized_inert_records.jsonl")
+        }
+        "unrecognized_inert_sidechain" => {
+            include_str!("fixtures/claude_characterization/unrecognized_inert_sidechain.jsonl")
+        }
         "parent_with_task_spawn" => {
             include_str!("fixtures/claude_characterization/parent_with_task_spawn.jsonl")
         }
@@ -379,13 +391,17 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 18] {
+fn evidence_fixture_names() -> [&'static str; 22] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
         "malformed_between_valid",
         "incomplete_final_record",
         "unrecognized_type",
+        "unrecognized_role_with_usage",
+        "unrecognized_evidence_shapes",
+        "unrecognized_inert_records",
+        "unrecognized_inert_sidechain",
         "parent_with_task_spawn",
         "subagent_child",
         "multi_model_session",

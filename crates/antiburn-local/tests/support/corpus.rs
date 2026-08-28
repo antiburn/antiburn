@@ -64,8 +64,12 @@ pub struct SessionSpec {
     pub delegated: bool,
     /// Number of `Task` tool_use spawns to plant near the session start.
     pub task_spawns: usize,
-    /// Insert one fictional unrecognized housekeeping record every N records.
+    /// Insert one fictional inert unknown record every N records.
+    /// Evidence-bearing insertion wins when both intervals match.
     pub unrecognized_every: Option<usize>,
+    /// Insert one fictional evidence-bearing unknown every N records.
+    /// This insertion runs before the inert insertion at matching indexes.
+    pub evidence_bearing_unrecognized_every: Option<usize>,
     /// Replace the record at this index with a single oversized line of
     /// roughly `oversized_bytes` bytes.
     pub oversized_at: Option<usize>,
@@ -81,6 +85,7 @@ impl SessionSpec {
             delegated: false,
             task_spawns: 0,
             unrecognized_every: None,
+            evidence_bearing_unrecognized_every: None,
             oversized_at: None,
             oversized_bytes: 0,
         }
@@ -99,6 +104,7 @@ pub struct Tallies {
     /// compaction boundaries).
     pub eventless_records: usize,
     pub unrecognized_records: usize,
+    pub evidence_bearing_unrecognized_records: usize,
     pub oversized_records: usize,
     pub task_spawns: usize,
     pub compaction_boundaries: usize,
@@ -138,6 +144,25 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
             jsonl.push('\n');
             tallies.total_records += 1;
             tallies.oversized_records += 1;
+            continue;
+        }
+        if let Some(every) = spec.evidence_bearing_unrecognized_every
+            && every > 0
+            && index > 0
+            && index.is_multiple_of(every)
+        {
+            let kind = UNRECOGNIZED_TYPES[index / every % UNRECOGNIZED_TYPES.len()];
+            push_record(
+                &mut jsonl,
+                &json!({
+                    "type": kind,
+                    "role": "agent",
+                    "timestamp": ts,
+                    "usage": {"input_tokens": 13, "output_tokens": 5}
+                }),
+            );
+            tallies.total_records += 1;
+            tallies.evidence_bearing_unrecognized_records += 1;
             continue;
         }
         if let Some(every) = spec.unrecognized_every

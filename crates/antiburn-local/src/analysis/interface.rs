@@ -70,6 +70,7 @@ pub enum EvidenceObservation {
     },
     UnrecognizedType {
         discriminator: String,
+        inert: bool,
     },
 }
 

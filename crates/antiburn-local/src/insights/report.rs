@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{
     CoverageReason, EvidenceCoverage, EvidenceValue, SessionEvidence, SourceAcceptance,
@@ -10,6 +10,8 @@ use super::quota::{QuotaPressureAccumulator, QuotaPressureSection};
 use super::{CoverageBucket, DetectorId};
 
 pub const MAX_EXAMPLES_PER_DETECTOR: usize = 3;
+pub const MAX_REPORT_UNRECOGNIZED_TYPES: usize = 16;
+const UNRECOGNIZED_TYPES_DIAGNOSTIC: &str = "diagnostics.unrecognized_types";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetectorCounts {
@@ -242,6 +244,21 @@ pub struct ReportContext {
     pub coverage: CoverageCounts,
 }
 
+/// Summarizes unknown record vocabulary across the current cohort.
+///
+/// The session counts are not exclusive. The evidence string cap already limits each type.
+/// The engine also bounds the diagnostic marker set, so both limit counts are best-effort.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UnrecognizedRecords {
+    pub types: BTreeSet<String>,
+    pub types_truncated: bool,
+    pub sessions_with_types: u64,
+    pub inert_sessions: u64,
+    pub evidence_bearing_sessions: u64,
+    pub capped_sessions: u64,
+    pub truncated_sessions: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EfficiencyReport {
     pub context: ReportContext,
@@ -251,6 +268,7 @@ pub struct EfficiencyReport {
     pub quota_pressure: QuotaPressureSection,
     pub catalog_revision: i64,
     pub coverage_reasons: BTreeMap<CoverageReason, u64>,
+    pub unrecognized_records: UnrecognizedRecords,
     pub capability_gaps: BTreeMap<DetectorId, u64>,
     pub capability_gap_examples: BTreeMap<DetectorId, Vec<SessionExample>>,
 }
@@ -262,6 +280,7 @@ pub struct EfficiencyReportAccumulator {
     quota: QuotaPressureAccumulator,
     catalogs: ReportCatalogs,
     coverage_reasons: BTreeMap<CoverageReason, u64>,
+    unrecognized_records: UnrecognizedRecords,
     capability_gaps: BTreeMap<DetectorId, u64>,
     capability_gap_examples: BTreeMap<DetectorId, Vec<SessionExample>>,
     actively_growing: u64,
@@ -291,6 +310,7 @@ impl EfficiencyReportAccumulator {
             quota: QuotaPressureAccumulator::default(),
             catalogs,
             coverage_reasons: BTreeMap::new(),
+            unrecognized_records: UnrecognizedRecords::default(),
             capability_gaps: BTreeMap::new(),
             capability_gap_examples: BTreeMap::new(),
             actively_growing: 0,
@@ -303,6 +323,7 @@ impl EfficiencyReportAccumulator {
         if let EvidenceCoverage::Partial(reason) = evidence.coverage {
             *self.coverage_reasons.entry(reason).or_default() += 1;
         }
+        self.observe_unrecognized_records(&evidence);
         if matches!(
             evidence.provenance.source_acceptance,
             SourceAcceptance::AcceptedPrefix { .. }
@@ -361,6 +382,42 @@ impl EfficiencyReportAccumulator {
         }
     }
 
+    fn observe_unrecognized_records(&mut self, evidence: &SessionEvidence) {
+        let diagnostics = &evidence.diagnostics;
+        if diagnostics.unrecognized_types.is_empty() {
+            return;
+        }
+
+        self.unrecognized_records.sessions_with_types += 1;
+        self.unrecognized_records.inert_sessions +=
+            u64::from(diagnostics.records_unrecognized_inert > 0);
+        self.unrecognized_records.evidence_bearing_sessions += u64::from(
+            diagnostics
+                .unusable_reasons
+                .contains_key(&CoverageReason::UnrecognizedRecordType),
+        );
+        let capped = diagnostics
+            .capped_collections
+            .contains(UNRECOGNIZED_TYPES_DIAGNOSTIC);
+        let truncated = diagnostics
+            .truncated_strings
+            .contains(UNRECOGNIZED_TYPES_DIAGNOSTIC);
+        self.unrecognized_records.capped_sessions += u64::from(capped);
+        self.unrecognized_records.truncated_sessions += u64::from(truncated);
+        self.unrecognized_records.types_truncated |= capped;
+
+        for kind in &diagnostics.unrecognized_types {
+            if self.unrecognized_records.types.contains(kind) {
+                continue;
+            }
+            if self.unrecognized_records.types.len() == MAX_REPORT_UNRECOGNIZED_TYPES {
+                self.unrecognized_records.types_truncated = true;
+                continue;
+            }
+            self.unrecognized_records.types.insert(kind.clone());
+        }
+    }
+
     pub fn finish(self, mut context: ReportContext) -> EfficiencyReport {
         context.coverage.actively_growing = self.actively_growing;
         let detector_statuses = core::array::from_fn(|index| {
@@ -378,6 +435,7 @@ impl EfficiencyReportAccumulator {
             quota_pressure: self.quota.finish(),
             catalog_revision: self.catalogs.revision,
             coverage_reasons: self.coverage_reasons,
+            unrecognized_records: self.unrecognized_records,
             capability_gaps: self.capability_gaps,
             capability_gap_examples: self.capability_gap_examples,
         }
@@ -430,6 +488,124 @@ mod tests {
             evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
             coverage,
         }
+    }
+
+    #[test]
+    fn unrecognized_records_summarizes_the_cohort() {
+        let mut inert = evidence("inert");
+        inert
+            .diagnostics
+            .unrecognized_types
+            .insert("alpha".to_owned());
+        inert.diagnostics.records_unrecognized_inert = 1;
+
+        let mut bearing = evidence("bearing");
+        bearing
+            .diagnostics
+            .unrecognized_types
+            .insert("beta".to_owned());
+        bearing
+            .diagnostics
+            .unusable_reasons
+            .insert(CoverageReason::UnrecognizedRecordType, 1);
+
+        let mut mixed = evidence("mixed");
+        mixed
+            .diagnostics
+            .unrecognized_types
+            .insert("gamma".to_owned());
+        mixed.diagnostics.records_unrecognized_inert = 1;
+        mixed
+            .diagnostics
+            .unusable_reasons
+            .insert(CoverageReason::UnrecognizedRecordType, 1);
+
+        let mut capped = evidence("capped");
+        capped
+            .diagnostics
+            .unrecognized_types
+            .insert("delta".to_owned());
+        capped.diagnostics.records_unrecognized_inert = 1;
+        capped
+            .diagnostics
+            .capped_collections
+            .insert(UNRECOGNIZED_TYPES_DIAGNOSTIC.to_owned());
+
+        let mut truncated = evidence("truncated");
+        truncated
+            .diagnostics
+            .unrecognized_types
+            .insert("epsilon".to_owned());
+        truncated.diagnostics.records_unrecognized_inert = 1;
+        truncated
+            .diagnostics
+            .truncated_strings
+            .insert(UNRECOGNIZED_TYPES_DIAGNOSTIC.to_owned());
+
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        for row in [inert, bearing, mixed, capped, truncated] {
+            accumulator.observe_session(row);
+        }
+        let summary = accumulator
+            .finish(context(CoverageCounts::default()))
+            .unrecognized_records;
+
+        assert_eq!(summary.sessions_with_types, 5);
+        assert_eq!(summary.inert_sessions, 4);
+        assert_eq!(summary.evidence_bearing_sessions, 2);
+        assert_eq!(summary.capped_sessions, 1);
+        assert_eq!(summary.truncated_sessions, 1);
+        assert!(summary.types_truncated);
+        assert_eq!(
+            summary.types,
+            BTreeSet::from([
+                "alpha".to_owned(),
+                "beta".to_owned(),
+                "delta".to_owned(),
+                "epsilon".to_owned(),
+                "gamma".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_report_type_set_is_capped() {
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        for index in 0..=MAX_REPORT_UNRECOGNIZED_TYPES {
+            let mut row = evidence(&format!("session-{index}"));
+            row.diagnostics
+                .unrecognized_types
+                .insert(format!("type-{index:02}"));
+            row.diagnostics.records_unrecognized_inert = 1;
+            accumulator.observe_session(row);
+        }
+
+        let summary = accumulator
+            .finish(context(CoverageCounts::default()))
+            .unrecognized_records;
+        assert_eq!(summary.types.len(), MAX_REPORT_UNRECOGNIZED_TYPES);
+        assert!(summary.types_truncated);
+        assert_eq!(summary.types.first().map(String::as_str), Some("type-00"));
+        assert_eq!(summary.types.last().map(String::as_str), Some("type-15"));
+
+        let mut session_capped = evidence("session-capped");
+        for index in 0..MAX_REPORT_UNRECOGNIZED_TYPES {
+            session_capped
+                .diagnostics
+                .unrecognized_types
+                .insert(format!("session-type-{index:02}"));
+        }
+        session_capped
+            .diagnostics
+            .capped_collections
+            .insert(UNRECOGNIZED_TYPES_DIAGNOSTIC.to_owned());
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(session_capped);
+        let summary = accumulator
+            .finish(context(CoverageCounts::default()))
+            .unrecognized_records;
+        assert!(summary.types_truncated);
+        assert_eq!(summary.capped_sessions, 1);
     }
 
     #[test]

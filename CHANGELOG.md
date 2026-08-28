@@ -20,6 +20,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- **Sessions containing record types antiburn does not recognise are now assessed again.** A new housekeeping record from a coding agent used to make a whole session's evidence incomplete, which held back results and session badges. antiburn now proves a skipped record carries no usage data before assessing the session, names unrecognised types in Insights coverage, and still declines when a skipped record could carry usage data or exceeds a bounded type limit. Insights results and badges refresh as sessions are re-read.
+- **An anonymised event now reports when Insights encounters unknown record formats.** When analytics are on, opening Settings → Insights can send `antiburn.unrecognized_records_observed` with a rounded session-count bucket and one of three fixed outcome labels. Unknown type names never leave the device. `docs/analytics.md` contains the full catalog entry.
+
 ## [0.1.0] - 2026-08-27
 
 The first supported public release. The macOS app is Developer ID signed and
