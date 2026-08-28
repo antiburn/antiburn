@@ -87,7 +87,7 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
 }
 
 function summary(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSummaryPayload {
-  return { providers: [provider()], errors: [], generatedAt: "", ...overrides }
+  return { providers: [provider()], errors: [], meters: [], generatedAt: "", ...overrides }
 }
 
 describe("window labels", () => {

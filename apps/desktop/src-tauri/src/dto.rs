@@ -552,9 +552,12 @@ pub struct SessionHygienePayload {
 
 fn badge_id_str(id: BadgeId) -> &'static str {
     match id {
-        BadgeId::ReasoningOverkill => "reasoningOverkill",
+        BadgeId::SessionOverdepth => "sessionOverdepth",
+        BadgeId::ModelOverthinking => "modelOverthinking",
+        BadgeId::OverpoweredSubagents => "overpoweredSubagents",
+        BadgeId::ObsoleteModel => "obsoleteModel",
+        BadgeId::FastModeOveruse => "fastModeOveruse",
         BadgeId::ExcessCacheRehydration => "excessCacheRehydration",
-        BadgeId::BloatedInitialContext => "bloatedInitialContext",
     }
 }
 
@@ -577,7 +580,7 @@ impl SessionHygieneBadgePayload {
 }
 
 impl SessionHygienePayload {
-    pub fn from_badges(badges: [SessionBadge; 3], evidence_state: &'static str) -> Self {
+    pub fn from_badges(badges: [SessionBadge; 6], evidence_state: &'static str) -> Self {
         Self {
             badges: badges
                 .into_iter()
@@ -935,17 +938,43 @@ pub struct LiveUsageSourceError {
     pub category: String,
 }
 
+/// One provider antiburn can meter, and whether the reader shows it.
+///
+/// The roster comes from the registered sources, not from the readings. A
+/// hidden provider is never asked for usage, so it is absent from
+/// `LiveUsageSummary::providers`. Only this list keeps its switch on screen.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageMeter {
+    /// The canonical provider id, for example `anthropic`.
+    pub provider: String,
+    /// The provider's display name, for example "Claude".
+    pub display_name: String,
+    /// False when the reader turned this meter off.
+    pub shown: bool,
+}
+
 /// Live provider usage, as one snapshot.
 ///
 /// An empty `providers` list is the ordinary state — no source configured, or
 /// none with anything to say — and the views render nothing rather than an
 /// empty frame. `errors` is separate so that "nothing found" and "something
 /// broke" never look alike.
+///
+/// `meters` says which of the two an empty `providers` list is. A roster with
+/// every entry hidden means the reader turned the meters off. A roster with
+/// entries still shown means antiburn found nothing to report.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveUsageSummary {
     pub providers: Vec<LiveProviderUsage>,
     pub errors: Vec<LiveUsageSourceError>,
+    /// Every provider antiburn can meter, shown or hidden, ordered by id.
+    ///
+    /// Defaulted on deserialize: a snapshot cached before this field existed
+    /// must still load.
+    #[serde(default)]
+    pub meters: Vec<LiveUsageMeter>,
     /// ISO-8601 stamp of the moment this snapshot was collected.
     pub generated_at: String,
 }
@@ -1155,16 +1184,28 @@ mod tests {
             let payload = SessionHygienePayload::from_badges(
                 [
                     SessionBadge {
-                        id: BadgeId::ReasoningOverkill,
+                        id: BadgeId::SessionOverdepth,
                         status: BadgeStatus::Finding,
+                    },
+                    SessionBadge {
+                        id: BadgeId::ModelOverthinking,
+                        status: BadgeStatus::Clean,
+                    },
+                    SessionBadge {
+                        id: BadgeId::OverpoweredSubagents,
+                        status: BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+                    },
+                    SessionBadge {
+                        id: BadgeId::ObsoleteModel,
+                        status: BadgeStatus::Clean,
+                    },
+                    SessionBadge {
+                        id: BadgeId::FastModeOveruse,
+                        status: BadgeStatus::Clean,
                     },
                     SessionBadge {
                         id: BadgeId::ExcessCacheRehydration,
                         status: BadgeStatus::Clean,
-                    },
-                    SessionBadge {
-                        id: BadgeId::BloatedInitialContext,
-                        status: BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
                     },
                 ],
                 "ready",
@@ -1174,13 +1215,16 @@ mod tests {
                 serde_json::to_value(payload).unwrap(),
                 serde_json::json!({
                     "badges": [
-                        {"id": "reasoningOverkill", "status": "finding", "notAssessedReason": null},
-                        {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null},
+                        {"id": "sessionOverdepth", "status": "finding", "notAssessedReason": null},
+                        {"id": "modelOverthinking", "status": "clean", "notAssessedReason": null},
                         {
-                            "id": "bloatedInitialContext",
+                            "id": "overpoweredSubagents",
                             "status": "notAssessed",
                             "notAssessedReason": "incompleteEvidence"
-                        }
+                        },
+                        {"id": "obsoleteModel", "status": "clean", "notAssessedReason": null},
+                        {"id": "fastModeOveruse", "status": "clean", "notAssessedReason": null},
+                        {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null}
                     ],
                     "evidenceState": "ready"
                 })

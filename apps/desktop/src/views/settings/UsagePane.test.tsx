@@ -53,7 +53,7 @@ vi.mock("../../lib/ipc", async () => {
 const SETTINGS = { liveUsageEnabled: false } as unknown as AppSettings
 
 function summary(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSummaryPayload {
-  return { providers: [], errors: [], generatedAt: "", ...overrides }
+  return { providers: [], errors: [], meters: [], generatedAt: "", ...overrides }
 }
 
 function pane(settings: Partial<AppSettings> = {}, update = vi.fn()) {
@@ -155,6 +155,75 @@ describe("UsagePane", () => {
     await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
     expect(screen.getByText(/Asked Claude directly/)).toBeInTheDocument()
     expect(screen.getByText("Live 5m ago")).toBeInTheDocument()
+  })
+
+  it("lists every provider it can meter, with nothing to report yet", async () => {
+    // The roster, not the readings. A reader who has signed into neither tool
+    // still sees what antiburn is able to meter.
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [
+          { provider: "anthropic", displayName: "Claude", shown: true },
+          { provider: "openai", displayName: "Codex", shown: true },
+        ],
+      }),
+    )
+    pane({ liveUsageEnabled: true })
+    await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument())
+    expect(screen.getByText("Codex")).toBeInTheDocument()
+    expect(screen.queryByText("No plan limits found")).not.toBeInTheDocument()
+  })
+
+  it("keeps a hidden provider's row, so the switch can be found again", async () => {
+    // The regression the roster exists to prevent: hiding a meter stops the
+    // request, so the provider reports nothing and a list built from readings
+    // would lose the only control that turns it back on.
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [{ provider: "openai", displayName: "Codex", shown: false }],
+      }),
+    )
+    pane({ liveUsageEnabled: true, liveUsageHiddenProviders: ["openai"] })
+    await waitFor(() => expect(screen.getByText("Codex")).toBeInTheDocument())
+    expect(screen.getByRole("switch", { name: "Show Codex meter" })).not.toBeChecked()
+  })
+
+  it("names both consequences of hiding one provider", async () => {
+    // Same rule as the master switch above it: a switch that stops the request
+    // also stops that provider's milestones, and has to say so.
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [{ provider: "openai", displayName: "Codex", shown: false }],
+      }),
+    )
+    pane({ liveUsageEnabled: true, liveUsageHiddenProviders: ["openai"] })
+    await waitFor(() => expect(screen.getByText("Codex")).toBeInTheDocument())
+    const row = screen.getByText("Codex").closest("div")!
+    expect(row).toHaveTextContent(/does not ask Codex for usage/i)
+    expect(row).toHaveTextContent(/milestone notifications do not fire/i)
+  })
+
+  it("writes the hidden set when a meter switch moves", async () => {
+    getLiveUsage.mockResolvedValue(
+      summary({
+        meters: [
+          { provider: "anthropic", displayName: "Claude", shown: true },
+          { provider: "openai", displayName: "Codex", shown: true },
+        ],
+      }),
+    )
+    const update = pane({ liveUsageEnabled: true, liveUsageHiddenProviders: ["anthropic"] })
+    await waitFor(() => expect(screen.getByText("Codex")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole("switch", { name: "Show Codex meter" }))
+    // The provider already hidden stays hidden: one switch moves one meter.
+    expect(update).toHaveBeenCalledWith({
+      liveUsageHiddenProviders: ["anthropic", "openai"],
+    })
+
+    fireEvent.click(screen.getByRole("switch", { name: "Show Claude meter" }))
+    expect(update).toHaveBeenCalledWith({ liveUsageHiddenProviders: [] })
+    await waitFor(() => expect(refreshLiveUsage).toHaveBeenCalled())
   })
 
   it("degrades to an empty list rather than throwing when the shell answers with nothing", async () => {

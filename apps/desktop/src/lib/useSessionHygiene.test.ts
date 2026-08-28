@@ -41,17 +41,32 @@ function payload(status: "finding" | "clean" | "notAssessed"): SessionHygienePay
     evidenceState: status === "notAssessed" ? "processing" : "ready",
     badges: [
       {
-        id: "reasoningOverkill",
+        id: "sessionOverdepth",
         status,
         notAssessedReason: status === "notAssessed" ? "incompleteEvidence" : null,
       },
       {
-        id: "excessCacheRehydration",
+        id: "modelOverthinking",
         status: "clean",
         notAssessedReason: null,
       },
       {
-        id: "bloatedInitialContext",
+        id: "overpoweredSubagents",
+        status: "clean",
+        notAssessedReason: null,
+      },
+      {
+        id: "obsoleteModel",
+        status: "clean",
+        notAssessedReason: null,
+      },
+      {
+        id: "fastModeOveruse",
+        status: "clean",
+        notAssessedReason: null,
+      },
+      {
+        id: "excessCacheRehydration",
         status: "clean",
         notAssessedReason: null,
       },

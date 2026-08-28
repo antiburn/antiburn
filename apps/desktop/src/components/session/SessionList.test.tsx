@@ -160,7 +160,7 @@ describe("SessionList — rows", () => {
   it("shows evidence computation instead of a synthetic hygiene verdict", () => {
     list({ entries: [entry({ sessionId: "session-pending" })] })
     const verdict = screen.getByLabelText("Computing session hygiene checks")
-    expect(verdict.textContent).toBe("Computing checks")
+    expect(verdict.textContent).toBe("Computing checks…")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
     expect(screen.queryByLabelText("All checks pass")).toBeNull()
   })
@@ -171,17 +171,32 @@ describe("SessionList — rows", () => {
         evidenceState: "ready",
         badges: [
           {
-            id: "reasoningOverkill",
+            id: "sessionOverdepth",
             status: "finding",
             notAssessedReason: null,
           },
           {
-            id: "excessCacheRehydration",
+            id: "modelOverthinking",
             status: "clean",
             notAssessedReason: null,
           },
           {
-            id: "bloatedInitialContext",
+            id: "overpoweredSubagents",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "obsoleteModel",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "fastModeOveruse",
+            status: "clean",
+            notAssessedReason: null,
+          },
+          {
+            id: "excessCacheRehydration",
             status: "clean",
             notAssessedReason: null,
           },
@@ -191,8 +206,8 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("1 of 3 assessed checks failed").textContent).toBe(
-        "2/3 burn checks",
+      expect(screen.getByLabelText("5 of 6 burn checks pass").textContent).toBe(
+        "5/6 burn checks",
       )
     })
     expect(getSessionHygiene).toHaveBeenCalledWith([

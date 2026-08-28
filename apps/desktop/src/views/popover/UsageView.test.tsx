@@ -239,6 +239,7 @@ function live(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSummar
   return {
     providers: [liveProvider()],
     errors: [],
+    meters: [],
     generatedAt: "2027-01-15T12:00:00Z",
     ...overrides,
   }
@@ -559,5 +560,47 @@ describe("UsageView — HUD pop-out", () => {
     expect(hideOverlayWindow).toHaveBeenCalled()
     expect(setFloatingHudEnabled).toHaveBeenCalledWith(false)
     expect(button).toHaveAttribute("aria-pressed", "false")
+  })
+})
+
+describe("UsageView — every meter turned off", () => {
+  it("names the reader's own choice instead of leaving the limits missing", () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({
+          providers: [],
+          meters: [
+            { provider: "anthropic", displayName: "Claude", shown: false },
+            { provider: "openai", displayName: "Codex", shown: false },
+          ],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/No meter selected\./)).toBeInTheDocument()
+    // The estimate half survives: hiding a meter hides a provider's own
+    // figures, not what this machine measured.
+    expect(screen.getByText("Anthropic")).toBeInTheDocument()
+  })
+
+  it("says nothing while one meter is still shown", () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({
+          meters: [
+            { provider: "anthropic", displayName: "Claude", shown: true },
+            { provider: "openai", displayName: "Codex", shown: false },
+          ],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByText(/No meter selected\./)).not.toBeInTheDocument()
   })
 })

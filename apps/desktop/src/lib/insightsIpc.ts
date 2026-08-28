@@ -100,7 +100,12 @@ export interface InsightsStatusPayload {
 }
 
 export type SessionHygieneBadgeId =
-  "reasoningOverkill" | "excessCacheRehydration" | "bloatedInitialContext"
+  | "sessionOverdepth"
+  | "modelOverthinking"
+  | "overpoweredSubagents"
+  | "obsoleteModel"
+  | "fastModeOveruse"
+  | "excessCacheRehydration"
 
 export interface SessionHygieneBadgePayload {
   id: SessionHygieneBadgeId

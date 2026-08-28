@@ -430,6 +430,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             milestones_5h: Milestones::selected([75, 90]),
             milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
+            live_usage_hidden_providers: HiddenMeters::default(),
             analytics_enabled: false,
             overview_limits_expanded: false,
         })
@@ -1912,7 +1913,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 4,
+            parser_revision: 5,
             analyzer_revision: 6,
             metrics_schema_revision: 1,
             evidence_schema_revision: 3,

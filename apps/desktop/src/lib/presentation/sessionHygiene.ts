@@ -13,6 +13,11 @@ export interface SessionHygieneCheck {
   status: SessionHygieneBadgePayload["status"]
   notAssessedReason: InsightsNotAssessedReason | null
   title: string
+  /**
+   * The check name alone, with no verdict. Use it where a separate line
+   * carries the verdict, so the two do not repeat each other.
+   */
+  name: string
   ink: SessionHygieneInk
 }
 
@@ -25,27 +30,45 @@ interface HygieneCheckDefinition {
 
 const CHECKS: readonly HygieneCheckDefinition[] = [
   {
-    id: "reasoningOverkill",
-    cleanTitle: "No reasoning overkill",
-    findingTitle: "Reasoning overkill",
-    notAssessedTitle: "Reasoning overkill not assessed",
+    id: "sessionOverdepth",
+    cleanTitle: "No session overdepth detected",
+    findingTitle: "Session overdepth detected",
+    notAssessedTitle: "Session overdepth not assessed",
+  },
+  {
+    id: "modelOverthinking",
+    cleanTitle: "No model overthinking detected",
+    findingTitle: "Model overthinking detected",
+    notAssessedTitle: "Model overthinking not assessed",
+  },
+  {
+    id: "overpoweredSubagents",
+    cleanTitle: "No overpowered subagents detected",
+    findingTitle: "Overpowered subagents detected",
+    notAssessedTitle: "Overpowered subagents not assessed",
+  },
+  {
+    id: "obsoleteModel",
+    cleanTitle: "No obsolete model detected",
+    findingTitle: "Obsolete model detected",
+    notAssessedTitle: "Obsolete model not assessed",
+  },
+  {
+    id: "fastModeOveruse",
+    cleanTitle: "No fast mode overuse detected",
+    findingTitle: "Fast mode overuse detected",
+    notAssessedTitle: "Fast mode overuse not assessed",
   },
   {
     id: "excessCacheRehydration",
-    cleanTitle: "No excess cache rehydration",
-    findingTitle: "Excess cache rehydration",
+    cleanTitle: "No excess cache rehydration detected",
+    findingTitle: "Excess cache rehydration detected",
     notAssessedTitle: "Excess cache rehydration not assessed",
-  },
-  {
-    id: "bloatedInitialContext",
-    cleanTitle: "No bloated initial context",
-    findingTitle: "Bloated initial context",
-    notAssessedTitle: "Bloated initial context not assessed",
   },
 ]
 
 const NOT_ASSESSED: SessionHygieneBadgePayload = {
-  id: "reasoningOverkill",
+  id: "sessionOverdepth",
   status: "notAssessed",
   notAssessedReason: "incompleteEvidence",
 }
@@ -66,6 +89,7 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       return {
         ...badge,
         title: definition.findingTitle,
+        name: definition.findingTitle,
         ink: "system-red-text" as const,
       }
     }
@@ -73,12 +97,14 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       return {
         ...badge,
         title: definition.cleanTitle,
+        name: definition.findingTitle,
         ink: "system-green" as const,
       }
     }
     return {
       ...badge,
       title: definition.notAssessedTitle,
+      name: definition.findingTitle,
       ink: "label-tertiary" as const,
     }
   })
@@ -100,5 +126,34 @@ export function sessionHygieneStateLabel(state: SessionHygieneEvidenceState): st
       return "Unavailable"
     case "ready":
       return null
+  }
+}
+
+/** True while the engine still works and the verdict can change on its own. */
+export function sessionHygieneStateIsTransient(state: SessionHygieneEvidenceState): boolean {
+  switch (state) {
+    case "pending":
+    case "processing":
+    case "stale":
+    case "activelyGrowing":
+      return true
+    case "unsupported":
+    case "failed":
+    case "ready":
+      return false
+  }
+}
+
+/** Reader wording for why one check was not assessed. */
+export function notAssessedReasonLabel(reason: InsightsNotAssessedReason): string {
+  switch (reason) {
+    case "capabilityMissing":
+      return "this agent's logs don't record what this check needs"
+    case "incompleteEvidence":
+      return "couldn't read the whole session log"
+    case "evidenceContractIncomplete":
+      return "the log is missing data this check needs"
+    case "noSessionsInWindow":
+      return "no sessions in the window"
   }
 }

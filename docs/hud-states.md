@@ -64,6 +64,27 @@ stateDiagram-v2
 - The detail window fades in over 100ms (`--duration-quick`). It hides with no
   transition. Reduced motion disables the fade.
 
+### When there are no bars
+
+The HUD shows one empty track when it has no reading to draw. The track is the
+usual width with every segment off. The HUD does not hide itself and does not
+change size.
+
+The detail window names which empty it is:
+
+| Condition                                   | Detail window text              |
+| ------------------------------------------- | ------------------------------- |
+| The reader turned off every meter            | `No meter selected.`            |
+| A meter is on, but no provider reported yet  | `No usage limits detected yet.` |
+
+The two are different facts. The first is a choice the reader made in
+Settings → Usage → Show Meter. The second is an absence of data. The HUD must
+not report a setting as a failure.
+
+The HUD polls the usage summary every 60 seconds and also listens for the
+summary the shell pushes. The push is what makes a Show Meter switch reach the
+HUD at once instead of on the next poll.
+
 ## The detail window
 
 The detail window (`antiburn-hud-detail`) is pure display. It ignores cursor
