@@ -170,6 +170,7 @@ pub enum PartialReason {
     Cancelled,
     ReadFailed,
     UnrecognizedRecordType,
+    AttributionIncomplete,
 }
 
 impl RecordSkip {

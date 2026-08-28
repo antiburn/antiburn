@@ -1834,7 +1834,7 @@ mod tests {
     }
 
     #[test]
-    fn the_detail_path_does_not_persist_claude_projections() {
+    fn the_detail_path_does_not_persist_evidence_cohort_projections() {
         let directory = tempfile::TempDir::new().unwrap();
         let store = Store::open_in_memory(directory.path()).unwrap();
         let session = |agent: &str, id: &str| SessionRecord {
@@ -1920,14 +1920,14 @@ mod tests {
             analyzer_revision: 1,
             metrics_schema_revision: 1,
         };
-        assert!(cache_detail_analysis(&store, &codex_analysis, None));
-        assert!(cache_detail_relations(
+        assert!(!cache_detail_analysis(&store, &codex_analysis, None));
+        assert!(!cache_detail_relations(
             &store,
             &codex.key,
             std::slice::from_ref(&replacement),
         ));
-        assert_eq!(store.analysis(&codex.key).unwrap(), Some(codex_analysis));
-        assert_eq!(store.relations(&codex.key).unwrap(), vec![replacement]);
+        assert_eq!(store.analysis(&codex.key).unwrap(), None);
+        assert!(store.relations(&codex.key).unwrap().is_empty());
     }
 
     #[test]

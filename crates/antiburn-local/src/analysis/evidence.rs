@@ -49,6 +49,7 @@ impl From<PartialReason> for CoverageReason {
             PartialReason::Cancelled => Self::Cancelled,
             PartialReason::ReadFailed => Self::ReadFailed,
             PartialReason::UnrecognizedRecordType => Self::UnrecognizedRecordType,
+            PartialReason::AttributionIncomplete => Self::AttributionIncomplete,
         }
     }
 }
@@ -317,6 +318,28 @@ impl SourceCapabilities {
             subagent_models: true,
             compaction_boundaries: true,
             thread_identity: true,
+            quota_incidents: false,
+            harness_version: false,
+        }
+    }
+
+    pub fn codex() -> Self {
+        Self {
+            request_context_tokens: true,
+            cache_write_tokens: false,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            skill_mcp_attribution: false,
+            tool_definitions: false,
+            model_identity: true,
+            token_classes: true,
+            reasoning_effort_tier: true,
+            fast_tier: false,
+            service_tier: false,
+            subagent_relationships: false,
+            subagent_models: false,
+            compaction_boundaries: true,
+            thread_identity: false,
             quota_incidents: false,
             harness_version: false,
         }

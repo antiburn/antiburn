@@ -172,6 +172,13 @@ impl SessionMetricsAccumulator {
         self.turns.iter().filter_map(|turn| turn.ts_ms).min()
     }
 
+    pub fn started_at_ms(&self) -> Option<i64> {
+        self.summary
+            .as_ref()
+            .and_then(|summary| summary.started_at_ms)
+            .or_else(|| self.earliest_ts_ms())
+    }
+
     pub fn retained_turns(&self) -> usize {
         self.turns.len()
     }

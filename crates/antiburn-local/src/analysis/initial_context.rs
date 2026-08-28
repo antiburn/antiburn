@@ -379,6 +379,68 @@ fn parse_codex(payload: &str, catalog: &ToolCatalog) -> InitialContextTokenParse
     InitialContextTokenParseResult::Supported(normalize_breakdown(source_rows))
 }
 
+#[derive(Default)]
+pub(crate) struct CodexContextAccumulator {
+    source_rows: Vec<InitialContextTokenSourceCount>,
+    skill_descriptions: HashMap<String, String>,
+    cwd: Option<String>,
+    cli_version: Option<String>,
+    model: Option<String>,
+}
+
+impl CodexContextAccumulator {
+    pub(crate) fn observe(&mut self, value: &Value) {
+        match value.get("type").and_then(Value::as_str) {
+            Some("session_meta") => {
+                if self.cwd.is_none() {
+                    self.cwd = value
+                        .pointer("/payload/cwd")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                }
+                if self.cli_version.is_none() {
+                    self.cli_version = value
+                        .pointer("/payload/cli_version")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                }
+            }
+            Some("turn_context") if self.model.is_none() => {
+                self.model = value
+                    .pointer("/payload/model")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
+            Some("response_item")
+                if value.pointer("/payload/type").and_then(Value::as_str) == Some("message") =>
+            {
+                let role = value.pointer("/payload/role").and_then(Value::as_str);
+                if matches!(role, Some("developer" | "system")) {
+                    let text = extract_codex_message_text(value);
+                    self.source_rows
+                        .extend(parse_codex_developer_prompt(&text, self.cwd.as_deref()));
+                    if let Some((start, end)) = section_bounds(&text, "## Skills") {
+                        insert_bullet_descriptions(&text[start..end], &mut self.skill_descriptions);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> (Option<InitialContextBreakdown>, HashMap<String, String>) {
+        self.source_rows.extend(builtin_tool_rows(
+            "codex",
+            self.cli_version.as_deref(),
+            self.model.as_deref(),
+            &HashSet::new(),
+            tool_catalog::embedded(),
+        ));
+        let breakdown = to_output(normalize_breakdown(self.source_rows));
+        (Some(breakdown), self.skill_descriptions)
+    }
+}
+
 /// How strongly a piece of evidence pins down a Claude skill's origin, lowest
 /// number wins. Matches the priority order in the module doc: an
 /// `invoked_skills` attachment beats a `dynamic_skill` attachment, which beats

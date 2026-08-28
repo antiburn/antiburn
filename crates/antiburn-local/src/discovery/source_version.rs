@@ -48,11 +48,12 @@ impl super::Explorers {
                     head_hash: read.head_hash,
                 }
                 .fingerprint();
-                let streamability = if descriptor.agent == AgentKind::Claude {
-                    Streamability::RecordStream
-                } else {
-                    Streamability::WholeDocumentFallback
-                };
+                let streamability =
+                    if matches!(descriptor.agent, AgentKind::Claude | AgentKind::Codex) {
+                        Streamability::RecordStream
+                    } else {
+                        Streamability::WholeDocumentFallback
+                    };
                 Some(SourceVersion {
                     fingerprint,
                     estimated_bytes,
@@ -417,6 +418,32 @@ mod tests {
         assert_eq!(version.estimated_bytes, Some(content.len() as u64));
         assert_eq!(version.streamability, Streamability::RecordStream);
         assert!(version.fingerprint.starts_with("sv1:"));
+    }
+
+    #[tokio::test]
+    async fn source_version_for_a_codex_file_reports_a_record_stream() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("rollout.jsonl");
+        tokio::fs::write(&path, b"{}\n")
+            .await
+            .expect("write source");
+        let log = super::super::SessionLog {
+            agent_type: AgentKind::Codex,
+            source: SessionSource::File(path),
+            updated_at: Some(100),
+            environment: DiscoveryEnvironment::default(),
+        };
+        let read = super::super::session_log_read(&log)
+            .await
+            .expect("source read");
+        let descriptor = descriptor(log.agent_type, log.source);
+
+        let version = super::super::Explorers::DISK
+            .source_version(&descriptor, Some(&read))
+            .await
+            .expect("source version");
+
+        assert_eq!(version.streamability, Streamability::RecordStream);
     }
 
     #[tokio::test]
