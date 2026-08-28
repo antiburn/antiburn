@@ -1,12 +1,10 @@
 //! Drains the durable transcript evidence queue outside the scan pass.
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::SessionEvidence;
-use antiburn_local::discovery::SessionSource;
 use antiburn_local::insights::{DetectorId, requirements};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
@@ -135,25 +133,10 @@ pub(crate) fn backoff_secs(retry_count: i64) -> i64 {
         .min(BACKOFF_MAX_SECS)
 }
 
-pub(crate) fn permit_for(source: &SessionSource) -> PermitKind {
-    match source {
-        SessionSource::ProviderDb { .. } => PermitKind::ProviderDb,
-        SessionSource::File(_) | SessionSource::Inline { .. } => PermitKind::Source,
-    }
-}
-
-fn source_for_record(record: &SessionRecord, agent: AgentKind) -> SessionSource {
-    match record.source_kind.as_str() {
-        "providerDb" => SessionSource::ProviderDb {
-            agent,
-            db_path: PathBuf::from(&record.source_label),
-            session_id: record.key.session_id.clone(),
-        },
-        "inline" => SessionSource::Inline {
-            label: record.source_label.clone(),
-            content: String::new(),
-        },
-        _ => SessionSource::File(PathBuf::from(&record.source_label)),
+pub(crate) fn permit_for_source_kind(source_kind: &str) -> PermitKind {
+    match source_kind {
+        "providerDb" => PermitKind::ProviderDb,
+        _ => PermitKind::Source,
     }
 }
 
@@ -293,19 +276,18 @@ pub(crate) async fn process_next(
     let Some(record) = store.session(&claim.key)? else {
         return Ok(true);
     };
-    let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
+    let Some(_agent) = crate::agents::kind_from_slug(&record.key.agent) else {
         let pass = analysis::unsupported_evidence_pass();
         apply_outcome(store, &claim, &pass, clock())?;
         return Ok(true);
     };
-    let source = source_for_record(&record, agent);
     let _cpu = handle
         .permits
         .cpu
         .acquire()
         .await
         .map_err(|_| anyhow::anyhow!("CPU permit closed"))?;
-    let permit = match permit_for(&source) {
+    let permit = match permit_for_source_kind(&record.source_kind) {
         PermitKind::Source => &handle.permits.source,
         PermitKind::ProviderDb => &handle.permits.provider_db,
     };
@@ -1402,25 +1384,9 @@ mod tests {
 
     #[test]
     fn a_permit_is_chosen_per_source_kind() {
-        assert_eq!(
-            permit_for(&SessionSource::File("a".into())),
-            PermitKind::Source
-        );
-        assert_eq!(
-            permit_for(&SessionSource::Inline {
-                label: "a".into(),
-                content: String::new()
-            }),
-            PermitKind::Source
-        );
-        assert_eq!(
-            permit_for(&SessionSource::ProviderDb {
-                agent: AgentKind::Claude,
-                db_path: "a".into(),
-                session_id: "s".into()
-            }),
-            PermitKind::ProviderDb
-        );
+        assert_eq!(permit_for_source_kind("file"), PermitKind::Source);
+        assert_eq!(permit_for_source_kind("inline"), PermitKind::Source);
+        assert_eq!(permit_for_source_kind("providerDb"), PermitKind::ProviderDb);
     }
 
     #[tokio::test]

@@ -8,6 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const FINGERPRINT_HEAD_BYTES: usize = 64 * 1024;
 
+pub(crate) fn provider_db_fingerprint(latest: u64, rows: u64) -> String {
+    format!("sv1:db:{latest}:{rows}")
+}
+
 #[derive(Debug, Clone)]
 pub struct SourceDescriptor {
     pub agent: AgentKind,
@@ -69,7 +73,7 @@ impl super::Explorers {
                     .provider_db_fingerprint(agent, db_path, session_id)
                     .await?;
                 Some(SourceVersion {
-                    fingerprint: format!("sv1:db:{latest}:{rows}"),
+                    fingerprint: provider_db_fingerprint(latest, rows),
                     estimated_bytes: None,
                     streamability: Streamability::DatabaseRows,
                 })

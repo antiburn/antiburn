@@ -552,25 +552,128 @@ fn push_record(
     jsonl.push('\n');
 }
 
-/// Writes one synthetic provider-DB (SQLite) session for the generic
-/// schema-agnostic table walk: one JSON record per row in a `turns` table,
-/// plus a non-JSON `housekeeping` table the walk must skip. Content comes
-/// from the same deterministic generator as the JSONL tiers.
+/// Writes one synthetic OpenCode provider-DB session from the shared corpus.
 pub fn write_provider_db(path: &Path, session: &GeneratedSession) -> anyhow::Result<()> {
     let mut connection = rusqlite::Connection::open(path)?;
     connection.execute_batch(
-        "CREATE TABLE turns (id INTEGER PRIMARY KEY, recorded_at INTEGER, payload TEXT);\n         CREATE TABLE housekeeping (id INTEGER PRIMARY KEY, note TEXT);",
+        "CREATE TABLE session (
+             id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER
+         );
+         CREATE TABLE message (
+             id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+             time_updated INTEGER, data TEXT
+         );
+         CREATE TABLE part (
+             id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+             time_created INTEGER, time_updated INTEGER, data TEXT
+         );
+         CREATE INDEX session_parent_idx ON session (parent_id);
+         CREATE INDEX message_session_time_created_id_idx
+             ON message (session_id, time_created, id);
+         CREATE INDEX part_message_id_id_idx ON part (message_id, id);
+         CREATE INDEX part_session_idx ON part (session_id);",
     )?;
     let transaction = connection.transaction()?;
     {
-        let mut insert =
-            transaction.prepare("INSERT INTO turns (recorded_at, payload) VALUES (?1, ?2)")?;
+        transaction.execute(
+            "INSERT INTO session VALUES (?1, NULL, 0, 0)",
+            [&session.session_id],
+        )?;
+        let mut insert_message =
+            transaction.prepare("INSERT INTO message VALUES (?1, ?2, ?3, ?3, ?4)")?;
+        let mut insert_part =
+            transaction.prepare("INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?4, ?5)")?;
         for (index, line) in session.jsonl.lines().enumerate() {
-            insert.execute(rusqlite::params![index as i64, line])?;
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let record_type = record.get("type").and_then(Value::as_str);
+            let message = record.get("message");
+            let role = match record_type {
+                Some("assistant") => "assistant",
+                Some("user") => {
+                    let has_tool_result = message
+                        .and_then(|message| message.get("content"))
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|part| {
+                                part.get("type").and_then(Value::as_str) == Some("tool_result")
+                            })
+                        });
+                    if has_tool_result { "tool" } else { "user" }
+                }
+                Some("system")
+                    if record.get("subtype").and_then(Value::as_str)
+                        == Some("compact_boundary") =>
+                {
+                    "system"
+                }
+                _ => continue,
+            };
+            let timestamp = record
+                .get("timestamp")
+                .and_then(Value::as_i64)
+                .unwrap_or(index as i64);
+            let message_id = format!("provider-message-{index}");
+            let usage = message.and_then(|message| message.get("usage"));
+            let data = json!({
+                "role": role,
+                "modelID": message.and_then(|message| message.get("model")),
+                "variant": record.get("effort"),
+                "tokens": {
+                    "input": usage.and_then(|usage| usage.get("input_tokens")).and_then(Value::as_u64).unwrap_or(0),
+                    "output": usage.and_then(|usage| usage.get("output_tokens")).and_then(Value::as_u64).unwrap_or(0),
+                    "reasoning": 0,
+                    "cache": {
+                        "read": usage.and_then(|usage| usage.get("cache_read_input_tokens")).and_then(Value::as_u64).unwrap_or(0),
+                        "write": usage.and_then(|usage| usage.get("cache_creation_input_tokens")).and_then(Value::as_u64).unwrap_or(0)
+                    }
+                }
+            });
+            insert_message.execute(rusqlite::params![
+                message_id,
+                session.session_id,
+                timestamp,
+                data.to_string()
+            ])?;
+
+            if role == "system" {
+                insert_part.execute(rusqlite::params![
+                    format!("provider-part-{index}-0"),
+                    message_id,
+                    session.session_id,
+                    timestamp,
+                    json!({"type": "compaction"}).to_string()
+                ])?;
+                continue;
+            }
+            let Some(content) = message
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for (part_index, part) in content.iter().enumerate() {
+                let part = match part.get("type").and_then(Value::as_str) {
+                    Some("tool_use") => json!({
+                        "type": "tool",
+                        "tool": part.get("name"),
+                        "state": {"input": part.get("input")}
+                    }),
+                    Some("thinking") => json!({"type": "reasoning"}),
+                    Some("text") => json!({"type": "text"}),
+                    Some("tool_result") => continue,
+                    _ => continue,
+                };
+                insert_part.execute(rusqlite::params![
+                    format!("provider-part-{index}-{part_index}"),
+                    message_id,
+                    session.session_id,
+                    timestamp,
+                    part.to_string()
+                ])?;
+            }
         }
-        let mut note = transaction.prepare("INSERT INTO housekeeping (note) VALUES (?1)")?;
-        note.execute(["vacuum sweep of the fictional shelf index"])?;
-        note.execute(["synthetic retention note for the demo app"])?;
     }
     transaction.commit()?;
     Ok(())

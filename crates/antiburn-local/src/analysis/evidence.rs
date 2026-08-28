@@ -345,6 +345,34 @@ impl SourceCapabilities {
         }
     }
 
+    /// OpenCode messages report prompt, output, reasoning, and both cache classes.
+    /// Message and part timestamps provide deterministic order within one database snapshot.
+    /// Tool and patch parts identify invocations but do not provide a tool catalog.
+    /// `modelID` and `variant` identify each assistant model run and reasoning tier.
+    /// Compaction parts identify boundaries, but OpenCode provides no thread or quota contract.
+    /// Descendant sessions are included, but their orchestration relationship is not inferred.
+    pub fn opencode() -> Self {
+        Self {
+            request_context_tokens: true,
+            cache_write_tokens: true,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            skill_mcp_attribution: false,
+            tool_definitions: false,
+            model_identity: true,
+            token_classes: true,
+            reasoning_effort_tier: true,
+            fast_tier: false,
+            service_tier: false,
+            subagent_relationships: false,
+            subagent_models: false,
+            compaction_boundaries: true,
+            thread_identity: false,
+            quota_incidents: false,
+            harness_version: false,
+        }
+    }
+
     /// Pi reports request occupancy from its three disjoint input classes.
     /// Cache-write support degrades when an assistant API lacks that bucket.
     /// Top-level timestamps provide ordering for every semantic row.

@@ -1634,6 +1634,67 @@ fn pi_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
 }
 
 #[test]
+fn opencode_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..13] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 13).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label,
+                 surface, first_seen_at, last_seen_at
+             ) VALUES
+                 ('native', 'opencode', 'new', 'providerDb', 'opencode:new', 'cli', 'x', 'x'),
+                 ('native', 'opencode', 'ready', 'providerDb', 'opencode:ready', 'cli', 'x', 'x'),
+                 ('native', 'pi', 'pi', 'file', '/synthetic/pi.jsonl', 'cli', 'x', 'x');
+             INSERT INTO session_evidence (
+                 environment_key, agent, session_id, status
+             ) VALUES ('native', 'opencode', 'ready', 'ready');",
+        )
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-opencode-cohort-migration-test").to_path_buf(),
+    )
+    .unwrap();
+    let connection = store.lock();
+    let statuses = connection
+        .prepare(
+            "SELECT agent, session_id, status FROM session_evidence ORDER BY agent, session_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        statuses,
+        vec![
+            (
+                "opencode".to_owned(),
+                "new".to_owned(),
+                "pending".to_owned()
+            ),
+            (
+                "opencode".to_owned(),
+                "ready".to_owned(),
+                "ready".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
 fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
     for start in 0..super::schema::MIGRATIONS.len() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
@@ -1745,6 +1806,33 @@ fn a_new_source_generation_marks_session_evidence_pending() {
             .unwrap()
             .source_generation,
         2
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn a_changed_child_activity_cursor_requeues_the_same_parent_generation() {
+    let store = store();
+    let mut record = seed_current_session_evidence(&store, "changed-child-cursor");
+    record.activity_cursor = "parent-and-child-v2".to_owned();
+
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .session_source_state(&record.key)
+            .unwrap()
+            .unwrap()
+            .source_generation,
+        1
     );
     assert_eq!(
         store.evidence(&record.key).unwrap().unwrap().status,

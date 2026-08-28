@@ -41,6 +41,8 @@ const CLI_DATA_CHUNK_BYTES: usize = 16 * 1024;
 const CLI_EXPORT_CONCURRENCY: usize = 4;
 const CLI_EXPORT_CACHE_LIMIT: usize = 256;
 const CLI_EXPORT_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DB_FORK_CANDIDATES: i64 = 100;
+const MAX_DB_FORK_RECORD_BYTES: i64 = 8 * 1024 * 1024;
 
 static CLI_EXPORT_CACHE: OnceLock<Mutex<CliExportCache>> = OnceLock::new();
 
@@ -1822,6 +1824,7 @@ fn render_session_logs(
         lines.push(session_meta.to_string());
 
         let mut ordered_records = Vec::new();
+        let mut message_order = HashMap::new();
 
         for session_id in &cluster.session_ids {
             if let Some(record) = sessions.get(session_id)
@@ -1845,6 +1848,8 @@ fn render_session_logs(
                         .or(record.file_mtime),
                     kind_rank: 0,
                     session_id: session_id.clone(),
+                    message_id: String::new(),
+                    within_message_timestamp: None,
                     record_id: session_id.clone(),
                     line: json!({
                         "type": "session_member",
@@ -1885,10 +1890,14 @@ fn render_session_logs(
                 if let Some(ts) = message.created_at.or(message.file_mtime) {
                     max_updated = max_updated.max(ts);
                 }
+                let timestamp = message.created_at.or(message.file_mtime);
+                message_order.insert(message.id.clone(), (timestamp, message.session_id.clone()));
                 ordered_records.push(RenderedClusterRecord {
-                    timestamp: message.created_at.or(message.file_mtime),
+                    timestamp,
                     kind_rank: 1,
                     session_id: message.session_id.clone(),
+                    message_id: message.id.clone(),
+                    within_message_timestamp: timestamp,
                     record_id: message.id.clone(),
                     line: json!({
                         "type": "message",
@@ -1931,10 +1940,21 @@ fn render_session_logs(
                 if let Some(ts) = part.created_at.or(part.file_mtime) {
                     max_updated = max_updated.max(ts);
                 }
+                let own_timestamp = part.created_at.or(part.file_mtime);
+                let (timestamp, message_session_id) = part
+                    .message_id
+                    .as_ref()
+                    .and_then(|message_id| message_order.get(message_id))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        (own_timestamp, part.session_id.clone().unwrap_or_default())
+                    });
                 ordered_records.push(RenderedClusterRecord {
-                    timestamp: part.created_at.or(part.file_mtime),
+                    timestamp,
                     kind_rank: 2,
-                    session_id: part.session_id.clone().unwrap_or_default(),
+                    session_id: message_session_id,
+                    message_id: part.message_id.clone().unwrap_or_else(|| part.id.clone()),
+                    within_message_timestamp: own_timestamp,
                     record_id: part.id.clone(),
                     line: json!({
                         "type": "part",
@@ -1962,8 +1982,14 @@ fn render_session_logs(
             a.timestamp
                 .unwrap_or_default()
                 .cmp(&b.timestamp.unwrap_or_default())
-                .then(a.kind_rank.cmp(&b.kind_rank))
                 .then(a.session_id.cmp(&b.session_id))
+                .then(a.message_id.cmp(&b.message_id))
+                .then(a.kind_rank.cmp(&b.kind_rank))
+                .then(
+                    a.within_message_timestamp
+                        .unwrap_or_default()
+                        .cmp(&b.within_message_timestamp.unwrap_or_default()),
+                )
                 .then(a.record_id.cmp(&b.record_id))
         });
 
@@ -2006,6 +2032,8 @@ struct RenderedClusterRecord {
     timestamp: Option<i64>,
     kind_rank: u8,
     session_id: String,
+    message_id: String,
+    within_message_timestamp: Option<i64>,
     record_id: String,
     line: String,
 }
@@ -2315,6 +2343,14 @@ pub async fn render_db_session(db_path: PathBuf, root_session_id: String) -> Opt
         .flatten()
 }
 
+/// Find a database-backed fork parent without rendering the session transcript.
+pub async fn db_fork_parent(db_path: PathBuf, session_id: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || db_fork_parent_blocking(&db_path, &session_id))
+        .await
+        .ok()
+        .flatten()
+}
+
 pub async fn db_session_metadata(
     db_path: PathBuf,
     root_session_id: String,
@@ -2352,6 +2388,175 @@ fn render_db_session_blocking(db_path: &Path, root_session_id: &str) -> Option<S
             SessionSource::File(_) | SessionSource::ProviderDb { .. } => None,
         }
     })
+}
+
+fn db_fork_parent_blocking(db_path: &Path, session_id: &str) -> Option<String> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    conn.execute_batch("BEGIN").ok()?;
+    let (directory, title, child_created) = conn
+        .query_row(
+            "SELECT directory, title, time_created FROM session WHERE id = ?1 LIMIT 1",
+            params![session_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2).ok().flatten(),
+                ))
+            },
+        )
+        .ok()?;
+    let parent_title = opencode_fork_parent_title(&title)?;
+    let candidate_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session
+              WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL",
+            params![session_id, directory, parent_title],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()?;
+    if candidate_count == 0 || candidate_count > MAX_DB_FORK_CANDIDATES {
+        return None;
+    }
+
+    let visible_sql = "WITH bounded AS (
+             SELECT CASE WHEN length(CAST(message.data AS BLOB)) <= ?2
+                               AND json_valid(message.data)
+                         THEN message.data END AS message_data,
+                     length(CAST(message.data AS BLOB)) AS message_bytes,
+                     json_valid(message.data) AS message_valid,
+                     CASE WHEN length(CAST(part.data AS BLOB)) <= ?2
+                               AND json_valid(part.data)
+                         THEN part.data END AS part_data,
+                     length(CAST(part.data AS BLOB)) AS part_bytes,
+                     json_valid(part.data) AS part_valid,
+                    message.time_created AS message_created,
+                    message.time_updated AS message_updated,
+                    message.id AS message_id,
+                    part.time_created AS part_created,
+                    part.time_updated AS part_updated,
+                    part.id AS part_id
+               FROM message JOIN part ON part.message_id = message.id
+              WHERE message.session_id = ?1
+         )
+         SELECT CASE WHEN json_type(message_data, '$.role') = 'text'
+                     THEN json_extract(message_data, '$.role') END,
+                 message_bytes,
+                 message_valid,
+                 CASE WHEN json_type(part_data, '$.type') = 'text'
+                      THEN json_extract(part_data, '$.type') END,
+                 CASE WHEN json_extract(part_data, '$.type') = 'text'
+                            AND json_type(part_data, '$.text') = 'text'
+                      THEN json_extract(part_data, '$.text') END,
+                 part_bytes,
+                 part_valid
+           FROM bounded
+          ORDER BY COALESCE(message_created, message_updated, 0), message_id,
+                   COALESCE(part_created, part_updated, 0), part_id";
+    let mut parent_items = conn.prepare(visible_sql).ok()?;
+    let mut child_items = conn.prepare(visible_sql).ok()?;
+    let mut candidates = conn
+        .prepare(
+            "SELECT id, time_created FROM session
+              WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL",
+        )
+        .ok()?;
+    let rows = candidates
+        .query_map(params![session_id, directory, parent_title], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1).ok().flatten(),
+            ))
+        })
+        .ok()?;
+
+    let mut best: Option<(String, usize)> = None;
+    let mut best_is_tied = false;
+    for (parent_session_id, parent_created) in rows.flatten() {
+        if parent_created
+            .zip(child_created)
+            .is_some_and(|(parent, child)| parent > child)
+        {
+            continue;
+        }
+        let Some(inherited) = db_visible_prefix_len(
+            &mut parent_items,
+            &parent_session_id,
+            &mut child_items,
+            session_id,
+            MAX_DB_FORK_RECORD_BYTES,
+        ) else {
+            continue;
+        };
+        match &best {
+            Some((_, best_inherited)) if inherited < *best_inherited => {}
+            Some((_, best_inherited)) if inherited == *best_inherited => best_is_tied = true,
+            _ => {
+                best = Some((parent_session_id, inherited));
+                best_is_tied = false;
+            }
+        }
+    }
+
+    if best_is_tied {
+        return None;
+    }
+    best.map(|(parent_session_id, _)| parent_session_id)
+}
+
+fn db_visible_prefix_len(
+    parent_statement: &mut rusqlite::Statement<'_>,
+    parent_session_id: &str,
+    child_statement: &mut rusqlite::Statement<'_>,
+    child_session_id: &str,
+    max_record_bytes: i64,
+) -> Option<usize> {
+    let mut parent_rows = parent_statement
+        .query(params![parent_session_id, max_record_bytes])
+        .ok()?;
+    let mut child_rows = child_statement
+        .query(params![child_session_id, max_record_bytes])
+        .ok()?;
+    let mut inherited = 0;
+
+    while let Some(parent) = next_db_visible_item(&mut parent_rows)? {
+        if next_db_visible_item(&mut child_rows)? != Some(parent) {
+            return None;
+        }
+        inherited += 1;
+    }
+    (inherited >= 2 && next_db_visible_item(&mut child_rows)?.is_some()).then_some(inherited)
+}
+
+fn next_db_visible_item(rows: &mut rusqlite::Rows<'_>) -> Option<Option<(String, String)>> {
+    while let Some(row) = rows.next().ok()? {
+        let message_bytes = row.get::<_, Option<i64>>(1).ok().flatten().unwrap_or(0);
+        let message_valid = row.get::<_, bool>(2).ok()?;
+        let part_bytes = row.get::<_, Option<i64>>(5).ok().flatten().unwrap_or(0);
+        let part_valid = row.get::<_, bool>(6).ok()?;
+        if message_bytes > MAX_DB_FORK_RECORD_BYTES || part_bytes > MAX_DB_FORK_RECORD_BYTES {
+            return None;
+        }
+        if !message_valid || !part_valid {
+            return None;
+        }
+        let role = row.get::<_, Option<String>>(0).ok().flatten();
+        let part_type = row.get::<_, Option<String>>(3).ok().flatten();
+        let text = row.get::<_, Option<String>>(4).ok().flatten();
+        if let (Some(role), Some("text"), Some(text)) = (role, part_type.as_deref(), text)
+            && matches!(role.as_str(), "user" | "assistant")
+        {
+            let text = normalize_opencode_visible_text(&text);
+            if !text.is_empty() {
+                return Some(Some((role, text)));
+            }
+        }
+    }
+    Some(None)
 }
 
 fn db_session_metadata_blocking(
@@ -2407,6 +2612,20 @@ fn infer_db_fork_observation(
     child_session_id: &str,
     child_records: &DbRecords,
 ) -> Option<ForkObservation> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    infer_db_fork_observation_connection(&conn, db_path, child_session_id, child_records)
+}
+
+fn infer_db_fork_observation_connection(
+    conn: &Connection,
+    db_path: &Path,
+    child_session_id: &str,
+    child_records: &DbRecords,
+) -> Option<ForkObservation> {
     let (_, child_session) = child_records
         .sessions
         .iter()
@@ -2420,11 +2639,6 @@ fn infer_db_fork_observation(
         return None;
     }
 
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
     let mut stmt = conn
         .prepare(
             "SELECT id FROM session WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL LIMIT 101",
@@ -2439,7 +2653,7 @@ fn infer_db_fork_observation(
     let mut matches = rows
         .flatten()
         .filter_map(|parent_session_id| {
-            let records = query_db_records_for_root_connection(&conn, db_path, &parent_session_id)?;
+            let records = query_db_records_for_root_connection(conn, db_path, &parent_session_id)?;
             let (_, parent_session) = records
                 .sessions
                 .iter()
@@ -2678,51 +2892,52 @@ fn db_session_fingerprint_blocking(db_path: &Path, root_session_id: &str) -> Opt
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
-    let cluster_session_ids = db_session_ids_for_root(&conn, root_session_id);
-    if cluster_session_ids.is_empty() {
-        return None;
-    }
-
-    let placeholders = sql_in_placeholders(cluster_session_ids.len());
-    let (session_count, session_updated) = count_and_max_updated(
-        &conn,
-        &format!(
-            "SELECT COUNT(*), MAX(COALESCE(time_updated, time_created, 0)) FROM session WHERE id IN ({placeholders})"
-        ),
-        &cluster_session_ids,
-    );
-    let (message_count, message_updated) = count_and_max_updated(
-        &conn,
-        &format!(
-            "SELECT COUNT(*), MAX(COALESCE(time_updated, time_created, 0)) FROM message WHERE session_id IN ({placeholders})"
-        ),
-        &cluster_session_ids,
-    );
-    let (part_count, part_updated) = count_and_max_updated(
-        &conn,
-        &format!(
-            "SELECT COUNT(*), MAX(COALESCE(time_updated, time_created, 0)) FROM part WHERE session_id IN ({placeholders})"
-        ),
-        &cluster_session_ids,
-    );
-
-    let latest = session_updated.max(message_updated).max(part_updated);
-    let rows = session_count + message_count + part_count;
-    Some((latest.max(0) as u64, rows))
+    db_session_fingerprint_connection(&conn, root_session_id)
 }
 
-fn count_and_max_updated(
+/// Computes the provider fingerprint without loading the cluster identifiers.
+pub(crate) fn db_session_fingerprint_connection(
     conn: &Connection,
-    sql: &str,
-    session_ids: &HashSet<String>,
-) -> (u64, i64) {
-    conn.query_row(sql, params_from_iter(session_ids.iter()), |row| {
-        Ok((
-            row.get::<_, i64>(0).unwrap_or(0).max(0) as u64,
-            row.get::<_, Option<i64>>(1).unwrap_or(None).unwrap_or(0),
-        ))
-    })
-    .unwrap_or((0, 0))
+    root_session_id: &str,
+) -> Option<(u64, u64)> {
+    let cluster = if db_session_has_parent_id(conn) {
+        "WITH RECURSIVE cluster(id) AS (
+             SELECT id FROM session WHERE id = ?1
+             UNION
+             SELECT session.id FROM session JOIN cluster ON session.parent_id = cluster.id
+         )"
+    } else {
+        "WITH cluster(id) AS (SELECT id FROM session WHERE id = ?1)"
+    };
+    conn.query_row(
+        &format!(
+            "{cluster}, records(updated) AS (
+             SELECT COALESCE(time_updated, time_created, 0) FROM session JOIN cluster ON session.id = cluster.id
+             UNION ALL
+             SELECT COALESCE(time_updated, time_created, 0) FROM message JOIN cluster ON message.session_id = cluster.id
+             UNION ALL
+             SELECT COALESCE(time_updated, time_created, 0) FROM part JOIN cluster ON part.session_id = cluster.id
+         )
+         SELECT COUNT(*), MAX(updated) FROM records"
+        ),
+        params![root_session_id],
+        |row| {
+            let rows = row.get::<_, i64>(0)?.max(0) as u64;
+            let latest = row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64;
+            Ok((latest, rows))
+        },
+    )
+    .ok()
+    .filter(|(_, rows)| *rows > 0)
+}
+
+pub(crate) fn db_session_has_parent_id(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'parent_id')",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
 }
 
 fn recent_db_session_ids(conn: &Connection, cutoff: i64) -> HashSet<String> {

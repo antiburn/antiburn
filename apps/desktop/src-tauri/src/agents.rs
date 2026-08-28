@@ -44,10 +44,11 @@ pub fn kind_from_slug(slug: &str) -> Option<AgentKind> {
 }
 
 /// Return the agents that use the durable evidence queue.
-pub fn evidence_cohort() -> [&'static str; 3] {
+pub fn evidence_cohort() -> [&'static str; 4] {
     [
         AgentKind::Claude.slug(),
         AgentKind::Codex.slug(),
+        AgentKind::OpenCode.slug(),
         AgentKind::Pi.slug(),
     ]
 }
@@ -108,10 +109,15 @@ mod tests {
             [
                 AgentKind::Claude.slug(),
                 AgentKind::Codex.slug(),
+                AgentKind::OpenCode.slug(),
                 AgentKind::Pi.slug(),
             ]
         );
         assert_eq!(AgentKind::Codex.slug(), vendor_label(AgentKind::Codex));
+        assert_eq!(
+            AgentKind::OpenCode.slug(),
+            vendor_label(AgentKind::OpenCode)
+        );
         assert_eq!(AgentKind::Pi.slug(), vendor_label(AgentKind::Pi));
     }
 

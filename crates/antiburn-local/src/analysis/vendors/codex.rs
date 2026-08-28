@@ -45,6 +45,9 @@ use crate::analysis::interface::{
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
+const MAX_PENDING_FORK_ROWS: usize = 256;
+const MAX_PENDING_FORK_BYTES: usize = 1024 * 1024;
+
 pub struct CodexAdapter;
 
 impl VendorAdapter for CodexAdapter {
@@ -178,7 +181,7 @@ impl CodexAdapter {
                         sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
                         continue;
                     };
-                    state.observe(value, sink);
+                    state.observe(value, bytes.len(), sink);
                 }
             }
         }
@@ -200,7 +203,9 @@ struct CodexStreamState {
     ownership: ForkOwnership,
     agent_path: Option<String>,
     pending_rows: Vec<Value>,
+    pending_bytes: usize,
     pending_owned_start: Option<usize>,
+    fork_attribution_incomplete: bool,
     previous_token_count_key: Option<TokenCountKey>,
     previous_event_was_boundary: bool,
     previous_boundary_ts: Option<i64>,
@@ -215,7 +220,7 @@ struct CodexStreamState {
 }
 
 impl CodexStreamState {
-    fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
+    fn observe(&mut self, value: Value, record_bytes: usize, sink: &mut dyn RecordSink) {
         if record_to_event(&value).is_some_and(|event| event.ts_ms.is_none()) {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
@@ -245,13 +250,13 @@ impl CodexStreamState {
         }
 
         if self.ownership == ForkOwnership::Pending {
-            self.observe_pending(value, sink);
+            self.observe_pending(value, record_bytes, sink);
         } else {
             self.process_value(value, true, sink);
         }
     }
 
-    fn observe_pending(&mut self, value: Value, sink: &mut dyn RecordSink) {
+    fn observe_pending(&mut self, value: Value, record_bytes: usize, sink: &mut dyn RecordSink) {
         let record_type = value.get("type").and_then(Value::as_str);
         let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
 
@@ -272,6 +277,32 @@ impl CodexStreamState {
                 .and_then(Value::as_str)
                 .zip(self.agent_path.as_deref())
                 .is_some_and(|(recipient, path)| recipient == path);
+        if self.fork_attribution_incomplete {
+            self.pending_owned_start = None;
+            self.process_value(value, false, sink);
+            if addressed_to_child {
+                self.ownership = ForkOwnership::Owned;
+            }
+            return;
+        }
+
+        if self.pending_rows.len() == MAX_PENDING_FORK_ROWS
+            || self.pending_bytes.saturating_add(record_bytes) > MAX_PENDING_FORK_BYTES
+        {
+            for pending in std::mem::take(&mut self.pending_rows) {
+                self.process_value(pending, false, sink);
+            }
+            self.pending_bytes = 0;
+            self.pending_owned_start = None;
+            self.fork_attribution_incomplete = true;
+            self.process_value(value, false, sink);
+            if addressed_to_child {
+                self.ownership = ForkOwnership::Owned;
+            }
+            return;
+        }
+
+        self.pending_bytes = self.pending_bytes.saturating_add(record_bytes);
         self.pending_rows.push(value);
 
         if addressed_to_child {
@@ -282,6 +313,7 @@ impl CodexStreamState {
             for (index, value) in pending_rows.into_iter().enumerate() {
                 self.process_value(value, index >= owned_start, sink);
             }
+            self.pending_bytes = 0;
             self.pending_owned_start = None;
             self.ownership = ForkOwnership::Owned;
         }
@@ -398,7 +430,9 @@ impl CodexStreamState {
                 self.process_value(value, true, sink);
             }
         }
-        let coverage_gaps = if self.owned_token_count_seen && !self.effort_seen {
+        let coverage_gaps = if self.fork_attribution_incomplete
+            || (self.owned_token_count_seen && !self.effort_seen)
+        {
             vec![PartialReason::AttributionIncomplete]
         } else {
             Vec::new()
@@ -1038,5 +1072,47 @@ fn codex_usage(u: &Map<String, Value>) -> Usage {
         output_tokens: get("output_tokens"),
         cache_read_tokens: cached,
         cache_creation_tokens: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::SessionCollector;
+
+    #[test]
+    fn unresolved_fork_rows_stop_accumulating_at_the_cap() {
+        let mut state = CodexStreamState::default();
+        let mut sink = SessionCollector::new("codex", "large-unresolved-fork");
+        state.observe(
+            serde_json::json!({
+                "type": "session_meta",
+                "payload": {
+                    "thread_source": "subagent",
+                    "agent_path": "agent-a"
+                }
+            }),
+            100,
+            &mut sink,
+        );
+
+        for index in 0..=MAX_PENDING_FORK_ROWS {
+            state.observe(
+                serde_json::json!({"type": "world_state", "payload": {"index": index}}),
+                100,
+                &mut sink,
+            );
+            assert!(state.pending_rows.len() <= MAX_PENDING_FORK_ROWS);
+        }
+
+        assert!(state.fork_attribution_incomplete);
+        assert!(state.pending_rows.is_empty());
+        assert_eq!(state.pending_bytes, 0);
+        let summary = state.finish(&mut sink);
+        sink.finish(summary);
+        assert_eq!(
+            sink.partial_reasons(),
+            &std::collections::BTreeSet::from([PartialReason::AttributionIncomplete])
+        );
     }
 }

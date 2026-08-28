@@ -19,6 +19,9 @@ version and refuses the release if there is none.
 
 ### Added
 
+- `analysis::OpenCodeAdapter` and `SourceCapabilities::opencode()` provide
+  bounded metrics and evidence from OpenCode JSONL exports and SQLite sessions.
+  Claimed SQLite reads validate the session fingerprint inside one read snapshot.
 - `insights::UnrecognizedRecords` and `insights::MAX_REPORT_UNRECOGNIZED_TYPES` expose a bounded discriminator set and non-exclusive cohort counts for inert, evidence-bearing, set-capped, and string-truncated unknown records.
 - `analysis::PiAdapter` and `SourceCapabilities::pi()` provide bounded,
   source-validated metrics and evidence for Pi JSONL sessions.
@@ -29,6 +32,11 @@ version and refuses the release if there is none.
 
 ### Changed
 
+
+- `adapter_for("opencode")` now streams OpenCode SQLite sessions directly and
+  no longer depends on a schema-agnostic SQLite fallback.
+- Codex fork ownership lookahead keeps at most 256 records or 1 MiB. A later
+  ownership marker reports partial attribution instead of retaining more rows.
 - **Breaking:** `EvidenceObservation::UnrecognizedType` gains an `inert` field, `ParseDiagnostics` gains `records_unrecognized_inert`, and `EfficiencyReport` gains `unrecognized_records`. Its `UnrecognizedRecords` summary separates set-capped and string-truncated session counts. `PARSER_REVISION` is now 4 and `EVIDENCE_SCHEMA_REVISION` is now 3, so older stored evidence is stale and reprocessed lazily.
 - Structurally inert unknown Claude records retain complete coverage and can produce report and badge results. Evidence-bearing unknowns still fail closed, including allowlisted eventless names that begin carrying shallow evidence. Known eventless records tolerate command echoes and unread scalar evidence-key names in nested configuration. Unknown discriminator truncation or collection overflow still produces `CapExceeded` and blocks clean results.
 - `adapter_for("pi")` now selects the dedicated Pi adapter instead of the

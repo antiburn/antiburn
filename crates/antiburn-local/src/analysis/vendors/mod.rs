@@ -12,7 +12,6 @@ mod generic_jsonl;
 mod jsonl;
 mod opencode;
 pub(crate) mod pi;
-mod sqlite;
 
 use crate::analysis::interface::{RawSource, VendorAdapter};
 

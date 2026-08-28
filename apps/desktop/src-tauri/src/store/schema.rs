@@ -10,7 +10,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -347,5 +347,14 @@ INSERT INTO session_evidence (environment_key, agent, session_id)
 SELECT environment_key, agent, session_id
   FROM session
  WHERE agent = 'pi'
+ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
+"#;
+
+/// v14 adds existing OpenCode sessions to the durable evidence queue.
+const V14: &str = r#"
+INSERT INTO session_evidence (environment_key, agent, session_id)
+SELECT environment_key, agent, session_id
+  FROM session
+ WHERE agent = 'opencode'
 ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 "#;

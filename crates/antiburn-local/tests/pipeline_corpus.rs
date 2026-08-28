@@ -346,8 +346,7 @@ fn provider_db_backed_source_flows_end_to_end_into_a_report() {
     let db_path = directory.path().join("provider.db");
     write_provider_db(&db_path, &session).expect("write synthetic provider DB");
 
-    // A raw provider DB handed straight in resolves to the generic
-    // schema-agnostic SQLite walk (the OpenCode fallback path).
+    // A raw provider DB streams through the native OpenCode adapter.
     let input = SessionInput {
         agent: "opencode".to_string(),
         session_id: session.session_id.clone(),
@@ -368,9 +367,7 @@ fn provider_db_backed_source_flows_end_to_end_into_a_report() {
         .expect("provider-DB session must publish");
     assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
     let eligibility = observed(&evidence.eligibility);
-    // The walk feeds every JSON text cell through the shared record parser:
-    // conversational records become events, the eventless housekeeping tail
-    // and the non-JSON housekeeping table are skipped without loss.
+    // The synthetic conversion keeps every conversational record.
     assert_eq!(
         eligibility.assistant_turns,
         session.tallies.assistant_records as u64

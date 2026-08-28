@@ -272,4 +272,15 @@ pub trait VendorAdapter: Sync {
     ) -> anyhow::Result<VisitOutcome> {
         anyhow::bail!("claimed streaming is unsupported for this adapter")
     }
+
+    /// Streams a provider database from one stable read snapshot.
+    fn visit_db_claimed(
+        &self,
+        _input: &SessionInput,
+        _claimed_fingerprint: &str,
+        _cancel: &dyn Fn() -> bool,
+        _sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        anyhow::bail!("claimed database streaming is unsupported for this adapter")
+    }
 }

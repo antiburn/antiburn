@@ -429,15 +429,15 @@ pub async fn locate(
 }
 
 /// Shape a located source into the raw payload the analysis layer reads.
-///
-/// A vendor database is rendered to the discovery layer's synthesized JSONL
-/// rather than handed over as a file: the dedicated adapters (OpenCode's, in
-/// particular) are written against that stream, and passing the database
-/// directly would silently drop them onto the schema-agnostic fallback.
 async fn raw_source(source: &SessionSource) -> Option<RawSource> {
     match source {
         SessionSource::File(path) => Some(RawSource::File(path.clone())),
         SessionSource::Inline { content, .. } => Some(RawSource::Jsonl(content.clone())),
+        SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path,
+            ..
+        } => Some(RawSource::Sqlite(db_path.clone())),
         SessionSource::ProviderDb { .. } => {
             session_source_content(source).await.map(RawSource::Jsonl)
         }
@@ -510,13 +510,14 @@ fn stream_vendor_with_claim_hook(
     cancel: &CancelFlag,
     after_claim: &dyn Fn(usize, &std::path::Path),
 ) -> StreamOutcome {
-    stream_vendor_with_hooks(inputs, &|| cancel.cancelled(), after_claim)
+    stream_vendor_with_hooks(inputs, &|| cancel.cancelled(), after_claim, None)
 }
 
 fn capabilities_for_vendor(agent: &str) -> Option<SourceCapabilities> {
     match agent {
         "claude" => Some(SourceCapabilities::claude()),
         "codex" => Some(SourceCapabilities::codex()),
+        "opencode" => Some(SourceCapabilities::opencode()),
         "pi" => Some(SourceCapabilities::pi()),
         _ => None,
     }
@@ -526,6 +527,7 @@ fn stream_vendor_with_hooks(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
+    database_claim: Option<&str>,
 ) -> StreamOutcome {
     let mut accumulators = Vec::with_capacity(inputs.len());
     let mut parent_fingerprint = None;
@@ -584,7 +586,22 @@ fn stream_vendor_with_hooks(
                 }
                 adapter.visit(input, &mut accumulator)
             }
-            RawSource::Sqlite(_) if index == 0 => return StreamOutcome::ParentUnsupported,
+            RawSource::Sqlite(_) if adapter.agent() != "opencode" && index == 0 => {
+                return StreamOutcome::ParentUnsupported;
+            }
+            RawSource::Sqlite(_) if adapter.agent() != "opencode" => continue,
+            RawSource::Sqlite(_) if index == 0 => {
+                let outcome = match database_claim {
+                    Some(fingerprint) => {
+                        adapter.visit_db_claimed(input, fingerprint, cancelled, &mut accumulator)
+                    }
+                    None => adapter.visit(input, &mut accumulator),
+                };
+                if database_claim.is_some() {
+                    parent_fingerprint = database_claim.map(str::to_owned);
+                }
+                outcome
+            }
             RawSource::Sqlite(_) => continue,
         };
         match result {
@@ -747,7 +764,23 @@ pub async fn analyze_for_evidence(
         .list_subagents_in_environment(&agent, session_id, wsl_distro)
         .await;
     subagent_paths.sort();
-    let fingerprint = combined_fingerprint(&source, &subagent_paths);
+    let database_claim = matches!(
+        &source,
+        SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            ..
+        }
+    )
+    .then(|| claimed.fingerprint.clone())
+    .flatten();
+    let fingerprint = if matches!(&source, SessionSource::ProviderDb { .. }) {
+        claimed
+            .fingerprint
+            .clone()
+            .unwrap_or_else(|| MISSING_FINGERPRINT.to_string())
+    } else {
+        combined_fingerprint(&source, &subagent_paths)
+    };
     let mut subagents: Vec<(String, String, SessionInput)> = Vec::new();
     for path in subagent_paths {
         let Some(subagent_id) = Explorers::DISK.subagent_id(&agent, &path) else {
@@ -788,7 +821,12 @@ pub async fn analyze_for_evidence(
     let computed = tauri::async_runtime::spawn_blocking(move || {
         if streams_evidence {
             let cancelled = || signal_for_pass.observe();
-            return match stream_vendor_with_hooks(&inputs, &cancelled, &test_subagent_after_claim) {
+            return match stream_vendor_with_hooks(
+                &inputs,
+                &cancelled,
+                &test_subagent_after_claim,
+                database_claim.as_deref(),
+            ) {
                 StreamOutcome::Published {
                     session,
                     parent_fingerprint,
@@ -1046,7 +1084,7 @@ fn evidence_pass_with_hook(
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
 ) -> EvidencePass {
-    match stream_vendor_with_hooks(inputs, cancelled, after_claim) {
+    match stream_vendor_with_hooks(inputs, cancelled, after_claim, None) {
         StreamOutcome::Published { session, .. } => {
             let StreamedSession {
                 merged,
@@ -1241,6 +1279,17 @@ pub async fn fork_parent(source: &SessionSource) -> Option<String> {
     let content = match source {
         SessionSource::Inline { content, .. } => content.clone(),
         SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok()?,
+        SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path,
+            session_id,
+        } => {
+            return antiburn_local::discovery::agents::opencode::db_fork_parent(
+                db_path.clone(),
+                session_id.clone(),
+            )
+            .await;
+        }
         SessionSource::ProviderDb { .. } => session_source_content(source).await?,
     };
     fork_parent_from_content(&content)
@@ -1381,6 +1430,34 @@ pub fn price_cached_breakdown(model_breakdown_json: &str) -> (Option<SessionCost
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn opencode_lineage_does_not_render_an_ordinary_database_session() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let db_path = directory.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&db_path).expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT);
+                 INSERT INTO session VALUES ('ses_root', '/repo', 'Ordinary session');",
+            )
+            .expect("schema");
+        drop(connection);
+        antiburn_local::discovery::track_provider_db_renders(&db_path);
+
+        let parent = fork_parent(&SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: db_path.clone(),
+            session_id: "ses_root".to_string(),
+        })
+        .await;
+
+        assert_eq!(parent, None);
+        assert_eq!(
+            antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
+            0
+        );
+    }
+
     fn member_with_start(subagent_id: &str, started_at_epoch: Option<i64>) -> SubagentMember {
         SubagentMember {
             agent: "claude-code".to_string(),
@@ -1441,6 +1518,70 @@ mod tests {
             session_id: id.to_string(),
             source: RawSource::Jsonl(content),
         }
+    }
+
+    fn opencode_database() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&path).expect("database");
+        connection
+            .execute_batch(
+                r#"CREATE TABLE session (
+                     id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER
+                 );
+                 CREATE TABLE message (
+                     id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+                     time_updated INTEGER, data TEXT
+                 );
+                 CREATE TABLE part (
+                     id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                     time_created INTEGER, time_updated INTEGER, data TEXT
+                 );
+                 INSERT INTO session VALUES ('root', NULL, 100, 120);
+                 INSERT INTO message VALUES (
+                     'message', 'root', 110, 110,
+                     '{"role":"assistant","modelID":"model-a","tokens":{"input":12,"output":3}}'
+                 );"#,
+            )
+            .expect("OpenCode fixture");
+        drop(connection);
+        (directory, path, "sv1:db:120:2".to_owned())
+    }
+
+    #[tokio::test]
+    async fn an_opencode_provider_database_stays_native() {
+        let (_directory, path, _) = opencode_database();
+        let source = SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: path.clone(),
+            session_id: "root".to_owned(),
+        };
+
+        assert_eq!(raw_source(&source).await, Some(RawSource::Sqlite(path)));
+    }
+
+    #[test]
+    fn a_claimed_opencode_database_publishes_from_the_validated_snapshot() {
+        let (_directory, path, fingerprint) = opencode_database();
+        let input = SessionInput {
+            agent: "opencode".to_owned(),
+            session_id: "root".to_owned(),
+            source: RawSource::Sqlite(path),
+        };
+
+        let outcome = stream_vendor_with_hooks(&[input], &|| false, &|_, _| {}, Some(&fingerprint));
+
+        let StreamOutcome::Published {
+            session,
+            parent_fingerprint,
+        } = outcome
+        else {
+            panic!("a stable OpenCode database must publish");
+        };
+        assert_eq!(parent_fingerprint.as_deref(), Some(fingerprint.as_str()));
+        assert_eq!(session.parent.billable_input_tokens, 12);
+        assert_eq!(session.parent.billable_output_tokens, 3);
+        assert!(session.evidence.is_some());
     }
 
     fn codex_record() -> String {
@@ -1985,6 +2126,7 @@ mod tests {
             &[file_input(&parent, "parent"), file_input(&child, "child")],
             &cancelled,
             &hook,
+            None,
         ) {
             StreamOutcome::ParentUnreadable => SessionAnalysis::unavailable(),
             StreamOutcome::Published { .. } => panic!("cancelled child read must not publish"),

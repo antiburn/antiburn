@@ -26,7 +26,7 @@ described in [Network](#network).
 | --- | --- | --- | --- |
 | Claude Code | Supported | Supported | |
 | Codex | Supported | Supported | |
-| OpenCode | Supported | Supported | |
+| OpenCode | Supported | Supported | Dedicated session analysis and Insights |
 | Cursor | Supported | Not supported | |
 | GitHub Copilot | Supported | Not supported | |
 | Cline | Supported | Not supported | |

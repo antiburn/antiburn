@@ -355,10 +355,9 @@ fn materialization(criterion: &mut Criterion) {
     group.finish();
 }
 
-/// Provider-DB-backed source: the generic schema-agnostic SQLite walk
-/// (the raw-`RawSource::Sqlite` fallback path), through the composite sink.
+/// Provider-DB-backed source through the native OpenCode message stream.
 fn provider_db(criterion: &mut Criterion) {
-    let mut group = criterion.benchmark_group("provider_db_walk");
+    let mut group = criterion.benchmark_group("provider_db_stream");
     group.sample_size(10);
 
     let directory = TempDir::new().expect("tempdir");
