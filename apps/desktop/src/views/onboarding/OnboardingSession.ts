@@ -1,7 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { applyTheme } from "../../lib/appearance"
-import { analyticsDefaultsOff } from "../../lib/euLocale"
 import {
   addScanRoot,
   appInfo,
@@ -13,6 +12,7 @@ import {
   getSettings,
   listRepositories,
   listScanRoots,
+  noteInteraction,
   onScanEvent,
   recheckFolderPermissions,
   removeScanRoot,
@@ -33,6 +33,9 @@ import type {
   FolderVerdict,
 } from "../../lib/useFolderPermissionFlow"
 
+export type OnboardingStep =
+  "welcome" | "sources" | "repositories" | "historical_scan" | "ready"
+
 const EMPTY_PERMISSIONS: FolderPermissions = {
   deferred: [],
   granted: [],
@@ -46,15 +49,10 @@ export type OnboardingSnapshot = {
   loadError: string | null
   activityWindowDays: number
   launchAtLogin: boolean
-  /** The consent draft. Written only by `finish`, so a reader who abandons
-   *  the flow — or turns this off on the Ready screen — is never counted. */
-  analyticsEnabled: boolean
-  /** Whether this build can transmit at all. Read from the shell rather than
-   *  assumed: a clean checkout has no endpoint, and the Ready screen says so
-   *  instead of offering a switch over nothing. */
+  /** Whether this build includes an active analytics client. */
   analyticsSupported: boolean
-  /** Who receives the events, named rather than implied. */
-  analyticsOperator: string | null
+  /** Whether the process environment disables analytics for this launch. */
+  analyticsEnvironmentDisabled: boolean
   scanRoots: string[]
   defaultRoots: string[]
   permissions: FolderPermissions
@@ -97,6 +95,7 @@ export class OnboardingSession {
   private permissionRunning = false
   private permissionCancelled = false
   private permissionTimer: ReturnType<typeof setTimeout> | null = null
+  private analyticsSteps = new Set<OnboardingStep>()
 
   private snapshot: OnboardingSnapshot
 
@@ -106,12 +105,8 @@ export class OnboardingSession {
       loadError: null,
       activityWindowDays: 7,
       launchAtLogin: true,
-      // On by default, except where it has to be opted into rather than out
-      // of — see `analyticsDefaultsOff`. The control sits in the same place
-      // either way; only its starting position moves.
-      analyticsEnabled: !analyticsDefaultsOff(),
       analyticsSupported: false,
-      analyticsOperator: null,
+      analyticsEnvironmentDisabled: false,
       scanRoots: [],
       defaultRoots: [],
       permissions: EMPTY_PERMISSIONS,
@@ -149,8 +144,15 @@ export class OnboardingSession {
     this.update({ launchAtLogin: enabled, finishError: null })
   }
 
-  setAnalyticsEnabled = (enabled: boolean): void => {
-    this.update({ analyticsEnabled: enabled, finishError: null })
+  noteOnboardingStep = (step: OnboardingStep): void => {
+    if (
+      !this.snapshot.analyticsSupported ||
+      this.snapshot.analyticsEnvironmentDisabled ||
+      this.analyticsSteps.has(step)
+    )
+      return
+    this.analyticsSteps.add(step)
+    noteInteraction({ kind: "onboardingStepViewed", step })
   }
 
   addScanRoot = async (): Promise<void> => {
@@ -197,11 +199,7 @@ export class OnboardingSession {
     if (this.snapshot.finishing) return
     this.update({ finishing: true, finishError: null })
     try {
-      await finishOnboarding(
-        this.snapshot.activityWindowDays,
-        this.snapshot.launchAtLogin,
-        this.snapshot.analyticsEnabled,
-      )
+      await finishOnboarding(this.snapshot.activityWindowDays, this.snapshot.launchAtLogin)
     } catch (error) {
       this.update({
         finishing: false,
@@ -250,21 +248,15 @@ export class OnboardingSession {
         loadError: null,
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
-        // A store that has never been written still reports the shell's
-        // default, which is unconditional `true` — so the jurisdiction-aware
-        // default is applied here, where the reader's locale is visible, and
-        // only while onboarding has not yet committed an answer.
-        analyticsEnabled: settings.onboardingCompleted
-          ? settings.analyticsEnabled
-          : settings.analyticsEnabled && !analyticsDefaultsOff(),
         analyticsSupported: info?.analyticsSupported ?? false,
-        analyticsOperator: info?.analyticsOperator ?? null,
+        analyticsEnvironmentDisabled: info?.analyticsEnvironmentDisabled ?? false,
         scanRoots,
         defaultRoots,
         permissions,
         repositories: toRepositories(repositories),
         ...(scanVersion === this.scanEventVersion ? { scanStatus } : {}),
       })
+      this.noteOnboardingStep("welcome")
     } catch (error) {
       if (generation !== this.generation) return
       this.update({

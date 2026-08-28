@@ -116,13 +116,13 @@ the next time it looks.
 
 ## Network
 
-antiburn needs no connection to any service of ours — no antiburn account, server,
-or backend, ever. The connections it makes beyond that are yours, not ours: reading
+antiburn needs no account or backend for its main work. The connections it makes
+beyond analytics and updates are yours, not ours: reading
 a provider's own figures with your own credentials is traffic between this machine
 and a provider you already use. The application's own connection to a service of
-ours is exactly one kind: the updater, which asks GitHub Releases whether a newer
+ours are analytics and the updater. The updater asks GitHub Releases whether a newer
 version exists and downloads its signed bundle only after you select Install. The
-app never depends on this connection.
+app never depends on either connection.
 
 - The check sends nothing about you, your machine, or your sessions.
 - It runs on a schedule only while "check for updates automatically" is on, and can
@@ -134,8 +134,8 @@ app never depends on this connection.
 - Linux AppImage releases update in the app. Debian packages remain install-only
   and require the next package to be installed manually.
 - **Anonymised analytics** are the one thing antiburn reports about itself.
-  On by default; the switch is in Settings → Privacy, and the first-run Ready
-  screen shows it before anything is sent. Each event carries thirteen fields and
+  Official release builds start with it on, including during onboarding. The Ready
+  screen explains it, and the switch is in Settings → Privacy. Each event carries thirteen fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   the event name; the time it happened and the time it was delivered; the
@@ -149,9 +149,9 @@ app never depends on this connection.
   the full event catalog, and how to verify all of it yourself.
   Never sent: sessions, transcripts, prompts, titles, file paths, repository or
   branch names, token counts, costs, or credentials. Switching it off deletes
-  the identifier and anything still queued. A build with no endpoint configured
-  — every development build, and every build from a clean checkout of the public
-  repository — sends nothing at all.
+  the identifier and anything still queued. The endpoint also stores the request
+  IP address and user-agent. Raw events are retained until the operator deletes
+  them. Default source and development builds exclude the analytics client.
 - There is **no third-party analytics, telemetry, or crash-reporting SDK** in this
   application. The channel above is first-party and is the only one.
 

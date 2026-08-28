@@ -6,20 +6,17 @@ that: every field, every event, what is deliberately excluded, what antiburn
 cannot promise, and how to verify all of it yourself without trusting this
 page.
 
-The control is in **Settings → Privacy**, and the first-run Ready screen shows
-it before anything is sent. It is on by default — except in the EU, the EEA,
-and the UK, where it starts **off**, because there analytics are something you
-opt into rather than out of. That is decided from the locale and time zone your
-machine already reports; nothing is looked up, and neither is ever sent. That
-default differs from the general default-off policy so consent is collected
-before analytics starts in those regions.
+Official release builds start with analytics on. This includes the launch and
+fixed onboarding-step events. The first-run Ready screen explains the channel,
+and the permanent opt-out is in **Settings → Privacy**. Set
+`ANTIBURN_ANALYTICS_ENABLED=false` in the app's launch environment for a second,
+process-level opt-out.
 
 ## The short version
 
 - Nothing derived from your work is ever sent — no transcript, prompt, title,
   file path, repository or branch name, token count, cost, or credential.
-- Nothing is sent until the first run completes, so declining on the Ready
-  screen means no event is ever recorded, rather than recorded and withdrawn.
+- Official builds can record launch and onboarding progress before setup ends.
 - The installation identifier is random, is not derived from anything about
   your machine, and is replaced every 30 days.
 - Turning the control off deletes the identifier and everything queued.
@@ -102,16 +99,16 @@ design.
 
 Event names are namespaced `antiburn.*`.
 
-| Event                                    | When it fires                                                                                                                                                                                               | Carries                                                                                                                                                                                                     |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `antiburn.app_launched`                  | The application starts.                                                                                                                                                                                     | —                                                                                                                                                                                                           |
-| `antiburn.onboarding_finished`           | The first run completes.                                                                                                                                                                                    | —                                                                                                                                                                                                           |
-| `antiburn.scan_completed`                | A discovery pass finishes **and finds a different number of sessions than the last one reported**. antiburn rescans about once a minute while the popover is open; a repeat of the same answer is not sent. | `bucket` — how many sessions                                                                                                                                                                                |
-| `antiburn.setting_toggled`               | A preference changes.                                                                                                                                                                                       | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value.                                                                                       |
-| `antiburn.session_opened`                | You open a session from the activity list.                                                                                                                                                                  | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native` or `wsl`. **Not** the session, its title, its repository, or the name of your WSL distribution.               |
-| `antiburn.usage_viewed`                  | You open the usage view.                                                                                                                                                                                    | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
-| `antiburn.error_occurred`                | Something failed, and the previous pass had not already reported the same failure.                                                                                                                          | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                           |
-| `antiburn.unrecognized_records_observed` | Settings → Insights returns a cohort containing unknown record vocabulary, and its outcome differs from the last one reported during this run.                                                              | `bucket` — sessions containing unknown types. `label` — `inert_only`, `inert_capped`, or `evidence_bearing`. No discriminator, payload, session identifier, or second dimension.                            |
+| Event                          | When it fires                                                                                                                                                                                               | Carries                                                                                                                                                                                                     |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `antiburn.app_launched`        | The application starts.                                                                                                                                                                                     | —                                                                                                                                                                                                           |
+| `antiburn.onboarding_finished` | The first run completes.                                                                                                                                                                                    | —                                                                                                                                                                                                           |
+| `antiburn.onboarding_step_viewed` | A fixed first-run step becomes visible. Each step is recorded at most once per onboarding flow. | `label` — one of `welcome`, `sources`, `repositories`, `historical_scan`, `ready`. |
+| `antiburn.scan_completed`      | A discovery pass finishes **and finds a different number of sessions than the last one reported**. antiburn rescans about once a minute while the popover is open; a repeat of the same answer is not sent. | `bucket` — how many sessions                                                                                                                                                                                |
+| `antiburn.setting_toggled`     | A preference changes.                                                                                                                                                                                       | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value.                                                                                       |
+| `antiburn.session_opened`      | You open a session from the activity list.                                                                                                                                                                  | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native` or `wsl`. **Not** the session, its title, its repository, or the name of your WSL distribution.               |
+| `antiburn.usage_viewed`        | You open the usage view.                                                                                                                                                                                    | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
+| `antiburn.error_occurred`      | Something failed, and the previous pass had not already reported the same failure.                                                                                                                          | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                           |
 
 Three of those are deliberately not sent once per occurrence. A scan result that
 repeats the last one is dropped, so a machine left running does not report the
@@ -138,27 +135,19 @@ later, and the table is not a courtesy when they are: a test
 in the code and not in this table, so what you are reading is enforced rather
 than maintained.
 
-## What antiburn cannot promise
+## What the endpoint also records
 
-How long these events are kept, and whether the receiving server records the IP
-address that every internet request carries, are decisions belonging to whoever
-operates the endpoint — not to the application. antiburn can only promise what
-it sends, which is the list above. Retention and IP handling belong in the
-[privacy policy](privacy-policy.md), which is still a draft: it names each of
-those open questions explicitly rather than leaving them unstated, and nothing
-in the application links to it until they are answered.
-
-This distinction is deliberate. The in-app copy and this document stop at the
-boundary of what the client code can guarantee.
+The first-party endpoint stores the request IP address and user-agent with each
+raw event. Raw events have no automatic deletion schedule and are retained until
+the operator deletes them. See the [privacy policy](privacy-policy.md).
 
 ## Verifying this yourself
 
 Everything above is checkable on your own machine.
 
-**Confirm a development build sends nothing.** Run `pnpm dev` from
-`apps/desktop`. Settings → Privacy shows the control disabled, with the reason.
-No endpoint was injected, so `analytics::config::configured()` is false
-and nothing is queued or sent.
+**Confirm a default development build sends nothing.** Run `pnpm dev` from
+`apps/desktop`. The analytics client is excluded from the build, so no analytics
+UI appears and nothing is queued or sent.
 
 **Watch what a configured build actually sends.** Start a collector that prints
 each request:
@@ -178,7 +167,10 @@ Then build against it. Plain `http` is accepted only on loopback, which exists
 for exactly this:
 
 ```bash
-cd apps/desktop && ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 pnpm tauri dev --features distribution --config src-tauri/tauri.debug.conf.json
+cd apps/desktop
+ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 \
+ANTIBURN_ANALYTICS_OPERATOR="Local development" \
+pnpm tauri dev --features analytics --config src-tauri/tauri.debug.conf.json
 ```
 
 The first delivery is a minute after launch, then every fifteen minutes.
@@ -199,7 +191,7 @@ identity that cannot be linked to the old one.
 
 | Concern                                                   | File                                                                       |
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Consent gate, queue, delivery                             | [`analytics/mod.rs`](../apps/desktop/src-tauri/src/analytics/mod.rs)       |
+| Opt-out gates, queue, delivery                            | [`analytics/mod.rs`](../apps/desktop/src-tauri/src/analytics/mod.rs)       |
 | The payload, and the closed field set                     | [`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs)   |
 | Endpoint configuration, and why a clean checkout is inert | [`analytics/config.rs`](../apps/desktop/src-tauri/src/analytics/config.rs) |
 | The setting, and the upgrade rule for existing installs   | [`store/mod.rs`](../apps/desktop/src-tauri/src/store/mod.rs)               |

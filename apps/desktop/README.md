@@ -11,9 +11,9 @@ your sessions is uploaded. It makes two calls to a service of ours, neither of
 which it depends on: the updater plugin, registered in release builds only,
 asking whether a newer version exists; and the anonymised analytics
 channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
-which reports on the application itself behind a control the reader meets on
-the first-run Ready screen. A build with no endpoint injected — which is every
-build from a clean checkout — sends nothing at all.
+which reports on the application itself in official release builds. The Ready
+screen explains it, and Settings → Privacy provides the opt-out. The analytics
+client is excluded from default source and development builds.
 
 ## Layout
 
@@ -71,6 +71,17 @@ cd apps/desktop/src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+```
+
+To inspect analytics requests locally, start the print-only loopback collector
+in [`docs/analytics.md`](../../docs/analytics.md#verifying-this-yourself), then
+run:
+
+```bash
+ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 \
+ANTIBURN_ANALYTICS_OPERATOR="Local development" \
+pnpm --filter @antiburn/desktop exec tauri dev \
+  --features analytics --config src-tauri/tauri.debug.conf.json
 ```
 
 Debug builds load the frontend from the Vite dev server, so `cargo` checks do

@@ -7,5 +7,6 @@ fn main() {
     // reads as a code problem.
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_URL");
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_OPERATOR");
+    println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_ENABLED");
     tauri_build::build();
 }

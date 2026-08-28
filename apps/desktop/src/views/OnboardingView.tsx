@@ -70,9 +70,9 @@ export function OnboardingView() {
         onWindowDaysChange={session.setActivityWindowDays}
         launchAtLogin={state.launchAtLogin}
         onLaunchAtLoginChange={session.setLaunchAtLogin}
-        analyticsEnabled={state.analyticsEnabled}
-        onAnalyticsEnabledChange={session.setAnalyticsEnabled}
         analyticsSupported={state.analyticsSupported}
+        analyticsEnvironmentDisabled={state.analyticsEnvironmentDisabled}
+        onStepViewed={session.noteOnboardingStep}
         finishing={state.finishing}
         finishError={state.finishError}
         onFinish={session.finish}

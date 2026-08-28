@@ -270,6 +270,7 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         // running rather than from a `cfg!`, so no copy downstream can offer
         // a control this binary cannot honour.
         analytics_supported: crate::analytics::available(),
+        analytics_environment_disabled: crate::analytics::environment_disabled(),
         analytics_operator: crate::analytics::operator().map(str::to_string),
     })
 }
@@ -358,26 +359,17 @@ pub fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
-    analytics_enabled: bool,
 ) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved) = store
         .update_settings(|settings| {
             settings.activity_window_days = activity_window_days;
             settings.launch_at_login = launch_at_login;
-            // Written here and nowhere earlier. The draft the Ready screen
-            // holds is the reader's answer *before* anything can be sent —
-            // `analytics::allowed` also requires the flag set on the next
-            // line, so switching analytics off on that screen means no event
-            // is ever recorded, rather than recorded and then withdrawn.
-            settings.analytics_enabled = analytics_enabled;
             settings.onboarding_completed = true;
         })
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
-    // After the transition, so the gate this event reads sees the saved flags.
-    // A reader who declined on the Ready screen records nothing at all. An
-    // explicit restart records a new completion because it is a new setup run.
+    // An explicit restart records a new completion because it is a new setup run.
     crate::analytics::record(
         &app,
         crate::analytics::event::EventName::OnboardingFinished,
@@ -1615,6 +1607,28 @@ pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
         .map_err(fail)
 }
 
+/// Open the public analytics documentation in the system browser.
+#[tauri::command]
+pub fn open_analytics_documentation(app: tauri::AppHandle) -> CommandResult<()> {
+    let url = analytics_documentation_url(&app.package_info().version.to_string());
+    app.opener().open_url(url, None::<&str>).map_err(fail)
+}
+
+fn analytics_documentation_url(version: &str) -> String {
+    format!("https://github.com/antiburn/antiburn/blob/antiburn-v{version}/docs/analytics.md")
+}
+
+/// Open the public privacy policy in the system browser.
+#[tauri::command]
+pub fn open_privacy_policy(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url(
+            "https://github.com/antiburn/antiburn/blob/main/docs/privacy-policy.md",
+            None::<&str>,
+        )
+        .map_err(fail)
+}
+
 /// Probe outcomes from this run, for the reader to copy into a bug report.
 ///
 /// Every entry uses the same vocabulary — `granted`, `denied`, `recorded-denial`
@@ -1707,6 +1721,14 @@ fn presentable(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analytics_documentation_matches_the_installed_release() {
+        assert_eq!(
+            analytics_documentation_url("0.1.0-rc.5"),
+            "https://github.com/antiburn/antiburn/blob/antiburn-v0.1.0-rc.5/docs/analytics.md"
+        );
+    }
 
     fn repository(key: &str, name: &str, root: &str) -> RepositoryRecord {
         RepositoryRecord {

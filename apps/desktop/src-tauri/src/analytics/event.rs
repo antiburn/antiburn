@@ -13,7 +13,9 @@
 //! without also answering "is this the same machine as last week".
 
 use antiburn_local::model::AgentKind;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+#[cfg(feature = "analytics")]
+use serde::Serialize;
 
 /// The events this application may report. A closed set, by design: a
 /// `&'static str` a caller passes in would put naming — and therefore scope —
@@ -27,15 +29,22 @@ pub enum EventName {
     /// comment describing an unbuilt capability is how a catalog starts to
     /// overstate itself.
     OnboardingFinished,
+    /// One fixed onboarding step became visible.
+    #[cfg(feature = "analytics")]
+    OnboardingStepViewed,
     /// A discovery pass completed, with a bucketed count of what it found.
+    #[cfg(feature = "analytics")]
     ScanCompleted,
     /// A preference changed. The key travels; the value never does.
     SettingToggled,
     /// A session was opened from the activity list.
+    #[cfg(feature = "analytics")]
     SessionOpened,
     /// The usage view was opened.
+    #[cfg(feature = "analytics")]
     UsageViewed,
     /// Something failed, by category. No message, no path, no backtrace.
+    #[cfg(feature = "analytics")]
     ErrorOccurred,
     /// An Insights cohort contains unknown record vocabulary.
     UnrecognizedRecordsObserved,
@@ -49,10 +58,11 @@ pub enum EventName {
 /// closes that with an exhaustive match: adding a variant is a *compile* error
 /// until it is listed here, and listing it here is what forces it into
 /// `docs/analytics.md`.
-#[cfg(test)]
+#[cfg(all(test, feature = "analytics"))]
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
     EventName::OnboardingFinished,
+    EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
     EventName::SessionOpened,
@@ -61,11 +71,13 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::UnrecognizedRecordsObserved,
 ];
 
+#[cfg(feature = "analytics")]
 impl EventName {
     pub fn as_str(self) -> &'static str {
         match self {
             EventName::AppLaunched => "antiburn.app_launched",
             EventName::OnboardingFinished => "antiburn.onboarding_finished",
+            EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
             EventName::SessionOpened => "antiburn.session_opened",
@@ -85,6 +97,7 @@ impl EventName {
 /// capture, so the server can correct for clock skew against
 /// `originalTimestamp`; a queued event that waited an hour must not claim it
 /// was sent when it was recorded.
+#[cfg(feature = "analytics")]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
@@ -123,6 +136,7 @@ pub struct Event {
 
 /// Everything an event may carry beyond its name. Closed, for the reason in
 /// this module's own docs.
+#[cfg(feature = "analytics")]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Properties {
@@ -158,6 +172,7 @@ pub struct Facts {
 }
 
 /// The install context the contract stamps on every track event.
+#[cfg(feature = "analytics")]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
@@ -180,6 +195,8 @@ pub struct Context {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Interaction {
+    /// A fixed onboarding step became visible.
+    OnboardingStepViewed { step: OnboardingStep },
     /// A session was opened from the activity list. `agent` deserializes into
     /// the engine's own closed enum, so an unrecognised slug is a rejected
     /// command rather than a new value appearing in the data.
@@ -192,6 +209,17 @@ pub enum Interaction {
         providers: u64,
         evidence: UsageEvidence,
     },
+}
+
+/// A screen in the fixed first-run flow.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnboardingStep {
+    Welcome,
+    Sources,
+    Repositories,
+    HistoricalScan,
+    Ready,
 }
 
 /// Where an agent ran. Two values, and neither names anything: a WSL
@@ -221,10 +249,18 @@ pub enum UsageEvidence {
     None,
 }
 
+#[cfg(feature = "analytics")]
 impl Interaction {
     /// The event and the facts this interaction becomes.
     pub fn resolve(self) -> (EventName, Facts) {
         match self {
+            Interaction::OnboardingStepViewed { step } => (
+                EventName::OnboardingStepViewed,
+                Facts {
+                    label: Some(step.as_str()),
+                    ..Facts::default()
+                },
+            ),
             Interaction::SessionOpened { agent, environment } => (
                 EventName::SessionOpened,
                 Facts {
@@ -248,6 +284,20 @@ impl Interaction {
     }
 }
 
+#[cfg(feature = "analytics")]
+impl OnboardingStep {
+    fn as_str(self) -> &'static str {
+        match self {
+            OnboardingStep::Welcome => "welcome",
+            OnboardingStep::Sources => "sources",
+            OnboardingStep::Repositories => "repositories",
+            OnboardingStep::HistoricalScan => "historical_scan",
+            OnboardingStep::Ready => "ready",
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
 impl Environment {
     fn as_str(self) -> &'static str {
         match self {
@@ -257,6 +307,7 @@ impl Environment {
     }
 }
 
+#[cfg(feature = "analytics")]
 impl UsageEvidence {
     fn as_str(self) -> &'static str {
         match self {
@@ -268,6 +319,7 @@ impl UsageEvidence {
 }
 
 /// Collapse a count into the bucket that ships in its place.
+#[cfg(feature = "analytics")]
 pub fn bucket(count: u64) -> &'static str {
     match count {
         0 => "0",
@@ -281,19 +333,22 @@ pub fn bucket(count: u64) -> &'static str {
 
 /// The surface class the collector partitions on. antiburn is a desktop
 /// application, and the contract's vocabulary has one value for that.
+#[cfg(feature = "analytics")]
 pub const PLATFORM: &str = "desktop";
 
 /// The operating-system family, as the payload reports it.
+#[cfg(feature = "analytics")]
 pub fn os_family() -> &'static str {
     std::env::consts::OS
 }
 
 /// The CPU architecture, as the payload reports it.
+#[cfg(feature = "analytics")]
 pub fn arch() -> &'static str {
     std::env::consts::ARCH
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "analytics"))]
 mod tests {
     use super::*;
 
@@ -421,6 +476,7 @@ mod tests {
             match event {
                 EventName::AppLaunched
                 | EventName::OnboardingFinished
+                | EventName::OnboardingStepViewed
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
                 | EventName::SessionOpened
@@ -508,6 +564,13 @@ mod tests {
     /// anything the renderer supplied verbatim.
     #[test]
     fn an_interaction_resolves_to_this_files_own_constants() {
+        let (name, facts) = Interaction::OnboardingStepViewed {
+            step: OnboardingStep::HistoricalScan,
+        }
+        .resolve();
+        assert_eq!(name, EventName::OnboardingStepViewed);
+        assert_eq!(facts.label, Some("historical_scan"));
+
         let (name, facts) = Interaction::SessionOpened {
             agent: AgentKind::Claude,
             environment: Environment::Wsl,

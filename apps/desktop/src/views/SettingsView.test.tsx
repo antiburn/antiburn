@@ -65,6 +65,7 @@ const SETTINGS = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: false,
+  analyticsEnabled: true,
 }
 
 const INFO = {
@@ -77,6 +78,9 @@ const INFO = {
   indexedSessions: 42,
   databaseBytes: 3_670_016,
   updatesSupported: false,
+  analyticsSupported: true,
+  analyticsEnvironmentDisabled: false,
+  analyticsOperator: "Cadence AI (Vic) Pty Ltd",
 }
 
 let updateRevision = 0
@@ -639,7 +643,7 @@ describe("SettingsView", () => {
     for (const headline of [
       "Exactly what is sent",
       "The two identifiers",
-      "How the starting default is chosen",
+      "How the starting default works",
       "What happens after it arrives",
     ]) {
       expect(screen.getByRole("button", { name: headline })).toBeInTheDocument()
@@ -702,34 +706,58 @@ describe("SettingsView", () => {
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument()
     expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument()
     expect(screen.getByText(/quitting antiburn ends it/i)).toBeInTheDocument()
-    // Shown to everyone, because the locale read it describes happens to
-    // everyone. Asserted unconditionally for the same reason — a regression
-    // that gated this row would pass a test that only ran it one way.
-    open("How the starting default is chosen")
+    open("How the starting default works")
     expect(
-      screen.getByText(/nothing is looked up, nothing is asked of you/i),
+      screen.getByText(/official release builds start with analytics on/i),
     ).toBeInTheDocument()
     // Retention is the operator's, and the pane says so rather than promising
     // something this build cannot keep.
     open("What happens after it arrives")
     expect(
-      screen.getByText(/are the operator’s decisions rather than the app’s/i),
+      screen.getByText(/raw events are retained until the operator deletes them/i),
     ).toBeInTheDocument()
   })
 
-  /// A build with no injected endpoint cannot transmit, and the row says so
-  /// rather than offering a live switch over nothing. `app_info` in these
-  /// tests reports the shell's real answer, which for a test build is false.
-  it("disables the analytics switch in a build that has no endpoint", async () => {
+  it("omits analytics settings from a build without analytics", async () => {
+    mockCommands({ app_info: { ...INFO, analyticsSupported: false } })
     render(<SettingsView />)
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
-    const toggle = await screen.findByRole("switch", {
-      name: "Send anonymised analytics",
+    await screen.findByRole("heading", { name: "Privacy" })
+    expect(
+      screen.queryByRole("switch", { name: "Send anonymised analytics" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Analytics documentation")).not.toBeInTheDocument()
+  })
+
+  it("persists an analytics opt-out from Settings", async () => {
+    render(<SettingsView />)
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+
+    const toggle = await screen.findByRole("switch", { name: "Send anonymised analytics" })
+    expect(toggle).toBeChecked()
+    fireEvent.click(toggle)
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ analyticsEnabled: false }),
+      }),
+    )
+  })
+
+  it("shows the process-level analytics opt-out", async () => {
+    mockCommands({
+      app_info: { ...INFO, analyticsEnvironmentDisabled: true },
     })
+    render(<SettingsView />)
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+
+    const toggle = await screen.findByRole("switch", { name: "Send anonymised analytics" })
     expect(toggle).toBeDisabled()
     expect(toggle).not.toBeChecked()
-    expect(screen.getByText(/this build has no analytics endpoint/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/disabled by ANTIBURN_ANALYTICS_ENABLED=false/i),
+    ).toBeInTheDocument()
   })
 
   it("adds a scan folder through the directory picker", async () => {

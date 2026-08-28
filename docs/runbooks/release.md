@@ -68,9 +68,15 @@ Placeholders below show the shape, never a real value.
 | `APPLE_TEAM_ID`                      | For notarization          | The ten-character Apple Developer team identifier.                                                                        | Apple Developer → Membership. Placeholder: `ABCDE12345`                                                                                                                                                                              |
 | `WINDOWS_CERTIFICATE`                | For signed Windows builds | Base64 of the Authenticode code-signing certificate exported as `.pfx`.                                                   | `base64 -w0 codesign.pfx`. Placeholder: `MIIM…`                                                                                                                                                                                      |
 | `WINDOWS_CERTIFICATE_PASSWORD`       | With the above            | The `.pfx` export passphrase.                                                                                             | Chosen during export. Placeholder: `<passphrase>`                                                                                                                                                                                    |
+| `ANTIBURN_ANALYTICS_URL`             | For official analytics    | The first-party analytics endpoint compiled into official builds.                                                        | Store the production HTTPS origin. Never commit it.                                                                                                                                                                                  |
+| `ANTIBURN_ANALYTICS_OPERATOR`        | With the analytics URL    | The operator name shown in Settings → Privacy.                                                                           | `Cadence AI (Vic) Pty Ltd`                                                                                                                                                                                                           |
 
 `GITHUB_TOKEN` is provided by Actions; it is not configured and must not be
 replaced by a personal access token.
+
+The workflow compiles official desktop builds with `distribution,analytics`.
+Keep both analytics secrets unset until the privacy policy is ready. A missing
+or invalid endpoint or operator leaves analytics unavailable.
 
 **The updater key is not optional.** `release-app.yml` fails immediately if
 `TAURI_SIGNING_PRIVATE_KEY` is absent, and it fails _before that_ if

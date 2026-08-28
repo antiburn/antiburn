@@ -1,4 +1,4 @@
-import { Check, FolderPlus, Lock, X } from "lucide-react"
+import { Check, Copy, FolderPlus, Lock, X } from "lucide-react"
 
 import appIcon from "../../assets/app-icon.png"
 import { useState } from "react"
@@ -18,36 +18,8 @@ import type { FolderPermissions, LocalRepositoryItem } from "../../lib/types/rep
 import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
 
 /**
- * First run, in five screens: Welcome, Sources, Repositories, Historical scan,
- * Ready.
- *
- * The rhythm is the app-shell contract's — establish trust, choose where to
- * look, choose what to include, do the work with progress and a way out, then
- * confirm a usable result. What each step *does* is local: there is no account
- * to create and nothing is uploaded, so the steps carry local jobs and local
- * copy.
- *
- * ## The window
- *
- * This runs in its own 680×480 window (`src-tauri/src/onboarding.rs`), not in
- * the popover it used to be a surface of. Two consequences show up in the markup below. The
- * centred screens cap their copy column rather than running to 680pt, and the
- * header carries a `data-tauri-drag-region` strip on macOS, where the window's
- * title bar is an overlay and the webview covers its area.
- *
- * ## The analytics control
- *
- * The ratified onboarding row asks Welcome to *mention* anonymised analytics
- * and to put the opt-in somewhere separate. That is the shape here: Welcome
- * names the channel and says it is optional, and the switch itself is on the
- * Ready step in its own card, which points at Settings → Privacy for later.
- * The matrix specifies default-off while this build ships default-on outside
- * the EU, the EEA, and the UK.
- *
- * The switch is on the *last* step rather than the first because this flow
- * writes nothing until its final button. A reader who turns analytics off on
- * the Ready screen is never counted once, rather than counted and then
- * withdrawn — and that is only true while this step is the one that commits.
+ * The first-run flow uses five steps in a dedicated 680x480 window.
+ * Analytics-capable builds record each fixed step and show the privacy notice.
  */
 
 export interface OnboardingFlowProps {
@@ -87,13 +59,15 @@ export interface OnboardingFlowProps {
   /** Whether the installed app should start after the reader signs in. */
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
-  /** The consented analytics channel. On by default, and nothing is sent
-   *  until this flow finishes — so switching it off here means never. */
-  analyticsEnabled: boolean
-  onAnalyticsEnabledChange: (enabled: boolean) => void
   /** Whether this build can send analytics at all. False in development and
-   *  in any build from a clean checkout, where the row says so instead. */
+   *  in any build from a clean checkout. */
   analyticsSupported: boolean
+  /** Whether the process environment disables analytics for this launch. */
+  analyticsEnvironmentDisabled: boolean
+  /** Count one fixed step. The session deduplicates repeated navigation. */
+  onStepViewed: (
+    step: "welcome" | "sources" | "repositories" | "historical_scan" | "ready",
+  ) => void
   /** Finish: records the flag and enters the activity view. */
   onFinish: () => void
   finishing: boolean
@@ -102,6 +76,17 @@ export interface OnboardingFlowProps {
 
 const STEPS = ["welcome", "sources", "repositories", "scan", "ready"] as const
 type Step = (typeof STEPS)[number]
+
+const ANALYTICS_STEP = {
+  welcome: "welcome",
+  sources: "sources",
+  repositories: "repositories",
+  scan: "historical_scan",
+  ready: "ready",
+} as const
+
+const PRIVACY_REVIEW_PROMPT =
+  "Review Antiburn's public source code: https://github.com/antiburn/antiburn. Explain in plain language what stays on my computer, what data leaves it, when analytics starts, and how I can turn analytics off. Cite the files that support each answer."
 
 /** Steps that want a discovery pass to have run by the time they are read. */
 const STEPS_NEEDING_DISCOVERY: readonly Step[] = ["repositories", "scan"]
@@ -144,7 +129,19 @@ function StepDots({ step }: { step: Step }) {
  */
 const CENTRED_COLUMN = "mx-auto flex max-w-[440px] flex-col items-center"
 
-function Welcome({ analyticsSupported }: { analyticsSupported: boolean }) {
+function Welcome({
+  analyticsSupported,
+  analyticsEnvironmentDisabled,
+}: {
+  analyticsSupported: boolean
+  analyticsEnvironmentDisabled: boolean
+}) {
+  const networkCopy = !analyticsSupported
+    ? "It only goes online for your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself."
+    : analyticsEnvironmentDisabled
+      ? "It only goes online for your provider’s usage figures and a version check. Analytics is disabled for this launch by ANTIBURN_ANALYTICS_ENABLED=false."
+      : "It only goes online for your provider’s usage figures, a version check, and anonymised analytics about the app. You can opt out of the analytics."
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
@@ -180,14 +177,7 @@ function Welcome({ analyticsSupported }: { analyticsSupported: boolean }) {
         <p className="mt-2 text-balance type-callout text-label-secondary">
           antiburn reads the coding-agent sessions already on your disk and shows what they
           cost, how they went, and how close your limits are. No account, and nothing from your
-          sessions is ever uploaded.{" "}
-          {analyticsSupported
-            ? // The opt-out gets its own sentence. Trailing the list, "which you
-              // can opt out of" modified all three items — and a reader cannot
-              // opt out of a version check. "only" still closes the list; what
-              // moved is the scope of the offer.
-              "It only goes online for your provider’s usage figures, a version check, and anonymised analytics about the app. You can opt out of the analytics."
-            : "It only goes online for your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself."}
+          sessions is ever uploaded. {networkCopy}
         </p>
       </div>
     </div>
@@ -476,19 +466,26 @@ function Ready({
   sessions,
   launchAtLogin,
   onLaunchAtLoginChange,
-  analyticsEnabled,
-  onAnalyticsEnabledChange,
   analyticsSupported,
+  analyticsEnvironmentDisabled,
   finishError,
 }: {
   sessions: number
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
-  analyticsEnabled: boolean
-  onAnalyticsEnabledChange: (enabled: boolean) => void
   analyticsSupported: boolean
+  analyticsEnvironmentDisabled: boolean
   finishError: string | null
 }) {
+  const [copied, setCopied] = useState(false)
+
+  const copyReviewPrompt = () => {
+    void navigator.clipboard
+      .writeText(PRIVACY_REVIEW_PROMPT)
+      .then(() => setCopied(true))
+      .catch(() => setCopied(false))
+  }
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
       <div className={CENTRED_COLUMN}>
@@ -514,31 +511,33 @@ function Ready({
             onChange={onLaunchAtLoginChange}
           />
         </Card>
-        {/* Its own card, with a gap, rather than a second row in the one
-            above. Both switches default on, and a consent control stacked
-            under a convenience control reads as part of it — one glance,
-            one decision, which is exactly the reading this must not get.
-            Nothing has been sent at this point: the flow writes the setting
-            only when the button below is pressed, so switching this off here
-            means no event is ever recorded rather than recorded and then
-            withdrawn. */}
-        <Card className="mt-3 w-full text-left">
-          <ToggleRow
-            label="Send anonymised analytics"
-            description={
-              analyticsSupported
-                ? // Names no recipient. Settings → Privacy does, and is one click
-                  // from here; a first-run switch reads better without a party
-                  // the reader has no context for yet.
-                  "Only sends which features are used, and what breaks. Never anything to do with your sessions. Change anytime in Settings → Privacy."
-                : "This build has no analytics endpoint, so nothing can be sent from it."
-            }
-            checked={analyticsSupported && analyticsEnabled}
-            onChange={onAnalyticsEnabledChange}
-            dimmed={!analyticsSupported}
-            disabled={!analyticsSupported}
-          />
-        </Card>
+        {analyticsSupported ? (
+          <Card className="mt-3 w-full text-left">
+            <h3 className="type-body font-medium text-label">Privacy matters to us.</h3>
+            <p className="mt-1 type-footnote text-label-secondary">
+              Antiburn&rsquo;s analytics never includes your agent prompts, sessions, source
+              code, file contents, filenames, or paths. We collect limited usage statistics to
+              help improve the product. You can disable analytics at any time in Settings &rarr;
+              Privacy.
+            </p>
+            {analyticsEnvironmentDisabled ? (
+              <p className="mt-2 type-footnote text-label-tertiary">
+                Analytics is disabled for this launch by
+                <code> ANTIBURN_ANALYTICS_ENABLED=false</code>. Without that override, the
+                Settings preference applies.
+              </p>
+            ) : null}
+            <p className="mt-2 type-footnote text-label-tertiary">
+              Optional: copy this prompt into your AI agent if you want to validate the
+              analytics implementation.
+            </p>
+            <div className="mt-3">
+              <PushButton onClick={copyReviewPrompt} trailingIcon={Copy}>
+                {copied ? "Prompt copied" : "Copy prompt for AI agent"}
+              </PushButton>
+            </div>
+          </Card>
+        ) : null}
         {finishError ? (
           <p className="mt-3 type-footnote text-system-red" role="alert">
             {finishError}
@@ -570,9 +569,9 @@ export function OnboardingFlow({
   onWindowDaysChange,
   launchAtLogin,
   onLaunchAtLoginChange,
-  analyticsEnabled,
-  onAnalyticsEnabledChange,
   analyticsSupported,
+  analyticsEnvironmentDisabled,
+  onStepViewed,
   onFinish,
   finishing,
   finishError,
@@ -595,7 +594,14 @@ export function OnboardingFlow({
       setDiscoveryRequested(true)
       onDiscover()
     }
+    onStepViewed(ANALYTICS_STEP[next])
     setStep(next)
+  }
+
+  const goBack = () => {
+    const previous = STEPS[index - 1] ?? "welcome"
+    onStepViewed(ANALYTICS_STEP[previous])
+    setStep(previous)
   }
 
   return (
@@ -630,7 +636,12 @@ export function OnboardingFlow({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {step === "welcome" && <Welcome analyticsSupported={analyticsSupported} />}
+        {step === "welcome" && (
+          <Welcome
+            analyticsSupported={analyticsSupported}
+            analyticsEnvironmentDisabled={analyticsEnvironmentDisabled}
+          />
+        )}
         {step === "sources" && (
           <Sources
             defaultRoots={defaultRoots}
@@ -664,9 +675,8 @@ export function OnboardingFlow({
             sessions={scanStatus?.sessions ?? 0}
             launchAtLogin={launchAtLogin}
             onLaunchAtLoginChange={onLaunchAtLoginChange}
-            analyticsEnabled={analyticsEnabled}
-            onAnalyticsEnabledChange={onAnalyticsEnabledChange}
             analyticsSupported={analyticsSupported}
+            analyticsEnvironmentDisabled={analyticsEnvironmentDisabled}
             finishError={finishError}
           />
         )}
@@ -674,9 +684,7 @@ export function OnboardingFlow({
 
       <footer className="flex shrink-0 items-center gap-2 border-t border-separator px-4 py-3">
         <div className="flex-1">
-          {index > 0 && (
-            <PushButton onClick={() => setStep(STEPS[index - 1] ?? "welcome")}>Back</PushButton>
-          )}
+          {index > 0 && <PushButton onClick={goBack}>Back</PushButton>}
         </div>
         <StepDots step={step} />
         <div className="flex flex-1 items-center justify-end gap-2">
