@@ -9,7 +9,7 @@ import type {
 type SessionHygieneInk = "system-green" | "system-red-text" | "label-tertiary"
 
 /** Reader copy for one check's explanatory tooltip. */
-export interface SessionHygieneTooltip {
+interface SessionHygieneTooltip {
   heading: string
   /** What the check examined in the transcript. */
   body: string
