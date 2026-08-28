@@ -632,8 +632,11 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
     expect(
-      await screen.findByRole("switch", { name: "Send anonymised analytics" }),
+      await screen.findByRole("switch", { name: "Share product analytics" }),
     ).toBeInTheDocument()
+    expect(screen.getByText(/Sends app launches, onboarding progress/i)).toHaveTextContent(
+      "Never prompts, sessions, source code, filenames, or paths.",
+    )
 
     // What a reader sees without clicking anything: four headlines and
     // nothing else. Collapsed disclosures are unmounted, so this is the
@@ -725,7 +728,7 @@ describe("SettingsView", () => {
 
     await screen.findByRole("heading", { name: "Privacy" })
     expect(
-      screen.queryByRole("switch", { name: "Send anonymised analytics" }),
+      screen.queryByRole("switch", { name: "Share product analytics" }),
     ).not.toBeInTheDocument()
     expect(screen.queryByText("Analytics documentation")).not.toBeInTheDocument()
   })
@@ -734,7 +737,7 @@ describe("SettingsView", () => {
     render(<SettingsView />)
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
-    const toggle = await screen.findByRole("switch", { name: "Send anonymised analytics" })
+    const toggle = await screen.findByRole("switch", { name: "Share product analytics" })
     expect(toggle).toBeChecked()
     fireEvent.click(toggle)
 
@@ -743,6 +746,9 @@ describe("SettingsView", () => {
         settings: expect.objectContaining({ analyticsEnabled: false }),
       }),
     )
+    expect(
+      await screen.findByText(/Antiburn deleted its analytics identifier/i),
+    ).toBeInTheDocument()
   })
 
   it("shows the process-level analytics opt-out", async () => {
@@ -752,11 +758,11 @@ describe("SettingsView", () => {
     render(<SettingsView />)
     fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
 
-    const toggle = await screen.findByRole("switch", { name: "Send anonymised analytics" })
+    const toggle = await screen.findByRole("switch", { name: "Share product analytics" })
     expect(toggle).toBeDisabled()
     expect(toggle).not.toBeChecked()
     expect(
-      screen.getByText(/disabled by ANTIBURN_ANALYTICS_ENABLED=false/i),
+      screen.getByText(/Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false/i),
     ).toBeInTheDocument()
   })
 

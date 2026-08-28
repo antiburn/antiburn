@@ -142,16 +142,18 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
       </div>
 
       {analyticsSupported ? (
-        <SectionGroup title="Anonymised analytics">
+        <SectionGroup title="Analytics">
           <Card>
             <ToggleRow
-              label="Send anonymised analytics"
+              label="Share product analytics"
               description={
                 analyticsEnvironmentDisabled
-                  ? "Disabled by ANTIBURN_ANALYTICS_ENABLED=false. Remove the environment variable to use this setting."
-                  : `Which features get used and what breaks${
-                      operator ? `, sent to ${operator}` : ""
-                    }. Helps decide what to build next.`
+                  ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
+                  : loaded && !settings.analyticsEnabled
+                    ? "Off. Antiburn deleted its analytics identifier and anything waiting to be sent."
+                    : `Sends app launches, onboarding progress, feature use, and error categories${
+                        operator ? ` to ${operator}` : ""
+                      }. Never prompts, sessions, source code, filenames, or paths.`
               }
               // Gated on `loaded` as well as support. The controller starts from
               // DEFAULT_SETTINGS, where this is on, so an unguarded row would
@@ -160,7 +162,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
               // though the reader had chosen it.
               checked={!analyticsEnvironmentDisabled && loaded && settings.analyticsEnabled}
               onChange={(next) => void update({ analyticsEnabled: next })}
-              dimmed={analyticsEnvironmentDisabled || !loaded}
+              dimmed={!loaded}
               disabled={analyticsEnvironmentDisabled || !loaded}
             />
           </Card>
