@@ -483,7 +483,10 @@ function Ready({
   const copyReviewPrompt = () => {
     void navigator.clipboard
       .writeText(PRIVACY_REVIEW_PROMPT)
-      .then(() => setCopied(true))
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2_000)
+      })
       .catch(() => setCopied(false))
   }
 
@@ -524,13 +527,16 @@ function Ready({
             />
             <Row
               label="Review the source code"
-              description="Copy a prompt for your AI agent to check what leaves your computer."
               trailing={
-                <PushButton onClick={copyReviewPrompt} trailingIcon={Copy}>
+                <PushButton onClick={copyReviewPrompt} trailingIcon={Copy} disabled={copied}>
                   {copied ? "Copied" : "Copy prompt"}
                 </PushButton>
               }
-            />
+            >
+              <p className="mt-1 type-footnote text-label-secondary">
+                Copy a prompt for your AI agent to check what leaves your computer.
+              </p>
+            </Row>
           </Card>
         ) : null}
         {finishError ? (

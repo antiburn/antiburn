@@ -270,6 +270,10 @@ describe("OnboardingView", () => {
     expect(clipboardWrite).toHaveBeenCalledWith(
       expect.stringContaining("Explain in plain language what stays on my computer"),
     )
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument(),
+      { timeout: 3_000 },
+    )
   })
 
   it("persists an opt-out before finishing onboarding", async () => {
