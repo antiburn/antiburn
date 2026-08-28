@@ -62,8 +62,8 @@ pub use model::{
 
 use crate::dto::{
     LiveExtraUsage, LiveProviderPlan, LiveProviderUsage, LiveUsageForecast, LiveUsageFreshness,
-    LiveUsageResetCredits, LiveUsageSourceError, LiveUsageSummary, LiveUsageSupport,
-    LiveUsageWindow,
+    LiveUsageMeter, LiveUsageResetCredits, LiveUsageSourceError, LiveUsageSummary,
+    LiveUsageSupport, LiveUsageWindow,
 };
 
 /// A source of provider-reported usage snapshots.
@@ -186,11 +186,47 @@ pub fn summarize(
     // gates — the reader's switch and onboarding having finished — are folded
     // into `live_usage_active` so this can never fetch pre-onboarding even
     // though the switch itself now defaults on.
-    let online = store
-        .and_then(|store| store.settings().ok())
+    let settings = store.and_then(|store| store.settings().ok());
+    let online = settings
+        .as_ref()
         .is_some_and(|settings| settings.live_usage_active());
-    let collected = sources::collect(sources, online, max_age);
-    summarize_collected(collected, store, now, utc_offset_minutes)
+    let hidden = settings
+        .map(|settings| settings.live_usage_hidden_providers)
+        .unwrap_or_default();
+    let collected = sources::collect(sources, online, &hidden, max_age);
+    summarize_collected(
+        collected,
+        roster(sources, &hidden),
+        store,
+        now,
+        utc_offset_minutes,
+    )
+}
+
+/// Every provider this build can meter, and whether the reader shows it.
+///
+/// Built from the registered sources rather than from the readings, because a
+/// hidden provider produces no reading. Without this list its switch would
+/// leave the screen the moment the reader used it, and nothing could turn the
+/// meter back on.
+///
+/// Ordered by provider id, to match `LiveUsageSummary::providers`.
+pub fn roster(
+    sources: &[Box<dyn LiveUsageSource>],
+    hidden: &crate::store::HiddenMeters,
+) -> Vec<LiveUsageMeter> {
+    let mut meters: Vec<LiveUsageMeter> = sources
+        .iter()
+        .map(|source| LiveUsageMeter {
+            provider: source.provider().to_string(),
+            display_name: super::providers::display_name(source.provider()).to_string(),
+            shown: !hidden.contains(source.provider()),
+        })
+        .collect();
+    meters.sort_by(|a, b| a.provider.cmp(&b.provider));
+    // Two sources can answer for one provider. The reader sees one meter.
+    meters.dedup_by(|a, b| a.provider == b.provider);
+    meters
 }
 
 /// Shape one completed collection for the views and record its history.
@@ -200,6 +236,7 @@ pub fn summarize(
 /// evaluate crossings before this function consumes them.
 pub fn summarize_collected(
     collected: sources::Collected,
+    meters: Vec<LiveUsageMeter>,
     store: Option<&crate::store::Store>,
     now: i64,
     utc_offset_minutes: i32,
@@ -266,6 +303,7 @@ pub fn summarize_collected(
                 category: failure.error.category().to_string(),
             })
             .collect(),
+        meters,
         generated_at: crate::store::iso_from_epoch(Some(now)),
     }
 }

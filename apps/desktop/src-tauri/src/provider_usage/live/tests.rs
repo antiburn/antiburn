@@ -14,7 +14,8 @@ use super::model::{
     Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageScope,
     UsageSource, UsageWindowKind, WindowRole,
 };
-use super::{LiveUsageSource, SourceOutcome, sources, summarize, summarize_collected};
+use super::{LiveUsageSource, SourceOutcome, roster, sources, summarize, summarize_collected};
+use crate::store::HiddenMeters;
 
 const NOW: i64 = 1_800_000_000;
 
@@ -343,7 +344,7 @@ fn two_accounts_at_one_provider_never_merge() {
         "both",
         vec![snapshot(Freshness::Fresh, NOW, 81.0), other],
     ))];
-    let collected = sources::collect(&sources, true, MAX_AGE);
+    let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
     assert_eq!(collected.snapshots.len(), 2);
 }
 
@@ -388,7 +389,7 @@ fn a_completed_background_collection_records_history_and_shapes_the_view() {
         errors: Vec::new(),
     };
 
-    let summary = summarize_collected(collected, Some(&store), NOW, 0);
+    let summary = summarize_collected(collected, Vec::new(), Some(&store), NOW, 0);
 
     assert_eq!(summary.providers[0].windows[0].used_percent, Some(44.0));
     assert_eq!(super::history::load(&store).samples(&key).len(), 1);
@@ -508,14 +509,14 @@ fn a_gated_source_is_never_called_while_the_opt_in_is_off() {
         Box::new(Counted(Arc::clone(&calls))),
     ];
 
-    let off = sources::collect(&sources, false, MAX_AGE);
+    let off = sources::collect(&sources, false, &HiddenMeters::default(), MAX_AGE);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     // The ungated source still ran, so turning the opt-in off costs the
     // reader the gated source's readings and nothing else.
     assert_eq!(off.snapshots.len(), 1);
     assert_eq!(off.snapshots[0].windows[0].used_percent, Some(40.0));
 
-    sources::collect(&sources, true, MAX_AGE);
+    sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -673,4 +674,107 @@ fn a_reset_clears_the_flag_for_the_new_period() {
     ))];
     let summary = summarize(&rolled, Some(&store), NOW, 0, MAX_AGE);
     assert!(!summary.providers[0].windows[0].has_nonzero_usage_in_current_period);
+}
+
+/* -------------------------------------------------------------------------
+ * The per-provider meter switch
+ * ---------------------------------------------------------------------- */
+
+/// A source for a named provider that counts how often it is asked.
+struct CountedFor(&'static str, Arc<AtomicUsize>);
+
+impl LiveUsageSource for CountedFor {
+    fn id(&self) -> &'static str {
+        self.0
+    }
+    fn provider(&self) -> &'static str {
+        self.0
+    }
+    fn requires_online_opt_in(&self) -> bool {
+        true
+    }
+    fn fetch(&self, _max_age: std::time::Duration) -> SourceOutcome {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        SourceOutcome::found(vec![snapshot(Freshness::Fresh, NOW, 55.0)])
+    }
+}
+
+#[test]
+fn a_hidden_meter_never_calls_its_source() {
+    // The same rule as the online opt-in above, one provider at a time. A
+    // hidden meter shows no figure, so antiburn does not make the request.
+    let anthropic_calls = Arc::new(AtomicUsize::new(0));
+    let openai_calls = Arc::new(AtomicUsize::new(0));
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+        Box::new(CountedFor(
+            crate::provider_usage::providers::ANTHROPIC,
+            Arc::clone(&anthropic_calls),
+        )),
+        Box::new(CountedFor(
+            crate::provider_usage::providers::OPENAI,
+            Arc::clone(&openai_calls),
+        )),
+    ];
+
+    let hidden = HiddenMeters::parse("openai");
+    let collected = sources::collect(&sources, true, &hidden, MAX_AGE);
+
+    assert_eq!(openai_calls.load(Ordering::SeqCst), 0);
+    // The other provider is untouched: this switch is per provider.
+    assert_eq!(anthropic_calls.load(Ordering::SeqCst), 1);
+    // The milestone monitor reads these snapshots. A hidden provider adds
+    // none, so it can cross no threshold and fires no notification.
+    assert_eq!(collected.snapshots.len(), 1);
+    assert_eq!(
+        collected.snapshots[0].provider,
+        crate::provider_usage::providers::ANTHROPIC
+    );
+}
+
+#[test]
+fn the_roster_keeps_a_hidden_provider() {
+    // The reason the roster exists. A hidden provider reports nothing, so a
+    // list built from readings would drop the row that turns it back on.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+        Box::new(CountedFor(
+            crate::provider_usage::providers::ANTHROPIC,
+            Arc::clone(&calls),
+        )),
+        Box::new(CountedFor(
+            crate::provider_usage::providers::OPENAI,
+            Arc::clone(&calls),
+        )),
+    ];
+
+    let all_hidden = HiddenMeters::parse("anthropic,openai");
+    let meters = roster(&sources, &all_hidden);
+
+    assert_eq!(meters.len(), 2);
+    assert!(meters.iter().all(|meter| !meter.shown));
+    assert_eq!(meters[0].provider, "anthropic");
+    assert_eq!(meters[0].display_name, "Claude");
+    assert_eq!(meters[1].display_name, "Codex");
+
+    let none_hidden = roster(&sources, &HiddenMeters::default());
+    assert!(none_hidden.iter().all(|meter| meter.shown));
+}
+
+#[test]
+fn two_sources_for_one_provider_are_one_meter() {
+    // The reader chooses a provider, not a source. Codex registers a fetch
+    // source and a fallback that both answer for OpenAI.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+        Box::new(CountedFor(
+            crate::provider_usage::providers::OPENAI,
+            Arc::clone(&calls),
+        )),
+        Box::new(CountedFor(
+            crate::provider_usage::providers::OPENAI,
+            Arc::clone(&calls),
+        )),
+    ];
+
+    assert_eq!(roster(&sources, &HiddenMeters::default()).len(), 1);
 }

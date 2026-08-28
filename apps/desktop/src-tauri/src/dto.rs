@@ -908,17 +908,43 @@ pub struct LiveUsageSourceError {
     pub category: String,
 }
 
+/// One provider antiburn can meter, and whether the reader shows it.
+///
+/// The roster comes from the registered sources, not from the readings. A
+/// hidden provider is never asked for usage, so it is absent from
+/// `LiveUsageSummary::providers`. Only this list keeps its switch on screen.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveUsageMeter {
+    /// The canonical provider id, for example `anthropic`.
+    pub provider: String,
+    /// The provider's display name, for example "Claude".
+    pub display_name: String,
+    /// False when the reader turned this meter off.
+    pub shown: bool,
+}
+
 /// Live provider usage, as one snapshot.
 ///
 /// An empty `providers` list is the ordinary state — no source configured, or
 /// none with anything to say — and the views render nothing rather than an
 /// empty frame. `errors` is separate so that "nothing found" and "something
 /// broke" never look alike.
+///
+/// `meters` says which of the two an empty `providers` list is. A roster with
+/// every entry hidden means the reader turned the meters off. A roster with
+/// entries still shown means antiburn found nothing to report.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveUsageSummary {
     pub providers: Vec<LiveProviderUsage>,
     pub errors: Vec<LiveUsageSourceError>,
+    /// Every provider antiburn can meter, shown or hidden, ordered by id.
+    ///
+    /// Defaulted on deserialize: a snapshot cached before this field existed
+    /// must still load.
+    #[serde(default)]
+    pub meters: Vec<LiveUsageMeter>,
     /// ISO-8601 stamp of the moment this snapshot was collected.
     pub generated_at: String,
 }

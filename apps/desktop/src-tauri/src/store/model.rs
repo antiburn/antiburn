@@ -477,6 +477,52 @@ impl Milestones {
     }
 }
 
+/// The providers whose meter the reader turned off, by canonical provider id.
+///
+/// Stores the *hidden* set, not the shown set. A provider a later build adds
+/// is metered by default, and an id an older build wrote stays harmless.
+///
+/// Hidden means antiburn does not ask that provider for usage. The id is the
+/// gate in `provider_usage::live::sources::collect`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HiddenMeters(Vec<String>);
+
+impl HiddenMeters {
+    pub fn selected(values: impl IntoIterator<Item = String>) -> Self {
+        Self(values.into_iter().collect()).normalized()
+    }
+
+    pub fn as_str(&self) -> String {
+        self.0.join(",")
+    }
+
+    pub fn parse(value: &str) -> Self {
+        Self::selected(value.split(',').map(str::to_string))
+    }
+
+    pub fn contains(&self, provider: &str) -> bool {
+        let provider = provider.trim().to_ascii_lowercase();
+        self.0.binary_search(&provider).is_ok()
+    }
+
+    pub fn any(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    fn normalized(mut self) -> Self {
+        for value in &mut self.0 {
+            *value = value.trim().to_ascii_lowercase();
+        }
+        // An empty id matches no provider and would hide nothing. Drop it, so
+        // that a stray comma in the stored value cannot survive a round trip.
+        self.0.retain(|value| !value.is_empty());
+        self.0.sort_unstable();
+        self.0.dedup();
+        self
+    }
+}
+
 /// Narrowest and widest activity windows the settings pane offers, in days.
 /// These control presentation and recent discovery, not storage: sessions
 /// already indexed remain until the reader clears them.
@@ -554,6 +600,12 @@ pub struct AppSettings {
     /// [`AppSettings::live_usage_active`] for the second, unconditional gate
     /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
+    /// The providers whose meter the reader turned off. See [`HiddenMeters`].
+    ///
+    /// This is a narrower form of the switch above it: that one stops every
+    /// provider, this one stops the named provider. Both stop requests, so a
+    /// hidden provider also stops its milestone notifications.
+    pub live_usage_hidden_providers: HiddenMeters,
     /// The consented analytics channel. On by default for a new install, which
     /// meets the control on the Ready
     /// screen before anything is sent; off for a store that finished
@@ -596,6 +648,9 @@ impl Default for AppSettings {
             // not sit behind a first-run choice. The switch is the opt-out
             // for a reader who wants no background traffic at all.
             live_usage_enabled: true,
+            // Empty: every provider antiburn can meter is metered. A reader
+            // who wants fewer meters says so one provider at a time.
+            live_usage_hidden_providers: HiddenMeters::default(),
             // On by default too, but for a different reason and with a
             // different bar: this one reports on antiburn itself rather than
             // asking a provider about the reader, so the reader is shown it on
@@ -641,6 +696,7 @@ impl AppSettings {
             .clamp(MIN_DISK_THRESHOLD_GB, MAX_DISK_THRESHOLD_GB);
         self.milestones_5h = self.milestones_5h.normalized();
         self.milestones_weekly = self.milestones_weekly.normalized();
+        self.live_usage_hidden_providers = self.live_usage_hidden_providers.normalized();
         self
     }
 }
@@ -649,6 +705,42 @@ impl AppSettings {
 mod tests {
     use super::*;
     use antiburn_local::platform::environment::DiscoveryEnvironment;
+
+    #[test]
+    fn hidden_meters_survive_a_round_trip_through_their_stored_text() {
+        let hidden = HiddenMeters::parse("openai,anthropic");
+        assert_eq!(hidden.as_str(), "anthropic,openai");
+        assert!(hidden.contains("openai"));
+        assert!(hidden.any());
+    }
+
+    #[test]
+    fn hidden_meters_tolerate_what_a_hand_edited_database_can_hold() {
+        // Whitespace, case, duplicates, and a stray comma. Each one must
+        // resolve to the same set rather than to a row that hides nothing.
+        let hidden = HiddenMeters::parse(" OpenAI , openai,, ");
+        assert_eq!(hidden.as_str(), "openai");
+        assert!(hidden.contains("OPENAI"));
+
+        // An empty value hides nothing, which is the default state.
+        assert!(!HiddenMeters::parse("").any());
+    }
+
+    #[test]
+    fn an_unknown_hidden_id_hides_nothing_it_should_not() {
+        // A provider from a newer build, left behind by a downgrade. It stays
+        // in the set, and matches no source this build registers.
+        let hidden = HiddenMeters::parse("some-future-provider");
+        assert!(!hidden.contains("anthropic"));
+        assert!(!hidden.contains("openai"));
+    }
+
+    #[test]
+    fn every_meter_is_shown_by_default() {
+        // A provider a later build adds must be metered without the reader
+        // asking. Storing the hidden set is what makes that true.
+        assert!(!AppSettings::default().live_usage_hidden_providers.any());
+    }
 
     #[test]
     fn the_environment_key_matches_the_one_discovery_stamps_sessions_with() {

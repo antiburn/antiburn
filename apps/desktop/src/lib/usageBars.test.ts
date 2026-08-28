@@ -49,7 +49,7 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
 }
 
 function summary(providers: LiveProviderUsagePayload[]): LiveUsageSummaryPayload {
-  return { providers, errors: [], generatedAt: new Date(NOW).toISOString() }
+  return { providers, errors: [], meters: [], generatedAt: new Date(NOW).toISOString() }
 }
 
 describe("deriveUsageBars", () => {
