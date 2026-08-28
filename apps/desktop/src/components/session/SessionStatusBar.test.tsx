@@ -172,7 +172,7 @@ describe("SessionStatusBar", () => {
     fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
 
     // The name carries no verdict, so it does not repeat the reason below it.
-    const name = await screen.findByText("Overpowered subagents")
+    const name = await screen.findByText("Overpowered subagents detected")
     expect(name.textContent).not.toContain("not assessed")
     const reason = await screen.findByText("couldn't read the whole session log")
     // The reason shares the name's column and never runs under the mark.
@@ -186,8 +186,8 @@ describe("SessionStatusBar", () => {
     fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
 
     for (const label of ["Finding", "Pass", "Not assessed"]) {
-      const mark = await screen.findByLabelText(label)
-      expect(mark.tagName.toLowerCase()).toBe("svg")
+      const marks = await screen.findAllByLabelText(label)
+      expect(marks.every((mark) => mark.tagName.toLowerCase() === "svg")).toBe(true)
     }
   })
 
