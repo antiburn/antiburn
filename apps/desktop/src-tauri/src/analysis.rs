@@ -17,13 +17,13 @@ use std::sync::{
 };
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, ActiveSessionsSummary, ClaudeAdapter, CompositeSink,
-    EVIDENCE_SCHEMA_REVISION, EfficiencyTotals, EvidenceSource, METRICS_SCHEMA_REVISION, ModelRun,
-    NormalizedSession, PARSER_REVISION, RawSource, SessionCost, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse,
-    SourceCapabilities, SourceClaim, SourceKind, VendorAdapter, VisitOutcome, aggregate_metrics,
-    analyze_session, analyze_sources_with, append_only_guarantee, merge_metrics,
-    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
+    ANALYZER_REVISION, ActiveSessionsSummary, CompositeSink, EVIDENCE_SCHEMA_REVISION,
+    EfficiencyTotals, EvidenceSource, METRICS_SCHEMA_REVISION, ModelRun, NormalizedSession,
+    PARSER_REVISION, RawSource, SessionCost, SessionEvidence, SessionEvidenceAccumulator,
+    SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse, SourceCapabilities,
+    SourceClaim, SourceKind, VisitOutcome, adapter_for, aggregate_metrics, analyze_session,
+    analyze_sources_with, append_only_guarantee, merge_metrics, merge_subagent_events,
+    normalize_source, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -31,6 +31,9 @@ use antiburn_local::discovery::{
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
+
+#[cfg(test)]
+use antiburn_local::analysis::{ClaudeAdapter, VendorAdapter};
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
@@ -168,14 +171,9 @@ enum ComputedAnalysis {
 
 /// Longest a skill description may be once it leaves this module.
 ///
-/// A skill's description is lifted verbatim from the line the transcript's own
-/// skill listing carries, and the engine puts no bound on it — a listing that
-/// inlined a paragraph would put that paragraph in the local store and in every
-/// export. That is a *derived excerpt*, and an excerpt with no ceiling is just
-/// the text. One line of prose is what the tooltip renders and what the
-/// contract in [`crate::store::schema`] and [`crate::export`] promises, so the
-/// ceiling is applied here, at the app's boundary, before the value can reach
-/// either.
+/// A skill's description comes from the transcript's skill listing.
+/// The engine applies this limit before metrics leave its accumulator.
+/// The app applies it again before values reach the store or an export.
 pub const SKILL_DESCRIPTION_MAX_CHARS: usize = 300;
 
 /// The character appended to a description this module had to shorten, so a
@@ -431,15 +429,15 @@ pub async fn locate(
 }
 
 /// Shape a located source into the raw payload the analysis layer reads.
-///
-/// A vendor database is rendered to the discovery layer's synthesized JSONL
-/// rather than handed over as a file: the dedicated adapters (OpenCode's, in
-/// particular) are written against that stream, and passing the database
-/// directly would silently drop them onto the schema-agnostic fallback.
 async fn raw_source(source: &SessionSource) -> Option<RawSource> {
     match source {
         SessionSource::File(path) => Some(RawSource::File(path.clone())),
         SessionSource::Inline { content, .. } => Some(RawSource::Jsonl(content.clone())),
+        SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path,
+            ..
+        } => Some(RawSource::Sqlite(db_path.clone())),
         SessionSource::ProviderDb { .. } => {
             session_source_content(source).await.map(RawSource::Jsonl)
         }
@@ -477,8 +475,8 @@ fn inline_fingerprint(content: &str) -> String {
     .fingerprint()
 }
 
-fn stream_claude(inputs: &[SessionInput], cancel: &CancelFlag) -> StreamOutcome {
-    stream_claude_with_claim_hook(inputs, cancel, &test_subagent_after_claim)
+fn stream_vendor(inputs: &[SessionInput], cancel: &CancelFlag) -> StreamOutcome {
+    stream_vendor_with_claim_hook(inputs, cancel, &test_subagent_after_claim)
 }
 
 #[cfg(not(test))]
@@ -507,18 +505,29 @@ fn test_subagent_after_claim(_: usize, path: &std::path::Path) {
     }
 }
 
-fn stream_claude_with_claim_hook(
+fn stream_vendor_with_claim_hook(
     inputs: &[SessionInput],
     cancel: &CancelFlag,
     after_claim: &dyn Fn(usize, &std::path::Path),
 ) -> StreamOutcome {
-    stream_claude_with_hooks(inputs, &|| cancel.cancelled(), after_claim)
+    stream_vendor_with_hooks(inputs, &|| cancel.cancelled(), after_claim, None)
 }
 
-fn stream_claude_with_hooks(
+fn capabilities_for_vendor(agent: &str) -> Option<SourceCapabilities> {
+    match agent {
+        "claude" => Some(SourceCapabilities::claude()),
+        "codex" => Some(SourceCapabilities::codex()),
+        "opencode" => Some(SourceCapabilities::opencode()),
+        "pi" => Some(SourceCapabilities::pi()),
+        _ => None,
+    }
+}
+
+fn stream_vendor_with_hooks(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
+    database_claim: Option<&str>,
 ) -> StreamOutcome {
     let mut accumulators = Vec::with_capacity(inputs.len());
     let mut parent_fingerprint = None;
@@ -526,12 +535,19 @@ fn stream_claude_with_hooks(
         if cancelled() {
             return StreamOutcome::ParentUnreadable;
         }
+        let Some(capabilities) = capabilities_for_vendor(&input.agent) else {
+            if index == 0 {
+                return StreamOutcome::ParentUnsupported;
+            }
+            continue;
+        };
+        let adapter = adapter_for(&input.agent);
         let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
         let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             kind: SourceKind::from(&input.source),
-            capabilities: SourceCapabilities::claude(),
+            capabilities,
         });
         let mut accumulator = CompositeSink::new(metrics, evidence);
         let result = match &input.source {
@@ -552,10 +568,10 @@ fn stream_claude_with_hooks(
                 };
                 let fingerprint = claim.fingerprint.clone();
                 after_claim(index, path);
-                let outcome = ClaudeAdapter.visit_claimed(
+                let outcome = adapter.visit_claimed(
                     input,
                     &claim,
-                    append_only_guarantee("claude"),
+                    append_only_guarantee(adapter.agent()),
                     cancelled,
                     &mut accumulator,
                 );
@@ -568,9 +584,24 @@ fn stream_claude_with_hooks(
                 if index == 0 {
                     parent_fingerprint = Some(inline_fingerprint(content));
                 }
-                ClaudeAdapter.visit(input, &mut accumulator)
+                adapter.visit(input, &mut accumulator)
             }
-            RawSource::Sqlite(_) if index == 0 => return StreamOutcome::ParentUnsupported,
+            RawSource::Sqlite(_) if adapter.agent() != "opencode" && index == 0 => {
+                return StreamOutcome::ParentUnsupported;
+            }
+            RawSource::Sqlite(_) if adapter.agent() != "opencode" => continue,
+            RawSource::Sqlite(_) if index == 0 => {
+                let outcome = match database_claim {
+                    Some(fingerprint) => {
+                        adapter.visit_db_claimed(input, fingerprint, cancelled, &mut accumulator)
+                    }
+                    None => adapter.visit(input, &mut accumulator),
+                };
+                if database_claim.is_some() {
+                    parent_fingerprint = database_claim.map(str::to_owned);
+                }
+                outcome
+            }
             RawSource::Sqlite(_) => continue,
         };
         match result {
@@ -603,13 +634,13 @@ fn stream_claude_with_hooks(
     };
     let started_at_epoch = metrics
         .iter()
-        .filter_map(SessionMetricsAccumulator::earliest_ts_ms)
+        .filter_map(SessionMetricsAccumulator::started_at_ms)
         .min()
         .map(|timestamp| timestamp / 1000);
     let parent_metrics = parent.metrics();
     let subagents = children
         .iter()
-        .map(|child| (child.metrics(), child.earliest_ts_ms().map(|ts| ts / 1000)))
+        .map(|child| (child.metrics(), child.started_at_ms().map(|ts| ts / 1000)))
         .collect();
     let merged = merge_metrics(parent, children);
     StreamOutcome::Published {
@@ -695,7 +726,8 @@ pub async fn analyze(
     .await;
     debug_assert!(
         pass.evidence.is_none()
-            || (agent == AgentKind::Claude && pass.outcome == PassOutcome::Published)
+            || (capabilities_for_vendor(vendor_label(agent)).is_some()
+                && pass.outcome == PassOutcome::Published)
     );
     pass.analysis
 }
@@ -732,7 +764,23 @@ pub async fn analyze_for_evidence(
         .list_subagents_in_environment(&agent, session_id, wsl_distro)
         .await;
     subagent_paths.sort();
-    let fingerprint = combined_fingerprint(&source, &subagent_paths);
+    let database_claim = matches!(
+        &source,
+        SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            ..
+        }
+    )
+    .then(|| claimed.fingerprint.clone())
+    .flatten();
+    let fingerprint = if matches!(&source, SessionSource::ProviderDb { .. }) {
+        claimed
+            .fingerprint
+            .clone()
+            .unwrap_or_else(|| MISSING_FINGERPRINT.to_string())
+    } else {
+        combined_fingerprint(&source, &subagent_paths)
+    };
     let mut subagents: Vec<(String, String, SessionInput)> = Vec::new();
     for path in subagent_paths {
         let Some(subagent_id) = Explorers::DISK.subagent_id(&agent, &path) else {
@@ -765,15 +813,20 @@ pub async fn analyze_for_evidence(
 
     let inputs_for_merge = inputs.clone();
     let parent_session_id_for_merge = parent_session_id.clone();
-    let is_claude = label == "claude";
+    let streams_evidence = capabilities_for_vendor(label).is_some();
 
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads.
     let signal_for_pass = signal.clone();
     let computed = tauri::async_runtime::spawn_blocking(move || {
-        if is_claude {
+        if streams_evidence {
             let cancelled = || signal_for_pass.observe();
-            return match stream_claude_with_hooks(&inputs, &cancelled, &test_subagent_after_claim) {
+            return match stream_vendor_with_hooks(
+                &inputs,
+                &cancelled,
+                &test_subagent_after_claim,
+                database_claim.as_deref(),
+            ) {
                 StreamOutcome::Published {
                     session,
                     parent_fingerprint,
@@ -822,7 +875,7 @@ pub async fn analyze_for_evidence(
     })
     .await;
 
-    debug_assert!(agent != AgentKind::Claude || signal.progress() > 0);
+    debug_assert!(capabilities_for_vendor(vendor_label(agent)).is_none() || signal.progress() > 0);
     let Ok(computed) = computed else {
         return unavailable_evidence_pass(PassOutcome::Unreadable, source_path, Some(fingerprint));
     };
@@ -1000,6 +1053,10 @@ pub async fn analyze_for_evidence(
     }
 }
 
+pub(crate) fn unsupported_evidence_pass() -> EvidencePass {
+    unavailable_evidence_pass(PassOutcome::Unsupported, None, None)
+}
+
 fn unavailable_evidence_pass(
     outcome: PassOutcome,
     source_path: Option<String>,
@@ -1027,14 +1084,18 @@ fn evidence_pass_with_hook(
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
 ) -> EvidencePass {
-    match stream_claude_with_hooks(inputs, cancelled, after_claim) {
+    match stream_vendor_with_hooks(inputs, cancelled, after_claim, None) {
         StreamOutcome::Published { session, .. } => {
             let StreamedSession {
-                merged, evidence, ..
+                merged,
+                evidence,
+                started_at_epoch,
+                ..
             } = *session;
             EvidencePass {
                 analysis: SessionAnalysis {
                     metrics: Some(merged),
+                    started_at_epoch,
                     ..SessionAnalysis::unavailable()
                 },
                 evidence,
@@ -1095,10 +1156,10 @@ pub async fn analyze_subagent(
     let source_path = source_path(&source);
     let agent_slug = agent.slug().to_string();
 
-    let is_claude = vendor_label(agent) == "claude";
+    let streams_evidence = capabilities_for_vendor(vendor_label(agent)).is_some();
     let computed = tauri::async_runtime::spawn_blocking(move || {
-        if is_claude {
-            return match stream_claude(&[input], &cancel) {
+        if streams_evidence {
+            return match stream_vendor(&[input], &cancel) {
                 StreamOutcome::Published { session, .. } => {
                     Some((session.parent, session.started_at_epoch))
                 }
@@ -1420,6 +1481,98 @@ mod tests {
         }
     }
 
+    fn opencode_database() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&path).expect("database");
+        connection
+            .execute_batch(
+                r#"CREATE TABLE session (
+                     id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER
+                 );
+                 CREATE TABLE message (
+                     id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+                     time_updated INTEGER, data TEXT
+                 );
+                 CREATE TABLE part (
+                     id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                     time_created INTEGER, time_updated INTEGER, data TEXT
+                 );
+                 INSERT INTO session VALUES ('root', NULL, 100, 120);
+                 INSERT INTO message VALUES (
+                     'message', 'root', 110, 110,
+                     '{"role":"assistant","modelID":"model-a","tokens":{"input":12,"output":3}}'
+                 );"#,
+            )
+            .expect("OpenCode fixture");
+        drop(connection);
+        (directory, path, "sv1:db:120:2".to_owned())
+    }
+
+    #[tokio::test]
+    async fn an_opencode_provider_database_stays_native() {
+        let (_directory, path, _) = opencode_database();
+        let source = SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: path.clone(),
+            session_id: "root".to_owned(),
+        };
+
+        assert_eq!(raw_source(&source).await, Some(RawSource::Sqlite(path)));
+    }
+
+    #[test]
+    fn a_claimed_opencode_database_publishes_from_the_validated_snapshot() {
+        let (_directory, path, fingerprint) = opencode_database();
+        let input = SessionInput {
+            agent: "opencode".to_owned(),
+            session_id: "root".to_owned(),
+            source: RawSource::Sqlite(path),
+        };
+
+        let outcome = stream_vendor_with_hooks(&[input], &|| false, &|_, _| {}, Some(&fingerprint));
+
+        let StreamOutcome::Published {
+            session,
+            parent_fingerprint,
+        } = outcome
+        else {
+            panic!("a stable OpenCode database must publish");
+        };
+        assert_eq!(parent_fingerprint.as_deref(), Some(fingerprint.as_str()));
+        assert_eq!(session.parent.billable_input_tokens, 12);
+        assert_eq!(session.parent.billable_output_tokens, 3);
+        assert!(session.evidence.is_some());
+    }
+
+    fn codex_record() -> String {
+        [
+            r#"{"timestamp":"2026-08-01T09:59:58Z","type":"session_meta","payload":{"id":"synthetic","timestamp":"2026-08-01T09:59:58Z","source":"cli"}}"#,
+            r#"{"timestamp":"2026-08-01T10:00:00Z","type":"turn_context","payload":{"model":"gpt-test","effort":"medium"}}"#,
+            r#"{"timestamp":"2026-08-01T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":112},"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":112},"model_context_window":200000}}}"#,
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    fn codex_file_input(path: &std::path::Path, id: &str) -> SessionInput {
+        SessionInput {
+            agent: "codex".to_string(),
+            session_id: id.to_string(),
+            source: RawSource::File(path.to_path_buf()),
+        }
+    }
+
+    fn pi_record() -> String {
+        [
+            r#"{"type":"session","version":3,"timestamp":"2026-08-01T09:59:58Z"}"#,
+            r#"{"type":"thinking_level_change","timestamp":"2026-08-01T10:00:00Z","thinkingLevel":"medium"}"#,
+            r#"{"type":"message","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
+        ]
+        .join("\n")
+            + "\n"
+    }
+
     struct SubagentOverrideGuard;
 
     impl Drop for SubagentOverrideGuard {
@@ -1437,7 +1590,7 @@ mod tests {
         std::fs::write(&path, claude_record("parent", 1_760_000_000)).expect("write parent");
 
         let StreamOutcome::Published { session, .. } =
-            stream_claude(&[file_input(&path, "parent")], &CancelFlag::never())
+            stream_vendor(&[file_input(&path, "parent")], &CancelFlag::never())
         else {
             panic!("stable source must publish");
         };
@@ -1445,6 +1598,86 @@ mod tests {
         assert_eq!(session.parent.tokens_in, 2);
         assert_eq!(session.parent.tokens_out, 3);
         assert_eq!(session.started_at_epoch, Some(1_760_000_000));
+    }
+
+    #[test]
+    fn codex_read_publishes_its_capabilities_and_provider_start() {
+        let input = SessionInput {
+            agent: "codex".to_owned(),
+            session_id: "codex-inline".to_owned(),
+            source: RawSource::Jsonl(codex_record()),
+        };
+
+        let StreamOutcome::Published { session, .. } =
+            stream_vendor(std::slice::from_ref(&input), &CancelFlag::never())
+        else {
+            panic!("Codex source must publish");
+        };
+        assert_eq!(session.started_at_epoch, Some(1_785_578_398));
+        assert_eq!(
+            session.evidence.unwrap().capabilities,
+            SourceCapabilities::codex()
+        );
+
+        let pass = evidence_pass(&[input], &|| false);
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        assert_eq!(
+            pass.evidence.unwrap().capabilities,
+            SourceCapabilities::codex()
+        );
+    }
+
+    #[test]
+    fn pi_read_publishes_through_the_evidence_path() {
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: "pi-inline".to_owned(),
+            source: RawSource::Jsonl(pi_record()),
+        };
+
+        let StreamOutcome::Published { session, .. } =
+            stream_vendor(std::slice::from_ref(&input), &CancelFlag::never())
+        else {
+            panic!("Pi source must publish");
+        };
+        assert_eq!(session.started_at_epoch, Some(1_785_578_398));
+        assert_eq!(session.parent.peak_context_tokens, 14);
+        assert_eq!(
+            session.evidence.unwrap().capabilities,
+            SourceCapabilities::pi()
+        );
+
+        let pass = evidence_pass(&[input], &|| false);
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        assert_eq!(
+            pass.evidence.unwrap().capabilities,
+            SourceCapabilities::pi()
+        );
+    }
+
+    #[test]
+    fn a_changed_codex_source_publishes_neither_projection() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("codex.jsonl");
+        std::fs::write(&path, codex_record()).expect("write Codex source");
+        let hook = |_: usize, path: &std::path::Path| {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("open Codex source")
+                .write_all(b"{}\n")
+                .expect("append Codex source");
+        };
+
+        assert!(matches!(
+            stream_vendor_with_claim_hook(
+                &[codex_file_input(&path, "codex")],
+                &CancelFlag::never(),
+                &hook,
+            ),
+            StreamOutcome::SourceChanged
+        ));
     }
 
     #[test]
@@ -1456,7 +1689,7 @@ mod tests {
         std::fs::write(&child, claude_record("child", 1_760_000_001)).expect("write child");
         let inputs = [file_input(&parent, "parent"), file_input(&child, "child")];
 
-        let StreamOutcome::Published { session, .. } = stream_claude(&inputs, &CancelFlag::never())
+        let StreamOutcome::Published { session, .. } = stream_vendor(&inputs, &CancelFlag::never())
         else {
             panic!("stable sources must publish");
         };
@@ -1482,7 +1715,7 @@ mod tests {
         };
 
         assert!(matches!(
-            stream_claude_with_claim_hook(
+            stream_vendor_with_claim_hook(
                 &[file_input(&path, "parent")],
                 &CancelFlag::never(),
                 &hook,
@@ -1511,7 +1744,7 @@ mod tests {
         };
 
         assert!(matches!(
-            stream_claude_with_claim_hook(
+            stream_vendor_with_claim_hook(
                 &[file_input(&parent, "parent"), file_input(&child, "child")],
                 &CancelFlag::never(),
                 &hook,
@@ -1527,7 +1760,7 @@ mod tests {
         std::fs::write(&parent, claude_record("parent", 1_760_000_000)).expect("write parent");
         let missing = directory.path().join("missing.jsonl");
 
-        let StreamOutcome::Published { session, .. } = stream_claude(
+        let StreamOutcome::Published { session, .. } = stream_vendor(
             &[file_input(&parent, "parent"), file_input(&missing, "child")],
             &CancelFlag::never(),
         ) else {
@@ -1559,7 +1792,7 @@ mod tests {
             }
         };
 
-        let outcome = stream_claude_with_claim_hook(
+        let outcome = stream_vendor_with_claim_hook(
             &[
                 file_input(&parent, "parent"),
                 file_input(&unreadable, "unreadable"),
@@ -1592,7 +1825,7 @@ mod tests {
             .expect("batch metrics");
 
         let StreamOutcome::Published { session, .. } =
-            stream_claude(&[input], &CancelFlag::never())
+            stream_vendor(&[input], &CancelFlag::never())
         else {
             panic!("inline source must publish");
         };
@@ -1611,7 +1844,7 @@ mod tests {
             VisitOutcome::Unvalidated
         );
         assert!(matches!(
-            stream_claude(&[input], &CancelFlag::never()),
+            stream_vendor(&[input], &CancelFlag::never()),
             StreamOutcome::Published { .. }
         ));
     }
@@ -1781,7 +2014,7 @@ mod tests {
             generation: 9,
         };
         let actual = inline_fingerprint(&content);
-        let StreamOutcome::Published { session, .. } = stream_claude(
+        let StreamOutcome::Published { session, .. } = stream_vendor(
             &[SessionInput {
                 agent: "claude".to_string(),
                 session_id: "inline".to_string(),
@@ -1850,10 +2083,11 @@ mod tests {
             }
         };
 
-        let analysis = match stream_claude_with_hooks(
+        let analysis = match stream_vendor_with_hooks(
             &[file_input(&parent, "parent"), file_input(&child, "child")],
             &cancelled,
             &hook,
+            None,
         ) {
             StreamOutcome::ParentUnreadable => SessionAnalysis::unavailable(),
             StreamOutcome::Published { .. } => panic!("cancelled child read must not publish"),
@@ -1881,7 +2115,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(true));
 
         assert!(matches!(
-            stream_claude(&[file_input(&path, "parent")], &CancelFlag::from_flag(flag),),
+            stream_vendor(&[file_input(&path, "parent")], &CancelFlag::from_flag(flag),),
             StreamOutcome::ParentUnreadable
         ));
     }

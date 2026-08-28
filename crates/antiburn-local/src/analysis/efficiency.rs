@@ -1,51 +1,54 @@
 //! Spend efficiency for one thread of turns.
 //!
-//! Every dollar a turn costs goes to one of three places. *New work* is the
-//! output plus the fresh input that grew the context. *Carry* is the cached
-//! prefix the model re-reads. *Rewrite* is fresh input that did not grow the
-//! context: the prefix the agent sent again after a compaction, a cache miss,
-//! or a model switch. The split uses only the usage counters and the pricing
-//! table, so it needs no transcript text.
+//! Every dollar a turn costs goes to one of three places. New work is output
+//! plus fresh input that grows context. Carry is cache-read spend. Rewrite is
+//! fresh input that does not grow context.
 //!
-//! A thread is one event stream. The parent transcript is one thread, and
-//! each sub-agent transcript is its own thread. The context of one thread
-//! says nothing about another, so a caller sums per-thread totals with
-//! [`EfficiencyTotals::add`] instead of running one pass over a merged stream.
+//! A parent transcript and each subagent transcript are separate threads.
+//! Callers add their totals instead of combining their context sequences.
+//! The reducer uses usage counters and pricing data. It does not read transcript text.
+//! An unpriced turn increments `unpriced_turns` and no cost field.
 
-use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::mem::size_of;
 
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::model::{NormalizedEvent, Role, Usage};
 use crate::analysis::pricing::{lookup_pricing, strip_window_tag};
+use crate::pricing::ModelPricing;
+
+/// Open message state covers heavily interleaved parent and sidechain records.
+const MAX_OPEN_MESSAGES: usize = 64;
+/// The finalized-turn window restores local timestamp order.
+const MAX_EFF_REORDER: usize = 32;
+/// The contribution list keeps eight entries per visible chart bucket.
+const MAX_EFF_CONTRIBUTIONS: usize = 1_440;
 
 /// Additive spend totals for one or more threads.
-///
-/// Every field sums over priced turns only. A turn whose model has no price
-/// counts in `unpriced_turns` and in nothing else, so a ratio of two fields
-/// always describes the same set of turns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EfficiencyTotals {
-    /// The all-in cost of the priced turns.
+    /// The total cost of priced turns.
     pub total_usd: f64,
-    /// Output plus the fresh input that grew the context.
+    /// Output and fresh input that grows context.
     pub new_work_usd: f64,
-    /// Cache reads.
+    /// Cache-read spend.
     pub carry_usd: f64,
-    /// Fresh input beyond the context growth.
+    /// Fresh input that does not grow context.
     pub rewrite_usd: f64,
-    /// Context growth summed over the priced turns.
+    /// Context growth from priced turns.
     pub growth_tokens: u64,
-    /// Output tokens summed over the priced turns.
+    /// Output from priced turns.
     pub output_tokens: u64,
+    /// Turns with known pricing.
     pub priced_turns: u64,
-    /// Turns with output whose model has no price.
+    /// Output turns without known pricing.
     pub unpriced_turns: u64,
 }
 
 impl EfficiencyTotals {
-    /// Add another thread's totals into this one.
+    /// Adds another thread without combining thread context.
     pub fn add(&mut self, other: EfficiencyTotals) {
         self.total_usd += other.total_usd;
         self.new_work_usd += other.new_work_usd;
@@ -58,10 +61,42 @@ impl EfficiencyTotals {
     }
 }
 
-/// One assistant turn after the records of one message are merged.
-struct Turn<'a> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MessageKey {
+    first: u64,
+    second: u64,
+    length: usize,
+}
+
+impl MessageKey {
+    fn new(value: &str) -> Self {
+        Self {
+            first: hash_bytes(value.as_bytes(), 0xcbf2_9ce4_8422_2325),
+            second: hash_bytes(value.as_bytes(), 0x8422_2325_cbf2_9ce4),
+            length: value.len(),
+        }
+    }
+}
+
+fn hash_bytes(bytes: &[u8], seed: u64) -> u64 {
+    bytes.iter().fold(seed, |hash, byte| {
+        hash.wrapping_mul(0x0000_0100_0000_01b3) ^ u64::from(*byte)
+    })
+}
+
+#[derive(Clone)]
+enum ModelStatus {
+    Missing,
+    Priced(ModelPricing),
+    Unpriced,
+}
+
+#[derive(Clone)]
+struct Turn {
+    creation: u64,
     ts: i64,
-    model: Option<&'a str>,
+    id: Option<MessageKey>,
+    model: ModelStatus,
     usage: Usage,
 }
 
@@ -74,16 +109,355 @@ pub(crate) struct EfficiencyInput<'a> {
     pub(crate) usage: Usage,
 }
 
-/// The efficiency totals for one thread of events.
+#[derive(Clone, Copy)]
+enum Contribution {
+    Priced {
+        new_work: f64,
+        carry: f64,
+        rewrite: f64,
+        growth: u64,
+        output: u64,
+    },
+    Fallback {
+        usage: Usage,
+        growth: u64,
+    },
+    Unpriced,
+}
+
+#[derive(Clone, Copy, Default)]
+struct FallbackOverflow {
+    growth_tokens: u64,
+    output_tokens: u64,
+    new_input_tokens: f64,
+    new_cache_tokens: f64,
+    rewrite_input_tokens: f64,
+    rewrite_cache_tokens: f64,
+    cache_read_tokens: u64,
+    turns: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct EfficiencyReducer {
+    open: VecDeque<Turn>,
+    reorder: Vec<Turn>,
+    contributions: Vec<Contribution>,
+    overflow_totals: EfficiencyTotals,
+    fallback_overflow: FallbackOverflow,
+    previous_context: Option<u64>,
+    last_ts: i64,
+    creation: u64,
+    pub(crate) open_overflow: u64,
+    pub(crate) reorder_overflow: u64,
+    pub(crate) contribution_overflow: u64,
+}
+
+impl Default for EfficiencyReducer {
+    fn default() -> Self {
+        Self {
+            open: VecDeque::new(),
+            reorder: Vec::new(),
+            contributions: Vec::new(),
+            overflow_totals: EfficiencyTotals::default(),
+            fallback_overflow: FallbackOverflow::default(),
+            previous_context: None,
+            last_ts: i64::MIN,
+            creation: 0,
+            open_overflow: 0,
+            reorder_overflow: 0,
+            contribution_overflow: 0,
+        }
+    }
+}
+
+impl EfficiencyReducer {
+    pub(crate) fn observe(&mut self, input: EfficiencyInput<'_>) {
+        if let Some(timestamp) = input.ts_ms {
+            self.last_ts = timestamp;
+        }
+        if input.role != Role::Assistant {
+            return;
+        }
+        let message_key = input.message_id.map(MessageKey::new);
+        if let Some(index) = message_key.and_then(|id| {
+            self.open
+                .iter()
+                .position(|turn| turn.id.as_ref() == Some(&id))
+        }) {
+            let turn = &mut self.open[index];
+            turn.usage = turn.usage.saturating_add(input.usage);
+            if matches!(turn.model, ModelStatus::Missing) {
+                turn.model = model_status(input.model);
+            }
+            return;
+        }
+        if self.open.len() == MAX_OPEN_MESSAGES
+            && let Some(turn) = self.open.pop_front()
+        {
+            self.finalize_turn(turn);
+            self.open_overflow = self.open_overflow.saturating_add(1);
+            tracing::debug!(event = "metrics_efficiency_open_window_capped");
+        }
+        self.open.push_back(Turn {
+            creation: self.creation,
+            ts: self.last_ts,
+            id: message_key,
+            model: model_status(input.model),
+            usage: input.usage,
+        });
+        self.creation = self.creation.saturating_add(1);
+    }
+
+    fn finalize_turn(&mut self, turn: Turn) {
+        if turn.usage.output_tokens == 0 {
+            return;
+        }
+        self.reorder.push(turn);
+        if self.reorder.len() > MAX_EFF_REORDER {
+            self.emit_earliest();
+            self.reorder_overflow = self.reorder_overflow.saturating_add(1);
+            tracing::debug!(event = "metrics_efficiency_reorder_window_capped");
+        }
+    }
+
+    fn emit_earliest(&mut self) {
+        let Some((index, _)) = self
+            .reorder
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, turn)| (turn.ts, turn.creation))
+        else {
+            return;
+        };
+        let turn = self.reorder.swap_remove(index);
+        self.fold(turn);
+    }
+
+    fn fold(&mut self, turn: Turn) {
+        let context = turn.usage.context_tokens();
+        let growth = self
+            .previous_context
+            .map_or(context, |prior| context.saturating_sub(prior));
+        self.previous_context = Some(context);
+        let contribution = match turn.model {
+            ModelStatus::Missing => Contribution::Fallback {
+                usage: turn.usage,
+                growth,
+            },
+            ModelStatus::Priced(price) => priced_contribution(turn.usage, growth, &price),
+            ModelStatus::Unpriced => Contribution::Unpriced,
+        };
+        if self.contributions.len() < MAX_EFF_CONTRIBUTIONS {
+            self.contributions.push(contribution);
+        } else {
+            self.contribution_overflow = self.contribution_overflow.saturating_add(1);
+            tracing::debug!(event = "metrics_efficiency_contributions_capped");
+            fold_overflow(
+                contribution,
+                &mut self.overflow_totals,
+                &mut self.fallback_overflow,
+            );
+        }
+    }
+
+    pub(crate) fn flush(&mut self) {
+        while let Some(turn) = self.open.pop_front() {
+            self.finalize_turn(turn);
+        }
+        while !self.reorder.is_empty() {
+            self.emit_earliest();
+        }
+        self.open.shrink_to_fit();
+        self.reorder.shrink_to_fit();
+    }
+
+    pub(crate) fn finish(mut self, fallback_model: Option<&str>) -> EfficiencyTotals {
+        self.flush();
+        let fallback = model_status(fallback_model);
+        let mut totals = EfficiencyTotals::default();
+        for contribution in self.contributions {
+            apply_contribution(&mut totals, contribution, &fallback);
+        }
+        totals.add(self.overflow_totals);
+        apply_fallback_overflow(&mut totals, self.fallback_overflow, &fallback);
+        totals
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.open
+            .capacity()
+            .saturating_mul(size_of::<Turn>())
+            .saturating_add(self.reorder.capacity().saturating_mul(size_of::<Turn>()))
+            .saturating_add(
+                self.contributions
+                    .capacity()
+                    .saturating_mul(size_of::<Contribution>()),
+            )
+    }
+}
+
+fn model_status(model: Option<&str>) -> ModelStatus {
+    let Some(model) = model else {
+        return ModelStatus::Missing;
+    };
+    let model = strip_window_tag(model).trim();
+    if model.is_empty() {
+        return ModelStatus::Unpriced;
+    }
+    lookup_pricing(model).map_or(ModelStatus::Unpriced, ModelStatus::Priced)
+}
+
+fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> Contribution {
+    let fresh = usage
+        .input_tokens
+        .saturating_add(usage.cache_creation_tokens);
+    let new_tokens = fresh.min(growth);
+    let rewrite_tokens = fresh.saturating_sub(new_tokens);
+    let fresh_rate = if fresh == 0 {
+        0.0
+    } else {
+        (usage.input_tokens as f64 * price.input_cost_per_token
+            + usage.cache_creation_tokens as f64 * price.cache_write_cost_per_token)
+            / fresh as f64
+    };
+    Contribution::Priced {
+        new_work: usage.output_tokens as f64 * price.output_cost_per_token
+            + new_tokens as f64 * fresh_rate,
+        carry: usage.cache_read_tokens as f64 * price.cache_read_cost_per_token,
+        rewrite: rewrite_tokens as f64 * fresh_rate,
+        growth,
+        output: usage.output_tokens,
+    }
+}
+
+fn apply_contribution(
+    totals: &mut EfficiencyTotals,
+    contribution: Contribution,
+    fallback: &ModelStatus,
+) {
+    match contribution {
+        Contribution::Priced {
+            new_work,
+            carry,
+            rewrite,
+            growth,
+            output,
+        } => add_priced_values(totals, new_work, carry, rewrite, growth, output, 1),
+        Contribution::Fallback { usage, growth } => match fallback {
+            ModelStatus::Priced(price) => {
+                if let Contribution::Priced {
+                    new_work,
+                    carry,
+                    rewrite,
+                    output,
+                    ..
+                } = priced_contribution(usage, growth, price)
+                {
+                    add_priced_values(totals, new_work, carry, rewrite, growth, output, 1);
+                }
+            }
+            ModelStatus::Missing | ModelStatus::Unpriced => {
+                totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
+            }
+        },
+        Contribution::Unpriced => {
+            totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
+        }
+    }
+}
+
+fn add_priced_values(
+    totals: &mut EfficiencyTotals,
+    new_work: f64,
+    carry: f64,
+    rewrite: f64,
+    growth: u64,
+    output: u64,
+    turns: u64,
+) {
+    totals.new_work_usd += new_work;
+    totals.carry_usd += carry;
+    totals.rewrite_usd += rewrite;
+    totals.total_usd += new_work + carry + rewrite;
+    totals.growth_tokens = totals.growth_tokens.saturating_add(growth);
+    totals.output_tokens = totals.output_tokens.saturating_add(output);
+    totals.priced_turns = totals.priced_turns.saturating_add(turns);
+}
+
+fn fold_overflow(
+    contribution: Contribution,
+    totals: &mut EfficiencyTotals,
+    fallback: &mut FallbackOverflow,
+) {
+    match contribution {
+        Contribution::Priced {
+            new_work,
+            carry,
+            rewrite,
+            growth,
+            output,
+        } => add_priced_values(totals, new_work, carry, rewrite, growth, output, 1),
+        Contribution::Fallback { usage, growth } => add_fallback_overflow(fallback, usage, growth),
+        Contribution::Unpriced => {
+            totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
+        }
+    }
+}
+
+fn add_fallback_overflow(target: &mut FallbackOverflow, usage: Usage, growth: u64) {
+    let fresh = usage
+        .input_tokens
+        .saturating_add(usage.cache_creation_tokens);
+    let new_tokens = fresh.min(growth);
+    let rewrite_tokens = fresh.saturating_sub(new_tokens);
+    let input_share = if fresh == 0 {
+        0.0
+    } else {
+        usage.input_tokens as f64 / fresh as f64
+    };
+    target.growth_tokens = target.growth_tokens.saturating_add(growth);
+    target.output_tokens = target.output_tokens.saturating_add(usage.output_tokens);
+    target.new_input_tokens += new_tokens as f64 * input_share;
+    target.new_cache_tokens += new_tokens as f64 * (1.0 - input_share);
+    target.rewrite_input_tokens += rewrite_tokens as f64 * input_share;
+    target.rewrite_cache_tokens += rewrite_tokens as f64 * (1.0 - input_share);
+    target.cache_read_tokens = target
+        .cache_read_tokens
+        .saturating_add(usage.cache_read_tokens);
+    target.turns = target.turns.saturating_add(1);
+}
+
+fn apply_fallback_overflow(
+    totals: &mut EfficiencyTotals,
+    contribution: FallbackOverflow,
+    fallback: &ModelStatus,
+) {
+    let ModelStatus::Priced(price) = fallback else {
+        totals.unpriced_turns = totals.unpriced_turns.saturating_add(contribution.turns);
+        return;
+    };
+    let new_work = contribution.output_tokens as f64 * price.output_cost_per_token
+        + contribution.new_input_tokens * price.input_cost_per_token
+        + contribution.new_cache_tokens * price.cache_write_cost_per_token;
+    let carry = contribution.cache_read_tokens as f64 * price.cache_read_cost_per_token;
+    let rewrite = contribution.rewrite_input_tokens * price.input_cost_per_token
+        + contribution.rewrite_cache_tokens * price.cache_write_cost_per_token;
+    add_priced_values(
+        totals,
+        new_work,
+        carry,
+        rewrite,
+        contribution.growth_tokens,
+        contribution.output_tokens,
+        contribution.turns,
+    );
+}
+
+/// Returns efficiency totals for one thread.
 ///
-/// A Claude transcript writes one record per content block of a message,
-/// and the vendor adapter makes their usage additive. The function sums
-/// the records that share a `message_id` back into one turn. A record with
-/// no `message_id` is a turn on its own. The function orders the turns by
-/// `ts_ms`. A turn with no timestamp keeps its place after the last
-/// timestamped turn before it. A turn with no output is not a turn for
-/// this purpose. `fallback_model` prices a turn that records no model of
-/// its own.
+/// Records with one `message_id` form one turn. Each record without an id forms its own turn.
+/// Turns use timestamp order. An untimestamped turn follows the last timestamped turn before it.
+/// A turn without output does not contribute. `fallback_model` prices a turn without its own model.
 pub fn thread_efficiency(
     events: &[NormalizedEvent],
     fallback_model: Option<&str>,
@@ -104,85 +478,12 @@ pub(crate) fn thread_efficiency_from_inputs<'a>(
     events: impl IntoIterator<Item = EfficiencyInput<'a>>,
     fallback_model: Option<&str>,
 ) -> EfficiencyTotals {
-    let mut turns: Vec<Turn<'a>> = Vec::new();
-    let mut index_by_id: HashMap<&'a str, usize> = HashMap::new();
-    let mut last_ts = i64::MIN;
+    let mut reducer = EfficiencyReducer::default();
     for event in events {
-        if let Some(ts) = event.ts_ms {
-            last_ts = ts;
-        }
-        if event.role != Role::Assistant {
-            continue;
-        }
-        if let Some(&index) = event.message_id.and_then(|id| index_by_id.get(id)) {
-            let turn = &mut turns[index];
-            turn.usage = turn.usage.saturating_add(event.usage);
-            if turn.model.is_none() {
-                turn.model = event.model;
-            }
-            continue;
-        }
-        if let Some(id) = event.message_id {
-            index_by_id.insert(id, turns.len());
-        }
-        turns.push(Turn {
-            ts: last_ts,
-            model: event.model,
-            usage: event.usage,
-        });
+        reducer.observe(event);
     }
-    turns.retain(|turn| turn.usage.output_tokens > 0);
-    turns.sort_by_key(|turn| turn.ts);
-
-    let mut totals = EfficiencyTotals::default();
-    let mut prev_ctx: Option<u64> = None;
-    for turn in turns {
-        let u = turn.usage;
-        let ctx = u.context_tokens();
-        let growth = match prev_ctx {
-            None => ctx,
-            Some(prev) => ctx.saturating_sub(prev),
-        };
-        prev_ctx = Some(ctx);
-
-        let model = turn
-            .model
-            .or(fallback_model)
-            .map(|m| strip_window_tag(m).trim())
-            .filter(|m| !m.is_empty());
-        let Some(price) = model.and_then(lookup_pricing) else {
-            totals.unpriced_turns += 1;
-            continue;
-        };
-
-        let fresh = u.input_tokens.saturating_add(u.cache_creation_tokens);
-        let new_tok = fresh.min(growth);
-        let rewrite_tok = fresh - new_tok;
-        // The fresh rate blends the input and cache-write rates in the same
-        // proportion this turn sent them.
-        let fresh_rate = if fresh == 0 {
-            0.0
-        } else {
-            (u.input_tokens as f64 * price.input_cost_per_token
-                + u.cache_creation_tokens as f64 * price.cache_write_cost_per_token)
-                / fresh as f64
-        };
-        let new_work_usd =
-            u.output_tokens as f64 * price.output_cost_per_token + new_tok as f64 * fresh_rate;
-        let carry_usd = u.cache_read_tokens as f64 * price.cache_read_cost_per_token;
-        let rewrite_usd = rewrite_tok as f64 * fresh_rate;
-
-        totals.new_work_usd += new_work_usd;
-        totals.carry_usd += carry_usd;
-        totals.rewrite_usd += rewrite_usd;
-        totals.total_usd += new_work_usd + carry_usd + rewrite_usd;
-        totals.growth_tokens = totals.growth_tokens.saturating_add(growth);
-        totals.output_tokens = totals.output_tokens.saturating_add(u.output_tokens);
-        totals.priced_turns += 1;
-    }
-    totals
+    reducer.finish(fallback_model)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +656,125 @@ mod tests {
         assert_eq!(totals.priced_turns, 2);
         assert_eq!(totals.growth_tokens, 10_000);
         assert_eq!(totals.output_tokens, 170);
+    }
+
+    #[test]
+    fn a_later_fragment_backfills_the_message_model() {
+        let mut first = turn(1, 100, 10, 0, 0);
+        first.message_id = Some("message".to_string());
+        first.model = None;
+        let mut tail = turn(2, 0, 5, 0, 0);
+        tail.message_id = Some("message".to_string());
+        let totals = thread_efficiency(&[first, tail], None);
+        assert_eq!(totals.priced_turns, 1);
+        assert_eq!(totals.output_tokens, 15);
+    }
+
+    #[test]
+    fn non_assistant_records_advance_the_carried_timestamp() {
+        let first = turn(10, 100, 10, 0, 0);
+        let mut user = NormalizedEvent::new(Role::User);
+        user.ts_ms = Some(5);
+        let mut untimestamped = turn(20, 100, 10, 0, 0);
+        untimestamped.ts_ms = None;
+        let totals = thread_efficiency(&[first, user, untimestamped], None);
+        assert_eq!(totals.priced_turns, 2);
+        assert_eq!(totals.growth_tokens, 100);
+    }
+
+    #[test]
+    fn an_empty_model_blocks_the_fallback_model() {
+        let mut current = turn(1, 100, 10, 0, 0);
+        current.model = Some("   ".to_string());
+        let totals = thread_efficiency(&[current], Some(MODEL));
+        assert_eq!(totals.priced_turns, 0);
+        assert_eq!(totals.unpriced_turns, 1);
+    }
+
+    #[test]
+    fn fallback_turns_keep_reference_float_order() {
+        let mut events = Vec::new();
+        for index in 0..100 {
+            let mut current = turn(
+                index,
+                101 + index as u64,
+                17 + index as u64,
+                503 + index as u64,
+                211 + index as u64,
+            );
+            current.model = None;
+            events.push(current);
+        }
+        let actual = thread_efficiency(&events, Some(MODEL));
+        let mut expected = EfficiencyTotals::default();
+        let mut previous_context = None;
+        let price = price();
+        for current in &events {
+            let context = current.usage.context_tokens();
+            let growth =
+                previous_context.map_or(context, |prior: u64| context.saturating_sub(prior));
+            previous_context = Some(context);
+            if let Contribution::Priced {
+                new_work,
+                carry,
+                rewrite,
+                output,
+                ..
+            } = priced_contribution(current.usage, growth, &price)
+            {
+                add_priced_values(&mut expected, new_work, carry, rewrite, growth, output, 1);
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn long_message_ids_do_not_collide_on_a_shared_prefix() {
+        let prefix = "x".repeat(80);
+        let mut first = turn(1, 10, 2, 0, 0);
+        first.message_id = Some(format!("{prefix}-a"));
+        let mut second = turn(2, 20, 3, 0, 0);
+        second.message_id = Some(format!("{prefix}-b"));
+        let totals = thread_efficiency(&[first, second], None);
+        assert_eq!(totals.priced_turns, 2);
+    }
+
+    #[test]
+    fn efficiency_overflow_counters_report_each_degradation() {
+        let mut reducer = EfficiencyReducer::default();
+        for index in 0..(MAX_EFF_CONTRIBUTIONS + MAX_OPEN_MESSAGES + MAX_EFF_REORDER + 10) {
+            let message_id = format!("message-{index}");
+            reducer.observe(EfficiencyInput {
+                ts_ms: Some(index as i64),
+                role: Role::Assistant,
+                message_id: Some(&message_id),
+                model: Some(MODEL),
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+            });
+        }
+        reducer.flush();
+        assert!(reducer.open_overflow > 0);
+        assert!(reducer.reorder_overflow > 0);
+        assert!(reducer.contribution_overflow > 0);
+    }
+
+    #[test]
+    fn a_message_recurring_past_the_open_window_becomes_a_new_turn() {
+        let mut events = Vec::new();
+        for index in 0..=MAX_OPEN_MESSAGES {
+            let mut current = turn(index as i64, 1, 1, 0, 0);
+            current.message_id = Some(format!("message-{index}"));
+            events.push(current);
+        }
+        let mut recurrence = turn(100, 1, 1, 0, 0);
+        recurrence.message_id = Some("message-0".to_string());
+        events.push(recurrence);
+        let totals = thread_efficiency(&events, None);
+        assert_eq!(totals.priced_turns, (MAX_OPEN_MESSAGES + 2) as u64);
     }
 }

@@ -1,0 +1,4 @@
+{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}
+{"type":"model_change","timestamp":"2026-01-01T00:00:01Z","modelId":"model-b"}
+{"type":"session_info","timestamp":"2026-01-01T00:00:00Z","name":"synthetic title"}
+{"type":"message","timestamp":"2026-01-01T00:00:03Z","message":{"role":"assistant","model":"model-b","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}

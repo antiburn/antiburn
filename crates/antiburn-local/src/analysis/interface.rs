@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::analysis::framing::PartialReason;
 use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall};
+use crate::analysis::source_validity::{AppendOnlyGuarantee, SourceClaim};
 
 /// Where a session's raw bytes come from. Adapters choose how to read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +68,12 @@ pub enum EvidenceObservation {
         uuid: Option<String>,
         parent_uuid: Option<String>,
     },
+    /// One non-turn record's provider timestamp.
+    RecordTimestamp {
+        ts_ms: i64,
+    },
+    /// One inherited record does not contribute to the child session.
+    InheritedRecord,
     UnrecognizedType {
         discriminator: String,
     },
@@ -91,6 +98,10 @@ pub struct SessionSummary {
     pub cache_write_tokens_available: bool,
     pub context_window: Option<u64>,
     pub model: Option<String>,
+    /// The provider-declared session start, in Unix milliseconds.
+    pub started_at_ms: Option<i64>,
+    /// Source gaps that become known only when the stream ends.
+    pub coverage_gaps: Vec<PartialReason>,
     /// Tool calls resolved at the end of the stream, keyed by event ordinal.
     pub late_tools: Vec<(usize, ToolCall)>,
     pub initial_context: Option<InitialContextBreakdown>,
@@ -178,6 +189,8 @@ impl RecordSink for SessionCollector {
     }
 
     fn finish(&mut self, summary: SessionSummary) {
+        self.partial_reasons
+            .extend(summary.coverage_gaps.iter().copied());
         self.summary = Some(summary);
     }
 }
@@ -238,10 +251,35 @@ pub trait VendorAdapter: Sync {
             cache_write_tokens_available,
             context_window,
             model,
+            started_at_ms: None,
+            coverage_gaps: Vec::new(),
             late_tools: Vec::new(),
             initial_context: None,
             skill_descriptions: HashMap::new(),
         });
         Ok(VisitOutcome::Unvalidated)
+    }
+
+    /// Streams a file after the caller captures its source claim.
+    fn visit_claimed(
+        &self,
+        _input: &SessionInput,
+        _claim: &SourceClaim,
+        _guarantee: AppendOnlyGuarantee,
+        _cancel: &dyn Fn() -> bool,
+        _sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        anyhow::bail!("claimed streaming is unsupported for this adapter")
+    }
+
+    /// Streams a provider database from one stable read snapshot.
+    fn visit_db_claimed(
+        &self,
+        _input: &SessionInput,
+        _claimed_fingerprint: &str,
+        _cancel: &dyn Fn() -> bool,
+        _sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        anyhow::bail!("claimed database streaming is unsupported for this adapter")
     }
 }

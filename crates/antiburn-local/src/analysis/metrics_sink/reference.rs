@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
-use crate::analysis::efficiency::{EfficiencyInput, thread_efficiency_from_inputs};
+use crate::analysis::efficiency::EfficiencyTotals;
 use crate::analysis::engine::{
     BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionMetrics, SkillUse,
 };
@@ -9,6 +9,7 @@ use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{
     CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCall, Usage,
 };
+use crate::analysis::pricing::{lookup_pricing, strip_window_tag};
 use crate::pricing::ModelTokens;
 
 const CONTEXT_WINDOW_TIERS: [u64; 2] = [200_000, 1_000_000];
@@ -449,6 +450,93 @@ fn cache_miss_events(
     events
 }
 
+struct ReferenceEfficiencyTurn<'a> {
+    ts: i64,
+    model: Option<&'a str>,
+    usage: Usage,
+}
+
+fn reference_efficiency(
+    turns: &[(EventSource, &MetricTurn)],
+    fallback_model: Option<&str>,
+) -> EfficiencyTotals {
+    let mut merged = Vec::new();
+    let mut index_by_id = HashMap::new();
+    let mut last_ts = i64::MIN;
+    for (_, event) in turns {
+        if let Some(timestamp) = event.ts_ms {
+            last_ts = timestamp;
+        }
+        if event.role != Role::Assistant {
+            continue;
+        }
+        if let Some(&index) = event
+            .message_id
+            .as_deref()
+            .and_then(|id| index_by_id.get(id))
+        {
+            let current: &mut ReferenceEfficiencyTurn<'_> = &mut merged[index];
+            current.usage = current.usage.saturating_add(event.usage);
+            if current.model.is_none() {
+                current.model = event.model.as_deref();
+            }
+            continue;
+        }
+        if let Some(id) = event.message_id.as_deref() {
+            index_by_id.insert(id, merged.len());
+        }
+        merged.push(ReferenceEfficiencyTurn {
+            ts: last_ts,
+            model: event.model.as_deref(),
+            usage: event.usage,
+        });
+    }
+    merged.retain(|turn| turn.usage.output_tokens > 0);
+    merged.sort_by_key(|turn| turn.ts);
+
+    let mut totals = EfficiencyTotals::default();
+    let mut previous_context = None;
+    for turn in merged {
+        let usage = turn.usage;
+        let context = usage.context_tokens();
+        let growth = previous_context.map_or(context, |prior: u64| context.saturating_sub(prior));
+        previous_context = Some(context);
+        let model = turn
+            .model
+            .or(fallback_model)
+            .map(|name| strip_window_tag(name).trim())
+            .filter(|name| !name.is_empty());
+        let Some(price) = model.and_then(lookup_pricing) else {
+            totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
+            continue;
+        };
+        let fresh = usage
+            .input_tokens
+            .saturating_add(usage.cache_creation_tokens);
+        let new_tokens = fresh.min(growth);
+        let rewrite_tokens = fresh.saturating_sub(new_tokens);
+        let fresh_rate = if fresh == 0 {
+            0.0
+        } else {
+            (usage.input_tokens as f64 * price.input_cost_per_token
+                + usage.cache_creation_tokens as f64 * price.cache_write_cost_per_token)
+                / fresh as f64
+        };
+        let new_work = usage.output_tokens as f64 * price.output_cost_per_token
+            + new_tokens as f64 * fresh_rate;
+        let carry = usage.cache_read_tokens as f64 * price.cache_read_cost_per_token;
+        let rewrite = rewrite_tokens as f64 * fresh_rate;
+        totals.new_work_usd += new_work;
+        totals.carry_usd += carry;
+        totals.rewrite_usd += rewrite;
+        totals.total_usd += new_work + carry + rewrite;
+        totals.growth_tokens = totals.growth_tokens.saturating_add(growth);
+        totals.output_tokens = totals.output_tokens.saturating_add(usage.output_tokens);
+        totals.priced_turns = totals.priced_turns.saturating_add(1);
+    }
+    totals
+}
+
 pub(crate) fn finalize_metrics(
     identity: MetricsIdentity,
     summary: &SessionSummary,
@@ -676,16 +764,7 @@ pub(crate) fn finalize_metrics(
         tallies.peak_context_tokens,
     );
     let cost = crate::analysis::pricing::price_breakdown(&model_breakdown);
-    let efficiency = thread_efficiency_from_inputs(
-        turns.iter().map(|(_, turn)| EfficiencyInput {
-            ts_ms: turn.ts_ms,
-            role: turn.role,
-            message_id: turn.message_id.as_deref(),
-            model: turn.model.as_deref(),
-            usage: turn.usage,
-        }),
-        summary.model.as_deref(),
-    );
+    let efficiency = reference_efficiency(turns, summary.model.as_deref());
 
     SessionMetrics {
         agent: identity.agent,

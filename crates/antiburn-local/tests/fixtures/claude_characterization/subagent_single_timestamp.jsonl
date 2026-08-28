@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-07-15T10:00:00Z","isSidechain":true,"message":{"id":"msg-single-ts-1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"Synthetic delegated turn one."}]}}
+{"type":"assistant","timestamp":"2026-07-15T10:00:00Z","isSidechain":true,"message":{"id":"msg-single-ts-2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":200,"output_tokens":20},"content":[{"type":"text","text":"Synthetic delegated turn two."}]}}

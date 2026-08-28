@@ -440,16 +440,30 @@ fn pi_sessions_report_real_local_usage_downstream() {
 }
 
 #[test]
-fn sqlite_vendor_is_extracted() {
+fn opencode_sqlite_vendor_is_extracted() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("opencode.db");
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute("CREATE TABLE messages (id INTEGER, data TEXT)", [])
-            .unwrap();
-        let rec = r#"{"role":"assistant","usage":{"input_tokens":300,"output_tokens":40},"content":[{"type":"tool_use","name":"Read","input":{}}]}"#;
-        conn.execute("INSERT INTO messages (id, data) VALUES (1, ?1)", [rec])
-            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+             INSERT INTO session VALUES ('x', NULL, 1, 1);",
+        )
+        .unwrap();
+        let message = r#"{"role":"assistant","tokens":{"input":300,"output":40}}"#;
+        conn.execute(
+            "INSERT INTO message VALUES ('m1', 'x', 2, 2, ?1)",
+            [message],
+        )
+        .unwrap();
+        let part = r#"{"type":"tool","tool":"Read","state":{"input":{}}}"#;
+        conn.execute(
+            "INSERT INTO part VALUES ('p1', 'm1', 'x', 3, 3, ?1)",
+            [part],
+        )
+        .unwrap();
     }
     let input = SessionInput {
         agent: "opencode".into(),
@@ -1569,13 +1583,13 @@ fn codex_cache_miss_after_a_ttl_lapse_is_inferred_as_rehydration() {
 
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +
 /// `payload.tokens`) and `part` rows (text / tool / patch) tagged by `messageID`.
-/// Messages come first, then parts — the adapter joins parts onto their message.
+/// Each message is followed by its parts, as bounded discovery rendering emits it.
 const OPENCODE_FIXTURE: &str = concat!(
     r#"{"type":"message","role":"user","time":{"created":1717243100000},"messageID":"m0","sessionID":"s1","payload":{"role":"user"}}"#,
     "\n",
-    r#"{"type":"message","role":"assistant","time":{"created":1717243200000},"messageID":"m1","sessionID":"s1","payload":{"role":"assistant","tokens":{"input":1000,"output":50,"reasoning":0,"cache":{"write":500,"read":0}}}}"#,
-    "\n",
     r#"{"type":"part","partType":"text","time":{"created":1717243100000},"messageID":"m0","sessionID":"s1","payload":{"type":"text","text":"review changelist"}}"#,
+    "\n",
+    r#"{"type":"message","role":"assistant","time":{"created":1717243200000},"messageID":"m1","sessionID":"s1","payload":{"role":"assistant","tokens":{"input":1000,"output":50,"reasoning":0,"cache":{"write":500,"read":0}}}}"#,
     "\n",
     r#"{"type":"part","partType":"text","time":{"created":1717243200000},"messageID":"m1","sessionID":"s1","payload":{"type":"text","text":"working on it"}}"#,
     "\n",

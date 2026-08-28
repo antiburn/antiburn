@@ -68,6 +68,17 @@ impl VendorAdapter for ClaudeAdapter {
         })()
         .with_context(|| format!("reading claude session {}", input.session_id))
     }
+
+    fn visit_claimed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        guarantee: AppendOnlyGuarantee,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        ClaudeAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+    }
 }
 
 impl ClaudeAdapter {
@@ -176,10 +187,17 @@ impl ClaudeAdapter {
                     state.observe_model(event.model.as_deref());
                     state.dedup_usage(&mut event);
                     if has_command_name {
-                        state.pending_commands.push((
-                            state.ordinal,
-                            command_names_in_text(text.as_deref().unwrap_or_default()),
-                        ));
+                        let commands = command_names_in_text(text.as_deref().unwrap_or_default());
+                        event.may_resolve_late_tool = commands.iter().any(|command| {
+                            command_skill_name(command, &state.skill_base_names).is_some()
+                                || !is_builtin_command(command)
+                        });
+                        event.late_tool_candidate_is_builtin = !commands.is_empty()
+                            && commands.iter().all(|command| {
+                                command_skill_name(command, &state.skill_base_names).is_none()
+                                    && is_builtin_command(command)
+                            });
+                        state.pending_commands.push((state.ordinal, commands));
                     }
                     sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
                     state.ordinal += 1;
@@ -289,11 +307,52 @@ impl ClaudeStreamState {
             cache_write_tokens_available: true,
             context_window: self.context_window,
             model,
+            started_at_ms: None,
+            coverage_gaps: Vec::new(),
             late_tools,
             initial_context,
             skill_descriptions,
         }
     }
+}
+
+fn is_builtin_command(command: &str) -> bool {
+    const BUILTINS: &[&str] = &[
+        "clear",
+        "compact",
+        "context",
+        "cost",
+        "doctor",
+        "exit",
+        "export",
+        "help",
+        "hooks",
+        "ide",
+        "init",
+        "login",
+        "logout",
+        "mcp",
+        "memory",
+        "model",
+        "permissions",
+        "plugin",
+        "privacy-settings",
+        "release-notes",
+        "remote-control",
+        "rename",
+        "resume",
+        "review",
+        "security-review",
+        "stats",
+        "status",
+        "statusline",
+        "terminal-setup",
+        "upgrade",
+        "vim",
+    ];
+    BUILTINS
+        .iter()
+        .any(|builtin| command.eq_ignore_ascii_case(builtin))
 }
 
 /// The context window for a recognized Claude model family. Unknown model ids
@@ -580,6 +639,14 @@ mod tests {
                 returned_data: false,
             }
         }
+    }
+
+    #[test]
+    fn builtin_commands_do_not_reserve_late_metric_candidates() {
+        assert!(is_builtin_command("clear"));
+        assert!(is_builtin_command("COMPACT"));
+        assert!(is_builtin_command("model"));
+        assert!(!is_builtin_command("orbit-tracker"));
     }
 
     impl Read for DataThenError {

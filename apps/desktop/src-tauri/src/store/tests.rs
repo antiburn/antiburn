@@ -1533,6 +1533,167 @@ fn migrating_forward_renames_the_analytics_tables_and_keeps_their_rows() {
 }
 
 #[test]
+fn codex_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..11] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 11).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label,
+                 surface, first_seen_at, last_seen_at
+             ) VALUES
+                 ('native', 'codex', 'new', 'file', '/tmp/new.jsonl', 'cli', 'x', 'x'),
+                 ('native', 'codex', 'ready', 'file', '/tmp/ready.jsonl', 'cli', 'x', 'x'),
+                 ('native', 'claude-code', 'claude', 'file', '/tmp/claude.jsonl', 'cli', 'x', 'x');
+             INSERT INTO session_evidence (
+                 environment_key, agent, session_id, status
+             ) VALUES ('native', 'codex', 'ready', 'ready');",
+        )
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-codex-cohort-migration-test").to_path_buf(),
+    )
+    .unwrap();
+    let connection = store.lock();
+    let statuses = connection
+        .prepare("SELECT session_id, status FROM session_evidence ORDER BY session_id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        statuses,
+        vec![
+            ("new".to_owned(), "pending".to_owned()),
+            ("ready".to_owned(), "ready".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn pi_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..12] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 12).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label,
+                 surface, first_seen_at, last_seen_at
+             ) VALUES
+                 ('native', 'pi', 'new', 'file', '/synthetic/new.jsonl', 'cli', 'x', 'x'),
+                 ('native', 'pi', 'ready', 'file', '/synthetic/ready.jsonl', 'cli', 'x', 'x'),
+                 ('native', 'codex', 'codex', 'file', '/synthetic/codex.jsonl', 'cli', 'x', 'x');
+             INSERT INTO session_evidence (
+                 environment_key, agent, session_id, status
+             ) VALUES ('native', 'pi', 'ready', 'ready');",
+        )
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-pi-cohort-migration-test").to_path_buf(),
+    )
+    .unwrap();
+    let connection = store.lock();
+    let statuses = connection
+        .prepare(
+            "SELECT agent, session_id, status FROM session_evidence ORDER BY agent, session_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        statuses,
+        vec![
+            ("pi".to_owned(), "new".to_owned(), "pending".to_owned()),
+            ("pi".to_owned(), "ready".to_owned(), "ready".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn opencode_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..13] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 13).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label,
+                 surface, first_seen_at, last_seen_at
+             ) VALUES
+                 ('native', 'opencode', 'new', 'providerDb', 'opencode:new', 'cli', 'x', 'x'),
+                 ('native', 'opencode', 'ready', 'providerDb', 'opencode:ready', 'cli', 'x', 'x'),
+                 ('native', 'pi', 'pi', 'file', '/synthetic/pi.jsonl', 'cli', 'x', 'x');
+             INSERT INTO session_evidence (
+                 environment_key, agent, session_id, status
+             ) VALUES ('native', 'opencode', 'ready', 'ready');",
+        )
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-opencode-cohort-migration-test").to_path_buf(),
+    )
+    .unwrap();
+    let connection = store.lock();
+    let statuses = connection
+        .prepare(
+            "SELECT agent, session_id, status FROM session_evidence ORDER BY agent, session_id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert_eq!(
+        statuses,
+        vec![
+            (
+                "opencode".to_owned(),
+                "new".to_owned(),
+                "pending".to_owned()
+            ),
+            (
+                "opencode".to_owned(),
+                "ready".to_owned(),
+                "ready".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
 fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
     for start in 0..super::schema::MIGRATIONS.len() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
@@ -1644,6 +1805,33 @@ fn a_new_source_generation_marks_session_evidence_pending() {
             .unwrap()
             .source_generation,
         2
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn a_changed_child_activity_cursor_requeues_the_same_parent_generation() {
+    let store = store();
+    let mut record = seed_current_session_evidence(&store, "changed-child-cursor");
+    record.activity_cursor = "parent-and-child-v2".to_owned();
+
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .session_source_state(&record.key)
+            .unwrap()
+            .unwrap()
+            .source_generation,
+        1
     );
     assert_eq!(
         store.evidence(&record.key).unwrap().unwrap().status,
@@ -1781,6 +1969,42 @@ fn reconciling_enrolls_a_session_evidence_row_for_an_upgraded_session() {
             .unwrap()
             .key,
         record.key
+    );
+}
+
+#[test]
+fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
+    let store = store();
+    let mut pi = session("pi-upgrade-enrollment", 1_000);
+    pi.key.agent = "pi".to_owned();
+    pi.source_label = "/synthetic/pi-upgrade-enrollment.jsonl".to_owned();
+    pi.source_fingerprint = Some("sv1:synthetic".to_owned());
+    store
+        .upsert_sessions(std::slice::from_ref(&pi), &[])
+        .unwrap();
+    assert!(store.evidence(&pi.key).unwrap().is_none());
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(
+                &crate::agents::evidence_cohort(),
+                crate::analysis::projection_revisions(),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.evidence(&pi.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    assert_eq!(
+        crate::analysis::projection_revisions(),
+        ProjectionRevisions {
+            parser_revision: 3,
+            analyzer_revision: 6,
+            metrics_schema_revision: 1,
+            evidence_schema_revision: 2,
+        }
     );
 }
 
@@ -1957,18 +2181,18 @@ fn reconciling_session_evidence_skips_a_disabled_agent() {
 fn a_session_outside_the_evidence_cohort_gets_no_row() {
     let store = store();
     let claude = session("cohort-claude", 1_000);
-    let mut codex = session("cohort-codex", 1_000);
-    codex.key.agent = "codex".to_string();
+    let mut cursor = session("cohort-cursor", 1_000);
+    cursor.key.agent = "cursor".to_string();
 
     store
         .upsert_sessions(
-            &[claude.clone(), codex.clone()],
+            &[claude.clone(), cursor.clone()],
             &crate::agents::evidence_cohort(),
         )
         .unwrap();
 
     assert!(store.evidence(&claude.key).unwrap().is_some());
-    assert!(store.evidence(&codex.key).unwrap().is_none());
+    assert!(store.evidence(&cursor.key).unwrap().is_none());
 }
 
 #[test]

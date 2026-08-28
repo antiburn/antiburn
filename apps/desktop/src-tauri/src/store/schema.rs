@@ -10,7 +10,7 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -324,4 +324,37 @@ CREATE TABLE session_evidence (
 ) STRICT;
 CREATE INDEX session_evidence_status
     ON session_evidence (status, next_attempt_at_epoch, lease_expires_at_epoch);
+"#;
+
+/// v12 — add existing Codex sessions to the durable evidence queue.
+///
+/// A normal upsert queues future Codex source generations. This migration also
+/// queues rows that scans stored before Codex joined the evidence cohort.
+const V12: &str = r#"
+INSERT INTO session_evidence (environment_key, agent, session_id)
+SELECT environment_key, agent, session_id
+  FROM session
+ WHERE agent = 'codex'
+ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
+"#;
+
+/// v13 — add existing Pi sessions to the durable evidence queue.
+///
+/// A normal upsert queues future Pi source generations. This migration also
+/// queues rows that scans stored before Pi joined the evidence cohort.
+const V13: &str = r#"
+INSERT INTO session_evidence (environment_key, agent, session_id)
+SELECT environment_key, agent, session_id
+  FROM session
+ WHERE agent = 'pi'
+ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
+"#;
+
+/// v14 adds existing OpenCode sessions to the durable evidence queue.
+const V14: &str = r#"
+INSERT INTO session_evidence (environment_key, agent, session_id)
+SELECT environment_key, agent, session_id
+  FROM session
+ WHERE agent = 'opencode'
+ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 "#;

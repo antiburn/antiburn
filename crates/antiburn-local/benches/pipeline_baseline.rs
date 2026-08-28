@@ -27,7 +27,7 @@ use antiburn_local::analysis::{
     EVIDENCE_SCHEMA_REVISION, EvidenceSource, MAX_RECORD_BYTES, NormalizedRecord, PARSER_REVISION,
     RawSource, RecordSink, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceClaim, SourceKind,
-    VisitOutcome, adapter_for,
+    VisitOutcome, adapter_for, normalize_source,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
@@ -247,7 +247,7 @@ fn stage_split(criterion: &mut Criterion) {
             adapter_for("claude")
                 .visit(&input, &mut sink)
                 .expect("synthetic source must stream");
-            black_box(sink.retained_turns())
+            black_box((sink.observed_turns(), sink.retained_bytes()))
         });
     });
 
@@ -260,6 +260,52 @@ fn stage_split(criterion: &mut Criterion) {
             composite.observe_source_outcome(outcome);
             black_box(composite.evidence())
         });
+    });
+
+    let normalized = normalize_source(&input).expect("synthetic source must normalize");
+    group.bench_function("metrics_accumulator_only", |bencher| {
+        bencher.iter_batched(
+            || {
+                (
+                    SessionMetricsAccumulator::new("claude", "isolated"),
+                    normalized.events.clone(),
+                )
+            },
+            |(mut sink, events)| {
+                for event in events {
+                    sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+                }
+                black_box((sink.observed_turns(), sink.retained_bytes()))
+            },
+            BatchSize::LargeInput,
+        );
+    });
+
+    let mut disordered = normalized.events.clone();
+    let event_count = disordered.len();
+    for (index, event) in disordered.iter_mut().enumerate() {
+        event.ts_ms = Some(
+            i64::try_from(event_count.saturating_sub(index))
+                .expect("synthetic event count fits")
+                .saturating_mul(600_000),
+        );
+    }
+    group.bench_function("metrics_accumulator_fully_disordered", |bencher| {
+        bencher.iter_batched(
+            || {
+                (
+                    SessionMetricsAccumulator::new("claude", "disordered"),
+                    disordered.clone(),
+                )
+            },
+            |(mut sink, events)| {
+                for event in events {
+                    sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+                }
+                black_box((sink.observed_turns(), sink.retained_bytes()))
+            },
+            BatchSize::LargeInput,
+        );
     });
 
     group.finish();
@@ -309,10 +355,9 @@ fn materialization(criterion: &mut Criterion) {
     group.finish();
 }
 
-/// Provider-DB-backed source: the generic schema-agnostic SQLite walk
-/// (the raw-`RawSource::Sqlite` fallback path), through the composite sink.
+/// Provider-DB-backed source through the native OpenCode message stream.
 fn provider_db(criterion: &mut Criterion) {
-    let mut group = criterion.benchmark_group("provider_db_walk");
+    let mut group = criterion.benchmark_group("provider_db_stream");
     group.sample_size(10);
 
     let directory = TempDir::new().expect("tempdir");
@@ -422,10 +467,9 @@ fn memory_probes() {
         .visit(&input, &mut metrics)
         .expect("synthetic source must stream");
     println!(
-        "metrics accumulator, 10 MiB source: {} retained turns, {} retained bytes ({} bytes/turn)",
-        metrics.retained_turns(),
-        metrics.retained_bytes(),
-        metrics.retained_bytes() / metrics.retained_turns().max(1)
+        "metrics accumulator, 10 MiB source: {} observed turns, {} retained bytes",
+        metrics.observed_turns(),
+        metrics.retained_bytes()
     );
 
     let mut composite = composite_for(&input);

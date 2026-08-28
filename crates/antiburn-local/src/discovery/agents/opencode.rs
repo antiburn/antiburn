@@ -1822,6 +1822,7 @@ fn render_session_logs(
         lines.push(session_meta.to_string());
 
         let mut ordered_records = Vec::new();
+        let mut message_order = HashMap::new();
 
         for session_id in &cluster.session_ids {
             if let Some(record) = sessions.get(session_id)
@@ -1845,6 +1846,8 @@ fn render_session_logs(
                         .or(record.file_mtime),
                     kind_rank: 0,
                     session_id: session_id.clone(),
+                    message_id: String::new(),
+                    within_message_timestamp: None,
                     record_id: session_id.clone(),
                     line: json!({
                         "type": "session_member",
@@ -1885,10 +1888,14 @@ fn render_session_logs(
                 if let Some(ts) = message.created_at.or(message.file_mtime) {
                     max_updated = max_updated.max(ts);
                 }
+                let timestamp = message.created_at.or(message.file_mtime);
+                message_order.insert(message.id.clone(), (timestamp, message.session_id.clone()));
                 ordered_records.push(RenderedClusterRecord {
-                    timestamp: message.created_at.or(message.file_mtime),
+                    timestamp,
                     kind_rank: 1,
                     session_id: message.session_id.clone(),
+                    message_id: message.id.clone(),
+                    within_message_timestamp: timestamp,
                     record_id: message.id.clone(),
                     line: json!({
                         "type": "message",
@@ -1931,10 +1938,21 @@ fn render_session_logs(
                 if let Some(ts) = part.created_at.or(part.file_mtime) {
                     max_updated = max_updated.max(ts);
                 }
+                let own_timestamp = part.created_at.or(part.file_mtime);
+                let (timestamp, message_session_id) = part
+                    .message_id
+                    .as_ref()
+                    .and_then(|message_id| message_order.get(message_id))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        (own_timestamp, part.session_id.clone().unwrap_or_default())
+                    });
                 ordered_records.push(RenderedClusterRecord {
-                    timestamp: part.created_at.or(part.file_mtime),
+                    timestamp,
                     kind_rank: 2,
-                    session_id: part.session_id.clone().unwrap_or_default(),
+                    session_id: message_session_id,
+                    message_id: part.message_id.clone().unwrap_or_else(|| part.id.clone()),
+                    within_message_timestamp: own_timestamp,
                     record_id: part.id.clone(),
                     line: json!({
                         "type": "part",
@@ -1962,8 +1980,14 @@ fn render_session_logs(
             a.timestamp
                 .unwrap_or_default()
                 .cmp(&b.timestamp.unwrap_or_default())
-                .then(a.kind_rank.cmp(&b.kind_rank))
                 .then(a.session_id.cmp(&b.session_id))
+                .then(a.message_id.cmp(&b.message_id))
+                .then(a.kind_rank.cmp(&b.kind_rank))
+                .then(
+                    a.within_message_timestamp
+                        .unwrap_or_default()
+                        .cmp(&b.within_message_timestamp.unwrap_or_default()),
+                )
                 .then(a.record_id.cmp(&b.record_id))
         });
 
@@ -2006,6 +2030,8 @@ struct RenderedClusterRecord {
     timestamp: Option<i64>,
     kind_rank: u8,
     session_id: String,
+    message_id: String,
+    within_message_timestamp: Option<i64>,
     record_id: String,
     line: String,
 }
@@ -2678,51 +2704,52 @@ fn db_session_fingerprint_blocking(db_path: &Path, root_session_id: &str) -> Opt
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
-    let cluster_session_ids = db_session_ids_for_root(&conn, root_session_id);
-    if cluster_session_ids.is_empty() {
-        return None;
-    }
-
-    let placeholders = sql_in_placeholders(cluster_session_ids.len());
-    let (session_count, session_updated) = count_and_max_updated(
-        &conn,
-        &format!(
-            "SELECT COUNT(*), MAX(COALESCE(time_updated, time_created, 0)) FROM session WHERE id IN ({placeholders})"
-        ),
-        &cluster_session_ids,
-    );
-    let (message_count, message_updated) = count_and_max_updated(
-        &conn,
-        &format!(
-            "SELECT COUNT(*), MAX(COALESCE(time_updated, time_created, 0)) FROM message WHERE session_id IN ({placeholders})"
-        ),
-        &cluster_session_ids,
-    );
-    let (part_count, part_updated) = count_and_max_updated(
-        &conn,
-        &format!(
-            "SELECT COUNT(*), MAX(COALESCE(time_updated, time_created, 0)) FROM part WHERE session_id IN ({placeholders})"
-        ),
-        &cluster_session_ids,
-    );
-
-    let latest = session_updated.max(message_updated).max(part_updated);
-    let rows = session_count + message_count + part_count;
-    Some((latest.max(0) as u64, rows))
+    db_session_fingerprint_connection(&conn, root_session_id)
 }
 
-fn count_and_max_updated(
+/// Computes the provider fingerprint without loading the cluster identifiers.
+pub(crate) fn db_session_fingerprint_connection(
     conn: &Connection,
-    sql: &str,
-    session_ids: &HashSet<String>,
-) -> (u64, i64) {
-    conn.query_row(sql, params_from_iter(session_ids.iter()), |row| {
-        Ok((
-            row.get::<_, i64>(0).unwrap_or(0).max(0) as u64,
-            row.get::<_, Option<i64>>(1).unwrap_or(None).unwrap_or(0),
-        ))
-    })
-    .unwrap_or((0, 0))
+    root_session_id: &str,
+) -> Option<(u64, u64)> {
+    let cluster = if db_session_has_parent_id(conn) {
+        "WITH RECURSIVE cluster(id) AS (
+             SELECT id FROM session WHERE id = ?1
+             UNION
+             SELECT session.id FROM session JOIN cluster ON session.parent_id = cluster.id
+         )"
+    } else {
+        "WITH cluster(id) AS (SELECT id FROM session WHERE id = ?1)"
+    };
+    conn.query_row(
+        &format!(
+            "{cluster}, records(updated) AS (
+             SELECT COALESCE(time_updated, time_created, 0) FROM session JOIN cluster ON session.id = cluster.id
+             UNION ALL
+             SELECT COALESCE(time_updated, time_created, 0) FROM message JOIN cluster ON message.session_id = cluster.id
+             UNION ALL
+             SELECT COALESCE(time_updated, time_created, 0) FROM part JOIN cluster ON part.session_id = cluster.id
+         )
+         SELECT COUNT(*), MAX(updated) FROM records"
+        ),
+        params![root_session_id],
+        |row| {
+            let rows = row.get::<_, i64>(0)?.max(0) as u64;
+            let latest = row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64;
+            Ok((latest, rows))
+        },
+    )
+    .ok()
+    .filter(|(_, rows)| *rows > 0)
+}
+
+pub(crate) fn db_session_has_parent_id(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'parent_id')",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
 }
 
 fn recent_db_session_ids(conn: &Connection, cutoff: i64) -> HashSet<String> {

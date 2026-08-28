@@ -61,6 +61,7 @@ describe("agentSupportsAnalysis", () => {
     expect(agentSupportsAnalysis("cursor")).toBe(true)
     expect(agentSupportsAnalysis("opencode")).toBe(true)
     expect(agentSupportsAnalysis("antigravity")).toBe(true)
+    expect(agentSupportsAnalysis("pi")).toBe(true)
   })
 
   it("is false for generic-fallback agents and unknown slugs", () => {

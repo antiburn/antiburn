@@ -27,6 +27,10 @@ pub const CONTEXT_WINDOW: u64 = 200_000;
 pub const IDLE_GAP_MS: i64 = 5 * 60 * 1000;
 
 /// One point on the shared 0→100% progress grid.
+///
+/// Large sessions merge facts on a bounded active-position quantum. This can
+/// move continuous values between progress buckets. Compaction markers stay
+/// with their aggregate and set the projected bucket context to zero.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bucket {
@@ -49,11 +53,9 @@ pub struct Bucket {
     /// This is a breakdown of `tokens_in`, not an addition to it — `tokens_in`
     /// already includes cache writes as effective input.
     pub cache_write_tokens: u64,
-    /// True when a turn landing in this bucket is a detected cache
-    /// rehydration (see `cache_miss_events` in `metrics_sink`).
+    /// True when a cache rehydration turn lands in this bucket.
     pub is_cache_rehydration: bool,
-    /// True when a turn landing in this bucket re-sent its context uncached
-    /// inside a fast burst, too soon for a TTL lapse (see `cache_miss_events`).
+    /// True when an uncached context replay lands here too soon for a cache expiry.
     #[serde(default)]
     pub is_cache_routing_miss: bool,
     /// Wall-clock seconds since the prior parent turn. A rehydration turn takes
@@ -118,8 +120,9 @@ pub struct SessionMetrics {
     pub agent: String,
     pub session_id: String,
     pub duration_secs: u64,
-    /// Wall-clock span minus idle gaps (≥ `IDLE_GAP_MS`); the time the session
-    /// was genuinely active. Always ≤ `duration_secs`.
+    /// Wall-clock span minus idle gaps of at least `IDLE_GAP_MS`.
+    /// This value is always less than or equal to `duration_secs`.
+    /// More than 1,024 intervals make active time and positions approximate.
     pub active_secs: u64,
     pub event_count: usize,
     /// Effective input tokens (fresh input + prompt-cache writes) — what the Tokens
@@ -146,9 +149,9 @@ pub struct SessionMetrics {
     /// Aggregation rescales each session's occupancy into the shared reference.
     pub context_window: u64,
     pub buckets: Vec<Bucket>,
-    /// Where this session's *initial* context window went, by source. `None`
-    /// when the agent/session has no reliable signal ("unavailable"). Populated
-    /// in `analyze_sources` (it needs the raw payload, not the normalized stream).
+    /// Where this session's initial context went. `None` means unavailable.
+    /// `analyze_sources` populates this field because it needs the raw payload.
+    /// The accumulator keeps 61 named rows and up to three named overflow rows.
     #[serde(default)]
     pub initial_context: Option<InitialContextBreakdown>,
     /// The model id used for this session (most expensive priceable one seen when
@@ -186,23 +189,22 @@ pub struct SessionMetrics {
     /// because the merge collapses the sub-agents' separate contexts.
     #[serde(default)]
     pub efficiency: EfficiencyTotals,
-    /// Skill invocations detected in this session — one entry per `Skill` tool
-    /// call, in event order. Each carries its active-time position, the invoking
-    /// turn's token figures, and an idle-capped duration;
-    /// `description` is grafted from the raw transcript later in `analyze_sources`.
-    /// Empty when the session invoked no skills. Skills stay in `ToolCategory::Other`.
+    /// Retained skill invocations in event order. The list keeps 256 calls and
+    /// 64 distinct names. Names over 192 bytes use a hash suffix.
+    /// The list is empty when the session invokes no skills.
+    /// Skills remain in `ToolCategory::Other`.
+    /// Each entry includes position, token figures, and an idle-capped duration.
+    /// `analyze_sources` adds a bounded description from the raw transcript.
     #[serde(default, skip_serializing)]
     pub skill_uses: Vec<SkillUse>,
-    /// Tool calls per MCP server, keyed by the lowercased `<server>` segment of
-    /// tool names shaped `mcp__<server>__<tool>`. `analyze_sources` reads this to
-    /// fill `InitialContextSourceCount::use_count` for MCP-sourced rows. Unlike
-    /// `skill_uses`, this never needs merging across sessions.
+    /// Tool calls for up to 128 MCP servers. Keys use the lowercased server
+    /// segment and a hash suffix when the segment exceeds 64 bytes.
+    /// `analyze_sources` uses these counts for initial-context rows.
     #[serde(default, skip_serializing)]
     pub mcp_tool_calls: HashMap<String, u32>,
-    /// Tool calls per raw tool name, exactly as the transcript names it (for
-    /// example `Bash`). `analyze_sources` reads this to fill
-    /// `InitialContextSourceCount::use_count` for `builtin_tool` rows. Like
-    /// `mcp_tool_calls`, this never needs merging across sessions.
+    /// Tool calls for up to 256 raw transcript names, such as `Bash`.
+    /// Names over 64 bytes use a hash suffix.
+    /// `analyze_sources` uses these counts for built-in initial-context rows.
     #[serde(default, skip_serializing)]
     pub tool_calls_by_name: HashMap<String, u32>,
 }
@@ -267,6 +269,8 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         cache_write_tokens_available: session.cache_write_tokens_available,
         context_window: session.context_window,
         model: session.model.clone(),
+        started_at_ms: None,
+        coverage_gaps: Vec::new(),
         late_tools: Vec::new(),
         initial_context: None,
         skill_descriptions: HashMap::new(),

@@ -1,0 +1,1 @@
+{"type":"message","timestamp":"2026-01-01T00:00:00Z","message":{"role":"bashExecution","command":"synthetic command","output":"synthetic output","usage":{"input":9,"output":8,"cacheRead":7,"cacheWrite":6}}}

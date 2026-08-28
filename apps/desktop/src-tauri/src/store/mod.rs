@@ -527,11 +527,12 @@ impl Store {
                 ],
                 |row| row.get::<_, i64>(0),
             )? != 0;
-            let (previous_generation, source_generation) = upsert_session_in(&tx, record)?;
+            let (previous_generation, source_generation, activity_cursor_changed) =
+                upsert_session_in(&tx, record)?;
             let generation_increased =
                 previous_generation.is_none_or(|previous| source_generation > previous);
             if evidence_agents.contains(&record.key.agent.as_str())
-                && (generation_increased || source_returned)
+                && (generation_increased || activity_cursor_changed || source_returned)
             {
                 mark_evidence_pending_in(&tx, &record.key)?;
             }
@@ -1650,19 +1651,23 @@ pub fn iso_from_epoch(epoch: Option<i64>) -> String {
 fn upsert_session_in(
     connection: &Connection,
     record: &SessionRecord,
-) -> Result<(Option<i64>, i64)> {
-    let previous_generation = connection
+) -> Result<(Option<i64>, i64, bool)> {
+    let previous_state = connection
         .query_row(
-            "SELECT source_generation FROM session
+            "SELECT source_generation, activity_cursor FROM session
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
                 record.key.environment_key,
                 record.key.agent,
                 record.key.session_id
             ],
-            |row| row.get(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
+    let previous_generation = previous_state.as_ref().map(|(generation, _)| *generation);
+    let activity_cursor_changed = previous_state
+        .as_ref()
+        .is_some_and(|(_, cursor)| cursor != &record.activity_cursor);
     let now = now_rfc3339();
     connection.execute(
         "INSERT INTO session (
@@ -1764,7 +1769,11 @@ fn upsert_session_in(
         ],
         |row| row.get(0),
     )?;
-    Ok((previous_generation, source_generation))
+    Ok((
+        previous_generation,
+        source_generation,
+        activity_cursor_changed,
+    ))
 }
 
 fn replace_relations_in(

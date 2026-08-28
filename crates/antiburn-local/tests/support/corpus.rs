@@ -70,6 +70,10 @@ pub struct SessionSpec {
     /// roughly `oversized_bytes` bytes.
     pub oversized_at: Option<usize>,
     pub oversized_bytes: usize,
+    /// Reuses assistant message ids with this modulus when set.
+    pub message_id_modulus: Option<usize>,
+    /// Adds a synthetic chained `uuid` and `parentUuid` identity to each record.
+    pub thread_identity: bool,
 }
 
 impl SessionSpec {
@@ -83,6 +87,8 @@ impl SessionSpec {
             unrecognized_every: None,
             oversized_at: None,
             oversized_bytes: 0,
+            message_id_modulus: None,
+            thread_identity: false,
         }
     }
 }
@@ -132,6 +138,9 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
 
     for index in 0..spec.records {
         let ts = base_epoch + (index as i64) * 7;
+        let push_record = |jsonl: &mut String, value: &Value| {
+            push_record(jsonl, value, &session_id, index, spec.thread_identity);
+        };
 
         if spec.oversized_at == Some(index) {
             jsonl.push_str(&oversized_record(ts, index, spec.oversized_bytes));
@@ -178,8 +187,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                 &mut jsonl,
                 &assistant_record(
                     ts,
-                    &session_id,
-                    index,
+                    &message_id(spec, index, &session_id),
                     MODELS[model_index],
                     spec.delegated,
                     &mut rng,
@@ -209,8 +217,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                     &mut jsonl,
                     &assistant_record(
                         ts,
-                        &session_id,
-                        index,
+                        &message_id(spec, index, &session_id),
                         MODELS[model_index],
                         spec.delegated,
                         &mut rng,
@@ -268,8 +275,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                     &mut jsonl,
                     &assistant_record(
                         ts,
-                        &session_id,
-                        index,
+                        &message_id(spec, index, &session_id),
                         MODELS[model_index],
                         spec.delegated,
                         &mut rng,
@@ -307,8 +313,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                     &mut jsonl,
                     &assistant_record(
                         ts,
-                        &session_id,
-                        index,
+                        &message_id(spec, index, &session_id),
                         MODELS[model_index],
                         spec.delegated,
                         &mut rng,
@@ -389,22 +394,74 @@ pub fn generate_session_of_bytes(
     session_index: usize,
     target_bytes: usize,
 ) -> GeneratedSession {
-    // Average record size is ~300 bytes; overshoot the first guess, then top up.
-    let mut records = target_bytes / 280;
+    generate_session_of_bytes_with_options(seed, session_index, target_bytes, None, false)
+}
+
+/// Grows a session that reuses a bounded set of assistant message ids.
+pub fn generate_session_of_bytes_with_message_modulus(
+    seed: u64,
+    session_index: usize,
+    target_bytes: usize,
+    message_id_modulus: Option<usize>,
+) -> GeneratedSession {
+    generate_session_of_bytes_with_options(
+        seed,
+        session_index,
+        target_bytes,
+        message_id_modulus,
+        false,
+    )
+}
+
+/// Grows a session with synthetic chained record identities.
+pub fn generate_session_of_bytes_with_identity(
+    seed: u64,
+    session_index: usize,
+    target_bytes: usize,
+    message_id_modulus: Option<usize>,
+) -> GeneratedSession {
+    generate_session_of_bytes_with_options(
+        seed,
+        session_index,
+        target_bytes,
+        message_id_modulus,
+        true,
+    )
+}
+
+fn generate_session_of_bytes_with_options(
+    seed: u64,
+    session_index: usize,
+    target_bytes: usize,
+    message_id_modulus: Option<usize>,
+    thread_identity: bool,
+) -> GeneratedSession {
+    let bytes_per_record = if thread_identity { 380 } else { 280 };
+    let mut records = target_bytes / bytes_per_record;
     loop {
-        let session = generate_session(&SessionSpec::tier_s(seed, session_index, records));
+        let mut spec = SessionSpec::tier_s(seed, session_index, records);
+        spec.message_id_modulus = message_id_modulus;
+        spec.thread_identity = thread_identity;
+        let session = generate_session(&spec);
         if session.jsonl.len() >= target_bytes {
             return session;
         }
         let deficit = target_bytes - session.jsonl.len();
-        records += deficit / 280 + 64;
+        records += deficit / bytes_per_record + 64;
     }
+}
+
+fn message_id(spec: &SessionSpec, index: usize, session_id: &str) -> String {
+    let id_index = spec
+        .message_id_modulus
+        .filter(|modulus| *modulus > 0)
+        .map_or(index, |modulus| index % modulus);
+    format!("msg-{session_id}-{id_index}")
 }
 
 fn assistant_record(
     ts: i64,
-    session_id: &str,
-    index: usize,
+    message_id: &str,
     model: &str,
     delegated: bool,
     rng: &mut CorpusRng,
@@ -414,7 +471,7 @@ fn assistant_record(
         "type": "assistant",
         "timestamp": ts,
         "message": {
-            "id": format!("msg-{session_id}-{index}"),
+            "id": message_id,
             "role": "assistant",
             "model": model,
             "usage": {
@@ -447,30 +504,146 @@ fn oversized_record(ts: i64, index: usize, bytes: usize) -> String {
     )
 }
 
-fn push_record(jsonl: &mut String, value: &Value) {
+fn push_record(
+    jsonl: &mut String,
+    value: &Value,
+    session_id: &str,
+    index: usize,
+    thread_identity: bool,
+) {
+    if !thread_identity {
+        jsonl.push_str(&value.to_string());
+        jsonl.push('\n');
+        return;
+    }
+    let mut value = value.clone();
+    value["uuid"] = json!(format!("uuid-{session_id}-{index}"));
+    value["parentUuid"] = if index == 0 {
+        Value::Null
+    } else {
+        json!(format!("uuid-{session_id}-{}", index - 1))
+    };
     jsonl.push_str(&value.to_string());
     jsonl.push('\n');
 }
 
-/// Writes one synthetic provider-DB (SQLite) session for the generic
-/// schema-agnostic table walk: one JSON record per row in a `turns` table,
-/// plus a non-JSON `housekeeping` table the walk must skip. Content comes
-/// from the same deterministic generator as the JSONL tiers.
+/// Writes one synthetic OpenCode provider-DB session from the shared corpus.
 pub fn write_provider_db(path: &Path, session: &GeneratedSession) -> anyhow::Result<()> {
     let mut connection = rusqlite::Connection::open(path)?;
     connection.execute_batch(
-        "CREATE TABLE turns (id INTEGER PRIMARY KEY, recorded_at INTEGER, payload TEXT);\n         CREATE TABLE housekeeping (id INTEGER PRIMARY KEY, note TEXT);",
+        "CREATE TABLE session (
+             id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER
+         );
+         CREATE TABLE message (
+             id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+             time_updated INTEGER, data TEXT
+         );
+         CREATE TABLE part (
+             id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+             time_created INTEGER, time_updated INTEGER, data TEXT
+         );",
     )?;
     let transaction = connection.transaction()?;
     {
-        let mut insert =
-            transaction.prepare("INSERT INTO turns (recorded_at, payload) VALUES (?1, ?2)")?;
+        transaction.execute(
+            "INSERT INTO session VALUES (?1, NULL, 0, 0)",
+            [&session.session_id],
+        )?;
+        let mut insert_message =
+            transaction.prepare("INSERT INTO message VALUES (?1, ?2, ?3, ?3, ?4)")?;
+        let mut insert_part =
+            transaction.prepare("INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?4, ?5)")?;
         for (index, line) in session.jsonl.lines().enumerate() {
-            insert.execute(rusqlite::params![index as i64, line])?;
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let record_type = record.get("type").and_then(Value::as_str);
+            let message = record.get("message");
+            let role = match record_type {
+                Some("assistant") => "assistant",
+                Some("user") => {
+                    let has_tool_result = message
+                        .and_then(|message| message.get("content"))
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|part| {
+                                part.get("type").and_then(Value::as_str) == Some("tool_result")
+                            })
+                        });
+                    if has_tool_result { "tool" } else { "user" }
+                }
+                Some("system")
+                    if record.get("subtype").and_then(Value::as_str)
+                        == Some("compact_boundary") =>
+                {
+                    "system"
+                }
+                _ => continue,
+            };
+            let timestamp = record
+                .get("timestamp")
+                .and_then(Value::as_i64)
+                .unwrap_or(index as i64);
+            let message_id = format!("provider-message-{index}");
+            let usage = message.and_then(|message| message.get("usage"));
+            let data = json!({
+                "role": role,
+                "modelID": message.and_then(|message| message.get("model")),
+                "variant": record.get("effort"),
+                "tokens": {
+                    "input": usage.and_then(|usage| usage.get("input_tokens")).and_then(Value::as_u64).unwrap_or(0),
+                    "output": usage.and_then(|usage| usage.get("output_tokens")).and_then(Value::as_u64).unwrap_or(0),
+                    "reasoning": 0,
+                    "cache": {
+                        "read": usage.and_then(|usage| usage.get("cache_read_input_tokens")).and_then(Value::as_u64).unwrap_or(0),
+                        "write": usage.and_then(|usage| usage.get("cache_creation_input_tokens")).and_then(Value::as_u64).unwrap_or(0)
+                    }
+                }
+            });
+            insert_message.execute(rusqlite::params![
+                message_id,
+                session.session_id,
+                timestamp,
+                data.to_string()
+            ])?;
+
+            if role == "system" {
+                insert_part.execute(rusqlite::params![
+                    format!("provider-part-{index}-0"),
+                    message_id,
+                    session.session_id,
+                    timestamp,
+                    json!({"type": "compaction"}).to_string()
+                ])?;
+                continue;
+            }
+            let Some(content) = message
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for (part_index, part) in content.iter().enumerate() {
+                let part = match part.get("type").and_then(Value::as_str) {
+                    Some("tool_use") => json!({
+                        "type": "tool",
+                        "tool": part.get("name"),
+                        "state": {"input": part.get("input")}
+                    }),
+                    Some("thinking") => json!({"type": "reasoning"}),
+                    Some("text") => json!({"type": "text"}),
+                    Some("tool_result") => continue,
+                    _ => continue,
+                };
+                insert_part.execute(rusqlite::params![
+                    format!("provider-part-{index}-{part_index}"),
+                    message_id,
+                    session.session_id,
+                    timestamp,
+                    part.to_string()
+                ])?;
+            }
         }
-        let mut note = transaction.prepare("INSERT INTO housekeeping (note) VALUES (?1)")?;
-        note.execute(["vacuum sweep of the fictional shelf index"])?;
-        note.execute(["synthetic retention note for the demo app"])?;
     }
     transaction.commit()?;
     Ok(())

@@ -1,12 +1,10 @@
 //! Drains the durable transcript evidence queue outside the scan pass.
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::SessionEvidence;
-use antiburn_local::discovery::SessionSource;
 use antiburn_local::insights::{DetectorId, requirements};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
@@ -57,6 +55,10 @@ pub struct WorkerHandle {
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
 pub(crate) type PassRunner<'a> =
     dyn Fn(&SessionRecord, PassSignal) -> PassFuture + Send + Sync + 'a;
+type RecordAnalyzer<'a> = dyn Fn(AgentKind, String, Option<String>, analysis::ClaimedSource, PassSignal) -> PassFuture
+    + Send
+    + Sync
+    + 'a;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermitKind {
@@ -64,18 +66,11 @@ pub(crate) enum PermitKind {
     ProviderDb,
 }
 
-pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let run_pass = |record: &SessionRecord, signal: PassSignal| {
-            let agent =
-                crate::agents::kind_from_slug(&record.key.agent).unwrap_or(AgentKind::Claude);
-            let session_id = record.key.session_id.clone();
-            let wsl_distro = record.wsl_distro.clone();
-            let claimed = analysis::ClaimedSource {
-                fingerprint: record.source_fingerprint.clone(),
-                generation: 0,
-            };
+fn run_record_pass(record: &SessionRecord, signal: PassSignal) -> PassFuture {
+    run_record_pass_with(
+        record,
+        signal,
+        &|agent, session_id, wsl_distro, claimed, signal| {
             Box::pin(async move {
                 analysis::analyze_for_evidence(
                     agent,
@@ -85,8 +80,35 @@ pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
                     signal,
                 )
                 .await
-            }) as PassFuture
-        };
+            })
+        },
+    )
+}
+
+fn run_record_pass_with(
+    record: &SessionRecord,
+    signal: PassSignal,
+    analyze: &RecordAnalyzer<'_>,
+) -> PassFuture {
+    let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
+        return Box::pin(async { analysis::unsupported_evidence_pass() });
+    };
+    analyze(
+        agent,
+        record.key.session_id.clone(),
+        record.wsl_distro.clone(),
+        analysis::ClaimedSource {
+            fingerprint: record.source_fingerprint.clone(),
+            generation: 0,
+        },
+        signal,
+    )
+}
+
+pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let run_pass = |record: &SessionRecord, signal: PassSignal| run_record_pass(record, signal);
         let announce_app = app.clone();
         let announce = move |entry: ActivityEntry| {
             let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
@@ -111,25 +133,10 @@ pub(crate) fn backoff_secs(retry_count: i64) -> i64 {
         .min(BACKOFF_MAX_SECS)
 }
 
-pub(crate) fn permit_for(source: &SessionSource) -> PermitKind {
-    match source {
-        SessionSource::ProviderDb { .. } => PermitKind::ProviderDb,
-        SessionSource::File(_) | SessionSource::Inline { .. } => PermitKind::Source,
-    }
-}
-
-fn source_for_record(record: &SessionRecord) -> SessionSource {
-    match record.source_kind.as_str() {
-        "providerDb" => SessionSource::ProviderDb {
-            agent: crate::agents::kind_from_slug(&record.key.agent).unwrap_or(AgentKind::Claude),
-            db_path: PathBuf::from(&record.source_label),
-            session_id: record.key.session_id.clone(),
-        },
-        "inline" => SessionSource::Inline {
-            label: record.source_label.clone(),
-            content: String::new(),
-        },
-        _ => SessionSource::File(PathBuf::from(&record.source_label)),
+pub(crate) fn permit_for_source_kind(source_kind: &str) -> PermitKind {
+    match source_kind {
+        "providerDb" => PermitKind::ProviderDb,
+        _ => PermitKind::Source,
     }
 }
 
@@ -269,14 +276,18 @@ pub(crate) async fn process_next(
     let Some(record) = store.session(&claim.key)? else {
         return Ok(true);
     };
-    let source = source_for_record(&record);
+    let Some(_agent) = crate::agents::kind_from_slug(&record.key.agent) else {
+        let pass = analysis::unsupported_evidence_pass();
+        apply_outcome(store, &claim, &pass, clock())?;
+        return Ok(true);
+    };
     let _cpu = handle
         .permits
         .cpu
         .acquire()
         .await
         .map_err(|_| anyhow::anyhow!("CPU permit closed"))?;
-    let permit = match permit_for(&source) {
+    let permit = match permit_for_source_kind(&record.source_kind) {
         PermitKind::Source => &handle.permits.source,
         PermitKind::ProviderDb => &handle.permits.provider_db,
     };
@@ -476,10 +487,26 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unknown_store_slug_is_rejected_instead_of_routing_to_claude() {
+        let mut unknown = record("unknown");
+        unknown.key.agent = "unknown-agent".to_owned();
+
+        let pass = run_record_pass(&unknown, PassSignal::new()).await;
+
+        assert_eq!(pass.outcome, PassOutcome::Unsupported);
+        assert!(pass.evidence.is_none());
+        assert!(pass.analysis.metrics.is_none());
+    }
+
     #[test]
     fn published_status_classifies_capability_sets_against_detector_prerequisites() {
         assert_eq!(
             published_status(&evidence_with(SourceCapabilities::claude())),
+            PublishedEvidence::Ready
+        );
+        assert_eq!(
+            published_status(&evidence_with(SourceCapabilities::pi())),
             PublishedEvidence::Ready
         );
         assert_eq!(
@@ -1220,6 +1247,107 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn pi_file_flows_through_worker_persistence_and_report() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let source_path = data_dir.path().join("synthetic-pi.jsonl");
+        std::fs::write(
+            &source_path,
+            concat!(
+                r#"{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z"}"#,
+                "\n",
+                r#"{"type":"thinking_level_change","timestamp":"2026-01-01T00:00:01Z","thinkingLevel":"low"}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        let mut pi = record("pi-worker-report");
+        pi.key.agent = "pi".to_owned();
+        pi.source_label = source_path.to_string_lossy().into_owned();
+        pi.source_fingerprint = Some("sv1:synthetic-pi-worker".to_owned());
+        store
+            .upsert_sessions(std::slice::from_ref(&pi), &crate::agents::evidence_cohort())
+            .unwrap();
+        let pi_source = source_path.clone();
+        let analyzer = move |agent: AgentKind,
+                             session_id: String,
+                             wsl_distro: Option<String>,
+                             claimed: analysis::ClaimedSource,
+                             signal: PassSignal| {
+            if agent != AgentKind::Pi || session_id != "pi-worker-report" {
+                return Box::pin(async move {
+                    analysis::analyze_for_evidence(
+                        agent,
+                        &session_id,
+                        wsl_distro.as_deref(),
+                        claimed,
+                        signal,
+                    )
+                    .await
+                }) as PassFuture;
+            }
+            let input = antiburn_local::analysis::SessionInput {
+                agent: crate::agents::vendor_label(agent).to_owned(),
+                session_id,
+                source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
+            };
+            Box::pin(async move {
+                let mut pass = analysis::evidence_pass(&[input], &|| signal.observe());
+                if let Some(fingerprint) = claimed.fingerprint {
+                    pass.analysis.fingerprint = fingerprint;
+                }
+                pass
+            }) as PassFuture
+        };
+        let runner = |record: &SessionRecord, signal: PassSignal| {
+            run_record_pass_with(record, signal, &analyzer)
+        };
+
+        assert!(
+            process_next(
+                &store,
+                &WorkerHandle::default(),
+                &|| 1_767_225_610,
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap()
+        );
+        let stored = store.evidence(&pi.key).unwrap().unwrap();
+        assert_eq!(stored.status, EvidenceStatus::Ready);
+        let evidence: SessionEvidence =
+            serde_json::from_str(stored.evidence_json.as_deref().unwrap()).unwrap();
+        assert_eq!(evidence.capabilities, SourceCapabilities::pi());
+
+        let report = crate::insights_report::reduce_report(
+            data_dir.path().to_path_buf(),
+            crate::insights_report::ReportRequest {
+                environment_key: "native".to_owned(),
+                window: antiburn_local::insights::ReportWindow {
+                    start_epoch: 1_767_225_000,
+                    end_epoch: 1_767_226_000,
+                },
+                computed_at_epoch: 1_767_226_000,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.assessed_sessions, 1);
+        assert_eq!(
+            report.detectors[DetectorId::ModelOverthinking.index()].assessed,
+            1
+        );
+        assert_eq!(
+            report.detectors[DetectorId::OldModelUsage.index()].assessed,
+            1
+        );
+    }
+
     #[test]
     fn errors_carry_no_transcript_content() {
         const SOURCE_CONTENT: &str = "PRIVATE_TRANSCRIPT_MARKER";
@@ -1256,25 +1384,9 @@ mod tests {
 
     #[test]
     fn a_permit_is_chosen_per_source_kind() {
-        assert_eq!(
-            permit_for(&SessionSource::File("a".into())),
-            PermitKind::Source
-        );
-        assert_eq!(
-            permit_for(&SessionSource::Inline {
-                label: "a".into(),
-                content: String::new()
-            }),
-            PermitKind::Source
-        );
-        assert_eq!(
-            permit_for(&SessionSource::ProviderDb {
-                agent: AgentKind::Claude,
-                db_path: "a".into(),
-                session_id: "s".into()
-            }),
-            PermitKind::ProviderDb
-        );
+        assert_eq!(permit_for_source_kind("file"), PermitKind::Source);
+        assert_eq!(permit_for_source_kind("inline"), PermitKind::Source);
+        assert_eq!(permit_for_source_kind("providerDb"), PermitKind::ProviderDb);
     }
 
     #[tokio::test]

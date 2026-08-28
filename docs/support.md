@@ -26,13 +26,13 @@ described in [Network](#network).
 | --- | --- | --- | --- |
 | Claude Code | Supported | Supported | |
 | Codex | Supported | Supported | |
-| OpenCode | Supported | Supported | |
+| OpenCode | Supported | Supported | Dedicated session analysis and Insights |
 | Cursor | Supported | Not supported | |
 | GitHub Copilot | Supported | Not supported | |
 | Cline | Supported | Not supported | |
 | Kiro | Supported | Not supported | |
 | Amp | Supported | Not supported | |
-| Pi | macOS and Linux only | Not supported | Excluded on Windows |
+| Pi | macOS and Linux only | Not supported | Dedicated session analysis; excluded on Windows |
 | Antigravity | Supported, **disk-only** | Not supported | Documented local files only |
 | Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
 

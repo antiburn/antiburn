@@ -11,7 +11,7 @@ mod cursor;
 mod generic_jsonl;
 mod jsonl;
 mod opencode;
-mod sqlite;
+pub(crate) mod pi;
 
 use crate::analysis::interface::{RawSource, VendorAdapter};
 
@@ -20,6 +20,7 @@ static GENERIC: generic_jsonl::GenericJsonlAdapter = generic_jsonl::GenericJsonl
 static CODEX: codex::CodexAdapter = codex::CodexAdapter;
 static CURSOR: cursor::CursorAdapter = cursor::CursorAdapter;
 static OPENCODE: opencode::OpenCodeAdapter = opencode::OpenCodeAdapter;
+static PI: pi::PiAdapter = pi::PiAdapter;
 static ANTIGRAVITY: antigravity::AntigravityAdapter = antigravity::AntigravityAdapter;
 
 /// Resolve the adapter for a vendor label (case-insensitive).
@@ -29,6 +30,7 @@ pub fn adapter_for(agent: &str) -> &'static dyn VendorAdapter {
         "codex" => &CODEX,
         "cursor" => &CURSOR,
         "opencode" => &OPENCODE,
+        "pi" => &PI,
         "antigravity" => &ANTIGRAVITY,
         _ => &GENERIC,
     }
@@ -78,7 +80,7 @@ mod tests {
 
     #[test]
     fn dedicated_adapters_are_recognized_case_insensitively() {
-        for agent in ["claude", "codex", "cursor", "opencode", "antigravity"] {
+        for agent in ["claude", "codex", "cursor", "opencode", "pi", "antigravity"] {
             assert!(has_dedicated_adapter(agent));
             assert!(has_dedicated_adapter(&agent.to_uppercase()));
         }
@@ -88,7 +90,7 @@ mod tests {
     fn generic_fallback_vendors_have_no_dedicated_adapter() {
         // Vendors on the generic JSONL fallback and unknown slugs return false,
         // so features keyed on this predicate leave them untouched.
-        for agent in ["copilot", "cline", "windsurf", "pi", "", "totally-unknown"] {
+        for agent in ["copilot", "cline", "windsurf", "", "totally-unknown"] {
             assert!(!has_dedicated_adapter(agent));
         }
     }
