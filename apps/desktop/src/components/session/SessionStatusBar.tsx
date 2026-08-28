@@ -90,8 +90,10 @@ function renderTooltip(
                   aria-label={mark.label}
                   className={`justify-self-center ${INK_CLASS[check.ink]}`}
                 />
+                {/* The reason stays in the name column. A full-width line would
+                    run under the mark column and break the right edge. */}
                 {check.status === "notAssessed" && check.notAssessedReason && (
-                  <span className="col-span-full type-caption text-label-tertiary">
+                  <span className="col-start-1 type-caption text-label-tertiary">
                     {notAssessedReasonLabel(check.notAssessedReason)}
                   </span>
                 )}

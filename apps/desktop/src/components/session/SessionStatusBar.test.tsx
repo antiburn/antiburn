@@ -148,7 +148,9 @@ describe("SessionStatusBar", () => {
     const name = await screen.findByText("Excess cache rehydration")
     expect(name.textContent).not.toContain("not assessed")
     const reason = await screen.findByText("couldn't read the whole session log")
-    expect(reason.className).toContain("col-span-full")
+    // The reason shares the name's column and never runs under the mark.
+    expect(reason.className).toContain("col-start-1")
+    expect(reason.className).not.toContain("col-span-full")
     expect(reason.className).toContain("text-label-tertiary")
   })
 
