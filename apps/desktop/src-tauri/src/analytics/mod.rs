@@ -74,6 +74,7 @@ pub fn record_unrecognized_records(
     _app: &tauri::AppHandle,
     _summary: &antiburn_local::insights::UnrecognizedRecords,
 ) {
+    let _ = event::EventName::UnrecognizedRecordsObserved;
 }
 
 #[cfg(not(feature = "analytics"))]
