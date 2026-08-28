@@ -40,9 +40,8 @@ import type { AppSettingsController } from "./useAppSettings"
  * it actually registered — not a compile-time guess. Everything here hangs off
  * that one flag:
  *
- * - **Supported.** The automatic-check switch is shown and is real: the shell
- *   runs the schedule, and the results arrive here as events, so the line under
- *   the switch reports what the last automatic check actually found.
+ * - **Supported.** The automatic-update switch is real. The shell runs the
+ *   schedule, and progress arrives here as events.
  * - **Unsupported.** The switch is not rendered at all. A build that cannot
  *   check for updates has no automatic behaviour to configure, and a disabled
  *   switch over a preference nothing reads is the exact "control that does
@@ -186,7 +185,7 @@ type UpdatesSnapshot = {
   latestRevision: number
 }
 
-// Module-level: the shell's automatic-check schedule and a manual check both
+// Module-level: the shell's automatic-update schedule and manual actions both
 // land here regardless of how many settings windows are open to see them.
 const updateStatusStore = createExternalStore<UpdatesSnapshot>({
   initial: { state: { kind: "idle" }, lastAutomatic: null, latestRevision: 0 },
@@ -363,11 +362,11 @@ export function UpdatesSection({ settings, update, info }: UpdatesSectionProps) 
         )}
         {supported ? (
           <ToggleRow
-            label="Check for updates automatically"
+            label="Install updates automatically"
             description={
               lastAutomatic
-                ? `A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else; last checked ${relativeTime(lastAutomatic)}.`
-                : "A moment after launch and every six hours. antiburn contacts the release feed for this check and nothing else — nothing about your sessions is ever sent."
+                ? `antiburn checks a moment after launch and every six hours, then downloads, verifies, installs, and restarts when an update is available; last checked ${relativeTime(lastAutomatic)}.`
+                : "antiburn checks a moment after launch and every six hours, then downloads, verifies, installs, and restarts when an update is available. Nothing about your sessions is sent."
             }
             checked={settings.autoUpdate}
             onChange={(next) => void update({ autoUpdate: next })}

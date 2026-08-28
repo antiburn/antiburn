@@ -151,7 +151,7 @@ engine. Release and dependency checks run through the required CI gate.
   background work must be no more frequent or intensive than the visible
   feature requires. See the policy at the top of `src-tauri/src/scan.rs`.
 - **Notifications.** Six kinds, all posted by the shell and never by the webview
-  (which is granted no notification permission): an available update, a failed
+  (which is granted no notification permission): an automatic update, a failed
   scan, low disk space, a crossed usage milestone, the first-run menu-bar
   location, and the settings pane's own test. The test and first-run location
   bypass the master switch because both follow a direct reader action. Other

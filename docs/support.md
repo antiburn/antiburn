@@ -121,13 +121,14 @@ beyond analytics and updates are yours, not ours: reading
 a provider's own figures with your own credentials is traffic between this machine
 and a provider you already use. The application's own connection to a service of
 ours are analytics and the updater. The updater asks GitHub Releases whether a newer
-version exists and downloads its signed bundle only after you select Install. The
-app never depends on either connection.
+version exists. When automatic updates are enabled, it downloads and installs the
+signed bundle and restarts antiburn. The app never depends on either connection.
 
 - The check sends nothing about you, your machine, or your sessions.
-- It runs on a schedule only while "check for updates automatically" is on, and can
+- It runs on a schedule only while "Install updates automatically" is on, and can
   always be run by hand from Settings → About.
-- Automatic checks never download or install an update.
+- An automatic update downloads, verifies, and installs the new version. antiburn
+  restarts as soon as installation succeeds.
 - An install verifies the downloaded bundle against the public key in the app before
   it changes the installed application.
 - Development builds carry no updater at all.

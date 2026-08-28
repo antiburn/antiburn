@@ -311,9 +311,9 @@ work, but it does not replace these signed-artifact checks.
 - [ ] **The previous version can update to this one.** The real test of a
       release: install the previous version, point it at the draft only after
       publishing (drafts are not reachable), or rehearse with a pre-release tag.
-      On macOS and Linux AppImage, confirm About shows download progress, changes
-      to the installed state, and offers Restart to update. Restart and confirm
-      About shows the new version. On Windows, confirm the passive NSIS installer
+      On macOS and Linux AppImage, leave the popover closed and confirm the app
+      downloads, installs, and restarts without approval. Confirm About shows the
+      new version after restart. On Windows, confirm the passive NSIS installer
       exits and relaunches the updated application. The Debian package is
       install-only and must report that in-app updates are unavailable.
 - [ ] **Updater failures stay safe and visible.** In a release rehearsal, interrupt

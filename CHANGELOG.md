@@ -20,6 +20,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- Signed application updates now download, install, and restart antiburn
+  automatically. The automatic-update setting remains available as an opt-out.
+
 ## [0.2.0] - 2026-08-28
 
 ### Added
