@@ -75,8 +75,8 @@ export function SettingsView() {
 
   // ⌘W closes the window. The shell runs as an accessory app with no
   // application menu, so the standard shortcut has no owner unless it is
-  // handled here. Routed through a close *request* (which the shell turns into
-  // a hide), so this takes the same path as the title-bar button.
+  // handled here. The close request takes the same path as the title-bar
+  // button, and the shell releases this renderer.
   // Esc must NOT close: dismiss-on-Escape is modal behavior and a settings
   // window is not a modal. Do not "fix" this by adding Escape.
   useGlobalKeydown(true, (event) => {

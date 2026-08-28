@@ -108,8 +108,7 @@ impl Schedulers {
 ///
 /// Panics if the webview runtime, tray item, or local database cannot be
 /// created. None has a meaningful degraded mode. The shell opens onboarding
-/// when required and prewarms Settings after setup. Other windows load when
-/// the first interaction requests them.
+/// when required. Other windows load when the first interaction requests them.
 pub fn run() {
     let log_directory_name = if cfg!(debug_assertions) {
         "antiburn-debug"
@@ -182,6 +181,7 @@ pub fn run() {
             commands::list_repositories,
             commands::list_scan_roots,
             commands::open_settings_window,
+            commands::popover_content_ready,
             commands::post_test_notification,
             commands::post_sample_notification,
             commands::quit_app,
@@ -282,8 +282,6 @@ pub fn run() {
                         error = %error
                     );
                 }
-            } else {
-                settings::schedule_prewarm(app.handle());
             }
 
             // Registered before the update scheduler starts, so the first
@@ -428,7 +426,6 @@ fn finish_retention_cleanup(handle: &mut Option<tauri::async_runtime::JoinHandle
 enum ClosePolicy {
     Allow,
     HidePopover,
-    HideSettings,
     HidePendingOnboarding,
     HideNudge,
 }
@@ -436,8 +433,6 @@ enum ClosePolicy {
 fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
     if label == popover::LABEL {
         ClosePolicy::HidePopover
-    } else if label == settings::LABEL {
-        ClosePolicy::HideSettings
     } else if label == antiburn_nudge::NUDGE_LABEL {
         ClosePolicy::HideNudge
     } else if label == onboarding::LABEL && onboarding_pending {
@@ -463,16 +458,6 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                     // Through `popover::hide` rather than `window.hide()`, so
                     // this path answers to the pin like every dismissal does.
                     popover::hide(window.app_handle());
-                }
-                ClosePolicy::HideSettings => {
-                    if let Err(error) = window.hide() {
-                        ::tracing::error!(
-                            event = "settings_window_hide_on_close_failed",
-                            error = %error
-                        );
-                    } else {
-                        api.prevent_close();
-                    }
                 }
                 ClosePolicy::HidePendingOnboarding => {
                     api.prevent_close();
@@ -697,7 +682,7 @@ mod tests {
         );
         assert_eq!(
             close_policy(super::settings::LABEL, false),
-            ClosePolicy::HideSettings
+            ClosePolicy::Allow
         );
         assert_eq!(
             close_policy(antiburn_nudge::NUDGE_LABEL, false),

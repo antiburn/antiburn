@@ -256,8 +256,7 @@ describe("InsightsSession", () => {
     await flush()
     expect(invoke).not.toHaveBeenCalledWith("cancel_insights_report")
 
-    // The shell hides the settings window on close; the pane stays
-    // mounted, so the session must pause on visibility alone.
+    // A system visibility change can pause work before the renderer unmounts.
     setWindowVisibility("hidden")
     expect(invoke).toHaveBeenCalledWith("cancel_insights_report")
 

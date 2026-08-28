@@ -25,7 +25,7 @@
 //! `data-tauri-drag-region` strip (`src/views/onboarding/OnboardingFlow.tsx`).
 
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -48,7 +48,23 @@ const HEIGHT: f64 = 480.0;
 
 /// Give the final settings command time to return before its caller's webview
 /// is destroyed. The window is hidden immediately, so this delay is invisible.
-const FINISH_TEARDOWN_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+const FINISH_TEARDOWN_DELAY: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FinishHandoffAction {
+    PrewarmPopover,
+    DestroyOnboarding,
+}
+
+fn finish_handoff_schedule() -> [(Duration, FinishHandoffAction); 2] {
+    [
+        (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
+        (
+            FINISH_TEARDOWN_DELAY,
+            FinishHandoffAction::DestroyOnboarding,
+        ),
+    ]
+}
 
 // The reasons for those two numbers, as build errors rather than tests —
 // following `popover.rs`, and for the same reason: a geometry constant edited
@@ -253,23 +269,35 @@ pub fn finish(app: &AppHandle) {
     // ordered out by it — hence this line before that one, not after.
     apply_activation_policy(app, false);
     crate::notifications::note_menu_bar_home(app);
-    crate::settings::schedule_prewarm(app);
 
     // `finish` runs inside the onboarding webview's final `set_settings` IPC.
-    // Destroying that webview synchronously can cut off the command response;
-    // hide now, then retire it once the response and location nudge are away.
+    // Queue the prewarm after this command yields. Destroy onboarding later so
+    // the command response can leave its renderer.
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FINISH_TEARDOWN_DELAY).await;
-        let check_app = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            if is_pending(&check_app) {
-                return;
+        for (delay, action) in finish_handoff_schedule() {
+            if delay.is_zero() {
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(delay).await;
             }
-            if let Some(window) = check_app.get_webview_window(LABEL) {
-                let _ = window.destroy();
-            }
-        });
+            let check_app = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if is_pending(&check_app) {
+                    return;
+                }
+                match action {
+                    FinishHandoffAction::PrewarmPopover => {
+                        crate::popover::prewarm(&check_app);
+                    }
+                    FinishHandoffAction::DestroyOnboarding => {
+                        if let Some(window) = check_app.get_webview_window(LABEL) {
+                            let _ = window.destroy();
+                        }
+                    }
+                }
+            });
+        }
     });
 }
 
@@ -339,6 +367,20 @@ mod tests {
         assert_eq!(
             LABEL, "onboarding",
             "also listed in capabilities/default.json"
+        );
+    }
+
+    #[test]
+    fn the_finish_handoff_schedules_prewarm_before_renderer_teardown() {
+        assert_eq!(
+            finish_handoff_schedule(),
+            [
+                (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
+                (
+                    FINISH_TEARDOWN_DELAY,
+                    FinishHandoffAction::DestroyOnboarding
+                ),
+            ]
         );
     }
 

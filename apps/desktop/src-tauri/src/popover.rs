@@ -1,8 +1,9 @@
 //! The tray-anchored popover window.
 //!
 //! The popover is created lazily on the first tray click. After dismissal it
-//! stays warm for the process lifetime, so each later open is immediate and
-//! keeps the state that its views already loaded.
+//! stays warm for a short grace period, so a quick reopen is immediate. Once
+//! the grace period ends, the shell destroys the hidden renderer. The next
+//! open creates a new renderer from native state.
 //!
 //! # Geometry
 //!
@@ -37,6 +38,9 @@
 //! Whichever way it goes, it leaves through [`note_hidden`], which is also
 //! where the menu-bar item is unlit; [`note_shown`] is the other half.
 
+mod retention;
+mod timing;
+
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -50,8 +54,10 @@ use tauri::{
 
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_readiness::{
-    OpenAction, ToggleAction, WindowReadiness, renderer_generation_script,
+    OpenAction, PrewarmAction, ToggleAction, WindowReadiness, renderer_generation_script,
 };
+
+use self::retention::{DueEviction, EvictionMode, EvictionSchedule, EvictionToken, Retention};
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "popover";
@@ -248,6 +254,7 @@ fn linux_anchor(window: &WebviewWindow) -> Option<AnchorRect> {
 /// pin stay the ways to put it away.
 #[cfg(target_os = "linux")]
 pub fn open_from_tray_menu(app: &AppHandle) {
+    let requested_at = Instant::now();
     // The same gate [`toggle`] applies: before the first run is finished the
     // popover has nothing to show, so send the reader to the flow they are owed.
     if crate::onboarding::is_pending(app) {
@@ -272,7 +279,7 @@ pub fn open_from_tray_menu(app: &AppHandle) {
     // latch, the item would do nothing right after the menu opens.
     state.clear_auto_hide();
 
-    let request = match request_open_window(app) {
+    let request = match request_open_window(app, Some(requested_at)) {
         Ok(request) => request,
         Err(error) => {
             ::tracing::error!(event = "popover_create_failed", error = %error);
@@ -333,6 +340,12 @@ pub struct PopoverState {
     /// Deliberately not persisted: a pin means "keep this on screen while I
     /// work", and a relaunch is the end of that work.
     pinned: AtomicBool,
+    /// The generation of the current renderer.
+    renderer_generation: AtomicU64,
+    /// The bounded ownership of hidden renderers and eviction callbacks.
+    retention: Mutex<Retention>,
+    /// Content-free timing for the active menu-bar open request.
+    timing: timing::PopoverTiming,
     /// The renderer load and any reveal waiting behind it.
     readiness: Mutex<WindowReadiness>,
 }
@@ -346,6 +359,9 @@ impl Default for PopoverState {
             resize_generation: AtomicU64::new(0),
             focus_hold: AtomicU64::new(0),
             pinned: AtomicBool::new(false),
+            renderer_generation: AtomicU64::new(0),
+            retention: Mutex::new(Retention::default()),
+            timing: timing::PopoverTiming::default(),
             readiness: Mutex::new(WindowReadiness::default()),
         }
     }
@@ -417,6 +433,83 @@ impl PopoverState {
         self.pinned.store(pinned, Ordering::SeqCst);
     }
 
+    fn retention(&self) -> std::sync::MutexGuard<'_, Retention> {
+        self.retention
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn arm_hidden_retention(
+        &self,
+        renderer_generation: u64,
+        now: Instant,
+    ) -> Option<EvictionSchedule> {
+        self.retention()
+            .arm_hidden(renderer_generation, now, self.is_pinned())
+    }
+
+    fn arm_eviction_retry(&self, renderer_generation: u64, mode: EvictionMode) -> EvictionSchedule {
+        self.retention().arm_retry(renderer_generation, mode)
+    }
+
+    fn attach_eviction_task(
+        &self,
+        token: EvictionToken,
+        task: tauri::async_runtime::JoinHandle<()>,
+    ) {
+        self.retention().attach_task(token, task);
+    }
+
+    fn cancel_eviction(&self) {
+        self.retention().cancel_eviction();
+    }
+
+    fn take_eviction_if_due(&self, token: EvictionToken, visible: bool) -> Option<DueEviction> {
+        let renderer_generation = self.renderer_generation.load(Ordering::SeqCst);
+        self.retention()
+            .take_due(token, renderer_generation, visible, self.is_pinned())
+    }
+
+    fn mark_prewarm(&self, generation: u64, now: Instant) {
+        self.retention().begin_prewarm(generation, now);
+    }
+
+    fn is_prewarm(&self, generation: u64) -> bool {
+        self.retention().is_prewarm(generation)
+    }
+
+    fn clear_prewarm(&self) {
+        self.retention().take_prewarm();
+    }
+
+    fn prewarm_generation(&self) -> Option<u64> {
+        self.retention().prewarm_generation()
+    }
+
+    fn transfer_prewarm(&self, from: u64, to: u64) -> bool {
+        self.retention().transfer_prewarm(from, to)
+    }
+
+    fn mark_prewarm_ready(&self, generation: u64, now: Instant) -> bool {
+        self.retention().mark_prewarm_ready(generation, now)
+    }
+
+    fn expired_prewarm(&self, now: Instant) -> Option<DueEviction> {
+        self.retention().expired_prewarm(now)
+    }
+
+    fn clear_prewarm_generation(&self, generation: u64) -> bool {
+        self.retention().clear_prewarm_generation(generation)
+    }
+
+    fn consume_prewarm_on_reveal(&self, generation: u64) -> bool {
+        self.retention().consume_prewarm_on_reveal(generation)
+    }
+
+    fn take_prewarm(&self) -> Option<u64> {
+        self.retention().take_prewarm()
+    }
+
     fn record_anchor(&self, anchor: AnchorRect) {
         if let Ok(mut slot) = self.anchor.lock() {
             *slot = Some(anchor);
@@ -468,6 +561,10 @@ fn ease_out(progress: f64) -> f64 {
 
 /// Build the popover hidden and off the taskbar.
 fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow> {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.timing.reset_renderer(generation);
+        state.timing.build_started(generation, Instant::now());
+    }
     ::tracing::info!(
         event = "window_renderer_load_started",
         window = LABEL,
@@ -513,9 +610,24 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
     );
 
     match builder.build() {
-        Ok(window) => Ok(window),
+        Ok(window) => {
+            let state = app.state::<PopoverState>();
+            state
+                .renderer_generation
+                .store(generation, Ordering::SeqCst);
+            if state.is_prewarm(generation) {
+                schedule_idle_eviction(app);
+            }
+            Ok(window)
+        }
         Err(error) => {
             window_lifecycle::cancel_load::<PopoverState>(app, generation);
+            if let Some(state) = app.try_state::<PopoverState>()
+                && state.is_prewarm(generation)
+            {
+                state.clear_prewarm();
+                state.cancel_eviction();
+            }
             Err(error)
         }
     }
@@ -528,8 +640,92 @@ enum WindowRequest {
     Cancelled,
 }
 
-fn request_open_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
+fn begin_open_timing(
+    state: &PopoverState,
+    requested_at: Option<Instant>,
+    generation: u64,
+    renderer_state: &'static str,
+) {
+    let Some(requested_at) = requested_at else {
+        return;
+    };
+    state.timing.begin_open(
+        generation,
+        requested_at,
+        state.is_prewarm(generation),
+        renderer_state,
+    );
+}
+
+fn transfer_prewarm_for_replacement(
+    state: &PopoverState,
+    previous_generation: Option<u64>,
+    replacement_generation: u64,
+) -> bool {
+    let Some(previous_generation) = previous_generation else {
+        return false;
+    };
+    if previous_generation != replacement_generation {
+        state.transfer_prewarm(previous_generation, replacement_generation);
+        state.cancel_eviction();
+    }
+    state.is_prewarm(replacement_generation)
+}
+
+fn replace_expired_prewarm(
+    app: &AppHandle,
+    requested_at: Option<Instant>,
+) -> tauri::Result<Option<WindowRequest>> {
     let state = app.state::<PopoverState>();
+    let Some(expired) = state.expired_prewarm(Instant::now()) else {
+        return Ok(None);
+    };
+    let expired_generation = expired.renderer_generation();
+
+    state.cancel_eviction();
+    state.readiness().reset();
+    state.timing.cancel_open();
+    let generation = {
+        let mut readiness = state.readiness();
+        match readiness.request_open(Instant::now()) {
+            OpenAction::StartLoading { generation } => generation,
+            _ => unreachable!("a reset lifecycle starts loading"),
+        }
+    };
+    begin_open_timing(&state, requested_at, generation, "expired");
+
+    let Some(existing) = app.get_webview_window(LABEL) else {
+        state.clear_prewarm_generation(expired_generation);
+        return build_window(app, generation)
+            .map(WindowRequest::Loading)
+            .map(Some);
+    };
+
+    state.readiness().defer_build_until_destroyed(generation);
+    if let Err(error) = existing.destroy() {
+        window_lifecycle::cancel_load::<PopoverState>(app, generation);
+        let retry = state.arm_eviction_retry(expired_generation, expired.mode());
+        arm_idle_eviction(app, retry);
+        return Err(error);
+    }
+    state.clear_prewarm_generation(expired_generation);
+    Ok(Some(WindowRequest::AwaitingBuild))
+}
+
+fn request_open_window(
+    app: &AppHandle,
+    requested_at: Option<Instant>,
+) -> tauri::Result<WindowRequest> {
+    if let Some(request) = replace_expired_prewarm(app, requested_at)? {
+        return Ok(request);
+    }
+    let state = app.state::<PopoverState>();
+    let prewarm_generation = state.prewarm_generation();
+    let prewarm_loading = prewarm_generation
+        .is_some_and(|generation| state.readiness().loading_generation() == Some(generation));
+    if !prewarm_loading {
+        state.cancel_eviction();
+    }
     let Some(existing) = app.get_webview_window(LABEL) else {
         let mut readiness = state.readiness();
         let action = readiness.request_open(Instant::now());
@@ -537,7 +733,14 @@ fn request_open_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
             OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
                 generation
             }
-            OpenAction::AwaitReady => return Ok(WindowRequest::AwaitingBuild),
+            OpenAction::AwaitReady => {
+                let generation = readiness
+                    .loading_generation()
+                    .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
+                drop(readiness);
+                begin_open_timing(&state, requested_at, generation, "loading");
+                return Ok(WindowRequest::AwaitingBuild);
+            }
             OpenAction::Reveal => {
                 readiness.reset();
                 match readiness.request_open(Instant::now()) {
@@ -547,6 +750,8 @@ fn request_open_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
             }
         };
         drop(readiness);
+        transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
+        begin_open_timing(&state, requested_at, generation, "build");
         return build_window(app, generation).map(WindowRequest::Loading);
     };
 
@@ -555,14 +760,32 @@ fn request_open_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
         readiness.request_open(Instant::now())
     };
     match action {
-        OpenAction::Reveal => Ok(WindowRequest::Ready(existing)),
-        OpenAction::AwaitReady => Ok(WindowRequest::Loading(existing)),
+        OpenAction::Reveal => {
+            let generation = state.renderer_generation.load(Ordering::SeqCst);
+            begin_open_timing(&state, requested_at, generation, "ready");
+            Ok(WindowRequest::Ready(existing))
+        }
+        OpenAction::AwaitReady => {
+            let generation = state
+                .readiness()
+                .loading_generation()
+                .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
+            begin_open_timing(&state, requested_at, generation, "loading");
+            Ok(WindowRequest::Loading(existing))
+        }
         OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
+            let prewarmed =
+                transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
+            begin_open_timing(&state, requested_at, generation, "replacement");
             if !state.readiness().defer_build_until_destroyed(generation) {
                 return Ok(WindowRequest::AwaitingBuild);
             }
             if let Err(error) = existing.destroy() {
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
+                if prewarmed && let Some(prewarm_generation) = prewarm_generation {
+                    state.transfer_prewarm(generation, prewarm_generation);
+                    schedule_idle_eviction(app);
+                }
                 return Err(error);
             }
             Ok(WindowRequest::AwaitingBuild)
@@ -570,8 +793,17 @@ fn request_open_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
     }
 }
 
-fn request_toggle_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
+fn request_toggle_window(app: &AppHandle, requested_at: Instant) -> tauri::Result<WindowRequest> {
+    if let Some(request) = replace_expired_prewarm(app, Some(requested_at))? {
+        return Ok(request);
+    }
     let state = app.state::<PopoverState>();
+    let prewarm_generation = state.prewarm_generation();
+    let prewarm_loading = prewarm_generation
+        .is_some_and(|generation| state.readiness().loading_generation() == Some(generation));
+    if !prewarm_loading {
+        state.cancel_eviction();
+    }
     let Some(existing) = app.get_webview_window(LABEL) else {
         let mut readiness = state.readiness();
         let action = readiness.toggle_open(Instant::now());
@@ -579,8 +811,24 @@ fn request_toggle_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
             ToggleAction::StartLoading { generation } | ToggleAction::Rebuild { generation } => {
                 generation
             }
-            ToggleAction::AwaitReady => return Ok(WindowRequest::AwaitingBuild),
-            ToggleAction::CancelPendingReveal => return Ok(WindowRequest::Cancelled),
+            ToggleAction::AwaitReady => {
+                let generation = readiness
+                    .loading_generation()
+                    .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
+                drop(readiness);
+                state.timing.begin_open(
+                    generation,
+                    requested_at,
+                    prewarm_generation == Some(generation),
+                    "loading",
+                );
+                return Ok(WindowRequest::AwaitingBuild);
+            }
+            ToggleAction::CancelPendingReveal => {
+                drop(readiness);
+                state.timing.cancel_open();
+                return Ok(WindowRequest::Cancelled);
+            }
             ToggleAction::UseWindowVisibility => {
                 readiness.reset();
                 match readiness.toggle_open(Instant::now()) {
@@ -590,6 +838,13 @@ fn request_toggle_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
             }
         };
         drop(readiness);
+        transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
+        state.timing.begin_open(
+            generation,
+            requested_at,
+            state.is_prewarm(generation),
+            "build",
+        );
         return build_window(app, generation).map(WindowRequest::Loading);
     };
 
@@ -598,15 +853,51 @@ fn request_toggle_window(app: &AppHandle) -> tauri::Result<WindowRequest> {
         readiness.toggle_open(Instant::now())
     };
     match action {
-        ToggleAction::UseWindowVisibility => Ok(WindowRequest::Ready(existing)),
-        ToggleAction::AwaitReady => Ok(WindowRequest::Loading(existing)),
-        ToggleAction::CancelPendingReveal => Ok(WindowRequest::Cancelled),
+        ToggleAction::UseWindowVisibility => {
+            let generation = state.renderer_generation.load(Ordering::SeqCst);
+            state.timing.begin_open(
+                generation,
+                requested_at,
+                prewarm_generation == Some(generation),
+                "ready",
+            );
+            Ok(WindowRequest::Ready(existing))
+        }
+        ToggleAction::AwaitReady => {
+            let generation = state
+                .readiness()
+                .loading_generation()
+                .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
+            state.timing.begin_open(
+                generation,
+                requested_at,
+                prewarm_generation == Some(generation),
+                "loading",
+            );
+            Ok(WindowRequest::Loading(existing))
+        }
+        ToggleAction::CancelPendingReveal => {
+            state.timing.cancel_open();
+            Ok(WindowRequest::Cancelled)
+        }
         ToggleAction::StartLoading { generation } | ToggleAction::Rebuild { generation } => {
+            let prewarmed =
+                transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
+            state.timing.begin_open(
+                generation,
+                requested_at,
+                state.is_prewarm(generation),
+                "replacement",
+            );
             if !state.readiness().defer_build_until_destroyed(generation) {
                 return Ok(WindowRequest::AwaitingBuild);
             }
             if let Err(error) = existing.destroy() {
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
+                if prewarmed && let Some(prewarm_generation) = prewarm_generation {
+                    state.transfer_prewarm(generation, prewarm_generation);
+                    schedule_idle_eviction(app);
+                }
                 return Err(error);
             }
             Ok(WindowRequest::AwaitingBuild)
@@ -619,6 +910,7 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
     let state = app.state::<PopoverState>();
     let generation = window_lifecycle::begin_deferred_build::<PopoverState>(app, Instant::now());
     let Some(generation) = generation else {
+        state.clear_prewarm();
         return;
     };
     match build_window(app, generation) {
@@ -635,10 +927,33 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
     }
 }
 
+/// Build one hidden renderer for the handoff from onboarding to the menu bar.
+pub fn prewarm(app: &AppHandle) {
+    if crate::onboarding::is_pending(app) || app.get_webview_window(LABEL).is_some() {
+        return;
+    }
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    let generation = {
+        let mut readiness = state.readiness();
+        match readiness.request_prewarm(Instant::now()) {
+            PrewarmAction::StartLoading { generation } => generation,
+            PrewarmAction::KeepExisting => return,
+        }
+    };
+    state.mark_prewarm(generation, Instant::now());
+    if let Err(error) = build_window(app, generation) {
+        state.clear_prewarm();
+        ::tracing::warn!(event = "popover_prewarm_failed", error = %error);
+    }
+}
+
 /// Handles a click on the menu-bar item.
 ///
 /// `anchor` is the item's screen rectangle as reported by the tray backend.
 pub fn toggle(app: &AppHandle, anchor: Rect) {
+    let requested_at = Instant::now();
     // Before the first run is finished the popover has nothing to show — the
     // activity list is empty by construction, because the scan scheduler is
     // gated on the same flag (see [`crate::scan`]). Send the click to the flow
@@ -668,8 +983,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
             let _ = window.set_focus();
             return;
         }
-        let _ = window.hide();
-        note_hidden(app);
+        hide_window(app);
         return;
     }
 
@@ -679,7 +993,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
         return;
     }
 
-    let request = match request_toggle_window(app) {
+    let request = match request_toggle_window(app, requested_at) {
         Ok(request) => request,
         Err(error) => {
             ::tracing::error!(event = "popover_create_failed", error = %error);
@@ -689,7 +1003,12 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     let (window, ready) = match request {
         WindowRequest::Ready(window) => (window, true),
         WindowRequest::Loading(window) => (window, false),
-        WindowRequest::AwaitingBuild | WindowRequest::Cancelled => return,
+        WindowRequest::AwaitingBuild => return,
+        WindowRequest::Cancelled => {
+            note_hidden(app);
+            schedule_idle_eviction(app);
+            return;
+        }
     };
 
     if let Err(error) = anchor_to(&window, anchor) {
@@ -725,14 +1044,117 @@ pub fn hide(app: &AppHandle) {
 ///
 /// This operation keeps the pin choice. The pin applies again after setup.
 pub fn hide_for_onboarding(app: &AppHandle) {
+    if destroy_prewarm(app) {
+        return;
+    }
+    if let Some(state) = app.try_state::<PopoverState>() {
+        cancel_pending_reveal_for_onboarding(&state);
+    }
     hide_window(app);
 }
 
-fn hide_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.hide();
+fn cancel_pending_reveal_for_onboarding(state: &PopoverState) -> bool {
+    state.timing.cancel_open();
+    state.readiness().cancel_pending_reveal()
+}
+
+fn destroy_prewarm(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return false;
+    };
+    let Some(_generation) = state.take_prewarm() else {
+        return false;
+    };
+    state.cancel_eviction();
+    state.readiness().reset();
+    state.timing.cancel_open();
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return true;
+    };
+    match window.destroy() {
+        Ok(()) => true,
+        Err(error) => {
+            ::tracing::warn!(event = "popover_prewarm_cancel_failed", error = %error);
+            false
+        }
     }
+}
+
+fn hide_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        note_hidden(app);
+        return;
+    };
+    let _ = window.hide();
     note_hidden(app);
+    schedule_idle_eviction(app);
+}
+
+fn schedule_idle_eviction(app: &AppHandle) {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    let loading_generation = state.readiness().loading_generation();
+    let renderer_generation =
+        loading_generation.unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
+    let Some(schedule) = state.arm_hidden_retention(renderer_generation, Instant::now()) else {
+        return;
+    };
+    arm_idle_eviction(app, schedule);
+}
+
+fn arm_idle_eviction(app: &AppHandle, schedule: EvictionSchedule) {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    let token = schedule.token();
+    ::tracing::info!(
+        event = "window_renderer_eviction_scheduled",
+        window = LABEL,
+        renderer_generation = schedule.renderer_generation(),
+        mode = ?schedule.mode(),
+        delay_ms = schedule.delay().as_millis() as u64
+    );
+    let task_app = app.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(schedule.delay()).await;
+        let check_app = task_app.clone();
+        if let Err(error) = task_app.run_on_main_thread(move || {
+            evict_if_due(&check_app, token);
+        }) {
+            ::tracing::warn!(event = "window_renderer_eviction_schedule_failed", error = %error);
+        }
+    });
+    state.attach_eviction_task(token, task);
+}
+
+fn evict_if_due(app: &AppHandle, token: EvictionToken) {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    let Some(window) = app.get_webview_window(LABEL) else {
+        state.cancel_eviction();
+        return;
+    };
+    let visible = window.is_visible().unwrap_or(true);
+    let Some(due) = state.take_eviction_if_due(token, visible) else {
+        return;
+    };
+    match window.destroy() {
+        Ok(()) => {
+            state.clear_prewarm_generation(due.renderer_generation());
+            ::tracing::info!(event = "window_renderer_evicted", window = LABEL);
+        }
+        Err(error) => {
+            ::tracing::warn!(
+                event = "window_renderer_eviction_failed",
+                window = LABEL,
+                error = %error
+            );
+            let retry = state.arm_eviction_retry(due.renderer_generation(), due.mode());
+            arm_idle_eviction(app, retry);
+        }
+    }
 }
 
 /// Resize the popover to the height the current view asked for.
@@ -858,10 +1280,7 @@ fn dismiss(app: &AppHandle) {
         }
         state.record_auto_hide();
     }
-    if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.hide();
-    }
-    note_hidden(app);
+    hide_window(app);
 }
 
 /// Begin a focus hold. Paired with [`end_focus_hold`] around a native dialog.
@@ -923,11 +1342,13 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
             && window.is_visible().unwrap_or(false)
         {
             let _ = window.set_focus();
+        } else {
+            schedule_idle_eviction(app);
         }
         return;
     }
 
-    let request = match request_open_window(app) {
+    let request = match request_open_window(app, None) {
         Ok(request) => request,
         Err(error) => {
             ::tracing::error!(event = "popover_create_failed", error = %error);
@@ -986,21 +1407,97 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
 /// Reveal the popover after React commits its shell.
 pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     let app = window.app_handle();
-    if window_lifecycle::renderer_ready::<PopoverState>(app, LABEL, generation, Instant::now()) {
+    let state = app.state::<PopoverState>();
+    let now = Instant::now();
+    if let Some(expired) = state.expired_prewarm(now)
+        && expired.renderer_generation() == generation
+    {
+        state.cancel_eviction();
+        prepare_expired_renderer_retirement(&state, generation, now);
+        match window.destroy() {
+            Ok(()) => {
+                state.clear_prewarm_generation(generation);
+                ::tracing::info!(event = "window_renderer_evicted", window = LABEL);
+            }
+            Err(error) => {
+                ::tracing::warn!(
+                    event = "window_renderer_eviction_failed",
+                    window = LABEL,
+                    error = %error
+                );
+                let retry = state.arm_eviction_retry(generation, expired.mode());
+                arm_idle_eviction(app, retry);
+            }
+        }
+        return;
+    }
+    let prewarm_became_ready =
+        state.is_prewarm(generation) && state.readiness().loading_generation() == Some(generation);
+    let renderer_became_ready = state.readiness().loading_generation() == Some(generation);
+    if renderer_became_ready {
+        state.mark_prewarm_ready(generation, now);
+        state.timing.renderer_ready(generation, now);
+    }
+    if window_lifecycle::renderer_ready::<PopoverState>(app, LABEL, generation, now) {
         reveal(window);
+    } else if prewarm_became_ready {
+        schedule_idle_eviction(app);
     }
 }
 
-fn reveal(window: &WebviewWindow) {
-    if let Err(error) = window.show() {
-        ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
+fn prepare_expired_renderer_retirement(state: &PopoverState, generation: u64, now: Instant) {
+    let replacement_generation = state.readiness().replace_expired_loading(generation, now);
+    if let Some(replacement_generation) = replacement_generation {
+        state
+            .readiness()
+            .defer_build_until_destroyed(replacement_generation);
+        state
+            .timing
+            .replace_open_generation(generation, replacement_generation);
         return;
     }
+    if state
+        .readiness()
+        .loading_generation()
+        .is_some_and(|active| active != generation)
+    {
+        return;
+    }
+    state.readiness().reset();
+    state.timing.cancel_open();
+}
+
+/// Record when the activity and cached usage state first settle.
+pub fn content_ready(window: &WebviewWindow, generation: u64) {
+    let app = window.app_handle();
+    let state = app.state::<PopoverState>();
+    state.timing.content_ready(generation, Instant::now());
+}
+
+fn reveal(window: &WebviewWindow) {
+    let app = window.app_handle();
+    let generation = app
+        .try_state::<PopoverState>()
+        .map(|state| state.renderer_generation.load(Ordering::SeqCst))
+        .unwrap_or(0);
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.cancel_eviction();
+    }
+    if let Err(error) = window.show() {
+        ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
+        schedule_idle_eviction(app);
+        return;
+    }
+    let revealed_at = Instant::now();
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.consume_prewarm_on_reveal(generation);
+        state.timing.revealed(generation, revealed_at);
+    }
+    ::tracing::info!(event = "window_revealed", window = LABEL, generation);
     if let Err(error) = window.set_focus() {
         ::tracing::warn!(event = "window_focus_failed", window = LABEL, error = %error);
     }
-    note_shown(window.app_handle());
-    ::tracing::info!(event = "window_revealed", window = LABEL);
+    note_shown(app);
 }
 
 /// Everything that has to happen when the popover reaches the screen, whichever
@@ -1375,9 +1872,76 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_restart_cancels_a_pending_cold_reveal() {
+        let state = PopoverState::default();
+        let started_at = Instant::now();
+        let generation = match state.readiness().request_open(started_at) {
+            OpenAction::StartLoading { generation } => generation,
+            _ => unreachable!("a fresh lifecycle starts loading"),
+        };
+
+        assert!(cancel_pending_reveal_for_onboarding(&state));
+        assert!(matches!(
+            state
+                .readiness()
+                .renderer_ready(generation, started_at + Duration::from_millis(1)),
+            crate::window_readiness::ReadyAction::StayHidden { .. }
+        ));
+    }
+
+    #[test]
+    fn repeated_expired_readiness_keeps_the_deferred_replacement() {
+        let state = PopoverState::default();
+        let started_at = Instant::now();
+        assert!(matches!(
+            state.readiness().request_prewarm(started_at),
+            PrewarmAction::StartLoading { .. }
+        ));
+        let expired_generation = match state
+            .readiness()
+            .request_open(started_at + Duration::from_secs(64))
+        {
+            OpenAction::Rebuild { generation } => generation,
+            _ => unreachable!("the stale prewarm starts a replacement"),
+        };
+        state.timing.begin_open(
+            expired_generation,
+            started_at + Duration::from_secs(64),
+            true,
+            "loading",
+        );
+
+        let expired_at = started_at + Duration::from_secs(65);
+        prepare_expired_renderer_retirement(&state, expired_generation, expired_at);
+        let replacement = state
+            .readiness()
+            .loading_generation()
+            .expect("the pending click owns a replacement");
+        prepare_expired_renderer_retirement(&state, expired_generation, expired_at);
+
+        assert_eq!(state.readiness().loading_generation(), Some(replacement));
+        assert_eq!(
+            state.readiness().begin_deferred_build(expired_at),
+            Some(replacement)
+        );
+    }
+
+    #[test]
     fn a_fresh_popover_is_not_pinned() {
         let state = PopoverState::default();
         assert!(!state.is_pinned());
+    }
+
+    #[test]
+    fn a_prewarm_marker_belongs_to_one_renderer_generation() {
+        let state = PopoverState::default();
+
+        state.mark_prewarm(4, Instant::now());
+        assert!(state.is_prewarm(4));
+        assert!(!state.is_prewarm(5));
+
+        state.clear_prewarm();
+        assert!(!state.is_prewarm(4));
     }
 
     #[test]
@@ -1387,6 +1951,22 @@ mod tests {
         assert!(state.is_pinned());
         state.set_pinned(false);
         assert!(!state.is_pinned());
+    }
+
+    #[test]
+    fn every_replacement_path_transfers_the_active_prewarm_deadline() {
+        let state = PopoverState::default();
+        let started_at = Instant::now();
+        state.mark_prewarm(4, started_at);
+
+        assert!(transfer_prewarm_for_replacement(&state, Some(4), 5));
+        assert!(!state.is_prewarm(4));
+        assert!(state.is_prewarm(5));
+        let schedule = state
+            .arm_hidden_retention(5, started_at + Duration::from_secs(10))
+            .expect("the transferred prewarm remains retained");
+        assert_eq!(schedule.delay(), Duration::from_secs(55));
+        assert_eq!(schedule.mode(), EvictionMode::PrewarmLoading);
     }
 
     /// The tray right-click that opens the menu hides the popover, arming the

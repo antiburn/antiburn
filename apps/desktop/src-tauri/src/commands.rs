@@ -79,6 +79,14 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     }
 }
 
+/// Record when the popover's first activity and cached usage state settle.
+#[tauri::command]
+pub fn popover_content_ready(window: tauri::WebviewWindow, generation: u64) {
+    if window.label() == crate::popover::LABEL {
+        crate::popover::content_ready(&window, generation);
+    }
+}
+
 /// Opens, or refocuses, the standalone settings window.
 ///
 /// `pane` is optional and is a *request*: the frontend owns the pane list, so
@@ -341,12 +349,18 @@ pub fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
     let store = app.state::<Store>();
     let (previous, saved) = store.restart_onboarding().map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
-    crate::onboarding::restart(&app).map_err(fail)?;
-    crate::popover::hide_for_onboarding(&app);
-    if let Err(error) = settings::hide(&app) {
-        ::tracing::warn!(event = "settings_hide_after_onboarding_restart_failed", error = %error);
-    }
-    Ok(())
+    restart_onboarding_surfaces(
+        || crate::popover::hide_for_onboarding(&app),
+        || crate::onboarding::restart(&app).map_err(fail),
+    )
+}
+
+fn restart_onboarding_surfaces(
+    hide_popover: impl FnOnce(),
+    open_onboarding: impl FnOnce() -> CommandResult<()>,
+) -> CommandResult<()> {
+    hide_popover();
+    open_onboarding()
 }
 
 /// Commit the first-run choices and finish onboarding as one transition.
@@ -1720,6 +1734,8 @@ fn presentable(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
 
     #[test]
@@ -1743,6 +1759,22 @@ mod tests {
             wsl_distro: None,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn restarting_onboarding_retires_the_popover_before_opening_setup() {
+        let actions = RefCell::new(Vec::new());
+
+        restart_onboarding_surfaces(
+            || actions.borrow_mut().push("hide_popover"),
+            || {
+                actions.borrow_mut().push("open_onboarding");
+                Ok(())
+            },
+        )
+        .expect("the test transition succeeds");
+
+        assert_eq!(*actions.borrow(), ["hide_popover", "open_onboarding"]);
     }
 
     /// The report request covers thirty days, ends one past now (the end

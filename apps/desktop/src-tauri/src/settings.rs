@@ -2,8 +2,8 @@
 //!
 //! Unlike the popover this is an ordinary window with real decorations: a
 //! place to read and change configuration, not a transient surface. It is
-//! fixed at 960×680 and prewarmed after launch. Closing it hides the resident
-//! webview, so the next request can show the same ready renderer.
+//! fixed at 960×680 and created on demand. Closing it destroys its webview, so
+//! the next request starts a new renderer from persisted settings.
 //!
 //! On macOS the title bar is an overlay: decorations (traffic lights, system
 //! shadow, real close semantics) are kept, the bar itself is transparent, and
@@ -18,9 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_placement::center_on_active_monitor;
-use crate::window_readiness::{
-    OpenAction, PrewarmAction, WindowReadiness, renderer_generation_script,
-};
+use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "settings";
@@ -76,32 +74,6 @@ const URL: &str = "settings.html";
 // designed for exactly this rectangle.
 const WIDTH: f64 = 960.0;
 const HEIGHT: f64 = 680.0;
-
-/// Schedule one hidden Settings load after launch or onboarding.
-pub fn schedule_prewarm(app: &AppHandle) {
-    let app = app.clone();
-    let prewarm_app = app.clone();
-    if let Err(error) = app.run_on_main_thread(move || prewarm(&prewarm_app)) {
-        ::tracing::warn!(event = "settings_prewarm_schedule_failed", error = %error);
-    }
-}
-
-fn prewarm(app: &AppHandle) {
-    if crate::onboarding::is_pending(app) {
-        return;
-    }
-    let state = app.state::<SettingsWindowState>();
-    let action = {
-        let mut readiness = state.readiness();
-        readiness.request_prewarm(Instant::now())
-    };
-    let PrewarmAction::StartLoading { generation } = action else {
-        return;
-    };
-    if let Err(error) = build(app, generation) {
-        ::tracing::warn!(event = "settings_prewarm_failed", error = %error);
-    }
-}
 
 /// Shows the settings window, creating it if this is the first request.
 ///
@@ -165,6 +137,8 @@ fn pane_event_reaches_renderer(action: OpenAction) -> bool {
 
 /// Build a deferred replacement after Tauri removes the old window label.
 pub fn rebuild_after_destroy(app: &AppHandle) {
+    let insights = app.try_state::<crate::insights_ipc::InsightsController>();
+    cancel_insights(insights.as_deref());
     let generation =
         window_lifecycle::begin_deferred_build::<SettingsWindowState>(app, Instant::now());
     let Some(generation) = generation else {
@@ -172,6 +146,12 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
     };
     if let Err(error) = build(app, generation) {
         ::tracing::error!(event = "window_rebuild_failed", window = LABEL, error = %error);
+    }
+}
+
+fn cancel_insights(insights: Option<&crate::insights_ipc::InsightsController>) {
+    if let Some(insights) = insights {
+        insights.cancel();
     }
 }
 
@@ -247,14 +227,6 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Hide Settings after it starts work in another window.
-pub fn hide(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window(LABEL) {
-        window.hide()?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_requests_reach_ready_and_prewarming_renderers() {
+    fn pane_requests_reach_ready_and_loading_renderers() {
         assert!(pane_event_reaches_renderer(OpenAction::Reveal));
         assert!(pane_event_reaches_renderer(OpenAction::AwaitReady));
         assert!(!pane_event_reaches_renderer(OpenAction::StartLoading {
@@ -296,5 +268,14 @@ mod tests {
         // inherit the last banner's destination.
         pending.set(None);
         assert_eq!(pending.take(), None);
+    }
+
+    #[test]
+    fn destroying_settings_requests_native_insights_cancellation() {
+        let insights = crate::insights_ipc::InsightsController::default();
+
+        cancel_insights(Some(&insights));
+
+        assert_eq!(insights.cancel_requests(), 1);
     }
 }

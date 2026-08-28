@@ -257,7 +257,107 @@ describe("PopoverView", () => {
     saveDialog.mockReset()
     openDialog.mockReset()
     listeners.clear()
+    Reflect.deleteProperty(window, "__ANTIBURN_WINDOW_GENERATION__")
     mockCommands()
+  })
+
+  it("reports content readiness after activity and cached usage settle", async () => {
+    let resolveEntries: ((entries: unknown[]) => void) | null = null
+    let resolveUsage: ((usage: unknown) => void) | null = null
+    const entries = new Promise<unknown[]>((resolve) => {
+      resolveEntries = resolve
+    })
+    const usage = new Promise<unknown>((resolve) => {
+      resolveUsage = resolve
+    })
+    Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+      configurable: true,
+      value: 7,
+    })
+    mockCommands({ list_recent_sessions: entries, get_provider_usage: usage })
+
+    render(<PopoverView />)
+
+    await act(async () => {
+      resolveEntries?.([])
+      await Promise.resolve()
+    })
+    expect(invoke).not.toHaveBeenCalledWith("popover_content_ready", { generation: 7 })
+
+    await act(async () => {
+      resolveUsage?.(PROVIDER_USAGE)
+      await Promise.resolve()
+    })
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("popover_content_ready", { generation: 7 }),
+    )
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "popover_content_ready"),
+    ).toHaveLength(1)
+
+    emit("popover:shown", undefined)
+    await act(async () => Promise.resolve())
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "popover_content_ready"),
+    ).toHaveLength(1)
+  })
+
+  it("retries a failed hidden content report when the popover appears", async () => {
+    Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+      configurable: true,
+      value: 7,
+    })
+    const baseInvoke = invoke.getMockImplementation()
+    let contentReadyCalls = 0
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "popover_content_ready") {
+        contentReadyCalls += 1
+        return contentReadyCalls === 1
+          ? Promise.reject(new Error("renderer not available"))
+          : Promise.resolve(null)
+      }
+      return baseInvoke?.(command, args)
+    })
+
+    render(<PopoverView />)
+    await waitFor(() => expect(contentReadyCalls).toBe(1))
+    await act(async () => Promise.resolve())
+
+    emit("popover:shown", undefined)
+    await waitFor(() => expect(contentReadyCalls).toBe(2))
+  })
+
+  it("retries once when reveal arrives during a report that later fails", async () => {
+    Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+      configurable: true,
+      value: 7,
+    })
+    const baseInvoke = invoke.getMockImplementation()
+    let rejectFirstReport: ((error: Error) => void) | null = null
+    let contentReadyCalls = 0
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "popover_content_ready") {
+        contentReadyCalls += 1
+        if (contentReadyCalls === 1) {
+          return new Promise((_resolve, reject) => {
+            rejectFirstReport = reject
+          })
+        }
+        return Promise.resolve(null)
+      }
+      return baseInvoke?.(command, args)
+    })
+
+    render(<PopoverView />)
+    await waitFor(() => expect(contentReadyCalls).toBe(1))
+    emit("popover:shown", undefined)
+    expect(contentReadyCalls).toBe(1)
+
+    await act(async () => {
+      rejectFirstReport?.(new Error("renderer not available"))
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(contentReadyCalls).toBe(2))
   })
 
   it("lists the sessions the shell reports for the stored window", async () => {

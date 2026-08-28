@@ -26,6 +26,7 @@ import {
   onSettingsChanged,
   onStorageHealth,
   openSettingsWindow,
+  popoverContentReady,
   refreshLiveUsage,
   scanNow,
   setPopoverHeight,
@@ -213,6 +214,10 @@ export class PopoverSession {
   /** How many `refreshAnalysis` calls are in flight; see `usageRefreshCount`. */
   private analysisRefreshCount = 0
   private liveUsageRevision = 0
+  private initialContentReady = false
+  private contentReadyReportedGeneration: number | null = null
+  private contentReadyReportInFlightGeneration: number | null = null
+  private contentReadyRetryGeneration: number | null = null
 
   /**
    * The key of the subject the poll's fingerprint belongs to, and the last
@@ -341,6 +346,7 @@ export class PopoverSession {
   private start(): void {
     this.started = true
     const generation = ++this.generation
+    this.initialContentReady = false
 
     void this.loadInitial(generation)
     void this.listenSettings(generation)
@@ -426,6 +432,8 @@ export class PopoverSession {
       usage,
     ])
     if (generation !== this.generation) return
+    this.initialContentReady = true
+    this.reportContentReady()
     void this.refreshUsage()
   }
 
@@ -551,6 +559,7 @@ export class PopoverSession {
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
+      if (this.initialContentReady) this.reportContentReady(true)
       void this.restoreFloatingHud(generation)
       void this.refreshUsage()
       void this.refreshAnalysis()
@@ -561,6 +570,35 @@ export class PopoverSession {
     }
     this.stopPopoverShownListening = unlisten
     void this.restoreFloatingHud(generation)
+  }
+
+  private reportContentReady(retryAfterPendingFailure = false): void {
+    const rendererGeneration = window.__ANTIBURN_WINDOW_GENERATION__
+    if (typeof rendererGeneration !== "number" || !Number.isSafeInteger(rendererGeneration))
+      return
+    if (this.contentReadyReportedGeneration === rendererGeneration) return
+    if (this.contentReadyReportInFlightGeneration === rendererGeneration) {
+      if (retryAfterPendingFailure) this.contentReadyRetryGeneration = rendererGeneration
+      return
+    }
+    this.contentReadyReportInFlightGeneration = rendererGeneration
+    void popoverContentReady(rendererGeneration)
+      .then(() => {
+        this.contentReadyReportedGeneration = rendererGeneration
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.contentReadyReportInFlightGeneration === rendererGeneration) {
+          this.contentReadyReportInFlightGeneration = null
+        }
+        const retry =
+          this.contentReadyRetryGeneration === rendererGeneration &&
+          this.contentReadyReportedGeneration !== rendererGeneration
+        if (this.contentReadyRetryGeneration === rendererGeneration) {
+          this.contentReadyRetryGeneration = null
+        }
+        if (retry) this.reportContentReady()
+      })
   }
 
   private restoreFloatingHud = async (generation: number): Promise<void> => {

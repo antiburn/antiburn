@@ -160,6 +160,7 @@ describe("SettingsView", () => {
     invoke.mockReset()
     openDialog.mockReset()
     confirmDialog.mockReset()
+    closeWindow.mockReset()
     listeners.clear()
     delete document.documentElement.dataset["theme"]
     mockCommands()
@@ -978,8 +979,13 @@ describe("SettingsView", () => {
     )
   })
 
-  it("restarts onboarding after explaining what the reset keeps", async () => {
+  it("closes Settings only after onboarding restarts successfully", async () => {
+    let finishRestart!: () => void
+    const restart = new Promise<void>((resolve) => {
+      finishRestart = resolve
+    })
     confirmDialog.mockResolvedValue(true)
+    mockCommands({ restart_onboarding: () => restart })
     render(<SettingsView />)
 
     fireEvent.click(await screen.findByRole("button", { name: "Run setup again…" }))
@@ -989,7 +995,11 @@ describe("SettingsView", () => {
     expect(message).toMatch(/indexed sessions and current settings stay/i)
     expect(message).toMatch(/returns the next time/i)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("restart_onboarding"))
-    expect(screen.getByRole("button", { name: "Run setup again…" })).toBeEnabled()
+    expect(closeWindow).not.toHaveBeenCalled()
+
+    finishRestart()
+
+    await waitFor(() => expect(closeWindow).toHaveBeenCalledTimes(1))
   })
 
   it("keeps onboarding unchanged when the restart is declined", async () => {
@@ -1011,6 +1021,7 @@ describe("SettingsView", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent(/setup could not open/i)
     expect(screen.getByRole("status")).toHaveTextContent(/try again or restart antiburn/i)
+    expect(closeWindow).not.toHaveBeenCalled()
   })
 })
 
@@ -1053,7 +1064,7 @@ describe("SettingsView — window chrome", () => {
     expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
   })
 
-  it("closes the window on ⌘W, as a request the shell may turn into a hide", async () => {
+  it("closes the window on ⌘W so the shell can destroy it", async () => {
     render(<SettingsView />)
     await screen.findByRole("switch", { name: "Launch antiburn on startup" })
 
