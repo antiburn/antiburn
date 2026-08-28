@@ -319,6 +319,8 @@ pub(super) fn is_recognized_eventless(value: &Value) -> bool {
                 | "mode"
                 | "last-prompt"
                 | "ai-title"
+                | "custom-title"
+                | "bridge-session"
                 | "queue-operation"
                 | "file-history-delta"
                 | "pr-link"
