@@ -1,3 +1,4 @@
+import { Check, CircleDashed, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
@@ -36,10 +37,18 @@ function verdictInk(failedShare: number, assessedCount: number): string {
   return `color-mix(in oklch, var(--color-system-red-text) ${pct}%, var(--color-system-orange))`
 }
 
-const CHECK_MARK: Record<SessionHygieneCheck["status"], string> = {
-  finding: "✘",
-  clean: "✔",
-  notAssessed: "–",
+const CHECK_ICON: Record<SessionHygieneCheck["status"], LucideIcon> = {
+  finding: X,
+  clean: Check,
+  // An open, broken outline reads as "not filled in". A dash reads as
+  // punctuation next to the two solid marks.
+  notAssessed: CircleDashed,
+}
+
+const CHECK_ICON_LABEL: Record<SessionHygieneCheck["status"], string> = {
+  finding: "Finding",
+  clean: "Pass",
+  notAssessed: "Not assessed",
 }
 
 const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
@@ -59,23 +68,30 @@ function renderTooltip(
       {groups.map((group, index) => (
         <Fragment key={group[0]!.status}>
           {index > 0 && <div className="col-span-full border-b border-separator" />}
-          {group.map((check) => (
-            <Fragment key={check.id}>
-              {/* A not-assessed check names itself only. The reason line below
-                  carries the verdict, so the two do not repeat each other. */}
-              <span className={INK_CLASS[check.ink]}>
-                {check.status === "notAssessed" ? check.name : check.title}
-              </span>
-              <span className={`${INK_CLASS[check.ink]} text-lg`}>
-                {CHECK_MARK[check.status]}
-              </span>
-              {check.status === "notAssessed" && check.notAssessedReason && (
-                <span className="col-span-full type-caption text-label-tertiary">
-                  {notAssessedReasonLabel(check.notAssessedReason)}
+          {group.map((check) => {
+            const Mark = CHECK_ICON[check.status]
+            return (
+              <Fragment key={check.id}>
+                {/* A not-assessed check names itself only. The reason line below
+                    carries the verdict, so the two do not repeat each other. */}
+                <span className={INK_CLASS[check.ink]}>
+                  {check.status === "notAssessed" ? check.name : check.title}
                 </span>
-              )}
-            </Fragment>
-          ))}
+                <Mark
+                  size={14}
+                  strokeWidth={2.5}
+                  role="img"
+                  aria-label={CHECK_ICON_LABEL[check.status]}
+                  className={INK_CLASS[check.ink]}
+                />
+                {check.status === "notAssessed" && check.notAssessedReason && (
+                  <span className="col-span-full type-caption text-label-tertiary">
+                    {notAssessedReasonLabel(check.notAssessedReason)}
+                  </span>
+                )}
+              </Fragment>
+            )
+          })}
         </Fragment>
       ))}
       <span className="col-span-full mt-2.5 text-label-secondary">

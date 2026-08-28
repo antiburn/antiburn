@@ -152,6 +152,16 @@ describe("SessionStatusBar", () => {
     expect(reason.className).toContain("text-label-tertiary")
   })
 
+  it("marks every check status with a named icon, not a text glyph", async () => {
+    render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
+    fireEvent.focus(screen.getByLabelText("1 of 3 burn checks pass; 1 not assessed"))
+
+    for (const label of ["Finding", "Pass", "Not assessed"]) {
+      const mark = await screen.findByLabelText(label)
+      expect(mark.tagName.toLowerCase()).toBe("svg")
+    }
+  })
+
   it("shows a usual cost figure without pill chrome", () => {
     render(
       <SessionStatusBar
