@@ -78,6 +78,7 @@ pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
 };
 pub use vendors::claude::ClaudeAdapter;
+pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 3;

@@ -19,6 +19,8 @@ version and refuses the release if there is none.
 
 ### Added
 
+- `analysis::PiAdapter` and `SourceCapabilities::pi()` provide bounded,
+  source-validated metrics and evidence for Pi JSONL sessions.
 - `NormalizedEvent::may_resolve_late_tool` identifies events whose tool call is
   available only in the final session summary. The hidden public field
   `NormalizedEvent::late_tool_candidate_is_builtin` identifies provisional
@@ -26,6 +28,8 @@ version and refuses the release if there is none.
 
 ### Changed
 
+- `adapter_for("pi")` now selects the dedicated Pi adapter instead of the
+  generic JSONL fallback.
 - `SessionMetricsAccumulator` now retains bounded derived state instead of one
   entry per metric event. Large sessions merge facts on an active-position
   quantum, so continuous values can move between progress buckets. Additive

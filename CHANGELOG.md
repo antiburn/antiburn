@@ -20,6 +20,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Added
+
+- Pi sessions now receive dedicated local analysis and Insights on supported
+  macOS and Linux installations.
+
 ### Changed
 
 - Analysing a very large session now uses far less memory. Long charts group

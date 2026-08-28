@@ -1,0 +1,9 @@
+{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z","usage":{"input":9,"output":8,"cacheRead":7,"cacheWrite":6}}
+{"type":"session_info","timestamp":"2026-01-01T00:00:01Z","speed":"fast"}
+{"type":"custom","timestamp":"2026-01-01T00:00:02Z","customType":"extension-guard","data":{"tool_calls":[{"name":"synthetic-hidden-tool"}]}}
+{"type":"custom","timestamp":"2026-01-01T00:00:03Z","usage":{"input":9}}
+{"type":"custom_message","timestamp":"2026-01-01T00:00:04Z","model":"extension-model"}
+{"type":"custom","timestamp":"2026-01-01T00:00:05Z","toolCalls":[]}
+{"type":"custom_message","timestamp":"2026-01-01T00:00:06Z","message":{"reasoning":true}}
+{"type":"custom","timestamp":"2026-01-01T00:00:07Z","compactMetadata":{}}
+{"type":"message","timestamp":"2026-01-01T00:00:08Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}

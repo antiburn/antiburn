@@ -68,6 +68,12 @@ pub enum EvidenceObservation {
         uuid: Option<String>,
         parent_uuid: Option<String>,
     },
+    /// One non-turn record's provider timestamp.
+    RecordTimestamp {
+        ts_ms: i64,
+    },
+    /// One inherited record does not contribute to the child session.
+    InheritedRecord,
     UnrecognizedType {
         discriminator: String,
     },

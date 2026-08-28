@@ -32,7 +32,7 @@ described in [Network](#network).
 | Cline | Supported | Not supported | |
 | Kiro | Supported | Not supported | |
 | Amp | Supported | Not supported | |
-| Pi | macOS and Linux only | Not supported | Excluded on Windows |
+| Pi | macOS and Linux only | Not supported | Dedicated session analysis; excluded on Windows |
 | Antigravity | Supported, **disk-only** | Not supported | Documented local files only |
 | Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
 

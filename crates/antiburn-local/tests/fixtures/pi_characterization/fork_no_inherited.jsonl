@@ -1,0 +1,4 @@
+{"type":"session","version":3,"timestamp":"2026-01-03T00:00:00Z","parentSession":"/synthetic/pi-parent.jsonl"}
+{"type":"model_change","timestamp":"2026-01-03T00:00:00Z","modelId":"model-b"}
+{"type":"thinking_level_change","timestamp":"2026-01-03T00:00:01Z","thinkingLevel":"medium"}
+{"type":"message","timestamp":"2026-01-03T00:00:02Z","message":{"role":"assistant","model":"model-b","usage":{"input":3,"output":2,"cacheRead":1,"cacheWrite":0},"content":[]}}
