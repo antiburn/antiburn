@@ -35,6 +35,14 @@ describe("sessionHygieneChecks", () => {
     ])
   })
 
+  it("names every check without a verdict, whatever the status", () => {
+    expect(sessionHygieneChecks(PAYLOAD).map((check) => check.name)).toEqual([
+      "Reasoning overkill",
+      "Excess cache rehydration",
+      "Bloated initial context",
+    ])
+  })
+
   it("maps finding, clean, and not-assessed states to semantic ink", () => {
     expect(sessionHygieneChecks(PAYLOAD).map((check) => check.ink)).toEqual([
       "system-red-text",

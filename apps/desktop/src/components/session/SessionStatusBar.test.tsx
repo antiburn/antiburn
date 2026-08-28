@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import type { SessionHygieneCheck } from "../../lib/presentation/sessionHygiene"
@@ -10,6 +10,7 @@ const CHECKS: SessionHygieneCheck[] = [
     status: "finding",
     notAssessedReason: null,
     title: "Bloated initial context",
+    name: "Bloated initial context",
     ink: "system-red-text",
   },
   {
@@ -17,6 +18,7 @@ const CHECKS: SessionHygieneCheck[] = [
     status: "clean",
     notAssessedReason: null,
     title: "No reasoning overkill",
+    name: "Reasoning overkill",
     ink: "system-green",
   },
   {
@@ -24,6 +26,7 @@ const CHECKS: SessionHygieneCheck[] = [
     status: "clean",
     notAssessedReason: null,
     title: "No excess cache rehydration",
+    name: "Excess cache rehydration",
     ink: "system-green",
   },
 ]
@@ -135,6 +138,18 @@ describe("SessionStatusBar", () => {
     const verdict = screen.getByLabelText("No checks assessed")
     expect(verdict.textContent).toBe("Not assessed")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
+  })
+
+  it("splits a not-assessed check into a bare name and its reason", async () => {
+    render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
+    fireEvent.focus(screen.getByLabelText("1 of 3 burn checks pass; 1 not assessed"))
+
+    // The name carries no verdict, so it does not repeat the reason below it.
+    const name = await screen.findByText("Excess cache rehydration")
+    expect(name.textContent).not.toContain("not assessed")
+    const reason = await screen.findByText("couldn't read the whole session log")
+    expect(reason.className).toContain("col-span-full")
+    expect(reason.className).toContain("text-label-tertiary")
   })
 
   it("shows a usual cost figure without pill chrome", () => {

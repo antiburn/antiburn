@@ -61,15 +61,19 @@ function renderTooltip(
           {index > 0 && <div className="col-span-full border-b border-separator" />}
           {group.map((check) => (
             <Fragment key={check.id}>
+              {/* A not-assessed check names itself only. The reason line below
+                  carries the verdict, so the two do not repeat each other. */}
               <span className={INK_CLASS[check.ink]}>
-                {check.title}
-                {check.status === "notAssessed" && check.notAssessedReason
-                  ? ` — ${notAssessedReasonLabel(check.notAssessedReason)}`
-                  : ""}
+                {check.status === "notAssessed" ? check.name : check.title}
               </span>
               <span className={`${INK_CLASS[check.ink]} text-lg`}>
                 {CHECK_MARK[check.status]}
               </span>
+              {check.status === "notAssessed" && check.notAssessedReason && (
+                <span className="col-span-full type-caption text-label-tertiary">
+                  {notAssessedReasonLabel(check.notAssessedReason)}
+                </span>
+              )}
             </Fragment>
           ))}
         </Fragment>

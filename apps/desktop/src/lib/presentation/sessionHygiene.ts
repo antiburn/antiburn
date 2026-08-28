@@ -13,6 +13,11 @@ export interface SessionHygieneCheck {
   status: SessionHygieneBadgePayload["status"]
   notAssessedReason: InsightsNotAssessedReason | null
   title: string
+  /**
+   * The check name alone, with no verdict. Use it where a separate line
+   * carries the verdict, so the two do not repeat each other.
+   */
+  name: string
   ink: SessionHygieneInk
 }
 
@@ -66,6 +71,7 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       return {
         ...badge,
         title: definition.findingTitle,
+        name: definition.findingTitle,
         ink: "system-red-text" as const,
       }
     }
@@ -73,12 +79,14 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       return {
         ...badge,
         title: definition.cleanTitle,
+        name: definition.findingTitle,
         ink: "system-green" as const,
       }
     }
     return {
       ...badge,
       title: definition.notAssessedTitle,
+      name: definition.findingTitle,
       ink: "label-tertiary" as const,
     }
   })
