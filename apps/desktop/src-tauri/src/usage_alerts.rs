@@ -236,9 +236,11 @@ fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     };
     let _summarizing = live.summarizing();
     let now = crate::scan::unix_now();
+    let hidden = &settings.live_usage_hidden_providers;
     let collected = provider_usage::live::sources::collect(
         &live.sources,
         settings.live_usage_active(),
+        hidden,
         BACKGROUND_MAX_AGE,
     );
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
@@ -246,6 +248,7 @@ fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     let store = app.try_state::<Store>();
     let summary = provider_usage::live::summarize_collected(
         collected,
+        provider_usage::live::roster(&live.sources, hidden),
         store.as_deref(),
         now,
         live.utc_offset_minutes(),
@@ -390,6 +393,7 @@ mod tests {
         let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-live-usage-cache"))
             .expect("in-memory store");
         let stored = LiveUsageSummary {
+            meters: Vec::new(),
             providers: vec![LiveProviderUsage {
                 provider: "openai".into(),
                 display_name: "Codex".into(),

@@ -33,6 +33,7 @@ function detailState(overrides: Partial<HudDetailState> = {}): HudDetailState {
   return {
     reason: "show",
     now: Date.now(),
+    noMeterSelected: false,
     bars: [
       {
         key: "anthropic:five-hour",
@@ -136,5 +137,13 @@ describe("HudDetailView", () => {
     await waitFor(() => expect(push.emit).not.toBeNull())
     act(() => push.emit!(detailState({ bars: [] })))
     expect(screen.getByText("No usage limits detected yet.")).toBeInTheDocument()
+  })
+
+  it("separates a reader's own choice from a shortage of readings", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState({ bars: [], noMeterSelected: true })))
+    expect(screen.getByText("No meter selected.")).toBeInTheDocument()
+    expect(screen.queryByText("No usage limits detected yet.")).not.toBeInTheDocument()
   })
 })

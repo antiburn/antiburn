@@ -10,6 +10,17 @@ const getLatestSessionActivity = vi.hoisted(() => vi.fn())
 const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const resizeOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
+const livePush = vi.hoisted(() => ({
+  emit: null as ((usage: unknown) => void) | null,
+}))
+const onLiveUsageChanged = vi.hoisted(() =>
+  vi.fn(async (handler: (usage: unknown) => void) => {
+    livePush.emit = handler
+    return () => {
+      livePush.emit = null
+    }
+  }),
+)
 vi.mock("../lib/ipc", async () => {
   const actual = await vi.importActual<typeof Ipc>("../lib/ipc")
   return {
@@ -19,6 +30,7 @@ vi.mock("../lib/ipc", async () => {
     showHudDetail,
     hideHudDetail,
     resizeOverlayWindow,
+    onLiveUsageChanged,
   }
 })
 
@@ -103,6 +115,7 @@ function summary(): LiveUsageSummaryPayload {
       },
     ],
     errors: [],
+    meters: [],
     generatedAt: new Date().toISOString(),
   }
 }
@@ -167,6 +180,8 @@ describe("OverlayWindow", () => {
     hideHudDetail.mockClear()
     resizeOverlayWindow.mockClear()
     invoke.mockClear()
+    livePush.emit = null
+    onLiveUsageChanged.mockClear()
     outerPosition.mockReset()
     outerPosition.mockResolvedValue({ x: 600, y: 40 })
     stored.clear()
@@ -195,6 +210,30 @@ describe("OverlayWindow", () => {
     expect(screen.queryByText("81%")).not.toBeInTheDocument()
     expect(closeButton()).toHaveClass("opacity-0", "pointer-events-none")
     expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+  })
+
+  it("drops a meter the moment settings turns it off, not on the next poll", async () => {
+    // The HUD polls once a minute. A switch the reader just moved cannot wait
+    // that long, so the shell pushes the new summary and the HUD takes it.
+    getLiveUsage.mockResolvedValue(withSecondBar())
+    render(<OverlayWindow />)
+    await waitFor(() =>
+      expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(40),
+    )
+
+    await act(async () => {
+      livePush.emit!({
+        providers: [],
+        errors: [],
+        meters: [{ provider: "anthropic", displayName: "Claude", shown: false }],
+        generatedAt: new Date().toISOString(),
+      })
+    })
+
+    // The empty track: one bar's worth of segments, none of them lit.
+    expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+    // The window shrinks with it, rather than keeping the old bars' height.
+    await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(28, false, true))
   })
 
   it("reveals at the measured collapsed height", async () => {

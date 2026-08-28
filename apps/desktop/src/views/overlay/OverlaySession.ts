@@ -8,13 +8,15 @@ import {
   getLatestSessionActivity,
   getLiveUsage,
   hideHudDetail,
+  onLiveUsageChanged,
   resizeOverlayWindow,
   showHudDetail,
   type HudDetailState,
+  type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
 import { hideOverlayWindow, setFloatingHudEnabled } from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
-import { deriveUsageBars, type UsageBarItem } from "../../lib/usageBars"
+import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
 const LIVE_WINDOW_SECS = 90
@@ -28,6 +30,8 @@ export type OverlaySnapshot = {
   dragging: boolean
   now: number
   sessionLive: boolean
+  /** True when `bars` is empty because every meter is turned off. */
+  noMeterSelected: boolean
 }
 
 const INITIAL_SNAPSHOT: OverlaySnapshot = {
@@ -36,6 +40,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   dragging: false,
   now: Date.now(),
   sessionLive: false,
+  noMeterSelected: false,
 }
 
 type DragOrigin = {
@@ -58,6 +63,7 @@ export class OverlaySession {
   private livenessPoll: number | null = null
   private resetClock: number | null = null
   private stopHoverListening: (() => void) | null = null
+  private stopUsageListening: (() => void) | null = null
   private dragOrigin: DragOrigin | null = null
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
@@ -111,20 +117,34 @@ export class OverlaySession {
     document.body.dataset.transparentWindow = "true"
     this.connectPanel()
 
+    const applyUsage = (response: LiveUsageSummaryPayload | null) => {
+      if (!this.isCurrent(generation)) return
+      this.commitLayout({
+        bars: deriveUsageBars(response),
+        noMeterSelected: noMeterSelected(response),
+      })
+      void this.syncWindow(true)
+      if (this.detailShown) {
+        void showHudDetail(this.detailState("refresh")).catch(() => {})
+      }
+    }
+
     const refreshUsage = () => {
       void getLiveUsage()
-        .then((response) => {
-          if (!this.isCurrent(generation)) return
-          this.commitLayout({ bars: deriveUsageBars(response) })
-          void this.syncWindow(true)
-          if (this.detailShown) {
-            void showHudDetail(this.detailState("refresh")).catch(() => {})
-          }
-        })
+        .then(applyUsage)
         .catch(() => {})
     }
     refreshUsage()
     this.usagePoll = window.setInterval(refreshUsage, REFRESH_MS)
+
+    // The poll is the slow floor. A meter switched off in settings must leave
+    // the HUD at once, so the HUD also takes the summary the shell pushes.
+    void onLiveUsageChanged(applyUsage)
+      .then((dispose) => {
+        if (this.isCurrent(generation)) this.stopUsageListening = dispose
+        else dispose()
+      })
+      .catch(() => {})
 
     const refreshLiveness = () => {
       void getLatestSessionActivity()
@@ -160,6 +180,8 @@ export class OverlaySession {
     this.clearInterval("resetClock")
     this.stopHoverListening?.()
     this.stopHoverListening = null
+    this.stopUsageListening?.()
+    this.stopUsageListening = null
     this.removeDragListeners()
     this.observer?.disconnect()
     this.observer = null
@@ -201,6 +223,7 @@ export class OverlaySession {
     return {
       reason,
       now: Date.now(),
+      noMeterSelected: this.snapshot.noMeterSelected,
       bars: this.snapshot.bars.map((bar) => ({
         key: bar.key,
         label: bar.label,

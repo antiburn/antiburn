@@ -28,6 +28,21 @@ function resetDate(resetsAt: string | null): Date | null {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
+/**
+ * True when the reader turned off every meter antiburn can show.
+ *
+ * The other reason for an empty HUD is that no provider reported anything.
+ * The two look alike on screen and are not alike: one is a choice the reader
+ * made, and the surfaces say so rather than reading as a failure.
+ */
+export function noMeterSelected(response: LiveUsageSummaryPayload | null): boolean {
+  // Only a roster that arrived and is wholly off proves the choice. No
+  // snapshot, or a snapshot from a build that predates the roster, means
+  // antiburn cannot say — and it must not claim the reader chose this.
+  if (!response || response.meters.length === 0) return false
+  return response.meters.every((meter) => !meter.shown)
+}
+
 /** Convert a live usage snapshot into the HUD bar order. */
 export function deriveUsageBars(response: LiveUsageSummaryPayload | null): UsageBarItem[] {
   const withBars = (response?.providers ?? [])

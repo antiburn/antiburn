@@ -16,13 +16,21 @@ const HUD_SEGMENTS = 20
 type DetailSnapshot = {
   bars: HudDetailState["bars"]
   now: number
+  /** True when `bars` is empty because every meter is turned off. */
+  noMeterSelected: boolean
   /** Counts the show requests, so each show restarts the enter animation. */
   shown: number
   /** True after a conceal request: the card is gone until the next payload. */
   concealed: boolean
 }
 
-const INITIAL_SNAPSHOT: DetailSnapshot = { bars: [], now: 0, shown: 0, concealed: false }
+const INITIAL_SNAPSHOT: DetailSnapshot = {
+  bars: [],
+  now: 0,
+  shown: 0,
+  concealed: false,
+  noMeterSelected: false,
+}
 
 function resetDate(resetsAt: string | null): Date | null {
   if (!resetsAt) return null
@@ -111,7 +119,13 @@ class HudDetailSession {
     const shown = state.reason === "show" ? this.snapshot.shown + 1 : this.snapshot.shown
     // flushSync, so the measurement below reads the fresh layout.
     flushSync(() => {
-      this.snapshot = { bars: state.bars, now: state.now, shown, concealed: false }
+      this.snapshot = {
+        bars: state.bars,
+        now: state.now,
+        shown,
+        concealed: false,
+        noMeterSelected: state.noMeterSelected,
+      }
       for (const listener of this.listeners) listener()
     })
     this.reportSize()
@@ -174,7 +188,9 @@ export function HudDetailView() {
           antiburn
         </p>
         {state.bars.length === 0 ? (
-          <p className="type-caption text-label-tertiary">No usage limits detected yet.</p>
+          <p className="type-caption text-label-tertiary">
+            {state.noMeterSelected ? "No meter selected." : "No usage limits detected yet."}
+          </p>
         ) : (
           <div className="space-y-2">
             {state.bars.map((bar) => (

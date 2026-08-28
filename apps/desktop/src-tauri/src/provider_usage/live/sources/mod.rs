@@ -62,15 +62,30 @@ pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
 /// declared [`LiveUsageSource::requires_online_opt_in`] is not merely ignored
 /// while it is false — it is never called, so nothing it would do can happen.
 ///
+/// `hidden` is the reader's per-provider opt-out — see
+/// [`crate::store::AppSettings::live_usage_hidden_providers`]. A hidden
+/// provider's source is skipped in the same way, and for the same reason: the
+/// reader will not see the figure, so antiburn does not ask for it.
+///
 /// `max_age` is passed straight through to every source's
 /// [`LiveUsageSource::fetch`] — see that method's doc for what it means. One
 /// value for the whole pass, because a pass answers one question ("what do
 /// the sources say right now, for this caller's freshness need") and every
 /// source in it should be answering the same question.
-pub fn collect(sources: &[Box<dyn LiveUsageSource>], online: bool, max_age: Duration) -> Collected {
+pub fn collect(
+    sources: &[Box<dyn LiveUsageSource>],
+    online: bool,
+    hidden: &crate::store::HiddenMeters,
+    max_age: Duration,
+) -> Collected {
     let mut collected = Collected::default();
     for source in sources {
         if source.requires_online_opt_in() && !online {
+            continue;
+        }
+        // A hidden meter is not asked. The reader turned the meter off, so
+        // there is no figure to show and no reason to spend the request.
+        if hidden.contains(source.provider()) {
             continue;
         }
         let outcome = source.fetch(max_age);
