@@ -3,7 +3,7 @@
 //! Used for any vendor without a bespoke adapter. The shared record parser
 //! already understands both the Anthropic and OpenAI transcript shapes, which
 //! covers the great majority of JSONL-emitting agents (Amp, Cline, Copilot,
-//! Windsurf, Pi, …). Vendors that diverge get a dedicated adapter later without
+//! Windsurf, …). Vendors that diverge get a dedicated adapter later without
 //! the engine ever changing.
 
 use anyhow::Context;

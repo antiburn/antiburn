@@ -82,6 +82,24 @@ fn fixture(name: &str) -> &'static str {
         "thread_identity_missing_uuid" => {
             include_str!("fixtures/claude_characterization/thread_identity_missing_uuid.jsonl")
         }
+        "sidechain_in_parent" => {
+            include_str!("fixtures/claude_characterization/sidechain_in_parent.jsonl")
+        }
+        "late_skill_metrics" => {
+            include_str!("fixtures/claude_characterization/late_skill_metrics.jsonl")
+        }
+        "two_compactions_second_without_metadata" => include_str!(
+            "fixtures/claude_characterization/two_compactions_second_without_metadata.jsonl"
+        ),
+        "rehydration_gap_none" => {
+            include_str!("fixtures/claude_characterization/rehydration_gap_none.jsonl")
+        }
+        "disorder_ladder" => {
+            include_str!("fixtures/claude_characterization/disorder_ladder.jsonl")
+        }
+        "subagent_single_timestamp" => {
+            include_str!("fixtures/claude_characterization/subagent_single_timestamp.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -224,7 +242,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
     composite
 }
 
-fn fixture_names() -> [&'static str; 15] {
+fn fixture_names() -> [&'static str; 21] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -241,6 +259,12 @@ fn fixture_names() -> [&'static str; 15] {
         "delegated_model_missing",
         "thread_identity_chain",
         "thread_identity_missing_uuid",
+        "sidechain_in_parent",
+        "late_skill_metrics",
+        "two_compactions_second_without_metadata",
+        "rehydration_gap_none",
+        "disorder_ladder",
+        "subagent_single_timestamp",
     ]
 }
 
@@ -391,7 +415,7 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 22] {
+fn evidence_fixture_names() -> [&'static str; 28] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -415,6 +439,12 @@ fn evidence_fixture_names() -> [&'static str; 22] {
         "housekeeping_records",
         "thread_identity_chain",
         "thread_identity_missing_uuid",
+        "sidechain_in_parent",
+        "late_skill_metrics",
+        "two_compactions_second_without_metadata",
+        "rehydration_gap_none",
+        "disorder_ladder",
+        "subagent_single_timestamp",
     ]
 }
 
@@ -891,16 +921,47 @@ fn golden_cost_values_compare_after_a_text_round_trip() {
 }
 
 #[test]
+fn merge_metrics_honours_each_parent_turns_own_source() {
+    let input = input("sidechain_in_parent");
+    let parent = stream_claude(&input);
+    let merged = merge_metrics(&parent, &[]);
+    assert_eq!(
+        merged
+            .buckets
+            .iter()
+            .map(|bucket| bucket.subagent_tokens)
+            .sum::<u64>(),
+        220
+    );
+    assert_eq!(
+        merged
+            .buckets
+            .iter()
+            .map(|bucket| bucket.tokens_in)
+            .sum::<u64>(),
+        100
+    );
+}
+
+#[test]
 fn merged_streaming_metrics_equal_the_merged_batch() {
     let parent_input = input("parent_with_task_spawn");
     let child_input = input("subagent_child");
     let parent = stream_claude(&parent_input);
     let child = stream_claude(&child_input);
-    let expected = analyze_session(&merge_subagent_events(
+    let mut expected = analyze_session(&merge_subagent_events(
         normalize_source(&parent_input).expect("parent fixture must normalize"),
         vec![normalize_source(&child_input).expect("child fixture must normalize")],
     ));
-    assert_eq!(merge_metrics(&parent, &[child]), expected);
+    let actual = merge_metrics(&parent, &[child]);
+
+    let mut per_thread_efficiency = parent.metrics().efficiency;
+    per_thread_efficiency.add(stream_claude(&child_input).metrics().efficiency);
+    assert_eq!(actual.efficiency, per_thread_efficiency);
+    expected.efficiency = actual.efficiency;
+
+    assert_eq!(actual.initial_context, None);
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -912,6 +973,50 @@ fn a_compaction_boundary_bucket_reports_zero_context_tokens() {
         .find(|bucket| bucket.is_compaction_boundary)
         .expect("fixture must contain a compaction boundary");
     assert_eq!(boundary.context_tokens, 0);
+}
+
+#[test]
+fn supplemental_metrics_fixtures_pin_order_sensitive_semantics() {
+    let late = stream_claude(&input("late_skill_metrics")).metrics();
+    assert_eq!(late.skill_uses.len(), 1);
+    assert_eq!(late.skill_uses[0].name, "orbit-tracker");
+    assert_eq!(late.skill_uses[0].duration_ms, Some(5_000));
+
+    let compactions = stream_claude(&input("two_compactions_second_without_metadata")).metrics();
+    let boundary = compactions
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_compaction_boundary)
+        .expect("compaction bucket");
+    assert_eq!(compactions.compaction_count, 2);
+    assert_eq!(boundary.compaction_trigger, None);
+    assert_eq!(boundary.compaction_pre_tokens, None);
+
+    let rehydration = stream_claude(&input("rehydration_gap_none")).metrics();
+    let cache_bucket = rehydration
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_cache_rehydration)
+        .expect("rehydration bucket");
+    assert_eq!(cache_bucket.secs_since_prior_turn, None);
+
+    let single_timestamp = stream_claude(&input("subagent_single_timestamp")).metrics();
+    assert_eq!(single_timestamp.buckets[0].subagent_tokens, 110);
+    assert_eq!(single_timestamp.buckets[179].subagent_tokens, 220);
+}
+
+#[test]
+fn supplemental_fixture_goldens() {
+    for name in [
+        "sidechain_in_parent",
+        "late_skill_metrics",
+        "two_compactions_second_without_metadata",
+        "rehydration_gap_none",
+        "disorder_ladder",
+        "subagent_single_timestamp",
+    ] {
+        check_fixture_golden(name);
+    }
 }
 
 #[test]
@@ -1139,6 +1244,85 @@ fn a_slash_command_skill_resolves_when_its_marker_arrives_later() {
         .find(|tool| tool.name == "skill")
         .and_then(|tool| tool.detail.as_deref());
     assert_eq!(detail, Some("orbit-tracker"));
+}
+
+#[test]
+fn a_builtin_named_skill_resolves_when_its_marker_arrives_later() {
+    let source = [
+        json!({
+            "type": "user",
+            "timestamp": 1_760_000_000,
+            "message": {
+                "role": "user",
+                "content": "<command-name>/review</command-name>"
+            }
+        })
+        .to_string(),
+        json!({
+            "type": "attachment",
+            "message": {
+                "content": "Base directory for this skill: /tmp/synthetic/review/SKILL.md"
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "builtin-named-skill".to_string(),
+        source: RawSource::Jsonl(source),
+    };
+    let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-named-skill");
+    adapter_for("claude")
+        .visit(&input, &mut metrics)
+        .expect("synthetic command source must stream");
+    let metrics = metrics.metrics();
+    assert_eq!(metrics.skill_uses.len(), 1);
+    assert_eq!(metrics.skill_uses[0].name, "review");
+    assert_eq!(metrics.tool_calls_by_name.get("skill"), Some(&1));
+}
+
+#[test]
+fn builtin_commands_do_not_exhaust_late_skill_metric_candidates() {
+    let mut source = String::from(
+        "{\"type\":\"attachment\",\"message\":{\"content\":\"Base directory for this skill: /tmp/synthetic/orbit-tracker/SKILL.md\"}}\n",
+    );
+    for index in 0..300 {
+        source.push_str(
+            &json!({
+                "type": "user",
+                "timestamp": 1_760_000_000 + index,
+                "message": {
+                    "role": "user",
+                    "content": "<command-name>/clear</command-name>"
+                }
+            })
+            .to_string(),
+        );
+        source.push('\n');
+    }
+    source.push_str(
+        &json!({
+            "type": "user",
+            "timestamp": 1_760_000_301,
+            "message": {
+                "role": "user",
+                "content": "<command-name>/orbit-tracker</command-name>"
+            }
+        })
+        .to_string(),
+    );
+    source.push('\n');
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: "builtin-command-budget".to_string(),
+        source: RawSource::Jsonl(source),
+    };
+    let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-command-budget");
+    adapter_for("claude")
+        .visit(&input, &mut metrics)
+        .expect("synthetic command source must stream");
+    assert_eq!(metrics.metrics().skill_uses.len(), 1);
 }
 
 #[test]

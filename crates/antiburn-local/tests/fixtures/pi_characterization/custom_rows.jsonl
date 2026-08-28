@@ -1,0 +1,3 @@
+{"type":"custom","timestamp":"2026-01-01T00:00:00Z","customType":"extension-one","data":{}}
+{"type":"custom","timestamp":"2026-01-01T00:00:01Z","customType":"extension-two","data":{}}
+{"type":"custom_message","timestamp":"2026-01-01T00:00:02Z","customType":"extension-three","content":"synthetic display","display":true,"details":{}}

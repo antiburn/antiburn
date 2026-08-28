@@ -16,19 +16,37 @@ use std::path::{Path, PathBuf};
 use antiburn_local::analysis::{
     ANALYZER_REVISION, AppendOnlyGuarantee, BoundedJsonlReader, ClaudeAdapter, CompositeSink,
     CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue,
-    MAX_RECORD_BYTES, NormalizedRecord, PARSER_REVISION, RawSource, RecordSink, SCAN_QUANTUM_BYTES,
-    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceChangedReason, SourceClaim, SourceKind, VisitOutcome,
-    adapter_for,
+    MAX_RECORD_BYTES, NormalizedRecord, PARSER_REVISION, RETAINED_METRICS_BYTES_BOUND, RawSource,
+    RecordSink, SCAN_QUANTUM_BYTES, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceChangedReason,
+    SourceClaim, SourceKind, VisitOutcome, adapter_for,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
     CoverageBucket, CoverageCounts, EfficiencyReportAccumulator, ReportContext, ReportWindow,
 };
 use corpus::{
-    GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes, write_provider_db,
+    GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes,
+    generate_session_of_bytes_with_identity, write_provider_db,
 };
 use tempfile::TempDir;
+
+#[test]
+fn thread_identity_is_opt_in_and_chained() {
+    let ordinary = generate_session(&SessionSpec::tier_s(7, 0, 3));
+    assert!(!ordinary.jsonl.contains("\"uuid\""));
+    assert!(!ordinary.jsonl.contains("\"parentUuid\""));
+
+    let identified = generate_session_of_bytes_with_identity(7, 0, 1_024, None);
+    let records = identified
+        .jsonl
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("synthetic JSON"))
+        .collect::<Vec<_>>();
+    assert!(records.len() >= 2);
+    assert!(records[0]["parentUuid"].is_null());
+    assert_eq!(records[1]["parentUuid"], records[0]["uuid"]);
+}
 
 fn file_input(session_id: &str, path: &Path) -> SessionInput {
     SessionInput {
@@ -191,12 +209,12 @@ fn large_session_respects_bounded_memory_contracts() {
     let (metrics, evidence) = composite
         .into_parts()
         .expect("large clean session must publish");
-    assert!(metrics.retained_turns() > 0);
+    assert!(metrics.observed_turns() > 0);
     assert!(
-        metrics.retained_bytes() < metrics.retained_turns() * 1024,
-        "retained {} bytes for {} turns",
+        metrics.retained_bytes() <= RETAINED_METRICS_BYTES_BOUND,
+        "retained {} bytes after {} turns",
         metrics.retained_bytes(),
-        metrics.retained_turns()
+        metrics.observed_turns()
     );
     assert_eq!(evidence.evidence().coverage, EvidenceCoverage::Complete);
 }

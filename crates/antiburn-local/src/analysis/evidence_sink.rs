@@ -408,6 +408,17 @@ impl SessionEvidenceAccumulator {
                     self.seen_thread_uuids.insert(uuid.clone());
                 }
             }
+            EvidenceObservation::RecordTimestamp { ts_ms } => {
+                if self.last_ts_ms.is_some_and(|last| *ts_ms < last) {
+                    self.ordering = OrderingObservation::OutOfOrder;
+                }
+                self.last_ts_ms = Some(*ts_ms);
+                self.first_ts_ms = Some(self.first_ts_ms.map_or(*ts_ms, |first| first.min(*ts_ms)));
+            }
+            EvidenceObservation::InheritedRecord => {
+                self.diagnostics.records_observed =
+                    self.diagnostics.records_observed.saturating_add(1);
+            }
             EvidenceObservation::UnrecognizedType {
                 discriminator,
                 inert,

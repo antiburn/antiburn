@@ -1,0 +1,4 @@
+{"type":"assistant","timestamp":"2026-07-12T10:00:00Z","message":{"id":"msg-compaction-1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":10,"cache_read_input_tokens":90000},"content":[{"type":"text","text":"Synthetic high context."}]}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-07-12T10:00:00Z","compactMetadata":{"trigger":"manual","preTokens":91000,"postTokens":20000}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-07-12T10:00:00Z"}
+{"type":"assistant","timestamp":"2026-07-12T10:00:10Z","message":{"id":"msg-compaction-2","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":5},"content":[{"type":"text","text":"Synthetic post-compaction work."}]}}
