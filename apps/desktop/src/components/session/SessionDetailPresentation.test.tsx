@@ -181,8 +181,8 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(pip.textContent).toBe("?")
     expect(pip.className).toContain("border-dashed")
     expect(pip.className).toContain("text-label-tertiary")
-    expect(screen.getByLabelText("No excess cache rehydration detected").textContent).toBe("✓")
-    expect(screen.getByLabelText("Bloated initial context detected").textContent).toBe("×")
+    expect(screen.getByLabelText("No excess cache rehydration").textContent).toBe("✓")
+    expect(screen.getByLabelText("Bloated initial context").textContent).toBe("×")
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -268,9 +268,9 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(detailRow).toHaveTextContent("5.6-sol/high")
     const hygiene = screen.getByLabelText("Session hygiene checks")
     expect(hygiene.children).toHaveLength(3)
-    expect(screen.getByLabelText("No reasoning overkill detected")).toBeTruthy()
-    expect(screen.getByLabelText("No excess cache rehydration detected")).toBeTruthy()
-    expect(screen.getByLabelText("No bloated initial context detected")).toBeTruthy()
+    expect(screen.getByLabelText("No reasoning overkill")).toBeTruthy()
+    expect(screen.getByLabelText("No excess cache rehydration")).toBeTruthy()
+    expect(screen.getByLabelText("No bloated initial context")).toBeTruthy()
   })
 
   it("names the back control for what it does, not for the view it leaves", () => {

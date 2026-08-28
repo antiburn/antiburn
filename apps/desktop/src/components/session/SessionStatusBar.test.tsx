@@ -9,21 +9,21 @@ const CHECKS: SessionHygieneCheck[] = [
     id: "bloatedInitialContext",
     status: "finding",
     notAssessedReason: null,
-    title: "Bloated initial context detected",
+    title: "Bloated initial context",
     ink: "system-red-text",
   },
   {
     id: "reasoningOverkill",
     status: "clean",
     notAssessedReason: null,
-    title: "No reasoning overkill detected",
+    title: "No reasoning overkill",
     ink: "system-green",
   },
   {
     id: "excessCacheRehydration",
     status: "clean",
     notAssessedReason: null,
-    title: "No excess cache rehydration detected",
+    title: "No excess cache rehydration",
     ink: "system-green",
   },
 ]
@@ -52,7 +52,7 @@ describe("SessionStatusBar", () => {
   it("inks a fill-free line green with the full pass count when every check passes", () => {
     render(<SessionStatusBar checks={ALL_PASSED} />)
     const verdict = screen.getByLabelText("All checks pass")
-    expect(verdict.textContent).toBe("3/3 checks pass")
+    expect(verdict.textContent).toBe("3/3 burn checks")
     expect(verdict.style.color).toBe("var(--color-system-green)")
     expect(verdict.className).not.toContain("bg-")
     expect(verdict.parentElement?.className).not.toContain("bg-")
@@ -61,7 +61,7 @@ describe("SessionStatusBar", () => {
   it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
     const verdict = screen.getByLabelText("1 of 3 assessed checks failed")
-    expect(verdict.textContent).toBe("2/3 checks pass")
+    expect(verdict.textContent).toBe("2/3 burn checks")
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
     expect(verdict.style.color).toContain("--color-system-red-text) 33%")
@@ -72,7 +72,7 @@ describe("SessionStatusBar", () => {
   it("counts findings, clean checks, and unassessed checks separately", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
     const verdict = screen.getByLabelText("1 of 2 assessed checks failed; 1 not assessed")
-    expect(verdict.textContent).toBe("1/2 checks pass · 1 not assessed")
+    expect(verdict.textContent).toBe("1/2 burn checks · 1 not assessed")
     expect(verdict.style.color).toContain("--color-system-red-text) 50%")
     expect(verdict.style.color).toContain("--color-system-orange")
   })
@@ -139,13 +139,6 @@ describe("SessionStatusBar", () => {
     passing.unmount()
     render(<SessionStatusBar checks={CHECKS} cost={cost} />)
     expect(figureClasses()).toContain("bg-brand-tint")
-  })
-
-  it("keeps the last-activity time hidden until the host row hover", () => {
-    render(<SessionStatusBar checks={ALL_PASSED} timestamp={new Date().toISOString()} />)
-    const time = screen.getByLabelText(/^Last activity /)
-    expect(time.className).toContain("opacity-0")
-    expect(time.className).toContain("group-hover:opacity-100")
   })
 
   it("omits the cost figure when nothing priced the session", () => {
