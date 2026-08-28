@@ -40,7 +40,6 @@ pub struct SessionEvidenceAccumulator {
     depth_eligible_turns: u64,
     max_request_context_tokens: u64,
     depth_examples: Vec<DepthExample>,
-    context_cap_exceeded: bool,
     tools: BTreeMap<String, ToolUse>,
     invoked_skills: BTreeSet<String>,
     tools_cap_exceeded: bool,
@@ -101,7 +100,6 @@ impl SessionEvidenceAccumulator {
             depth_eligible_turns: 0,
             max_request_context_tokens: 0,
             depth_examples: Vec::new(),
-            context_cap_exceeded: false,
             tools: BTreeMap::new(),
             invoked_skills: BTreeSet::new(),
             tools_cap_exceeded: false,
@@ -187,15 +185,11 @@ impl SessionEvidenceAccumulator {
             self.timestamped_turns = self.timestamped_turns.saturating_add(1);
             if depth > 0 {
                 let model = event.model.as_deref().map(|model| {
-                    let capped = cap_string(
+                    cap_string(
                         "context.top_depth_examples.model",
                         model,
                         &mut self.diagnostics,
-                    );
-                    if capped.len() != model.len() {
-                        self.context_cap_exceeded = true;
-                    }
-                    capped
+                    )
                 });
                 self.push_depth_example(DepthExample {
                     ts_ms: timestamp,
@@ -368,7 +362,6 @@ impl SessionEvidenceAccumulator {
         });
         if self.depth_examples.len() > MAX_EVIDENCE_EXAMPLES {
             self.depth_examples.truncate(MAX_EVIDENCE_EXAMPLES);
-            self.context_cap_exceeded = true;
             self.note_collection_cap("context.top_depth_examples");
         }
     }
@@ -667,11 +660,12 @@ impl SessionEvidenceAccumulator {
         SessionEvidence {
             schema_revision: EVIDENCE_SCHEMA_REVISION,
             identity: self.identity.clone(),
-            context: self.supported_value(
-                context,
-                self.capabilities.request_context_tokens,
-                self.context_cap_exceeded,
-            ),
+            // No cap can make this group partial. The group holds an exact
+            // maximum and a list of examples. The sink folds the maximum on
+            // every turn, and it keeps the deepest examples. A dropped
+            // example is always less deep than the maximum, so it hides
+            // nothing. Record loss still makes the group partial.
+            context: self.supported_value(context, self.capabilities.request_context_tokens, false),
             capabilities: self.capabilities,
             coverage,
             provenance: SessionProvenance {
@@ -1146,20 +1140,24 @@ mod tests {
     }
 
     #[test]
-    fn context_top_depth_examples_overflows_to_partial() {
+    fn context_top_depth_examples_cap_keeps_the_group_complete() {
+        let count = MAX_EVIDENCE_EXAMPLES * 2;
         let mut accumulator = accumulator(true);
-        for index in 0..(MAX_EVIDENCE_EXAMPLES * 2) {
+        for index in 0..count {
             accumulator.record(NormalizedRecord::MetricsEvent(Box::new(assistant_event(
                 index,
             ))));
         }
         let evidence = accumulator.evidence();
         assert_capped_collection(&evidence, "context.top_depth_examples");
+        let EvidenceValue::Complete(context) = evidence.context else {
+            panic!("an example cap must not make the context group partial");
+        };
+        assert_eq!(context.top_depth_examples.len(), MAX_EVIDENCE_EXAMPLES);
+        // The dropped examples are the shallow ones. The maximum survives.
         assert_eq!(
-            assert_cap_partial(evidence.context)
-                .top_depth_examples
-                .len(),
-            MAX_EVIDENCE_EXAMPLES
+            context.max_request_context_tokens,
+            u64::try_from(count).unwrap()
         );
     }
 
@@ -1428,14 +1426,16 @@ mod tests {
     }
 
     #[test]
-    fn context_top_depth_example_model_overflows_to_partial() {
+    fn context_top_depth_example_model_cap_keeps_the_group_complete() {
         let mut accumulator = accumulator(true);
         let mut event = assistant_event(1);
         event.model = Some(long_string());
         accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
         let evidence = accumulator.evidence();
         assert_truncated_string(&evidence, "context.top_depth_examples.model");
-        let context = assert_cap_partial(evidence.context);
+        let EvidenceValue::Complete(context) = evidence.context else {
+            panic!("a shortened example name must not make the group partial");
+        };
         assert_eq!(
             context.top_depth_examples[0].model.as_ref().unwrap().len(),
             EVIDENCE_STRING_CAP
