@@ -76,10 +76,9 @@ impl AgentExplorer for PiExplorer {
     // batched scan path — and Scan additionally populates
     // `AppState::session_surfaces` as a side effect, which Direct skips.
 
-    /// Pi filenames are `{ISO-timestamp}_{UUIDv7}.jsonl` and Pi transcripts
-    /// carry no in-content session ID. Recover the UUID from the filename
-    /// suffix so the scanner's metadata pipeline can populate `session_id`
-    /// without scanner-side Pi awareness.
+    /// Pi filenames are `{ISO-timestamp}_{UUIDv7}.jsonl`. The header also has
+    /// an ID, but the filename remains the stable discovery identity source.
+    /// Recover the UUID suffix so the scanner can populate `session_id`.
     ///
     /// Requires a `_` separator: a stem with no underscore is not a valid Pi
     /// session filename and returns `None` rather than guessing.

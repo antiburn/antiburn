@@ -69,7 +69,7 @@ pub use interface::{
     SourceChangedReason, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
-pub use metrics_sink::{SessionMetricsAccumulator, merge_metrics};
+pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
@@ -78,6 +78,7 @@ pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
 };
 pub use vendors::claude::ClaudeAdapter;
+pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 5;

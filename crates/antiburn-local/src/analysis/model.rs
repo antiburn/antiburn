@@ -318,6 +318,13 @@ pub struct NormalizedEvent {
     /// wrapper in `tools` directly instead).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapper_tool: Option<String>,
+    /// True when the vendor resolves this event's tool call after the stream.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub may_resolve_late_tool: bool,
+    /// True when a late-tool candidate currently matches a built-in command.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub late_tool_candidate_is_builtin: bool,
     /// The transcript's per-record identity (Claude's top-level `uuid`), when
     /// the vendor records one. Together with [`Self::parent_uuid`] this lets
     /// the evidence sink verify previous-turn adjacency per thread rather
@@ -350,6 +357,8 @@ impl NormalizedEvent {
             compaction_pre_tokens: None,
             compaction_post_tokens: None,
             wrapper_tool: None,
+            may_resolve_late_tool: false,
+            late_tool_candidate_is_builtin: false,
             uuid: None,
             parent_uuid: None,
         }

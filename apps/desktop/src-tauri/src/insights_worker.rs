@@ -57,6 +57,10 @@ pub struct WorkerHandle {
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
 pub(crate) type PassRunner<'a> =
     dyn Fn(&SessionRecord, PassSignal) -> PassFuture + Send + Sync + 'a;
+type RecordAnalyzer<'a> = dyn Fn(AgentKind, String, Option<String>, analysis::ClaimedSource, PassSignal) -> PassFuture
+    + Send
+    + Sync
+    + 'a;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermitKind {
@@ -65,19 +69,42 @@ pub(crate) enum PermitKind {
 }
 
 fn run_record_pass(record: &SessionRecord, signal: PassSignal) -> PassFuture {
+    run_record_pass_with(
+        record,
+        signal,
+        &|agent, session_id, wsl_distro, claimed, signal| {
+            Box::pin(async move {
+                analysis::analyze_for_evidence(
+                    agent,
+                    &session_id,
+                    wsl_distro.as_deref(),
+                    claimed,
+                    signal,
+                )
+                .await
+            })
+        },
+    )
+}
+
+fn run_record_pass_with(
+    record: &SessionRecord,
+    signal: PassSignal,
+    analyze: &RecordAnalyzer<'_>,
+) -> PassFuture {
     let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
         return Box::pin(async { analysis::unsupported_evidence_pass() });
     };
-    let session_id = record.key.session_id.clone();
-    let wsl_distro = record.wsl_distro.clone();
-    let claimed = analysis::ClaimedSource {
-        fingerprint: record.source_fingerprint.clone(),
-        generation: 0,
-    };
-    Box::pin(async move {
-        analysis::analyze_for_evidence(agent, &session_id, wsl_distro.as_deref(), claimed, signal)
-            .await
-    })
+    analyze(
+        agent,
+        record.key.session_id.clone(),
+        record.wsl_distro.clone(),
+        analysis::ClaimedSource {
+            fingerprint: record.source_fingerprint.clone(),
+            generation: 0,
+        },
+        signal,
+    )
 }
 
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
@@ -494,6 +521,10 @@ mod tests {
     fn published_status_classifies_capability_sets_against_detector_prerequisites() {
         assert_eq!(
             published_status(&evidence_with(SourceCapabilities::claude())),
+            PublishedEvidence::Ready
+        );
+        assert_eq!(
+            published_status(&evidence_with(SourceCapabilities::pi())),
             PublishedEvidence::Ready
         );
         assert_eq!(
@@ -1232,6 +1263,107 @@ mod tests {
                 clock.store(row.next_attempt_at_epoch.unwrap(), Ordering::SeqCst);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn pi_file_flows_through_worker_persistence_and_report() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let source_path = data_dir.path().join("synthetic-pi.jsonl");
+        std::fs::write(
+            &source_path,
+            concat!(
+                r#"{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z"}"#,
+                "\n",
+                r#"{"type":"thinking_level_change","timestamp":"2026-01-01T00:00:01Z","thinkingLevel":"low"}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        let mut pi = record("pi-worker-report");
+        pi.key.agent = "pi".to_owned();
+        pi.source_label = source_path.to_string_lossy().into_owned();
+        pi.source_fingerprint = Some("sv1:synthetic-pi-worker".to_owned());
+        store
+            .upsert_sessions(std::slice::from_ref(&pi), &crate::agents::evidence_cohort())
+            .unwrap();
+        let pi_source = source_path.clone();
+        let analyzer = move |agent: AgentKind,
+                             session_id: String,
+                             wsl_distro: Option<String>,
+                             claimed: analysis::ClaimedSource,
+                             signal: PassSignal| {
+            if agent != AgentKind::Pi || session_id != "pi-worker-report" {
+                return Box::pin(async move {
+                    analysis::analyze_for_evidence(
+                        agent,
+                        &session_id,
+                        wsl_distro.as_deref(),
+                        claimed,
+                        signal,
+                    )
+                    .await
+                }) as PassFuture;
+            }
+            let input = antiburn_local::analysis::SessionInput {
+                agent: crate::agents::vendor_label(agent).to_owned(),
+                session_id,
+                source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
+            };
+            Box::pin(async move {
+                let mut pass = analysis::evidence_pass(&[input], &|| signal.observe());
+                if let Some(fingerprint) = claimed.fingerprint {
+                    pass.analysis.fingerprint = fingerprint;
+                }
+                pass
+            }) as PassFuture
+        };
+        let runner = |record: &SessionRecord, signal: PassSignal| {
+            run_record_pass_with(record, signal, &analyzer)
+        };
+
+        assert!(
+            process_next(
+                &store,
+                &WorkerHandle::default(),
+                &|| 1_767_225_610,
+                &runner,
+                &|_| {},
+            )
+            .await
+            .unwrap()
+        );
+        let stored = store.evidence(&pi.key).unwrap().unwrap();
+        assert_eq!(stored.status, EvidenceStatus::Ready);
+        let evidence: SessionEvidence =
+            serde_json::from_str(stored.evidence_json.as_deref().unwrap()).unwrap();
+        assert_eq!(evidence.capabilities, SourceCapabilities::pi());
+
+        let report = crate::insights_report::reduce_report(
+            data_dir.path().to_path_buf(),
+            crate::insights_report::ReportRequest {
+                environment_key: "native".to_owned(),
+                window: antiburn_local::insights::ReportWindow {
+                    start_epoch: 1_767_225_000,
+                    end_epoch: 1_767_226_000,
+                },
+                computed_at_epoch: 1_767_226_000,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.assessed_sessions, 1);
+        assert_eq!(
+            report.detectors[DetectorId::ModelOverthinking.index()].assessed,
+            1
+        );
+        assert_eq!(
+            report.detectors[DetectorId::OldModelUsage.index()].assessed,
+            1
+        );
     }
 
     #[test]

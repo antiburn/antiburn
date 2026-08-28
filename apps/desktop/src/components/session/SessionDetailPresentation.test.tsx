@@ -387,6 +387,15 @@ describe("SessionDetailPresentation — states", () => {
     expect(screen.getByText(/Session analysis for Kiro sessions/)).toBeTruthy()
   })
 
+  it("renders supported Pi analysis instead of the generic unsupported state", () => {
+    view({
+      session: { agent: "pi", sessionId: "pi-1", wslDistro: null },
+      supportsAnalysis: true,
+    })
+    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.queryByText(/Session analysis for Pi sessions/)).toBeNull()
+  })
+
   it("blames the fork parent when a fork has no activity of its own", () => {
     view({
       summary: summary({ sessionCount: 0 }),

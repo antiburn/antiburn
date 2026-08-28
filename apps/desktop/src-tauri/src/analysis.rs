@@ -171,14 +171,9 @@ enum ComputedAnalysis {
 
 /// Longest a skill description may be once it leaves this module.
 ///
-/// A skill's description is lifted verbatim from the line the transcript's own
-/// skill listing carries, and the engine puts no bound on it — a listing that
-/// inlined a paragraph would put that paragraph in the local store and in every
-/// export. That is a *derived excerpt*, and an excerpt with no ceiling is just
-/// the text. One line of prose is what the tooltip renders and what the
-/// contract in [`crate::store::schema`] and [`crate::export`] promises, so the
-/// ceiling is applied here, at the app's boundary, before the value can reach
-/// either.
+/// A skill's description comes from the transcript's skill listing.
+/// The engine applies this limit before metrics leave its accumulator.
+/// The app applies it again before values reach the store or an export.
 pub const SKILL_DESCRIPTION_MAX_CHARS: usize = 300;
 
 /// The character appended to a description this module had to shorten, so a
@@ -522,6 +517,7 @@ fn capabilities_for_vendor(agent: &str) -> Option<SourceCapabilities> {
     match agent {
         "claude" => Some(SourceCapabilities::claude()),
         "codex" => Some(SourceCapabilities::codex()),
+        "pi" => Some(SourceCapabilities::pi()),
         _ => None,
     }
 }
@@ -1053,11 +1049,15 @@ fn evidence_pass_with_hook(
     match stream_vendor_with_hooks(inputs, cancelled, after_claim) {
         StreamOutcome::Published { session, .. } => {
             let StreamedSession {
-                merged, evidence, ..
+                merged,
+                evidence,
+                started_at_epoch,
+                ..
             } = *session;
             EvidencePass {
                 analysis: SessionAnalysis {
                     metrics: Some(merged),
+                    started_at_epoch,
                     ..SessionAnalysis::unavailable()
                 },
                 evidence,
@@ -1461,6 +1461,16 @@ mod tests {
         }
     }
 
+    fn pi_record() -> String {
+        [
+            r#"{"type":"session","version":3,"timestamp":"2026-08-01T09:59:58Z"}"#,
+            r#"{"type":"thinking_level_change","timestamp":"2026-08-01T10:00:00Z","thinkingLevel":"medium"}"#,
+            r#"{"type":"message","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
+        ]
+        .join("\n")
+            + "\n"
+    }
+
     struct SubagentOverrideGuard;
 
     impl Drop for SubagentOverrideGuard {
@@ -1512,6 +1522,34 @@ mod tests {
         assert_eq!(
             pass.evidence.unwrap().capabilities,
             SourceCapabilities::codex()
+        );
+    }
+
+    #[test]
+    fn pi_read_publishes_through_the_evidence_path() {
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: "pi-inline".to_owned(),
+            source: RawSource::Jsonl(pi_record()),
+        };
+
+        let StreamOutcome::Published { session, .. } =
+            stream_vendor(std::slice::from_ref(&input), &CancelFlag::never())
+        else {
+            panic!("Pi source must publish");
+        };
+        assert_eq!(session.started_at_epoch, Some(1_785_578_398));
+        assert_eq!(session.parent.peak_context_tokens, 14);
+        assert_eq!(
+            session.evidence.unwrap().capabilities,
+            SourceCapabilities::pi()
+        );
+
+        let pass = evidence_pass(&[input], &|| false);
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        assert_eq!(
+            pass.evidence.unwrap().capabilities,
+            SourceCapabilities::pi()
         );
     }
 
