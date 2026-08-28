@@ -24,7 +24,39 @@ This document is append-only and not digest-bound. Any seam can append an entry.
 - **Found by seam:** GH-70 seam 0001.
 - **Why deferred:** The first release must collect evidence before the parser adds unused record types. A new parser revision can reparse them.
 - **Kind:** `enhancement`
-- **Disposition:** `file-issue` after release data supports specific row types. **Filed as antiburn#222** (fix in flight as PR antiburn#231). The best-effort policy for sessions with unrecognized record types is antiburn#229, and the three missing Claude capabilities are antiburn#226 (part 1 in flight).
+- **Disposition:** `file-issue` after release data supports specific row types. **Filed as antiburn#222 and shipped in PR antiburn#231.** The structural best-effort policy is implemented for antiburn#229 but has no PR yet. The three missing Claude capabilities are tracked by antiburn#226.
+
+## Runtime unknown-type discriminators in analytics
+
+- **What was found:** The catalog event for unrecognized records cannot name a type because analytics properties use a closed `&'static str` vocabulary.
+- **Found by seam:** antiburn#229.
+- **Why deferred:** Sending runtime strings changes the payload type and needs a separate privacy review. Local diagnostics and the Insights note expose the names meanwhile.
+- **Kind:** `enhancement`
+- **Disposition:** `file-issue` after the first `antiburn.unrecognized_records_observed` data arrives. **No issue yet:** the event must ship before data can justify the privacy review.
+
+## Per-group degradation on record loss
+
+- **What was found:** Record loss degrades every supported top-level group, while only some groups can be affected by a specific lost record.
+- **Found by seam:** antiburn#229.
+- **Why deferred:** Narrowing the loss changes verdicts for malformed, oversized, and pinned-prefix records and needs a separate test matrix.
+- **Kind:** `enhancement`
+- **Disposition:** `file-issue` with its own blast-radius analysis. **No issue yet:** the separate verdict change needs product scope first.
+
+## Zero-work sessions in detector denominators
+
+- **What was found:** A session without assistant turns can enter and be assessed by six detectors. Two absence detectors exclude it, and one detector lacks Claude capability.
+- **Found by seam:** antiburn#229.
+- **Why deferred:** Extending the exclusion changes existing housekeeping-only sessions and needs detector-specific product rules.
+- **Kind:** `enhancement`
+- **Disposition:** `file-issue` with a detector-by-detector denominator rule. **No issue yet:** the product rule needs detector-specific decisions first.
+
+## End-to-end analytics consent test
+
+- **What was found:** The desktop shell has no Tauri mock harness, so the new event's consent gate is proven at the shared analytics choke point.
+- **Found by seam:** antiburn#229.
+- **Why deferred:** Enabling Tauri's `test` feature is a separate build and dependency change.
+- **Kind:** `enhancement`
+- **Disposition:** `file-issue` for a queue-level opt-out test. **No issue yet:** the test requires a separate Tauri feature and dependency review.
 
 ## Migration ladder squash
 

@@ -466,6 +466,23 @@ pub struct InsightsQuotaPressurePayload {
     pub findings: Option<InsightsQuotaFindingsPayload>,
 }
 
+/// Bounded unknown record vocabulary from the local evidence cohort.
+///
+/// Type discriminators are schema vocabulary, not transcript content.
+/// The engine limits each value to 256 bytes and each report to 16 values.
+/// The counts are not exclusive. The engine bounds the diagnostic markers for both limit counts.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightsUnrecognizedRecordsPayload {
+    pub types: Vec<String>,
+    pub types_truncated: bool,
+    pub sessions_with_types: u64,
+    pub inert_sessions: u64,
+    pub evidence_bearing_sessions: u64,
+    pub capped_sessions: u64,
+    pub truncated_sessions: u64,
+}
+
 /// The thirty-day insights report, as the pane renders it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -482,6 +499,7 @@ pub struct InsightsReportPayload {
     pub assessed_sessions: u64,
     pub categories: Vec<InsightsCategoryPayload>,
     pub quota_pressure: InsightsQuotaPressurePayload,
+    pub unrecognized_records: InsightsUnrecognizedRecordsPayload,
     pub catalog_revision: i64,
 }
 
@@ -694,6 +712,15 @@ impl From<EfficiencyReport> for InsightsReportPayload {
             assessed_sessions: report.assessed_sessions,
             categories,
             quota_pressure,
+            unrecognized_records: InsightsUnrecognizedRecordsPayload {
+                types: report.unrecognized_records.types.into_iter().collect(),
+                types_truncated: report.unrecognized_records.types_truncated,
+                sessions_with_types: report.unrecognized_records.sessions_with_types,
+                inert_sessions: report.unrecognized_records.inert_sessions,
+                evidence_bearing_sessions: report.unrecognized_records.evidence_bearing_sessions,
+                capped_sessions: report.unrecognized_records.capped_sessions,
+                truncated_sessions: report.unrecognized_records.truncated_sessions,
+            },
             catalog_revision: report.catalog_revision,
         }
     }
@@ -1025,6 +1052,7 @@ mod tests {
                     "coverage",
                     "environmentKey",
                     "quotaPressure",
+                    "unrecognizedRecords",
                     "windowEndEpoch",
                     "windowStartEpoch",
                 ]
@@ -1080,6 +1108,48 @@ mod tests {
                 ]
             );
             assert_eq!(findings["hitsByLimitKind"][0]["kind"], "weekly");
+
+            let unrecognized = value["unrecognizedRecords"].as_object().unwrap();
+            let unrecognized_keys: Vec<&str> = unrecognized.keys().map(String::as_str).collect();
+            assert_eq!(
+                unrecognized_keys,
+                [
+                    "cappedSessions",
+                    "evidenceBearingSessions",
+                    "inertSessions",
+                    "sessionsWithTypes",
+                    "truncatedSessions",
+                    "types",
+                    "typesTruncated",
+                ]
+            );
+        }
+
+        #[test]
+        fn unrecognized_types_survive_dto_conversion() {
+            let mut report = report();
+            report.unrecognized_records.types =
+                BTreeSet::from(["zeta".to_owned(), "alpha".to_owned()]);
+            report.unrecognized_records.types_truncated = true;
+            report.unrecognized_records.sessions_with_types = 4;
+            report.unrecognized_records.inert_sessions = 3;
+            report.unrecognized_records.evidence_bearing_sessions = 2;
+            report.unrecognized_records.capped_sessions = 1;
+            report.unrecognized_records.truncated_sessions = 1;
+
+            let value = serde_json::to_value(InsightsReportPayload::from(report)).unwrap();
+            assert_eq!(
+                value["unrecognizedRecords"],
+                serde_json::json!({
+                    "types": ["alpha", "zeta"],
+                    "typesTruncated": true,
+                    "sessionsWithTypes": 4,
+                    "inertSessions": 3,
+                    "evidenceBearingSessions": 2,
+                    "cappedSessions": 1,
+                    "truncatedSessions": 1,
+                })
+            );
         }
 
         /// A quota section with no evidence serializes as not assessed,

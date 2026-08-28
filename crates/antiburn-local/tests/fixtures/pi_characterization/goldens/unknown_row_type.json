@@ -70,6 +70,7 @@
     "diagnostics": {
       "cappedCollections": [],
       "recordsObserved": 1,
+      "recordsUnrecognizedInert": 0,
       "recordsUnusable": 1,
       "truncatedStrings": [],
       "unrecognizedTypes": [
@@ -112,7 +113,7 @@
     },
     "provenance": {
       "analyzerRevision": 6,
-      "evidenceSchemaRevision": 2,
+      "evidenceSchemaRevision": 3,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -124,7 +125,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 2,
+    "schemaRevision": 3,
     "subagents": {
       "state": "unsupported"
     },

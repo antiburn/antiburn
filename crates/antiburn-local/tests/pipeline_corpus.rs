@@ -285,7 +285,7 @@ fn roster_parent_and_subagent_children_compose() {
 }
 
 #[test]
-fn housekeeping_tail_with_unrecognized_types_degrades_coverage_only() {
+fn housekeeping_tail_with_inert_unrecognized_types_keeps_coverage() {
     let directory = TempDir::new().expect("tempdir");
     let mut spec = SessionSpec::tier_s(29, 0, 200);
     spec.unrecognized_every = Some(25);
@@ -296,11 +296,8 @@ fn housekeeping_tail_with_unrecognized_types_degrades_coverage_only() {
     let composite = run_pipeline(&file_input(&session.session_id, &path));
     let evidence = composite
         .evidence()
-        .expect("unrecognized housekeeping degrades coverage, not publication");
-    assert_eq!(
-        evidence.coverage,
-        EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
-    );
+        .expect("inert unrecognized housekeeping must publish");
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
     assert!(
         evidence
             .diagnostics
@@ -308,11 +305,38 @@ fn housekeeping_tail_with_unrecognized_types_degrades_coverage_only() {
             .iter()
             .any(|discriminator| discriminator == "relay_probe" || discriminator == "shelf_audit")
     );
+    assert_eq!(
+        evidence.diagnostics.records_unrecognized_inert,
+        session.tallies.unrecognized_records as u64
+    );
     let eligibility = observed(&evidence.eligibility);
     assert_eq!(
         eligibility.assistant_turns,
         session.tallies.assistant_records as u64
     );
+}
+
+#[test]
+fn evidence_bearing_unrecognized_types_degrade_coverage() {
+    let directory = TempDir::new().expect("tempdir");
+    let mut spec = SessionSpec::tier_s(31, 0, 200);
+    spec.evidence_bearing_unrecognized_every = Some(25);
+    let session = generate_session(&spec);
+    assert!(session.tallies.evidence_bearing_unrecognized_records > 0);
+    let path = write_session(&directory, &session);
+
+    let evidence = run_pipeline(&file_input(&session.session_id, &path))
+        .evidence()
+        .expect("evidence-bearing unknowns degrade coverage, not publication");
+    assert_eq!(
+        evidence.coverage,
+        EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
+    );
+    assert_eq!(
+        evidence.diagnostics.records_unusable,
+        session.tallies.evidence_bearing_unrecognized_records as u64
+    );
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
 }
 
 #[test]

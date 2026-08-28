@@ -37,6 +37,8 @@ pub enum EventName {
     UsageViewed,
     /// Something failed, by category. No message, no path, no backtrace.
     ErrorOccurred,
+    /// An Insights cohort contains unknown record vocabulary.
+    UnrecognizedRecordsObserved,
 }
 
 /// Every event this application may send.
@@ -56,6 +58,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::SessionOpened,
     EventName::UsageViewed,
     EventName::ErrorOccurred,
+    EventName::UnrecognizedRecordsObserved,
 ];
 
 impl EventName {
@@ -68,6 +71,7 @@ impl EventName {
             EventName::SessionOpened => "antiburn.session_opened",
             EventName::UsageViewed => "antiburn.usage_viewed",
             EventName::ErrorOccurred => "antiburn.error_occurred",
+            EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
         }
     }
 }
@@ -421,12 +425,13 @@ mod tests {
                 | EventName::SettingToggled
                 | EventName::SessionOpened
                 | EventName::UsageViewed
-                | EventName::ErrorOccurred => true,
+                | EventName::ErrorOccurred
+                | EventName::UnrecognizedRecordsObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            7,
+            8,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

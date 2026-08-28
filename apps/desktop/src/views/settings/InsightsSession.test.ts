@@ -35,6 +35,15 @@ function report(overrides: Partial<InsightsReportPayload> = {}): InsightsReportP
     assessedSessions: 0,
     categories: [],
     quotaPressure: { assessed: false, findings: null },
+    unrecognizedRecords: {
+      types: [],
+      typesTruncated: false,
+      sessionsWithTypes: 0,
+      inertSessions: 0,
+      evidenceBearingSessions: 0,
+      cappedSessions: 0,
+      truncatedSessions: 0,
+    },
     catalogRevision: 1,
     ...overrides,
   }

@@ -348,8 +348,8 @@ mod tests {
     /// The badge is a session-scope integrity signal. The report is
     /// detector-scope. A truncated group that no detector reads keeps the
     /// report Clean for that detector. The badge for the same session stays
-    /// NotAssessed. This asymmetry is intentional. Issue #229 tracks the
-    /// report-wide coverage policy.
+    /// NotAssessed. This asymmetry is intentional. Issue #229 keeps the
+    /// detector-scope report rule.
     #[test]
     fn session_wide_partial_coverage_diverges_from_report_by_design() {
         let mut evidence = claude_evidence("synthetic-divergent");

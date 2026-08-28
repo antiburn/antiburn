@@ -14,7 +14,7 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | `timestamps_repeated_and_out_of_order.jsonl` | Repeated and non-monotonic timestamps produce stable duration, active time, and buckets. |
 | `malformed_between_valid.jsonl` | The parser skips one malformed line and keeps valid records on both sides. CH-004 must also assert `Partial` coverage because the current API exposes no coverage value. |
 | `incomplete_final_record.jsonl` | The parser does not commit the truncated final record. The next source generation can pick up the record after its terminating newline arrives. |
-| `unrecognized_type.jsonl` | A `telemetry_ping` record without a role or message produces no event. A record with the same type and a recognized assistant role produces one event. Valid neighbours survive both records. |
+| `unrecognized_type.jsonl` | A structurally inert `telemetry_ping` record keeps `Complete` coverage and retains its discriminator. A record with the same type and a recognized assistant role produces one event. Valid neighbours survive both records. |
 | `housekeeping_records.jsonl` | The thirteen recognized housekeeping record types (`permission-mode`, `mode`, `last-prompt`, `ai-title`, `queue-operation`, `file-history-delta`, `pr-link`, `atis-latch`, `worktree-state`, `relocated`, `frame-link`, `cost-state`, `agent-name`) produce no events. The session keeps `Complete` coverage and records no unrecognized discriminators. |
 | `parent_with_task_spawn.jsonl` | A parent transcript records a `Task` tool spawn without adding child events to the parent. |
 | `subagent_child.jsonl` | The child source has its own session ID and metrics. An analysis call over both files does not count either source twice. |
@@ -35,13 +35,22 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | `disorder_ladder.jsonl` | A turn displaced by 64 arrivals exercises the reorder-window overflow and timestamp clamp. |
 | `subagent_single_timestamp.jsonl` | A delegated stream with one repeated timestamp keeps its ordinal order before merged placement. |
 
-The checked-in goldens serialize `NormalizedSession` and the complete `SessionMetrics` value for each fixture. The tests compare parsed JSON values, so a field addition fails until a reviewer accepts the golden change.
+The following policy fixtures carry no metrics golden. `tests/unrecognized_records.rs` exercises them directly.
+
+| Policy fixture | Proves |
+| --- | --- |
+| `unrecognized_role_with_usage.jsonl` | An unknown role with usage fails closed, while valid neighbours survive. |
+| `unrecognized_evidence_shapes.jsonl` | Tool, thinking, compaction, model, usage, split function-call, and allowlisted evidence shapes fail closed. |
+| `unrecognized_inert_records.jsonl` | Several inert unknown types keep complete coverage and enter a detector denominator beside real assistant work. |
+| `unrecognized_inert_sidechain.jsonl` | Sidechain evidence is observed before inert classification, so downstream contract-incomplete status remains reachable. |
+
+The checked-in goldens serialize `NormalizedSession` and the complete `SessionMetrics` value for each golden fixture. The tests compare parsed JSON values, so a field addition fails until a reviewer accepts the golden change.
 
 The large-source tests generate their JSONL in memory. They do not commit a large transcript-shaped blob.
 
 ## Claude capability and coverage matrix
 
-An empty supported collection means that the session had no matching record. `Unsupported` means that the Claude format represented by these fixtures cannot state the fact.
+An empty supported collection means that the session had no matching record. `Unsupported` means that the Claude format represented by these fixtures cannot state the fact. Unknown variants degrade supported groups only when they are evidence-bearing or their discriminator bounds are exceeded. Structurally inert unknowns keep complete coverage.
 
 | Evidence group | Capability flags | Claude state | Unsupported fact, reason, and upgrade condition | Proving fixture |
 | --- | --- | --- | --- | --- |

@@ -15,8 +15,9 @@ use serde_json::Value;
 
 use super::jsonl::{
     SKILL_BASE_MARKER, collect_skill_base_names_from_text, command_names_in_text,
-    command_skill_name, evidence_observations, is_recognized_eventless, parse_record,
-    record_discriminator, record_text,
+    command_skill_name, evidence_observations, is_inert_recognized_eventless,
+    is_inert_unrecognized, is_recognized_eventless, parse_record, record_discriminator,
+    record_text,
 };
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
 use crate::analysis::initial_context::ClaudeContextAccumulator;
@@ -171,12 +172,24 @@ impl ClaudeAdapter {
                     }
 
                     let Some(mut event) = parse_record(&value) else {
-                        if !is_recognized_eventless(&value) {
+                        let allowlisted = is_recognized_eventless(&value);
+                        let structurally_inert = if allowlisted {
+                            is_inert_recognized_eventless(&value)
+                        } else {
+                            is_inert_unrecognized(&value)
+                        };
+                        // A known eventless record cannot own a late tool call.
+                        // Other records fail closed when no parsed event owns the marker.
+                        let inert = structurally_inert && (allowlisted || !has_command_name);
+                        if !inert || !allowlisted {
                             sink.record(NormalizedRecord::Observation(Box::new(
                                 crate::analysis::interface::EvidenceObservation::UnrecognizedType {
                                     discriminator: record_discriminator(&value),
+                                    inert,
                                 },
                             )));
+                        }
+                        if !inert {
                             sink.record(NormalizedRecord::Unusable(
                                 crate::analysis::framing::PartialReason::UnrecognizedRecordType,
                             ));

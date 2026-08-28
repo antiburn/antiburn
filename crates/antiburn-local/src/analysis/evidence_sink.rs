@@ -412,7 +412,19 @@ impl SessionEvidenceAccumulator {
                 self.diagnostics.records_observed =
                     self.diagnostics.records_observed.saturating_add(1);
             }
-            EvidenceObservation::UnrecognizedType { discriminator } => {
+            EvidenceObservation::UnrecognizedType {
+                discriminator,
+                inert,
+            } => {
+                // The paired Unusable record counts an evidence-bearing unknown.
+                if *inert {
+                    self.diagnostics.records_observed =
+                        self.diagnostics.records_observed.saturating_add(1);
+                    self.diagnostics.records_unrecognized_inert = self
+                        .diagnostics
+                        .records_unrecognized_inert
+                        .saturating_add(1);
+                }
                 let original_len = discriminator.len();
                 let discriminator = cap_string(
                     "diagnostics.unrecognized_types",
@@ -421,10 +433,16 @@ impl SessionEvidenceAccumulator {
                 );
                 if discriminator.len() != original_len {
                     self.session_cap_exceeded = true;
+                    // A truncated discriminator no longer identifies the record format.
+                    // Treat the truncation as loss so no supported group reports complete.
+                    self.set_record_loss_reason(CoverageReason::CapExceeded);
                 }
                 if !self.diagnostics.unrecognized_types.contains(&discriminator) {
                     if self.diagnostics.unrecognized_types.len() == MAX_UNRECOGNIZED_TYPES {
                         self.session_cap_exceeded = true;
+                        // A capped set means antiburn no longer understands the record format.
+                        // Treat the cap as loss so no supported group reports complete.
+                        self.set_record_loss_reason(CoverageReason::CapExceeded);
                         self.note_collection_cap("diagnostics.unrecognized_types");
                     } else {
                         self.diagnostics.unrecognized_types.insert(discriminator);
@@ -846,7 +864,11 @@ impl SessionEvidenceAccumulator {
     }
 
     fn set_record_loss_reason(&mut self, reason: CoverageReason) {
-        if self.record_loss_reason.is_none() {
+        // A specific loss reason replaces a cap reason. The cap is the weakest claim.
+        if self.record_loss_reason.is_none()
+            || (self.record_loss_reason == Some(CoverageReason::CapExceeded)
+                && reason != CoverageReason::CapExceeded)
+        {
             self.record_loss_reason = Some(reason);
         }
     }
@@ -1034,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unmodelled_type_still_degrades_and_records_its_discriminator() {
+    fn an_inert_unmodelled_type_keeps_coverage_and_records_its_discriminator() {
         let input = crate::analysis::SessionInput {
             agent: "claude".to_owned(),
             session_id: "unknown".to_owned(),
@@ -1054,10 +1076,8 @@ mod tests {
             .expect("unknown record must be skipped");
         composite.observe_source_outcome(outcome);
         let evidence = composite.evidence().expect("evidence");
-        assert_eq!(
-            evidence.coverage,
-            EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
-        );
+        assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+        assert_eq!(evidence.diagnostics.records_unrecognized_inert, 1);
         assert_eq!(
             evidence.diagnostics.unrecognized_types,
             BTreeSet::from(["telemetry_ping".to_owned()])
@@ -1371,12 +1391,81 @@ mod tests {
     }
 
     #[test]
+    fn an_inert_unrecognized_record_keeps_complete_coverage() {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::UnrecognizedType {
+                discriminator: "telemetry_ping".to_owned(),
+                inert: true,
+            },
+        )));
+
+        let evidence = accumulator.evidence();
+        assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+        assert_eq!(evidence.diagnostics.records_observed, 1);
+        assert_eq!(evidence.diagnostics.records_unrecognized_inert, 1);
+        assert_eq!(evidence.diagnostics.records_unusable, 0);
+        assert!(evidence.diagnostics.unusable_reasons.is_empty());
+        assert!(
+            evidence
+                .diagnostics
+                .unrecognized_types
+                .contains("telemetry_ping")
+        );
+    }
+
+    #[test]
+    fn an_evidence_bearing_unrecognized_record_still_fails_closed() {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::UnrecognizedType {
+                discriminator: "telemetry_ping".to_owned(),
+                inert: false,
+            },
+        )));
+        accumulator.record(NormalizedRecord::Unusable(
+            crate::analysis::framing::PartialReason::UnrecognizedRecordType,
+        ));
+
+        let evidence = accumulator.evidence();
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
+        );
+        assert_eq!(evidence.diagnostics.records_observed, 1);
+        assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
+        assert_eq!(evidence.diagnostics.records_unusable, 1);
+        assert!(matches!(
+            evidence.context,
+            EvidenceValue::Partial {
+                reason: CoverageReason::UnrecognizedRecordType,
+                ..
+            }
+        ));
+        assert!(matches!(
+            evidence.time_range,
+            EvidenceValue::Partial {
+                reason: CoverageReason::UnrecognizedRecordType,
+                ..
+            }
+        ));
+        assert!(matches!(
+            evidence.eligibility,
+            EvidenceValue::Partial {
+                reason: CoverageReason::UnrecognizedRecordType,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn diagnostics_unrecognized_types_overflows_to_partial() {
         let mut accumulator = accumulator(true);
         for index in 0..(MAX_UNRECOGNIZED_TYPES * 2) {
             accumulator.record(NormalizedRecord::Observation(Box::new(
                 EvidenceObservation::UnrecognizedType {
                     discriminator: format!("type-{index}"),
+                    inert: true,
                 },
             )));
         }
@@ -1390,6 +1479,37 @@ mod tests {
             EvidenceCoverage::Partial(CoverageReason::CapExceeded)
         );
         assert_capped_collection(&evidence, "diagnostics.unrecognized_types");
+        assert_eq!(
+            evidence.diagnostics.records_unrecognized_inert,
+            (MAX_UNRECOGNIZED_TYPES * 2) as u64
+        );
+    }
+
+    #[test]
+    fn a_capped_inert_session_and_an_evidence_bearing_record_report_the_loss_reason() {
+        let mut accumulator = accumulator(true);
+        for index in 0..=MAX_UNRECOGNIZED_TYPES {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::UnrecognizedType {
+                    discriminator: format!("type-{index}"),
+                    inert: true,
+                },
+            )));
+        }
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::UnrecognizedType {
+                discriminator: "bearing".to_owned(),
+                inert: false,
+            },
+        )));
+        accumulator.record(NormalizedRecord::Unusable(
+            crate::analysis::framing::PartialReason::UnrecognizedRecordType,
+        ));
+
+        assert_eq!(
+            accumulator.evidence().coverage,
+            EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
+        );
     }
 
     #[test]
@@ -1705,6 +1825,7 @@ mod tests {
         accumulator.record(NormalizedRecord::Observation(Box::new(
             EvidenceObservation::UnrecognizedType {
                 discriminator: long_string(),
+                inert: true,
             },
         )));
         let evidence = accumulator.evidence();

@@ -84,7 +84,7 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 pub const PARSER_REVISION: i64 = 5;
 pub const ANALYZER_REVISION: i64 = 6;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 2;
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 3;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
