@@ -72,6 +72,14 @@ samples. No pre-change isolated row exists, so the required isolated
 before-and-after gate was not evaluated. The full-stage and disorder ratios are
 both below 1.30×, but they do not replace that missing gate.
 
+### Issue #229 remeasurement
+
+The structural unknown-record scan was remeasured before the issue #229 commit.
+The 10 MiB full reparse median was 72.8 ms, compared with 72.5 ms above.
+Criterion detected no change for the 10 MiB metrics-and-evidence stage against
+the immediately preceding run. The eventless-record walk caused no measurable
+pipeline regression.
+
 ### Fork-job `Inline` materialization proxy at 10 MiB
 
 | Path | Time (median) |

@@ -1,7 +1,10 @@
+import { Check, CircleDashed, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
 import {
+  notAssessedReasonLabel,
+  sessionHygieneStateIsTransient,
   sessionHygieneStateLabel,
   type SessionHygieneCheck,
 } from "../../lib/presentation/sessionHygiene"
@@ -34,10 +37,24 @@ function verdictInk(failedShare: number, assessedCount: number): string {
   return `color-mix(in oklch, var(--color-system-red-text) ${pct}%, var(--color-system-orange))`
 }
 
-const CHECK_MARK: Record<SessionHygieneCheck["status"], string> = {
-  finding: "✘",
-  clean: "✔",
-  notAssessed: "–",
+interface StatusMark {
+  Icon: LucideIcon
+  /** Box size in px. The tooltip surface sets 12px text. */
+  size: number
+  strokeWidth: number
+  label: string
+}
+
+const STATUS_MARK: Record<SessionHygieneCheck["status"], StatusMark> = {
+  finding: { Icon: X, size: 12, strokeWidth: 2.5, label: "Finding" },
+  clean: { Icon: Check, size: 12, strokeWidth: 2.5, label: "Pass" },
+  // An open, broken outline reads as "not filled in". A dash reads as
+  // punctuation next to the two solid marks.
+  //
+  // The circle draws to the edge of its box, but a check or a cross does
+  // not. So the circle needs a smaller box and a thinner stroke to carry
+  // the same visual weight, and to keep its gaps legible.
+  notAssessed: { Icon: CircleDashed, size: 10, strokeWidth: 2, label: "Not assessed" },
 }
 
 const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
@@ -57,14 +74,32 @@ function renderTooltip(
       {groups.map((group, index) => (
         <Fragment key={group[0]!.status}>
           {index > 0 && <div className="col-span-full border-b border-separator" />}
-          {group.map((check) => (
-            <Fragment key={check.id}>
-              <span className={INK_CLASS[check.ink]}>{check.title}</span>
-              <span className={`${INK_CLASS[check.ink]} text-lg`}>
-                {CHECK_MARK[check.status]}
-              </span>
-            </Fragment>
-          ))}
+          {group.map((check) => {
+            const mark = STATUS_MARK[check.status]
+            return (
+              <Fragment key={check.id}>
+                {/* A not-assessed check names itself only. The reason line below
+                    carries the verdict, so the two do not repeat each other. */}
+                <span className={INK_CLASS[check.ink]}>
+                  {check.status === "notAssessed" ? check.name : check.title}
+                </span>
+                <mark.Icon
+                  size={mark.size}
+                  strokeWidth={mark.strokeWidth}
+                  role="img"
+                  aria-label={mark.label}
+                  className={`justify-self-center ${INK_CLASS[check.ink]}`}
+                />
+                {/* The reason stays in the name column. A full-width line would
+                    run under the mark column and break the right edge. */}
+                {check.status === "notAssessed" && check.notAssessedReason && (
+                  <span className="col-start-1 type-caption text-label-tertiary">
+                    {notAssessedReasonLabel(check.notAssessedReason)}
+                  </span>
+                )}
+              </Fragment>
+            )
+          })}
         </Fragment>
       ))}
       <span className="col-span-full mt-2.5 text-label-secondary">
@@ -83,21 +118,31 @@ export function SessionStatusBar({
   const passed = checks.filter((check) => check.status === "clean")
   const notAssessed = checks.filter((check) => check.status === "notAssessed")
   const assessedCount = passed.length + failed.length
-  const failedShare = assessedCount === 0 ? 0 : failed.length / assessedCount
+  // The denominator is every check the session has, not only the assessed
+  // ones. A denominator that moves with the assessed count contradicts the
+  // not-assessed tail beside it.
+  const failedShare = checks.length === 0 ? 0 : failed.length / checks.length
   const allPassed = passed.length === checks.length && checks.length > 0
   const stateLabel = sessionHygieneStateLabel(evidenceState)
-  const countText = `${passed.length}/${assessedCount} burn checks${
-    notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
-  }`
+  // A transient state ends on its own, so its label carries an ellipsis.
+  const stateText = stateLabel
+    ? `${stateLabel} checks${sessionHygieneStateIsTransient(evidenceState) ? "…" : ""}`
+    : null
+  const checkNoun = checks.length === 1 ? "burn check" : "burn checks"
+  const notAssessedText = notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
+  const countText =
+    assessedCount === 0
+      ? "Not assessed"
+      : `${passed.length}/${checks.length} ${checkNoun}${notAssessedText}`
   const verdictLabel = stateLabel
     ? `${stateLabel} session hygiene checks`
     : allPassed
       ? "All checks pass"
-      : failed.length > 0
-        ? `${failed.length} of ${assessedCount} assessed checks failed${
+      : assessedCount === 0
+        ? "No checks assessed"
+        : `${passed.length} of ${checks.length} ${checkNoun} pass${
             notAssessed.length > 0 ? `; ${notAssessed.length} not assessed` : ""
           }`
-        : `${passed.length} of ${assessedCount} assessed checks pass; ${notAssessed.length} not assessed`
   const tooltip = stateLabel ? verdictLabel : renderTooltip(failed, passed, notAssessed)
 
   return (
@@ -111,7 +156,7 @@ export function SessionStatusBar({
           className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
           style={{ color: verdictInk(failedShare, assessedCount) }}
         >
-          {stateLabel ? `${stateLabel} checks` : countText}
+          {stateText ?? countText}
         </span>
       </Tooltip>
 

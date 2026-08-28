@@ -14,6 +14,7 @@ import type {
   InsightsNotAssessedReason,
   InsightsQuotaPressurePayload,
   InsightsReportPayload,
+  InsightsUnrecognizedRecordsPayload,
   InsightsStatusPayload,
 } from "../../lib/insightsIpc"
 import { InsightsSession, type InsightsSnapshot } from "./InsightsSession"
@@ -201,6 +202,7 @@ function InsightsBody({
       <CoverageSection
         coverage={coverage}
         assessedSessions={report.assessedSessions}
+        unrecognizedRecords={report.unrecognizedRecords}
         status={snapshot.status}
         nothingProcessedYet={nothingProcessedYet}
       />
@@ -228,11 +230,13 @@ const COVERAGE_ROWS: readonly {
 function CoverageSection({
   coverage,
   assessedSessions,
+  unrecognizedRecords,
   status,
   nothingProcessedYet,
 }: {
   coverage: InsightsCoveragePayload
   assessedSessions: number
+  unrecognizedRecords: InsightsUnrecognizedRecordsPayload
   status: InsightsStatusPayload | null
   nothingProcessedYet: boolean
 }) {
@@ -280,6 +284,10 @@ function CoverageSection({
               </li>
             ))}
           </ul>
+          <UnrecognizedRecordsNote
+            records={unrecognizedRecords}
+            assessedSessions={assessedSessions}
+          />
           <StatusText tone="secondary">
             {status?.calculating
               ? "Recomputing the report…"
@@ -290,6 +298,61 @@ function CoverageSection({
         </div>
       </Card>
     </SectionGroup>
+  )
+}
+
+function UnrecognizedRecordsNote({
+  records,
+  assessedSessions,
+}: {
+  records: InsightsUnrecognizedRecordsPayload
+  assessedSessions: number
+}) {
+  if (records.sessionsWithTypes === 0) return null
+
+  const types = records.types
+    .map((kind) => (kind === "<missing>" ? "records with no type" : kind))
+    .join(", ")
+  const more = records.typesTruncated ? " and more" : ""
+  const cohortNoun = assessedSessions === 1 ? "session" : "sessions"
+  const evidencePronoun = records.evidenceBearingSessions === 1 ? "it" : "them"
+  const cappedPronoun = records.cappedSessions === 1 ? "it" : "them"
+  const truncatedPronoun = records.truncatedSessions === 1 ? "it" : "them"
+
+  return (
+    <div className="space-y-1 break-words">
+      <p className="type-footnote text-label">
+        {records.sessionsWithTypes} of the {assessedSessions} {cohortNoun} in the assessed
+        cohort contained record types antiburn could not read
+        {types ? `: ${types}${more}.` : "."}
+      </p>
+      {records.evidenceBearingSessions > 0 && (
+        <p className="type-footnote text-label-secondary">
+          {records.evidenceBearingSessions} of those sessions contained a record that could
+          carry usage data, so some checks cannot report a result for {evidencePronoun}.
+        </p>
+      )}
+      {records.cappedSessions > 0 && (
+        <p className="type-footnote text-label-secondary">
+          {records.cappedSessions} of those sessions contained more unrecognised types than
+          antiburn records, so some checks cannot report a result for {cappedPronoun}.
+        </p>
+      )}
+      {records.truncatedSessions > 0 && (
+        <p className="type-footnote text-label-secondary">
+          {records.truncatedSessions} of those sessions contained a record type that antiburn
+          could not record in full, so some checks cannot report a result for {truncatedPronoun}
+          {"."}
+        </p>
+      )}
+      {records.evidenceBearingSessions === 0 &&
+        records.cappedSessions === 0 &&
+        records.truncatedSessions === 0 && (
+          <p className="type-footnote text-label-secondary">
+            These records do not themselves block results for those sessions.
+          </p>
+        )}
+    </div>
   )
 }
 

@@ -65,6 +65,17 @@ export interface InsightsQuotaPressurePayload {
   findings: InsightsQuotaFindingsPayload | null
 }
 
+/** Bounded unknown record vocabulary from the local evidence cohort. */
+export interface InsightsUnrecognizedRecordsPayload {
+  types: string[]
+  typesTruncated: boolean
+  sessionsWithTypes: number
+  inertSessions: number
+  evidenceBearingSessions: number
+  cappedSessions: number
+  truncatedSessions: number
+}
+
 /** The thirty-day insights report for one environment scope. */
 export interface InsightsReportPayload {
   environmentKey: string
@@ -77,6 +88,7 @@ export interface InsightsReportPayload {
   assessedSessions: number
   categories: InsightsCategoryPayload[]
   quotaPressure: InsightsQuotaPressurePayload
+  unrecognizedRecords: InsightsUnrecognizedRecordsPayload
   catalogRevision: number
 }
 
@@ -88,7 +100,12 @@ export interface InsightsStatusPayload {
 }
 
 export type SessionHygieneBadgeId =
-  "reasoningOverkill" | "excessCacheRehydration" | "bloatedInitialContext"
+  | "sessionOverdepth"
+  | "modelOverthinking"
+  | "overpoweredSubagents"
+  | "obsoleteModel"
+  | "fastModeOveruse"
+  | "excessCacheRehydration"
 
 export interface SessionHygieneBadgePayload {
   id: SessionHygieneBadgeId

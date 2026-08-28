@@ -23,7 +23,7 @@ Post-review refinements folded in during Keith's testing (2026-08-24): titles se
 - **Alert colour**: brand orange, via the existing `brand` token — not raw `#FF6A2C`, since `brand` is already contrast-adjusted per theme. Pass glyphs use `text-label-tertiary`.
 - **High-cost pill goes solid brand orange**: white text and flame on a full `brand-tint` fill (`bg-brand-tint text-white`), replacing the red tint treatment (`bg-system-red/15 text-system-red-text`). Keith picked "solid" from four proto variants after flagging that pure orange *text* suffers on a light card. Check white-on-`brand-tint` contrast in both themes; if it falls short, deepen the fill with the `brand` (text-grade) colour rather than reverting to tinted text.
 - **Session title size up one notch.** Keith's call: antiburn's current text runs small against best-practice Mac apps. The proto moved the title from 14px to 15px. Implementation-wise this means adjusting the `type-callout` step (or moving the title to a larger existing `type-*` step) — a token change, so update `design.md` in the same change per the drift check. Decide scope in review: title only, or the whole `type-*` scale.
-- **Icons** (owner-picked): all six exist in lucide.
+- **Icons** (owner-picked): all six checks exist in lucide.
 
   | Check | lucide import |
   | --- | --- |
@@ -74,6 +74,6 @@ One-line class swap: `bg-system-red/15 text-system-red-text` → `bg-brand-tint/
 
 ## Out of scope
 
-- Real hygiene data (stays `mockSessionHygiene`).
-- Renaming the checks ("Session too deep", "Cache reloads" etc. were reviewed but not decided).
+- Changes to the underlying evidence collection beyond the existing real-data wiring.
+- Further check categories beyond the six shipped checks.
 - Dark mode polish beyond what the `brand`/`label-tertiary` tokens give for free — check it in the screenshot pass, don't redesign.

@@ -306,6 +306,10 @@ fn thread_identity_field(value: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Returns true for known eventless record names.
+///
+/// The Claude adapter permits unread nested scalar keys and command markers for these records.
+/// Shallow evidence shapes still fail closed.
 pub(super) fn is_recognized_eventless(value: &Value) -> bool {
     matches!(
         value.get("type").and_then(Value::as_str),
@@ -319,6 +323,9 @@ pub(super) fn is_recognized_eventless(value: &Value) -> bool {
                 | "mode"
                 | "last-prompt"
                 | "ai-title"
+                | "custom-title"
+                | "bridge-session"
+                | "artifact-comment-monitor"
                 | "queue-operation"
                 | "file-history-delta"
                 | "pr-link"
@@ -332,6 +339,135 @@ pub(super) fn is_recognized_eventless(value: &Value) -> bool {
     )
 }
 
+/// Returns true when an unknown object cannot carry evidence that `parse_record` reads.
+///
+/// `INERTNESS_MIRROR_CASES` lists the parser readers and deliberate exemptions.
+/// The scan rejects evidence keys and tool shapes at any depth.
+/// The framing limit bounds the scan to one record of at most `MAX_RECORD_BYTES`.
+/// A non-object record fails closed.
+/// Timestamps and thread fields are inert because separate passes read them first.
+/// `isSidechain`, attachments, message IDs, and free text also produce no skipped event evidence.
+/// An empty tool name is inert because `push_named_tool_str` rejects it.
+/// The Claude adapter checks command markers separately because they can create late tool calls.
+/// This proof keeps complete coverage without weakening the clean-status evidence rule.
+pub(super) fn is_inert_unrecognized(value: &Value) -> bool {
+    is_inert_record(value, true)
+}
+
+/// Returns true when a known eventless record carries no parser-readable evidence.
+///
+/// Known eventless records can contain nested configuration with scalar evidence-key names.
+/// `parse_record` reads those scalar keys only at the root or in the root `message` object.
+pub(super) fn is_inert_recognized_eventless(value: &Value) -> bool {
+    is_inert_record(value, false)
+}
+
+fn is_inert_record(value: &Value, reject_nested_scalar_keys: bool) -> bool {
+    if !value.is_object() {
+        return false;
+    }
+
+    let mut pending = vec![(value, true)];
+    while let Some((value, reads_scalar_keys)) = pending.pop() {
+        match value {
+            Value::Object(object) => {
+                if (reads_scalar_keys
+                    && [
+                        "role",
+                        "usage",
+                        "model",
+                        "speed",
+                        "effort",
+                        "reasoning_effort",
+                    ]
+                    .into_iter()
+                    .any(|key| object.contains_key(key)))
+                    || object.contains_key("tool_calls")
+                    || object.contains_key("compactMetadata")
+                    || object.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+                    || object
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| {
+                            matches!(kind, "tool_use" | "toolCall" | "tool_result" | "thinking")
+                        })
+                {
+                    return false;
+                }
+
+                let has_arguments =
+                    object.contains_key("input") || object.contains_key("arguments");
+                let has_named_tool = object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| !name.is_empty())
+                    && has_arguments;
+                let has_split_named_tool = has_arguments
+                    && object.values().any(|child| {
+                        child
+                            .as_object()
+                            .and_then(|child| child.get("name"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| !name.is_empty())
+                    });
+                if has_named_tool || has_split_named_tool {
+                    return false;
+                }
+
+                pending.extend(object.iter().map(|(key, child)| {
+                    let reads_scalar_keys =
+                        reject_nested_scalar_keys || (reads_scalar_keys && key == "message");
+                    (child, reads_scalar_keys)
+                }));
+            }
+            Value::Array(items) => {
+                pending.extend(items.iter().map(|item| (item, reject_nested_scalar_keys)))
+            }
+            _ => {}
+        }
+    }
+
+    true
+}
+
+#[cfg(test)]
+const INERTNESS_MIRROR_CASES: &[(&str, bool)] = &[
+    (r#"{"type":"new","role":"agent"}"#, false),
+    (r#"{"type":"new","message":{"role":"agent"}}"#, false),
+    (r#"{"type":"new","usage":{}}"#, false),
+    (r#"{"type":"new","message":{"usage":null}}"#, false),
+    (r#"{"type":"new","payload":{"usage":{}}}"#, false),
+    (r#"{"type":"new","model":"m"}"#, false),
+    (r#"{"type":"new","speed":"fast"}"#, false),
+    (r#"{"type":"new","effort":"high"}"#, false),
+    (r#"{"type":"new","reasoning_effort":"high"}"#, false),
+    (r#"{"type":"new","tool_calls":[]}"#, false),
+    (r#"{"type":"new","content":[{"type":"tool_use"}]}"#, false),
+    (r#"{"type":"new","content":[{"type":"toolCall"}]}"#, false),
+    (
+        r#"{"type":"new","content":[{"type":"tool_result"}]}"#,
+        false,
+    ),
+    (r#"{"type":"new","content":[{"type":"thinking"}]}"#, false),
+    (r#"{"type":"new","compactMetadata":{}}"#, false),
+    (r#"{"type":"new","subtype":"compact_boundary"}"#, false),
+    (r#"{"type":"new","name":"Bash","input":{}}"#, false),
+    (
+        r#"{"type":"new","payload":{"name":"Bash"},"arguments":{}}"#,
+        false,
+    ),
+    (
+        r#"{"type":"new","timestamp":1,"ts":1,"created_at":1,"createdAt":1}"#,
+        true,
+    ),
+    (r#"{"type":"new","uuid":"u","parentUuid":"p"}"#, true),
+    (r#"{"type":"new","isSidechain":true}"#, true),
+    (r#"{"type":"new","attachment":{"name":"guide"}}"#, true),
+    (r#"{"type":"new","message":{"id":"m"}}"#, true),
+    (r#"{"type":"new","text":"free","content":"free"}"#, true),
+    (r#"{"type":"new","name":"","input":{}}"#, true),
+];
+
 pub(super) fn record_discriminator(value: &Value) -> String {
     value
         .get("type")
@@ -342,6 +478,9 @@ pub(super) fn record_discriminator(value: &Value) -> String {
 
 /// Parse a single JSON record into a normalized event, or `None` if the record
 /// carries no analyzable signal (titles, summaries, metadata lines, …).
+///
+/// Every read here is a rejected key in `is_inert_unrecognized` or an exempt row
+/// in `INERTNESS_MIRROR_CASES`. Add one of the two before you update the fingerprint.
 pub fn parse_record(value: &Value) -> Option<NormalizedEvent> {
     let obj = value.as_object()?;
     let msg = obj.get("message").and_then(|m| m.as_object());
@@ -716,6 +855,233 @@ mod tests {
     use super::*;
     use crate::analysis::model::{Role, ToolCategory};
     use serde_json::json;
+
+    #[test]
+    fn every_field_parse_record_reads_appears_in_the_inertness_table() {
+        for (record, expected_inert) in INERTNESS_MIRROR_CASES {
+            let value: Value = serde_json::from_str(record).unwrap();
+            assert_eq!(
+                is_inert_unrecognized(&value),
+                *expected_inert,
+                "unexpected classification for {record}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_record_changes_require_an_inertness_review() {
+        const EXPECTED_FINGERPRINT: u64 = 9_811_810_106_425_720_840;
+        let source = include_str!("jsonl.rs").replace("\r\n", "\n");
+        let start = source.find("pub fn parse_record").unwrap();
+        let end = source[start..].find("\n#[cfg(test)]\nmod tests").unwrap() + start;
+        let fingerprint = source.as_bytes()[start..end]
+            .iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+
+        assert_eq!(fingerprint, EXPECTED_FINGERPRINT);
+    }
+
+    #[test]
+    fn a_bare_housekeeping_record_is_inert() {
+        assert!(is_inert_unrecognized(&json!({
+            "type": "telemetry_ping",
+            "timestamp": 1,
+            "payload": {"ok": true}
+        })));
+    }
+
+    #[test]
+    fn roles_fail_closed() {
+        for record in [
+            json!({"type": "new", "role": "agent"}),
+            json!({"type": "new", "message": {"role": "agent"}}),
+            json!({"type": "new", "role": 7}),
+            json!({"type": "new", "role": null}),
+            json!({"type": "new", "role": {}}),
+        ] {
+            assert!(!is_inert_unrecognized(&record));
+        }
+    }
+
+    #[test]
+    fn non_object_records_fail_closed() {
+        for record in [json!([]), json!(7), json!("text"), Value::Null] {
+            assert!(!is_inert_unrecognized(&record));
+        }
+    }
+
+    #[test]
+    fn usage_model_speed_or_effort_fails_closed() {
+        for record in [
+            json!({"type": "new", "usage": {}}),
+            json!({"type": "new", "usage": null}),
+            json!({"type": "new", "message": {"usage": {"speed": "fast"}}}),
+            json!({"type": "new", "model": "m"}),
+            json!({"type": "new", "message": {"model": "m"}}),
+            json!({"type": "new", "speed": "fast"}),
+            json!({"type": "new", "effort": "high"}),
+            json!({"type": "new", "message": {"reasoning_effort": "high"}}),
+        ] {
+            assert!(!is_inert_unrecognized(&record));
+        }
+    }
+
+    #[test]
+    fn tool_calls_and_content_blocks_fail_closed() {
+        for record in [
+            json!({"type": "new", "tool_calls": []}),
+            json!({"type": "new", "message": {"tool_calls": []}}),
+            json!({"type": "new", "content": [{"type": "tool_use"}]}),
+            json!({"type": "new", "message": {"content": [{"nested": {"type": "toolCall"}}]}}),
+            json!({"type": "new", "payload": {"type": "tool_result"}}),
+            json!({"type": "new", "payload": [{"type": "thinking"}]}),
+        ] {
+            assert!(!is_inert_unrecognized(&record));
+        }
+    }
+
+    #[test]
+    fn named_tool_shapes_fail_closed() {
+        for record in [
+            json!({"type": "new", "name": "Bash", "input": {}}),
+            json!({"type": "new", "message": {"name": "Bash", "arguments": {}}}),
+            json!({"type": "new", "payload": {"name": "Bash", "input": {}}}),
+            json!({"type": "new", "payload": {"name": "Bash"}, "arguments": {}}),
+        ] {
+            assert!(!is_inert_unrecognized(&record));
+        }
+        assert!(is_inert_unrecognized(
+            &json!({"type": "new", "name": "", "input": {}})
+        ));
+    }
+
+    #[test]
+    fn wrong_message_or_content_types_are_inert() {
+        for record in [
+            json!({"type": "new", "message": []}),
+            json!({"type": "new", "message": "text"}),
+            json!({"type": "new", "content": {"text": "free"}}),
+            json!({"type": "new", "content": "free"}),
+        ] {
+            assert!(is_inert_unrecognized(&record));
+        }
+    }
+
+    #[test]
+    fn compaction_metadata_fails_closed() {
+        assert!(!is_inert_unrecognized(
+            &json!({"type": "new", "compactMetadata": {}})
+        ));
+        assert!(!is_inert_unrecognized(
+            &json!({"type": "new", "subtype": "compact_boundary"})
+        ));
+    }
+
+    #[test]
+    fn allowlisted_names_use_the_recognized_eventless_predicate() {
+        for kind in [
+            "attachment",
+            "summary",
+            "file-history-snapshot",
+            "permission-mode",
+            "mode",
+            "last-prompt",
+            "ai-title",
+            "queue-operation",
+            "file-history-delta",
+            "pr-link",
+            "atis-latch",
+            "worktree-state",
+            "relocated",
+            "frame-link",
+            "cost-state",
+            "agent-name",
+        ] {
+            let inert = json!({"type": kind, "timestamp": 1});
+            assert!(is_recognized_eventless(&inert));
+            assert!(is_inert_recognized_eventless(&inert));
+            assert!(!is_inert_recognized_eventless(
+                &json!({"type": kind, "message": {"usage": {}}})
+            ));
+        }
+    }
+
+    #[test]
+    fn recognized_eventless_records_fail_closed_on_every_parser_readable_shape() {
+        for key in [
+            "role",
+            "usage",
+            "model",
+            "speed",
+            "effort",
+            "reasoning_effort",
+        ] {
+            let mut root = json!({"type": "cost-state"});
+            root.as_object_mut()
+                .unwrap()
+                .insert(key.to_owned(), Value::Null);
+            assert!(!is_inert_recognized_eventless(&root), "root {key}");
+
+            let mut message = json!({"type": "cost-state", "message": {}});
+            message["message"]
+                .as_object_mut()
+                .unwrap()
+                .insert(key.to_owned(), Value::Null);
+            assert!(!is_inert_recognized_eventless(&message), "message {key}");
+        }
+
+        for record in [
+            json!({"type": "cost-state", "payload": {"tool_calls": []}}),
+            json!({"type": "cost-state", "payload": {"content": [{"type": "tool_use"}]}}),
+            json!({"type": "cost-state", "payload": {"content": [{"type": "toolCall"}]}}),
+            json!({"type": "cost-state", "payload": {"content": [{"type": "tool_result"}]}}),
+            json!({"type": "cost-state", "payload": {"content": [{"type": "thinking"}]}}),
+            json!({"type": "cost-state", "payload": {"compactMetadata": {}}}),
+            json!({"type": "cost-state", "payload": {"subtype": "compact_boundary"}}),
+            json!({"type": "cost-state", "payload": {"name": "Bash", "input": {}}}),
+            json!({
+                "type": "cost-state",
+                "payload": {"arguments": {}, "call": {"name": "Bash"}}
+            }),
+        ] {
+            assert!(!is_inert_recognized_eventless(&record), "{record}");
+        }
+
+        for record in [
+            json!({"type": "attachment", "attachment": {"config": {"model": "display-only"}}}),
+            json!({"type": "last-prompt", "prompt": "<command-name>/review</command-name>"}),
+        ] {
+            assert!(is_inert_recognized_eventless(&record), "{record}");
+        }
+    }
+
+    #[test]
+    fn large_and_deep_allowlisted_records_stay_inert() {
+        let large = json!({
+            "type": "file-history-snapshot",
+            "files": (0..500).map(|index| json!({"path": index})).collect::<Vec<_>>()
+        });
+        let deep = json!({
+            "type": "summary",
+            "payload": {"a": {"b": {"c": {"d": {"e": {"f": {"g": {"h": {}}}}}}}}}
+        });
+
+        assert!(is_inert_unrecognized(&large));
+        assert!(is_inert_unrecognized(&deep));
+    }
+
+    #[test]
+    fn nested_evidence_keys_fail_closed() {
+        for record in [
+            json!({"type": "new", "payload": {"role": "agent"}}),
+            json!({"type": "new", "payload": {"usage": {}}}),
+            json!({"type": "new", "payload": {"model": "m"}}),
+        ] {
+            assert!(!is_inert_unrecognized(&record));
+        }
+    }
 
     #[test]
     fn message_usage_speed_is_parsed() {

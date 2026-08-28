@@ -17,6 +17,7 @@ pub use quota::{
 pub use report::{
     CapabilityFlag, CoverageCounts, DetectorCounts, DetectorRequirements, EfficiencyReport,
     EfficiencyReportAccumulator, EvidenceGroup, GroupState, MAX_EXAMPLES_PER_DETECTOR,
-    ReportContext, ReportWindow, SessionExample, requirements,
+    MAX_REPORT_UNRECOGNIZED_TYPES, ReportContext, ReportWindow, SessionExample,
+    UnrecognizedRecords, requirements,
 };
 pub use status::{CoverageBucket, DetectorId};

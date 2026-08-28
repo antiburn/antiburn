@@ -6,6 +6,9 @@
 //! finding. Incomplete absence of a signal never produces clean.
 //! Thresholds and catalogs are report-time policy inputs. Evidence stays
 //! rule-neutral (Locked Decision 2).
+//!
+//! An evidence-bearing or capped unknown record blocks clean results. A structurally inert unknown drops no evidence and keeps complete coverage.
+//! A session with only inert records has zero work. `in_denominator` excludes it for two detectors only.
 
 mod cache_churn;
 mod model_overthinking;

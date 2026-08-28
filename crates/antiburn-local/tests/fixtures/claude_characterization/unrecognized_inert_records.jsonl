@@ -1,0 +1,5 @@
+{"type":"assistant","timestamp":"2026-05-04T08:00:00Z","uuid":"known-u1","parentUuid":null,"message":{"id":"known-inert-before","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":8,"output_tokens":4},"content":[{"type":"text","text":"Synthetic neighbour before."}]}}
+{"type":"relay_probe","timestamp":"2026-05-04T08:00:01Z","payload":{"ok":true}}
+{"type":"telemetry_ping","timestamp":"2026-05-04T08:00:02Z","content":"Synthetic inert text."}
+{"type":"shelf_audit","timestamp":"2026-05-04T08:00:03Z","uuid":"inert-u1","parentUuid":"known-u1"}
+{"type":"assistant","timestamp":"2026-05-04T08:00:04Z","uuid":"known-u2","parentUuid":"inert-u1","message":{"id":"known-inert-after","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":6,"output_tokens":3},"content":[{"type":"text","text":"Synthetic neighbour after."}]}}

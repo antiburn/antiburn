@@ -1160,6 +1160,7 @@ pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<Insight
         .state::<InsightsController>()
         .report(data_dir, request)
         .await?;
+    crate::analytics::record_unrecognized_records(&app, &report.unrecognized_records);
     Ok(report.into())
 }
 
