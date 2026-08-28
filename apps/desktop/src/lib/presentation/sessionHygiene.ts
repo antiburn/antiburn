@@ -49,8 +49,8 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     checkingTitle: "Checking context depth…",
     tooltip: {
       heading: "Session overdepth",
-      body: "Flags any single request that carried more than 160k tokens of context.",
-      burn: "Every turn re-reads the whole context, so a deep session pays for it again and again. Handing off to a fresh session resets the cost.",
+      body: "Flags the session when its largest single request carried more than 160k tokens of context.",
+      burn: "Every turn re-sends the whole context, so a deep session pays for it again and again, even at cache-read rates. Handing off to a fresh session resets the cost.",
     },
   },
   {
@@ -74,7 +74,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     tooltip: {
       heading: "Overpowered subagents",
       body: "A premium main-loop model spawned subagents that ran on a premium model too, such as Opus delegating to Opus.",
-      burn: "Every delegated turn bills at the top tier. Fetch-and-carry work — searching, reading files, running commands — lands the same on a cheaper model.",
+      burn: "Every delegated turn bills at the top tier. Fetch-and-carry work — searching, reading files, running commands — usually lands the same on a cheaper model.",
     },
   },
   {
@@ -109,7 +109,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     checkingTitle: "Checking cache rehydration…",
     tooltip: {
       heading: "Cache rehydration",
-      body: "Looks for paid cache writes after something invalidated the prompt cache: a model switch, an idle gap past cache expiry, or a manual compaction.",
+      body: "Looks for paid cache writes alongside something that invalidated the prompt cache: a model switch, an idle gap of 5 minutes or more, or a manual compaction.",
       burn: "Each rehydration re-writes the whole context prefix at cache-write rates — you pay for the same tokens again.",
     },
   },

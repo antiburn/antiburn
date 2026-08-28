@@ -310,6 +310,8 @@ function HygieneChecks({ checks, display }: HygieneChecksProps) {
           key={check.id}
           label={<HygieneTooltipBody check={check} />}
           side="bottom"
+          align="start"
+          alignOffset={12}
           delayMs={150}
         >
           <div

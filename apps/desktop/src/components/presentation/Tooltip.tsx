@@ -7,6 +7,10 @@ export interface TooltipProps {
   /** The trigger. Must accept a ref and spread props (Radix uses `asChild`). */
   children: ReactNode
   side?: "top" | "right" | "bottom" | "left"
+  /** Where the surface sits along the trigger edge. */
+  align?: "start" | "center" | "end"
+  /** Shift along the trigger edge, in pixels. Ignored when align is center. */
+  alignOffset?: number
   /** Hover delay before opening, in milliseconds. */
   delayMs?: number
   /**
@@ -28,6 +32,8 @@ export function Tooltip({
   label,
   children,
   side = "top",
+  align = "center",
+  alignOffset = 0,
   delayMs = 600,
   interactive = false,
 }: TooltipProps) {
@@ -52,6 +58,8 @@ export function Tooltip({
           <TooltipPrimitive.Content
             side={side}
             sideOffset={4}
+            align={align}
+            alignOffset={alignOffset}
             collisionPadding={8}
             className="ui-tooltip max-w-[220px] whitespace-normal"
           >
