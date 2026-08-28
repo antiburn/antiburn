@@ -10,6 +10,7 @@ import { FolderPermissionNotice } from "../../components/repositories/FolderPerm
 import { LocalRepositoryList } from "../../components/repositories/LocalRepositoryList"
 import { Card } from "../../components/ui/Card"
 import { PushButton } from "../../components/ui/PushButton"
+import { Row } from "../../components/ui/Row"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { ToggleRow } from "../../components/ui/ToggleRow"
@@ -513,29 +514,23 @@ function Ready({
         </Card>
         {analyticsSupported ? (
           <Card className="mt-3 w-full text-left">
-            <h3 className="type-body font-medium text-label">Privacy matters to us.</h3>
-            <p className="mt-1 type-footnote text-label-secondary">
-              Antiburn&rsquo;s analytics never includes your agent prompts, sessions, source
-              code, file contents, filenames, or paths. We collect limited usage statistics to
-              help improve the product. You can disable analytics at any time in Settings &rarr;
-              Privacy.
-            </p>
-            {analyticsEnvironmentDisabled ? (
-              <p className="mt-2 type-footnote text-label-tertiary">
-                Analytics is disabled for this launch by
-                <code> ANTIBURN_ANALYTICS_ENABLED=false</code>. Without that override, the
-                Settings preference applies.
-              </p>
-            ) : null}
-            <p className="mt-2 type-footnote text-label-tertiary">
-              Optional: copy this prompt into your AI agent if you want to validate the
-              analytics implementation.
-            </p>
-            <div className="mt-3">
-              <PushButton onClick={copyReviewPrompt} trailingIcon={Copy}>
-                {copied ? "Prompt copied" : "Copy prompt for AI agent"}
-              </PushButton>
-            </div>
+            <Row
+              label="Anonymised analytics"
+              description={
+                analyticsEnvironmentDisabled
+                  ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use the setting in Settings → Privacy."
+                  : "Sends app launches, onboarding progress, feature use, and error categories. Never prompts, sessions, source code, filenames, or paths. Turn it off in Settings → Privacy."
+              }
+            />
+            <Row
+              label="Review the source code"
+              description="Copy a prompt for your AI agent to check what leaves your computer."
+              trailing={
+                <PushButton onClick={copyReviewPrompt} trailingIcon={Copy}>
+                  {copied ? "Copied" : "Copy prompt"}
+                </PushButton>
+              }
+            />
           </Card>
         ) : null}
         {finishError ? (

@@ -197,12 +197,10 @@ describe("OnboardingView", () => {
     expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument()
     expect(screen.getByRole("switch", { name: "Launch antiburn on startup" })).toBeChecked()
     expect(
-      screen.getByText(/analytics never includes your agent prompts, sessions, source code/i),
+      screen.getByText(/Never prompts, sessions, source code, filenames, or paths/i),
     ).toBeInTheDocument()
-    expect(
-      screen.getByText(/Optional: copy this prompt into your AI agent/i),
-    ).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Copy prompt for AI agent" })).toBeInTheDocument()
+    expect(screen.getByText(/check what leaves your computer/i)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
 
     await waitFor(() =>
@@ -237,10 +235,8 @@ describe("OnboardingView", () => {
 
     await advanceToReady()
 
-    expect(screen.queryByText(/analytics never includes/i)).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole("button", { name: "Copy prompt for AI agent" }),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/Never prompts, sessions/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).not.toBeInTheDocument()
   })
 
   it("explains the process override without hiding analytics support", async () => {
@@ -256,10 +252,9 @@ describe("OnboardingView", () => {
 
     await advanceToReady()
 
-    expect(screen.getByText(/analytics never includes your agent prompts/i)).toBeInTheDocument()
-    expect(
-      screen.getByText(/Without that override, the Settings preference applies/i),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/Off for this launch/i)).toHaveTextContent(
+      "ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use the setting in Settings → Privacy.",
+    )
     expect(
       invoke.mock.calls.filter(([command]) => command === "note_interaction"),
     ).toHaveLength(0)
@@ -269,9 +264,9 @@ describe("OnboardingView", () => {
     render(<OnboardingView />)
     await advanceToReady()
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for AI agent" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }))
 
-    expect(await screen.findByRole("button", { name: "Prompt copied" })).toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument()
     expect(clipboardWrite).toHaveBeenCalledWith(
       expect.stringContaining("Explain in plain language what stays on my computer"),
     )
