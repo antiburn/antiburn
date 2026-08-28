@@ -11,7 +11,7 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::Path;
 
 use anyhow::Context;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, Statement, params};
 use serde_json::{Map, Value};
 
 use super::jsonl::{parse_ts, tool_call_from_input};
@@ -178,8 +178,9 @@ fn visit_database_connection(
                 length(CAST(message.data AS BLOB))
          FROM message JOIN cluster ON message.session_id = cluster.id
          ORDER BY COALESCE(message.time_created, message.time_updated, 0),
-                  message.session_id, message.id"
+                   message.session_id, message.id"
     ))?;
+    let mut parts = prepare_db_parts(conn)?;
     let mut rows = messages.query(params![root_session_id, MAX_RECORD_BYTES as i64])?;
     while let Some(row) = rows.next()? {
         if cancel() {
@@ -194,22 +195,22 @@ fn visit_database_connection(
 
         if data_len > MAX_RECORD_BYTES {
             sink.record(NormalizedRecord::Unusable(PartialReason::Oversized));
-            drain_message_parts(conn, &message_id, cancel, sink)?;
+            drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         }
         let Some(data) = data else {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
-            drain_message_parts(conn, &message_id, cancel, sink)?;
+            drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         };
         let Ok(value) = serde_json::from_str::<Value>(&data) else {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
-            drain_message_parts(conn, &message_id, cancel, sink)?;
+            drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         };
         let Some(event) = message_event(&value, fallback_ts) else {
             report_invalid_message(&value, sink);
-            drain_message_parts(conn, &message_id, cancel, sink)?;
+            drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         };
         state.observe_model(&event);
@@ -219,33 +220,40 @@ fn visit_database_connection(
             part_bytes: 0,
             parts_oversized: false,
         };
-        visit_db_parts(conn, &mut pending, cancel, sink)?;
+        visit_db_parts(&mut parts, &mut pending, cancel, sink)?;
         sink.record(NormalizedRecord::MetricsEvent(Box::new(pending.event)));
     }
     Ok(state.finish())
 }
 
+fn prepare_db_parts(conn: &Connection) -> rusqlite::Result<Statement<'_>> {
+    conn.prepare(
+        "SELECT id, time_created, time_updated,
+                CASE
+                    WHEN length(CAST(data AS BLOB)) <= ?2
+                     AND SUM(length(CAST(data AS BLOB))) OVER (
+                             ORDER BY COALESCE(time_created, time_updated, 0), id
+                             ROWS UNBOUNDED PRECEDING
+                         ) <= ?2
+                    THEN data
+                END,
+                length(CAST(data AS BLOB)),
+                SUM(length(CAST(data AS BLOB))) OVER (
+                    ORDER BY COALESCE(time_created, time_updated, 0), id
+                    ROWS UNBOUNDED PRECEDING
+                )
+           FROM part
+          WHERE message_id = ?1
+          ORDER BY COALESCE(time_created, time_updated, 0), id",
+    )
+}
+
 fn visit_db_parts(
-    conn: &Connection,
+    statement: &mut Statement<'_>,
     pending: &mut PendingMessage,
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
 ) -> anyhow::Result<()> {
-    let mut statement = conn.prepare(
-        "WITH ordered AS (
-             SELECT id, time_created, time_updated, data,
-                    length(CAST(data AS BLOB)) AS data_len,
-                    SUM(length(CAST(data AS BLOB))) OVER (
-                        ORDER BY COALESCE(time_created, time_updated, 0), id
-                        ROWS UNBOUNDED PRECEDING
-                    ) AS cumulative_len
-             FROM part WHERE message_id = ?1
-         )
-         SELECT id, time_created, time_updated,
-                CASE WHEN data_len <= ?2 AND cumulative_len <= ?2 THEN data END,
-                data_len, cumulative_len
-         FROM ordered ORDER BY COALESCE(time_created, time_updated, 0), id",
-    )?;
     let mut rows = statement.query(params![pending.id, MAX_RECORD_BYTES as i64])?;
     while let Some(row) = rows.next()? {
         if cancel() {
@@ -282,7 +290,7 @@ fn visit_db_parts(
 }
 
 fn drain_message_parts(
-    conn: &Connection,
+    statement: &mut Statement<'_>,
     message_id: &str,
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
@@ -293,7 +301,7 @@ fn drain_message_parts(
         part_bytes: 0,
         parts_oversized: false,
     };
-    visit_db_parts(conn, &mut pending, cancel, sink)
+    visit_db_parts(statement, &mut pending, cancel, sink)
 }
 
 #[derive(Default)]

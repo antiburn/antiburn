@@ -41,6 +41,8 @@ const CLI_DATA_CHUNK_BYTES: usize = 16 * 1024;
 const CLI_EXPORT_CONCURRENCY: usize = 4;
 const CLI_EXPORT_CACHE_LIMIT: usize = 256;
 const CLI_EXPORT_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DB_FORK_CANDIDATES: i64 = 100;
+const MAX_DB_FORK_RECORD_BYTES: i64 = 8 * 1024 * 1024;
 
 static CLI_EXPORT_CACHE: OnceLock<Mutex<CliExportCache>> = OnceLock::new();
 
@@ -2341,6 +2343,14 @@ pub async fn render_db_session(db_path: PathBuf, root_session_id: String) -> Opt
         .flatten()
 }
 
+/// Find a database-backed fork parent without rendering the session transcript.
+pub async fn db_fork_parent(db_path: PathBuf, session_id: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || db_fork_parent_blocking(&db_path, &session_id))
+        .await
+        .ok()
+        .flatten()
+}
+
 pub async fn db_session_metadata(
     db_path: PathBuf,
     root_session_id: String,
@@ -2378,6 +2388,175 @@ fn render_db_session_blocking(db_path: &Path, root_session_id: &str) -> Option<S
             SessionSource::File(_) | SessionSource::ProviderDb { .. } => None,
         }
     })
+}
+
+fn db_fork_parent_blocking(db_path: &Path, session_id: &str) -> Option<String> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    conn.execute_batch("BEGIN").ok()?;
+    let (directory, title, child_created) = conn
+        .query_row(
+            "SELECT directory, title, time_created FROM session WHERE id = ?1 LIMIT 1",
+            params![session_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2).ok().flatten(),
+                ))
+            },
+        )
+        .ok()?;
+    let parent_title = opencode_fork_parent_title(&title)?;
+    let candidate_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session
+              WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL",
+            params![session_id, directory, parent_title],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()?;
+    if candidate_count == 0 || candidate_count > MAX_DB_FORK_CANDIDATES {
+        return None;
+    }
+
+    let visible_sql = "WITH bounded AS (
+             SELECT CASE WHEN length(CAST(message.data AS BLOB)) <= ?2
+                               AND json_valid(message.data)
+                         THEN message.data END AS message_data,
+                     length(CAST(message.data AS BLOB)) AS message_bytes,
+                     json_valid(message.data) AS message_valid,
+                     CASE WHEN length(CAST(part.data AS BLOB)) <= ?2
+                               AND json_valid(part.data)
+                         THEN part.data END AS part_data,
+                     length(CAST(part.data AS BLOB)) AS part_bytes,
+                     json_valid(part.data) AS part_valid,
+                    message.time_created AS message_created,
+                    message.time_updated AS message_updated,
+                    message.id AS message_id,
+                    part.time_created AS part_created,
+                    part.time_updated AS part_updated,
+                    part.id AS part_id
+               FROM message JOIN part ON part.message_id = message.id
+              WHERE message.session_id = ?1
+         )
+         SELECT CASE WHEN json_type(message_data, '$.role') = 'text'
+                     THEN json_extract(message_data, '$.role') END,
+                 message_bytes,
+                 message_valid,
+                 CASE WHEN json_type(part_data, '$.type') = 'text'
+                      THEN json_extract(part_data, '$.type') END,
+                 CASE WHEN json_extract(part_data, '$.type') = 'text'
+                            AND json_type(part_data, '$.text') = 'text'
+                      THEN json_extract(part_data, '$.text') END,
+                 part_bytes,
+                 part_valid
+           FROM bounded
+          ORDER BY COALESCE(message_created, message_updated, 0), message_id,
+                   COALESCE(part_created, part_updated, 0), part_id";
+    let mut parent_items = conn.prepare(visible_sql).ok()?;
+    let mut child_items = conn.prepare(visible_sql).ok()?;
+    let mut candidates = conn
+        .prepare(
+            "SELECT id, time_created FROM session
+              WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL",
+        )
+        .ok()?;
+    let rows = candidates
+        .query_map(params![session_id, directory, parent_title], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1).ok().flatten(),
+            ))
+        })
+        .ok()?;
+
+    let mut best: Option<(String, usize)> = None;
+    let mut best_is_tied = false;
+    for (parent_session_id, parent_created) in rows.flatten() {
+        if parent_created
+            .zip(child_created)
+            .is_some_and(|(parent, child)| parent > child)
+        {
+            continue;
+        }
+        let Some(inherited) = db_visible_prefix_len(
+            &mut parent_items,
+            &parent_session_id,
+            &mut child_items,
+            session_id,
+            MAX_DB_FORK_RECORD_BYTES,
+        ) else {
+            continue;
+        };
+        match &best {
+            Some((_, best_inherited)) if inherited < *best_inherited => {}
+            Some((_, best_inherited)) if inherited == *best_inherited => best_is_tied = true,
+            _ => {
+                best = Some((parent_session_id, inherited));
+                best_is_tied = false;
+            }
+        }
+    }
+
+    if best_is_tied {
+        return None;
+    }
+    best.map(|(parent_session_id, _)| parent_session_id)
+}
+
+fn db_visible_prefix_len(
+    parent_statement: &mut rusqlite::Statement<'_>,
+    parent_session_id: &str,
+    child_statement: &mut rusqlite::Statement<'_>,
+    child_session_id: &str,
+    max_record_bytes: i64,
+) -> Option<usize> {
+    let mut parent_rows = parent_statement
+        .query(params![parent_session_id, max_record_bytes])
+        .ok()?;
+    let mut child_rows = child_statement
+        .query(params![child_session_id, max_record_bytes])
+        .ok()?;
+    let mut inherited = 0;
+
+    while let Some(parent) = next_db_visible_item(&mut parent_rows)? {
+        if next_db_visible_item(&mut child_rows)? != Some(parent) {
+            return None;
+        }
+        inherited += 1;
+    }
+    (inherited >= 2 && next_db_visible_item(&mut child_rows)?.is_some()).then_some(inherited)
+}
+
+fn next_db_visible_item(rows: &mut rusqlite::Rows<'_>) -> Option<Option<(String, String)>> {
+    while let Some(row) = rows.next().ok()? {
+        let message_bytes = row.get::<_, Option<i64>>(1).ok().flatten().unwrap_or(0);
+        let message_valid = row.get::<_, bool>(2).ok()?;
+        let part_bytes = row.get::<_, Option<i64>>(5).ok().flatten().unwrap_or(0);
+        let part_valid = row.get::<_, bool>(6).ok()?;
+        if message_bytes > MAX_DB_FORK_RECORD_BYTES || part_bytes > MAX_DB_FORK_RECORD_BYTES {
+            return None;
+        }
+        if !message_valid || !part_valid {
+            return None;
+        }
+        let role = row.get::<_, Option<String>>(0).ok().flatten();
+        let part_type = row.get::<_, Option<String>>(3).ok().flatten();
+        let text = row.get::<_, Option<String>>(4).ok().flatten();
+        if let (Some(role), Some("text"), Some(text)) = (role, part_type.as_deref(), text)
+            && matches!(role.as_str(), "user" | "assistant")
+        {
+            let text = normalize_opencode_visible_text(&text);
+            if !text.is_empty() {
+                return Some(Some((role, text)));
+            }
+        }
+    }
+    Some(None)
 }
 
 fn db_session_metadata_blocking(
@@ -2433,6 +2612,20 @@ fn infer_db_fork_observation(
     child_session_id: &str,
     child_records: &DbRecords,
 ) -> Option<ForkObservation> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    infer_db_fork_observation_connection(&conn, db_path, child_session_id, child_records)
+}
+
+fn infer_db_fork_observation_connection(
+    conn: &Connection,
+    db_path: &Path,
+    child_session_id: &str,
+    child_records: &DbRecords,
+) -> Option<ForkObservation> {
     let (_, child_session) = child_records
         .sessions
         .iter()
@@ -2446,11 +2639,6 @@ fn infer_db_fork_observation(
         return None;
     }
 
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
     let mut stmt = conn
         .prepare(
             "SELECT id FROM session WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL LIMIT 101",
@@ -2465,7 +2653,7 @@ fn infer_db_fork_observation(
     let mut matches = rows
         .flatten()
         .filter_map(|parent_session_id| {
-            let records = query_db_records_for_root_connection(&conn, db_path, &parent_session_id)?;
+            let records = query_db_records_for_root_connection(conn, db_path, &parent_session_id)?;
             let (_, parent_session) = records
                 .sessions
                 .iter()

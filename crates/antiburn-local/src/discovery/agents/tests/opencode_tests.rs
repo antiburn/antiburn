@@ -962,6 +962,34 @@ async fn production_db_fixture_detects_null_parent_id_fork_and_rejects_title_onl
     let logs = discover_recent_in(&[tmp.path().to_path_buf()], 1_785_480_000, 86_400).await;
     assert_eq!(logs.len(), 3, "parent, child, and negative stay distinct");
 
+    assert_eq!(
+        db_fork_parent(db_path.clone(), "ses_child".to_string()).await,
+        Some("ses_parent".to_string())
+    );
+    assert_eq!(
+        db_fork_parent(db_path.clone(), "ses_similar".to_string()).await,
+        None,
+        "a generated fork title without an exact copied prefix must fail closed"
+    );
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        params![
+            "prt_child_malformed",
+            "msg_child_assistant_1",
+            "ses_child",
+            1_785_479_000_000_i64,
+            "{malformed",
+        ],
+    )
+    .unwrap();
+    drop(conn);
+    assert_eq!(
+        db_fork_parent(db_path.clone(), "ses_child".to_string()).await,
+        None,
+        "malformed comparison input must fail closed"
+    );
+
     let child = render_db_session(db_path.clone(), "ses_child".to_string())
         .await
         .expect("child transcript");
@@ -979,6 +1007,33 @@ async fn production_db_fixture_detects_null_parent_id_fork_and_rejects_title_onl
         embedded_fork_observation(&similar).is_none(),
         "a generated fork title without an exact copied prefix must fail closed"
     );
+}
+
+#[tokio::test]
+async fn db_fork_parent_rejects_candidate_overflow_as_ambiguous() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("opencode.db");
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE session (
+             id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+             time_created INTEGER
+         );
+         INSERT INTO session VALUES (
+             'ses_child', NULL, '/repo', 'Parent statement (fork #1)', 200
+         );",
+    )
+    .unwrap();
+    for index in 0..=MAX_DB_FORK_CANDIDATES {
+        conn.execute(
+            "INSERT INTO session VALUES (?1, NULL, '/repo', 'Parent statement', 100)",
+            params![format!("ses_parent_{index}")],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    assert_eq!(db_fork_parent(db_path, "ses_child".to_string()).await, None);
 }
 
 #[test]

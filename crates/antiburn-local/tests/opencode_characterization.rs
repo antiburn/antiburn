@@ -112,6 +112,21 @@ fn native_sqlite_streams_root_and_descendant_messages_in_order() {
         r#"{"role":"assistant","modelID":"model-a","variant":"high","tokens":{"input":100,"output":20,"reasoning":5,"cache":{"read":30,"write":40}}}"#,
     );
     insert_message(&connection, "earlier", "child", 30, r#"{"role":"user"}"#);
+    insert_message(
+        &connection,
+        "child-assistant",
+        "child",
+        35,
+        r#"{"role":"assistant","modelID":"model-child","tokens":{"input":3,"output":2}}"#,
+    );
+    insert_part(
+        &connection,
+        "child-tool",
+        "child-assistant",
+        "child",
+        36,
+        r#"{"type":"tool","tool":"read","state":{"input":{}}}"#,
+    );
     insert_part(
         &connection,
         "reasoning",
@@ -153,9 +168,12 @@ fn native_sqlite_streams_root_and_descendant_messages_in_order() {
         .expect("stream database");
     let session = collector.into_session().expect("finished session");
 
-    assert_eq!(session.events.len(), 2);
+    assert_eq!(session.events.len(), 3);
     assert_eq!(session.events[0].role, antiburn_local::analysis::Role::User);
-    let assistant = &session.events[1];
+    let child_assistant = &session.events[1];
+    assert_eq!(child_assistant.model.as_deref(), Some("model-child"));
+    assert_eq!(child_assistant.tools.len(), 1);
+    let assistant = &session.events[2];
     assert_eq!(assistant.usage.input_tokens, 100);
     assert_eq!(assistant.usage.output_tokens, 25);
     assert_eq!(assistant.usage.cache_read_tokens, 30);

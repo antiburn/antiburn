@@ -1279,6 +1279,17 @@ pub async fn fork_parent(source: &SessionSource) -> Option<String> {
     let content = match source {
         SessionSource::Inline { content, .. } => content.clone(),
         SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok()?,
+        SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path,
+            session_id,
+        } => {
+            return antiburn_local::discovery::agents::opencode::db_fork_parent(
+                db_path.clone(),
+                session_id.clone(),
+            )
+            .await;
+        }
         SessionSource::ProviderDb { .. } => session_source_content(source).await?,
     };
     fork_parent_from_content(&content)
@@ -1418,6 +1429,34 @@ pub fn price_cached_breakdown(model_breakdown_json: &str) -> (Option<SessionCost
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn opencode_lineage_does_not_render_an_ordinary_database_session() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let db_path = directory.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&db_path).expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT);
+                 INSERT INTO session VALUES ('ses_root', '/repo', 'Ordinary session');",
+            )
+            .expect("schema");
+        drop(connection);
+        antiburn_local::discovery::track_provider_db_renders(&db_path);
+
+        let parent = fork_parent(&SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: db_path.clone(),
+            session_id: "ses_root".to_string(),
+        })
+        .await;
+
+        assert_eq!(parent, None);
+        assert_eq!(
+            antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
+            0
+        );
+    }
 
     fn member_with_start(subagent_id: &str, started_at_epoch: Option<i64>) -> SubagentMember {
         SubagentMember {
