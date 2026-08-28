@@ -3,6 +3,9 @@
 {"type":"mode","timestamp":"2026-08-01T09:00:02Z","mode":"normal"}
 {"type":"last-prompt","timestamp":"2026-08-01T09:00:03Z","prompt":"Summarize the fictional orbit status."}
 {"type":"ai-title","timestamp":"2026-08-01T09:00:04Z","title":"Fictional orbit status summary"}
+{"type":"custom-title","timestamp":"2026-08-01T09:00:04Z","customTitle":"Orbit status, renamed"}
+{"type":"bridge-session","timestamp":"2026-08-01T09:00:04Z","bridgeSessionId":"bridge-0001"}
+{"type":"artifact-comment-monitor","timestamp":"2026-08-01T09:00:04Z","artifactUrl":"https://example.invalid/artifacts/orbit"}
 {"type":"queue-operation","timestamp":"2026-08-01T09:00:05Z","operation":"dequeue"}
 {"type":"file-history-delta","timestamp":"2026-08-01T09:00:06Z","delta":{"added":1,"removed":0}}
 {"type":"pr-link","timestamp":"2026-08-01T09:00:07Z","url":"https://example.invalid/avery/demo-app/pull/7"}

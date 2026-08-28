@@ -534,9 +534,12 @@ pub struct SessionHygienePayload {
 
 fn badge_id_str(id: BadgeId) -> &'static str {
     match id {
-        BadgeId::ReasoningOverkill => "reasoningOverkill",
+        BadgeId::SessionOverdepth => "sessionOverdepth",
+        BadgeId::ModelOverthinking => "modelOverthinking",
+        BadgeId::OverpoweredSubagents => "overpoweredSubagents",
+        BadgeId::ObsoleteModel => "obsoleteModel",
+        BadgeId::FastModeOveruse => "fastModeOveruse",
         BadgeId::ExcessCacheRehydration => "excessCacheRehydration",
-        BadgeId::BloatedInitialContext => "bloatedInitialContext",
     }
 }
 
@@ -559,7 +562,7 @@ impl SessionHygieneBadgePayload {
 }
 
 impl SessionHygienePayload {
-    pub fn from_badges(badges: [SessionBadge; 3], evidence_state: &'static str) -> Self {
+    pub fn from_badges(badges: [SessionBadge; 6], evidence_state: &'static str) -> Self {
         Self {
             badges: badges
                 .into_iter()
@@ -1111,16 +1114,28 @@ mod tests {
             let payload = SessionHygienePayload::from_badges(
                 [
                     SessionBadge {
-                        id: BadgeId::ReasoningOverkill,
+                        id: BadgeId::SessionOverdepth,
                         status: BadgeStatus::Finding,
+                    },
+                    SessionBadge {
+                        id: BadgeId::ModelOverthinking,
+                        status: BadgeStatus::Clean,
+                    },
+                    SessionBadge {
+                        id: BadgeId::OverpoweredSubagents,
+                        status: BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+                    },
+                    SessionBadge {
+                        id: BadgeId::ObsoleteModel,
+                        status: BadgeStatus::Clean,
+                    },
+                    SessionBadge {
+                        id: BadgeId::FastModeOveruse,
+                        status: BadgeStatus::Clean,
                     },
                     SessionBadge {
                         id: BadgeId::ExcessCacheRehydration,
                         status: BadgeStatus::Clean,
-                    },
-                    SessionBadge {
-                        id: BadgeId::BloatedInitialContext,
-                        status: BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
                     },
                 ],
                 "ready",
@@ -1130,13 +1145,16 @@ mod tests {
                 serde_json::to_value(payload).unwrap(),
                 serde_json::json!({
                     "badges": [
-                        {"id": "reasoningOverkill", "status": "finding", "notAssessedReason": null},
-                        {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null},
+                        {"id": "sessionOverdepth", "status": "finding", "notAssessedReason": null},
+                        {"id": "modelOverthinking", "status": "clean", "notAssessedReason": null},
                         {
-                            "id": "bloatedInitialContext",
+                            "id": "overpoweredSubagents",
                             "status": "notAssessed",
                             "notAssessedReason": "incompleteEvidence"
-                        }
+                        },
+                        {"id": "obsoleteModel", "status": "clean", "notAssessedReason": null},
+                        {"id": "fastModeOveruse", "status": "clean", "notAssessedReason": null},
+                        {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null}
                     ],
                     "evidenceState": "ready"
                 })
