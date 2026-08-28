@@ -491,7 +491,10 @@ fn unrecognized(discriminator: &str, sink: &mut dyn RecordSink) {
         .take(EVIDENCE_STRING_CAP)
         .collect::<String>();
     sink.record(NormalizedRecord::Observation(Box::new(
-        EvidenceObservation::UnrecognizedType { discriminator },
+        EvidenceObservation::UnrecognizedType {
+            discriminator,
+            inert: false,
+        },
     )));
     sink.record(NormalizedRecord::Unusable(
         PartialReason::UnrecognizedRecordType,
