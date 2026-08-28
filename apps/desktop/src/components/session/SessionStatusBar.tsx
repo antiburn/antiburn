@@ -37,18 +37,24 @@ function verdictInk(failedShare: number, assessedCount: number): string {
   return `color-mix(in oklch, var(--color-system-red-text) ${pct}%, var(--color-system-orange))`
 }
 
-const CHECK_ICON: Record<SessionHygieneCheck["status"], LucideIcon> = {
-  finding: X,
-  clean: Check,
-  // An open, broken outline reads as "not filled in". A dash reads as
-  // punctuation next to the two solid marks.
-  notAssessed: CircleDashed,
+interface StatusMark {
+  Icon: LucideIcon
+  /** Box size in px. The tooltip surface sets 12px text. */
+  size: number
+  strokeWidth: number
+  label: string
 }
 
-const CHECK_ICON_LABEL: Record<SessionHygieneCheck["status"], string> = {
-  finding: "Finding",
-  clean: "Pass",
-  notAssessed: "Not assessed",
+const STATUS_MARK: Record<SessionHygieneCheck["status"], StatusMark> = {
+  finding: { Icon: X, size: 12, strokeWidth: 2.5, label: "Finding" },
+  clean: { Icon: Check, size: 12, strokeWidth: 2.5, label: "Pass" },
+  // An open, broken outline reads as "not filled in". A dash reads as
+  // punctuation next to the two solid marks.
+  //
+  // The circle draws to the edge of its box, but a check or a cross does
+  // not. So the circle needs a smaller box and a thinner stroke to carry
+  // the same visual weight, and to keep its gaps legible.
+  notAssessed: { Icon: CircleDashed, size: 10, strokeWidth: 2, label: "Not assessed" },
 }
 
 const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
@@ -69,7 +75,7 @@ function renderTooltip(
         <Fragment key={group[0]!.status}>
           {index > 0 && <div className="col-span-full border-b border-separator" />}
           {group.map((check) => {
-            const Mark = CHECK_ICON[check.status]
+            const mark = STATUS_MARK[check.status]
             return (
               <Fragment key={check.id}>
                 {/* A not-assessed check names itself only. The reason line below
@@ -77,12 +83,12 @@ function renderTooltip(
                 <span className={INK_CLASS[check.ink]}>
                   {check.status === "notAssessed" ? check.name : check.title}
                 </span>
-                <Mark
-                  size={14}
-                  strokeWidth={2.5}
+                <mark.Icon
+                  size={mark.size}
+                  strokeWidth={mark.strokeWidth}
                   role="img"
-                  aria-label={CHECK_ICON_LABEL[check.status]}
-                  className={INK_CLASS[check.ink]}
+                  aria-label={mark.label}
+                  className={`justify-self-center ${INK_CLASS[check.ink]}`}
                 />
                 {check.status === "notAssessed" && check.notAssessedReason && (
                   <span className="col-span-full type-caption text-label-tertiary">
