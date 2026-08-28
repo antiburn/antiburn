@@ -1522,10 +1522,8 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .map(|value| HiddenMeters::parse(value))
             .unwrap_or(defaults.live_usage_hidden_providers.clone()),
         // No stored answer means this database predates the setting. A fresh
-        // install takes the default and meets the control on the Ready screen;
-        // one that already finished onboarding was told analytics did not
-        // exist, so it stays off until the reader says otherwise. Upgrading
-        // must never start sending on somebody's behalf.
+        // install takes the default. An install that already finished setup
+        // stays off until the reader enables it.
         analytics_enabled: stored
             .get("analyticsEnabled")
             .map(|value| value == "true")

@@ -109,11 +109,8 @@ export interface AppSettings {
   /**
    * The consented analytics channel.
    *
-   * On by default for a new install, which meets the control on the first-run
-   * Ready screen before anything can be sent; off for a store that finished
-   * onboarding under copy promising no analytics at all. Nothing is
-   * transmitted until onboarding completes, and no build without an injected
-   * endpoint transmits at all — see `AppInfo.analyticsSupported`.
+   * On by default for a new install. No build without the analytics feature
+   * and an injected endpoint transmits at all; see `AppInfo.analyticsSupported`.
    */
   analyticsEnabled: boolean
   /**
@@ -146,18 +143,11 @@ export interface AppInfo {
    * update never renders a control implying it can.
    */
   updatesSupported: boolean
-  /**
-   * Whether this build can send consented analytics at all.
-   *
-   * Same rule as `updatesSupported`, for the same reason: derived shell-side
-   * from the build that is actually running, never from a compile-time flag.
-   * False in every development build and every build from a clean checkout of
-   * this repository, because the endpoint is injected at build time and this
-   * tree carries none.
-   */
+  /** Whether this build includes a configured analytics client. */
   analyticsSupported: boolean
-  /** Who receives those events, in the reader's own words. Null when this
-   *  build has no endpoint. */
+  /** Whether `ANTIBURN_ANALYTICS_ENABLED=false` overrides the stored setting. */
+  analyticsEnvironmentDisabled: boolean
+  /** Who receives those events. Null when this build has no endpoint. */
   analyticsOperator: string | null
 }
 
@@ -894,6 +884,18 @@ export async function restartOnboarding(): Promise<void> {
   await invoke("restart_onboarding")
 }
 
+/** Open the public analytics documentation in the system browser. */
+export async function openAnalyticsDocumentation(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_analytics_documentation")
+}
+
+/** Open the public privacy policy in the system browser. */
+export async function openPrivacyPolicy(): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_privacy_policy")
+}
+
 /**
  * One interaction worth counting, in the shell's own closed vocabulary.
  *
@@ -905,6 +907,10 @@ export async function restartOnboarding(): Promise<void> {
  * `src-tauri/src/analytics/event.rs`.
  */
 export type Interaction =
+  | {
+      kind: "onboardingStepViewed"
+      step: "welcome" | "sources" | "repositories" | "historical_scan" | "ready"
+    }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
   | {
       kind: "usageViewed"
@@ -916,8 +922,8 @@ export type Interaction =
  * Report one interaction. Fire-and-forget, and silent on failure.
  *
  * The shell decides whether anything is actually recorded: this is inert
- * unless the build has an endpoint, the reader has finished onboarding, and
- * the switch in Settings → Privacy is on. Callers do not check, so there is
+ * unless the build has an endpoint and the switch in Settings → Privacy is on.
+ * Callers do not check, so there is
  * one gate rather than two that can drift apart.
  */
 export function noteInteraction(interaction: Interaction): void {
@@ -932,22 +938,16 @@ export function noteInteraction(interaction: Interaction): void {
 export async function finishOnboarding(
   activityWindowDays: number,
   launchAtLogin: boolean,
-  analyticsEnabled: boolean,
 ): Promise<AppSettings> {
   if (!hasShell()) {
     return {
       ...DEFAULT_SETTINGS,
       activityWindowDays,
       launchAtLogin,
-      analyticsEnabled,
       onboardingCompleted: true,
     }
   }
-  return invoke<AppSettings>("finish_onboarding", {
-    activityWindowDays,
-    launchAtLogin,
-    analyticsEnabled,
-  })
+  return invoke<AppSettings>("finish_onboarding", { activityWindowDays, launchAtLogin })
 }
 
 /** The sessions to show in the popover, newest first. */

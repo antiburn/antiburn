@@ -156,6 +156,8 @@ pub fn run() {
             commands::restart_onboarding,
             commands::open_folder_access_settings,
             commands::open_github_repo,
+            commands::open_analytics_documentation,
+            commands::open_privacy_policy,
             commands::open_overlay_window,
             commands::hide_overlay_window,
             commands::install_update,
@@ -288,9 +290,8 @@ pub fn run() {
             // automatic check can see whether there is anything to check with.
             install_updater(app.handle());
 
-            // Both analytics calls are inert unless this build injects an endpoint and the
-            // reader has finished onboarding with the switch on — see
-            // `analytics::allowed`, which is the single gate both go through.
+            // Both calls are inert unless the build configuration is complete
+            // and the reader permits analytics. See `analytics::allowed`.
             analytics::install(app.handle());
             analytics::record(
                 app.handle(),
