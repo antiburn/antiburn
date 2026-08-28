@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn parse_record_changes_require_an_inertness_review() {
         const EXPECTED_FINGERPRINT: u64 = 9_811_810_106_425_720_840;
-        let source = include_str!("jsonl.rs");
+        let source = include_str!("jsonl.rs").replace("\r\n", "\n");
         let start = source.find("pub fn parse_record").unwrap();
         let end = source[start..].find("\n#[cfg(test)]\nmod tests").unwrap() + start;
         let fingerprint = source.as_bytes()[start..end]
