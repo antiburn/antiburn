@@ -1,0 +1,29 @@
+{
+  "manifest": {
+    "sessionId": "local_00000000-0000-4000-8000-0000000000a1",
+    "cliSessionId": "00000000-0000-4000-8000-0000000000b1",
+    "cwd": "/home/avery/projects/demo-app",
+    "title": "Add the retry banner",
+    "isArchived": false,
+    "lastActivityAt": 1700000000000
+  },
+  "manifest_without_cli_session": {
+    "sessionId": "local_00000000-0000-4000-8000-0000000000a2",
+    "cwd": "/home/avery/projects/demo-app",
+    "title": "Sketch the release notes",
+    "isArchived": false,
+    "lastActivityAt": 1700000000000
+  },
+  "scheduled_tasks_sidecar": {
+    "scheduledTasks": [
+      {
+        "id": "demo-app-nightly-check",
+        "enabled": false,
+        "cwd": "/home/avery/projects/demo-app",
+        "filePath": "/home/avery/.claude/scheduled-tasks/demo-app-nightly-check/SKILL.md",
+        "notifySessionId": "local_00000000-0000-4000-8000-0000000000a2"
+      }
+    ],
+    "recordedSkips": {}
+  }
+}
