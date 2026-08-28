@@ -295,7 +295,10 @@ Notes for what isn't expressible as a token:
   documented shared component.
 - **Type scale** — `.type-*` classes, declared outside any `@layer` in `src/styles/typography.css`.
   Unlayered CSS outranks Tailwind's `utilities` layer, so overriding a baked-in weight needs the
-  important modifier (`font-normal!`), as `SectionGroup` does.
+  important modifier: `font-normal!` (as `SectionGroup` does) to soften a heading step, or
+  `font-medium!` / `font-semibold!` to make a body step carry a small label or a short alert
+  title. Pair the modifier with a `type-*` class; it changes weight only, never size. `italic` is
+  the one permitted style variant, for a placeholder sentence in an otherwise empty list.
 - **Icons** — `lucide-react`, inherits `currentColor`. `size` 12 (footnote) / 14–16 (default) / 24
   (feature); color with `text-*`; `strokeWidth` 2 (2.5–3 tiny marks, 1.5 large/chart); `shrink-0` in
   flex; decorative → `aria-hidden`.

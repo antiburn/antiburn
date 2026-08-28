@@ -64,10 +64,7 @@ export function OnboardingView() {
         repositories={state.repositories}
         onToggleRepository={session.toggleRepository}
         onDiscover={session.rescan}
-        onCancelScan={session.cancelScan}
         scanStatus={state.scanStatus}
-        windowDays={state.activityWindowDays}
-        onWindowDaysChange={session.setActivityWindowDays}
         launchAtLogin={state.launchAtLogin}
         onLaunchAtLoginChange={session.setLaunchAtLogin}
         analyticsSupported={state.analyticsSupported}

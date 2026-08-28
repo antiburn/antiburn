@@ -216,9 +216,7 @@ pub enum Interaction {
 #[serde(rename_all = "snake_case")]
 pub enum OnboardingStep {
     Welcome,
-    Sources,
-    Repositories,
-    HistoricalScan,
+    SourcesAndRepos,
     Ready,
 }
 
@@ -289,9 +287,7 @@ impl OnboardingStep {
     fn as_str(self) -> &'static str {
         match self {
             OnboardingStep::Welcome => "welcome",
-            OnboardingStep::Sources => "sources",
-            OnboardingStep::Repositories => "repositories",
-            OnboardingStep::HistoricalScan => "historical_scan",
+            OnboardingStep::SourcesAndRepos => "sources_and_repos",
             OnboardingStep::Ready => "ready",
         }
     }
@@ -565,11 +561,11 @@ mod tests {
     #[test]
     fn an_interaction_resolves_to_this_files_own_constants() {
         let (name, facts) = Interaction::OnboardingStepViewed {
-            step: OnboardingStep::HistoricalScan,
+            step: OnboardingStep::SourcesAndRepos,
         }
         .resolve();
         assert_eq!(name, EventName::OnboardingStepViewed);
-        assert_eq!(facts.label, Some("historical_scan"));
+        assert_eq!(facts.label, Some("sources_and_repos"));
 
         let (name, facts) = Interaction::SessionOpened {
             agent: AgentKind::Claude,

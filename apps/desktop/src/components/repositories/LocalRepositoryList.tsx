@@ -72,7 +72,7 @@ function RepositoryRow({
   }
 
   return (
-    <div className="flex items-start gap-3 rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+    <div className="flex items-start gap-3 rounded-md py-2 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate type-callout text-label">{item.fullName}</span>
@@ -157,9 +157,8 @@ export function LocalRepositoryList({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-6 items-center gap-3 px-4 pt-3 pb-2">
-        <p className="shrink-0 type-body font-medium text-label">Repositories</p>
-        {onRefresh && (
+      {onRefresh && (
+        <div className="flex h-6 items-center gap-3 px-4 pt-3 pb-2">
           <button
             type="button"
             onClick={onRefresh}
@@ -175,8 +174,8 @@ export function LocalRepositoryList({
             />
             <span>Rescan</span>
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {undo && (
         <div className="mx-4 mb-2 flex items-center gap-2 rounded-control bg-surface-secondary px-2 py-1.5">
@@ -193,7 +192,7 @@ export function LocalRepositoryList({
         </div>
       )}
 
-      <ScrollPane viewportClassName="px-2">
+      <ScrollPane>
         {showPlaceholders ? (
           <div aria-hidden data-testid="repository-list-placeholder" className="space-y-1 pb-3">
             {Array.from({ length: PLACEHOLDER_ROWS }, (_, i) => (
@@ -223,7 +222,7 @@ export function LocalRepositoryList({
             </div>
           </div>
         ) : (
-          <div className="space-y-1 pb-3">
+          <div className="pb-3">
             {repositories.map((item) => (
               <RepositoryRow
                 key={item.key}

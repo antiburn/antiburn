@@ -354,8 +354,10 @@ shows its unidentified-developer warning.
 ### Added
 
 - Anonymised usage analytics about the application itself, on by default with
-  the control on the first-run Ready screen and in Settings → Privacy. Events
-  carry thirteen fields — platform, a per-message id, a rotating installation
+  the control in Settings → Privacy, and can be turned off for one launch with
+  `ANTIBURN_ANALYTICS_ENABLED=false`. Events start from the first launch, so
+  first-run setup itself is counted, one event per step. They carry thirteen
+  fields — platform, a per-message id, a rotating installation
   identifier, an in-memory identifier for one run of the app, the event name,
   capture and delivery timestamps, architecture, a bucketed count, a
   closed-vocabulary label, a second such label where an event has two things
@@ -363,9 +365,8 @@ shows its unidentified-developer warning.
   sessions, prompts, titles, file paths, repository names, token counts, costs,
   or credentials. Settings → Privacy enumerates all of them, and
   `docs/analytics.md` carries the full catalog plus the commands to check any of
-  it yourself. Nothing is sent until the first run completes; in the EU, the
-  EEA, and the UK the control starts off rather than on; and a build with no
-  endpoint injected sends nothing at all.
+  it yourself. The automatic default is the same in every locale, and a build
+  with no endpoint injected sends nothing at all.
 - **Launch antiburn when you sign in.** New installs opt in by default from the
   final setup step so the menu-bar or tray utility is available without being
   opened by hand. The same switch is available later in Settings → General,
@@ -495,7 +496,7 @@ shows its unidentified-developer warning.
   reading into something you can act on rather than a blank.
 
   Turning the switch on is also what lets usage milestone notifications fire,
-  because a milestone is a threshold being *crossed* and that needs readings
+  because a milestone is a threshold being _crossed_ and that needs readings
   that keep moving. With it off you still see your limits; antiburn just never
   interrupts you about them. The switch says both of these things.
 

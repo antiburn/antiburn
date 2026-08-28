@@ -4,7 +4,6 @@ import { applyTheme } from "../../lib/appearance"
 import {
   addScanRoot,
   appInfo,
-  cancelScan,
   defaultScanRoots,
   finishOnboarding,
   getFolderPermissions,
@@ -19,6 +18,7 @@ import {
   requestFolderAccess,
   scanNow,
   setRepositoryEnabled,
+  type Interaction,
   type RepositoryItemPayload,
   type ScanStatus,
 } from "../../lib/ipc"
@@ -33,9 +33,6 @@ import type {
   FolderVerdict,
 } from "../../lib/useFolderPermissionFlow"
 
-export type OnboardingStep =
-  "welcome" | "sources" | "repositories" | "historical_scan" | "ready"
-
 const EMPTY_PERMISSIONS: FolderPermissions = {
   deferred: [],
   granted: [],
@@ -43,6 +40,8 @@ const EMPTY_PERMISSIONS: FolderPermissions = {
 }
 
 const BETWEEN_FOLDERS_MS = 800
+
+export type OnboardingStep = Extract<Interaction, { kind: "onboardingStepViewed" }>["step"]
 
 export type OnboardingSnapshot = {
   loadState: "loading" | "ready" | "error"
@@ -95,6 +94,8 @@ export class OnboardingSession {
   private permissionRunning = false
   private permissionCancelled = false
   private permissionTimer: ReturnType<typeof setTimeout> | null = null
+  private rescanInFlight = false
+  private rescanQueued = false
   private analyticsSteps = new Set<OnboardingStep>()
 
   private snapshot: OnboardingSnapshot
@@ -136,10 +137,6 @@ export class OnboardingSession {
     void this.start()
   }
 
-  setActivityWindowDays = (days: number): void => {
-    this.update({ activityWindowDays: days, finishError: null })
-  }
-
   setLaunchAtLogin = (enabled: boolean): void => {
     this.update({ launchAtLogin: enabled, finishError: null })
   }
@@ -159,22 +156,32 @@ export class OnboardingSession {
     const picked = await open({ directory: true, multiple: false })
     if (typeof picked !== "string") return
     this.update({ scanRoots: await addScanRoot(picked) })
+    await this.rescan()
   }
 
   removeScanRoot = async (path: string): Promise<void> => {
     this.update({ scanRoots: await removeScanRoot(path) })
+    await this.rescan()
   }
 
   rescan = async (): Promise<void> => {
-    const status = await scanNow(this.snapshot.activityWindowDays).catch(() => null)
-    if (status) this.update({ scanStatus: status })
-    const permissions = await getFolderPermissions().catch(() => null)
-    if (permissions) this.update({ permissions })
-  }
+    if (this.rescanInFlight) {
+      this.rescanQueued = true
+      return
+    }
 
-  cancelScan = async (): Promise<void> => {
-    const status = await cancelScan().catch(() => null)
-    if (status) this.update({ scanStatus: status })
+    this.rescanInFlight = true
+    try {
+      do {
+        this.rescanQueued = false
+        const status = await scanNow(this.snapshot.activityWindowDays).catch(() => null)
+        if (status) this.update({ scanStatus: status })
+        const permissions = await getFolderPermissions().catch(() => null)
+        if (permissions) this.update({ permissions })
+      } while (this.rescanQueued)
+    } finally {
+      this.rescanInFlight = false
+    }
   }
 
   toggleRepository = async (item: LocalRepositoryItem, enabled: boolean): Promise<void> => {

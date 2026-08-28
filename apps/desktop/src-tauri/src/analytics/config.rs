@@ -1,4 +1,4 @@
-//! Where consented events go — and, in every build of this repository as it
+//! Where analytics events go — and, in every build of this repository as it
 //! stands, the fact that they go nowhere.
 //!
 //! The endpoint and the operator's display name are injected at build time and

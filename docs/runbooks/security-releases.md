@@ -55,8 +55,9 @@ One distinction to make before you harden anything: antiburn has **one**
 outbound channel besides the update check — the anonymised analytics publisher
 in `src-tauri/src/analytics`. Traffic from it is not a breach. What _would_ be a breach
 is that channel carrying a field its event schema does not name, reaching an
-endpoint the build did not inject, or sending while the reader's consent is
-off. Check the schema and the gate before concluding the boundary held.
+endpoint the build did not inject, sending before setup, or sending while the
+analytics setting is off. Check the schema and the gate before concluding the
+boundary held.
 
 ## Releasing it
 

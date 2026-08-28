@@ -909,7 +909,7 @@ export async function openPrivacyPolicy(): Promise<void> {
 export type Interaction =
   | {
       kind: "onboardingStepViewed"
-      step: "welcome" | "sources" | "repositories" | "historical_scan" | "ready"
+      step: "welcome" | "sources_and_repos" | "ready"
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
   | {

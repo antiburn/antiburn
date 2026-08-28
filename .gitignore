@@ -17,7 +17,7 @@ node_modules/
 *.key
 *.key.pub
 
-# The scanner writes local data under .aislop.
-# The repository keeps only config.yml from this directory.
-/.aislop/*
+# The scanner writes local data under .aislop, at the root and inside
+# packages. The repository keeps only the root config.yml.
+**/.aislop/*
 !/.aislop/config.yml

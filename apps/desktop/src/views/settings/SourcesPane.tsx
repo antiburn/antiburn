@@ -74,8 +74,6 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
 
   const handleRemoveRoot = useCallback((path: string) => session.removeRoot(path), [session])
 
-  const handleRefresh = useCallback(() => session.refresh(), [session])
-
   return (
     <>
       <PaneHeader title="Sources" />
@@ -170,13 +168,14 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
 
         <SectionGroup title="Repositories">
           <Card className="h-[280px]">
-            <LocalRepositoryList
-              repositories={repositories}
-              loading={scanning}
-              onToggleRepository={(item, enabled) => void handleToggle(item, enabled)}
-              onRefresh={() => void handleRefresh()}
-              onLocate={() => void handleLocate()}
-            />
+            <div className="h-full px-4">
+              <LocalRepositoryList
+                repositories={repositories}
+                loading={scanning}
+                onToggleRepository={(item, enabled) => void handleToggle(item, enabled)}
+                onLocate={() => void handleLocate()}
+              />
+            </div>
           </Card>
         </SectionGroup>
       </div>

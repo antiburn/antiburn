@@ -400,6 +400,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // not something that needs a first-run choice. See `live_usage_active`
     // for the onboarding gate that still applies regardless of this default.
     assert!(defaults.live_usage_enabled);
+    // Analytics starts automatically only after onboarding completes.
+    assert!(defaults.analytics_enabled);
     // Open by default, same reasoning: a reader who has limits to see should
     // see them without an extra click the first time they notice the section.
     assert!(defaults.overview_limits_expanded);
@@ -510,7 +512,7 @@ fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
             activity_window_days: 14,
             onboarding_completed: true,
             launch_at_login: false,
-            analytics_enabled: true,
+            analytics_enabled: false,
             ..AppSettings::default()
         })
         .unwrap();
