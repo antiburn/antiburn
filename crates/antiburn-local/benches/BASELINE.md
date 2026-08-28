@@ -13,7 +13,7 @@ content only; nothing reads a real transcript).
 | RAM | 18 GiB |
 | OS | macOS 26.2 |
 | Toolchain | rustc 1.97.0, bench profile (optimized) |
-| Date | 2026-02 baseline run |
+| Provenance | Issue #245 rerun on the original identity-free corpus; the 500 MiB identity profile is opt-in. |
 
 ## Stage coverage
 
@@ -34,9 +34,9 @@ the measurement follow-up.
 
 | Scenario | Time (median) | Throughput |
 |---|---|---|
-| 6 MiB of small lines (~22k records) | 3.05 ms | ~2.07 GiB/s |
-| One near-8 MiB line (just under the bound) | 4.04 ms | ~1.92 GiB/s |
-| One oversized line (> 8 MiB, skipped) | 3.42 ms | ~2.30 GiB/s |
+| 6 MiB of small lines (~22k records) | 2.75 ms | ~2.30 GiB/s |
+| One near-8 MiB line (just under the bound) | 3.13 ms | ~2.48 GiB/s |
+| One oversized line (> 8 MiB, skipped) | 2.99 ms | ~2.64 GiB/s |
 
 ### Full reparse cost vs session size (the append-only question)
 
@@ -46,60 +46,68 @@ for every source change today.
 
 | File size | Time (median) | Throughput |
 |---|---|---|
-| 1 MiB | 7.38 ms | ~146 MiB/s |
-| 10 MiB | 72.5 ms | ~149 MiB/s |
-| 50 MiB | 351 ms | ~154 MiB/s |
+| 1 MiB | 8.57 ms | ~126 MiB/s |
+| 10 MiB | 83.6 ms | ~129 MiB/s |
+| 50 MiB | 424 ms | ~127 MiB/s |
 
-The cost curve is linear at ~150 MiB/s end to end.
+The current corpus keeps its original identity-free shape. The 10 MiB result is
+1.15× the 72.5 ms pre-change baseline. The UUID and chained-parent evidence
+profile is opt-in and does not alter these rows. The tiers remain linear.
 
 ### Per-stage split at 10 MiB (in-memory source)
 
 | Stage composition | Time (median) | Share |
 |---|---|---|
-| Framing only | 4.64 ms | ~7 % |
-| + parse/normalize (no-op sink) | 67.0 ms | ~98 % |
-| + metrics accumulation | 66.4 ms | within noise of no-op |
-| + metrics and evidence together | 68.4 ms | +~2 ms |
+| Framing only | 4.59 ms | ~7 % |
+| + parse/normalize (no-op sink) | 65.7 ms | ~82 % |
+| + metrics accumulation | 79.7 ms | +14.0 ms |
+| + metrics and evidence together | 82.8 ms | +3.1 ms |
+| Metrics accumulator only, pre-normalized events | 14.3 ms | ~755 MiB/s |
+| Fully disordered metrics accumulator | 16.9 ms | 1.18× ordered |
 
-The pipeline is dominated by JSON parsing (serde deserialization inside the
-adapter); both accumulators together add only ~2–3 % on top.
+The bounded reducer adds slot, cache, efficiency, active-time, and local reorder
+folds in the hot loop. The full metrics stage is 1.20× its 66.4 ms pre-change
+baseline. The isolated row excludes event cloning and uses ten Criterion
+samples. No pre-change isolated row exists, so the required isolated
+before-and-after gate was not evaluated. The full-stage and disorder ratios are
+both below 1.30×, but they do not replace that missing gate.
 
 ### Fork-job `Inline` materialization proxy at 10 MiB
 
 | Path | Time (median) |
 |---|---|
-| Stream from file | 68.8 ms |
-| `read_to_string` then inline visit | 73.2 ms |
+| Stream from file | 82.6 ms |
+| `read_to_string` then inline visit | 83.4 ms |
 
-Materializing the whole transcript first costs ~6 % extra time plus one
-transient full-source allocation (10 MiB here).
+Materializing the whole transcript first costs ~1.0 % extra time in this run.
+It also adds one transient full-source allocation (10 MiB here).
 
 ### Provider-DB-backed source (generic SQLite walk)
 
 Raw `RawSource::Sqlite` through the composite metrics+evidence sink. This
 path is batch, not streaming: the walk materializes every extracted event
-before the sink sees them, so retained memory here is proportional to the
-session, like the metrics accumulator itself.
+before the bounded metrics accumulator sees them. The batch event vector,
+not the metrics accumulator, retains memory proportional to the session.
 
 | Rows (records) | DB size | Time (median) | Throughput |
 |---|---|---|---|
-| 2,000 | ~0.6 MiB | 2.98 ms | ~214 MiB/s |
-| 20,000 | ~6.2 MiB | 30.7 ms | ~205 MiB/s |
+| 2,000 | ~0.6 MiB | 3.63 ms | ~175 MiB/s |
+| 20,000 | ~6.2 MiB | 37.1 ms | ~170 MiB/s |
 
-Linear, and slightly faster per byte than the JSONL path (SQLite hands the
+Linear, and faster per byte than the JSONL path (SQLite hands the
 walk whole text cells; no newline scanning).
 
 ### Report reduction vs cohort size (`EfficiencyReportAccumulator`)
 
 | Sessions | Time (median) | Per session |
 |---|---|---|
-| 10 | 8.98 µs | ~0.9 µs |
-| 65 (field cohort, issue #222) | 49.2 µs | ~0.76 µs |
-| 100 | 75.4 µs | ~0.75 µs |
-| 500 | 367 µs | ~0.73 µs |
+| 10 | 8.73 µs | ~0.87 µs |
+| 65 (field cohort, issue #222) | 48.6 µs | ~0.75 µs |
+| 100 | 75.1 µs | ~0.75 µs |
+| 500 | 361 µs | ~0.72 µs |
 
-Linear at ~0.75 µs/session — reduction over a 30-day window is microseconds,
-not milliseconds.
+Linear at ~0.72–0.75 µs/session — reduction over a 30-day window is
+microseconds, not milliseconds.
 
 ## Memory figures
 
@@ -107,8 +115,8 @@ not milliseconds.
 |---|---|---|
 | Framing high-water, 10 MiB of small lines | 446 bytes | ≤ `SCAN_QUANTUM_BYTES × 4` |
 | Framing high-water, one near-8 MiB line | 8,323,291 bytes | ≤ `MAX_RECORD_BYTES` (8,388,608) — bound respected |
-| Metrics accumulator, 10 MiB source | 34,361 turns, 10.4 MB retained (~303 bytes/turn) | CH-005's "proportional growth" quantified: ≈ 1.0× source bytes for a dense transcript |
-| Serialized evidence per session (report query row proxy) | ~4.5 KB | a 500-session reduction reads ~2.2 MB of evidence rows; the accumulator itself holds only capped folds and examples |
+| Metrics accumulator, 10 MiB source | 34,361 observed turns, 326,591 bytes of derived state retained | Bounded below the 640 KiB derived-state contract; exact identity strings are additional |
+| Serialized evidence per session (report query row proxy) | ~4.5 KB | a 500-session reduction reads ~2.3 MB of evidence rows; the accumulator itself holds capped folds and examples, except for the tracked thread-identity set |
 
 ### Peak heap: streaming vs whole-file materialization
 
@@ -119,18 +127,14 @@ on-disk session, streamed vs `read_to_string` first:
 
 | Source | Streaming peak | Inline peak | Inline / streaming |
 |---|---|---|---|
-| 1 MiB | 1.66 MB (1.49× source) | 2.68 MB (2.40× source) | 1.61× |
-| 10 MiB | 20.7 MB (1.84× source) | 32.0 MB (2.84× source) | 1.54× |
-| 50 MiB | 98.9 MB (1.75× source) | 155.6 MB (2.75× source) | 1.57× |
+| 1 MiB | 0.82 MB (0.74× source) | 1.93 MB (1.73× source) | 2.35× |
+| 10 MiB | 3.81 MB (0.34× source) | 15.1 MB (1.34× source) | 3.96× |
+| 50 MiB | 27.8 MB (0.49× source) | 84.5 MB (1.49× source) | 3.04× |
 
-What this says: the streaming reader itself is nearly free (446-byte
-high-water above), so the streaming floor of ~1.5–1.8× source is the metrics
-accumulator's proportional retention plus parse transients — not the reader.
-Materializing first adds one full source copy on top, so inline peaks at
-~1.55× the streaming peak at every size. Streaming keeps its advantage
-constant in ratio and growing in absolute bytes (57 MB saved at 50 MiB); the
-next memory win, if one is ever needed, is accumulator retention, not
-framing.
+What this says: the streaming reader and metrics accumulator are bounded.
+Streaming peak stays below 0.50× source at the 10 MiB and 50 MiB tiers.
+Materializing first adds one full source copy. The residual proportional state
+is in the Claude adapter's message-id de-duplication map, not metrics framing.
 
 ### 500 MiB tier: which accumulator owns the peak
 
@@ -140,17 +144,42 @@ full composite:
 
 | Measurement | Value |
 |---|---|
-| Metrics-only peak | 797.0 MB (1.40× source) |
-| Composite (metrics + evidence) peak | 797.0 MB — evidence adds 5,825 bytes |
-| Metrics retained at end of stream | 525.6 MB over 1,722,451 turns (~305 bytes/turn, ≈0.92× source) |
-| Serialized evidence | 4,497 bytes — flat from 1 MiB to 500 MiB |
+| Metrics-only peak | 220.6 MB (0.40× source), down from 797.0 MB |
+| Composite (metrics + evidence) peak | 317.8 MB (0.58× source) — evidence adds 97.2 MB |
+| Metrics derived state retained at end of stream | 241,599 bytes after 1,269,150 turns, down from 525.6 MB |
+| Allocator-observed metrics live bytes | 241,988 bytes (0.16% above the estimate, including identity strings) |
+| Peak residual outside metrics | 220.3 MB |
+| Repeated-64-ID metrics peak | 9.99 MB |
+| Unique-ID peak delta | 210.6 MB |
+| Serialized evidence | 4,461 bytes |
 
-The peak multiplier improves with scale (1.75–1.84× at 10–50 MiB, 1.40× at
-500 MiB): parse transients amortize and metrics retention is what remains.
-The evidence caps bound its memory the same way they bound its output, so
-the whole pipeline reduces to: peak ≈ metrics retention plus bounded
-transients; the reader and evidence are both effectively free. A 500 MiB
-session is ~10× the largest session in the issue #222 field cohort.
+The metrics state is below 640 KiB and agrees with allocator observation within
+one percent. Reusing 64 message ids removes 210.6 MB from the 220.3 MB metrics
+residual, which attributes most metrics-side peak growth to
+`ClaudeStreamState::max_usage_by_message_id`. The UUID-bearing composite adds
+97.2 MB, exercising the tracked unbounded
+`SessionEvidenceAccumulator::seen_thread_uuids` state. This change does not
+claim a bounded full-pipeline peak.
+
+### Saturated metrics state
+
+The synthetic saturation profile fills the slot grid, efficiency contributions,
+skill and late-tool lists, tool, model, thinking-mode, speed, and last-tool
+interners, model runs, and name maps.
+
+| Records | Estimated retained | Allocator-observed live |
+|---:|---:|---:|
+| 40,000 | 366,413 bytes | 375,455 bytes |
+| 400,000 | 395,789 bytes | 404,831 bytes |
+
+Sparse occupied-cell capacity varies by 29,376 bytes across the tenfold turn-
+count increase. Both measurements stay below the 640 KiB contract.
+
+### Held session tree
+
+One 10 MiB parent plus twenty 50-turn children retained 867,833 bytes of
+derived state at merge time. Allocator-observed live growth was 936,678 bytes;
+peak growth, including the temporary merged output, was 3,808,726 bytes.
 
 ## Active-writer `SourceChanged` rates
 
@@ -175,26 +204,25 @@ seconds apart, and the read window for typical session sizes is milliseconds.
 
 1. **Phase-13 optimizations (report caching, relational evidence
    projections, read pooling)** — *dismiss with the number.* Report
-   reduction costs ~0.75 µs/session (367 µs for a 500-session cohort, 49 µs
-   for the 65-session field cohort). No stage shows a bottleneck that
+   reduction costs ~0.72–0.75 µs/session (361 µs for a 500-session cohort,
+   48.6 µs for the 65-session field cohort). No stage shows a bottleneck that
    caching or projections would relieve; the only material cost is serde
-   parsing at ~150 MiB/s, and even a 50 MiB session completes in 0.35 s.
+   parsing at ~127 MiB/s, and even a 50 MiB session completes in 424 ms.
 
 2. **Claude append-only guarantee evidence** — *defer with evidence; likely
-   never justified.* A full reprocess is 7 ms at 1 MiB, 73 ms at 10 MiB,
-   351 ms at 50 MiB — linear and cheap. The rejection rate is bounded by
+   never justified.* A full reprocess is 8.57 ms at 1 MiB, 83.6 ms at 10 MiB,
+   and 424 ms at 50 MiB — linear and cheap. The rejection rate is bounded by
    read-window/write-interval and reached zero in every measured scenario
    with realistic write spacing. The followups entry's own words apply:
    "the work may never be justified." Incremental (byte-offset) parsing
-   would save at most a fraction of ~0.35 s per pathological session.
+   would save at most a fraction of 424 ms per pathological session.
 
 3. **Fork-job `Inline` materialization** — *defer.* Materializing costs
-   ~6 % extra time and one transient full-source buffer per fork job. With
-   the worker's single source permit, peak transient memory equals the
-   largest single session. The metrics accumulator already retains ≈ source
-   size for dense transcripts, so inlining changes the constant, not the
-   order of magnitude. Revisit only if field sessions well beyond 50 MiB
-   appear in the affected-source volume.
+   ~0.9 % extra time in this run and one transient full-source buffer per fork
+   job. With the worker's single source permit, peak transient memory equals
+   the largest single session. The metrics accumulator stays bounded, so the
+   inline source copy is the material memory difference. Revisit if fork jobs
+   become common or field sessions grow well beyond 50 MiB.
 
 4. **Popover-hidden staleness (Locked Decision 15 review)** — *reaffirm; no
    change proposed.* Catch-up drain time once the popover opens is
@@ -207,7 +235,7 @@ seconds apart, and the read window for typical session sizes is milliseconds.
 **Worker concurrency and leases (Part 3 tuning clause):** keep 1 CPU /
 1 source / 1 provider-DB permit and `LEASE_SECS = 300`,
 `LEASE_RENEW_SECS = 60` — now a measured outcome. The worst measured
-per-session cost (0.35 s at 50 MiB) is two orders of magnitude below the
-lease renewal interval, and single-permit throughput (~150 MiB/s) clears
+per-session cost (424 ms at 50 MiB) is two orders of magnitude below the
+lease renewal interval, and single-permit throughput (~133 MiB/s) clears
 realistic backlogs in seconds, so extra permits would only add contention
 with the reader's live agent sessions.

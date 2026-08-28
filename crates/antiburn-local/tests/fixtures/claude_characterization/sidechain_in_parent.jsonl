@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-07-10T10:00:00Z","message":{"role":"user","content":"Start the synthetic parent task."}}
+{"type":"assistant","timestamp":"2026-07-10T10:00:01Z","isSidechain":true,"message":{"id":"msg-sidechain-parent-1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":200,"output_tokens":20},"content":[{"type":"text","text":"Synthetic delegated work."}]}}
+{"type":"assistant","timestamp":"2026-07-10T10:00:02Z","message":{"id":"msg-sidechain-parent-2","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"Synthetic parent work."}]}}
