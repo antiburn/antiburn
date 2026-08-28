@@ -18,6 +18,7 @@ import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import { liveAuthNote, liveForProvider, livePlanLabel } from "../../lib/presentation/liveUsage"
+import { noMeterSelected } from "../../lib/usageBars"
 import {
   providerWindow,
   rankByWindow,
@@ -83,7 +84,10 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
   const at = now ?? (Date.parse(live.generatedAt) || 0)
   const { recent, rest } = sectioned(summary.providers)
   const empty = recent.length === 0 && rest.length === 0
-  const authNote = liveAuthNote(live)
+  // A reader who turned every meter off gets that sentence instead of an
+  // auth note. No source ran, so no failure of theirs is current.
+  const noMeter = noMeterSelected(live)
+  const authNote = noMeter ? null : liveAuthNote(live)
 
   return (
     <div className="flex h-full flex-col">
@@ -111,6 +115,11 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
             className="mb-2 rounded-control bg-system-orange/10 px-3 py-2 type-caption text-system-orange"
           >
             {authNote}
+          </p>
+        )}
+        {noMeter && (
+          <p role="status" className="mb-2 px-3 py-2 type-caption text-label-tertiary">
+            No meter selected. The cards below show this machine's own estimate.
           </p>
         )}
         {empty ? (

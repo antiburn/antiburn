@@ -189,6 +189,7 @@ const LIVE_USAGE = {
     },
   ],
   errors: [],
+  meters: [{ provider: "openai", displayName: "Codex", shown: true }],
   generatedAt: "2027-01-15T08:00:00Z",
 }
 
@@ -593,7 +594,7 @@ describe("PopoverView", () => {
   })
 
   it("withholds the usage-limits bar entirely when no provider has a limit to show", async () => {
-    const noLiveUsage = { providers: [], errors: [], generatedAt: "" }
+    const noLiveUsage = { providers: [], errors: [], meters: [], generatedAt: "" }
     mockCommands({ get_live_usage: noLiveUsage, refresh_live_usage: noLiveUsage })
     render(<PopoverView />)
 

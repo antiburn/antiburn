@@ -5,12 +5,15 @@ import { Pane } from "../../components/ui/Pane"
 import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { ToggleRow } from "../../components/ui/ToggleRow"
+import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { createExternalStore } from "../../lib/externalStore"
 import {
   EMPTY_LIVE_USAGE,
   getLiveUsage,
   onLiveUsageChanged,
   refreshLiveUsage,
+  type LiveUsageMeterPayload,
+  type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
 import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
@@ -34,6 +37,12 @@ import type { AppSettingsController } from "./useAppSettings"
  * possible at all, *and* it is what lets milestone notifications fire —
  * because a switch with two consequences has to say both or a reader turning
  * it off for one reason is surprised by the other.
+ *
+ * Show Meter, below, is the same switch one provider at a time. Hidden means
+ * antiburn does not ask that provider, so the same two consequences apply and
+ * the row says so. The list is a roster of what antiburn can meter, not a list
+ * of what answered: a hidden provider reports nothing, and a list built from
+ * readings would drop the row that turns it back on.
  */
 
 export type UsagePaneProps = AppSettingsController
@@ -61,9 +70,25 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
   const live = useSyncExternalStore(store.subscribe, store.getSnapshot)
 
   const on = settings?.liveUsageEnabled ?? false
+  const hidden = settings?.liveUsageHiddenProviders ?? []
+  const meters = roster(live)
 
   function handleHudChange(next: boolean) {
     hudVisibility.set(next)
+  }
+
+  // Write the hidden set, then refresh: a provider the reader just turned on
+  // has no reading yet, and one they turned off must leave the other surfaces
+  // now rather than at the next background pass.
+  function handleMeterChange(provider: string, next: boolean) {
+    const remaining = hidden.filter((id) => id !== provider)
+    void Promise.resolve(
+      update({
+        liveUsageHiddenProviders: next ? remaining : [...remaining, provider],
+      }),
+    ).then(() => {
+      void refreshLiveUsage().catch(() => undefined)
+    })
   }
 
   return (
@@ -100,9 +125,9 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         </SectionGroup>
       )}
 
-      <SectionGroup title="What antiburn can currently see">
+      <SectionGroup title="Show Meter">
         <Card>
-          {live.providers.length === 0 && live.errors.length === 0 && (
+          {meters.length === 0 && (
             <Row
               label="No plan limits found"
               description={
@@ -112,33 +137,112 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
               }
             />
           )}
-          {live.providers.map((provider) => (
-            <Row
-              key={provider.provider}
-              label={provider.displayName}
-              description={`${provider.sourceLabel}. ${provider.windows.length} limit${
-                provider.windows.length === 1 ? "" : "s"
-              } reported.`}
-              trailing={
-                <span className="type-caption tabular-nums text-label-tertiary">
-                  {liveSourceNote(provider)}
-                </span>
-              }
-            />
-          ))}
-          {live.errors.map((error) => (
-            <Row
-              key={error.source}
-              label={
-                error.displayName
-                  ? `Could not read ${error.displayName} usage`
-                  : "Could not read usage"
-              }
-              description={liveErrorNote(error.category)}
-            />
-          ))}
+          {meters.map((meter) => {
+            const reading = live.providers.find(
+              (provider) => provider.provider === meter.provider,
+            )
+            const failure = live.errors.find((error) => error.provider === meter.provider)
+            const shown = !hidden.includes(meter.provider)
+            return (
+              <Row
+                key={meter.provider}
+                label={meter.displayName}
+                description={meterNote({
+                  shown,
+                  on,
+                  reading,
+                  failure,
+                  name: meter.displayName,
+                })}
+                dimmed={!on}
+                trailing={
+                  <ToggleSwitch
+                    checked={shown}
+                    onCheckedChange={(next) => handleMeterChange(meter.provider, next)}
+                    aria-label={`Show ${meter.displayName} meter`}
+                    disabled={!on}
+                  />
+                }
+              >
+                {shown && reading && (
+                  <p className="type-caption tabular-nums text-label-tertiary">
+                    {liveSourceNote(reading)}
+                  </p>
+                )}
+              </Row>
+            )
+          })}
         </Card>
       </SectionGroup>
     </Pane>
   )
+}
+
+/**
+ * The providers to show a switch for.
+ *
+ * The shell states the roster. An older cached snapshot has none, so fall back
+ * to whatever the readings name — the reader keeps a working list until the
+ * next refresh answers with the real one.
+ */
+function roster(live: LiveUsageSummaryPayload): LiveUsageMeterPayload[] {
+  if (live.meters.length > 0) return live.meters
+  const named = new Map<string, LiveUsageMeterPayload>()
+  for (const provider of live.providers) {
+    named.set(provider.provider, {
+      provider: provider.provider,
+      displayName: provider.displayName,
+      shown: true,
+    })
+  }
+  for (const error of live.errors) {
+    if (named.has(error.provider)) continue
+    named.set(error.provider, {
+      provider: error.provider,
+      displayName: error.displayName || error.provider,
+      shown: true,
+    })
+  }
+  return [...named.values()]
+}
+
+/**
+ * The one line under a provider's switch.
+ *
+ * A hidden meter says both consequences, for the same reason the master switch
+ * above does: it stops the request, and it stops that provider's milestone
+ * notifications.
+ */
+function meterNote({
+  shown,
+  on,
+  reading,
+  failure,
+  name,
+}: {
+  shown: boolean
+  on: boolean
+  reading: LiveUsageSummaryPayload["providers"][number] | undefined
+  failure: LiveUsageSummaryPayload["errors"][number] | undefined
+  name: string
+}): string {
+  if (!shown) {
+    return `antiburn does not ask ${name} for usage, and ${name} milestone notifications do not fire.`
+  }
+  // Report what the snapshot holds before reporting a switch. A reading and a
+  // failure can both be true — a stale figure that a fresh attempt could not
+  // replace — and the reader needs the second sentence to read the first one
+  // correctly.
+  const parts: string[] = []
+  if (reading) {
+    parts.push(
+      `${reading.sourceLabel}. ${reading.windows.length} limit${
+        reading.windows.length === 1 ? "" : "s"
+      } reported.`,
+    )
+  }
+  if (failure) parts.push(liveErrorNote(failure.category))
+  if (parts.length > 0) return parts.join(" ")
+  if (!on) return "Turn the switch above back on to ask for current plan limits."
+  return `No readings yet. Sign in with ${name} and this fills in.`
 }

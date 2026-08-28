@@ -73,6 +73,7 @@ function liveSummary(
   return {
     providers: [liveProvider()],
     errors: [],
+    meters: [],
     generatedAt: GENERATED_AT,
     ...overrides,
   }
