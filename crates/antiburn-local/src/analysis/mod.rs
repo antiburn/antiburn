@@ -69,7 +69,7 @@ pub use interface::{
     SourceChangedReason, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
-pub use metrics_sink::{SessionMetricsAccumulator, merge_metrics};
+pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
@@ -82,7 +82,7 @@ pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 3;
-pub const ANALYZER_REVISION: i64 = 5;
+pub const ANALYZER_REVISION: i64 = 6;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 2;
 

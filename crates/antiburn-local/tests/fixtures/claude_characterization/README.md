@@ -28,6 +28,12 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | `delegated_model_missing.jsonl` | A sidechain assistant record without `message.model` degrades the subagent group to attribution-incomplete `Partial`, so Overpowered Subagents cannot read clean. |
 | `thread_identity_chain.jsonl` | Every record carries a `uuid`, every non-root `parentUuid` resolves in-file (including a sidechain rooted at `parentUuid: null`), and the cache group's `previous_turn` verifies as `Complete`. The model switch next to paid cache writes gives Cache Churn a real finding. |
 | `thread_identity_missing_uuid.jsonl` | One counted turn carries no `uuid`, so `previous_turn` and the cache group degrade to `Partial` with `attribution_incomplete` and Cache Churn cannot read clean. |
+| `sidechain_in_parent.jsonl` | A sidechain record inside the parent transcript keeps subagent token classification during bounded merge. |
+| `late_skill_metrics.jsonl` | A slash-command skill resolved at finish keeps its original position and duration. |
+| `two_compactions_second_without_metadata.jsonl` | Two same-position compactions keep the last boundary's empty metadata as one tuple. |
+| `rehydration_gap_none.jsonl` | An inferred cache miss without its own timestamp preserves the unknown-gap rehydration rule. |
+| `disorder_ladder.jsonl` | A turn displaced by 64 arrivals exercises the reorder-window overflow and timestamp clamp. |
+| `subagent_single_timestamp.jsonl` | A delegated stream with one repeated timestamp keeps its ordinal order before merged placement. |
 
 The checked-in goldens serialize `NormalizedSession` and the complete `SessionMetrics` value for each fixture. The tests compare parsed JSON values, so a field addition fails until a reviewer accepts the golden change.
 

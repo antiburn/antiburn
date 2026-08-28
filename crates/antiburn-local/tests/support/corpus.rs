@@ -70,6 +70,10 @@ pub struct SessionSpec {
     /// roughly `oversized_bytes` bytes.
     pub oversized_at: Option<usize>,
     pub oversized_bytes: usize,
+    /// Reuses assistant message ids with this modulus when set.
+    pub message_id_modulus: Option<usize>,
+    /// Adds a synthetic chained `uuid` and `parentUuid` identity to each record.
+    pub thread_identity: bool,
 }
 
 impl SessionSpec {
@@ -83,6 +87,8 @@ impl SessionSpec {
             unrecognized_every: None,
             oversized_at: None,
             oversized_bytes: 0,
+            message_id_modulus: None,
+            thread_identity: false,
         }
     }
 }
@@ -132,6 +138,9 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
 
     for index in 0..spec.records {
         let ts = base_epoch + (index as i64) * 7;
+        let push_record = |jsonl: &mut String, value: &Value| {
+            push_record(jsonl, value, &session_id, index, spec.thread_identity);
+        };
 
         if spec.oversized_at == Some(index) {
             jsonl.push_str(&oversized_record(ts, index, spec.oversized_bytes));
@@ -178,8 +187,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                 &mut jsonl,
                 &assistant_record(
                     ts,
-                    &session_id,
-                    index,
+                    &message_id(spec, index, &session_id),
                     MODELS[model_index],
                     spec.delegated,
                     &mut rng,
@@ -209,8 +217,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                     &mut jsonl,
                     &assistant_record(
                         ts,
-                        &session_id,
-                        index,
+                        &message_id(spec, index, &session_id),
                         MODELS[model_index],
                         spec.delegated,
                         &mut rng,
@@ -268,8 +275,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                     &mut jsonl,
                     &assistant_record(
                         ts,
-                        &session_id,
-                        index,
+                        &message_id(spec, index, &session_id),
                         MODELS[model_index],
                         spec.delegated,
                         &mut rng,
@@ -307,8 +313,7 @@ pub fn generate_session(spec: &SessionSpec) -> GeneratedSession {
                     &mut jsonl,
                     &assistant_record(
                         ts,
-                        &session_id,
-                        index,
+                        &message_id(spec, index, &session_id),
                         MODELS[model_index],
                         spec.delegated,
                         &mut rng,
@@ -389,22 +394,74 @@ pub fn generate_session_of_bytes(
     session_index: usize,
     target_bytes: usize,
 ) -> GeneratedSession {
-    // Average record size is ~300 bytes; overshoot the first guess, then top up.
-    let mut records = target_bytes / 280;
+    generate_session_of_bytes_with_options(seed, session_index, target_bytes, None, false)
+}
+
+/// Grows a session that reuses a bounded set of assistant message ids.
+pub fn generate_session_of_bytes_with_message_modulus(
+    seed: u64,
+    session_index: usize,
+    target_bytes: usize,
+    message_id_modulus: Option<usize>,
+) -> GeneratedSession {
+    generate_session_of_bytes_with_options(
+        seed,
+        session_index,
+        target_bytes,
+        message_id_modulus,
+        false,
+    )
+}
+
+/// Grows a session with synthetic chained record identities.
+pub fn generate_session_of_bytes_with_identity(
+    seed: u64,
+    session_index: usize,
+    target_bytes: usize,
+    message_id_modulus: Option<usize>,
+) -> GeneratedSession {
+    generate_session_of_bytes_with_options(
+        seed,
+        session_index,
+        target_bytes,
+        message_id_modulus,
+        true,
+    )
+}
+
+fn generate_session_of_bytes_with_options(
+    seed: u64,
+    session_index: usize,
+    target_bytes: usize,
+    message_id_modulus: Option<usize>,
+    thread_identity: bool,
+) -> GeneratedSession {
+    let bytes_per_record = if thread_identity { 380 } else { 280 };
+    let mut records = target_bytes / bytes_per_record;
     loop {
-        let session = generate_session(&SessionSpec::tier_s(seed, session_index, records));
+        let mut spec = SessionSpec::tier_s(seed, session_index, records);
+        spec.message_id_modulus = message_id_modulus;
+        spec.thread_identity = thread_identity;
+        let session = generate_session(&spec);
         if session.jsonl.len() >= target_bytes {
             return session;
         }
         let deficit = target_bytes - session.jsonl.len();
-        records += deficit / 280 + 64;
+        records += deficit / bytes_per_record + 64;
     }
+}
+
+fn message_id(spec: &SessionSpec, index: usize, session_id: &str) -> String {
+    let id_index = spec
+        .message_id_modulus
+        .filter(|modulus| *modulus > 0)
+        .map_or(index, |modulus| index % modulus);
+    format!("msg-{session_id}-{id_index}")
 }
 
 fn assistant_record(
     ts: i64,
-    session_id: &str,
-    index: usize,
+    message_id: &str,
     model: &str,
     delegated: bool,
     rng: &mut CorpusRng,
@@ -414,7 +471,7 @@ fn assistant_record(
         "type": "assistant",
         "timestamp": ts,
         "message": {
-            "id": format!("msg-{session_id}-{index}"),
+            "id": message_id,
             "role": "assistant",
             "model": model,
             "usage": {
@@ -447,7 +504,25 @@ fn oversized_record(ts: i64, index: usize, bytes: usize) -> String {
     )
 }
 
-fn push_record(jsonl: &mut String, value: &Value) {
+fn push_record(
+    jsonl: &mut String,
+    value: &Value,
+    session_id: &str,
+    index: usize,
+    thread_identity: bool,
+) {
+    if !thread_identity {
+        jsonl.push_str(&value.to_string());
+        jsonl.push('\n');
+        return;
+    }
+    let mut value = value.clone();
+    value["uuid"] = json!(format!("uuid-{session_id}-{index}"));
+    value["parentUuid"] = if index == 0 {
+        Value::Null
+    } else {
+        json!(format!("uuid-{session_id}-{}", index - 1))
+    };
     jsonl.push_str(&value.to_string());
     jsonl.push('\n');
 }

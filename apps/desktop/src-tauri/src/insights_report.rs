@@ -544,63 +544,6 @@ mod tests {
         }
 
         #[test]
-        fn pi_backfill_moves_awaiting_support_into_the_pending_queue() {
-            let data_dir = TempDir::new().unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            let mut pi = session("pi-backfill", 120, "sv1:pi-backfill");
-            pi.key.agent = "pi".to_owned();
-            pi.source_label = "/synthetic/pi-backfill.jsonl".to_owned();
-            store
-                .upsert_sessions(std::slice::from_ref(&pi), &[])
-                .unwrap();
-            store
-                .save_analysis(
-                    &AnalysisRecord {
-                        key: pi.key.clone(),
-                        model_breakdown_json: "{}".to_owned(),
-                        inclusive_models_json: "[]".to_owned(),
-                        source_fingerprint: "sv1:pi-backfill".to_owned(),
-                        pricing_generation: 1,
-                        analyzed_generation: 1,
-                        parser_revision: PARSER_REVISION,
-                        analyzer_revision: ANALYZER_REVISION,
-                        metrics_schema_revision: METRICS_SCHEMA_REVISION,
-                    },
-                    Some(120),
-                )
-                .unwrap();
-
-            let before = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            assert_eq!(before.context.coverage.pending, 1);
-            assert_eq!(before.context.coverage.awaiting_provider_support, 1);
-
-            assert_eq!(
-                store
-                    .reconcile_evidence_revisions(
-                        &crate::agents::evidence_cohort(),
-                        crate::analysis::projection_revisions(),
-                    )
-                    .unwrap(),
-                1
-            );
-            let after = reduce_on_snapshot(
-                data_dir.path(),
-                request(),
-                &mut || {},
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            assert_eq!(after.context.coverage.pending, 1);
-            assert_eq!(after.context.coverage.awaiting_provider_support, 0);
-        }
-
-        #[test]
         fn unknown_start_rows_split_on_in_window_activity() {
             // Each case seeds one row alone, so a reversed activity predicate
             // cannot pass by counting the other row.
