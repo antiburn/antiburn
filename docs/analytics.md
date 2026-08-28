@@ -6,20 +6,16 @@ that: every field, every event, what is deliberately excluded, what antiburn
 cannot promise, and how to verify all of it yourself without trusting this
 page.
 
-The control is in **Settings → Privacy**, and the first-run Ready screen shows
-it before anything is sent. It is on by default — except in the EU, the EEA,
-and the UK, where it starts **off**, because there analytics are something you
-opt into rather than out of. That is decided from the locale and time zone your
-machine already reports; nothing is looked up, and neither is ever sent. That
-default differs from the general default-off policy so consent is collected
-before analytics starts in those regions.
+Analytics is enabled automatically when first-run setup completes. The default
+is the same in every locale. Nothing is sent before setup completes, and the
+control in **Settings → Privacy** turns analytics off at any time.
 
 ## The short version
 
 - Nothing derived from your work is ever sent — no transcript, prompt, title,
   file path, repository or branch name, token count, cost, or credential.
-- Nothing is sent until the first run completes, so declining on the Ready
-  screen means no event is ever recorded, rather than recorded and withdrawn.
+- Nothing is sent until the first run completes. Analytics then starts
+  automatically unless the stored setting was already switched off.
 - The installation identifier is random, is not derived from anything about
   your machine, and is replaced every 30 days.
 - Turning the control off deletes the identifier and everything queued.
@@ -199,7 +195,7 @@ identity that cannot be linked to the old one.
 
 | Concern                                                   | File                                                                       |
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Consent gate, queue, delivery                             | [`analytics/mod.rs`](../apps/desktop/src-tauri/src/analytics/mod.rs)       |
+| Setup and opt-out gates, queue, delivery                  | [`analytics/mod.rs`](../apps/desktop/src-tauri/src/analytics/mod.rs)       |
 | The payload, and the closed field set                     | [`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs)   |
 | Endpoint configuration, and why a clean checkout is inert | [`analytics/config.rs`](../apps/desktop/src-tauri/src/analytics/config.rs) |
 | The setting, and the upgrade rule for existing installs   | [`store/mod.rs`](../apps/desktop/src-tauri/src/store/mod.rs)               |

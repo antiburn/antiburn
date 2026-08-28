@@ -6,15 +6,15 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Platforms
 
-| Platform | v1 support |
-| --- | --- |
-| macOS 13 or later (Apple silicon and Intel) | Supported |
-| macOS 12 or earlier | Not supported; the bundle declares macOS 13 as its minimum |
-| Windows 11 (x86-64) | Supported |
-| Windows 10 | Not tested; no support claimed |
-| Linux, mainstream x86-64 desktops with a system tray | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session with no X server leaves that placement to the compositor |
-| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application |
-| Mobile | Out of scope |
+| Platform                                              | v1 support                                                                                                                                                                                                           |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS 13 or later (Apple silicon and Intel)           | Supported                                                                                                                                                                                                            |
+| macOS 12 or earlier                                   | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                           |
+| Windows 11 (x86-64)                                   | Supported                                                                                                                                                                                                            |
+| Windows 10                                            | Not tested; no support claimed                                                                                                                                                                                       |
+| Linux, mainstream x86-64 desktops with a system tray  | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session with no X server leaves that placement to the compositor |
+| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application                                                                                                                                                                       |
+| Mobile                                                | Out of scope                                                                                                                                                                                                         |
 
 ## Agents
 
@@ -22,19 +22,19 @@ antiburn reads session data that a coding agent has already written to disk.
 Plan limits are separate: antiburn can ask a provider for those figures as
 described in [Network](#network).
 
-| Agent | Native (macOS / Windows / Linux) | WSL | Notes |
-| --- | --- | --- | --- |
-| Claude Code | Supported | Supported | |
-| Codex | Supported | Supported | |
-| OpenCode | Supported | Supported | |
-| Cursor | Supported | Not supported | |
-| GitHub Copilot | Supported | Not supported | |
-| Cline | Supported | Not supported | |
-| Kiro | Supported | Not supported | |
-| Amp | Supported | Not supported | |
-| Pi | macOS and Linux only | Not supported | Dedicated session analysis; excluded on Windows |
-| Antigravity | Supported, **disk-only** | Not supported | Documented local files only |
-| Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
+| Agent          | Native (macOS / Windows / Linux) | WSL           | Notes                                           |
+| -------------- | -------------------------------- | ------------- | ----------------------------------------------- |
+| Claude Code    | Supported                        | Supported     |                                                 |
+| Codex          | Supported                        | Supported     |                                                 |
+| OpenCode       | Supported                        | Supported     |                                                 |
+| Cursor         | Supported                        | Not supported |                                                 |
+| GitHub Copilot | Supported                        | Not supported |                                                 |
+| Cline          | Supported                        | Not supported |                                                 |
+| Kiro           | Supported                        | Not supported |                                                 |
+| Amp            | Supported                        | Not supported |                                                 |
+| Pi             | macOS and Linux only             | Not supported | Dedicated session analysis; excluded on Windows |
+| Antigravity    | Supported, **disk-only**         | Not supported | Documented local files only                     |
+| Windsurf       | Supported, **disk-only**         | Not supported | Documented local files only                     |
 
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
@@ -56,7 +56,7 @@ transcript recorded. They are **API-equivalent estimates**, not a bill:
   and the provider's total is then labelled as a floor;
 - work done on another machine is not counted, because antiburn cannot see it.
 
-Provider Usage shows what was *spent* on this machine. It never shows a percentage,
+Provider Usage shows what was _spent_ on this machine. It never shows a percentage,
 an allowance, a remaining balance, or a reset time: a transcript records spend, and a
 denominator would have to be invented.
 
@@ -134,9 +134,9 @@ app never depends on this connection.
 - Linux AppImage releases update in the app. Debian packages remain install-only
   and require the next package to be installed manually.
 - **Anonymised analytics** are the one thing antiburn reports about itself.
-  On by default; the switch is in Settings → Privacy, and the first-run Ready
-  screen shows it before anything is sent. Each event carries thirteen fields and
-  no others: the constant `desktop`; a random per-message id used to discard
+  They start automatically after first-run setup in every locale, and the switch
+  is in Settings → Privacy. Each event carries thirteen fields and no others:
+  the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;

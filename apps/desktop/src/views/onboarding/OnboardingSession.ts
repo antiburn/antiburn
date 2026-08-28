@@ -1,11 +1,8 @@
 import { open } from "@tauri-apps/plugin-dialog"
 
 import { applyTheme } from "../../lib/appearance"
-import { analyticsDefaultsOff } from "../../lib/euLocale"
 import {
   addScanRoot,
-  appInfo,
-  cancelScan,
   defaultScanRoots,
   finishOnboarding,
   getFolderPermissions,
@@ -46,15 +43,6 @@ export type OnboardingSnapshot = {
   loadError: string | null
   activityWindowDays: number
   launchAtLogin: boolean
-  /** The consent draft. Written only by `finish`, so a reader who abandons
-   *  the flow — or turns this off on the Ready screen — is never counted. */
-  analyticsEnabled: boolean
-  /** Whether this build can transmit at all. Read from the shell rather than
-   *  assumed: a clean checkout has no endpoint, and the Ready screen says so
-   *  instead of offering a switch over nothing. */
-  analyticsSupported: boolean
-  /** Who receives the events, named rather than implied. */
-  analyticsOperator: string | null
   scanRoots: string[]
   defaultRoots: string[]
   permissions: FolderPermissions
@@ -97,6 +85,8 @@ export class OnboardingSession {
   private permissionRunning = false
   private permissionCancelled = false
   private permissionTimer: ReturnType<typeof setTimeout> | null = null
+  private rescanInFlight = false
+  private rescanQueued = false
 
   private snapshot: OnboardingSnapshot
 
@@ -106,12 +96,6 @@ export class OnboardingSession {
       loadError: null,
       activityWindowDays: 7,
       launchAtLogin: true,
-      // On by default, except where it has to be opted into rather than out
-      // of — see `analyticsDefaultsOff`. The control sits in the same place
-      // either way; only its starting position moves.
-      analyticsEnabled: !analyticsDefaultsOff(),
-      analyticsSupported: false,
-      analyticsOperator: null,
       scanRoots: [],
       defaultRoots: [],
       permissions: EMPTY_PERMISSIONS,
@@ -141,38 +125,40 @@ export class OnboardingSession {
     void this.start()
   }
 
-  setActivityWindowDays = (days: number): void => {
-    this.update({ activityWindowDays: days, finishError: null })
-  }
-
   setLaunchAtLogin = (enabled: boolean): void => {
     this.update({ launchAtLogin: enabled, finishError: null })
-  }
-
-  setAnalyticsEnabled = (enabled: boolean): void => {
-    this.update({ analyticsEnabled: enabled, finishError: null })
   }
 
   addScanRoot = async (): Promise<void> => {
     const picked = await open({ directory: true, multiple: false })
     if (typeof picked !== "string") return
     this.update({ scanRoots: await addScanRoot(picked) })
+    await this.rescan()
   }
 
   removeScanRoot = async (path: string): Promise<void> => {
     this.update({ scanRoots: await removeScanRoot(path) })
+    await this.rescan()
   }
 
   rescan = async (): Promise<void> => {
-    const status = await scanNow(this.snapshot.activityWindowDays).catch(() => null)
-    if (status) this.update({ scanStatus: status })
-    const permissions = await getFolderPermissions().catch(() => null)
-    if (permissions) this.update({ permissions })
-  }
+    if (this.rescanInFlight) {
+      this.rescanQueued = true
+      return
+    }
 
-  cancelScan = async (): Promise<void> => {
-    const status = await cancelScan().catch(() => null)
-    if (status) this.update({ scanStatus: status })
+    this.rescanInFlight = true
+    try {
+      do {
+        this.rescanQueued = false
+        const status = await scanNow(this.snapshot.activityWindowDays).catch(() => null)
+        if (status) this.update({ scanStatus: status })
+        const permissions = await getFolderPermissions().catch(() => null)
+        if (permissions) this.update({ permissions })
+      } while (this.rescanQueued)
+    } finally {
+      this.rescanInFlight = false
+    }
   }
 
   toggleRepository = async (item: LocalRepositoryItem, enabled: boolean): Promise<void> => {
@@ -197,11 +183,7 @@ export class OnboardingSession {
     if (this.snapshot.finishing) return
     this.update({ finishing: true, finishError: null })
     try {
-      await finishOnboarding(
-        this.snapshot.activityWindowDays,
-        this.snapshot.launchAtLogin,
-        this.snapshot.analyticsEnabled,
-      )
+      await finishOnboarding(this.snapshot.activityWindowDays, this.snapshot.launchAtLogin)
     } catch (error) {
       this.update({
         finishing: false,
@@ -230,10 +212,9 @@ export class OnboardingSession {
       }
 
       const scanVersion = this.scanEventVersion
-      const [settings, info, scanRoots, defaultRoots, scanStatus, permissions, repositories] =
+      const [settings, scanRoots, defaultRoots, scanStatus, permissions, repositories] =
         await Promise.all([
           getSettings(),
-          appInfo().catch(() => null),
           listScanRoots().catch(() => []),
           defaultScanRoots().catch(() => []),
           getScanStatus().catch(() => null),
@@ -250,15 +231,6 @@ export class OnboardingSession {
         loadError: null,
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
-        // A store that has never been written still reports the shell's
-        // default, which is unconditional `true` — so the jurisdiction-aware
-        // default is applied here, where the reader's locale is visible, and
-        // only while onboarding has not yet committed an answer.
-        analyticsEnabled: settings.onboardingCompleted
-          ? settings.analyticsEnabled
-          : settings.analyticsEnabled && !analyticsDefaultsOff(),
-        analyticsSupported: info?.analyticsSupported ?? false,
-        analyticsOperator: info?.analyticsOperator ?? null,
         scanRoots,
         defaultRoots,
         permissions,

@@ -1,13 +1,11 @@
-//! Anonymised events about the application, behind the reader's consent.
+//! Anonymised events about the application, behind the stored opt-out.
 //!
 //! This is the one place antiburn sends anything of its own beyond the update
 //! check. The properties below define its privacy boundary.
 //!
-//! - **The reader is shown the control before a single event is sent.** The
-//!   switch is on by default, but the gate in [`allowed`] also requires
-//!   onboarding to have finished, and the first-run flow does not write the
-//!   setting until its final button. A reader who turns it off on the Ready
-//!   screen is therefore never counted once — not "counted and then deleted".
+//! - **Analytics starts only after setup.** The setting starts on for a new
+//!   install, and the gate in [`allowed`] also requires onboarding to finish.
+//!   Settings → Privacy turns it off and destroys queued state.
 //! - **A build with no endpoint sends nothing.** See [`config`]; every build
 //!   from a clean checkout of this repository is in that state.
 //! - **The payload cannot carry the reader's work.** See [`event`], where the
@@ -59,7 +57,7 @@ const MAX_ATTEMPTS: u32 = 5;
 /// How long one delivery may take before it is abandoned.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Whether this build could report at all, regardless of the reader's choice.
+/// Whether this build could report at all, regardless of the stored setting.
 ///
 /// Surfaces ask this to decide whether to offer the control as a live switch
 /// or as a disabled row that says why. Re-exported so callers do not have to
@@ -75,10 +73,9 @@ pub fn operator() -> Option<&'static str> {
 
 /// Whether an event may be recorded right now.
 ///
-/// Read fresh, and default to *not* acting: an unreadable preference is not
-/// permission, the same rule every notifier in this app follows. The
-/// onboarding clause is the one that makes the consent honest rather than
-/// merely present — see the module docs.
+/// Read fresh, and default to *not* acting. An unreadable preference must not
+/// start a network request. The onboarding clause delays the automatic default
+/// until setup is complete.
 fn allowed(app: &tauri::AppHandle) -> bool {
     if !available() {
         return false;
@@ -192,7 +189,7 @@ impl UnrecognizedOutcome {
 pub fn record_scan(app: &tauri::AppHandle, sessions: Option<u64>) {
     // Ahead of the suppression check, not after it. A pass during onboarding,
     // or while the switch is off, must not leave a mark that then suppresses
-    // the first pass the reader actually consented to.
+    // the first pass after analytics starts.
     if !allowed(app) {
         return;
     }
@@ -601,7 +598,7 @@ mod tests {
     }
 
     /// The run identifier holds still for the length of a run and is dropped
-    /// when consent is withdrawn.
+    /// when analytics is turned off.
     ///
     /// The first half is what makes the collector's rows coherent; the second
     /// is what stops opting out and straight back in from continuing the

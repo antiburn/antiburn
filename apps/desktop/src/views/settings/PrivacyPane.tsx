@@ -141,9 +141,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             label="Send anonymised analytics"
             description={
               analyticsSupported
-                ? `Which features get used and what breaks${
+                ? `Enabled automatically after setup. Reports which features get used and what breaks${
                     operator ? `, sent to ${operator}` : ""
-                  }. Helps decide what to build next.`
+                  }. Turn it off here at any time.`
                 : "This build has no analytics endpoint, so nothing can be sent from it. The switch is shown so the setting is visible, not because it currently does anything."
             }
             // Gated on `loaded` as well as support. The controller starts from
@@ -233,21 +233,14 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
               groups one run&rsquo;s events and cannot connect one run to another.
             </p>
           </Disclosure>
-          {/* Shown to every reader, not only the ones it switches off for.
-                The locale and time-zone read happens on every machine, so this
-                is a disclosure owed to everybody — and gating it on the guess
-                in `euLocale.ts` would hide the explanation from exactly the
-                reader that guess got wrong. */}
-          <Disclosure label="How the starting default is chosen">
+          <Disclosure label="How analytics starts">
             <p>
-              antiburn reads the locale and time zone your machine already reports. Nothing is
-              looked up, nothing is asked of you, and neither is ever sent &mdash; the answer
-              only picks where the switch above starts.
+              Analytics is enabled automatically when first-run setup finishes. The default is
+              the same in every locale, and no event can be sent before setup is complete.
             </p>
             <p className="mt-2">
-              In the EU, the EEA, and the UK it starts off rather than on, because there
-              analytics are something you opt into. Everywhere else it starts on, and this pane
-              is where you turn it off.
+              Turn the switch above off at any time to discard queued events and delete the
+              installation identifier.
             </p>
           </Disclosure>
           {/* Deliberately not claimed by the app. Retention and IP handling

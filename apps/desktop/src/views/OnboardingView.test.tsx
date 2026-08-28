@@ -1,17 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { OnboardingView } from "./OnboardingView"
-
-/**
- * The first-run window, driven entirely through the mocked command layer.
- *
- * These moved here from `PopoverView.test.tsx` with the standalone flow. They
- * assert the same things they always did — every step
- * appears, each is announced and takes focus, and the two settings writes go
- * out with the arguments the shell expects — because none of that changed;
- * only which window it happens in.
- */
 
 const invoke = vi.hoisted(() => vi.fn())
 const openDialog = vi.hoisted(() => vi.fn())
@@ -41,18 +31,6 @@ const SETTINGS = {
   analyticsEnabled: true,
 }
 
-/// A build that *can* transmit, so the consent control renders as a live
-/// switch. The unsupported case has its own test below, because "no endpoint
-/// injected" is the state every clean checkout is in.
-const APP_INFO = {
-  appVersion: "0.1.0",
-  debugBuild: false,
-  arch: "aarch64",
-  updatesSupported: false,
-  analyticsSupported: true,
-  analyticsOperator: "the antiburn team",
-}
-
 const SCAN_STATUS = {
   running: false,
   completedAgents: 11,
@@ -64,14 +42,37 @@ const SCAN_STATUS = {
   agents: [],
 }
 
+const FAILED_SCAN_STATUS = {
+  ...SCAN_STATUS,
+  completedAgents: 3,
+  sessions: 0,
+  error: "Could not read ~/.claude/projects.",
+}
+
+const REPOSITORY = {
+  key: "/home/avery/code/widgets",
+  repoName: "widgets",
+  fullName: "avery/widgets",
+  status: "accessible",
+  repoRoot: "/home/avery/code/widgets",
+  suspectedPath: null,
+  worktreeCount: 1,
+  sessionCount: 3,
+  wslDistro: null,
+  enabled: true,
+}
+
 function mockCommands(overrides: Record<string, unknown> = {}) {
   invoke.mockImplementation((command: string, args?: unknown) => {
-    if (command in overrides) return Promise.resolve(overrides[command])
+    if (command in overrides) {
+      const value = overrides[command]
+      return Promise.resolve(
+        typeof value === "function" ? (value as (args?: unknown) => unknown)(args) : value,
+      )
+    }
     switch (command) {
       case "get_settings":
         return Promise.resolve(SETTINGS)
-      case "app_info":
-        return Promise.resolve(APP_INFO)
       case "scan_now":
       case "cancel_scan":
         return Promise.resolve(SCAN_STATUS)
@@ -101,7 +102,7 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
 
 async function advanceToReady() {
   await screen.findByRole("heading", { name: "Stop hitting your token limits." })
-  for (let step = 0; step < 4; step += 1) {
+  for (let step = 0; step < 2; step += 1) {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
   }
   await screen.findByRole("heading", { name: "Ready" })
@@ -152,7 +153,7 @@ describe("OnboardingView", () => {
     })
   })
 
-  it("runs the five-step first-run flow and records that it finished", async () => {
+  it("runs the three-step first-run flow and records that it finished", async () => {
     mockCommands({ default_scan_roots: ["/home/avery/code"] })
     render(<OnboardingView />)
 
@@ -161,114 +162,43 @@ describe("OnboardingView", () => {
       await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
     ).toBeInTheDocument()
     expect(screen.getByText(/nothing from your sessions is ever uploaded/i)).toBeInTheDocument()
-    // Welcome *mentions* the analytics control and says where it lives; the
-    // switch itself is on the last step, which is the shape the matrix asks
-    // for. `APP_INFO` reports a supported build, so this is the branch that
-    // claims analytics — see below for the build that cannot send them.
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+
+    // 2 — Search locations and repositories share the discovery pass.
     expect(
-      screen.getByText(/only goes online for.*You can opt out of the analytics/i),
+      await screen.findByRole("heading", { name: "Repo search locations" }),
     ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
-
-    // 2 — Sources. The engine's own default roots are listed, so the reader can
-    // see the common cases are already covered.
-    expect(await screen.findByRole("heading", { name: "Where to look" })).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Repos found" })).toBeInTheDocument()
     expect(screen.getByText("/home/avery/code")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
-
-    // 3 — Repositories, which needs a discovery pass to have something to show.
-    expect(await screen.findByRole("heading", { name: "What to include" })).toBeInTheDocument()
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("scan_now", { activityWindowDays: 7 }),
     )
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
-    // 4 — Historical scan: the window choice, and the pass with a way out.
-    expect(await screen.findByRole("heading", { name: "Historical scan" })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("radio", { name: "14 days" }))
-    expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
-
-    // 5 — Ready.
+    // 3 — Ready.
     expect(await screen.findByRole("heading", { name: "Ready" })).toBeInTheDocument()
     expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument()
     expect(screen.getByRole("switch", { name: "Launch antiburn on startup" })).toBeChecked()
-    // What the switch commits to, at the moment it is committed to. The
-    // recipient is deliberately not named here — Settings → Privacy does that,
-    // and this row points at it.
-    expect(
-      screen.getByText(/only sends which features are used, and what breaks/i),
-    ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
-        activityWindowDays: 14,
-        launchAtLogin: true,
-        analyticsEnabled: true,
-      }),
-    )
-  })
-
-  /// The consent control ships on by default, and the reader meets it here
-  /// before anything can be sent — the flow writes nothing until Finish.
-  it("offers the analytics control on the last step, on by default", async () => {
-    render(<OnboardingView />)
-    await advanceToReady()
-
-    const analytics = screen.getByRole("switch", {
-      name: "Send anonymised analytics",
-    })
-    expect(analytics).toBeChecked()
-    // Nothing has been written yet: the whole point of putting this on the
-    // step that commits is that declining here means never recorded.
-    expect(invoke).not.toHaveBeenCalledWith("finish_onboarding", expect.anything())
-  })
-
-  /// A build with no endpoint injected cannot send anything, so the row says
-  /// so rather than offering a switch over nothing.
-  it("disables the analytics control in a build with no endpoint", async () => {
-    mockCommands({ app_info: { ...APP_INFO, analyticsSupported: false } })
-    render(<OnboardingView />)
-
-    // Welcome first, because it is the screen that used to overstate this.
-    // Its analytics sentence was unconditional, so a build with no endpoint
-    // opened by announcing a transmission it could not make.
-    expect(
-      await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
-    ).toBeInTheDocument()
-    expect(screen.getByText(/it sends nothing about itself/i)).toBeInTheDocument()
-    expect(screen.queryByText(/anonymised analytics about the app/i)).not.toBeInTheDocument()
-
-    await advanceToReady()
-
-    const analytics = screen.getByRole("switch", {
-      name: "Send anonymised analytics",
-    })
-    expect(analytics).toBeDisabled()
-    expect(analytics).not.toBeChecked()
-    expect(screen.getByText(/this build has no analytics endpoint/i)).toBeInTheDocument()
-  })
-
-  /// Turning it off on the Ready screen must reach the shell as part of the
-  /// same commit, not as a later correction.
-  it("carries an analytics opt-out into the finish call", async () => {
-    render(<OnboardingView />)
-    await advanceToReady()
-
-    fireEvent.click(screen.getByRole("switch", { name: "Send anonymised analytics" }))
     fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 7,
         launchAtLogin: true,
-        analyticsEnabled: false,
       }),
     )
   })
 
-  it("persists an opt-out before finishing onboarding", async () => {
+  it("leaves analytics out of the onboarding choices", async () => {
+    render(<OnboardingView />)
+    await advanceToReady()
+
+    expect(
+      screen.queryByRole("switch", { name: "Send anonymised analytics" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("persists a startup opt-out before finishing onboarding", async () => {
     render(<OnboardingView />)
     await advanceToReady()
 
@@ -283,7 +213,6 @@ describe("OnboardingView", () => {
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 7,
         launchAtLogin: false,
-        analyticsEnabled: true,
       }),
     )
   })
@@ -332,13 +261,112 @@ describe("OnboardingView", () => {
       name: "Stop hitting your token limits.",
     })
     await waitFor(() => expect(welcome).toHaveFocus())
-    expect(screen.getByText("Step 1 of 5")).toBeInTheDocument()
+    expect(screen.getByText("Step 1 of 3")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
-    const sources = await screen.findByRole("heading", { name: "Where to look" })
-    await waitFor(() => expect(sources).toHaveFocus())
-    expect(screen.getByText("Step 2 of 5")).toBeInTheDocument()
+    const locations = await screen.findByRole("heading", { name: "Repo search locations" })
+    await waitFor(() => expect(locations).toHaveFocus())
+    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument()
+  })
+
+  it("queues a follow-up scan when a folder is added during discovery", async () => {
+    let resolveScan!: (status: typeof SCAN_STATUS) => void
+    const pendingScan = new Promise<typeof SCAN_STATUS>((resolve) => {
+      resolveScan = resolve
+    })
+    mockCommands({ scan_now: pendingScan })
+    openDialog.mockResolvedValue("/home/avery/work")
+    render(<OnboardingView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await waitFor(() =>
+      expect(invoke.mock.calls.filter(([command]) => command === "scan_now")).toHaveLength(1),
+    )
+    fireEvent.click(await screen.findByRole("button", { name: /Add a folder/ }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_scan_root", expect.anything()))
+
+    resolveScan(SCAN_STATUS)
+
+    await waitFor(() =>
+      expect(invoke.mock.calls.filter(([command]) => command === "scan_now")).toHaveLength(2),
+    )
+  })
+
+  it("shows a failed scan instead of an empty result and allows a retry", async () => {
+    let attempts = 0
+    mockCommands({
+      scan_now: () => {
+        attempts += 1
+        return attempts === 1 ? FAILED_SCAN_STATUS : SCAN_STATUS
+      },
+    })
+    render(<OnboardingView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Scan did not finish")
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not read ~/.claude/projects.")
+    expect(screen.queryByText("Nothing found yet")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+
+    await waitFor(() => expect(attempts).toBe(2))
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+  })
+
+  it("keeps repository rows after failure and hides retry while scanning", async () => {
+    let attempts = 0
+    let resolveRetry!: (status: typeof SCAN_STATUS) => void
+    const pendingRetry = new Promise<typeof SCAN_STATUS>((resolve) => {
+      resolveRetry = resolve
+    })
+    mockCommands({
+      list_repositories: [REPOSITORY],
+      scan_now: () => {
+        attempts += 1
+        return attempts === 1 ? FAILED_SCAN_STATUS : pendingRetry
+      },
+    })
+    render(<OnboardingView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Scan did not finish")
+    expect(screen.getByText("avery/widgets")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    await waitFor(() => expect(attempts).toBe(2))
+    act(() => {
+      for (const notify of listeners.get("scan:started") ?? []) {
+        notify({ payload: { ...FAILED_SCAN_STATUS, running: true, error: null } })
+      }
+    })
+
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument()
+    expect(screen.getByText("avery/widgets")).toBeInTheDocument()
+
+    resolveRetry(SCAN_STATUS)
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+  })
+
+  it("rescans after a folder is removed", async () => {
+    mockCommands({ list_scan_roots: ["/home/avery/work"] })
+    render(<OnboardingView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await waitFor(() =>
+      expect(invoke.mock.calls.filter(([command]) => command === "scan_now")).toHaveLength(1),
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop scanning /home/avery/work" }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("remove_scan_root", expect.anything()),
+    )
+    await waitFor(() =>
+      expect(invoke.mock.calls.filter(([command]) => command === "scan_now")).toHaveLength(2),
+    )
   })
 
   it("opens the folder picker without holding the popover open", async () => {

@@ -369,7 +369,7 @@ impl Store {
 
     /* Anonymised application events. */
 
-    /// Queue one event for delivery. Callers hold the consent check; this is
+    /// Queue one event for delivery. Callers hold the analytics gate; this is
     /// storage, and a queue that decided policy for itself would be a second
     /// place for the gate to drift out of step with the reader's choice.
     ///
@@ -440,7 +440,7 @@ impl Store {
     }
 
     /// The current installation identifier and when it was minted, if one has
-    /// been created. Absent until the reader's first consented event.
+    /// been created. Absent until the first event after setup.
     pub fn analytics_identity(&self) -> Result<Option<(String, String)>> {
         let connection = self.lock();
         let mut statement = connection
@@ -464,10 +464,9 @@ impl Store {
 
     /// Opting out: the queue and the identity go together, in one transaction.
     ///
-    /// Both halves matter. Leaving the queue would send, on a later opt-in,
-    /// events the reader withdrew consent for; leaving the identity would let
-    /// a later opt-in be joined to the earlier one, which is the whole thing
-    /// the rotation exists to prevent.
+    /// Both halves matter. Leaving the queue would send old events if analytics
+    /// is enabled again. Leaving the identity would join the new period to the
+    /// earlier one, which the rotation exists to prevent.
     pub fn clear_analytics(&self) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
@@ -1521,10 +1520,9 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .map(|value| HiddenMeters::parse(value))
             .unwrap_or(defaults.live_usage_hidden_providers.clone()),
         // No stored answer means this database predates the setting. A fresh
-        // install takes the default and meets the control on the Ready screen;
-        // one that already finished onboarding was told analytics did not
-        // exist, so it stays off until the reader says otherwise. Upgrading
-        // must never start sending on somebody's behalf.
+        // install takes the automatic default. One that already finished setup
+        // was told analytics did not exist, so it stays off until the reader
+        // changes the setting.
         analytics_enabled: stored
             .get("analyticsEnabled")
             .map(|value| value == "true")

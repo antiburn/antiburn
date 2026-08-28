@@ -107,13 +107,9 @@ export interface AppSettings {
    */
   liveUsageHiddenProviders: string[]
   /**
-   * The consented analytics channel.
-   *
-   * On by default for a new install, which meets the control on the first-run
-   * Ready screen before anything can be sent; off for a store that finished
-   * onboarding under copy promising no analytics at all. Nothing is
-   * transmitted until onboarding completes, and no build without an injected
-   * endpoint transmits at all — see `AppInfo.analyticsSupported`.
+   * The analytics channel. On automatically after first-run setup for a new
+   * install. Settings → Privacy provides the opt-out. Nothing is transmitted
+   * before onboarding completes or without an injected endpoint.
    */
   analyticsEnabled: boolean
   /**
@@ -147,7 +143,7 @@ export interface AppInfo {
    */
   updatesSupported: boolean
   /**
-   * Whether this build can send consented analytics at all.
+   * Whether this build can send analytics at all.
    *
    * Same rule as `updatesSupported`, for the same reason: derived shell-side
    * from the build that is actually running, never from a compile-time flag.
@@ -932,21 +928,18 @@ export function noteInteraction(interaction: Interaction): void {
 export async function finishOnboarding(
   activityWindowDays: number,
   launchAtLogin: boolean,
-  analyticsEnabled: boolean,
 ): Promise<AppSettings> {
   if (!hasShell()) {
     return {
       ...DEFAULT_SETTINGS,
       activityWindowDays,
       launchAtLogin,
-      analyticsEnabled,
       onboardingCompleted: true,
     }
   }
   return invoke<AppSettings>("finish_onboarding", {
     activityWindowDays,
     launchAtLogin,
-    analyticsEnabled,
   })
 }
 

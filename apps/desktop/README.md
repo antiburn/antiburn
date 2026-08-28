@@ -11,9 +11,9 @@ your sessions is uploaded. It makes two calls to a service of ours, neither of
 which it depends on: the updater plugin, registered in release builds only,
 asking whether a newer version exists; and the anonymised analytics
 channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
-which reports on the application itself behind a control the reader meets on
-the first-run Ready screen. A build with no endpoint injected — which is every
-build from a clean checkout — sends nothing at all.
+which reports on the application itself after first-run setup completes and can
+be turned off in Settings → Privacy. A build with no endpoint injected — which
+is every build from a clean checkout — sends nothing at all.
 
 ## Layout
 
@@ -88,9 +88,10 @@ notifications, and the updater simulator.
 ## What keeps the app local
 
 The Tauri content security policy limits renderer connections to the local app
-and IPC. The Rust analytics module tests consent, endpoint injection, and the
-payload schema. `cargo-deny` rejects known telemetry dependencies in the local
-engine. Release and dependency checks run through the required CI gate.
+and IPC. The Rust analytics module tests the setup and opt-out gates, endpoint
+injection, and the payload schema. `cargo-deny` rejects known telemetry
+dependencies in the local engine. Release and dependency checks run through
+the required CI gate.
 
 ## Shell behavior
 

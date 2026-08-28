@@ -26,7 +26,7 @@ on your machine. It is not sent anywhere, and this policy has nothing to say
 about it, because there is no processing by anyone but you.
 
 This policy covers one thing only: the anonymised usage events antiburn sends
-when the analytics control is switched on.
+while the analytics setting is on.
 
 For the complete, field-by-field account of what those events contain — and the
 commands you can run to verify it yourself — see
@@ -56,25 +56,16 @@ Neither is derived from your name, your email address, your account with anyone,
 or any hardware or network identifier. antiburn has no account system, so there
 is nothing for these to be joined to on our side.
 
-## Legal basis and consent
+## Legal basis and controls
 
-The control is presented on the first-run **Ready** screen, already switched on,
-before any event is sent. Nothing is transmitted until first-run setup
-completes, so switching it off there means no event ever leaves your machine.
-Settings → Privacy carries the permanent switch.
-
-In the **EU, the EEA, and the UK** the control starts switched **off**: analytics
-there are something you opt into rather than out of. antiburn determines this
-from the locale and time zone your machine already reports. Nothing is looked
-up, and neither the locale nor the time zone is ever transmitted.
+Analytics is enabled automatically when first-run setup completes. The default
+is the same in every locale. Nothing is transmitted before setup completes.
+Settings → Privacy carries the permanent switch and can turn analytics off at
+any time.
 
 An installation that completed first-run setup before this feature existed
 defaults to **off**, because it was set up under copy stating that analytics did
 not exist.
-
-**`[TO BE COMPLETED]`** — The lawful basis relied on outside the EU/EEA/UK, and
-confirmation that the EU/EEA/UK default-off behaviour is the basis relied on
-there. This needs a lawyer's sign-off rather than an engineer's reasoning.
 
 ## Who receives these events
 
@@ -142,7 +133,7 @@ configured and transmits nothing at all, whatever the switch says.
 ## Changes to this policy
 
 **`[TO BE COMPLETED]`** — How readers are notified of a material change, and
-whether a change that widens what is collected re-prompts for consent.
+how a change that widens what is collected affects the analytics control.
 
 ## Contact
 

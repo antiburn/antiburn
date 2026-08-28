@@ -358,26 +358,18 @@ pub fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
-    analytics_enabled: bool,
 ) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved) = store
         .update_settings(|settings| {
             settings.activity_window_days = activity_window_days;
             settings.launch_at_login = launch_at_login;
-            // Written here and nowhere earlier. The draft the Ready screen
-            // holds is the reader's answer *before* anything can be sent —
-            // `analytics::allowed` also requires the flag set on the next
-            // line, so switching analytics off on that screen means no event
-            // is ever recorded, rather than recorded and then withdrawn.
-            settings.analytics_enabled = analytics_enabled;
             settings.onboarding_completed = true;
         })
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
-    // After the transition, so the gate this event reads sees the saved flags.
-    // A reader who declined on the Ready screen records nothing at all. An
-    // explicit restart records a new completion because it is a new setup run.
+    // After the transition, so the gate this event reads sees onboarding as
+    // complete. An explicit restart records a new completion for a new setup.
     crate::analytics::record(
         &app,
         crate::analytics::event::EventName::OnboardingFinished,
@@ -452,11 +444,8 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // transition edge needs to be computed here.
     crate::notifications::maybe_initialize_authorization(app);
 
-    // Consent changing is the queue's business: turning it off withdraws
-    // whatever is already queued rather than merely pausing it, and destroys
-    // the installation identifier so a later opt-in cannot be joined to this
-    // one. Routed through the same hub as every other consequence so the two
-    // can never drift apart.
+    // Turning analytics off clears the queue and the installation identifier.
+    // This transition hub keeps those effects aligned with the saved setting.
     crate::analytics::handle_settings_transition(app, previous, saved);
 
     // Which switch moved, never what it moved to, and only from this closed

@@ -379,8 +379,8 @@ const HOME_NOUN: &str = "system tray";
 pub fn menu_bar_home_message() -> NotificationCopy {
     NotificationCopy::new(
         format!("antiburn is in your {HOME_NOUN}"),
-        "Click it to see your limits and details of your coding sessions.",
-        "antiburn runs in the background after onboarding closes.",
+        "Click here to see coding sessions.",
+        "antiburn runs in the background at all times.",
     )
 }
 
