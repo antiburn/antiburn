@@ -522,6 +522,7 @@ fn install_updater(app: &tauri::AppHandle) {
                 if let Some(state) = app.try_state::<updates::UpdaterState>() {
                     state.note_registered();
                 }
+                ::tracing::info!(event = "updater_registered");
             }
             Err(error) => ::tracing::warn!(
                 event = "updater_registration_failed",

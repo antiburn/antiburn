@@ -557,7 +557,7 @@ pub struct AppSettings {
     pub onboarding_completed: bool,
     /// Whether the packaged app should register itself to start after sign-in.
     pub launch_at_login: bool,
-    /// Whether the updater may check on its own. Read by
+    /// Whether the updater may install and restart on its own. Read by
     /// [`crate::updates::spawn_scheduler`], which is what makes it real.
     pub auto_update: bool,
     /// Whether background discovery and indexing are paused.
@@ -568,7 +568,7 @@ pub struct AppSettings {
     /// The master switch for desktop notifications. Off means nothing is
     /// delivered, whatever the per-kind preferences below say.
     pub notifications_enabled: bool,
-    /// Notify when an automatic update check finds a newer version.
+    /// Notify before an automatic update installs and restarts the app.
     pub notify_update_available: bool,
     /// Notify the first time a scan fails in this run of the app.
     pub notify_scan_failure: bool,

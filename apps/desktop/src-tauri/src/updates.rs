@@ -10,15 +10,14 @@
 //!   configuration. A compile-time `cfg!` would say "yes" in a release build
 //!   whose key was never configured, and every piece of copy downstream would
 //!   inherit that lie.
-//! - **When it speaks on its own.** [`spawn_scheduler`] checks once shortly
-//!   after launch and then every [`CHECK_INTERVAL`], and only while the reader's
-//!   "check automatically" preference is on. It is the thing that makes that
-//!   preference real; without it the switch would be decoration.
+//! - **When it updates on its own.** [`spawn_scheduler`] checks once shortly
+//!   after launch and then every [`CHECK_INTERVAL`]. When automatic updates are
+//!   enabled, it downloads, verifies, installs, and restarts without waiting
+//!   for approval. It defers while the popover is open.
 //! - **What it says afterwards.** Every check — automatic or not — ends in an
 //!   [`EVENT_UPDATE`] event carrying an [`UpdateStatus`], which is what the
-//!   Updates pane renders. Nothing is inferred from silence. An *automatic*
-//!   check that finds a version also asks [`crate::notifications`] to say so
-//!   once, since nobody is watching the pane when the schedule runs.
+//!   Updates pane renders. Nothing is inferred from silence. An automatic
+//!   install also tells the reader that the app will restart.
 //!
 //! Nothing here contacts a server in a development build: the plugin is never
 //! registered there, so [`supported`] is false and the scheduler does nothing.
@@ -59,15 +58,18 @@ use crate::store::Store;
 /// Event the shell emits as the update lifecycle changes.
 pub const EVENT_UPDATE: &str = "update:status";
 
-/// How long after launch the first automatic check runs.
+/// How long after launch the first automatic update check runs.
 ///
 /// Launch is the busiest moment in the app's life — the first scan, the store
 /// migration, the webview boot — and an update check is the least urgent thing
 /// competing for it.
 pub const STARTUP_DELAY: Duration = Duration::from_secs(30);
 
-/// How often the automatic check repeats.
+/// How often the automatic update check repeats.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How soon to retry when the reader has the popover open.
+pub const DEFERRED_RETRY: Duration = Duration::from_secs(30);
 
 /// Fixed version used by the debug-only update simulator.
 pub const SIMULATED_VERSION: &str = "99.0.0";
@@ -242,9 +244,7 @@ pub struct UpdateStatus {
     pub message: Option<String>,
     /// ISO-8601 stamp for this update state.
     pub checked_at: String,
-    /// True when the check ran on the schedule rather than because a reader
-    /// pressed a button — so the pane can say "checked automatically" without
-    /// inventing the distinction.
+    /// True when the shell schedule started this operation.
     pub automatic: bool,
     /// Bytes received for an active or completed download.
     pub downloaded_bytes: Option<u64>,
@@ -286,12 +286,13 @@ impl UpdateStatus {
         version: String,
         downloaded_bytes: u64,
         total_bytes: Option<u64>,
+        automatic: bool,
     ) -> UpdateStatus {
         UpdateStatus {
             version: Some(version),
             downloaded_bytes: Some(downloaded_bytes),
             total_bytes,
-            ..UpdateStatus::new("downloading", false)
+            ..UpdateStatus::new("downloading", automatic)
         }
     }
 
@@ -299,19 +300,20 @@ impl UpdateStatus {
         version: String,
         downloaded_bytes: u64,
         total_bytes: Option<u64>,
+        automatic: bool,
     ) -> UpdateStatus {
         UpdateStatus {
             version: Some(version),
             downloaded_bytes: Some(downloaded_bytes),
             total_bytes,
-            ..UpdateStatus::new("installing", false)
+            ..UpdateStatus::new("installing", automatic)
         }
     }
 
-    fn installed(version: String) -> UpdateStatus {
+    fn installed(version: String, automatic: bool) -> UpdateStatus {
         UpdateStatus {
             version: Some(version),
-            ..UpdateStatus::new("installed", false)
+            ..UpdateStatus::new("installed", automatic)
         }
     }
 
@@ -330,7 +332,7 @@ impl UpdateStatus {
     }
 }
 
-/// Start the automatic check schedule. The returned handle is aborted on exit.
+/// Start the automatic update schedule. The returned handle is aborted on exit.
 ///
 /// The loop runs in every build; what it *does* is decided every pass by
 /// [`supported`] and the reader's preference, so there is no compile-time
@@ -340,25 +342,27 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
         loop {
-            if should_check(&app) {
-                let Some(status) = automatic_check(&app).await else {
-                    tokio::time::sleep(CHECK_INTERVAL).await;
-                    continue;
-                };
-                // The Updates pane learns from the event; someone who is not
-                // looking at antiburn learns from a notification, at most once
-                // per version. A *manual* check is deliberately not notified:
-                // the reader is already looking at the answer.
-                let status = emit_status(&app, status);
-                crate::notifications::note_update_status(&app, &status);
+            if popover_visible(&app) {
+                ::tracing::debug!(event = "auto_update_deferred_popover_visible");
+                tokio::time::sleep(DEFERRED_RETRY).await;
+                continue;
+            }
+            if should_update(&app) {
+                automatic_update(&app).await;
             }
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     })
 }
 
-/// Whether an automatic check should run right now.
-fn should_check(app: &AppHandle) -> bool {
+fn popover_visible(app: &AppHandle) -> bool {
+    app.get_webview_window(crate::popover::LABEL)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
+/// Whether an automatic update should run now.
+fn should_update(app: &AppHandle) -> bool {
     supported(app)
         && auto_update_enabled(app)
         && app
@@ -366,8 +370,9 @@ fn should_check(app: &AppHandle) -> bool {
             .is_some_and(|state| state.installed_version().is_none())
 }
 
-/// The reader's "check automatically" preference, defaulting to *not* checking
-/// when the store cannot be read: a failed read is not consent.
+/// Read the automatic-update preference.
+///
+/// A failed store read does not authorize an installation.
 fn auto_update_enabled(app: &AppHandle) -> bool {
     app.try_state::<Store>()
         .and_then(|store| store.settings().ok())
@@ -383,15 +388,29 @@ pub async fn check(app: &AppHandle, automatic: bool) -> UpdateStatus {
     if !supported(app) {
         return UpdateStatus::new("unsupported", automatic);
     }
+    ::tracing::info!(event = "updater_check_started", automatic);
     check_with_plugin(app, automatic).await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn check_with_plugin(app: &AppHandle, automatic: bool) -> UpdateStatus {
     match find_update(app).await {
-        Ok(Some(update)) => UpdateStatus::available(update.version.clone(), automatic),
-        Ok(None) => UpdateStatus::current(automatic),
-        Err(error) => UpdateStatus::failed(error, automatic, "check", None),
+        Ok(Some(update)) => {
+            ::tracing::info!(
+                event = "updater_update_found",
+                version = %update.version,
+                automatic
+            );
+            UpdateStatus::available(update.version.clone(), automatic)
+        }
+        Ok(None) => {
+            ::tracing::info!(event = "updater_current", automatic);
+            UpdateStatus::current(automatic)
+        }
+        Err(error) => {
+            ::tracing::warn!(event = "updater_check_failed", automatic, error = %error);
+            UpdateStatus::failed(error, automatic, "check", None)
+        }
     }
 }
 
@@ -407,7 +426,7 @@ pub async fn manual_check(app: &AppHandle) -> UpdateStatus {
     };
     let _operation = state.operation.lock().await;
     if let Some(version) = state.installed_version() {
-        let status = UpdateStatus::installed(version);
+        let status = UpdateStatus::installed(version, false);
         return emit_status(app, status);
     }
     let status = check(app, false).await;
@@ -436,7 +455,7 @@ pub async fn start_simulation(app: &AppHandle) -> Result<UpdateStatus, &'static 
     ))
 }
 
-/// Download, verify, and install the version the reader approved.
+/// Download, verify, and install the version the reader selected.
 pub async fn install(app: &AppHandle, expected_version: &str) -> UpdateStatus {
     let Some(state) = app.try_state::<UpdaterState>() else {
         return UpdateStatus::new("unsupported", false);
@@ -449,7 +468,7 @@ pub async fn install(app: &AppHandle, expected_version: &str) -> UpdateStatus {
         return UpdateStatus::new("unsupported", false);
     }
     if let Some(version) = state.installed_version() {
-        let status = UpdateStatus::installed(version);
+        let status = UpdateStatus::installed(version, false);
         return emit_status(app, status);
     }
     install_with_plugin(app, expected_version).await
@@ -486,12 +505,15 @@ async fn install_simulation(
         );
     }
     if phase == SimulationPhase::Installed {
-        return emit_status(app, UpdateStatus::installed(SIMULATED_VERSION.to_string()));
+        return emit_status(
+            app,
+            UpdateStatus::installed(SIMULATED_VERSION.to_string(), false),
+        );
     }
 
     emit_status(
         app,
-        UpdateStatus::downloading(SIMULATED_VERSION.to_string(), 0, None),
+        UpdateStatus::downloading(SIMULATED_VERSION.to_string(), 0, None, false),
     );
     tokio::time::sleep(SIMULATION_STEP_DELAY).await;
     emit_status(
@@ -500,6 +522,7 @@ async fn install_simulation(
             SIMULATED_VERSION.to_string(),
             SIMULATED_TOTAL_BYTES / 2,
             Some(SIMULATED_TOTAL_BYTES),
+            false,
         ),
     );
     tokio::time::sleep(SIMULATION_STEP_DELAY).await;
@@ -524,20 +547,59 @@ async fn install_simulation(
             SIMULATED_VERSION.to_string(),
             SIMULATED_TOTAL_BYTES,
             Some(SIMULATED_TOTAL_BYTES),
+            false,
         ),
     );
     tokio::time::sleep(SIMULATION_STEP_DELAY).await;
-    emit_status(app, UpdateStatus::installed(SIMULATED_VERSION.to_string()))
+    emit_status(
+        app,
+        UpdateStatus::installed(SIMULATED_VERSION.to_string(), false),
+    )
 }
 
-async fn automatic_check(app: &AppHandle) -> Option<UpdateStatus> {
-    let state = app.try_state::<UpdaterState>()?;
-    let _operation = state.operation.try_lock().ok()?;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn automatic_update(app: &AppHandle) {
+    let Some(state) = app.try_state::<UpdaterState>() else {
+        ::tracing::warn!(event = "auto_update_state_unavailable");
+        return;
+    };
+    let Ok(_operation) = state.operation.try_lock() else {
+        ::tracing::debug!(event = "auto_update_skip_busy");
+        return;
+    };
     if state.installed_version().is_some() {
-        return None;
+        return;
     }
-    Some(check(app, true).await)
+
+    ::tracing::info!(event = "updater_check_started", automatic = true);
+    let update = match find_update(app).await {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            ::tracing::info!(event = "updater_current", automatic = true);
+            emit_status(app, UpdateStatus::current(true));
+            return;
+        }
+        Err(error) => {
+            ::tracing::warn!(event = "updater_check_failed", automatic = true, error = %error);
+            emit_status(app, UpdateStatus::failed(error, true, "check", None));
+            return;
+        }
+    };
+
+    let version = update.version.clone();
+    ::tracing::info!(event = "auto_update_found", version = %version);
+    let available = emit_status(app, UpdateStatus::available(version.clone(), true));
+    crate::notifications::note_automatic_update(app, &available);
+
+    let status = download_and_install(app, update, true).await;
+    if status.kind == "installed" {
+        ::tracing::info!(event = "auto_update_installed", version = %version);
+        app.restart();
+    }
 }
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn automatic_update(_app: &AppHandle) {}
 
 fn emit_status(app: &AppHandle, mut status: UpdateStatus) -> UpdateStatus {
     if let Some(state) = app.try_state::<UpdaterState>() {
@@ -579,10 +641,23 @@ async fn install_with_plugin(app: &AppHandle, expected_version: &str) -> UpdateS
         }
     };
 
+    download_and_install(app, update, false).await
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn download_and_install(
+    app: &AppHandle,
+    update: tauri_plugin_updater::Update,
+    automatic: bool,
+) -> UpdateStatus {
     let version = update.version.clone();
+    ::tracing::info!(event = "updater_download_started", version = %version, automatic);
     let downloaded = Arc::new(AtomicU64::new(0));
     let total = Arc::new(AtomicU64::new(u64::MAX));
-    emit_status(app, UpdateStatus::downloading(version.clone(), 0, None));
+    emit_status(
+        app,
+        UpdateStatus::downloading(version.clone(), 0, None, automatic),
+    );
 
     let progress_downloaded = Arc::clone(&downloaded);
     let progress_total = Arc::clone(&total);
@@ -611,6 +686,7 @@ async fn install_with_plugin(app: &AppHandle, expected_version: &str) -> UpdateS
                             progress_version.clone(),
                             current,
                             content_length,
+                            automatic,
                         ),
                     );
                 }
@@ -627,9 +703,14 @@ async fn install_with_plugin(app: &AppHandle, expected_version: &str) -> UpdateS
                 let status = UpdateStatus::failed(
                     "The update download stopped making progress. Check your connection and try again."
                         .to_string(),
-                    false,
+                    automatic,
                     "install",
                     Some(version.clone()),
+                );
+                ::tracing::warn!(
+                    event = "updater_download_stalled",
+                    version = %version,
+                    automatic
                 );
                 return emit_status(app, status);
             };
@@ -640,9 +721,15 @@ async fn install_with_plugin(app: &AppHandle, expected_version: &str) -> UpdateS
                     Err(error) => {
                         let status = UpdateStatus::failed(
                             error.to_string(),
-                            false,
+                            automatic,
                             "install",
                             Some(version.clone()),
+                        );
+                        ::tracing::warn!(
+                            event = "updater_download_failed",
+                            version = %version,
+                            automatic,
+                            error = %error
                         );
                         return emit_status(app, status);
                     }
@@ -659,16 +746,26 @@ async fn install_with_plugin(app: &AppHandle, expected_version: &str) -> UpdateS
     };
     emit_status(
         app,
-        UpdateStatus::installing(version.clone(), downloaded_bytes, total_bytes),
+        UpdateStatus::installing(version.clone(), downloaded_bytes, total_bytes, automatic),
     );
+    ::tracing::info!(event = "updater_install_started", version = %version, automatic);
     let status = match update.install(bytes) {
         Ok(()) => {
             if let Some(state) = app.try_state::<UpdaterState>() {
                 state.note_installed(&version);
             }
-            UpdateStatus::installed(version)
+            ::tracing::info!(event = "updater_install_succeeded", version = %version, automatic);
+            UpdateStatus::installed(version, automatic)
         }
-        Err(error) => UpdateStatus::failed(error.to_string(), false, "install", Some(version)),
+        Err(error) => {
+            ::tracing::warn!(
+                event = "updater_install_failed",
+                version = %version,
+                automatic,
+                error = %error
+            );
+            UpdateStatus::failed(error.to_string(), automatic, "install", Some(version))
+        }
     };
     emit_status(app, status)
 }
@@ -746,21 +843,30 @@ mod tests {
         assert_eq!(current["kind"], "current");
         assert!(current["version"].is_null());
 
-        let downloading =
-            serde_json::to_value(UpdateStatus::downloading("0.2.0".into(), 512, Some(1_024)))
-                .unwrap();
+        let downloading = serde_json::to_value(UpdateStatus::downloading(
+            "0.2.0".into(),
+            512,
+            Some(1_024),
+            true,
+        ))
+        .unwrap();
         assert_eq!(downloading["kind"], "downloading");
         assert_eq!(downloading["downloadedBytes"], 512);
         assert_eq!(downloading["totalBytes"], 1_024);
+        assert_eq!(downloading["automatic"], true);
 
         let installing =
-            serde_json::to_value(UpdateStatus::installing("0.2.0".into(), 1_024, None)).unwrap();
+            serde_json::to_value(UpdateStatus::installing("0.2.0".into(), 1_024, None, true))
+                .unwrap();
         assert_eq!(installing["kind"], "installing");
         assert!(installing["totalBytes"].is_null());
+        assert_eq!(installing["automatic"], true);
 
-        let installed = serde_json::to_value(UpdateStatus::installed("0.2.0".into())).unwrap();
+        let installed =
+            serde_json::to_value(UpdateStatus::installed("0.2.0".into(), true)).unwrap();
         assert_eq!(installed["kind"], "installed");
         assert_eq!(installed["version"], "0.2.0");
+        assert_eq!(installed["automatic"], true);
     }
 
     #[test]
@@ -840,9 +946,9 @@ mod tests {
 
     #[test]
     fn the_schedule_is_the_one_the_updates_pane_describes() {
-        // The pane tells the reader an automatic check happens a moment after
-        // launch and then every few hours; these are those numbers.
+        // The pane tells the reader when automatic updates run.
         assert_eq!(STARTUP_DELAY, Duration::from_secs(30));
         assert_eq!(CHECK_INTERVAL, Duration::from_secs(21_600));
+        assert_eq!(DEFERRED_RETRY, Duration::from_secs(30));
     }
 }

@@ -5,11 +5,10 @@
 //! choose to look at. That makes it the surface where restraint matters most,
 //! so the whole policy is here rather than spread across the callers:
 //!
-//! - **Every kind is enumerated here.** A newer version, a failed scan, low
-//!   disk space, a crossed usage milestone, where the app went when the first
-//!   run finished, and the settings pane's own test. Each is
-//!   something a reader would act on (or, for the test, explicitly asked for);
-//!   none is a progress report. Nothing else in the app posts a notification.
+//! - **Every kind is enumerated here.** An automatic update, a failed scan,
+//!   low disk space, a crossed usage milestone, where the app went after setup,
+//!   and the settings pane's own test. Each is information the reader needs.
+//!   Nothing else in the app posts a notification.
 //! - **Every kind is gated twice** — once by the master preference and once by
 //!   its own ([`allowed`]). All default on, because a notification surface
 //!   that has to be discovered before it says anything is a surface nobody
@@ -60,7 +59,7 @@ pub(crate) const NOTIFICATION_SETTINGS_ACTION_ID: &str = "notification_settings"
 /// Something antiburn is willing to interrupt a reader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// An update check found a newer version.
+    /// An automatic update found a newer version and will restart the app.
     UpdateAvailable,
     /// A scan pass ended in an error.
     ScanFailure,
@@ -171,9 +170,8 @@ impl NotificationState {
 
     /// Claim the right to report `version`, once per version.
     ///
-    /// The automatic check repeats every six hours and keeps finding the same
-    /// release until it is installed. Keying on the version rather than on a
-    /// flag means a *newer* release is still announced.
+    /// A failed automatic install can find the same release again. Keying on
+    /// the version prevents repeated notices during one run.
     pub fn claim_update(&self, version: &str) -> bool {
         let mut reported = self
             .update_version_reported
@@ -269,6 +267,15 @@ pub fn update_message(version: &str) -> NotificationCopy {
         "antiburn update released",
         format!("New version {version} is available."),
         "Select Install to download, verify, and install it. Open About to follow progress.",
+    )
+}
+
+/// Tell the reader that an automatic update will restart the app.
+pub fn automatic_update_message(version: &str) -> NotificationCopy {
+    NotificationCopy::new(
+        "antiburn is updating",
+        format!("Installing version {version}."),
+        "antiburn will restart when the signed update is ready.",
     )
 }
 
@@ -416,12 +423,8 @@ pub fn note_scan_outcome(app: &AppHandle, status: &ScanStatus) {
     );
 }
 
-/// Report the outcome of an update check, if it found a version worth naming.
-///
-/// Only the shell's own schedule reaches here (see [`crate::updates`]): a
-/// reader who pressed "Check for updates" is already looking at the answer, and
-/// notifying them about it would be telling them what they can see.
-pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
+/// Report that the automatic updater will install and restart the app.
+pub fn note_automatic_update(app: &AppHandle, status: &UpdateStatus) {
     if status.kind != "available" {
         return;
     }
@@ -441,8 +444,8 @@ pub fn note_update_status(app: &AppHandle, status: &UpdateStatus) {
         app,
         Kind::UpdateAvailable,
         Delivery::Automated,
-        update_message(version),
-        Some(("install", "Install", Some(update_target(version)))),
+        automatic_update_message(version),
+        None,
         None,
     );
 }
@@ -636,6 +639,14 @@ mod tests {
         assert!(copy.subtitle.contains("0.2.0"));
         assert!(copy.description.contains("Select Install"));
         assert!(copy.description.contains("Open About"));
+    }
+
+    #[test]
+    fn automatic_update_copy_explains_the_restart() {
+        let copy = automatic_update_message("0.2.0");
+        assert!(copy.subtitle.contains("0.2.0"));
+        assert!(copy.description.contains("restart"));
+        assert!(copy.description.contains("signed update"));
     }
 
     #[test]

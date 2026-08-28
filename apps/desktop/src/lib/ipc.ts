@@ -51,7 +51,7 @@ export interface AppSettings {
   onboardingCompleted: boolean
   /** Recorded; applied by the platform at next launch. */
   launchAtLogin: boolean
-  /** Whether the shell may check the release feed on its own schedule. */
+  /** Whether the shell may install and restart for updates on its schedule. */
   autoUpdate: boolean
   /**
    * Whether background discovery and indexing are paused.
@@ -65,7 +65,7 @@ export interface AppSettings {
    * delivered, whatever the per-kind preferences say.
    */
   notificationsEnabled: boolean
-  /** Notify when an automatic update check finds a newer version. */
+  /** Notify before an automatic update installs and restarts the app. */
   notifyUpdateAvailable: boolean
   /** Notify the first time a scan fails in this run of the app. */
   notifyScanFailure: boolean
@@ -549,7 +549,7 @@ export interface UpdateStatusPayload {
   version: string | null
   message: string | null
   checkedAt: string
-  /** True when the shell's own schedule ran the check rather than a reader. */
+  /** True when the shell schedule started this operation. */
   automatic: boolean
   downloadedBytes: number | null
   totalBytes: number | null
@@ -1499,9 +1499,8 @@ export const UPDATE_EVENT = "update:status"
  * Subscribe to checks, download progress, installation, and failures. The
  * returned function unsubscribes.
  *
- * This is what makes the "check automatically" preference visible: the shell
- * does the checking, and the Updates pane reflects what it found rather than
- * inferring anything from silence.
+ * This makes automatic updates visible. The shell owns the operation, and the
+ * Updates pane reports its state instead of inferring from silence.
  */
 export async function onUpdateStatus(
   handler: (status: UpdateStatusPayload) => void,

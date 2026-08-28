@@ -304,7 +304,7 @@ describe("SettingsView", () => {
 
     // Not a disabled switch over a preference nothing reads — no switch.
     expect(
-      screen.queryByRole("switch", { name: "Check for updates automatically" }),
+      screen.queryByRole("switch", { name: "Install updates automatically" }),
     ).not.toBeInTheDocument()
     expect(screen.getByText(/never contacts the release feed/i)).toBeInTheDocument()
   })
@@ -361,16 +361,17 @@ describe("SettingsView", () => {
     expect(await screen.findByText("Up to date")).toBeInTheDocument()
   })
 
-  it("offers the automatic-check preference, and persists it, when updates work", async () => {
+  it("offers the automatic-install preference, and persists it, when updates work", async () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } })
     render(<SettingsView />)
 
     fireEvent.click(screen.getByRole("tab", { name: "About" }))
     const toggle = await screen.findByRole("switch", {
-      name: "Check for updates automatically",
+      name: "Install updates automatically",
     })
-    // The copy describes the schedule the shell actually runs.
+    // The copy describes the complete scheduled update path.
     expect(screen.getByText(/every six hours/i)).toBeInTheDocument()
+    expect(screen.getByText(/downloads, verifies, installs, and restarts/i)).toBeInTheDocument()
 
     fireEvent.click(toggle)
     await waitFor(() =>
@@ -380,12 +381,12 @@ describe("SettingsView", () => {
     )
   })
 
-  it("reflects what an automatic check found", async () => {
+  it("reflects what an automatic update found", async () => {
     mockCommands({ app_info: { ...INFO, updatesSupported: true } })
     render(<SettingsView />)
 
     fireEvent.click(screen.getByRole("tab", { name: "About" }))
-    await screen.findByRole("switch", { name: "Check for updates automatically" })
+    await screen.findByRole("switch", { name: "Install updates automatically" })
 
     emit(
       "update:status",
@@ -396,8 +397,7 @@ describe("SettingsView", () => {
     )
 
     expect(await screen.findByText("Version 0.2.0 is available")).toBeInTheDocument()
-    // The switch says when the schedule last ran, so "automatic" is an
-    // observable fact rather than an assurance.
+    // The switch says when the scheduled update path last ran.
     expect(screen.getByText(/last checked/i)).toBeInTheDocument()
   })
 

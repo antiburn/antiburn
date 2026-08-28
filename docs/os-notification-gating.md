@@ -35,7 +35,7 @@ So the two rules the whole design serves:
 
 ## Who is gated
 
-Automated kinds — update available, scan failure, low disk space, usage
+Automated kinds — automatic update, scan failure, low disk space, usage
 milestone — ask the gate. Preview kinds bypass it for the same reason they
 bypass the master notification switch: they are the direct result of a button
 the reader pressed a moment earlier. That is the settings pane's test
@@ -51,8 +51,8 @@ Consequences of drop semantics, per kind:
   milestone step notifies as usual.
 - **Scan failure** — the once-per-run claim stays spent; the next run of the
   app reports again if scans still fail.
-- **Update available** — the once-per-version claim stays spent; a *newer*
-  version still notifies.
+- **Automatic update** — the once-per-version claim stays spent. The update still
+  installs and restarts antiburn when the notification is suppressed.
 
 ## Platform matrix
 
