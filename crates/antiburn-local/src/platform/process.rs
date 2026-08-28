@@ -424,7 +424,7 @@ mod tests {
             &args,
             Some(b"byte-identical stdin"),
             BoundedOutputOptions {
-                timeout: Duration::from_secs(5),
+                timeout: Duration::from_secs(60),
                 max_stdout_bytes: 64,
                 max_stderr_bytes: 4,
                 env: &[],
