@@ -1,0 +1,8 @@
+{"timestamp":"2026-08-07T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-lookbehind","timestamp":"2026-08-07T10:00:00Z","thread_source":"subagent","agent_path":"worker","source":"cli"}}
+{"timestamp":"2026-08-07T10:00:01Z","type":"turn_context","payload":{"model":"gpt-parent","effort":"high"}}
+{"timestamp":"2026-08-07T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":800,"cached_input_tokens":600,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":860},"total_token_usage":{"input_tokens":800,"cached_input_tokens":600,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":860},"model_context_window":200000}}}
+{"timestamp":"2026-08-07T10:00:03Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Use the synthetic child instructions."}]}}
+{"timestamp":"2026-08-07T10:00:04Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-08-07T10:00:05Z","type":"response_item","payload":{"type":"agent_message","author":"parent","recipient":"worker","content":[{"type":"input_text","text":"Handle the synthetic child task."}]}}
+{"timestamp":"2026-08-07T10:00:06Z","type":"turn_context","payload":{"model":"gpt-child","effort":"medium"}}
+{"timestamp":"2026-08-07T10:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":320,"cached_input_tokens":120,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":355},"total_token_usage":{"input_tokens":320,"cached_input_tokens":120,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":355},"model_context_window":100000}}}

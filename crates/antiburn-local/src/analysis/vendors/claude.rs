@@ -68,6 +68,17 @@ impl VendorAdapter for ClaudeAdapter {
         })()
         .with_context(|| format!("reading claude session {}", input.session_id))
     }
+
+    fn visit_claimed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        guarantee: AppendOnlyGuarantee,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        ClaudeAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+    }
 }
 
 impl ClaudeAdapter {
@@ -296,6 +307,8 @@ impl ClaudeStreamState {
             cache_write_tokens_available: true,
             context_window: self.context_window,
             model,
+            started_at_ms: None,
+            coverage_gaps: Vec::new(),
             late_tools,
             initial_context,
             skill_descriptions,

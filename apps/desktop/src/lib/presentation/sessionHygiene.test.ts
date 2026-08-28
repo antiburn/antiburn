@@ -23,10 +23,10 @@ const PAYLOAD: SessionHygienePayload = {
 describe("sessionHygieneChecks", () => {
   it("maps every engine identifier to reader copy in a stable order", () => {
     expect(sessionHygieneChecks(PAYLOAD).map(({ id, title }) => ({ id, title }))).toEqual([
-      { id: "reasoningOverkill", title: "Reasoning overkill detected" },
+      { id: "reasoningOverkill", title: "Reasoning overkill" },
       {
         id: "excessCacheRehydration",
-        title: "No excess cache rehydration detected",
+        title: "No excess cache rehydration",
       },
       {
         id: "bloatedInitialContext",

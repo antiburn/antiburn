@@ -192,7 +192,7 @@ describe("SessionList — rows", () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText("1 of 3 assessed checks failed").textContent).toBe(
-        "2/3 checks pass",
+        "2/3 burn checks",
       )
     })
     expect(getSessionHygiene).toHaveBeenCalledWith([

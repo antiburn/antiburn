@@ -26,20 +26,20 @@ interface HygieneCheckDefinition {
 const CHECKS: readonly HygieneCheckDefinition[] = [
   {
     id: "reasoningOverkill",
-    cleanTitle: "No reasoning overkill detected",
-    findingTitle: "Reasoning overkill detected",
+    cleanTitle: "No reasoning overkill",
+    findingTitle: "Reasoning overkill",
     notAssessedTitle: "Reasoning overkill not assessed",
   },
   {
     id: "excessCacheRehydration",
-    cleanTitle: "No excess cache rehydration detected",
-    findingTitle: "Excess cache rehydration detected",
+    cleanTitle: "No excess cache rehydration",
+    findingTitle: "Excess cache rehydration",
     notAssessedTitle: "Excess cache rehydration not assessed",
   },
   {
     id: "bloatedInitialContext",
-    cleanTitle: "No bloated initial context detected",
-    findingTitle: "Bloated initial context detected",
+    cleanTitle: "No bloated initial context",
+    findingTitle: "Bloated initial context",
     notAssessedTitle: "Bloated initial context not assessed",
   },
 ]

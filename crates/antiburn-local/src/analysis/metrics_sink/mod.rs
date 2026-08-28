@@ -94,6 +94,7 @@ struct StoredSummary {
     cache_write_tokens_available: bool,
     context_window: Option<u64>,
     model: Option<String>,
+    started_at_ms: Option<i64>,
     initial_context: Option<InitialContextBreakdown>,
     skill_descriptions: Vec<(String, String)>,
 }
@@ -203,6 +204,13 @@ impl SessionMetricsAccumulator {
 
     pub fn earliest_ts_ms(&self) -> Option<i64> {
         self.active.earliest_ts_ms()
+    }
+
+    pub fn started_at_ms(&self) -> Option<i64> {
+        self.summary
+            .as_ref()
+            .and_then(|summary| summary.started_at_ms)
+            .or_else(|| self.earliest_ts_ms())
     }
 
     pub fn observed_turns(&self) -> usize {
@@ -783,6 +791,7 @@ impl SessionMetricsAccumulator {
             cache_write_tokens_available: summary.cache_write_tokens_available,
             context_window: summary.context_window,
             model: summary.model.map(|model| tally::truncate_name(&model)),
+            started_at_ms: summary.started_at_ms,
             initial_context: summary.initial_context.map(|breakdown| {
                 bound_initial_context(
                     breakdown,

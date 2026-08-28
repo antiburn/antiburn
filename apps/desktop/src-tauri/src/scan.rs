@@ -1791,8 +1791,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(located.lock().unwrap().as_slice(), ["direct"]);
-        assert_eq!(analyzed.lock().unwrap().as_slice(), ["direct"]);
+        assert!(located.lock().unwrap().is_empty());
+        assert!(analyzed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
