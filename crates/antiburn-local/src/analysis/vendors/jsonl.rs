@@ -321,6 +321,7 @@ pub(super) fn is_recognized_eventless(value: &Value) -> bool {
                 | "ai-title"
                 | "custom-title"
                 | "bridge-session"
+                | "artifact-comment-monitor"
                 | "queue-operation"
                 | "file-history-delta"
                 | "pr-link"
