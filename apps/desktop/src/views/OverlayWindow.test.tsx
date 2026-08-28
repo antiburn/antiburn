@@ -34,7 +34,7 @@ vi.mock("../lib/ipc", async () => {
   }
 })
 
-const invoke = vi.hoisted(() => vi.fn(async () => {}))
+const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
 const hover = vi.hoisted(() => ({ emit: null as ((next: boolean) => void) | null }))
@@ -361,6 +361,36 @@ describe("OverlayWindow", () => {
     fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
     await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(2))
     fireEvent.mouseUp(window)
+  })
+
+  it("remembers where a settled drag left the HUD", async () => {
+    const { container } = render(<OverlayWindow />)
+    fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+    await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
+    fireEvent.mouseUp(window)
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("record_hud_position"))
+    const records = invoke.mock.calls.filter(([command]) => command === "record_hud_position")
+    expect(records).toHaveLength(1)
+  })
+
+  it("does not remember a position when no drag was running", async () => {
+    render(<OverlayWindow />)
+    fireEvent.mouseUp(window)
+    await act(async () => {})
+    expect(invoke).not.toHaveBeenCalledWith("record_hud_position")
+  })
+
+  it("survives a rejected position record", async () => {
+    invoke.mockRejectedValueOnce(new Error("no window"))
+    const { container } = render(<OverlayWindow />)
+    fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+    await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
+    fireEvent.mouseUp(window)
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("record_hud_position"))
+    fireEvent.mouseEnter(frame(container))
+    expect(frame(container)).toBeInTheDocument()
   })
 
   it("cleans up drag listeners when native setup rejects", async () => {

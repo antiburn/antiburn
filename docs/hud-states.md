@@ -74,8 +74,8 @@ The detail window names which empty it is:
 
 | Condition                                   | Detail window text              |
 | ------------------------------------------- | ------------------------------- |
-| The reader turned off every meter            | `No meter selected.`            |
-| A meter is on, but no provider reported yet  | `No usage limits detected yet.` |
+| The reader turned off every meter           | `No meter selected.`            |
+| A meter is on, but no provider reported yet | `No usage limits detected yet.` |
 
 The two are different facts. The first is a choice the reader made in
 Settings → Usage → Show Meter. The second is an absence of data. The HUD must
@@ -121,6 +121,32 @@ rendered bar panel, up to a 500px safety ceiling. The default position is
 centered under the primary macOS menu bar, with a 24px menu-bar allowance and an
 8px gap. Reopening a live window keeps the reader's position and measured
 height.
+
+### Remembered position
+
+The HUD returns to where the reader put it, on the display they put it on.
+
+Each drag stores an entry under the `internal:hudPlacements` scalar: the
+display's identity, and the position as a logical offset from that display's own
+top-left corner. The offset is relative because a new arrangement moves the
+display itself in the shared desktop space. A display's identity is its name,
+size, and scale factor; two identical monitors of one model make the same
+identity.
+
+The list is ordered by recency, holds 8 displays, and the head is the preferred
+display. Placement takes the first entry whose display is connected, and clamps
+the offset inside that display. Nothing remembered and connected means the
+default position above.
+
+**Only a drag reorders the list.** A display that disconnects makes the HUD fall
+back to the next remembered display that is connected, and that fallback writes
+nothing. So the preferred display stays at the head, and reconnecting it takes
+the HUD back.
+
+A 2-second poll compares the connected displays and replaces the HUD when the
+set changes. The poll returns at once while the HUD is closed. The same
+resolution runs when the HUD is built and when it reopens, so a display change
+during an off period is also caught.
 
 The renderer measures the panel before the native window first appears.
 Turning the HUD off cancels that pending reveal, even if the measurement arrives
