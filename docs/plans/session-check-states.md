@@ -9,8 +9,9 @@ Branch: `claude/ui-test-state-handling-10db01` · Status: implemented, awaiting 
 | Investigate why counts vary and why checks are not assessed | Done |
 | Agree the copy rules below | Done (discuss 2026-08-28: ellipsis on transient states; fraction stays) |
 | Implement + tests | Done — 902/902 desktop tests pass |
-| Keith manual test + screenshot | In progress (dev app running from this worktree) |
-| Commit + PR | Pending |
+| Keith manual test + screenshot | Waiting on Keith — needed before the PR opens |
+| Commit + push | Done — 3 commits on `claude/ui-test-state-handling-10db01` |
+| Draft PR | Blocked on the screenshot |
 
 ## Found during manual test (2026-08-28)
 
@@ -18,12 +19,20 @@ Branch: `claude/ui-test-state-handling-10db01` · Status: implemented, awaiting 
   concrete phrases ("couldn't read the whole session log", "this agent's logs
   don't record what this check needs").
 - Root cause found for many "not assessed" rows: current Claude Code writes
-  `custom-title` and `bridge-session` housekeeping records that the parser
-  did not recognize, which marked whole transcripts partially read. Added both
-  to the recognized-eventless list in
-  [jsonl.rs](../../crates/antiburn-local/src/analysis/vendors/jsonl.rs) and
-  bumped `PARSER_REVISION` to 4 so stored verdicts recompute. Engine 962/962
-  and shell 566/566 tests pass.
+  `custom-title`, `bridge-session`, and `artifact-comment-monitor` housekeeping
+  records that the parser did not recognize, which marked whole transcripts
+  partially read. Added all three to the recognized-eventless list in
+  [jsonl.rs](../../crates/antiburn-local/src/analysis/vendors/jsonl.rs),
+  extended the housekeeping characterization fixture to cover them, and bumped
+  `PARSER_REVISION` to 5 so stored verdicts recompute. Engine 962/962 and shell
+  566/566 tests pass.
+- Scale of that bug, measured on this machine: 289 of the 302 Claude Code
+  transcripts inside the 14-day discovery window (95%) hold at least one of the
+  three record types, so 95% of recent sessions could never report a clean
+  check.
+- Separate bug found, not fixed here: discovery treats `.json` sidecar files
+  under `claude-code-sessions/` as sessions. `scheduled-tasks.json` and a
+  `local_*.json` both appear in `session_evidence`.
 
 ## What the screenshot actually shows (answers first)
 
