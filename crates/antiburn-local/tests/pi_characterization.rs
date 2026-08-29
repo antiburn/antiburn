@@ -890,9 +890,13 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
         complete_badges.map(|badge| badge.status),
         [
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            BadgeStatus::Clean,
+            // The fixture's assistant turns carry no effort value, so
+            // zero eligible turns means the effort signal is missing.
+            BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            BadgeStatus::Clean,
+            // The production catalog default carries no curated
+            // deprecated models, so the rule can never prove absence.
+            BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
         ]
@@ -905,9 +909,13 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
         partial_badges.map(|badge| badge.status),
         [
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            // The fixture's assistant turns carry no effort value, so
+            // zero eligible turns means the effort signal is missing.
+            BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            // The production catalog default carries no curated
+            // deprecated models, so the rule can never prove absence.
+            BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
         ]

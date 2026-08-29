@@ -23,6 +23,8 @@ export interface SessionHygieneCheck {
 
 interface HygieneCheckDefinition {
   id: SessionHygieneBadgeId
+  /** The check name alone, with no verdict. Feeds `SessionHygieneCheck.name`. */
+  name: string
   cleanTitle: string
   findingTitle: string
   notAssessedTitle: string
@@ -31,36 +33,45 @@ interface HygieneCheckDefinition {
 const CHECKS: readonly HygieneCheckDefinition[] = [
   {
     id: "sessionOverdepth",
+    name: "Session overdepth",
     cleanTitle: "No session overdepth detected",
     findingTitle: "Session overdepth detected",
     notAssessedTitle: "Session overdepth not assessed",
   },
   {
     id: "modelOverthinking",
+    name: "Model overthinking",
     cleanTitle: "No model overthinking detected",
     findingTitle: "Model overthinking detected",
     notAssessedTitle: "Model overthinking not assessed",
   },
   {
     id: "overpoweredSubagents",
+    name: "Overpowered subagents",
     cleanTitle: "No overpowered subagents detected",
     findingTitle: "Overpowered subagents detected",
     notAssessedTitle: "Overpowered subagents not assessed",
   },
   {
     id: "obsoleteModel",
+    name: "Obsolete model",
     cleanTitle: "No obsolete model detected",
     findingTitle: "Obsolete model detected",
     notAssessedTitle: "Obsolete model not assessed",
   },
   {
     id: "fastModeOveruse",
+    name: "Fast-mode overuse",
     cleanTitle: "No fast mode overuse detected",
     findingTitle: "Fast mode overuse detected",
     notAssessedTitle: "Fast mode overuse not assessed",
   },
   {
     id: "excessCacheRehydration",
+    // This name diverges from the title wording on purpose. "Excess cache
+    // rehydration" names the mechanism; "Excess context reprocessing"
+    // names the check in reader terms.
+    name: "Excess context reprocessing",
     cleanTitle: "No excess cache rehydration detected",
     findingTitle: "Excess cache rehydration detected",
     notAssessedTitle: "Excess cache rehydration not assessed",
@@ -89,7 +100,7 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       return {
         ...badge,
         title: definition.findingTitle,
-        name: definition.findingTitle,
+        name: definition.name,
         ink: "system-red-text" as const,
       }
     }
@@ -97,14 +108,14 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       return {
         ...badge,
         title: definition.cleanTitle,
-        name: definition.findingTitle,
+        name: definition.name,
         ink: "system-green" as const,
       }
     }
     return {
       ...badge,
       title: definition.notAssessedTitle,
-      name: definition.findingTitle,
+      name: definition.name,
       ink: "label-tertiary" as const,
     }
   })
@@ -153,6 +164,8 @@ export function notAssessedReasonLabel(reason: InsightsNotAssessedReason): strin
       return "couldn't read the whole session log"
     case "evidenceContractIncomplete":
       return "the log is missing data this check needs"
+    case "signalMissing":
+      return "this session did not record the setting this check needs"
     case "noSessionsInWindow":
       return "no sessions in the window"
   }

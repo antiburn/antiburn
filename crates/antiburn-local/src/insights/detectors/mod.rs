@@ -48,6 +48,9 @@ pub enum NotAssessedReason {
     /// The evidence schema does not yet carry the payload the rule
     /// needs, so neither a finding nor clean is expressible.
     EvidenceContractIncomplete,
+    /// The source supports the signal, but too few turns in this
+    /// session carried it to trust an absence conclusion.
+    SignalMissing,
 }
 
 /// Bounded finding summary for one detector.
@@ -67,6 +70,9 @@ pub(crate) enum Observation {
     NoFinding,
     /// The evidence contract cannot express the fact the rule needs.
     ContractIncomplete,
+    /// The source supports the signal, but too few turns in this
+    /// session carried it to trust an absence conclusion.
+    SignalMissing,
 }
 
 /// Bounded per-detector fold state across the assessed cohort.
@@ -75,6 +81,7 @@ pub(crate) struct DetectorFold {
     pub finding_sessions: u64,
     pub examples: Vec<SessionExample>,
     pub contract_incomplete: u64,
+    pub signal_missing: u64,
 }
 
 impl DetectorFold {
@@ -91,6 +98,7 @@ impl DetectorFold {
             }
             Observation::NoFinding => {}
             Observation::ContractIncomplete => self.contract_incomplete += 1,
+            Observation::SignalMissing => self.signal_missing += 1,
         }
     }
 }
@@ -126,7 +134,7 @@ pub struct ReportCatalogs {
 impl Default for ReportCatalogs {
     fn default() -> Self {
         Self {
-            revision: 2,
+            revision: 3,
             depth_cap_tokens: 160_000,
             effort_tiers_above_cap: ["max", "ultrathink", "xhigh"]
                 .into_iter()
@@ -215,6 +223,9 @@ pub(crate) fn status(
     if fold.contract_incomplete > 0 {
         return DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete);
     }
+    if fold.signal_missing > 0 {
+        return DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing);
+    }
     if counts.assessed == counts.eligible {
         return DetectorStatus::Clean;
     }
@@ -272,6 +283,7 @@ mod tests {
             finding_sessions: 2,
             examples: Vec::new(),
             contract_incomplete: 1,
+            signal_missing: 0,
         };
 
         assert!(matches!(
@@ -315,11 +327,27 @@ mod tests {
             finding_sessions: 0,
             examples: Vec::new(),
             contract_incomplete: 1,
+            signal_missing: 0,
         };
 
         assert_eq!(
             status(counts(2, 2), fold, 2),
             DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
+        );
+    }
+
+    #[test]
+    fn signal_missing_sessions_prevent_clean() {
+        let fold = DetectorFold {
+            finding_sessions: 0,
+            examples: Vec::new(),
+            contract_incomplete: 0,
+            signal_missing: 1,
+        };
+
+        assert_eq!(
+            status(counts(2, 2), fold, 2),
+            DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
         );
     }
 

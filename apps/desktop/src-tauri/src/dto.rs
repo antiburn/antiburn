@@ -621,6 +621,7 @@ fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
         NotAssessedReason::CapabilityMissing => "capabilityMissing",
         NotAssessedReason::IncompleteEvidence => "incompleteEvidence",
         NotAssessedReason::EvidenceContractIncomplete => "evidenceContractIncomplete",
+        NotAssessedReason::SignalMissing => "signalMissing",
     }
 }
 

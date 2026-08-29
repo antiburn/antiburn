@@ -14,12 +14,17 @@
 //!   contract gap: the rule cannot place the usage relative to the
 //!   replacement's availability, so the session never supports clean.
 //!   An observed finding elsewhere in the session still wins.
+//! - An empty replacement catalog reports the contract gap. No entry
+//!   in the catalog can prove that no deprecated model ran.
 
 use crate::analysis::SessionEvidence;
 
 use super::{Observation, ReportCatalogs, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> Observation {
+    if catalogs.model_replacements.is_empty() {
+        return Observation::ContractIncomplete;
+    }
     let mut missing_timestamp = false;
     if let Some(models) = observed(&evidence.models) {
         for (model, tokens) in &models.by_model {
@@ -158,5 +163,18 @@ mod tests {
         insert_model(&mut evidence, "old-model-3", 200);
 
         assert_eq!(evaluate(&evidence, &catalogs()), Observation::Finding);
+    }
+
+    #[test]
+    fn an_empty_replacement_registry_reports_the_contract_gap() {
+        // Production ships with an empty catalog. An empty catalog can
+        // never prove absence of deprecated-model usage, so the rule
+        // must not read as no-finding.
+        let evidence = with_model("any-model", 200, false);
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::ContractIncomplete
+        );
     }
 }

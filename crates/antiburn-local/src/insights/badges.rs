@@ -84,6 +84,7 @@ fn badge_status(
         Observation::ContractIncomplete => {
             BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
         }
+        Observation::SignalMissing => BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
         Observation::NoFinding => {
             let groups_complete = required
                 .groups
@@ -252,16 +253,41 @@ mod tests {
         }
     }
 
+    /// Three badges never carry the generic zero-turn expectation:
+    /// Obsolete Model reports the empty-catalog contract gap, and
+    /// Model Overthinking / Fast Mode Overuse report a missing signal,
+    /// because the synthetic evidence carries zero eligible turns.
+    fn zero_turn_override(id: BadgeId) -> Option<BadgeStatus> {
+        match id {
+            BadgeId::ObsoleteModel => Some(BadgeStatus::NotAssessed(
+                NotAssessedReason::EvidenceContractIncomplete,
+            )),
+            BadgeId::ModelOverthinking | BadgeId::FastModeOveruse => {
+                Some(BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing))
+            }
+            _ => None,
+        }
+    }
+
+    fn zero_turn_override_detector(id: BadgeId) -> Option<DetectorStatus> {
+        match zero_turn_override(id)? {
+            BadgeStatus::NotAssessed(reason) => Some(DetectorStatus::NotAssessed(reason)),
+            BadgeStatus::Clean => Some(DetectorStatus::Clean),
+            BadgeStatus::Finding => None,
+        }
+    }
+
     #[test]
     fn partial_coverage_without_a_signal_never_reads_clean() {
         let mut evidence = claude_evidence("synthetic-partial");
         evidence.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
 
         for result in session_badges(&evidence, &ReportCatalogs::default()) {
-            assert_eq!(
-                result.status,
-                BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
-            );
+            // Every other badge reports the session-wide partial coverage.
+            let expected = zero_turn_override(result.id).unwrap_or(BadgeStatus::NotAssessed(
+                NotAssessedReason::IncompleteEvidence,
+            ));
+            assert_eq!(result.status, expected, "{:?}", result.id);
         }
     }
 
@@ -287,7 +313,8 @@ mod tests {
         let evidence = claude_evidence("synthetic-clean");
 
         for result in session_badges(&evidence, &ReportCatalogs::default()) {
-            assert_eq!(result.status, BadgeStatus::Clean);
+            let expected = zero_turn_override(result.id).unwrap_or(BadgeStatus::Clean);
+            assert_eq!(result.status, expected, "{:?}", result.id);
         }
     }
 
@@ -356,17 +383,20 @@ mod tests {
         evidence.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
 
         for badge in session_badges(&evidence, &ReportCatalogs::default()) {
-            assert_eq!(
-                badge.status,
-                BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
-                "{:?}",
-                badge.id
-            );
+            // Obsolete Model, Model Overthinking, and Fast Mode Overuse
+            // report their own not-assessed reason on both sides
+            // regardless of session-wide coverage, so they sit outside
+            // this test's badge-vs-report divergence claim.
+            let expected = zero_turn_override(badge.id).unwrap_or(BadgeStatus::NotAssessed(
+                NotAssessedReason::IncompleteEvidence,
+            ));
+            assert_eq!(badge.status, expected, "{:?}", badge.id);
         }
         for id in BadgeId::ALL {
+            let expected = zero_turn_override_detector(id).unwrap_or(DetectorStatus::Clean);
             assert_eq!(
                 report_status(evidence.clone(), id.detector(), &ReportCatalogs::default()),
-                DetectorStatus::Clean,
+                expected,
                 "{id:?}"
             );
         }
