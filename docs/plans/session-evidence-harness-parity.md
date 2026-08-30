@@ -742,6 +742,9 @@ Settled:
 5. `excessCacheRehydration` keeps its ID; shared name "Excess context
    reprocessing"; accounting-specific detail copy.
 6. Scope is all four harnesses.
+7. The generic fallback adapter reports the minimum capability set, so the
+   badges read not-assessed for an unknown vendor (decided 2026-08-31; ships
+   with the Codex adapter change in Phase 4).
 
 Open, needs a human decision before the relevant seam:
 
@@ -758,7 +761,3 @@ Open, needs a human decision before the relevant seam:
 3. **Crate boundary for rows** (see "Where the row logic lives").
 4. **Premium-tier and effort-tier policies** per model family, needed by
    Phase 5. Not yet drafted.
-5. **Generic fallback capability claims.** `GenericJsonlAdapter` reports
-   `cache_write_tokens_available: true` for every unknown vendor. This is a
-   guess. Decide whether the fallback reports the minimum capability set and
-   lets the badges read not-assessed, which matches the Phase 1 honesty rule.
