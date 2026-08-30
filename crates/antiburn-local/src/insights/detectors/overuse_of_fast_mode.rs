@@ -3,6 +3,10 @@
 //! The evidence separates main-loop from delegated fast-tier turns.
 //! A standing-default signal does not exist in the contract yet, so
 //! the rule covers only the delegated-work half of the category.
+//! Both shipped families recognize exactly the normalized labels
+//! `fast` and `standard` (`ReportCatalogs::families`), so — unlike
+//! Model Overthinking — the rule does not need to know which family
+//! produced a turn to classify its speed label.
 //!
 //! Partial-evidence rules:
 //! - Partial model evidence still permits a finding. Observed
@@ -13,9 +17,13 @@
 //!   gap: the eligibility clause admits a session on service-tier
 //!   alone, but `ModelEvidence::service_tiers` is a bare marker the
 //!   rule cannot read, so neither a finding nor clean is expressible.
-//! - The rule counts only the `FAST_SPEED_KEY` entry. Any other
-//!   observed speed label (for example `"standard"`) never counts
-//!   toward the finding.
+//! - The rule counts only the normalized `fast` label. Any other
+//!   recognized label (for example `"standard"`) never counts toward
+//!   the finding.
+//! - A `fast_modes` key with turns that normalizes to neither `fast`
+//!   nor `standard` blocks clean with a contract gap: the policy has
+//!   not classified the label, so absence is never provable. A finding
+//!   still wins over this gap.
 //! - A finding still wins on partial speed-signal coverage. Otherwise,
 //!   when fewer eligible turns carried a speed value than the source
 //!   saw (including zero eligible turns), the rule reports the signal
@@ -35,12 +43,25 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         return Observation::ContractIncomplete;
     }
     if let Some(models) = observed(&evidence.models) {
-        let delegated = models
-            .fast_modes
-            .get(FAST_SPEED_KEY)
-            .map_or(0, |turns| turns.delegated);
-        if delegated > 0 && delegated >= catalogs.fast_mode_delegated_turns_threshold {
-            return Observation::Finding;
+        let mut contract_incomplete = false;
+        for (label, turns) in &models.fast_modes {
+            let turns_with_signal = turns.main_loop + turns.delegated;
+            if turns_with_signal == 0 {
+                continue;
+            }
+            let normalized = label.trim().to_lowercase();
+            if normalized == FAST_SPEED_KEY {
+                if turns.delegated > 0
+                    && turns.delegated >= catalogs.fast_mode_delegated_turns_threshold
+                {
+                    return Observation::Finding;
+                }
+            } else if !is_recognized_speed(&normalized, catalogs) {
+                contract_incomplete = true;
+            }
+        }
+        if contract_incomplete {
+            return Observation::ContractIncomplete;
         }
         let coverage = models.speed_signal;
         if coverage.eligible_turns == 0 || coverage.present_turns < coverage.eligible_turns {
@@ -48,6 +69,17 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         }
     }
     Observation::NoFinding
+}
+
+/// Returns whether any family's policy recognizes `label`, which is
+/// already trimmed and lowercased. Both shipped families recognize the
+/// same speed vocabulary, so this does not need per-session family
+/// derivation the way Model Overthinking's effort check does.
+fn is_recognized_speed(label: &str, catalogs: &ReportCatalogs) -> bool {
+    catalogs
+        .families
+        .values()
+        .any(|policy| policy.speed.recognized.contains(label))
 }
 
 #[cfg(test)]
@@ -182,5 +214,44 @@ mod tests {
         evidence.models = EvidenceValue::Complete(models);
 
         assert_eq!(evaluate(&evidence, &catalogs), Observation::Finding);
+    }
+
+    #[test]
+    fn an_unrecognized_speed_label_with_turns_is_contract_incomplete() {
+        let catalogs = ReportCatalogs::default();
+
+        assert_eq!(
+            evaluate(&with_speed_entry("synthetic-tier", 0, 1, false), &catalogs),
+            Observation::ContractIncomplete
+        );
+    }
+
+    #[test]
+    fn a_finding_wins_over_an_unrecognized_speed_label_elsewhere_in_the_session() {
+        let catalogs = ReportCatalogs::default();
+        let mut evidence = with_fast_turns(0, 1, false);
+        let EvidenceValue::Complete(mut models) = evidence.models else {
+            unreachable!()
+        };
+        models.fast_modes.insert(
+            "synthetic-tier".to_owned(),
+            TurnCounts {
+                main_loop: 0,
+                delegated: 1,
+            },
+        );
+        evidence.models = EvidenceValue::Complete(models);
+
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::Finding);
+    }
+
+    #[test]
+    fn label_normalization_trims_and_lowercases_before_policy_lookup() {
+        let catalogs = ReportCatalogs::default();
+
+        assert_eq!(
+            evaluate(&with_speed_entry("  Fast  ", 0, 1, false), &catalogs),
+            Observation::Finding
+        );
     }
 }

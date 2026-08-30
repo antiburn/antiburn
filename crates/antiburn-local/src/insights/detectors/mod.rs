@@ -12,6 +12,7 @@
 
 mod cache_churn;
 mod model_overthinking;
+mod model_registry;
 mod old_model_usage;
 mod overpowered_subagents;
 mod overuse_of_fast_mode;
@@ -23,9 +24,14 @@ mod unused_skills;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{EvidenceValue, SessionEvidence};
+use crate::pricing::normalize_model_key;
 
 use super::report::{DetectorCounts, MAX_EXAMPLES_PER_DETECTOR, SessionExample};
 use super::status::DetectorId;
+
+pub use model_registry::{
+    ModelRegistry, ModelReplacementEntry, ModelReplacementRule, REGISTRY_REVISION,
+};
 
 /// One report-level status for one detector.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,11 +109,73 @@ impl DetectorFold {
     }
 }
 
-/// One curated replacement entry for a deprecated model.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelReplacement {
-    pub replacement: String,
-    pub available_since_ts_ms: i64,
+/// A model family, derived from the normalized model key's prefix.
+/// Tier policy is keyed by family, not by harness, because OpenCode and
+/// Pi can run any vendor's models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ModelFamily {
+    Claude,
+    OpenAi,
+    /// No known vendor prefix matched. A tier or premium check can
+    /// never classify an unknown family; it always reports a contract
+    /// gap instead of a finding or clean result.
+    Unknown,
+}
+
+/// Classifies a model key into its family from the normalized,
+/// lowercased key's prefix.
+pub fn model_family(model: &str) -> ModelFamily {
+    let normalized = normalize_model_key(model).to_lowercase();
+    if normalized.starts_with("claude-") {
+        ModelFamily::Claude
+    } else if normalized.starts_with("gpt-")
+        || normalized.starts_with("o1")
+        || normalized.starts_with("o3")
+        || normalized.starts_with("o4")
+    {
+        ModelFamily::OpenAi
+    } else {
+        ModelFamily::Unknown
+    }
+}
+
+/// One family's reasoning-effort tier policy: which normalized labels
+/// count as above the recommended cap, and which labels the family
+/// recognizes at all. A recognized label that is not above the cap is
+/// clean; an unrecognized label with turns blocks clean until the
+/// policy classifies it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EffortPolicy {
+    pub above_cap: BTreeSet<String>,
+    pub recognized: BTreeSet<String>,
+}
+
+/// One family's fast-mode speed policy: the normalized labels it
+/// recognizes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpeedPolicy {
+    pub recognized: BTreeSet<String>,
+}
+
+/// One family's premium-tier policy for Overpowered Subagents.
+/// `reviewed` states whether a maintainer has classified this family's
+/// premium tier at all. An unreviewed family's models can never prove
+/// premium or non-premium; the detector reports a contract gap.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PremiumPolicy {
+    pub reviewed: bool,
+    /// Exact normalized model keys that are premium.
+    pub models: BTreeSet<String>,
+    /// Normalized model key prefixes that are premium.
+    pub prefixes: Vec<String>,
+}
+
+/// One model family's full tier policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FamilyPolicy {
+    pub effort: EffortPolicy,
+    pub speed: SpeedPolicy,
+    pub premium: PremiumPolicy,
 }
 
 /// Report-time policy inputs. Catalogs change without reparsing
@@ -118,12 +186,11 @@ pub struct ReportCatalogs {
     /// A request whose observed context depth exceeds this cap is a
     /// Sessions Over Depth finding.
     pub depth_cap_tokens: u64,
-    /// Effort tier labels above the recommended cap.
-    pub effort_tiers_above_cap: BTreeSet<String>,
-    /// Curated deprecated models keyed by normalized model name.
-    pub model_replacements: BTreeMap<String, ModelReplacement>,
-    /// Premium models keyed by normalized model name.
-    pub premium_models: BTreeSet<String>,
+    /// Reviewed tier policy, one entry per known model family.
+    pub families: BTreeMap<ModelFamily, FamilyPolicy>,
+    /// Curated deprecated-model registry, keyed by normalized model
+    /// name and alias.
+    pub model_replacements: ModelRegistry,
     /// Delegated fast-tier turns at or above this count are a finding.
     /// Zero observed delegated turns never fire, whatever the value.
     pub fast_mode_delegated_turns_threshold: u64,
@@ -133,27 +200,76 @@ pub struct ReportCatalogs {
 
 impl Default for ReportCatalogs {
     fn default() -> Self {
+        let mut families = BTreeMap::new();
+        families.insert(
+            ModelFamily::Claude,
+            FamilyPolicy {
+                effort: EffortPolicy {
+                    above_cap: ["max", "ultrathink"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    recognized: ["low", "medium", "high", "max", "ultrathink"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                },
+                speed: SpeedPolicy {
+                    recognized: ["fast", "standard"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                },
+                premium: PremiumPolicy {
+                    reviewed: true,
+                    models: [
+                        "claude-3-opus",
+                        "claude-opus-4",
+                        "claude-opus-4-1",
+                        "claude-opus-4-5",
+                        "claude-opus-4-6",
+                        "claude-opus-4-7",
+                        "claude-opus-4-8",
+                        "claude-opus-5",
+                        "claude-fable-5",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                    prefixes: vec!["claude-opus-".to_owned(), "claude-fable-".to_owned()],
+                },
+            },
+        );
+        families.insert(
+            ModelFamily::OpenAi,
+            FamilyPolicy {
+                effort: EffortPolicy {
+                    above_cap: ["xhigh"].into_iter().map(str::to_owned).collect(),
+                    recognized: ["minimal", "low", "medium", "high", "xhigh"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                },
+                speed: SpeedPolicy {
+                    recognized: ["fast", "standard"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                },
+                premium: PremiumPolicy {
+                    reviewed: true,
+                    models: BTreeSet::new(),
+                    prefixes: vec!["gpt-5.6-sol".to_owned()],
+                },
+            },
+        );
+        families.insert(ModelFamily::Unknown, FamilyPolicy::default());
+
         Self {
-            revision: 3,
-            depth_cap_tokens: 160_000,
-            effort_tiers_above_cap: ["max", "ultrathink", "xhigh"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            model_replacements: BTreeMap::new(),
-            premium_models: [
-                "claude-3-opus",
-                "claude-opus-4",
-                "claude-opus-4-1",
-                "claude-opus-4-5",
-                "claude-opus-4-6",
-                "claude-opus-4-7",
-                "claude-opus-4-8",
-                "claude-opus-5",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
+            revision: 4,
+            depth_cap_tokens: 400_000,
+            families,
+            model_replacements: model_registry::default_registry(),
             fast_mode_delegated_turns_threshold: 1,
             cache_idle_expiry_ms: 300_000,
         }

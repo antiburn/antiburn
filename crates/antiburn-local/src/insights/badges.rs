@@ -130,6 +130,12 @@ mod tests {
                 let EvidenceValue::Complete(models) = &mut evidence.models else {
                     unreachable!()
                 };
+                // A `by_model` entry establishes that the Claude family
+                // is present, which the reviewed policy needs to
+                // classify "max" as above the cap.
+                models
+                    .by_model
+                    .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
                 models.effort_tiers.insert(
                     "max".to_owned(),
                     TurnCounts {
@@ -215,11 +221,13 @@ mod tests {
 
     fn test_catalogs() -> ReportCatalogs {
         let mut catalogs = ReportCatalogs::default();
-        catalogs.model_replacements.insert(
+        catalogs.model_replacements.entries.insert(
             "old-model".to_owned(),
-            super::super::detectors::ModelReplacement {
+            super::super::detectors::ModelReplacementEntry {
                 replacement: "new-model".to_owned(),
                 available_since_ts_ms: 0,
+                rationale: "test rule".to_owned(),
+                source_url: "https://example.invalid/old-model".to_owned(),
             },
         );
         catalogs
@@ -242,15 +250,15 @@ mod tests {
         }
     }
 
-    /// Three badges never carry the generic zero-turn expectation:
-    /// Obsolete Model reports the empty-catalog contract gap, and
-    /// Model Overthinking / Fast Mode Overuse report a missing signal,
+    /// Two badges never carry the generic zero-turn expectation: Model
+    /// Overthinking and Fast Mode Overuse report a missing signal,
     /// because the synthetic evidence carries zero eligible turns.
+    /// Obsolete Model does not need an override: the reviewed
+    /// production registry is non-empty, and zero observed models
+    /// means no catalogued model can have run, so it reads clean like
+    /// the rest.
     fn zero_turn_override(id: BadgeId) -> Option<BadgeStatus> {
         match id {
-            BadgeId::ObsoleteModel => Some(BadgeStatus::NotAssessed(
-                NotAssessedReason::EvidenceContractIncomplete,
-            )),
             BadgeId::ModelOverthinking | BadgeId::FastModeOveruse => {
                 Some(BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing))
             }

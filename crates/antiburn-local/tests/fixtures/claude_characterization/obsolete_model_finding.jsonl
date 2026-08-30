@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-07-25T10:00:00Z","message":{"id":"msg-obsolete-1","role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":40,"output_tokens":10},"content":[{"type":"text","text":"Synthetic obsolete-model turn."}]}}

@@ -493,6 +493,7 @@ impl SessionEvidenceAccumulator {
             service_tiers: EvidenceValue::Unsupported,
             effort_signal: facts.effort_signal,
             speed_signal: facts.speed_signal,
+            dominant_main_model: facts.dominant_main_model.clone(),
         };
         let models_cap_exceeded = facts.models_capped || facts.tiers_capped;
         let subagents = SubagentEvidence {

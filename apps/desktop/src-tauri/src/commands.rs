@@ -2139,13 +2139,14 @@ mod tests {
         let payload = session_hygiene_payload(Some(row));
         assert_eq!(payload.evidence_state, "activelyGrowing");
         assert!(payload.badges.iter().all(|badge| {
-            // Obsolete Model reports the empty-catalog contract gap, and
             // Model Overthinking / Fast Mode Overuse report a missing
             // signal, because the synthetic evidence carries zero
-            // eligible turns. Every other badge reports the session-
-            // wide partial coverage from the accepted-prefix outcome.
+            // eligible turns. Every other badge — Obsolete Model
+            // included, since the reviewed production registry is
+            // non-empty and its own rule falls through to the
+            // session-wide coverage check — reports the session-wide
+            // partial coverage from the accepted-prefix outcome.
             let expected_reason = match badge.id {
-                "obsoleteModel" => "evidenceContractIncomplete",
                 "modelOverthinking" | "fastModeOveruse" => "signalMissing",
                 _ => "incompleteEvidence",
             };

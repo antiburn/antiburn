@@ -8,7 +8,9 @@ mod status;
 
 pub use badges::{BadgeId, BadgeStatus, SessionBadge, session_badges};
 pub use detectors::{
-    DetectorFindings, DetectorStatus, ModelReplacement, NotAssessedReason, ReportCatalogs,
+    DetectorFindings, DetectorStatus, EffortPolicy, FamilyPolicy, ModelFamily, ModelRegistry,
+    ModelReplacementEntry, ModelReplacementRule, NotAssessedReason, PremiumPolicy,
+    REGISTRY_REVISION, ReportCatalogs, SpeedPolicy, model_family,
 };
 pub use quota::{
     MAX_QUOTA_AFFECTED_MODELS, MAX_QUOTA_OBSERVED_TIMES, MAX_QUOTA_SESSION_EXAMPLES,

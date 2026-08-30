@@ -1,2 +1,2 @@
 {"type":"message","id":"od-1","parentId":null,"timestamp":"2026-01-02T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
-{"type":"message","id":"od-2","parentId":"od-1","timestamp":"2026-01-02T00:00:01Z","message":{"role":"assistant","model":"model-a","usage":{"input":200000,"output":50,"cacheRead":0,"cacheWrite":0},"content":[{"type":"text","text":"ok"}]}}
+{"type":"message","id":"od-2","parentId":"od-1","timestamp":"2026-01-02T00:00:01Z","message":{"role":"assistant","model":"model-a","usage":{"input":450000,"output":50,"cacheRead":0,"cacheWrite":0},"content":[{"type":"text","text":"ok"}]}}

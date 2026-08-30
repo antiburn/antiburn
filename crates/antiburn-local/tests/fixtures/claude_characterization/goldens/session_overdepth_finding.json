@@ -21,7 +21,7 @@
         "usage": {
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
-          "inputTokens": 200000,
+          "inputTokens": 450000,
           "outputTokens": 50
         }
       },
@@ -56,7 +56,7 @@
       "agent": "claude",
       "billableCacheCreationTokens": 0,
       "billableCacheReadTokens": 0,
-      "billableInputTokens": 200000,
+      "billableInputTokens": 450000,
       "billableOutputTokens": 50,
       "buckets": [
         {
@@ -65,7 +65,7 @@
           "compactionPostTokens": null,
           "compactionPreTokens": null,
           "compactionTrigger": null,
-          "contextTokens": 200000,
+          "contextTokens": 450000,
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,
@@ -77,7 +77,7 @@
           "subagentLaunches": 0,
           "subagentTokens": 0,
           "thinkingMode": null,
-          "tokensIn": 200000,
+          "tokensIn": 450000,
           "tokensOut": 50,
           "userPrompts": 0
         },
@@ -4028,19 +4028,19 @@
       "cost": {
         "cacheReadUsd": 0.0,
         "cacheWriteUsd": 0.0,
-        "inputUsd": 1.0,
+        "inputUsd": 2.25,
         "outputUsd": 0.00125,
-        "totalUsd": 1.00125
+        "totalUsd": 2.25125
       },
       "durationSecs": 1,
       "efficiency": {
         "carryUsd": 0.0,
-        "growthTokens": 200000,
-        "newWorkUsd": 1.00125,
+        "growthTokens": 450000,
+        "newWorkUsd": 2.25125,
         "outputTokens": 50,
         "pricedTurns": 1,
         "rewriteUsd": 0.0,
-        "totalUsd": 1.00125,
+        "totalUsd": 2.25125,
         "unpricedTurns": 0
       },
       "eventCount": 2,
@@ -4053,7 +4053,7 @@
           "cache_creation_1h_tokens": 0,
           "cache_creation_tokens": 0,
           "cache_read_tokens": 0,
-          "input_tokens": 200000,
+          "input_tokens": 450000,
           "output_tokens": 50
         }
       },
@@ -4062,9 +4062,9 @@
           "model": "claude-opus-4-6"
         }
       ],
-      "peakContextTokens": 200000,
+      "peakContextTokens": 450000,
       "sessionId": "session_overdepth_finding",
-      "tokensIn": 200000,
+      "tokensIn": 450000,
       "tokensOut": 50
     }
   ]

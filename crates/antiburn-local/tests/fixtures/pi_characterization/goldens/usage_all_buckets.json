@@ -108,6 +108,7 @@
             "turns": 2
           }
         },
+        "dominantMainModel": "model-a",
         "effortSignal": {
           "eligibleTurns": 2,
           "presentTurns": 0
@@ -125,8 +126,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 11,
-      "evidenceSchemaRevision": 8,
+      "analyzerRevision": 12,
+      "evidenceSchemaRevision": 9,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -138,7 +139,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 8,
+    "schemaRevision": 9,
     "subagents": {
       "state": "unsupported"
     },

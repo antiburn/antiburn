@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::analysis::evidence::{
     CompactionBoundary, DepthExample, EligibilityEvidence, MAX_COMPACTION_BOUNDARIES,
@@ -35,6 +35,7 @@ pub struct TurnFacts {
     pub time_range: SessionTimeRange,
     pub by_model: BTreeMap<String, ModelTokens>,
     pub models_capped: bool,
+    pub dominant_main_model: Option<String>,
     pub unattributed_turns: u64,
     pub effort_tiers: BTreeMap<String, TurnCounts>,
     pub fast_modes: BTreeMap<String, TurnCounts>,
@@ -73,6 +74,7 @@ pub fn query_turn_facts(
     let (top_depth_examples, depth_examples_capped) =
         query_top_depth_examples(conn, key, claim_fence, &mut diagnostics)?;
     let (by_model, models_capped) = query_by_model(conn, key, claim_fence, &mut diagnostics)?;
+    let dominant_main_model = query_dominant_main_model(conn, key, claim_fence, &mut diagnostics)?;
     let (effort_tiers, effort_capped) = query_tier_map(
         conn,
         key,
@@ -107,6 +109,7 @@ pub fn query_turn_facts(
         time_range: core.time_range,
         by_model,
         models_capped,
+        dominant_main_model,
         unattributed_turns: core.unattributed_turns,
         effort_tiers,
         fast_modes,
@@ -372,6 +375,39 @@ fn add_model_tokens(
         }
         tokens.last_ts_ms = tokens.last_ts_ms.max(ts_ms);
     }
+}
+
+/* --------------------------------------------------------------------
+ * Dominant main-loop model.
+ * ----------------------------------------------------------------- */
+
+/// Groups `scope = 'main'` assistant turns by model and picks the one
+/// with the most turns. A tie breaks on the earliest `last_ts_ms`
+/// (`MAX(ts_ms)` per model, ascending — the model whose activity ended
+/// soonest), then the earliest `turn_index` (`MIN(turn_index)` per
+/// model, ascending). `LIMIT 1` keeps this a single bounded row.
+const DOMINANT_MAIN_MODEL_SQL: &str = "SELECT model
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+    AND scope = 'main' AND role = 'assistant' AND model IS NOT NULL
+  GROUP BY model
+  ORDER BY COUNT(*) DESC, MAX(ts_ms) ASC, MIN(turn_index) ASC
+  LIMIT 1";
+
+fn query_dominant_main_model(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+    diagnostics: &mut ParseDiagnostics,
+) -> rusqlite::Result<Option<String>> {
+    let mut statement = conn.prepare(DOMINANT_MAIN_MODEL_SQL)?;
+    let model: Option<String> = statement
+        .query_row(
+            params![key.environment_key, key.agent, key.session_id, claim_fence],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(model.map(|model| cap_string("models.dominant_main_model", &model, diagnostics)))
 }
 
 /* --------------------------------------------------------------------
