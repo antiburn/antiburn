@@ -155,6 +155,7 @@ impl SessionEvidenceAccumulator {
                 self.observe_event(event);
             }
             NormalizedRecord::Observation(observation) => self.observe_observation(observation),
+            NormalizedRecord::TurnContent(_) => {}
             NormalizedRecord::Unusable(reason) => {
                 self.diagnostics.records_observed =
                     self.diagnostics.records_observed.saturating_add(1);

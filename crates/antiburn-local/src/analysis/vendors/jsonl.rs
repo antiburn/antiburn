@@ -14,7 +14,9 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::analysis::interface::{ContextSourceKind, EvidenceObservation, RelationProvenance};
+use crate::analysis::interface::{
+    ContentKind, ContentPart, ContextSourceKind, EvidenceObservation, RelationProvenance,
+};
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, Role, ToolCall, Usage,
 };
@@ -474,6 +476,175 @@ pub(super) fn record_discriminator(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("<missing>")
         .to_owned()
+}
+
+/// Extract this record's message content as [`ContentPart`]s, for the
+/// `turn_content` capture. Reads the same `message.content[]` / top-level
+/// `content` shape [`parse_record`] reads, but never retains it on
+/// `NormalizedEvent` — the caller emits the result as a separate
+/// `TurnContent` record, right after the record's `MetricsEvent`.
+///
+/// `role` is the event's *resolved* role (after the Claude tool-result
+/// reclassification from `User` to `Tool`), so a `tool_result` block is
+/// captured as `ToolResult` even though the record's JSON role is `user`.
+pub(super) fn extract_content_parts(value: &Value, role: Role) -> Vec<ContentPart> {
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
+    extract_content_parts_from_container(obj, role)
+}
+
+/// Like [`extract_content_parts`], reading a `message`-shaped JSON object
+/// directly rather than a whole transcript record. Lets a caller that only
+/// has the inner object (Codex's `payload`) skip re-wrapping it into a full
+/// record [`Value`].
+pub(super) fn extract_content_parts_from_container(
+    container: &serde_json::Map<String, Value>,
+    role: Role,
+) -> Vec<ContentPart> {
+    let content = container
+        .get("message")
+        .and_then(Value::as_object)
+        .and_then(|m| m.get("content"))
+        .or_else(|| container.get("content"));
+    if role == Role::Tool {
+        return tool_result_parts(content);
+    }
+    let mut parts = Vec::new();
+    match content {
+        Some(Value::String(text)) => push_text(text, role, &mut parts),
+        Some(Value::Array(items)) => {
+            for item in items {
+                push_content_block(item, role, &mut parts);
+            }
+        }
+        _ => {}
+    }
+    parts
+}
+
+fn text_kind(role: Role) -> ContentKind {
+    if role == Role::Assistant {
+        ContentKind::AssistantText
+    } else {
+        ContentKind::UserText
+    }
+}
+
+fn push_text(text: &str, role: Role, parts: &mut Vec<ContentPart>) {
+    if !text.is_empty() {
+        parts.push(ContentPart::new(text_kind(role), text));
+    }
+}
+
+fn push_content_block(item: &Value, role: Role, parts: &mut Vec<ContentPart>) {
+    let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        // "input_text" / "output_text" are Codex's (OpenAI-shaped) content
+        // block types, captured through this same helper.
+        "text" | "input_text" | "output_text" => {
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                push_text(text, role, parts);
+            }
+        }
+        "thinking" => {
+            if let Some(text) = item
+                .get("thinking")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                parts.push(ContentPart::new(ContentKind::Thinking, text));
+            }
+        }
+        "tool_use" | "toolCall" => {
+            let input = item.get("input").or_else(|| item.get("arguments"));
+            if let Some(text) = input.and_then(compact_json_text) {
+                parts.push(ContentPart::new(ContentKind::ToolInput, text));
+            }
+        }
+        "tool_result" | "toolResult" | "function_call_output" => {
+            if let Some(text) = tool_result_text(item) {
+                parts.push(ContentPart::new(ContentKind::ToolResult, text));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A tool-result-shaped item's own content: a plain string, or the
+/// concatenated text of a content-block array (non-text parts skipped).
+fn tool_result_text(item: &Value) -> Option<String> {
+    concatenated_text(item.get("content"))
+}
+
+/// A content value's text: a plain string, or the concatenated `text` field
+/// of each item in a content-block array (non-text items skipped).
+pub(super) fn concatenated_text(content: Option<&Value>) -> Option<String> {
+    match content? {
+        Value::String(text) => (!text.is_empty()).then(|| text.clone()),
+        Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(text);
+                }
+            }
+            (!out.is_empty()).then_some(out)
+        }
+        _ => None,
+    }
+}
+
+/// A tool-role record's whole content as one `ToolResult` part: the
+/// top-level content string or array (Pi's `toolResult` message shape), or
+/// the nested tool-result items within a mixed array (Claude's `tool_result`
+/// content block, embedded in an otherwise `user`-shaped message). Non-text
+/// items are skipped.
+fn tool_result_parts(content: Option<&Value>) -> Vec<ContentPart> {
+    let text = match content {
+        Some(Value::Array(items)) => {
+            let mut out = String::new();
+            for item in items {
+                let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+                let text = if matches!(
+                    item_type,
+                    "tool_result" | "toolResult" | "function_call_output"
+                ) {
+                    tool_result_text(item)
+                } else {
+                    item.get("text").and_then(Value::as_str).map(str::to_owned)
+                };
+                if let Some(text) = text {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&text);
+                }
+            }
+            (!out.is_empty()).then_some(out)
+        }
+        _ => concatenated_text(content),
+    };
+    text.into_iter()
+        .map(|text| ContentPart::new(ContentKind::ToolResult, text))
+        .collect()
+}
+
+/// A tool call's input, JSON-serialized compactly. A JSON-encoded string
+/// (OpenAI-style `function.arguments`) is parsed and re-serialized so the
+/// stored text is canonical JSON either way; a non-JSON string (Codex's raw
+/// `exec` script) is kept as-is.
+pub(super) fn compact_json_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(parsed) => serde_json::to_string(&parsed).ok(),
+            Err(_) => Some(raw.clone()),
+        },
+        other => serde_json::to_string(other).ok(),
+    }
 }
 
 /// Parse a single JSON record into a normalized event, or `None` if the record

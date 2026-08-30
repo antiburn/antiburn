@@ -10,7 +10,7 @@
 
 use rusqlite::{Connection, params};
 
-use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
+use crate::analysis::interface::{ContentPart, NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{EventSource, NormalizedEvent, Role};
 
 /// DDL for the `turn` and `turn_content` tables.
@@ -24,6 +24,11 @@ use crate::analysis::model::{EventSource, NormalizedEvent, Role};
 ///
 /// The caller applies this DDL after its own `session` table exists — the
 /// foreign key references `session (environment_key, agent, session_id)`.
+///
+/// `turn_content` is the only place transcript text is persisted. Evidence
+/// JSON, metrics JSON, and every other projection never join to it — see
+/// `docs/plans/session-evidence-harness-parity.md`, "Privacy with content
+/// stored".
 pub const TURN_SCHEMA_SQL: &str = r#"
 CREATE TABLE turn (
     rowid INTEGER PRIMARY KEY,
@@ -61,6 +66,7 @@ CREATE TABLE turn_content (
     part_index INTEGER NOT NULL,
     kind TEXT NOT NULL,
     content BLOB NOT NULL,
+    truncated INTEGER NOT NULL,
     PRIMARY KEY (turn_rowid, part_index)
 ) WITHOUT ROWID, STRICT;
 "#;
@@ -110,6 +116,10 @@ pub struct TurnRow {
     pub message_id: Option<String>,
     pub uuid: Option<String>,
     pub parent_uuid: Option<String>,
+    /// This turn's captured message content, when the source adapter emitted
+    /// a `TurnContent` record for it. Attached by [`TurnRowSink`] after
+    /// [`turn_row_from_event`] builds the row — an event alone carries none.
+    pub content: Vec<ContentPart>,
 }
 
 fn role_key(role: Role) -> &'static str {
@@ -154,6 +164,7 @@ pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index
         message_id: event.message_id.clone(),
         uuid: event.uuid.clone(),
         parent_uuid: event.parent_uuid.clone(),
+        content: Vec::new(),
     }
 }
 
@@ -193,14 +204,19 @@ pub trait TurnRowWriter: Send + Sync {
     fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError>;
 }
 
-/// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s and
-/// writes them through a [`TurnRowWriter`] in bounded batches.
+/// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s,
+/// attaches each row's `TurnContent` record (when one arrives), and writes
+/// the rows through a [`TurnRowWriter`] in bounded batches.
 ///
-/// `turn_index` is monotonic per `source_key`, starting at zero. The buffer
-/// never exceeds `batch_size`: [`Self::observe`] flushes as soon as it
-/// reaches that size, so memory stays bounded no matter how long the source
-/// runs. The first write error is kept and stops further writes;
-/// [`Self::into_error`] lets the caller surface it.
+/// `turn_index` is monotonic per `source_key`, starting at zero. After each
+/// call to [`Self::observe`] the buffer holds at most `batch_size` rows: once
+/// a pushed `MetricsEvent` row takes it over that size, every row except the
+/// one just pushed is flushed immediately, so memory stays bounded no matter
+/// how long the source runs. The most recently pushed row stays buffered
+/// (unwritten) so its `TurnContent` record — which the adapter contract
+/// promises arrives right after the `MetricsEvent` it belongs to — can still
+/// attach before that row is written. The first write error is kept and
+/// stops further writes; [`Self::into_error`] lets the caller surface it.
 pub struct TurnRowSink<'a> {
     writer: &'a dyn TurnRowWriter,
     source_key: String,
@@ -242,20 +258,29 @@ impl<'a> TurnRowSink<'a> {
         self.error
     }
 
-    /// Folds one record without taking it. Only a `MetricsEvent` becomes a
-    /// row; `Observation` and `Unusable` records are not turns.
+    /// Folds one record without taking it. A `MetricsEvent` becomes a
+    /// buffered row; a `TurnContent` record attaches its parts to the most
+    /// recently buffered row. `Observation` and `Unusable` records are not
+    /// turns.
     pub fn observe(&mut self, record: &NormalizedRecord) {
         if self.error.is_some() {
             return;
         }
-        let NormalizedRecord::MetricsEvent(event) = record else {
-            return;
-        };
-        let row = turn_row_from_event(event, &self.source_key, self.next_index);
-        self.next_index += 1;
-        self.buffer.push(row);
-        if self.buffer.len() >= self.batch_size {
-            self.flush();
+        match record {
+            NormalizedRecord::MetricsEvent(event) => {
+                let row = turn_row_from_event(event, &self.source_key, self.next_index);
+                self.next_index += 1;
+                self.buffer.push(row);
+                if self.buffer.len() > self.batch_size {
+                    self.flush_except_last();
+                }
+            }
+            NormalizedRecord::TurnContent(content) => {
+                if let Some(row) = self.buffer.last_mut() {
+                    row.content.clone_from(&content.parts);
+                }
+            }
+            NormalizedRecord::Observation(_) | NormalizedRecord::Unusable(_) => {}
         }
     }
 
@@ -268,6 +293,24 @@ impl<'a> TurnRowSink<'a> {
             self.error = Some(error);
         }
         self.buffer.clear();
+    }
+
+    /// Writes every buffered row except the last, keeping that last row
+    /// buffered so a `TurnContent` record for it can still attach before it
+    /// is written. Keeps the buffer at `batch_size` rows or fewer once this
+    /// returns.
+    fn flush_except_last(&mut self) {
+        if self.error.is_some() {
+            return;
+        }
+        let Some(last) = self.buffer.pop() else {
+            return;
+        };
+        if let Err(error) = self.writer.write_turn_rows(&self.buffer) {
+            self.error = Some(error);
+        }
+        self.buffer.clear();
+        self.buffer.push(last);
     }
 }
 
@@ -291,11 +334,16 @@ const INSERT_TURN_SQL: &str = "INSERT INTO turn (
     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
 )";
 
-/// Inserts one batch of rows for `key`, all stamped with `claim_fence`.
+const INSERT_TURN_CONTENT_SQL: &str = "INSERT INTO turn_content (
+    turn_rowid, part_index, kind, content, truncated
+) VALUES (?1, ?2, ?3, ?4, ?5)";
+
+/// Inserts one batch of rows for `key`, all stamped with `claim_fence`, and
+/// each row's captured content (if any) into `turn_content`.
 ///
-/// One prepared statement executed once per row. The caller supplies the
-/// transaction (pass a [`rusqlite::Transaction`], which derefs to
-/// `Connection`).
+/// One prepared statement executed once per row, plus one per content part.
+/// The caller supplies the transaction (pass a [`rusqlite::Transaction`],
+/// which derefs to `Connection`).
 pub fn insert_turn_rows(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -303,6 +351,7 @@ pub fn insert_turn_rows(
     rows: &[TurnRow],
 ) -> rusqlite::Result<()> {
     let mut statement = conn.prepare(INSERT_TURN_SQL)?;
+    let mut content_statement = conn.prepare(INSERT_TURN_CONTENT_SQL)?;
     for row in rows {
         statement.execute(params![
             key.environment_key,
@@ -328,6 +377,18 @@ pub fn insert_turn_rows(
             row.uuid,
             row.parent_uuid,
         ])?;
+        if !row.content.is_empty() {
+            let turn_rowid = conn.last_insert_rowid();
+            for (part_index, part) in row.content.iter().enumerate() {
+                content_statement.execute(params![
+                    turn_rowid,
+                    part_index as i64,
+                    part.kind.as_str(),
+                    part.text.as_bytes(),
+                    i64::from(part.truncated),
+                ])?;
+            }
+        }
     }
     Ok(())
 }
@@ -418,6 +479,26 @@ pub fn count_turn_rows(
     Ok(count.max(0) as u64)
 }
 
+/// Counts the `turn_content` rows for `key`'s turns stamped with
+/// `claim_fence`.
+pub fn count_turn_content_rows(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<u64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM turn_content
+          WHERE turn_rowid IN (
+              SELECT rowid FROM turn
+               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                 AND claim_fence = ?4
+          )",
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -471,6 +552,7 @@ mod tests {
             message_id: None,
             uuid: None,
             parent_uuid: None,
+            content: Vec::new(),
         }
     }
 
@@ -625,6 +707,20 @@ mod tests {
             )
             .expect("count")
         }
+
+        fn content_count(&self, claim_fence: i64) -> u64 {
+            let conn = self.conn.lock().expect("lock");
+            count_turn_content_rows(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                claim_fence,
+            )
+            .expect("count")
+        }
     }
 
     impl TurnRowWriter for RecordingWriter {
@@ -675,9 +771,12 @@ mod tests {
         let writer = FailingWriter;
         let mut sink = TurnRowSink::with_batch_size(&writer, "s1", 1);
 
+        // A row stays buffered, unflushed, until a later row pushes the
+        // buffer over `batch_size` — so the first write attempt (and the
+        // failure) happens on the second `observe` call, not the first.
+        sink.observe(&metric_record(Role::Assistant));
         sink.observe(&metric_record(Role::Assistant));
         assert!(sink.has_error());
-        sink.observe(&metric_record(Role::Assistant));
         sink.observe(&metric_record(Role::Assistant));
 
         let error = sink.into_error().expect("error must surface");
@@ -703,5 +802,60 @@ mod tests {
         sink.finish(SessionSummary::default());
 
         assert_eq!(writer.count(1), 1);
+    }
+
+    fn content_record(text: &str) -> NormalizedRecord {
+        NormalizedRecord::TurnContent(Box::new(crate::analysis::interface::TurnContent {
+            parts: vec![crate::analysis::interface::ContentPart::new(
+                crate::analysis::interface::ContentKind::AssistantText,
+                text,
+            )],
+        }))
+    }
+
+    #[test]
+    fn a_turn_content_record_attaches_to_the_row_it_follows() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let writer = RecordingWriter::new(conn);
+        let mut sink = TurnRowSink::new(&writer, "s1");
+
+        sink.observe(&metric_record(Role::User));
+        sink.observe(&content_record("hello"));
+        sink.observe(&metric_record(Role::Assistant));
+        sink.finish(SessionSummary::default());
+
+        assert_eq!(writer.count(1), 2);
+        assert_eq!(writer.content_count(1), 1);
+    }
+
+    #[test]
+    fn content_still_attaches_after_the_batch_boundary_flushes_earlier_rows() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let writer = RecordingWriter::new(conn);
+        let mut sink = TurnRowSink::with_batch_size(&writer, "s1", 2);
+
+        sink.observe(&metric_record(Role::Assistant));
+        sink.observe(&metric_record(Role::Assistant));
+        // Pushing a third row over `batch_size` flushes the first two,
+        // keeping only this one buffered for its content to attach to.
+        sink.observe(&metric_record(Role::Assistant));
+        assert_eq!(sink.buffer.len(), 1);
+        sink.observe(&content_record("hello"));
+        sink.finish(SessionSummary::default());
+
+        assert_eq!(writer.count(1), 3);
+        assert_eq!(writer.content_count(1), 1);
     }
 }

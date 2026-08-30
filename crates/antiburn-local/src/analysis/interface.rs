@@ -40,7 +40,77 @@ pub struct SessionInput {
 pub enum NormalizedRecord {
     MetricsEvent(Box<NormalizedEvent>),
     Observation(Box<EvidenceObservation>),
+    /// One turn's captured message content. An adapter emits this
+    /// immediately after the `MetricsEvent` it belongs to, and only when it
+    /// has at least one part. The metrics and evidence sinks ignore it; only
+    /// [`crate::analysis::rows::TurnRowSink`] reads it.
+    TurnContent(Box<TurnContent>),
     Unusable(PartialReason),
+}
+
+/// Cap on one [`ContentPart`]'s byte length. [`ContentPart::new`] truncates
+/// longer text on a char boundary. This bounds the row sink's per-batch
+/// memory no matter how long a single message part is.
+pub const MAX_CONTENT_PART_BYTES: usize = 256 * 1024;
+
+/// One turn's captured message content, ready to become `turn_content` rows.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TurnContent {
+    pub parts: Vec<ContentPart>,
+}
+
+/// One piece of a turn's captured text: one text block, one thinking block,
+/// one tool call's input, or one tool call's result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentPart {
+    pub kind: ContentKind,
+    pub text: String,
+    /// True when `text` was cut short at [`MAX_CONTENT_PART_BYTES`].
+    pub truncated: bool,
+}
+
+impl ContentPart {
+    /// Builds a part, capping `text` at [`MAX_CONTENT_PART_BYTES`] bytes on a
+    /// char boundary.
+    pub fn new(kind: ContentKind, text: impl Into<String>) -> Self {
+        let mut text = text.into();
+        let mut truncated = false;
+        if text.len() > MAX_CONTENT_PART_BYTES {
+            let mut boundary = MAX_CONTENT_PART_BYTES;
+            while boundary > 0 && !text.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            text.truncate(boundary);
+            truncated = true;
+        }
+        Self {
+            kind,
+            text,
+            truncated,
+        }
+    }
+}
+
+/// The kind of text one [`ContentPart`] carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentKind {
+    UserText,
+    AssistantText,
+    Thinking,
+    ToolInput,
+    ToolResult,
+}
+
+impl ContentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContentKind::UserText => "user",
+            ContentKind::AssistantText => "assistant",
+            ContentKind::Thinking => "thinking",
+            ContentKind::ToolInput => "tool_input",
+            ContentKind::ToolResult => "tool_result",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +253,7 @@ impl RecordSink for SessionCollector {
         match record {
             NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
             NormalizedRecord::Observation(_) => {}
+            NormalizedRecord::TurnContent(_) => {}
             NormalizedRecord::Unusable(reason) => {
                 self.partial_reasons.insert(reason);
             }

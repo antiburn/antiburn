@@ -34,13 +34,16 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use super::jsonl::{parse_ts, tool_call_from_input};
+use super::jsonl::{
+    compact_json_text, concatenated_text, extract_content_parts_from_container, parse_ts,
+    tool_call_from_input,
+};
 use super::read_source;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
-    EvidenceObservation, NormalizedRecord, RawSource, RecordSink, SessionInput, SessionSummary,
-    VendorAdapter, VisitOutcome,
+    ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
+    SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
@@ -358,7 +361,13 @@ impl CodexStreamState {
             if self.is_duplicate_boundary(&event) {
                 return;
             }
+            let content_parts = content_parts_for_record(&value);
             sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+            if !content_parts.is_empty() {
+                sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                    parts: content_parts,
+                })));
+            }
         } else if !is_recognized_eventless(record_type, payload_type) {
             sink.record(NormalizedRecord::Observation(Box::new(
                 EvidenceObservation::UnrecognizedType {
@@ -694,6 +703,99 @@ fn record_to_event(record: &Value) -> Option<NormalizedEvent> {
         ("compacted", _) => Some(compaction_event(ts)),
         _ => None,
     }
+}
+
+/// Extract one rollout envelope record's message content as
+/// [`ContentPart`]s, for the `turn_content` capture. Mirrors the
+/// `(rec_type, payload_type)` dispatch [`record_to_event`] uses, but the
+/// tool-call shapes [`record_to_event`] does not turn into a `NormalizedEvent`
+/// on their own (`local_shell_call`, `tool_search_call`, `web_search_call`,
+/// `image_generation_call`) are not captured here.
+fn content_parts_for_record(record: &Value) -> Vec<ContentPart> {
+    let Some(obj) = record.as_object() else {
+        return Vec::new();
+    };
+    let rec_type = obj.get("type").and_then(Value::as_str).unwrap_or("");
+    let Some(payload) = obj.get("payload").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let payload_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
+    match (rec_type, payload_type) {
+        ("response_item", "message") => message_content_parts(payload),
+        ("response_item", "reasoning") => reasoning_content_parts(payload),
+        ("response_item", "function_call_output")
+        | ("response_item", "custom_tool_call_output")
+        | ("response_item", "tool_search_output")
+        | ("response_item", "mcp_tool_call_output") => tool_output_content_parts(payload),
+        ("response_item", "custom_tool_call") => function_call_content_parts(payload),
+        ("response_item", _) if payload.contains_key("name") => {
+            function_call_content_parts(payload)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A `message` response_item's `content[]` (Codex's OpenAI-shaped
+/// `input_text` / `output_text` blocks), captured through the shared JSONL
+/// content extractor.
+fn message_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
+    let role = match payload.get("role").and_then(Value::as_str) {
+        Some("assistant") => Role::Assistant,
+        // `user`, `system`, and `developer` all capture as user-side text —
+        // `ContentKind` has no separate system kind.
+        _ => Role::User,
+    };
+    extract_content_parts_from_container(payload, role)
+}
+
+/// A `reasoning` response_item's `summary[]` text, concatenated into one
+/// `Thinking` part. Empty when the transcript carries no summary text (Codex
+/// often logs reasoning with an empty summary and encrypted content only).
+fn reasoning_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
+    let Some(summary) = payload.get("summary").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut text = String::new();
+    for item in summary {
+        if let Some(part) = item.get("text").and_then(Value::as_str) {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(part);
+        }
+    }
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![ContentPart::new(ContentKind::Thinking, text)]
+    }
+}
+
+/// A tool call's `name` + `arguments`/`input`, as one `ToolInput` part.
+/// Covers both `function_call`-shaped records and `custom_tool_call` (whose
+/// `exec` wrapper input is a JavaScript string, kept as-is).
+fn function_call_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
+    let input = payload.get("arguments").or_else(|| payload.get("input"));
+    input
+        .and_then(compact_json_text)
+        .into_iter()
+        .map(|text| ContentPart::new(ContentKind::ToolInput, text))
+        .collect()
+}
+
+/// A tool call output's plain `output` string (`function_call_output` and
+/// its siblings), or the concatenated text of a `content[]` array when the
+/// output is block-shaped instead.
+fn tool_output_content_parts(payload: &Map<String, Value>) -> Vec<ContentPart> {
+    let text = payload
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+        .or_else(|| concatenated_text(payload.get("content")));
+    text.into_iter()
+        .map(|text| ContentPart::new(ContentKind::ToolResult, text))
+        .collect()
 }
 
 fn message_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<NormalizedEvent> {
@@ -1114,5 +1216,79 @@ mod tests {
             sink.partial_reasons(),
             &std::collections::BTreeSet::from([PartialReason::AttributionIncomplete])
         );
+    }
+
+    /// Collects every `TurnContent` record a visit emits, in order.
+    #[derive(Default)]
+    struct ContentCapturingSink {
+        contents: Vec<TurnContent>,
+    }
+
+    impl RecordSink for ContentCapturingSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            if let NormalizedRecord::TurnContent(content) = record {
+                self.contents.push(*content);
+            }
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
+    #[test]
+    fn content_capture_maps_message_reasoning_tool_call_and_output() {
+        let message_record = serde_json::json!({
+            "timestamp": "2026-08-01T10:00:00Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hello there"}]
+            }
+        })
+        .to_string();
+        let reasoning_record = serde_json::json!({
+            "timestamp": "2026-08-01T10:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "pondering"}]
+            }
+        })
+        .to_string();
+        let function_call_record = serde_json::json!({
+            "timestamp": "2026-08-01T10:00:02Z",
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "bash", "arguments": "{\"command\":\"ls\"}"}
+        })
+        .to_string();
+        let function_output_record = serde_json::json!({
+            "timestamp": "2026-08-01T10:00:03Z",
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "c1", "output": "ok"}
+        })
+        .to_string();
+        let jsonl = format!(
+            "{message_record}\n{reasoning_record}\n{function_call_record}\n{function_output_record}\n"
+        );
+        let input = SessionInput {
+            agent: "codex".to_string(),
+            session_id: "content-session".to_string(),
+            source: RawSource::Jsonl(jsonl),
+        };
+        let mut sink = ContentCapturingSink::default();
+
+        CodexAdapter
+            .visit(&input, &mut sink)
+            .expect("visit content session");
+
+        assert_eq!(sink.contents.len(), 4, "one TurnContent per turn");
+        assert_eq!(sink.contents[0].parts[0].kind, ContentKind::AssistantText);
+        assert_eq!(sink.contents[0].parts[0].text, "hello there");
+        assert_eq!(sink.contents[1].parts[0].kind, ContentKind::Thinking);
+        assert_eq!(sink.contents[1].parts[0].text, "pondering");
+        assert_eq!(sink.contents[2].parts[0].kind, ContentKind::ToolInput);
+        assert_eq!(sink.contents[2].parts[0].text, r#"{"command":"ls"}"#);
+        assert_eq!(sink.contents[3].parts[0].kind, ContentKind::ToolResult);
+        assert_eq!(sink.contents[3].parts[0].text, "ok");
     }
 }

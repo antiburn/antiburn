@@ -14,15 +14,15 @@ use anyhow::Context;
 use rusqlite::{Connection, OpenFlags, Statement, params};
 use serde_json::{Map, Value};
 
-use super::jsonl::{parse_ts, tool_call_from_input};
+use super::jsonl::{compact_json_text, parse_ts, tool_call_from_input};
 use crate::analysis::EVIDENCE_STRING_CAP;
 use crate::analysis::SourceChangedReason;
 use crate::analysis::framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
 };
 use crate::analysis::interface::{
-    EvidenceObservation, NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput,
-    SessionSummary, VendorAdapter, VisitOutcome,
+    ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
+    SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{
     CompactionTrigger, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
@@ -217,11 +217,17 @@ fn visit_database_connection(
         let mut pending = PendingMessage {
             id: message_id,
             event,
+            content: Vec::new(),
             part_bytes: 0,
             parts_oversized: false,
         };
         visit_db_parts(&mut parts, &mut pending, cancel, sink)?;
         sink.record(NormalizedRecord::MetricsEvent(Box::new(pending.event)));
+        if !pending.content.is_empty() {
+            sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                parts: pending.content,
+            })));
+        }
     }
     Ok(state.finish())
 }
@@ -282,7 +288,7 @@ fn visit_db_parts(
         apply_part(
             &value,
             created.or(updated).and_then(parse_db_ts),
-            &mut pending.event,
+            pending,
             sink,
         );
     }
@@ -298,6 +304,7 @@ fn drain_message_parts(
     let mut pending = PendingMessage {
         id: message_id.to_owned(),
         event: NormalizedEvent::new(Role::Assistant),
+        content: Vec::new(),
         part_bytes: 0,
         parts_oversized: false,
     };
@@ -313,6 +320,10 @@ struct OpenCodeStreamState {
 struct PendingMessage {
     id: String,
     event: NormalizedEvent,
+    /// Content captured from this message's `text`, `reasoning`, and `tool`
+    /// parts, in part order. Emitted as one `TurnContent` record right after
+    /// this message's `MetricsEvent`.
+    content: Vec<ContentPart>,
     part_bytes: usize,
     parts_oversized: bool,
 }
@@ -337,6 +348,7 @@ impl OpenCodeStreamState {
                 self.pending = Some(PendingMessage {
                     id: id.to_owned(),
                     event,
+                    content: Vec::new(),
                     part_bytes: 0,
                     parts_oversized: false,
                 });
@@ -361,7 +373,7 @@ impl OpenCodeStreamState {
                 }
                 let payload = value.get("payload").unwrap_or(&value);
                 let fallback_ts = value.pointer("/time/created").and_then(parse_ts);
-                apply_part(payload, fallback_ts, &mut pending.event, sink);
+                apply_part(payload, fallback_ts, pending, sink);
             }
             Some("session_meta" | "session_member") => {
                 self.flush(sink);
@@ -395,6 +407,11 @@ impl OpenCodeStreamState {
     fn flush(&mut self, sink: &mut dyn RecordSink) {
         if let Some(pending) = self.pending.take() {
             sink.record(NormalizedRecord::MetricsEvent(Box::new(pending.event)));
+            if !pending.content.is_empty() {
+                sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                    parts: pending.content,
+                })));
+            }
         }
     }
 
@@ -435,15 +452,15 @@ fn message_event(value: &Value, fallback_ts: Option<i64>) -> Option<NormalizedEv
 fn apply_part(
     value: &Value,
     fallback_ts: Option<i64>,
-    event: &mut NormalizedEvent,
+    pending: &mut PendingMessage,
     sink: &mut dyn RecordSink,
 ) {
     let Some(object) = value.as_object() else {
         sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
         return;
     };
-    if event.ts_ms.is_none() {
-        event.ts_ms = object
+    if pending.event.ts_ms.is_none() {
+        pending.event.ts_ms = object
             .get("time")
             .and_then(|time| time.get("created"))
             .and_then(parse_ts)
@@ -451,38 +468,79 @@ fn apply_part(
     }
     let part_type = object.get("type").and_then(Value::as_str).unwrap_or("");
     match part_type {
-        "text" | "file" | "snapshot" | "step-start" | "step-finish" | "agent" | "retry" => {}
-        "reasoning" => event.has_thinking = true,
-        "tool" => apply_tool_part(object, event),
-        "patch" => event.tools.push(ToolCall {
+        "text" => {
+            if let Some(text) = object
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                let kind = if pending.event.role == Role::Assistant {
+                    ContentKind::AssistantText
+                } else {
+                    ContentKind::UserText
+                };
+                pending.content.push(ContentPart::new(kind, text));
+            }
+        }
+        "file" | "snapshot" | "step-start" | "step-finish" | "agent" | "retry" => {}
+        "reasoning" => {
+            pending.event.has_thinking = true;
+            if let Some(text) = object
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                pending
+                    .content
+                    .push(ContentPart::new(ContentKind::Thinking, text));
+            }
+        }
+        "tool" => apply_tool_part(object, pending),
+        "patch" => pending.event.tools.push(ToolCall {
             name: "patch".to_owned(),
             category: ToolCategory::Edit,
             detail: None,
         }),
         "compaction" => {
-            event.is_compaction_boundary = true;
-            event.compaction_trigger = object.get("auto").and_then(Value::as_bool).map(|auto| {
-                if auto {
-                    CompactionTrigger::Auto
-                } else {
-                    CompactionTrigger::Manual
-                }
-            });
+            pending.event.is_compaction_boundary = true;
+            pending.event.compaction_trigger =
+                object.get("auto").and_then(Value::as_bool).map(|auto| {
+                    if auto {
+                        CompactionTrigger::Auto
+                    } else {
+                        CompactionTrigger::Manual
+                    }
+                });
         }
         discriminator if !discriminator.is_empty() => unrecognized(discriminator, sink),
         _ => unrecognized("<missing_part_type>", sink),
     }
 }
 
-fn apply_tool_part(part: &Map<String, Value>, event: &mut NormalizedEvent) {
+fn apply_tool_part(part: &Map<String, Value>, pending: &mut PendingMessage) {
     let name = part
         .get("tool")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .unwrap_or("tool");
-    let input = part.get("state").and_then(|state| state.get("input"));
-    event.tools.push(tool_call_from_input(name, input));
+    let state = part.get("state");
+    let input = state.and_then(|state| state.get("input"));
+    pending.event.tools.push(tool_call_from_input(name, input));
+    if let Some(text) = input.and_then(compact_json_text) {
+        pending
+            .content
+            .push(ContentPart::new(ContentKind::ToolInput, text));
+    }
+    if let Some(output) = state
+        .and_then(|state| state.get("output"))
+        .and_then(Value::as_str)
+        .filter(|output| !output.is_empty())
+    {
+        pending
+            .content
+            .push(ContentPart::new(ContentKind::ToolResult, output));
+    }
 }
 
 fn unrecognized(discriminator: &str, sink: &mut dyn RecordSink) {
@@ -596,5 +654,86 @@ mod tests {
 
         assert!(state.pending.is_none());
         assert_eq!(sink.0, 10_000);
+    }
+
+    /// Collects every `TurnContent` record a visit emits, in order.
+    #[derive(Default)]
+    struct ContentCapturingSink {
+        contents: Vec<TurnContent>,
+    }
+
+    impl RecordSink for ContentCapturingSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            if let NormalizedRecord::TurnContent(content) = record {
+                self.contents.push(*content);
+            }
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
+    #[test]
+    fn content_capture_maps_text_reasoning_and_tool_parts() {
+        let mut state = OpenCodeStreamState::default();
+        let mut sink = ContentCapturingSink::default();
+
+        state.observe_export(
+            serde_json::json!({
+                "type": "message",
+                "messageID": "m1",
+                "time": {"created": 1000},
+                "payload": {"role": "assistant", "modelID": "model-a"}
+            }),
+            64,
+            &mut sink,
+        );
+        state.observe_export(
+            serde_json::json!({
+                "type": "part",
+                "messageID": "m1",
+                "payload": {"type": "text", "text": "hello there"}
+            }),
+            64,
+            &mut sink,
+        );
+        state.observe_export(
+            serde_json::json!({
+                "type": "part",
+                "messageID": "m1",
+                "payload": {"type": "reasoning", "text": "pondering"}
+            }),
+            64,
+            &mut sink,
+        );
+        state.observe_export(
+            serde_json::json!({
+                "type": "part",
+                "messageID": "m1",
+                "payload": {
+                    "type": "tool",
+                    "tool": "bash",
+                    "state": {"input": {"command": "ls"}, "output": "ok"}
+                }
+            }),
+            64,
+            &mut sink,
+        );
+        state.flush(&mut sink);
+
+        assert_eq!(
+            sink.contents.len(),
+            1,
+            "one TurnContent for the one message"
+        );
+        let parts = &sink.contents[0].parts;
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0].kind, ContentKind::AssistantText);
+        assert_eq!(parts[0].text, "hello there");
+        assert_eq!(parts[1].kind, ContentKind::Thinking);
+        assert_eq!(parts[1].text, "pondering");
+        assert_eq!(parts[2].kind, ContentKind::ToolInput);
+        assert_eq!(parts[2].text, r#"{"command":"ls"}"#);
+        assert_eq!(parts[3].kind, ContentKind::ToolResult);
+        assert_eq!(parts[3].text, "ok");
     }
 }

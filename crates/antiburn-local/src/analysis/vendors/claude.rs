@@ -15,15 +15,15 @@ use serde_json::Value;
 
 use super::jsonl::{
     SKILL_BASE_MARKER, collect_skill_base_names_from_text, command_names_in_text,
-    command_skill_name, evidence_observations, is_inert_recognized_eventless,
-    is_inert_unrecognized, is_recognized_eventless, parse_record, record_discriminator,
-    record_text,
+    command_skill_name, evidence_observations, extract_content_parts,
+    is_inert_recognized_eventless, is_inert_unrecognized, is_recognized_eventless, parse_record,
+    record_discriminator, record_text,
 };
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
 use crate::analysis::initial_context::ClaudeContextAccumulator;
 use crate::analysis::interface::{
     NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionSummary,
-    VendorAdapter, VisitOutcome,
+    TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
@@ -212,7 +212,13 @@ impl ClaudeAdapter {
                             });
                         state.pending_commands.push((state.ordinal, commands));
                     }
+                    let content_parts = extract_content_parts(&value, event.role);
                     sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+                    if !content_parts.is_empty() {
+                        sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                            parts: content_parts,
+                        })));
+                    }
                     state.ordinal += 1;
                 }
             }
@@ -583,6 +589,57 @@ mod tests {
     }
 
     #[test]
+    fn content_capture_maps_text_thinking_tool_use_and_tool_result() {
+        use crate::analysis::interface::ContentKind;
+
+        let assistant_record = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "hello there"},
+                    {"type": "thinking", "thinking": "pondering"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                ]
+            }
+        })
+        .to_string();
+        let tool_result_record = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+            }
+        })
+        .to_string();
+        let input = SessionInput {
+            agent: "claude".to_string(),
+            session_id: "content-session".to_string(),
+            source: RawSource::Jsonl(format!("{assistant_record}\n{tool_result_record}\n")),
+        };
+        let mut sink = ContentCapturingSink::default();
+
+        ClaudeAdapter
+            .visit(&input, &mut sink)
+            .expect("visit content session");
+
+        assert_eq!(sink.contents.len(), 2, "one TurnContent per turn");
+        let assistant_parts = &sink.contents[0].parts;
+        assert_eq!(assistant_parts.len(), 3);
+        assert_eq!(assistant_parts[0].kind, ContentKind::AssistantText);
+        assert_eq!(assistant_parts[0].text, "hello there");
+        assert_eq!(assistant_parts[1].kind, ContentKind::Thinking);
+        assert_eq!(assistant_parts[1].text, "pondering");
+        assert_eq!(assistant_parts[2].kind, ContentKind::ToolInput);
+        assert_eq!(assistant_parts[2].text, r#"{"command":"ls"}"#);
+
+        let tool_result_parts = &sink.contents[1].parts;
+        assert_eq!(tool_result_parts.len(), 1);
+        assert_eq!(tool_result_parts[0].kind, ContentKind::ToolResult);
+        assert_eq!(tool_result_parts[0].text, "ok");
+    }
+
+    #[test]
     fn a_mid_stream_read_failure_omits_the_whole_session() {
         let source = b"{\"type\":\"assistant\",\"message\":{\"id\":\"first\",\"role\":\"assistant\",\"content\":[]}}\n";
         let reader = BufReader::new(DataThenError::new(source));
@@ -638,6 +695,22 @@ mod tests {
         fn finish(&mut self, _summary: SessionSummary) {
             self.finishes += 1;
         }
+    }
+
+    /// Collects every `TurnContent` record a visit emits, in order.
+    #[derive(Default)]
+    struct ContentCapturingSink {
+        contents: Vec<TurnContent>,
+    }
+
+    impl RecordSink for ContentCapturingSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            if let NormalizedRecord::TurnContent(content) = record {
+                self.contents.push(*content);
+            }
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
     }
 
     struct DataThenError {
