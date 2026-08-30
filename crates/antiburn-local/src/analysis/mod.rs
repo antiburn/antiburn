@@ -93,7 +93,10 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
-pub const PARSER_REVISION: i64 = 13;
+pub const PARSER_REVISION: i64 = 14;
+// +1 for the fork sub-agent replay fix: the Claude adapter skips a fork
+// transcript's replayed parent records at the ingest boundary, so a stored
+// fork session must re-ingest to drop its duplicate turn rows and usage.
 // +1 for the Codex `token_count` fix: a heartbeat with zero-component usage
 // beside a nonzero derived `total_tokens` is now inert, and
 // `cache_write_input_tokens` is now a known usage key

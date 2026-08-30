@@ -1,0 +1,1 @@
+{"agentType":"fork","isFork":true,"description":"Inspect the fictional atlas module.","toolUseId":"toolu_fork_replay_fork","parentAgentId":"fork-replay-normal-child","spawnDepth":2,"model":"inherit"}

@@ -7,14 +7,16 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, CompositeSink, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage,
     EvidenceSource, EvidenceValue, MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedSession,
     OrderingObservation, PARSER_REVISION, PartialReason, RawSource, RecordCoverage,
-    SessionCollector, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, adapter_for, analyze_session,
-    analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
+    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
+    TurnRowStore, TurnScope, adapter_for, analyze_session, analyze_sources_with, merge_metrics,
+    merge_subagent_events, normalize_source,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator,
     NotAssessedReason, ReportContext, ReportWindow,
 };
+use rusqlite::params;
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> &'static str {
@@ -118,6 +120,21 @@ fn fixture(name: &str) -> &'static str {
         }
         "fast_mode_overuse_clean" => {
             include_str!("fixtures/claude_characterization/fast_mode_overuse_clean.jsonl")
+        }
+        "fork_replay_parent" => {
+            include_str!("fixtures/claude_characterization/fork_replay_parent.jsonl")
+        }
+        "fork_replay_subagent" => {
+            include_str!("fixtures/claude_characterization/fork_replay_subagent.jsonl")
+        }
+        "fork_replay_subagent_meta" => {
+            include_str!("fixtures/claude_characterization/fork_replay_subagent.meta.json")
+        }
+        "fork_replay_fork" => {
+            include_str!("fixtures/claude_characterization/fork_replay_fork.jsonl")
+        }
+        "fork_replay_fork_meta" => {
+            include_str!("fixtures/claude_characterization/fork_replay_fork.meta.json")
         }
         _ => panic!("unknown characterization fixture: {name}"),
     }
@@ -1608,5 +1625,168 @@ fn invalid_utf8_inside_an_unterminated_tail_does_not_omit_the_session() {
             BTreeSet::from([PartialReason::IncompleteTail]),
             Some(1),
         )
+    );
+}
+
+/* --------------------------------------------------------------------
+ * Fork sub-agent replay: a fork's transcript replays its parent agent's
+ * records under the same `uuid`s before it appends its own new records.
+ * See `crates/antiburn-local/src/analysis/vendors/claude.rs`.
+ * ----------------------------------------------------------------- */
+
+/// A `uuid` the fork sub-agent transcript replays from its direct parent
+/// (`fork_replay_subagent.jsonl`'s second record) before it appends its own
+/// new record.
+const FORK_REPLAY_REPLAYED_UUID: &str = "44444444-4444-4444-8444-000000000002";
+
+/// Writes the fork-replay characterization scenario to `directory`: a
+/// parent transcript, a normal sub-agent (`agent-fork-replay-normal-child`),
+/// and a fork of that sub-agent (`agent-fork-replay-fork-child`) whose
+/// `.meta.json` sidecar names it as the fork's `parentAgentId`. Returns the
+/// three `SessionInput`s in ingest order: the parent, then each sub-agent.
+fn fork_replay_session(directory: &tempfile::TempDir) -> [SessionInput; 3] {
+    let parent_path = directory.path().join("fork-replay-parent.jsonl");
+    fs::write(&parent_path, fixture("fork_replay_parent")).expect("write parent transcript");
+
+    let subs = directory
+        .path()
+        .join("fork-replay-parent")
+        .join("subagents");
+    fs::create_dir_all(&subs).expect("create subagents dir");
+
+    let normal_path = subs.join("agent-fork-replay-normal-child.jsonl");
+    fs::write(&normal_path, fixture("fork_replay_subagent")).expect("write normal sub-agent");
+    fs::write(
+        normal_path.with_extension("meta.json"),
+        fixture("fork_replay_subagent_meta"),
+    )
+    .expect("write normal sub-agent meta.json");
+
+    let fork_path = subs.join("agent-fork-replay-fork-child.jsonl");
+    fs::write(&fork_path, fixture("fork_replay_fork")).expect("write fork sub-agent");
+    fs::write(
+        fork_path.with_extension("meta.json"),
+        fixture("fork_replay_fork_meta"),
+    )
+    .expect("write fork sub-agent meta.json");
+
+    [
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: "fork-replay-parent".to_string(),
+            source: RawSource::File(parent_path),
+        },
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: "fork-replay-normal-child".to_string(),
+            source: RawSource::File(normal_path),
+        },
+        SessionInput {
+            agent: "claude".to_string(),
+            session_id: "fork-replay-fork-child".to_string(),
+            source: RawSource::File(fork_path),
+        },
+    ]
+}
+
+/// Streams `inputs` through one shared [`MemoryTurnRowStore`], the same way
+/// the app's production ingest streams a parent and its discovered
+/// sub-agents: index 0 is the parent (`TurnScope` derived from its own
+/// events), every later index is a delegated child. Returns the merged
+/// [`TurnFacts`], the merged [`SessionEvidence`], and the store, so a test
+/// can also inspect the written `turn` rows directly.
+fn stream_fork_replay_inputs(
+    inputs: &[SessionInput],
+) -> (TurnFacts, SessionEvidence, Arc<MemoryTurnRowStore>) {
+    let store = MemoryTurnRowStore::new("claude", inputs[0].session_id.clone());
+    let mut parent_residual: Option<SessionEvidenceAccumulator> = None;
+    for (index, input) in inputs.iter().enumerate() {
+        let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: input.agent.clone(),
+            session_id: input.session_id.clone(),
+            kind: SourceKind::from(&input.source),
+            capabilities: SourceCapabilities::claude(),
+        });
+        let scope = (index > 0).then_some(TurnScope::Delegated);
+        let turn_rows = TurnRowSink::new(
+            Arc::clone(&store) as Arc<dyn TurnRowStore>,
+            input.session_id.clone(),
+            scope,
+        );
+        let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+        let outcome = adapter_for("claude")
+            .visit(input, &mut composite)
+            .expect("Claude source must be visited");
+        composite.observe_source_outcome(outcome);
+        let (_metrics, residual) = composite
+            .into_parts()
+            .expect("fork-replay pass must publish");
+        if index == 0 {
+            parent_residual = Some(residual);
+        } else {
+            parent_residual
+                .as_mut()
+                .expect("the parent must stream first")
+                .observe_child_coverage(&residual);
+        }
+    }
+    let facts = store.query_turn_facts().expect("turn facts must query");
+    let evidence = parent_residual
+        .expect("the parent must have streamed")
+        .evidence(&facts);
+    (facts, evidence, store)
+}
+
+#[test]
+fn fork_replayed_uuids_are_counted_once_and_do_not_degrade_evidence() {
+    let directory = tempfile::TempDir::new().expect("tempdir");
+    let inputs = fork_replay_session(&directory);
+    let (facts, evidence, store) = stream_fork_replay_inputs(&inputs);
+
+    // The duplicate-identity diagnostic — the backstop for genuine identity
+    // corruption — stays at zero: the fork's replayed rows never reached
+    // the `turn` table under their own `source_key`.
+    assert_eq!(facts.duplicate_turn_identities, 0);
+
+    // Every replayed `uuid` appears exactly once, under the normal
+    // sub-agent's own `source_key`, and its usage is counted once.
+    let (row_count, source_keys, input_tokens): (i64, String, i64) = store
+        .with_connection(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*), GROUP_CONCAT(DISTINCT source_key), SUM(input_tokens)
+                   FROM turn WHERE uuid = ?1",
+                params![FORK_REPLAY_REPLAYED_UUID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        })
+        .expect("query the replayed uuid's turn rows");
+    assert_eq!(row_count, 1);
+    assert_eq!(source_keys, "fork-replay-normal-child");
+    assert_eq!(input_tokens, 40);
+
+    // The fork's own new record still counts, under its own source_key.
+    let new_row_count: i64 = store
+        .with_connection(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM turn
+                   WHERE uuid = '44444444-4444-4444-8444-000000000004'
+                     AND source_key = 'fork-replay-fork-child'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("query the fork's own new row");
+    assert_eq!(new_row_count, 1);
+
+    assert!(
+        matches!(evidence.models, EvidenceValue::Complete(_)),
+        "models must not degrade to attribution_incomplete: {:?}",
+        evidence.models
+    );
+    assert!(
+        matches!(evidence.subagents, EvidenceValue::Complete(_)),
+        "subagents must not degrade to attribution_incomplete: {:?}",
+        evidence.subagents
     );
 }

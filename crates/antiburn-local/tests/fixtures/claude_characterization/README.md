@@ -40,6 +40,7 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | `session_overdepth_finding.jsonl` | One main-loop turn reports input tokens above the Sessions Over Depth cap, giving that badge a finding. |
 | `model_overthinking_finding.jsonl` | One main-loop turn reports explicit effort `max`, giving Model Overthinking a finding. |
 | `fast_mode_overuse_clean.jsonl` | A main-loop and a delegated turn both report explicit speed `standard`, so Fast-Mode Overuse reads clean instead of not-assessed. |
+| `fork_replay_parent.jsonl`, `fork_replay_subagent.jsonl` + `.meta.json`, `fork_replay_fork.jsonl` + `.meta.json` | A fork sub-agent's `.meta.json` sidecar carries `isFork` and `parentAgentId`; its transcript replays its direct parent's records under the same `uuid` before it appends its own new record. `tests/claude_characterization.rs`'s `fork_replay_session` writes these three transcripts (plus the fork's sidecar) into a real `subagents/` directory so the ingest path can resolve the replay source from the file layout, the same way it does against a real Claude Code session. |
 
 The following policy fixtures carry no metrics golden. `tests/unrecognized_records.rs` exercises them directly.
 
