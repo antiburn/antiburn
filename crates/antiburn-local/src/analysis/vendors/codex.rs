@@ -42,7 +42,7 @@ use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, 
 use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
     ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
-    SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
+    RelationProvenance, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::records::{
@@ -359,6 +359,15 @@ impl CodexStreamState {
                     .and_then(Value::as_u64)
                     .filter(|window| *window > 0);
             }
+            if is_spawn_agent_call(record_type, payload_type, &value) {
+                sink.record(NormalizedRecord::Observation(Box::new(
+                    EvidenceObservation::SubagentSpawn {
+                        ts_ms: value.get("timestamp").and_then(parse_ts),
+                        parent_model: self.current_model.clone(),
+                        provenance: RelationProvenance::SpawnAgentCall,
+                    },
+                )));
+            }
         }
 
         if let Some(mut event) = record_to_event(&value) {
@@ -476,6 +485,18 @@ fn is_developer_message(value: &Value) -> bool {
     value.get("type").and_then(Value::as_str) == Some("response_item")
         && value.pointer("/payload/type").and_then(Value::as_str) == Some("message")
         && value.pointer("/payload/role").and_then(Value::as_str) == Some("developer")
+}
+
+/// True for a `spawn_agent` function call: the record a Codex parent emits
+/// to start a subagent.
+fn is_spawn_agent_call(
+    record_type: Option<&str>,
+    payload_type: Option<&str>,
+    value: &Value,
+) -> bool {
+    record_type == Some("response_item")
+        && payload_type == Some("function_call")
+        && value.pointer("/payload/name").and_then(Value::as_str) == Some("spawn_agent")
 }
 
 fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
@@ -1455,5 +1476,119 @@ mod tests {
             .find(|event| event.model.as_deref() == Some("gpt-child"))
             .expect("the child's owned token_count turn is emitted");
         assert_eq!(owned_event.speed.as_deref(), Some("fast"));
+    }
+
+    /// Collects every `EvidenceObservation` a visit emits, in order.
+    #[derive(Default)]
+    struct ObservationCapturingSink {
+        observations: Vec<EvidenceObservation>,
+    }
+
+    impl RecordSink for ObservationCapturingSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            if let NormalizedRecord::Observation(observation) = record {
+                self.observations.push(*observation);
+            }
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
+    fn spawn_agent_observations(sink: &ObservationCapturingSink) -> Vec<&EvidenceObservation> {
+        sink.observations
+            .iter()
+            .filter(|observation| matches!(observation, EvidenceObservation::SubagentSpawn { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn a_spawn_agent_call_owned_by_the_parent_emits_a_spawn() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-06T10:00:00Z","type":"turn_context","payload":{"model":"gpt-parent","effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:01Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","arguments":"{\"agent_type\":\"worker\"}","call_id":"call-1"}}"#,
+            "\n",
+        );
+        let input = SessionInput {
+            agent: "codex".to_string(),
+            session_id: "spawn-owned".to_string(),
+            source: RawSource::Jsonl(jsonl.to_string()),
+        };
+        let mut sink = ObservationCapturingSink::default();
+
+        CodexAdapter
+            .visit(&input, &mut sink)
+            .expect("visit spawn-owned session");
+
+        let spawns = spawn_agent_observations(&sink);
+        assert_eq!(spawns.len(), 1);
+        let EvidenceObservation::SubagentSpawn {
+            parent_model,
+            provenance,
+            ..
+        } = spawns[0]
+        else {
+            unreachable!("filtered to SubagentSpawn observations");
+        };
+        assert_eq!(parent_model.as_deref(), Some("gpt-parent"));
+        assert_eq!(*provenance, RelationProvenance::SpawnAgentCall);
+    }
+
+    /// A `spawn_agent` call inside the copied parent-history prefix of a
+    /// subagent rollout (`ForkOwnership::Pending` replay, before the owned
+    /// usage boundary) is a spawn the parent's own rollout already reports.
+    /// It must not also emit a spawn from the child's file.
+    #[test]
+    fn a_spawn_agent_call_in_the_replayed_parent_prefix_emits_no_spawn() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-06T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-child","thread_source":"subagent","agent_path":"worker","source":"cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:01Z","type":"turn_context","payload":{"model":"gpt-parent","effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:02Z","type":"response_item","payload":{"type":"function_call","name":"spawn_agent","arguments":"{\"agent_type\":\"worker\"}","call_id":"call-1"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:03Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:04Z","type":"response_item","payload":{"type":"agent_message","author":"parent","recipient":"worker","content":[{"type":"input_text","text":"Handle the synthetic task."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:05Z","type":"turn_context","payload":{"model":"gpt-child","effort":"low"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"model_context_window":100000}}}"#,
+            "\n",
+        );
+        let input = SessionInput {
+            agent: "codex".to_string(),
+            session_id: "spawn-replayed-prefix".to_string(),
+            source: RawSource::Jsonl(jsonl.to_string()),
+        };
+        let mut sink = ObservationCapturingSink::default();
+
+        CodexAdapter
+            .visit(&input, &mut sink)
+            .expect("visit spawn-replayed-prefix session");
+
+        assert!(spawn_agent_observations(&sink).is_empty());
+    }
+
+    #[test]
+    fn a_function_call_with_another_name_emits_no_spawn() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-06T10:00:00Z","type":"turn_context","payload":{"model":"gpt-parent","effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:01Z","type":"response_item","payload":{"type":"function_call","name":"bash","arguments":"{\"command\":\"ls\"}","call_id":"call-1"}}"#,
+            "\n",
+        );
+        let input = SessionInput {
+            agent: "codex".to_string(),
+            session_id: "spawn-other-name".to_string(),
+            source: RawSource::Jsonl(jsonl.to_string()),
+        };
+        let mut sink = ObservationCapturingSink::default();
+
+        CodexAdapter
+            .visit(&input, &mut sink)
+            .expect("visit spawn-other-name session");
+
+        assert!(spawn_agent_observations(&sink).is_empty());
     }
 }

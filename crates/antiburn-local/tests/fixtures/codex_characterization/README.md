@@ -19,14 +19,14 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 | Reasoning effort tier | yes | `turn_context.effort`; missing attribution degrades coverage |
 | Fast tier | yes | `event_msg`/`thread_settings_applied.thread_settings.service_tier`, normalized to `fast`/`standard` |
 | Service tier | no | The adapter folds the setting into `fast_tier`'s speed vocabulary instead of publishing its own `service_tiers` marker |
-| Subagent relationships | no | Discovery can relate files, but this evidence adapter does not publish the relation |
-| Subagent models | no | A subagent activity record does not carry its model |
+| Subagent relationships | yes | A `spawn_agent` function call emits `SubagentSpawn`; discovery relates the spawned child rollout |
+| Subagent models | yes | The child's own `turn_context.model` reaches `subagents.delegated_models` through its `Delegated`-scope rows |
 | Compaction boundaries | yes | Top-level `compacted` and legacy `context_compacted` |
 | Thread identity | no | Records have no Claude-style record and parent identities |
 | Quota incidents | no | The evidence sink has no incident ingestion path in this slice |
 | Harness version | no | The evidence sink has no version ingestion path in this slice |
 
-Only Model Overthinking and Old Model Usage have all capability prerequisites. Every other detector remains not assessed. Fast-mode overuse still needs Subagent relationships, so the `fast_tier` capability alone does not move it into the assessed set; per-session evaluation still reads `fast_tier` directly and reports `speed_signal` coverage.
+Model Overthinking, Overpowered Subagents, Old Model Usage, and Fast-Mode Overuse have all capability prerequisites. Every other detector remains not assessed. Fast-mode overuse needed Subagent relationships in addition to `fast_tier`; now that the adapter publishes the subagent relationship, both it and Overpowered Subagents move into the assessed set.
 
 ## Coverage cases
 
@@ -41,3 +41,4 @@ Only Model Overthinking and Old Model Usage have all capability prerequisites. E
 - `incomplete_final_record.jsonl` models an active writer stopped inside its final line.
 - `service_tier_priority.jsonl` changes `thread_settings.service_tier` from `default` to `priority` and back, and checks the resulting `fast`/`standard` split.
 - `service_tier_absent.jsonl` records no `thread_settings_applied` at all, so `speed_signal` reports zero present turns.
+- `spawn_agent.jsonl` has a parent turn call `spawn_agent`, and checks that the call publishes a subagent relationship and keeps the subagent-evidence detectors assessable.

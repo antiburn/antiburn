@@ -15,7 +15,7 @@ use antiburn_local::analysis::{
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
 };
-use antiburn_local::insights::{DetectorId, requirements};
+use antiburn_local::insights::{DetectorId, GroupState, requirements};
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> &'static str {
@@ -51,11 +51,12 @@ fn fixture(name: &str) -> &'static str {
         "service_tier_absent" => {
             include_str!("fixtures/codex_characterization/service_tier_absent.jsonl")
         }
+        "spawn_agent" => include_str!("fixtures/codex_characterization/spawn_agent.jsonl"),
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 11] {
+fn fixture_names() -> [&'static str; 12] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -68,6 +69,7 @@ fn fixture_names() -> [&'static str; 11] {
         "incomplete_final_record",
         "service_tier_priority",
         "service_tier_absent",
+        "spawn_agent",
     ]
 }
 
@@ -246,8 +248,8 @@ fn codex_capabilities_match_published_evidence() {
     assert!(!capabilities.skill_mcp_attribution);
     assert!(!capabilities.tool_definitions);
     assert!(!capabilities.service_tier);
-    assert!(!capabilities.subagent_relationships);
-    assert!(!capabilities.subagent_models);
+    assert!(capabilities.subagent_relationships && is_supported(&evidence.subagents));
+    assert!(capabilities.subagent_models);
     assert!(!capabilities.thread_identity);
     assert!(!capabilities.quota_incidents);
     assert!(!capabilities.harness_version);
@@ -255,7 +257,6 @@ fn codex_capabilities_match_published_evidence() {
         evidence.context_sources,
         EvidenceValue::Unsupported
     ));
-    assert!(matches!(evidence.subagents, EvidenceValue::Unsupported));
     assert!(matches!(
         evidence.quota_incidents,
         EvidenceValue::Unsupported
@@ -352,7 +353,12 @@ fn codex_detector_prerequisites_assess_only_supported_detectors() {
 
     assert_eq!(
         assessed,
-        vec![DetectorId::ModelOverthinking, DetectorId::OldModelUsage]
+        vec![
+            DetectorId::ModelOverthinking,
+            DetectorId::OverpoweredSubagents,
+            DetectorId::OldModelUsage,
+            DetectorId::OveruseOfFastMode,
+        ]
     );
 }
 
@@ -578,6 +584,11 @@ fn unrecognized_codex_fixture_matches_golden() {
 }
 
 #[test]
+fn spawn_agent_codex_fixture_matches_golden() {
+    check_golden("spawn_agent");
+}
+
+#[test]
 fn service_tier_changes_split_fast_modes_and_cover_every_assistant_turn() {
     let (evidence, _) = composite(&input("service_tier_priority"));
 
@@ -619,4 +630,33 @@ fn absent_service_tier_reports_the_speed_signal_as_missing() {
     // `present_turns < eligible_turns`.
     assert!(models.speed_signal.eligible_turns > 0);
     assert!(models.fast_modes.is_empty());
+}
+
+#[test]
+fn spawn_agent_call_creates_a_subagent_relationship_and_keeps_detectors_assessable() {
+    let (evidence, _) = composite(&input("spawn_agent"));
+
+    let EvidenceValue::Complete(subagents) = &evidence.subagents else {
+        panic!("spawn_agent fixture must publish complete subagent evidence");
+    };
+    assert_eq!(subagents.spawn_count, 1);
+    assert_eq!(subagents.children.len(), 1);
+    assert_eq!(
+        subagents.children[0].parent_model.as_deref(),
+        Some("gpt-alpha")
+    );
+
+    for detector in [
+        DetectorId::OverpoweredSubagents,
+        DetectorId::OveruseOfFastMode,
+    ] {
+        let assessable = requirements(detector)
+            .groups
+            .iter()
+            .all(|group| !matches!(group.state(&evidence), GroupState::Unsupported));
+        assert!(
+            assessable,
+            "{detector:?} must be assessable for the spawn_agent fixture"
+        );
+    }
 }

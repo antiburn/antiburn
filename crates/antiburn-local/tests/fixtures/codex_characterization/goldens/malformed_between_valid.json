@@ -34,8 +34,8 @@
       "requestContextTokens": true,
       "serviceTier": false,
       "skillMcpAttribution": false,
-      "subagentModels": false,
-      "subagentRelationships": false,
+      "subagentModels": true,
+      "subagentRelationships": true,
       "threadIdentity": false,
       "timestampsAndOrder": true,
       "tokenClasses": true,
@@ -143,21 +143,31 @@
     },
     "provenance": {
       "analyzerRevision": 9,
-      "evidenceSchemaRevision": 5,
+      "evidenceSchemaRevision": 6,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 7,
+      "parserRevision": 8,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 5,
+    "schemaRevision": 6,
     "subagents": {
-      "state": "unsupported"
+      "state": "partial",
+      "value": {
+        "observed": {
+          "children": [],
+          "delegatedModels": [],
+          "delegatedTurns": 0,
+          "examples": [],
+          "spawnCount": 0
+        },
+        "reason": "malformed_record"
+      }
     },
     "timeRange": {
       "state": "partial",

@@ -160,6 +160,8 @@ pub enum ContextSourceKind {
 #[serde(rename_all = "snake_case")]
 pub enum RelationProvenance {
     TaskToolUse,
+    /// A Codex `spawn_agent` function call.
+    SpawnAgentCall,
 }
 
 /// Session facts that an adapter can state only after the last record.

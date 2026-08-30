@@ -2094,6 +2094,67 @@ mod tests {
         assert!(subagents.delegated_models.contains("claude-opus-4-6"));
     }
 
+    /// A Codex parent rollout: one `turn_context` naming `model`, then one
+    /// `spawn_agent` function call that starts a subagent.
+    fn codex_spawn_parent_record(model: &str) -> String {
+        format!(
+            concat!(
+                r#"{{"timestamp":"2026-08-12T10:00:00Z","type":"turn_context","payload":{{"model":"{model}","effort":"medium"}}}}"#,
+                "\n",
+                r#"{{"timestamp":"2026-08-12T10:00:01Z","type":"response_item","payload":{{"type":"function_call","name":"spawn_agent","arguments":"{{\"agent_type\":\"worker\"}}","call_id":"call-spawn"}}}}"#,
+                "\n",
+            ),
+            model = model,
+        )
+    }
+
+    /// A discovered Codex child rollout: `session_meta` marks it a subagent
+    /// replaying its parent's history, then the task addressed to the
+    /// child's agent path opens its owned usage window, which carries one
+    /// `turn_context` naming `model` and one assistant turn with usage.
+    fn codex_spawn_child_record(model: &str) -> String {
+        format!(
+            concat!(
+                r#"{{"timestamp":"2026-08-12T10:00:02Z","type":"session_meta","payload":{{"id":"synthetic-spawn-child","thread_source":"subagent","agent_path":"worker","source":"cli"}}}}"#,
+                "\n",
+                r#"{{"timestamp":"2026-08-12T10:00:03Z","type":"event_msg","payload":{{"type":"task_started"}}}}"#,
+                "\n",
+                r#"{{"timestamp":"2026-08-12T10:00:04Z","type":"response_item","payload":{{"type":"agent_message","author":"parent","recipient":"worker","content":[{{"type":"input_text","text":"Handle the synthetic task."}}]}}}}"#,
+                "\n",
+                r#"{{"timestamp":"2026-08-12T10:00:05Z","type":"turn_context","payload":{{"model":"{model}","effort":"low"}}}}"#,
+                "\n",
+                r#"{{"timestamp":"2026-08-12T10:00:06Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340}},"total_token_usage":{{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340}},"model_context_window":100000}}}}}}"#,
+                "\n",
+            ),
+            model = model,
+        )
+    }
+
+    #[test]
+    fn a_codex_spawn_agent_call_links_to_its_discovered_child() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, codex_spawn_parent_record("gpt-parent")).expect("write parent");
+        std::fs::write(&child, codex_spawn_child_record("gpt-child")).expect("write child");
+
+        let pass = evidence_pass_with_turn_rows(
+            &[
+                codex_file_input(&parent, "spawn-parent"),
+                codex_file_input(&child, "spawn-child"),
+            ],
+            &|| false,
+            Some(turn_row_store("codex", "spawn-parent")),
+        );
+        let evidence = pass.evidence.expect("published evidence");
+
+        assert!(matches!(evidence.subagents, EvidenceValue::Complete(_)));
+        let subagents = observed(&evidence.subagents);
+        assert_eq!(subagents.spawn_count, 1);
+        assert!(subagents.delegated_models.contains("gpt-child"));
+        assert_eq!(subagents.delegated_turns, 1);
+    }
+
     #[test]
     fn a_model_switch_confined_to_one_child_produces_no_transition() {
         let directory = tempfile::TempDir::new().expect("tempdir");
