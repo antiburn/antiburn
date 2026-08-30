@@ -953,10 +953,17 @@ fn pi_detector_eligibility_is_frozen() {
     );
 }
 
+/// The generic fallback claims no cache-write support for any vendor (plan
+/// decision 7), so it always uses the uncached-input accounting mode. That
+/// only matches Pi's own accounting on a fixture where Pi's own per-session
+/// signal also reports cache-write support unavailable — both then read the
+/// same content through the same accounting mode. A fixture where Pi's own
+/// signal reports cache-write support available is not comparable here: Pi
+/// uses the cache-write mode and the generic fallback still cannot.
 #[test]
-fn cache_rehydration_behavior_matches_the_previous_generic_adapter_when_supported() {
+fn cache_rehydration_behavior_matches_the_generic_fallback_when_neither_supports_cache_writes() {
     for name in fixture_names() {
-        if !summary(name).cache_write_tokens_available {
+        if summary(name).cache_write_tokens_available {
             continue;
         }
         let input = input(name);
@@ -970,6 +977,10 @@ fn cache_rehydration_behavior_matches_the_previous_generic_adapter_when_supporte
         );
     }
 
+    // `mixed_api` reports cache-write support unavailable because its two
+    // API families disagree on whether they report cache writes at all. Pi
+    // and the generic fallback both fall back to uncached-input accounting
+    // and read the same rehydration count from it.
     let (evidence, pi_metrics) = composite(&input("mixed_api"));
     assert!(!evidence.capabilities.cache_write_tokens);
     assert_eq!(pi_metrics.metrics().cache_rehydration_count, 1);
@@ -978,7 +989,7 @@ fn cache_rehydration_behavior_matches_the_previous_generic_adapter_when_supporte
         SourceCapabilities::pi(),
         adapter_for("pi-generic-fallback"),
     );
-    assert_eq!(generic_metrics.metrics().cache_rehydration_count, 0);
+    assert_eq!(generic_metrics.metrics().cache_rehydration_count, 1);
 }
 
 #[test]

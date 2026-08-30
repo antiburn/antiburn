@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use antiburn_local::analysis::{
     AppendOnlyGuarantee, CompositeSink, CoverageReason, EvidenceCoverage, EvidenceSource,
-    EvidenceValue, MemoryTurnRowStore, NormalizedSession, PartialReason, RawSource, RecordCoverage,
-    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnRowSink,
-    TurnRowStore, VisitOutcome, adapter_for, analyze_sources_with, append_only_guarantee,
-    normalize_source,
+    EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, NormalizedSession, PartialReason, RawSource,
+    RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnCounts,
+    TurnRowSink, TurnRowStore, VisitOutcome, adapter_for, analyze_sources_with,
+    append_only_guarantee, normalize_source,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -45,11 +45,17 @@ fn fixture(name: &str) -> &'static str {
         "incomplete_final_record" => {
             include_str!("fixtures/codex_characterization/incomplete_final_record.jsonl")
         }
+        "service_tier_priority" => {
+            include_str!("fixtures/codex_characterization/service_tier_priority.jsonl")
+        }
+        "service_tier_absent" => {
+            include_str!("fixtures/codex_characterization/service_tier_absent.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 9] {
+fn fixture_names() -> [&'static str; 11] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -60,6 +66,8 @@ fn fixture_names() -> [&'static str; 9] {
         "fork_disputed_window",
         "unresolved_fork",
         "incomplete_final_record",
+        "service_tier_priority",
+        "service_tier_absent",
     ]
 }
 
@@ -233,10 +241,10 @@ fn codex_capabilities_match_published_evidence() {
     assert!(capabilities.reasoning_effort_tier && is_supported(&evidence.models));
     assert!(capabilities.compaction_boundaries && is_supported(&evidence.compactions));
 
+    assert!(capabilities.fast_tier);
     assert!(!capabilities.cache_write_tokens);
     assert!(!capabilities.skill_mcp_attribution);
     assert!(!capabilities.tool_definitions);
-    assert!(!capabilities.fast_tier);
     assert!(!capabilities.service_tier);
     assert!(!capabilities.subagent_relationships);
     assert!(!capabilities.subagent_models);
@@ -567,4 +575,48 @@ fn malformed_codex_fixture_matches_golden() {
 #[test]
 fn unrecognized_codex_fixture_matches_golden() {
     check_golden("unrecognized_type");
+}
+
+#[test]
+fn service_tier_changes_split_fast_modes_and_cover_every_assistant_turn() {
+    let (evidence, _) = composite(&input("service_tier_priority"));
+
+    let EvidenceValue::Complete(models) = evidence.models else {
+        panic!("service_tier_priority must publish a complete model group");
+    };
+    assert_eq!(
+        models.speed_signal.present_turns,
+        models.speed_signal.eligible_turns
+    );
+    assert_eq!(models.speed_signal.eligible_turns, 5);
+    assert_eq!(
+        models.fast_modes.get("standard"),
+        Some(&TurnCounts {
+            main_loop: 3,
+            delegated: 0
+        })
+    );
+    assert_eq!(
+        models.fast_modes.get(FAST_SPEED_KEY),
+        Some(&TurnCounts {
+            main_loop: 2,
+            delegated: 0
+        })
+    );
+}
+
+#[test]
+fn absent_service_tier_reports_the_speed_signal_as_missing() {
+    let (evidence, _) = composite(&input("service_tier_absent"));
+
+    let EvidenceValue::Complete(models) = evidence.models else {
+        panic!("service_tier_absent must publish a complete model group");
+    };
+    assert_eq!(models.speed_signal.present_turns, 0);
+    // Every turn is eligible (assistant role, model attributed) but none
+    // carries a speed value, so `overuse_of_fast_mode::evaluate` reads this
+    // as `SignalMissing`, never as clean: `eligible_turns > 0` and
+    // `present_turns < eligible_turns`.
+    assert!(models.speed_signal.eligible_turns > 0);
+    assert!(models.fast_modes.is_empty());
 }

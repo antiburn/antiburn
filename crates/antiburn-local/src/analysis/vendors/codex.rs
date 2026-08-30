@@ -11,12 +11,15 @@
 //!   whose input is JavaScript (`tools.apply_patch(...)`,
 //!   `tools.exec_command(...)`, …); this adapter lexes those calls as data and
 //!   never evaluates the script.
-//! - `event_msg` carries UI-layer events; the only one we need is `token_count`,
-//!   whose `info.last_token_usage` is the latest turn's usage (its `input_tokens`
-//!   is the live prompt size = context-window occupancy) and whose
+//! - `event_msg` carries UI-layer events. `token_count` gives usage: its
+//!   `info.last_token_usage` is the latest turn's usage (its `input_tokens`
+//!   is the live prompt size = context-window occupancy) and its
 //!   `info.model_context_window` gives the model's real window. (The duplicate
 //!   `user_message` / `agent_message` echoes of `response_item` turns are
-//!   skipped so turns aren't double-counted.)
+//!   skipped so turns aren't double-counted.) `thread_settings_applied` gives
+//!   the thread's speed: its `thread_settings.service_tier` applies to every
+//!   assistant turn after it, until the next `thread_settings_applied` record;
+//!   see `service_tier_speed`.
 //! - `compacted` is a top-level envelope (not an `event_msg`) that newer Codex
 //!   rollouts write when a compaction finishes. Older rollouts instead (or
 //!   also) emit `{"type":"event_msg","payload":{"type":"context_compacted"}}`.
@@ -216,6 +219,7 @@ struct CodexStreamState {
     model: Option<String>,
     current_model: Option<String>,
     current_thinking_mode: Option<String>,
+    current_speed: Option<String>,
     started_at_ms: Option<i64>,
     owned_token_count_seen: bool,
     effort_seen: bool,
@@ -327,6 +331,13 @@ impl CodexStreamState {
         let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
         let is_token_count =
             record_type == Some("event_msg") && payload_type == Some("token_count");
+        // A thread-level setting: update it whether or not this record's own
+        // usage belongs to this rollout, so a child rollout's owned turns
+        // still inherit the tier a `thread_settings_applied` record set in
+        // the replayed parent history that precedes them.
+        if let Some(speed) = service_tier_speed(&value) {
+            self.current_speed = Some(speed);
+        }
         if is_token_count {
             if let Some(key) = token_count_key(&value) {
                 let duplicate = self.previous_token_count_key.as_ref() == Some(&key);
@@ -354,6 +365,7 @@ impl CodexStreamState {
             if usage_is_owned {
                 event.model = event.model.or_else(|| self.current_model.clone());
                 event.thinking_mode = self.current_thinking_mode.clone();
+                apply_thread_speed(&mut event, &self.current_speed);
             }
             if is_token_count {
                 self.owned_token_count_seen = true;
@@ -491,6 +503,41 @@ fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>
     )
 }
 
+/// Read the per-turn speed a `thread_settings_applied` record sets, from its
+/// `payload.thread_settings.service_tier`. Returns `None` for any other
+/// record type, and for a missing or empty tier (the caller then leaves the
+/// current speed unchanged). `"priority"` maps to `"fast"` and `"default"`
+/// maps to `"standard"`, matching Claude's speed vocabulary; any other
+/// non-empty tier is kept as its own raw label, so an unreviewed tier still
+/// shows up as its own key in `fast_modes` instead of vanishing.
+fn service_tier_speed(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg")
+        || value.pointer("/payload/type").and_then(Value::as_str) != Some("thread_settings_applied")
+    {
+        return None;
+    }
+    let tier = value
+        .pointer("/payload/thread_settings/service_tier")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|tier| !tier.is_empty())?;
+    Some(match tier {
+        "priority" => "fast".to_owned(),
+        "default" => "standard".to_owned(),
+        other => other.to_owned(),
+    })
+}
+
+/// Attach the thread's current speed to an assistant event that carries none
+/// of its own. Every Codex event starts with no speed today, but the guard
+/// keeps a future record type that reports its own per-turn speed from being
+/// overwritten.
+fn apply_thread_speed(event: &mut NormalizedEvent, current_speed: &Option<String>) {
+    if event.role == Role::Assistant && event.speed.is_none() {
+        event.speed = current_speed.clone();
+    }
+}
+
 fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<String>) {
     let mut events = Vec::new();
     // A forked rollout starts by replaying its parent's history. Keep those
@@ -507,6 +554,11 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
     let mut model: Option<String> = None;
     let mut current_model: Option<String> = None;
     let mut current_thinking_mode: Option<String> = None;
+    // The thread-level speed a `thread_settings_applied` record last set, from
+    // its `service_tier`. Tracked regardless of `usage_is_owned` — see
+    // `service_tier_speed` — so a child rollout's owned turns still inherit
+    // the tier a replayed parent record set before the owned window starts.
+    let mut current_speed: Option<String> = None;
     // Dedupe state for compaction boundaries: some rollouts write a
     // `context_compacted` event_msg and a top-level `compacted` record
     // back-to-back for the same compaction (see `compaction_event`).
@@ -524,6 +576,9 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
             let usage_is_owned = owned_usage_start.is_none_or(|start| line_offset >= start);
+            if let Some(speed) = service_tier_speed(&value) {
+                current_speed = Some(speed);
+            }
             if usage_is_owned && context_window.is_none() {
                 context_window = value
                     .pointer("/payload/info/model_context_window")
@@ -561,8 +616,6 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
                 {
                     current_thinking_mode = Some(next_mode.to_string());
                 }
-                // Codex rollouts carry no speed/fast-mode signal like Claude's
-                // `usage.speed`, so `NormalizedEvent.speed` stays `None` here.
             }
             let inherited_token_count = !usage_is_owned
                 && value.get("type").and_then(Value::as_str) == Some("event_msg")
@@ -578,6 +631,7 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
                 if usage_is_owned {
                     ev.model = ev.model.or_else(|| current_model.clone());
                     ev.thinking_mode = current_thinking_mode.clone();
+                    apply_thread_speed(&mut ev, &current_speed);
                 }
                 let duplicate_boundary = ev.is_compaction_boundary
                     && previous_event_was_boundary
@@ -1290,5 +1344,116 @@ mod tests {
         assert_eq!(sink.contents[2].parts[0].text, r#"{"command":"ls"}"#);
         assert_eq!(sink.contents[3].parts[0].kind, ContentKind::ToolResult);
         assert_eq!(sink.contents[3].parts[0].text, "ok");
+    }
+
+    fn thread_settings_applied(service_tier: &str) -> Value {
+        serde_json::json!({
+            "timestamp": "2026-08-01T10:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "thread_settings_applied",
+                "thread_settings": {"service_tier": service_tier}
+            }
+        })
+    }
+
+    #[test]
+    fn service_tier_maps_priority_to_fast_and_default_to_standard() {
+        assert_eq!(
+            service_tier_speed(&thread_settings_applied("priority")).as_deref(),
+            Some("fast")
+        );
+        assert_eq!(
+            service_tier_speed(&thread_settings_applied("default")).as_deref(),
+            Some("standard")
+        );
+    }
+
+    #[test]
+    fn service_tier_keeps_an_unreviewed_tier_as_its_own_label() {
+        assert_eq!(
+            service_tier_speed(&thread_settings_applied("economy")).as_deref(),
+            Some("economy")
+        );
+    }
+
+    #[test]
+    fn service_tier_ignores_an_empty_or_missing_value() {
+        assert_eq!(service_tier_speed(&thread_settings_applied("")), None);
+        assert_eq!(
+            service_tier_speed(&serde_json::json!({
+                "type": "event_msg",
+                "payload": {"type": "thread_settings_applied", "thread_settings": {}}
+            })),
+            None
+        );
+        assert_eq!(
+            service_tier_speed(&serde_json::json!({
+                "type": "event_msg",
+                "payload": {"type": "token_count"}
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn an_event_that_already_carries_a_speed_keeps_it() {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.speed = Some("preexisting".to_owned());
+
+        apply_thread_speed(&mut event, &Some("fast".to_owned()));
+
+        assert_eq!(event.speed.as_deref(), Some("preexisting"));
+    }
+
+    #[test]
+    fn a_non_assistant_event_never_receives_the_thread_speed() {
+        let mut event = NormalizedEvent::new(Role::Tool);
+
+        apply_thread_speed(&mut event, &Some("fast".to_owned()));
+
+        assert_eq!(event.speed, None);
+    }
+
+    /// A `thread_settings_applied` record in the copied parent-history prefix
+    /// of a subagent rollout — the part `ForkOwnership::Pending` buffers and
+    /// attributes to no one — must still set the speed the child's later,
+    /// owned turns inherit. See `service_tier_speed`'s call in `process_value`.
+    #[test]
+    fn a_tier_set_in_the_replayed_parent_prefix_reaches_the_child_s_owned_turns() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-05T10:00:00Z","type":"session_meta","payload":{"id":"synthetic-child","thread_source":"subagent","agent_path":"worker","source":"cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T10:00:01Z","type":"turn_context","payload":{"model":"gpt-parent","effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T10:00:02Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T10:00:03Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T10:00:04Z","type":"response_item","payload":{"type":"agent_message","author":"parent","recipient":"worker","content":[{"type":"input_text","text":"Handle the synthetic task."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T10:00:05Z","type":"turn_context","payload":{"model":"gpt-child","effort":"low"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T10:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"model_context_window":100000}}}"#,
+            "\n",
+        );
+        let input = SessionInput {
+            agent: "codex".to_string(),
+            session_id: "fork-speed".to_string(),
+            source: RawSource::Jsonl(jsonl.to_string()),
+        };
+        let mut sink = SessionCollector::new("codex", "fork-speed");
+
+        CodexAdapter
+            .visit(&input, &mut sink)
+            .expect("visit fork speed session");
+        let session = sink.into_session().expect("fork speed session finishes");
+
+        let owned_event = session
+            .events
+            .iter()
+            .find(|event| event.model.as_deref() == Some("gpt-child"))
+            .expect("the child's owned token_count turn is emitted");
+        assert_eq!(owned_event.speed.as_deref(), Some("fast"));
     }
 }

@@ -17,8 +17,8 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 | Model identity | yes | `turn_context.model` |
 | Token classes | yes | Input, cached input, output, and reasoning output are distinct |
 | Reasoning effort tier | yes | `turn_context.effort`; missing attribution degrades coverage |
-| Fast tier | no | No speed mode field |
-| Service tier | no | The adapter does not extract the sparse setting |
+| Fast tier | yes | `event_msg`/`thread_settings_applied.thread_settings.service_tier`, normalized to `fast`/`standard` |
+| Service tier | no | The adapter folds the setting into `fast_tier`'s speed vocabulary instead of publishing its own `service_tiers` marker |
 | Subagent relationships | no | Discovery can relate files, but this evidence adapter does not publish the relation |
 | Subagent models | no | A subagent activity record does not carry its model |
 | Compaction boundaries | yes | Top-level `compacted` and legacy `context_compacted` |
@@ -26,7 +26,7 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 | Quota incidents | no | The evidence sink has no incident ingestion path in this slice |
 | Harness version | no | The evidence sink has no version ingestion path in this slice |
 
-Only Model Overthinking and Old Model Usage have all capability prerequisites. Every other detector remains not assessed.
+Only Model Overthinking and Old Model Usage have all capability prerequisites. Every other detector remains not assessed. Fast-mode overuse still needs Subagent relationships, so the `fast_tier` capability alone does not move it into the assessed set; per-session evaluation still reads `fast_tier` directly and reports `speed_signal` coverage.
 
 ## Coverage cases
 
@@ -39,3 +39,5 @@ Only Model Overthinking and Old Model Usage have all capability prerequisites. E
 - `fork_disputed_window.jsonl` keeps usage between the owned task boundary and its child discriminator.
 - `unresolved_fork.jsonl` attributes all usage when the child discriminator is absent.
 - `incomplete_final_record.jsonl` models an active writer stopped inside its final line.
+- `service_tier_priority.jsonl` changes `thread_settings.service_tier` from `default` to `priority` and back, and checks the resulting `fast`/`standard` split.
+- `service_tier_absent.jsonl` records no `thread_settings_applied` at all, so `speed_signal` reports zero present turns.

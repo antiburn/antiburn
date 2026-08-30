@@ -27,9 +27,37 @@ impl VendorAdapter for GenericJsonlAdapter {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events: parse_jsonl(&content),
-            cache_write_tokens_available: true,
+            // An unknown vendor's cache-write support is not a fact this
+            // adapter can verify. A dedicated adapter (for example
+            // `SourceCapabilities::claude`) can claim it because it knows its
+            // vendor's transcript contract; this fallback knows no vendor.
+            cache_write_tokens_available: false,
             context_window: None,
             model: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::interface::RawSource;
+
+    /// Freezes the generic fallback's minimum capability claim (plan decision
+    /// 7): an unknown vendor's transcript proves no vendor-specific contract,
+    /// so this adapter never claims cache-write support.
+    #[test]
+    fn generic_fallback_never_claims_cache_write_support() {
+        let input = SessionInput {
+            agent: "generic".to_owned(),
+            session_id: "generic-session".to_owned(),
+            source: RawSource::Jsonl(String::new()),
+        };
+
+        let session = GenericJsonlAdapter
+            .normalize(&input)
+            .expect("empty session normalizes");
+
+        assert!(!session.cache_write_tokens_available);
     }
 }
