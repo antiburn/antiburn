@@ -974,13 +974,13 @@ impl RecordSink for SessionEvidenceAccumulator {
     }
 }
 
-pub struct CompositeSink<'a> {
+pub struct CompositeSink {
     metrics: SessionMetricsAccumulator,
     evidence: SessionEvidenceAccumulator,
-    turn_rows: Option<TurnRowSink<'a>>,
+    turn_rows: Option<TurnRowSink>,
 }
 
-impl<'a> CompositeSink<'a> {
+impl CompositeSink {
     pub fn new(metrics: SessionMetricsAccumulator, evidence: SessionEvidenceAccumulator) -> Self {
         Self {
             metrics,
@@ -995,7 +995,7 @@ impl<'a> CompositeSink<'a> {
     pub fn with_turn_rows(
         metrics: SessionMetricsAccumulator,
         evidence: SessionEvidenceAccumulator,
-        turn_rows: TurnRowSink<'a>,
+        turn_rows: TurnRowSink,
     ) -> Self {
         Self {
             metrics,
@@ -1032,7 +1032,7 @@ impl<'a> CompositeSink<'a> {
     }
 }
 
-impl RecordSink for CompositeSink<'_> {
+impl RecordSink for CompositeSink {
     fn record(&mut self, record: NormalizedRecord) {
         self.evidence.observe(&record);
         if let Some(turn_rows) = &mut self.turn_rows {

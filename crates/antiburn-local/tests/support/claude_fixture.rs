@@ -19,11 +19,11 @@ pub fn session_input(name: &str) -> SessionInput {
     }
 }
 
-pub fn stream_composite(name: &str) -> CompositeSink<'static> {
+pub fn stream_composite(name: &str) -> CompositeSink {
     stream_input(session_input(name))
 }
 
-pub fn stream_source(name: &str, source: String) -> CompositeSink<'static> {
+pub fn stream_source(name: &str, source: String) -> CompositeSink {
     stream_input(SessionInput {
         agent: "claude".to_owned(),
         session_id: name.to_owned(),
@@ -31,7 +31,7 @@ pub fn stream_source(name: &str, source: String) -> CompositeSink<'static> {
     })
 }
 
-fn stream_input(input: SessionInput) -> CompositeSink<'static> {
+fn stream_input(input: SessionInput) -> CompositeSink {
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),

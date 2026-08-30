@@ -21,7 +21,7 @@ use antiburn_local::analysis::{
     EfficiencyTotals, EvidenceSource, METRICS_SCHEMA_REVISION, ModelRun, NormalizedSession,
     PARSER_REVISION, RawSource, SessionCost, SessionEvidence, SessionEvidenceAccumulator,
     SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse, SourceCapabilities,
-    SourceClaim, SourceKind, TurnRowSink, TurnRowWriter, VisitOutcome, adapter_for,
+    SourceClaim, SourceKind, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, adapter_for,
     aggregate_metrics, analyze_session, analyze_sources_with, append_only_guarantee, merge_metrics,
     merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
 };
@@ -528,7 +528,7 @@ fn stream_vendor_with_hooks(
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
     database_claim: Option<&str>,
-    turn_row_writer: Option<&dyn TurnRowWriter>,
+    turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> StreamOutcome {
     let mut accumulators = Vec::with_capacity(inputs.len());
     let mut parent_fingerprint = None;
@@ -552,13 +552,19 @@ fn stream_vendor_with_hooks(
         });
         // The turn-row source key is the input's own session id: the parent
         // transcript's id for index 0, a child's own id for every other
-        // input. `thread_id` equals `source_key` in this change.
-        let mut accumulator = match turn_row_writer {
-            Some(writer) => CompositeSink::with_turn_rows(
-                metrics,
-                evidence,
-                TurnRowSink::new(writer, input.session_id.clone()),
-            ),
+        // input. `thread_id` equals `source_key` in this change. Every
+        // input after the parent is a discovered child transcript, so its
+        // rows get `Delegated` scope from position. The adapter's own
+        // `EventSource` flag is not the only source of scope.
+        let mut accumulator = match turn_row_store.as_ref() {
+            Some(store) => {
+                let scope = (index > 0).then_some(TurnScope::Delegated);
+                CompositeSink::with_turn_rows(
+                    metrics,
+                    evidence,
+                    TurnRowSink::new(Arc::clone(store), input.session_id.clone(), scope),
+                )
+            }
             None => CompositeSink::new(metrics, evidence),
         };
         let result = match &input.source {
@@ -750,7 +756,7 @@ pub async fn analyze(
     pass.analysis
 }
 
-/// `turn_row_writer` is `Some` only for a pass the durable worker runs under
+/// `turn_row_store` is `Some` only for a pass the durable worker runs under
 /// a claimed evidence fence — see `insights_worker::run_record_pass`. Every
 /// other caller (an on-demand session view, a scan-triggered pass with no
 /// claim) passes `None`: without a claim fence, rows would have nothing to
@@ -761,7 +767,7 @@ pub async fn analyze_for_evidence(
     wsl_distro: Option<&str>,
     claimed: ClaimedSource,
     signal: PassSignal,
-    turn_row_writer: Option<Arc<dyn TurnRowWriter>>,
+    turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> EvidencePass {
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
@@ -845,13 +851,12 @@ pub async fn analyze_for_evidence(
     let computed = tauri::async_runtime::spawn_blocking(move || {
         if streams_evidence {
             let cancelled = || signal_for_pass.observe();
-            let turn_row_writer = turn_row_writer.as_deref();
             return match stream_vendor_with_hooks(
                 &inputs,
                 &cancelled,
                 &test_subagent_after_claim,
                 database_claim.as_deref(),
-                turn_row_writer,
+                turn_row_store,
             ) {
                 StreamOutcome::Published {
                     session,
@@ -1104,7 +1109,7 @@ pub(crate) fn evidence_pass(inputs: &[SessionInput], cancelled: &dyn Fn() -> boo
     evidence_pass_with_hook(inputs, cancelled, &test_subagent_after_claim, None)
 }
 
-/// Like [`evidence_pass`], with a [`TurnRowWriter`] fanned out through the
+/// Like [`evidence_pass`], with a [`TurnRowStore`] fanned out through the
 /// same real `stream_vendor_with_hooks` path the worker uses. Lets a test
 /// outside this module (`insights_worker`'s) assert on turn rows a published
 /// pass wrote, without a fake analyzer that skips the row sink entirely.
@@ -1112,13 +1117,13 @@ pub(crate) fn evidence_pass(inputs: &[SessionInput], cancelled: &dyn Fn() -> boo
 pub(crate) fn evidence_pass_with_turn_rows(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
-    turn_row_writer: Option<&dyn TurnRowWriter>,
+    turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> EvidencePass {
     evidence_pass_with_hook(
         inputs,
         cancelled,
         &test_subagent_after_claim,
-        turn_row_writer,
+        turn_row_store,
     )
 }
 
@@ -1127,9 +1132,9 @@ fn evidence_pass_with_hook(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
-    turn_row_writer: Option<&dyn TurnRowWriter>,
+    turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> EvidencePass {
-    match stream_vendor_with_hooks(inputs, cancelled, after_claim, None, turn_row_writer) {
+    match stream_vendor_with_hooks(inputs, cancelled, after_claim, None, turn_row_store) {
         StreamOutcome::Published { session, .. } => {
             let StreamedSession {
                 merged,

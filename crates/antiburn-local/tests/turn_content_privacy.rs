@@ -5,13 +5,13 @@
 //! See "Privacy with content stored" in
 //! `docs/plans/session-evidence-harness-parity.md`.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TURN_SCHEMA_SQL, TurnRow,
-    TurnRowSink, TurnRowWriteError, TurnRowWriter, TurnSessionKey, adapter_for,
-    count_turn_content_rows, delete_turn_rows, insert_turn_rows, normalize_source,
+    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TURN_MIGRATIONS, TurnFacts, TurnRow,
+    TurnRowError, TurnRowSink, TurnRowStore, TurnSessionKey, adapter_for, count_turn_content_rows,
+    delete_turn_rows, insert_turn_rows, normalize_source,
 };
 use rusqlite::{Connection, params};
 
@@ -96,8 +96,10 @@ fn test_connection() -> Connection {
         ) STRICT;",
     )
     .expect("create session table");
-    conn.execute_batch(TURN_SCHEMA_SQL)
-        .expect("create turn schema");
+    for migration in TURN_MIGRATIONS {
+        conn.execute_batch(migration)
+            .expect("apply turn schema migration");
+    }
     conn.execute(
         "INSERT INTO session (environment_key, agent, session_id) VALUES (?1, ?2, ?3)",
         params![ENVIRONMENT_KEY, AGENT, SESSION_ID],
@@ -108,10 +110,16 @@ fn test_connection() -> Connection {
 
 struct TestWriter(Mutex<Connection>);
 
-impl TurnRowWriter for TestWriter {
-    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+impl TurnRowStore for TestWriter {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError> {
         let conn = self.0.lock().expect("lock");
-        insert_turn_rows(&conn, &key(), 1, rows).map_err(TurnRowWriteError::from)
+        insert_turn_rows(&conn, &key(), 1, rows).map_err(TurnRowError::from)
+    }
+
+    // Never read: this test inspects `turn_content` through its own
+    // connection handle instead of through the store trait.
+    fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+        Err(TurnRowError("not readable".to_owned()))
     }
 }
 
@@ -135,7 +143,7 @@ fn turn_content_captures_sentinels_while_every_other_projection_stays_clean() {
 
     // Run the full pipeline: metrics, evidence, and turn rows in one pass,
     // exactly as the durable analysis worker does.
-    let writer = TestWriter(Mutex::new(test_connection()));
+    let writer = Arc::new(TestWriter(Mutex::new(test_connection())));
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
@@ -143,7 +151,11 @@ fn turn_content_captures_sentinels_while_every_other_projection_stays_clean() {
         kind: SourceKind::from(&input.source),
         capabilities: SourceCapabilities::claude(),
     });
-    let turn_rows = TurnRowSink::new(&writer, input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&writer) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
     let outcome = adapter_for("claude")
         .visit(&input, &mut composite)

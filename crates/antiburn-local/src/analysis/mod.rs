@@ -30,6 +30,7 @@
 mod efficiency;
 mod engine;
 mod evidence;
+mod evidence_query;
 mod evidence_sink;
 mod framing;
 mod initial_context;
@@ -58,6 +59,7 @@ pub use evidence::{
     SignalCoverage, SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild,
     SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts,
 };
+pub use evidence_query::{TurnFacts, query_turn_facts};
 pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
@@ -76,10 +78,10 @@ pub use model::{
 };
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
 pub use rows::{
-    TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TurnRow, TurnRowSink, TurnRowWriteError, TurnRowWriter,
-    TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
-    turn_row_from_event,
+    MemoryTurnRowStore, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
+    TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey,
+    count_turn_content_rows, count_turn_rows, delete_turn_rows, delete_turn_rows_except_fence,
+    delete_turn_rows_for_fence, insert_turn_rows, turn_row_from_event,
 };
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,

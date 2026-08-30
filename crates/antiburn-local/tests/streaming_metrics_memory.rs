@@ -2,14 +2,15 @@
 mod corpus;
 
 use std::io::Cursor;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use antiburn_local::analysis::{
     BoundedJsonlReader, CompositeSink, EvidenceSource, NormalizedEvent, NormalizedRecord,
     RETAINED_METRICS_BYTES_BOUND, RawSource, RecordSink, Role, SCAN_QUANTUM_BYTES,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, TURN_ROW_BATCH_SIZE, ToolCall, TurnRow, TurnRowSink,
-    TurnRowWriteError, TurnRowWriter, Usage, adapter_for,
+    SourceCapabilities, SourceKind, TURN_ROW_BATCH_SIZE, ToolCall, TurnFacts, TurnRow,
+    TurnRowError, TurnRowSink, TurnRowStore, Usage, adapter_for,
 };
 use corpus::generate_session_of_bytes;
 
@@ -134,11 +135,16 @@ struct CountingWriter {
     total_rows: AtomicUsize,
 }
 
-impl TurnRowWriter for CountingWriter {
-    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+impl TurnRowStore for CountingWriter {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError> {
         self.max_batch.fetch_max(rows.len(), Ordering::SeqCst);
         self.total_rows.fetch_add(rows.len(), Ordering::SeqCst);
         Ok(())
+    }
+
+    // Never read: this test only asserts on the batches the sink wrote.
+    fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+        Err(TurnRowError("not readable".to_owned()))
     }
 }
 
@@ -150,7 +156,7 @@ fn the_turn_row_sink_stays_bounded_over_a_streamed_corpus() {
         session_id: session.session_id.clone(),
         source: RawSource::Jsonl(session.jsonl.clone()),
     };
-    let writer = CountingWriter::default();
+    let writer = Arc::new(CountingWriter::default());
     let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
@@ -158,7 +164,11 @@ fn the_turn_row_sink_stays_bounded_over_a_streamed_corpus() {
         kind: SourceKind::Jsonl,
         capabilities: SourceCapabilities::claude(),
     });
-    let sink = TurnRowSink::new(&writer, input.session_id.clone());
+    let sink = TurnRowSink::new(
+        Arc::clone(&writer) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, sink);
     adapter_for("claude")
         .visit(&input, &mut composite)
