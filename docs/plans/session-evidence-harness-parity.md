@@ -11,6 +11,8 @@
   "Turn rows are the source of truth"). Phases 2, 3, and 5 rewritten as queries
   over rows. Policy items reopened. Overdepth environment override dropped.
   Standing-default fast-mode rule deferred.
+- rev 3 (2026-08-30): Phase 4 gains a shared-parser cleanup item. Open
+  decisions gain the generic fallback capability claim.
 
 ## Summary
 
@@ -486,6 +488,13 @@ boundaries.
 explicit effort; retain per-session cache-write availability per selected API;
 never infer subagents or speed.
 
+**Shared parser cleanup:** `vendors/jsonl.rs` is not a vendor. It is the
+shared record parser that every adapter imports, and it sniffs the Anthropic,
+OpenAI, and Pi shapes from the keys present. Move it out of `vendors/` (for
+example `analysis/records.rs`). Move the Claude-only skill-marker logic in
+`parse_jsonl` into `claude.rs`. Make `parse_record` take an explicit shape
+instead of guessing. `vendors/generic_jsonl.rs` stays as the fallback adapter.
+
 `PARSER_REVISION` 5 → 6 once, when the first adapter emits the new fields.
 
 **Acceptance:** Each adapter's characterization suite freezes its structural
@@ -700,3 +709,7 @@ Open, needs a human decision before the relevant seam:
 3. **Crate boundary for rows** (see "Where the row logic lives").
 4. **Premium-tier and effort-tier policies** per model family, needed by
    Phase 5. Not yet drafted.
+5. **Generic fallback capability claims.** `GenericJsonlAdapter` reports
+   `cache_write_tokens_available: true` for every unknown vendor. This is a
+   guess. Decide whether the fallback reports the minimum capability set and
+   lets the badges read not-assessed, which matches the Phase 1 honesty rule.
