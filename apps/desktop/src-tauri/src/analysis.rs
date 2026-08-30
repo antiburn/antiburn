@@ -2204,6 +2204,69 @@ mod tests {
         );
     }
 
+    /// A Claude assistant record with an explicit thread-identity chain
+    /// (`uuid` / `parentUuid`), optionally an inline sidechain.
+    fn claude_thread_record(
+        uuid: &str,
+        parent_uuid: Option<&str>,
+        is_sidechain: bool,
+        timestamp: i64,
+        model: &str,
+    ) -> String {
+        let parent_uuid_field = parent_uuid
+            .map(|parent| format!("\"{parent}\""))
+            .unwrap_or_else(|| "null".to_owned());
+        let sidechain_field = if is_sidechain {
+            ",\"isSidechain\":true"
+        } else {
+            ""
+        };
+        format!(
+            "{{\"type\":\"assistant\",\"uuid\":\"{uuid}\",\"parentUuid\":{parent_uuid_field}{sidechain_field},\"timestamp\":{timestamp},\"message\":{{\"id\":\"msg-{uuid}\",\"role\":\"assistant\",\"model\":\"{model}\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":3}},\"content\":[{{\"type\":\"text\",\"text\":\"Synthetic sidechain output.\"}}]}}}}\n"
+        )
+    }
+
+    #[test]
+    fn a_discovered_child_repeating_a_sidechains_uuid_degrades_instead_of_double_counting() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        // The parent's main turn, then an inline sidechain rooted at
+        // "shared-uuid".
+        std::fs::write(
+            &parent,
+            claude_record("dup-parent", 1_760_000_000)
+                + &claude_thread_record("shared-uuid", None, true, 1_760_000_001, "model-a"),
+        )
+        .expect("write parent");
+        // The discovered child file repeats "shared-uuid" — child files are
+        // authoritative, so the parent's own copy must not double count.
+        std::fs::write(
+            &child,
+            claude_thread_record("shared-uuid", None, true, 1_760_000_002, "model-b"),
+        )
+        .expect("write child");
+
+        let pass = evidence_pass_with_turn_rows(
+            &[
+                file_input(&parent, "dup-parent"),
+                file_input(&child, "dup-child"),
+            ],
+            &|| false,
+            Some(turn_row_store("claude", "dup-parent")),
+        );
+        let evidence = pass.evidence.expect("published evidence");
+
+        assert_eq!(evidence.diagnostics.duplicate_turn_identities, 1);
+        assert!(matches!(
+            evidence.models,
+            EvidenceValue::Partial {
+                reason: CoverageReason::AttributionIncomplete,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn a_changed_source_publishes_neither_projection() {
         let directory = tempfile::TempDir::new().expect("tempdir");

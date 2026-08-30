@@ -42,6 +42,7 @@ mod pricing;
 pub(crate) mod records;
 mod rows;
 mod source_validity;
+pub(crate) mod threads;
 pub mod tool_catalog;
 mod vendors;
 
@@ -91,8 +92,8 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
-pub const PARSER_REVISION: i64 = 5;
-pub const ANALYZER_REVISION: i64 = 8;
+pub const PARSER_REVISION: i64 = 6;
+pub const ANALYZER_REVISION: i64 = 9;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 5;
 
