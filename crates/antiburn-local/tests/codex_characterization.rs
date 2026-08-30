@@ -78,11 +78,14 @@ fn fixture(name: &str) -> &'static str {
         "context_reread" => {
             include_str!("fixtures/codex_characterization/context_reread.jsonl")
         }
+        "cache_write_tokens" => {
+            include_str!("fixtures/codex_characterization/cache_write_tokens.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 20] {
+fn fixture_names() -> [&'static str; 21] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -104,6 +107,7 @@ fn fixture_names() -> [&'static str; 20] {
         "session_overdepth_finding",
         "model_overthinking_finding",
         "context_reread",
+        "cache_write_tokens",
     ]
 }
 
@@ -647,6 +651,11 @@ fn context_reread_codex_fixture_matches_golden() {
 }
 
 #[test]
+fn cache_write_tokens_codex_fixture_matches_golden() {
+    check_golden("cache_write_tokens");
+}
+
+#[test]
 fn context_reread_reads_complete_uncached_input_repeated_context_and_a_finding_badge() {
     let (evidence, _) = composite(&input("context_reread"));
     let EvidenceValue::Complete(cache) = &evidence.cache else {
@@ -678,6 +687,78 @@ fn context_reread_reads_complete_uncached_input_repeated_context_and_a_finding_b
         .find(|badge| badge.id == BadgeId::ExcessCacheRehydration)
         .expect("BadgeId::ALL covers ExcessCacheRehydration");
     assert_eq!(cache_churn_badge.status, BadgeStatus::Finding);
+}
+
+/// `cache_write_tokens` extends `context_reread`'s shape with a
+/// `cache_write_input_tokens` count on every `token_count` record. Reading
+/// the field turns `capabilities.cache_write_tokens` on, but Codex's
+/// repeated-context accounting must stay `uncached_input` regardless (the
+/// codex overpay band bounds are derived under uncached-input accounting;
+/// see `evidence_sink`'s accounting chooser), and every turn's context
+/// occupancy must land on the same figure the unsplit interpretation (cache
+/// writes folded into `input_tokens`) would have reported.
+#[test]
+fn cache_write_tokens_reads_the_split_keeps_uncached_input_accounting() {
+    let (_, _, normalized) = collect(&input("cache_write_tokens"));
+    assert_eq!(normalized.events.len(), 3);
+    assert!(normalized.cache_write_tokens_available);
+
+    // Turn one: input 2000, no cache read, 500 written. Split out the write:
+    // 2000 - 0 - 500 = 1500 fresh input. Occupancy (input + read + write)
+    // still lands on the raw `input_tokens` figure Codex reported: 2000.
+    let turn_one = &normalized.events[0].usage;
+    assert_eq!(turn_one.input_tokens, 1_500);
+    assert_eq!(turn_one.cache_read_tokens, 0);
+    assert_eq!(turn_one.cache_creation_tokens, 500);
+    assert_eq!(turn_one.context_tokens(), 2_000);
+
+    // Turn two: input 60000, 58000 read, 1000 written. 60000 - 58000 - 1000
+    // = 1000 fresh input. Occupancy still lands on 60000.
+    let turn_two = &normalized.events[1].usage;
+    assert_eq!(turn_two.input_tokens, 1_000);
+    assert_eq!(turn_two.cache_read_tokens, 58_000);
+    assert_eq!(turn_two.cache_creation_tokens, 1_000);
+    assert_eq!(turn_two.context_tokens(), 60_000);
+
+    // Turn three: input 60000, no cache read (idle gap evicted it), 2000
+    // written. 60000 - 0 - 2000 = 58000 fresh input. Occupancy still lands
+    // on 60000.
+    let turn_three = &normalized.events[2].usage;
+    assert_eq!(turn_three.input_tokens, 58_000);
+    assert_eq!(turn_three.cache_read_tokens, 0);
+    assert_eq!(turn_three.cache_creation_tokens, 2_000);
+    assert_eq!(turn_three.context_tokens(), 60_000);
+
+    let (evidence, _) = composite(&input("cache_write_tokens"));
+    assert!(evidence.capabilities.cache_write_tokens);
+    let EvidenceValue::Complete(cache) = &evidence.cache else {
+        panic!("Codex cache evidence must be complete for this fixture");
+    };
+    assert_eq!(cache.cache_creation_tokens, 3_500);
+    let EvidenceValue::Complete(repeated_context) = &cache.repeated_context else {
+        panic!("repeated_context must be complete: no record loss, no skipped pairs");
+    };
+    assert_eq!(
+        repeated_context.accounting,
+        antiburn_local::analysis::RepeatedContextAccounting::UncachedInput
+    );
+    // Pair one (turn one -> turn two): occupancy grows 2000 -> 60000
+    // (+58000); turn two pays only 1000 fresh input, below growth, so
+    // nothing is repeated. Pair two (turn two -> turn three): occupancy
+    // stays at 60000 (growth 0); turn three pays 58000 fresh input, all of
+    // it repeated. repeated_tokens: 0 + 58000 = 58000. paid_tokens sums
+    // both pairs' paid buckets: 1000 + 58000 = 59000.
+    assert_eq!(repeated_context.repeated_tokens, 58_000);
+    assert_eq!(repeated_context.paid_tokens, 59_000);
+}
+
+/// `records_all_kinds` carries no `cache_write_input_tokens` key anywhere,
+/// so `cache_write_tokens_available` must stay false — an old Codex CLI
+/// rollout keeps reporting no cache-write capability.
+#[test]
+fn a_fixture_without_cache_write_keys_keeps_the_capability_false() {
+    let (_, _, normalized) = collect(&input("records_all_kinds"));
+    assert!(!normalized.cache_write_tokens_available);
 }
 
 #[test]

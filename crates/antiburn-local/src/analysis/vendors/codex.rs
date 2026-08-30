@@ -70,12 +70,12 @@ impl VendorAdapter for CodexAdapter {
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
         let content = read_source(&input.source)
             .with_context(|| format!("reading codex session {}", input.session_id))?;
-        let (events, context_window, model) = parse_codex(&content);
+        let (events, context_window, model, cache_write_tokens_available) = parse_codex(&content);
         Ok(NormalizedSession {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
-            cache_write_tokens_available: false,
+            cache_write_tokens_available,
             context_window,
             model,
         })
@@ -229,6 +229,9 @@ struct CodexStreamState {
     started_at_ms: Option<i64>,
     owned_token_count_seen: bool,
     effort_seen: bool,
+    /// Sticky once true: an owned `token_count` usage object has carried a
+    /// [`CACHE_WRITE_ALIAS_KEYS`] key. See `usage_carries_cache_write`.
+    cache_write_tokens_available: bool,
     context: CodexContextAccumulator,
 }
 
@@ -365,6 +368,10 @@ impl CodexStreamState {
                     .and_then(Value::as_u64)
                     .filter(|window| *window > 0);
             }
+            if !self.cache_write_tokens_available {
+                self.cache_write_tokens_available =
+                    token_count_usage_object(&value).is_some_and(usage_carries_cache_write);
+            }
             if is_spawn_agent_call(record_type, payload_type, &value) {
                 sink.record(NormalizedRecord::Observation(Box::new(
                     EvidenceObservation::SubagentSpawn {
@@ -488,7 +495,7 @@ impl CodexStreamState {
         };
         let (initial_context, skill_descriptions) = self.context.finish();
         SessionSummary {
-            cache_write_tokens_available: false,
+            cache_write_tokens_available: self.cache_write_tokens_available,
             context_window: self.context_window,
             model: self.model,
             started_at_ms: self.started_at_ms,
@@ -597,6 +604,12 @@ const CODEX_SCALAR_EVIDENCE_KEYS: &[&str] = &[
     "input_tokens",
     "output_tokens",
     "cached_input_tokens",
+    "cache_read_input_tokens",
+    "cache_read_tokens",
+    "cache_write_input_tokens",
+    "cache_write_tokens",
+    "cache_creation_input_tokens",
+    "cache_creation_tokens",
     "reasoning_output_tokens",
     "model",
     "effort",
@@ -747,7 +760,7 @@ fn apply_thread_speed(event: &mut NormalizedEvent, current_speed: &Option<String
     }
 }
 
-fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<String>) {
+fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<String>, bool) {
     let mut events = Vec::new();
     // A forked rollout starts by replaying its parent's history. Keep those
     // records available to the desktop analysis view, but do not attribute
@@ -775,6 +788,9 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
     let mut previous_boundary_ts: Option<i64> = None;
     // Dedupe state for `token_count` rows (see `token_count_key`).
     let mut previous_token_count_key: Option<TokenCountKey> = None;
+    // Sticky once true: an owned `token_count` usage object has carried a
+    // `CACHE_WRITE_ALIAS_KEYS` key.
+    let mut cache_write_tokens_available = false;
     let mut offset = 0;
     for line_with_ending in content.split_inclusive('\n') {
         let line_offset = offset;
@@ -793,6 +809,10 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
                     .pointer("/payload/info/model_context_window")
                     .and_then(Value::as_u64)
                     .filter(|&w| w > 0);
+            }
+            if usage_is_owned && !cache_write_tokens_available {
+                cache_write_tokens_available =
+                    token_count_usage_object(&value).is_some_and(usage_carries_cache_write);
             }
             if usage_is_owned {
                 if let Some(next_model) = [
@@ -860,7 +880,7 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
             }
         }
     }
-    (events, context_window, model)
+    (events, context_window, model, cache_write_tokens_available)
 }
 
 /// Locate the first row whose token usage belongs to a Codex fork itself.
@@ -1390,18 +1410,60 @@ fn token_count_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<No
     Some(ev)
 }
 
-/// The usage keys `codex_usage` reads, plus `cache_write_input_tokens` and
-/// the `total_tokens` sum Codex writes beside them. `codex_usage` does not
-/// read `cache_write_input_tokens`; it is listed only so a heartbeat that
-/// carries it is not mistaken for an unknown key.
+/// The usage keys `codex_usage` reads — `input_tokens`, `output_tokens`,
+/// every cache-read alias, and every cache-write alias
+/// ([`CACHE_WRITE_ALIAS_KEYS`]) — plus the `total_tokens` sum Codex writes
+/// beside them. `is_usage_free_token_count` uses this list to prove a usage
+/// object carries only known, zero-valued keys.
 const CODEX_USAGE_KEYS: &[&str] = &[
     "input_tokens",
     "cached_input_tokens",
+    "cache_read_input_tokens",
+    "cache_read_tokens",
     "cache_write_input_tokens",
+    "cache_write_tokens",
+    "cache_creation_input_tokens",
+    "cache_creation_tokens",
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
 ];
+
+/// The alias keys `codex_usage` reads for a cache-write token count.
+/// Presence of any of these in a usage object — not just a nonzero value —
+/// proves this session's Codex CLI reports cache writes; an old CLI omits
+/// every one of them. See [`usage_carries_cache_write`].
+const CACHE_WRITE_ALIAS_KEYS: &[&str] = &[
+    "cache_write_input_tokens",
+    "cache_write_tokens",
+    "cache_creation_input_tokens",
+    "cache_creation_tokens",
+];
+
+/// True when a usage object carries at least one [`CACHE_WRITE_ALIAS_KEYS`]
+/// key, at any value. Used to set `cache_write_tokens_available`.
+fn usage_carries_cache_write(usage: &Map<String, Value>) -> bool {
+    CACHE_WRITE_ALIAS_KEYS
+        .iter()
+        .any(|key| usage.contains_key(*key))
+}
+
+/// The usage object a `token_count` record carries: the turn's
+/// `last_token_usage`, falling back to `total_token_usage` only when
+/// `last_token_usage` is absent. Mirrors the object [`token_count_event`]
+/// selects; used to detect the cache-write capability without producing an
+/// event.
+fn token_count_usage_object(value: &Value) -> Option<&Map<String, Value>> {
+    if value.get("type").and_then(Value::as_str) != Some("event_msg")
+        || value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count")
+    {
+        return None;
+    }
+    let info = value.pointer("/payload/info")?.as_object()?;
+    info.get("last_token_usage")
+        .or_else(|| info.get("total_token_usage"))
+        .and_then(Value::as_object)
+}
 
 /// Returns true when a `token_count` record carries no usage to count.
 ///
@@ -1484,17 +1546,31 @@ fn compaction_event(ts: Option<i64>) -> NormalizedEvent {
     ev
 }
 
+/// Splits a Codex `last_token_usage` / `total_token_usage` object into
+/// [`Usage`]'s buckets. Mirrors Cadence's `parse_codex_last_token_usage`
+/// (`crates/analysis/src/model_turns.rs`): `cache_read_tokens` is the
+/// largest of the cache-read alias keys, `cache_creation_tokens` is the
+/// largest of the cache-write alias keys ([`CACHE_WRITE_ALIAS_KEYS`]), and
+/// `input_tokens` is `input_tokens` with both subtracted, floored at 0.
+/// Codex reports both cache classes *inside* `input_tokens`; leaving them
+/// in would double-count context occupancy ([`Usage::context_tokens`]).
 fn codex_usage(u: &Map<String, Value>) -> Usage {
     let get = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
-    let input = get("input_tokens");
-    let cached = get("cached_input_tokens");
+    let cache_read_tokens = get("cached_input_tokens")
+        .max(get("cache_read_input_tokens"))
+        .max(get("cache_read_tokens"));
+    let cache_creation_tokens = CACHE_WRITE_ALIAS_KEYS
+        .iter()
+        .map(|key| get(key))
+        .max()
+        .unwrap_or(0);
     Usage {
-        // Codex reports cached tokens *inside* `input_tokens`; split them out so
-        // context occupancy (input + cache_read) isn't double-counted.
-        input_tokens: input.saturating_sub(cached),
+        input_tokens: get("input_tokens")
+            .saturating_sub(cache_read_tokens)
+            .saturating_sub(cache_creation_tokens),
         output_tokens: get("output_tokens"),
-        cache_read_tokens: cached,
-        cache_creation_tokens: 0,
+        cache_read_tokens,
+        cache_creation_tokens,
     }
 }
 
@@ -1672,7 +1748,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 6_909_707_080_568_099_114;
+        const EXPECTED_FINGERPRINT: u64 = 13_963_361_553_191_881_769;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -1773,11 +1849,12 @@ mod tests {
     }
 
     /// A `token_count` whose usage object names a key this adapter does not
-    /// read, or a non-zero count, is not usage-free and still fails closed.
-    /// This holds even when the only non-zero count sits in a known key
-    /// (`cache_write_input_tokens`) this adapter does not read into
-    /// evidence, and even when the unknown key sits beside an otherwise
-    /// all-zero usage object.
+    /// read, or a non-zero count, is not usage-free. This holds even when
+    /// the only non-zero count sits in `cache_write_input_tokens` — a known
+    /// key `codex_usage` now reads into `cache_creation_tokens`, so this
+    /// case reports real usage rather than failing closed (see
+    /// `token_count_with_only_a_cache_write_reads_as_real_usage`) — and even
+    /// when the unknown key sits beside an otherwise all-zero usage object.
     #[test]
     fn token_count_with_unread_or_non_zero_usage_is_not_usage_free() {
         let renamed = serde_json::json!({
@@ -1819,6 +1896,63 @@ mod tests {
         assert!(!is_usage_free_token_count(&not_an_object));
         assert!(!is_usage_free_token_count(&non_zero_cache_write));
         assert!(!is_usage_free_token_count(&unknown_key));
+    }
+
+    /// A heartbeat whose only non-zero component is `cache_write_input_tokens`
+    /// now reads as real usage instead of failing closed. Before `codex_usage`
+    /// read the field, this record produced `Usage::default()` from
+    /// `token_count_event`, so `record_to_event` returned `None`,
+    /// `is_usage_free_token_count` still reported it as not usage-free (the
+    /// field carried a non-zero count), and `process_value` fell through to
+    /// the unrecognized-record path and marked the record `Unusable`.
+    #[test]
+    fn token_count_with_only_a_cache_write_reads_as_real_usage() {
+        let record = serde_json::json!({
+            "timestamp": "2026-08-28T19:52:18.490Z",
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {
+                "last_token_usage": {
+                    "input_tokens": 0, "cached_input_tokens": 0, "cache_write_input_tokens": 9000,
+                    "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": 9000
+                }
+            }}
+        });
+        let event = record_to_event(&record).expect("a nonzero cache-write count is real usage");
+        assert_eq!(event.usage.cache_creation_tokens, 9000);
+        assert_eq!(event.usage.input_tokens, 0);
+        assert_ne!(event.usage, Usage::default());
+    }
+
+    #[test]
+    fn codex_usage_splits_cache_read_and_cache_write_out_of_input() {
+        let usage_obj = serde_json::json!({
+            "input_tokens": 52000, "cached_input_tokens": 40000,
+            "cache_write_input_tokens": 9000, "output_tokens": 1200,
+            "reasoning_output_tokens": 300, "total_tokens": 53200
+        });
+        let usage = codex_usage(usage_obj.as_object().unwrap());
+        assert_eq!(usage.input_tokens, 3000);
+        assert_eq!(usage.cache_read_tokens, 40000);
+        assert_eq!(usage.cache_creation_tokens, 9000);
+        assert_eq!(usage.output_tokens, 1200);
+    }
+
+    /// `Usage::context_tokens()` (input + cache_read + cache_creation) must
+    /// not move for the same record between the old split and the new one.
+    /// Before this change, `codex_usage` did not read
+    /// `cache_write_input_tokens`, so context occupancy was `input_tokens`
+    /// as Codex reports it (52000): cache reads split out, cache writes
+    /// folded into `input_tokens`. The new split pulls cache writes into
+    /// their own bucket, but the three buckets still sum to the same raw
+    /// `input_tokens` figure.
+    #[test]
+    fn cache_write_split_preserves_context_occupancy() {
+        let usage_obj = serde_json::json!({
+            "input_tokens": 52000, "cached_input_tokens": 40000,
+            "cache_write_input_tokens": 9000, "output_tokens": 1200
+        });
+        let usage = codex_usage(usage_obj.as_object().unwrap());
+        assert_eq!(usage.context_tokens(), 52000);
     }
 
     /// `session_meta`, `turn_context`, and `thread_settings_applied` carry

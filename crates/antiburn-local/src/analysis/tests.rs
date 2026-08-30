@@ -1447,13 +1447,18 @@ fn codex_resume_does_not_repeat_the_last_token_count_as_a_turn() {
 }
 
 /// These values come from a Codex session after a long idle gap. The miss
-/// replays the old context, and the next turn confirms that the cache returns.
+/// replays the old context, and the next turn confirms that the cache
+/// returns. No usage object carries a `cache_write_input_tokens` key, so
+/// `cache_write_tokens_available` stays false and mode 1 (the direct
+/// signal) never overrides mode 2 (this inference); see
+/// `known_zero_cache_writes_do_not_use_rehydration_inference` for the case
+/// where the source does confirm a zero cache write.
 const CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE: &str = concat!(
-    r#"{"timestamp":"2026-08-22T07:55:39.907Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"cache_write_input_tokens":0,"output_tokens":194},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-22T07:55:39.907Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":194},"model_context_window":258400}}}"#,
     "\n",
-    r#"{"timestamp":"2026-08-22T11:24:21.967Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":577},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-22T11:24:21.967Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":577},"model_context_window":258400}}}"#,
     "\n",
-    r#"{"timestamp":"2026-08-22T11:24:29.777Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"cache_write_input_tokens":0,"output_tokens":271},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-22T11:24:29.777Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":153079,"cached_input_tokens":151424,"output_tokens":271},"model_context_window":258400}}}"#,
 );
 
 #[test]
@@ -1487,6 +1492,28 @@ fn known_zero_cache_writes_do_not_use_rehydration_inference() {
     let m = analyze_session(&session);
 
     assert_eq!(m.cache_rehydration_count, 0);
+}
+
+/// A real `cache_write_input_tokens` count now reaches mode 1 (the direct
+/// signal) for Codex, the same way it already does for a source that always
+/// reported cache writes. Turn one's cache read covers most of its context
+/// (20000 / 30000); turn two's cache write covers most of its own context
+/// (25000 / 40000) after a 90-second gap, past the rehydration gap gate —
+/// `is_cache_rehydration_turn` in `metrics_sink::cache_miss` reads this
+/// straight from `event.usage.cache_creation_tokens`, no inference needed.
+#[test]
+fn codex_confirmed_cache_write_is_read_as_a_direct_signal_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":20000,"cache_write_input_tokens":0,"output_tokens":50},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T07:56:30Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40000,"cached_input_tokens":0,"cache_write_input_tokens":25000,"output_tokens":60},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    assert!(session.cache_write_tokens_available);
+    let m = analyze_session(&session);
+
+    assert_eq!(m.cache_rehydration_count, 1);
+    assert_eq!(m.cache_routing_miss_count, 0);
 }
 
 #[test]
@@ -1539,13 +1566,15 @@ fn codex_first_turn_after_compaction_is_not_an_inferred_rehydration() {
 /// Real numbers from a Codex rollout. The miss comes 6 seconds after the
 /// prior turn, so the gap gate must block the inferred rehydration flag even
 /// though the replay and recovery ratios match the pattern. The engine
-/// reports the turn as a routing miss instead.
+/// reports the turn as a routing miss instead. No usage object carries a
+/// `cache_write_input_tokens` key, so `cache_write_tokens_available` stays
+/// false and this exercises mode 2 (inference), not the direct signal.
 const CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
-    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"cache_write_input_tokens":0,"output_tokens":168},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"output_tokens":168},"model_context_window":258400}}}"#,
     "\n",
-    r#"{"timestamp":"2026-08-24T21:10:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":177},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-24T21:10:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"output_tokens":177},"model_context_window":258400}}}"#,
     "\n",
-    r#"{"timestamp":"2026-08-24T21:10:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"cache_write_input_tokens":0,"output_tokens":166},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-24T21:10:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"output_tokens":166},"model_context_window":258400}}}"#,
 );
 
 #[test]
@@ -1564,13 +1593,14 @@ fn codex_cache_miss_inside_a_fast_burst_is_a_routing_miss() {
 /// The same values as CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE, but the
 /// second and third turns move 5 minutes later. The gap now clears the TTL
 /// gate, so the inferred rehydration flag fires — the gap is the only thing
-/// that changed between this test and the one above.
+/// that changed between this test and the one above. Same note on the
+/// missing `cache_write_input_tokens` key: this exercises mode 2.
 const CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE: &str = concat!(
-    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"cache_write_input_tokens":0,"output_tokens":168},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"output_tokens":168},"model_context_window":258400}}}"#,
     "\n",
-    r#"{"timestamp":"2026-08-24T21:15:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":177},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-24T21:15:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"output_tokens":177},"model_context_window":258400}}}"#,
     "\n",
-    r#"{"timestamp":"2026-08-24T21:15:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"cache_write_input_tokens":0,"output_tokens":166},"model_context_window":258400}}}"#,
+    r#"{"timestamp":"2026-08-24T21:15:51.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":54236,"cached_input_tokens":45824,"output_tokens":166},"model_context_window":258400}}}"#,
 );
 
 #[test]

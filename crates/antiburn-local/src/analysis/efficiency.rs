@@ -618,6 +618,38 @@ mod tests {
         assert!(close(totals.total_usd, all_in));
     }
 
+    /// A Codex turn now carries `cache_creation_tokens` (its usage object's
+    /// `cache_write_input_tokens`, split out by `vendors::codex::codex_usage`
+    /// — see that module's
+    /// `codex_usage_splits_cache_read_and_cache_write_out_of_input`).
+    /// Pricing already treats `cache_creation_tokens` as a cache-write cost
+    /// for every model, GPT-5.6 included, so this needs no code change —
+    /// only proof the premium now reaches a Codex turn's cost.
+    #[test]
+    fn a_priced_codex_turn_with_a_cache_write_pays_the_write_premium() {
+        const GPT_56: &str = "gpt-5.6";
+        let mut ev = NormalizedEvent::new(Role::Assistant);
+        ev.ts_ms = Some(1);
+        ev.model = Some(GPT_56.to_string());
+        // The split `codex_usage` produces for the spec's synthetic record:
+        // input 52000, cached 40000, cache-write 9000, output 1200.
+        ev.usage = Usage {
+            input_tokens: 3_000,
+            output_tokens: 1_200,
+            cache_read_tokens: 40_000,
+            cache_creation_tokens: 9_000,
+        };
+        let totals = thread_efficiency(&[ev], None);
+        let p = lookup_pricing(GPT_56).expect("gpt-5.6 has a price");
+        assert!(p.cache_write_cost_per_token > 0.0);
+        let expected = 3_000.0 * p.input_cost_per_token
+            + 1_200.0 * p.output_cost_per_token
+            + 40_000.0 * p.cache_read_cost_per_token
+            + 9_000.0 * p.cache_write_cost_per_token;
+        assert!(close(totals.total_usd, expected));
+        assert_eq!(totals.priced_turns, 1);
+    }
+
     #[test]
     fn turns_are_ordered_by_timestamp_and_fall_back_to_the_session_model() {
         let mut later = turn(2, 100, 10, 6_000, 0);

@@ -564,7 +564,25 @@ impl SessionEvidenceAccumulator {
         // cache-write accounting when the source bills cache creation
         // separately, else uncached-input accounting when the source
         // reports token classes and context occupancy, else unsupported.
-        let repeated_context_accounting = if self.capabilities.cache_write_tokens {
+        // Codex is a fixed exception to that capability-driven choice,
+        // matching Cadence's `CacheAccountingMode::for_harness`
+        // (`crates/analysis/src/efficiency_findings.rs`): OpenAI now
+        // reports (and this sink's `codex` source now reads)
+        // `cache_write_tokens`, but OpenAI never bills Codex for a cache
+        // write, and Cache Churn's Codex overpay-multiple threshold
+        // (`insights::detectors::FamilyPolicy::
+        // cache_overpay_multiple_threshold`, itself matching Cadence's
+        // `CACHE_OVERPAY_BAND_BOUNDS`) was derived under uncached-input
+        // accounting. So `codex` always uses uncached-input accounting,
+        // when its prerequisites hold, even once cache-write tokens become
+        // available — the identity this accumulator was built from
+        // (`self.identity.agent`) names the agent to check. Cache-write
+        // tokens still feed `cache.cache_creation_tokens` and turn depth
+        // either way; only this finding's accounting bucket is pinned.
+        let repeated_context_accounting = if self.identity.agent == "codex" {
+            (self.capabilities.token_classes && self.capabilities.request_context_tokens)
+                .then_some(RepeatedContextAccounting::UncachedInput)
+        } else if self.capabilities.cache_write_tokens {
             Some(RepeatedContextAccounting::CacheWrite)
         } else if self.capabilities.token_classes && self.capabilities.request_context_tokens {
             Some(RepeatedContextAccounting::UncachedInput)
