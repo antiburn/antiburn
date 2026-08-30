@@ -1442,10 +1442,10 @@ mod tests {
         let stored = store.evidence(&pi.key).unwrap().unwrap();
         assert_eq!(stored.status, EvidenceStatus::Ready);
         let evidence_json = stored.evidence_json.as_deref().unwrap();
-        assert!(evidence_json.contains("\"schemaRevision\":6"));
+        assert!(evidence_json.contains("\"schemaRevision\":7"));
         let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
         assert_eq!(evidence.capabilities, SourceCapabilities::pi());
-        assert_eq!(evidence.schema_revision, 6);
+        assert_eq!(evidence.schema_revision, 7);
 
         let report = crate::insights_report::reduce_report(
             data_dir.path().to_path_buf(),

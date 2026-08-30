@@ -5,7 +5,7 @@
 //! immediately followed by its parts. This adapter retains only one normalized
 //! message while it consumes either representation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::Path;
@@ -21,18 +21,25 @@ use crate::analysis::framing::{
 };
 use crate::analysis::interface::{
     ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
-    SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
+    RelationProvenance, SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter,
+    VisitOutcome,
 };
 use crate::analysis::model::{
-    CompactionTrigger, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
+    CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
+    ToolCategory, Usage,
 };
 use crate::analysis::records::{compact_json_text, parse_ts, tool_call_from_input};
 use crate::discovery::agents::opencode::{
-    db_session_fingerprint_connection, db_session_has_parent_id,
+    db_session_fingerprint_connection, db_session_has_parent_id, opencode_fork_parent_title,
 };
 use crate::discovery::source_version::provider_db_fingerprint;
 
 const MAX_MESSAGE_PART_BYTES: usize = MAX_RECORD_BYTES;
+
+/// Caps the descendant sessions [`OpenCodeStreamState`] tracks by identity,
+/// mirroring [`crate::analysis::threads::ThreadResolver`]'s bound for a
+/// pathologically wide fan-out of subagents.
+const MAX_TRACKED_CHILD_SESSIONS: usize = 50_000;
 
 pub struct OpenCodeAdapter;
 
@@ -171,11 +178,13 @@ fn visit_database_connection(
     } else {
         "WITH cluster(id) AS (SELECT id FROM session WHERE id = ?1)"
     };
+    state.descendant_sessions = query_db_descendant_sessions(conn, cluster, root_session_id)?;
     let mut messages = conn.prepare(&format!(
         "{cluster}
          SELECT message.id, message.time_created, message.time_updated,
                 CASE WHEN length(CAST(message.data AS BLOB)) <= ?2 THEN message.data END,
-                length(CAST(message.data AS BLOB))
+                length(CAST(message.data AS BLOB)),
+                message.session_id
          FROM message JOIN cluster ON message.session_id = cluster.id
          ORDER BY COALESCE(message.time_created, message.time_updated, 0),
                    message.session_id, message.id"
@@ -191,6 +200,7 @@ fn visit_database_connection(
         let updated: Option<i64> = row.get(2).ok();
         let data: Option<String> = row.get(3).ok().flatten();
         let data_len = row.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as usize;
+        let session_id: String = row.get(5)?;
         let fallback_ts = created.or(updated).and_then(parse_db_ts);
 
         if data_len > MAX_RECORD_BYTES {
@@ -208,11 +218,12 @@ fn visit_database_connection(
             drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         };
-        let Some(event) = message_event(&value, fallback_ts) else {
+        let Some(mut event) = message_event(&value, fallback_ts) else {
             report_invalid_message(&value, sink);
             drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         };
+        state.apply_session(&mut event, &session_id, session_id != root_session_id, sink);
         state.observe_model(&event);
         let mut pending = PendingMessage {
             id: message_id,
@@ -230,6 +241,40 @@ fn visit_database_connection(
         }
     }
     Ok(state.finish())
+}
+
+/// Loads each descendant session's own creation timestamp and fork-title
+/// signal in one query, so a message row never needs its own join back to
+/// `session`. One row per session, not per message; forks (null
+/// `parent_id`) never join `cluster` and never appear here.
+fn query_db_descendant_sessions(
+    conn: &Connection,
+    cluster: &str,
+    root_session_id: &str,
+) -> rusqlite::Result<HashMap<String, DescendantSessionMeta>> {
+    let mut statement = conn.prepare(&format!(
+        "{cluster}
+         SELECT session.id, session.time_created, session.title
+         FROM session JOIN cluster ON session.id = cluster.id
+         WHERE session.id != ?1"
+    ))?;
+    let mut rows = statement.query(params![root_session_id])?;
+    let mut out = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let created: Option<i64> = row.get(1).ok();
+        let title: Option<String> = row.get(2).ok();
+        out.insert(
+            id,
+            DescendantSessionMeta {
+                ts_ms: created.and_then(parse_db_ts),
+                looks_like_fork: title
+                    .as_deref()
+                    .is_some_and(|title| opencode_fork_parent_title(title).is_some()),
+            },
+        );
+    }
+    Ok(out)
 }
 
 fn prepare_db_parts(conn: &Connection) -> rusqlite::Result<Statement<'_>> {
@@ -311,10 +356,41 @@ fn drain_message_parts(
     visit_db_parts(statement, &mut pending, cancel, sink)
 }
 
+/// One descendant session's own creation timestamp and fork-title signal,
+/// known from `session` (database) or `session_member` (export) before its
+/// first message streams.
+#[derive(Default)]
+struct DescendantSessionMeta {
+    ts_ms: Option<i64>,
+    looks_like_fork: bool,
+}
+
 #[derive(Default)]
 struct OpenCodeStreamState {
     pending: Option<PendingMessage>,
     model: Option<String>,
+    /// The root session id, known from the export's `session_meta` row.
+    /// `None` for a synthetic stream with no session wrapper; every message
+    /// then stays main-scope, matching the pre-relationship behavior.
+    root_session_id: Option<String>,
+    /// The root's own most recently observed model, reported as
+    /// `SubagentSpawn::parent_model`.
+    root_model: Option<String>,
+    /// Spawn timestamp and fork-title signal per descendant session,
+    /// prefetched (database) or accumulated from `session_member` rows
+    /// (export) ahead of that session's first message.
+    descendant_sessions: HashMap<String, DescendantSessionMeta>,
+    /// Descendant sessions already reported through `SubagentSpawn`, capped
+    /// like [`crate::analysis::threads::ThreadResolver`].
+    seen_child_sessions: HashSet<String>,
+    /// True once [`MAX_TRACKED_CHILD_SESSIONS`] is reached and a further
+    /// descendant session goes unreported.
+    children_capped: bool,
+    /// True once a `parent_id` descendant's title also looks like an
+    /// OpenCode fork title (`opencode_fork_parent_title`). Discovery's
+    /// `infer_db_fork_observation` owns real fork detection; this only
+    /// degrades attribution for the ambiguous shape.
+    saw_fork_titled_child: bool,
 }
 
 struct PendingMessage {
@@ -340,10 +416,19 @@ impl OpenCodeStreamState {
                 };
                 let payload = value.get("payload").unwrap_or(&value);
                 let fallback_ts = value.pointer("/time/created").and_then(parse_ts);
-                let Some(event) = message_event(payload, fallback_ts) else {
+                let Some(mut event) = message_event(payload, fallback_ts) else {
                     report_invalid_message(payload, sink);
                     return;
                 };
+                if let Some(session_id) = value.get("sessionID").and_then(Value::as_str) {
+                    let session_role = value.get("sessionRole").and_then(Value::as_str);
+                    let is_child = session_role == Some("child")
+                        || self
+                            .root_session_id
+                            .as_deref()
+                            .is_some_and(|root| root != session_id);
+                    self.apply_session(&mut event, session_id, is_child, sink);
+                }
                 self.observe_model(&event);
                 self.pending = Some(PendingMessage {
                     id: id.to_owned(),
@@ -375,17 +460,31 @@ impl OpenCodeStreamState {
                 let fallback_ts = value.pointer("/time/created").and_then(parse_ts);
                 apply_part(payload, fallback_ts, pending, sink);
             }
-            Some("session_meta" | "session_member") => {
+            Some("session_meta") => {
                 self.flush(sink);
-                if let Some(ts_ms) = value
-                    .pointer("/time/created")
-                    .and_then(parse_ts)
-                    .or_else(|| value.pointer("/time/updated").and_then(parse_ts))
-                {
-                    sink.record(NormalizedRecord::Observation(Box::new(
-                        EvidenceObservation::RecordTimestamp { ts_ms },
-                    )));
+                if self.root_session_id.is_none() {
+                    self.root_session_id = value
+                        .pointer("/payload/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
                 }
+                self.observe_record_timestamp(&value, sink);
+            }
+            Some("session_member") => {
+                self.flush(sink);
+                if let Some(child_id) = value.get("originSessionID").and_then(Value::as_str) {
+                    let ts_ms = value.pointer("/time/created").and_then(parse_ts);
+                    let title = value.pointer("/payload/title").and_then(Value::as_str);
+                    self.descendant_sessions.insert(
+                        child_id.to_owned(),
+                        DescendantSessionMeta {
+                            ts_ms,
+                            looks_like_fork: title
+                                .is_some_and(|title| opencode_fork_parent_title(title).is_some()),
+                        },
+                    );
+                }
+                self.observe_record_timestamp(&value, sink);
             }
             Some(discriminator) => {
                 self.flush(sink);
@@ -396,6 +495,72 @@ impl OpenCodeStreamState {
                 unrecognized("<missing>", sink);
             }
         }
+    }
+
+    fn observe_record_timestamp(&self, value: &Value, sink: &mut dyn RecordSink) {
+        if let Some(ts_ms) = value
+            .pointer("/time/created")
+            .and_then(parse_ts)
+            .or_else(|| value.pointer("/time/updated").and_then(parse_ts))
+        {
+            sink.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::RecordTimestamp { ts_ms },
+            )));
+        }
+    }
+
+    /// Applies one message's session identity to its event: sets
+    /// `thread_id` to the message's own session and, for a descendant
+    /// session, `EventSource::Subagent`. Otherwise updates the root's
+    /// current model, reported by a later spawn as `parent_model`.
+    fn apply_session(
+        &mut self,
+        event: &mut NormalizedEvent,
+        session_id: &str,
+        is_child: bool,
+        sink: &mut dyn RecordSink,
+    ) {
+        event.thread_id = Some(session_id.to_owned());
+        if !is_child {
+            if event.model.is_some() {
+                self.root_model = event.model.clone();
+            }
+            return;
+        }
+        event.source = EventSource::Subagent;
+        if self
+            .descendant_sessions
+            .get(session_id)
+            .is_some_and(|meta| meta.looks_like_fork)
+        {
+            self.saw_fork_titled_child = true;
+        }
+        self.spawn_child(session_id, sink);
+    }
+
+    /// Emits one `SubagentSpawn` the first time `session_id` streams, up to
+    /// [`MAX_TRACKED_CHILD_SESSIONS`]. Past the cap, the session goes
+    /// untracked and [`Self::finish`] reports `AttributionIncomplete`.
+    fn spawn_child(&mut self, session_id: &str, sink: &mut dyn RecordSink) {
+        if self.seen_child_sessions.contains(session_id) {
+            return;
+        }
+        if self.seen_child_sessions.len() >= MAX_TRACKED_CHILD_SESSIONS {
+            self.children_capped = true;
+            return;
+        }
+        self.seen_child_sessions.insert(session_id.to_owned());
+        let ts_ms = self
+            .descendant_sessions
+            .get(session_id)
+            .and_then(|meta| meta.ts_ms);
+        sink.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::SubagentSpawn {
+                ts_ms,
+                parent_model: self.root_model.clone(),
+                provenance: RelationProvenance::SessionParentLink,
+            },
+        )));
     }
 
     fn observe_model(&mut self, event: &NormalizedEvent) {
@@ -416,12 +581,20 @@ impl OpenCodeStreamState {
     }
 
     fn finish(&self) -> SessionSummary {
+        // A capped or fork-titled descendant means some records could not
+        // be attributed to their real relationship: the same kind of
+        // attribution loss the Claude adapter's capped thread resolver
+        // reports.
+        let mut coverage_gaps = Vec::new();
+        if self.children_capped || self.saw_fork_titled_child {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
         SessionSummary {
             cache_write_tokens_available: true,
             context_window: None,
             model: self.model.clone(),
             started_at_ms: None,
-            coverage_gaps: Vec::new(),
+            coverage_gaps,
             late_tools: Vec::new(),
             initial_context: None,
             skill_descriptions: HashMap::new(),

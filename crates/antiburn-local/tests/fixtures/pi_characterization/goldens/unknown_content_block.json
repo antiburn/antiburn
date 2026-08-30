@@ -142,19 +142,19 @@
     },
     "provenance": {
       "analyzerRevision": 9,
-      "evidenceSchemaRevision": 6,
+      "evidenceSchemaRevision": 7,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 8,
+      "parserRevision": 9,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 6,
+    "schemaRevision": 7,
     "subagents": {
       "state": "unsupported"
     },

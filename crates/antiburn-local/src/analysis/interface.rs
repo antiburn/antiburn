@@ -162,6 +162,8 @@ pub enum RelationProvenance {
     TaskToolUse,
     /// A Codex `spawn_agent` function call.
     SpawnAgentCall,
+    /// An OpenCode descendant session's `parent_id` row.
+    SessionParentLink,
 }
 
 /// Session facts that an adapter can state only after the last record.

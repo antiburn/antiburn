@@ -389,8 +389,17 @@ impl SourceCapabilities {
     /// Message and part timestamps provide deterministic order within one database snapshot.
     /// Tool and patch parts identify invocations but do not provide a tool catalog.
     /// `modelID` and `variant` identify each assistant model run and reasoning tier.
-    /// Compaction parts identify boundaries, but OpenCode provides no thread or quota contract.
-    /// Descendant sessions are included, but their orchestration relationship is not inferred.
+    /// Compaction parts identify boundaries, but OpenCode provides no quota contract.
+    ///
+    /// `subagent_relationships`, `subagent_models`, and `thread_identity` are
+    /// set. A descendant session's `parent_id` row is the relationship; the
+    /// adapter emits `SubagentSpawn` the first time a descendant session's
+    /// messages stream. The descendant's own `modelID` reaches
+    /// `subagents.delegated_models` through its `Delegated`-scope rows. The
+    /// session id is the thread: every row's `thread_id` is its own session,
+    /// so a child model switch or idle gap never reads as parent
+    /// reprocessing. A fork (null `parent_id`) is a separate root and never
+    /// enters this relationship.
     pub fn opencode() -> Self {
         Self {
             request_context_tokens: true,
@@ -404,10 +413,10 @@ impl SourceCapabilities {
             reasoning_effort_tier: true,
             fast_tier: false,
             service_tier: false,
-            subagent_relationships: false,
-            subagent_models: false,
+            subagent_relationships: true,
+            subagent_models: true,
             compaction_boundaries: true,
-            thread_identity: false,
+            thread_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -664,7 +673,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 6,
+            "schemaRevision": 7,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -688,9 +697,9 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 8,
+                "parserRevision": 9,
                 "analyzerRevision": 9,
-                "evidenceSchemaRevision": 6,
+                "evidenceSchemaRevision": 7,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",

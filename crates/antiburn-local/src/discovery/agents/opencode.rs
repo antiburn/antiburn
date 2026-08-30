@@ -2826,7 +2826,12 @@ fn opencode_content_visible_items(content: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn opencode_fork_parent_title(title: &str) -> Option<&str> {
+/// Checks `title` for the OpenCode fork title shape (`"<parent> (fork
+/// #N)"`) and returns the parent's own title. The analysis adapter reuses
+/// this function to flag a `parent_id` child whose title also looks like a
+/// fork. The adapter does not decide fork identity; that stays a discovery
+/// task.
+pub(crate) fn opencode_fork_parent_title(title: &str) -> Option<&str> {
     let (parent, suffix) = title.trim().rsplit_once(" (fork #")?;
     let number = suffix.strip_suffix(')')?;
     (!parent.is_empty() && !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))

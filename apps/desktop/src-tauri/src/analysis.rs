@@ -1651,7 +1651,8 @@ mod tests {
         connection
             .execute_batch(
                 r#"CREATE TABLE session (
-                     id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER
+                     id TEXT PRIMARY KEY, parent_id TEXT, title TEXT,
+                     time_created INTEGER, time_updated INTEGER
                  );
                  CREATE TABLE message (
                      id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
@@ -1661,7 +1662,8 @@ mod tests {
                      id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
                      time_created INTEGER, time_updated INTEGER, data TEXT
                  );
-                 INSERT INTO session VALUES ('root', NULL, 100, 120);
+                 INSERT INTO session (id, parent_id, time_created, time_updated)
+                 VALUES ('root', NULL, 100, 120);
                  INSERT INTO message VALUES (
                      'message', 'root', 110, 110,
                      '{"role":"assistant","modelID":"model-a","tokens":{"input":12,"output":3}}'
@@ -1712,6 +1714,75 @@ mod tests {
         assert_eq!(session.parent.billable_input_tokens, 12);
         assert_eq!(session.parent.billable_output_tokens, 3);
         assert!(session.evidence.is_some());
+    }
+
+    /// Like [`opencode_database`], with one `parent_id` child session
+    /// carrying one assistant message on `model`. A separate helper (rather
+    /// than a parameter on `opencode_database`) keeps that helper's own
+    /// fingerprint assertions stable.
+    fn opencode_database_with_delegated_child(
+        model: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let path = directory.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&path).expect("database");
+        connection
+            .execute_batch(
+                r#"CREATE TABLE session (
+                     id TEXT PRIMARY KEY, parent_id TEXT, title TEXT,
+                     time_created INTEGER, time_updated INTEGER
+                 );
+                 CREATE TABLE message (
+                     id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+                     time_updated INTEGER, data TEXT
+                 );
+                 CREATE TABLE part (
+                     id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                     time_created INTEGER, time_updated INTEGER, data TEXT
+                 );
+                 INSERT INTO session (id, parent_id, time_created, time_updated)
+                 VALUES ('root', NULL, 100, 120);
+                 INSERT INTO session (id, parent_id, time_created, time_updated)
+                 VALUES ('child', 'root', 110, 115);
+                 INSERT INTO message VALUES (
+                     'message', 'root', 100, 100,
+                     '{"role":"assistant","modelID":"model-a","tokens":{"input":12,"output":3}}'
+                 );"#,
+            )
+            .expect("OpenCode fixture");
+        connection
+            .execute(
+                "INSERT INTO message VALUES ('child-message', 'child', 110, 110, ?1)",
+                [format!(
+                    r#"{{"role":"assistant","modelID":"{model}","tokens":{{"input":4,"output":1}}}}"#
+                )],
+            )
+            .expect("child message");
+        drop(connection);
+        (directory, path)
+    }
+
+    #[test]
+    fn an_opencode_parent_id_child_links_as_a_delegated_thread() {
+        let (_directory, path) = opencode_database_with_delegated_child("model-b");
+        let input = SessionInput {
+            agent: "opencode".to_owned(),
+            session_id: "root".to_owned(),
+            source: RawSource::Sqlite(path),
+        };
+
+        let pass = evidence_pass_with_turn_rows(
+            &[input],
+            &|| false,
+            Some(turn_row_store("opencode", "root")),
+        );
+        let evidence = pass.evidence.expect("published evidence");
+
+        assert!(matches!(evidence.subagents, EvidenceValue::Complete(_)));
+        let subagents = observed(&evidence.subagents);
+        assert_eq!(subagents.spawn_count, 1);
+        assert!(subagents.delegated_models.contains("model-b"));
+        assert_eq!(subagents.delegated_turns, 1);
     }
 
     fn codex_record() -> String {

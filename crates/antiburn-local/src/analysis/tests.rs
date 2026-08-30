@@ -451,10 +451,10 @@ fn opencode_sqlite_vendor_is_extracted() {
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
-            "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER);
+            "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
              CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
              CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
-             INSERT INTO session VALUES ('x', NULL, 1, 1);",
+             INSERT INTO session (id, parent_id, time_created, time_updated) VALUES ('x', NULL, 1, 1);",
         )
         .unwrap();
         let message = r#"{"role":"assistant","tokens":{"input":300,"output":40}}"#;

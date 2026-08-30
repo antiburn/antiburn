@@ -2011,10 +2011,10 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 8,
+            parser_revision: 9,
             analyzer_revision: 9,
             metrics_schema_revision: 1,
-            evidence_schema_revision: 6,
+            evidence_schema_revision: 7,
         }
     );
 }
@@ -2084,7 +2084,7 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(ready.status, EvidenceStatus::Ready);
-    assert_eq!(ready.evidence_schema_revision, Some(6));
+    assert_eq!(ready.evidence_schema_revision, Some(7));
     assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
 }
 
@@ -2125,7 +2125,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
 
     let failed = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(failed.status, EvidenceStatus::Failed);
-    assert_eq!(failed.evidence_schema_revision, Some(6));
+    assert_eq!(failed.evidence_schema_revision, Some(7));
     assert!(failed.evidence_json.is_none());
     assert!(failed.diagnostics_json.is_none());
 }
