@@ -226,7 +226,7 @@ fn stream_claude(input: &SessionInput) -> SessionMetricsAccumulator {
     accumulator
 }
 
-fn stream_composite(input: &SessionInput) -> CompositeSink {
+fn stream_composite(input: &SessionInput) -> CompositeSink<'static> {
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),

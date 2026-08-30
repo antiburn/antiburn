@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use antiburn_local::analysis::{TurnScope, count_turn_rows};
+
 use super::model::PublishedEvidence;
 use super::*;
 
@@ -2058,7 +2060,7 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
         Some("{\"state\":\"unimplemented\"}")
     );
 
-    let runner = |record: &SessionRecord, _signal: crate::analysis::PassSignal| {
+    let runner = |record: &SessionRecord, _signal: crate::analysis::PassSignal, _: i64| {
         let pass = published_evidence_pass(record);
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
@@ -2094,7 +2096,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
             .unwrap(),
         1
     );
-    let runner = |_record: &SessionRecord, _signal: crate::analysis::PassSignal| {
+    let runner = |_record: &SessionRecord, _signal: crate::analysis::PassSignal, _: i64| {
         Box::pin(async {
             crate::analysis::EvidencePass {
                 analysis: crate::analysis::SessionAnalysis::unavailable(),
@@ -2957,4 +2959,261 @@ fn evidence_backlog_counts_split_pending_from_processing_within_one_environment(
     let wsl = store.evidence_backlog_counts("wsl:ubuntu").unwrap();
     assert_eq!(wsl.pending, 1);
     assert_eq!(wsl.processing, 0);
+}
+
+/* --------------------------------------------------------------------
+ * Turn rows
+ * ----------------------------------------------------------------- */
+
+fn turn_row(turn_index: u64) -> TurnRow {
+    TurnRow {
+        source_key: "s1".into(),
+        thread_id: "s1".into(),
+        turn_index,
+        scope: TurnScope::Main,
+        child_id: None,
+        role: "assistant",
+        ts_ms: Some(1_000 + turn_index as i64),
+        model: Some("claude-opus-4-6".into()),
+        effort: None,
+        speed: None,
+        input_tokens: 10,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 5,
+        is_compaction_boundary: false,
+        message_id: None,
+        uuid: None,
+        parent_uuid: None,
+    }
+}
+
+#[test]
+fn the_migration_ladder_reaches_the_turn_row_schema() {
+    // Pinned so this test fails loudly if a future migration is appended
+    // without also being counted here — the number is the whole point of
+    // the assertion, not an incidental detail.
+    assert_eq!(super::schema::MIGRATIONS.len(), 15);
+
+    let store = store();
+    assert_eq!(store.schema_version().unwrap(), 15);
+}
+
+#[test]
+fn a_fenced_turn_row_writer_inserts_rows_the_store_can_count() {
+    let store = store();
+    let mut record = session("turn-rows-writer", 1_000);
+    record.source_fingerprint = Some("sv1:turn-rows-writer".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let key = record.key.clone();
+
+    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), 7);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+
+    let connection = store.lock();
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), 7).unwrap(),
+        2
+    );
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), 8).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "publish-current-fence", 100, 60);
+    let key = record.key.clone();
+
+    // A row left over from an earlier, superseded pass under a stale fence.
+    {
+        let connection = store.lock();
+        insert_turn_rows(
+            &connection,
+            &turn_session_key(&key),
+            claim.claim_fence - 1,
+            &[turn_row(0)],
+        )
+        .unwrap();
+    }
+    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    let connection = store.lock();
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence - 1).unwrap(),
+        0
+    );
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
+        2
+    );
+}
+
+#[test]
+fn a_lost_publish_race_deletes_only_its_own_fences_turn_rows() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "lost-race-turn-rows", 100, 60);
+    let key = record.key.clone();
+    // A row from a still-current, earlier pass. A lost race must not touch
+    // rows it does not own.
+    {
+        let connection = store.lock();
+        insert_turn_rows(
+            &connection,
+            &turn_session_key(&key),
+            claim.claim_fence - 1,
+            &[turn_row(0)],
+        )
+        .unwrap();
+    }
+    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    // Bumping the source generation makes the fenced UPDATE inside
+    // `publish_projections` affect zero rows — the same "lost the race"
+    // shape `a_stale_generation_publishes_no_session_evidence_and_no_analysis`
+    // exercises for the evidence and analysis projections.
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET source_generation = source_generation + 1
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        !store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    let connection = store.lock();
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
+        0
+    );
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence - 1).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn deleting_a_session_removes_its_turn_rows() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "turn-rows-delete");
+    store
+        .upsert_sessions(
+            &[session("turn-rows-delete", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    {
+        let connection = store.lock();
+        insert_turn_rows(&connection, &turn_session_key(&key), 1, &[turn_row(0)]).unwrap();
+    }
+
+    assert!(store.delete_session(&key).unwrap());
+
+    let connection = store.lock();
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), 1).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn clearing_local_session_data_removes_every_turn_row() {
+    let store = store();
+    let mut first = session("clear-turn-rows-one", 1_000);
+    first.source_fingerprint = Some("sv1:clear-turn-rows-one".into());
+    let mut second = session("clear-turn-rows-two", 1_000);
+    second.source_fingerprint = Some("sv1:clear-turn-rows-two".into());
+    store
+        .upsert_sessions(&[first, second], &crate::agents::evidence_cohort())
+        .unwrap();
+    {
+        let connection = store.lock();
+        insert_turn_rows(
+            &connection,
+            &TurnSessionKey {
+                environment_key: "native",
+                agent: "claude-code",
+                session_id: "clear-turn-rows-one",
+            },
+            1,
+            &[turn_row(0)],
+        )
+        .unwrap();
+        insert_turn_rows(
+            &connection,
+            &TurnSessionKey {
+                environment_key: "native",
+                agent: "claude-code",
+                session_id: "clear-turn-rows-two",
+            },
+            1,
+            &[turn_row(0)],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(store.clear_local_session_data().unwrap(), 2);
+
+    let count: i64 = store
+        .lock()
+        .query_row("SELECT COUNT(*) FROM turn", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn deleting_the_session_row_directly_cascades_to_its_turn_rows() {
+    // `delete_session` deletes `turn` rows explicitly (see its doc comment),
+    // matching how it already treats `session_evidence`. This test instead
+    // deletes the `session` row with raw SQL, bypassing that explicit
+    // delete, to prove the migrated schema's `ON DELETE CASCADE` also holds
+    // on its own — a backstop, not the primary mechanism.
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "turn-rows-cascade");
+    store
+        .upsert_sessions(
+            &[session("turn-rows-cascade", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    {
+        let connection = store.lock();
+        insert_turn_rows(&connection, &turn_session_key(&key), 1, &[turn_row(0)]).unwrap();
+    }
+
+    store
+        .lock()
+        .execute(
+            "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .unwrap();
+
+    let connection = store.lock();
+    assert_eq!(
+        count_turn_rows(&connection, &turn_session_key(&key), 1).unwrap(),
+        0
+    );
 }

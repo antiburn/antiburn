@@ -620,7 +620,7 @@ mod tests {
         let (entered, pass_entered) = mpsc::channel();
         let (completed, pass_completed) = mpsc::channel();
         let pass_blocked = Arc::clone(&blocked);
-        let runner = move |_: &SessionRecord, _: PassSignal| {
+        let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
             let blocked = Arc::clone(&pass_blocked);
             let entered = entered.clone();
             let completed = completed.clone();

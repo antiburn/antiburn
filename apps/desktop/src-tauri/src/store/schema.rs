@@ -10,7 +10,9 @@
 
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14];
+pub const MIGRATIONS: &[&str] = &[
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15,
+];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
 ///
@@ -358,3 +360,22 @@ SELECT environment_key, agent, session_id
  WHERE agent = 'opencode'
 ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 "#;
+
+/// v15 — persisted turn rows.
+///
+/// # Data policy (schema-level contract)
+///
+/// `turn` stores one row per parsed turn: identity, thread and scope facts,
+/// and token accounting derived from a transcript. `turn_content` exists for
+/// a later change to store the turn's text; nothing writes to it yet.
+///
+/// Session deletion and clear-local-session-data remove these rows
+/// explicitly, the same way [`V11`]'s `session_evidence` does — the FK
+/// cascade is a backstop, not the mechanism.
+///
+/// `antiburn_local::analysis::TURN_SCHEMA_SQL` owns the column list; this is
+/// a re-export so [`MIGRATIONS`] stays a plain `&[&str]` of literals. See
+/// "Where the row logic lives" in the session-evidence-harness-parity plan:
+/// the crate owns the DDL and the read/write functions over a borrowed
+/// connection, and never opens this database itself.
+const V15: &str = antiburn_local::analysis::TURN_SCHEMA_SQL;

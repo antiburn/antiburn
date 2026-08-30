@@ -1,0 +1,707 @@
+//! Persisted turn rows.
+//!
+//! Each parsed turn becomes one row in the `turn` table. This lets the app
+//! query the durable rows instead of streaming an accumulator, and lets a
+//! catalog or policy change requery rows instead of reparsing a transcript.
+//!
+//! This module owns only the `turn` and `turn_content` DDL and the read/write
+//! functions over a borrowed [`rusqlite::Connection`]. The crate does not open
+//! the app database and does not know any other app table.
+
+use rusqlite::{Connection, params};
+
+use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
+use crate::analysis::model::{EventSource, NormalizedEvent, Role};
+
+/// DDL for the `turn` and `turn_content` tables.
+///
+/// `turn` holds one row per parsed turn: identity, thread and scope facts,
+/// and token accounting. `turn_content` holds the turn's text, keyed by the
+/// `turn` rowid and part index (one turn has several parts: text,
+/// thinking, each tool input, each tool result), in a separate table so
+/// the hot `turn` table stays narrow.
+/// `turn_content` is created now; a later change writes to it.
+///
+/// The caller applies this DDL after its own `session` table exists — the
+/// foreign key references `session (environment_key, agent, session_id)`.
+pub const TURN_SCHEMA_SQL: &str = r#"
+CREATE TABLE turn (
+    rowid INTEGER PRIMARY KEY,
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    claim_fence INTEGER NOT NULL,
+    source_key TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    turn_index INTEGER NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN ('main','delegated')),
+    child_id TEXT,
+    role TEXT NOT NULL,
+    ts_ms INTEGER,
+    model TEXT,
+    effort TEXT,
+    speed TEXT,
+    input_tokens INTEGER NOT NULL,
+    cache_read_tokens INTEGER NOT NULL,
+    cache_write_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    is_compaction_boundary INTEGER NOT NULL,
+    message_id TEXT,
+    uuid TEXT,
+    parent_uuid TEXT,
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX turn_session_thread
+    ON turn (environment_key, agent, session_id, thread_id, turn_index);
+
+CREATE TABLE turn_content (
+    turn_rowid INTEGER NOT NULL REFERENCES turn (rowid) ON DELETE CASCADE,
+    part_index INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    content BLOB NOT NULL,
+    PRIMARY KEY (turn_rowid, part_index)
+) WITHOUT ROWID, STRICT;
+"#;
+
+/// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
+/// caller picks a different size with [`TurnRowSink::with_batch_size`].
+pub const TURN_ROW_BATCH_SIZE: usize = 512;
+
+/// Whether a turn ran in the session's main loop or in a delegated child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnScope {
+    Main,
+    Delegated,
+}
+
+impl TurnScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TurnScope::Main => "main",
+            TurnScope::Delegated => "delegated",
+        }
+    }
+}
+
+/// One parsed turn, ready to become a `turn` row.
+///
+/// Carries every column except the session key and the claim fence — the
+/// caller supplies those once, for the whole batch, in
+/// [`insert_turn_rows`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnRow {
+    pub source_key: String,
+    pub thread_id: String,
+    pub turn_index: u64,
+    pub scope: TurnScope,
+    pub child_id: Option<String>,
+    pub role: &'static str,
+    pub ts_ms: Option<i64>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub speed: Option<String>,
+    pub input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+    pub is_compaction_boundary: bool,
+    pub message_id: Option<String>,
+    pub uuid: Option<String>,
+    pub parent_uuid: Option<String>,
+}
+
+fn role_key(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System => "system",
+        Role::Tool => "tool",
+    }
+}
+
+/// Build one row from a normalized event.
+///
+/// `source_key` names the parent transcript or child file this event comes
+/// from. `thread_id` equals `source_key` in this change — a later change
+/// derives finer per-thread identity from provider record links.
+///
+/// Scope is `Delegated` with `child_id = Some(source_key)` when the event's
+/// [`EventSource`] is `Subagent`; otherwise scope is `Main` with no
+/// `child_id`.
+pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index: u64) -> TurnRow {
+    let (scope, child_id) = match event.source {
+        EventSource::Subagent => (TurnScope::Delegated, Some(source_key.to_owned())),
+        EventSource::Parent => (TurnScope::Main, None),
+    };
+    TurnRow {
+        source_key: source_key.to_owned(),
+        thread_id: source_key.to_owned(),
+        turn_index,
+        scope,
+        child_id,
+        role: role_key(event.role),
+        ts_ms: event.ts_ms,
+        model: event.model.clone(),
+        effort: event.thinking_mode.clone(),
+        speed: event.speed.clone(),
+        input_tokens: event.usage.input_tokens,
+        cache_read_tokens: event.usage.cache_read_tokens,
+        cache_write_tokens: event.usage.cache_creation_tokens,
+        output_tokens: event.usage.output_tokens,
+        is_compaction_boundary: event.is_compaction_boundary,
+        message_id: event.message_id.clone(),
+        uuid: event.uuid.clone(),
+        parent_uuid: event.parent_uuid.clone(),
+    }
+}
+
+/// A session's identity for row queries. Distinct from the app's own session
+/// key type — this crate does not depend on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnSessionKey<'a> {
+    pub environment_key: &'a str,
+    pub agent: &'a str,
+    pub session_id: &'a str,
+}
+
+/// One `turn`-row write failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnRowWriteError(pub String);
+
+impl std::fmt::Display for TurnRowWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "turn row write failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for TurnRowWriteError {}
+
+impl From<rusqlite::Error> for TurnRowWriteError {
+    fn from(error: rusqlite::Error) -> Self {
+        TurnRowWriteError(error.to_string())
+    }
+}
+
+/// Writes a batch of turn rows for one session.
+///
+/// `&self` so a shared handle (an `Arc<Store>`, or an app type that wraps
+/// one) can implement this and move into the blocking thread that runs the
+/// analysis pass.
+pub trait TurnRowWriter: Send + Sync {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError>;
+}
+
+/// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s and
+/// writes them through a [`TurnRowWriter`] in bounded batches.
+///
+/// `turn_index` is monotonic per `source_key`, starting at zero. The buffer
+/// never exceeds `batch_size`: [`Self::observe`] flushes as soon as it
+/// reaches that size, so memory stays bounded no matter how long the source
+/// runs. The first write error is kept and stops further writes;
+/// [`Self::into_error`] lets the caller surface it.
+pub struct TurnRowSink<'a> {
+    writer: &'a dyn TurnRowWriter,
+    source_key: String,
+    next_index: u64,
+    buffer: Vec<TurnRow>,
+    batch_size: usize,
+    error: Option<TurnRowWriteError>,
+}
+
+impl<'a> TurnRowSink<'a> {
+    pub fn new(writer: &'a dyn TurnRowWriter, source_key: impl Into<String>) -> Self {
+        Self::with_batch_size(writer, source_key, TURN_ROW_BATCH_SIZE)
+    }
+
+    pub fn with_batch_size(
+        writer: &'a dyn TurnRowWriter,
+        source_key: impl Into<String>,
+        batch_size: usize,
+    ) -> Self {
+        let batch_size = batch_size.max(1);
+        Self {
+            writer,
+            source_key: source_key.into(),
+            next_index: 0,
+            buffer: Vec::with_capacity(batch_size.min(TURN_ROW_BATCH_SIZE)),
+            batch_size,
+            error: None,
+        }
+    }
+
+    /// True once a write has failed. No further row reaches the writer after
+    /// this, but rows already accepted before the failure stay written.
+    pub fn has_error(&self) -> bool {
+        self.error.is_some()
+    }
+
+    /// Consumes the sink and returns the write error, if one occurred.
+    pub fn into_error(self) -> Option<TurnRowWriteError> {
+        self.error
+    }
+
+    /// Folds one record without taking it. Only a `MetricsEvent` becomes a
+    /// row; `Observation` and `Unusable` records are not turns.
+    pub fn observe(&mut self, record: &NormalizedRecord) {
+        if self.error.is_some() {
+            return;
+        }
+        let NormalizedRecord::MetricsEvent(event) = record else {
+            return;
+        };
+        let row = turn_row_from_event(event, &self.source_key, self.next_index);
+        self.next_index += 1;
+        self.buffer.push(row);
+        if self.buffer.len() >= self.batch_size {
+            self.flush();
+        }
+    }
+
+    /// Writes any buffered rows and clears the buffer.
+    pub fn flush(&mut self) {
+        if self.error.is_some() || self.buffer.is_empty() {
+            return;
+        }
+        if let Err(error) = self.writer.write_turn_rows(&self.buffer) {
+            self.error = Some(error);
+        }
+        self.buffer.clear();
+    }
+}
+
+impl RecordSink for TurnRowSink<'_> {
+    fn record(&mut self, record: NormalizedRecord) {
+        self.observe(&record);
+    }
+
+    fn finish(&mut self, _summary: SessionSummary) {
+        self.flush();
+    }
+}
+
+const INSERT_TURN_SQL: &str = "INSERT INTO turn (
+    environment_key, agent, session_id, claim_fence, source_key, thread_id,
+    turn_index, scope, child_id, role, ts_ms, model, effort, speed,
+    input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
+    is_compaction_boundary, message_id, uuid, parent_uuid
+) VALUES (
+    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+)";
+
+/// Inserts one batch of rows for `key`, all stamped with `claim_fence`.
+///
+/// One prepared statement executed once per row. The caller supplies the
+/// transaction (pass a [`rusqlite::Transaction`], which derefs to
+/// `Connection`).
+pub fn insert_turn_rows(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+    rows: &[TurnRow],
+) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare(INSERT_TURN_SQL)?;
+    for row in rows {
+        statement.execute(params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            claim_fence,
+            row.source_key,
+            row.thread_id,
+            row.turn_index as i64,
+            row.scope.as_str(),
+            row.child_id,
+            row.role,
+            row.ts_ms,
+            row.model,
+            row.effort,
+            row.speed,
+            row.input_tokens as i64,
+            row.cache_read_tokens as i64,
+            row.cache_write_tokens as i64,
+            row.output_tokens as i64,
+            i64::from(row.is_compaction_boundary),
+            row.message_id,
+            row.uuid,
+            row.parent_uuid,
+        ])?;
+    }
+    Ok(())
+}
+
+/// Deletes every row for `key` whose `claim_fence` is not `keep_fence`.
+///
+/// Used after a pass publishes: rows from every earlier, superseded pass are
+/// dropped, keeping only the rows the just-published evidence was built
+/// from. Returns the number of `turn` rows removed.
+pub fn delete_turn_rows_except_fence(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    keep_fence: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM turn_content WHERE turn_rowid IN (
+             SELECT rowid FROM turn
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND claim_fence != ?4
+         )",
+        params![key.environment_key, key.agent, key.session_id, keep_fence],
+    )?;
+    conn.execute(
+        "DELETE FROM turn
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND claim_fence != ?4",
+        params![key.environment_key, key.agent, key.session_id, keep_fence],
+    )
+}
+
+/// Deletes every row for `key` stamped with exactly `claim_fence`.
+///
+/// Used when a pass loses the publish race (its claim fence no longer
+/// matches): the rows it wrote never became part of any published evidence,
+/// so they are cleaned up under their own fence rather than left to
+/// accumulate. Returns the number of `turn` rows removed.
+pub fn delete_turn_rows_for_fence(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM turn_content WHERE turn_rowid IN (
+             SELECT rowid FROM turn
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND claim_fence = ?4
+         )",
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+    )?;
+    conn.execute(
+        "DELETE FROM turn
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND claim_fence = ?4",
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+    )
+}
+
+/// Deletes every row for `key`. Used by session delete and
+/// clear-local-session-data paths.
+pub fn delete_turn_rows(conn: &Connection, key: &TurnSessionKey<'_>) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM turn_content WHERE turn_rowid IN (
+             SELECT rowid FROM turn
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+         )",
+        params![key.environment_key, key.agent, key.session_id],
+    )?;
+    conn.execute(
+        "DELETE FROM turn
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+        params![key.environment_key, key.agent, key.session_id],
+    )
+}
+
+/// Counts the rows for `key` stamped with `claim_fence`.
+pub fn count_turn_rows(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<u64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM turn
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND claim_fence = ?4",
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::analysis::model::Usage;
+
+    const TEST_SESSION_SQL: &str = "CREATE TABLE session (
+        environment_key TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        PRIMARY KEY (environment_key, agent, session_id)
+    ) STRICT;";
+
+    fn test_connection() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory connection");
+        conn.pragma_update(None, "foreign_keys", true)
+            .expect("enable foreign keys");
+        conn.execute_batch(TEST_SESSION_SQL)
+            .expect("create session table");
+        conn.execute_batch(TURN_SCHEMA_SQL)
+            .expect("create turn schema");
+        conn
+    }
+
+    fn insert_session(conn: &Connection, key: &TurnSessionKey<'_>) {
+        conn.execute(
+            "INSERT INTO session (environment_key, agent, session_id) VALUES (?1, ?2, ?3)",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .expect("insert session");
+    }
+
+    fn sample_row(turn_index: u64) -> TurnRow {
+        TurnRow {
+            source_key: "s1".to_owned(),
+            thread_id: "s1".to_owned(),
+            turn_index,
+            scope: TurnScope::Main,
+            child_id: None,
+            role: "assistant",
+            ts_ms: Some(1_000 + turn_index as i64),
+            model: Some("claude-opus-4-6".to_owned()),
+            effort: None,
+            speed: None,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 5,
+            is_compaction_boundary: false,
+            message_id: None,
+            uuid: None,
+            parent_uuid: None,
+        }
+    }
+
+    #[test]
+    fn insert_and_count_round_trip() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let rows = vec![sample_row(0), sample_row(1)];
+        insert_turn_rows(&conn, &key, 7, &rows).expect("insert rows");
+
+        assert_eq!(count_turn_rows(&conn, &key, 7).expect("count"), 2);
+        assert_eq!(count_turn_rows(&conn, &key, 8).expect("count"), 0);
+    }
+
+    #[test]
+    fn delete_except_fence_keeps_only_the_current_pass() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        insert_turn_rows(&conn, &key, 1, &[sample_row(0)]).expect("insert pass 1");
+        insert_turn_rows(&conn, &key, 2, &[sample_row(0), sample_row(1)]).expect("insert pass 2");
+
+        let removed = delete_turn_rows_except_fence(&conn, &key, 2).expect("delete stale");
+        assert_eq!(removed, 1);
+        assert_eq!(count_turn_rows(&conn, &key, 1).expect("count"), 0);
+        assert_eq!(count_turn_rows(&conn, &key, 2).expect("count"), 2);
+    }
+
+    #[test]
+    fn delete_for_fence_removes_only_the_matching_pass() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        insert_turn_rows(&conn, &key, 1, &[sample_row(0)]).expect("insert pass 1");
+        insert_turn_rows(&conn, &key, 2, &[sample_row(0), sample_row(1)]).expect("insert pass 2");
+
+        let removed = delete_turn_rows_for_fence(&conn, &key, 1).expect("delete lost race");
+        assert_eq!(removed, 1);
+        assert_eq!(count_turn_rows(&conn, &key, 1).expect("count"), 0);
+        assert_eq!(count_turn_rows(&conn, &key, 2).expect("count"), 2);
+    }
+
+    #[test]
+    fn delete_turn_rows_removes_every_row_for_the_session() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        insert_turn_rows(&conn, &key, 1, &[sample_row(0), sample_row(1)]).expect("insert");
+
+        let removed = delete_turn_rows(&conn, &key).expect("delete all");
+        assert_eq!(removed, 2);
+        assert_eq!(count_turn_rows(&conn, &key, 1).expect("count"), 0);
+    }
+
+    #[test]
+    fn deleting_the_session_cascades_to_its_turn_rows() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        insert_turn_rows(&conn, &key, 1, &[sample_row(0)]).expect("insert");
+
+        conn.execute(
+            "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .expect("delete session");
+
+        assert_eq!(count_turn_rows(&conn, &key, 1).expect("count"), 0);
+    }
+
+    #[test]
+    fn turn_row_from_event_maps_delegated_scope() {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.source = EventSource::Subagent;
+        event.usage = Usage {
+            input_tokens: 3,
+            ..Usage::default()
+        };
+
+        let row = turn_row_from_event(&event, "child-1", 2);
+        assert_eq!(row.scope, TurnScope::Delegated);
+        assert_eq!(row.child_id.as_deref(), Some("child-1"));
+        assert_eq!(row.thread_id, "child-1");
+        assert_eq!(row.turn_index, 2);
+        assert_eq!(row.input_tokens, 3);
+    }
+
+    #[test]
+    fn turn_row_from_event_maps_main_scope() {
+        let event = NormalizedEvent::new(Role::User);
+        let row = turn_row_from_event(&event, "parent-1", 0);
+        assert_eq!(row.scope, TurnScope::Main);
+        assert_eq!(row.child_id, None);
+    }
+
+    /// A writer that always fails, so the sink's error path can be tested
+    /// without a real connection.
+    struct FailingWriter;
+
+    impl TurnRowWriter for FailingWriter {
+        fn write_turn_rows(&self, _rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+            Err(TurnRowWriteError("boom".to_owned()))
+        }
+    }
+
+    /// A writer over a real connection, so batching tests can assert on rows
+    /// actually reaching the table.
+    struct RecordingWriter {
+        conn: Mutex<Connection>,
+        key: String,
+    }
+
+    impl RecordingWriter {
+        fn new(conn: Connection) -> Self {
+            Self {
+                conn: Mutex::new(conn),
+                key: "s1".to_owned(),
+            }
+        }
+
+        fn count(&self, claim_fence: i64) -> u64 {
+            let conn = self.conn.lock().expect("lock");
+            count_turn_rows(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                claim_fence,
+            )
+            .expect("count")
+        }
+    }
+
+    impl TurnRowWriter for RecordingWriter {
+        fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+            let conn = self.conn.lock().expect("lock");
+            insert_turn_rows(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                1,
+                rows,
+            )
+            .map_err(TurnRowWriteError::from)
+        }
+    }
+
+    fn metric_record(role: Role) -> NormalizedRecord {
+        NormalizedRecord::MetricsEvent(Box::new(NormalizedEvent::new(role)))
+    }
+
+    #[test]
+    fn the_buffer_never_exceeds_batch_size_and_index_stays_monotonic() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let writer = RecordingWriter::new(conn);
+        let mut sink = TurnRowSink::with_batch_size(&writer, "s1", 4);
+
+        for _ in 0..10 {
+            sink.observe(&metric_record(Role::Assistant));
+            assert!(sink.buffer.len() <= 4);
+        }
+        sink.flush();
+
+        assert_eq!(writer.count(1), 10);
+        assert_eq!(sink.next_index, 10);
+    }
+
+    #[test]
+    fn a_write_error_stops_further_writes_and_is_surfaced() {
+        let writer = FailingWriter;
+        let mut sink = TurnRowSink::with_batch_size(&writer, "s1", 1);
+
+        sink.observe(&metric_record(Role::Assistant));
+        assert!(sink.has_error());
+        sink.observe(&metric_record(Role::Assistant));
+        sink.observe(&metric_record(Role::Assistant));
+
+        let error = sink.into_error().expect("error must surface");
+        assert_eq!(error.0, "boom");
+    }
+
+    #[test]
+    fn only_metrics_events_become_rows() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let writer = RecordingWriter::new(conn);
+        let mut sink = TurnRowSink::new(&writer, "s1");
+
+        sink.observe(&metric_record(Role::Assistant));
+        sink.observe(&NormalizedRecord::Unusable(
+            crate::analysis::PartialReason::MalformedRecord,
+        ));
+        sink.finish(SessionSummary::default());
+
+        assert_eq!(writer.count(1), 1);
+    }
+}
