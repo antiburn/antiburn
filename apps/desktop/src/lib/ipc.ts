@@ -674,6 +674,12 @@ export async function windowReady(generation: number): Promise<void> {
   await invoke("window_ready", { generation })
 }
 
+/** Tell the shell that the popover's initial activity and usage state settled. */
+export async function popoverContentReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("popover_content_ready", { generation })
+}
+
 /**
  * Version stamp of the engine's bundled pricing catalog.
  *
@@ -689,8 +695,8 @@ export async function engineCatalogVersion(): Promise<string | null> {
  * Opens (or refocuses) the standalone settings window.
  *
  * `pane` is a request for a section — an attention banner uses it to land a
- * reader on the pane that can fix what they were told about. Omitting it leaves
- * the window wherever it was.
+ * reader on the pane that can fix what they were told about. Omitting it keeps
+ * an open window on its current pane or opens a new window on General.
  */
 export async function openSettingsWindow(pane?: SettingsPane): Promise<void> {
   if (!hasShell()) return
@@ -711,9 +717,8 @@ export async function takeSettingsPane(): Promise<string | null> {
 /**
  * Asks the shell to close whichever window is calling (⌘W).
  *
- * A close *request*, not a destroy: the shell intercepts `CloseRequested` for
- * every window and hides instead (see `src-tauri/src/lib.rs`), so this takes
- * exactly the same path as the title-bar close button. Needs
+ * This takes the same path as the title-bar close button. The shell applies
+ * each window's close policy; Settings closes and releases its renderer. Needs
  * `core:window:allow-close` in `capabilities/default.json` — the ACL's
  * `core:window:default` set is read-only.
  *

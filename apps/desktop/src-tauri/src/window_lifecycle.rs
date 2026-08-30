@@ -13,7 +13,7 @@ pub(crate) trait ManagedWindowReadiness {
     fn readiness(&self) -> MutexGuard<'_, WindowReadiness>;
 }
 
-/// Take the deferred generation after Tauri removes the old window label.
+/// Reset the lifecycle or take its deferred generation after the window ends.
 pub(crate) fn begin_deferred_build<S>(app: &AppHandle, now: Instant) -> Option<u64>
 where
     S: ManagedWindowReadiness + Send + Sync + 'static,

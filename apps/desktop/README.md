@@ -105,6 +105,10 @@ engine. Release and dependency checks run through the required CI gate.
 
 ## Shell behavior
 
+See [Desktop window renderer lifecycle](../../docs/window-renderer-lifecycle.md)
+for the shared readiness handshake, onboarding prewarm, popover eviction,
+Settings teardown, and the memory rules behind those policies.
+
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
   menu with Pin Window, Settings, and Quit. The Settings sidebar ends in the
   same Quit action — an agent application has no Dock icon and no application
@@ -134,9 +138,13 @@ engine. Release and dependency checks run through the required CI gate.
   window can be reached again once something else takes focus. Finishing it
   puts the window away, drops the Dock icon, and posts the one notification
   that says where the app now lives, anchored under that glyph.
-- **Settings.** An ordinary decorated window, created on demand.
-  A source list on the left, one pane on the right; every control writes
-  through immediately, so there is no Save button and no dirty state.
+- **Settings.** An ordinary decorated window, created on demand and destroyed
+  on close. A source list on the left, one pane on the right; every control
+  writes through immediately, so there is no Save button and no dirty state.
+- **Popover lifetime.** Finishing onboarding starts one hidden renderer before
+  the onboarding window retires. After it becomes ready, the handoff renderer
+  stays warm for up to 60 seconds. The first reveal consumes that lease; later
+  dismissals use the normal 15-second grace period before renderer destruction.
 - **Local store.** One SQLite database under the app data directory
   (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
   build — see above) holds preferences, scan roots, and the local session data

@@ -25,17 +25,6 @@ pub enum OpenAction {
     Rebuild { generation: u64 },
 }
 
-/// The action for a request that warms a hidden renderer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrewarmAction {
-    /// Build the first renderer without a pending reveal.
-    StartLoading { generation: u64 },
-    /// Keep the active renderer load and its reveal intent unchanged.
-    AwaitReady,
-    /// Keep the ready resident renderer unchanged.
-    AlreadyReady,
-}
-
 /// The action for a request that toggles a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToggleAction {
@@ -49,6 +38,15 @@ pub enum ToggleAction {
     UseWindowVisibility,
     /// Replace the stale renderer once for this load cycle.
     Rebuild { generation: u64 },
+}
+
+/// The action for a request that warms a hidden window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrewarmAction {
+    /// Build the first renderer without a pending reveal.
+    StartLoading { generation: u64 },
+    /// Keep the renderer or load that already exists.
+    KeepExisting,
 }
 
 /// The action to take after the renderer reports readiness.
@@ -87,15 +85,14 @@ pub struct WindowReadiness {
 }
 
 impl WindowReadiness {
-    /// Request a hidden renderer without changing an active reveal request.
+    /// Request a hidden renderer without changing an existing reveal request.
     pub fn request_prewarm(&mut self, now: Instant) -> PrewarmAction {
         match &self.phase {
             Phase::Idle => {
                 let generation = self.replace_loading(now, false, false);
                 PrewarmAction::StartLoading { generation }
             }
-            Phase::Loading(_) => PrewarmAction::AwaitReady,
-            Phase::Ready => PrewarmAction::AlreadyReady,
+            Phase::Loading(_) | Phase::Ready => PrewarmAction::KeepExisting,
         }
     }
 
@@ -151,6 +148,17 @@ impl WindowReadiness {
         std::mem::take(&mut load.reveal_pending)
     }
 
+    /// Replace an expired load and keep its pending reveal request.
+    pub fn replace_expired_loading(&mut self, generation: u64, now: Instant) -> Option<u64> {
+        let Phase::Loading(load) = &self.phase else {
+            return None;
+        };
+        if load.generation != generation || !load.reveal_pending {
+            return None;
+        }
+        Some(self.replace_loading(now, true, true))
+    }
+
     /// Defer the matching renderer build until Tauri removes the old window.
     pub fn defer_build_until_destroyed(&mut self, generation: u64) -> bool {
         let Phase::Loading(load) = &mut self.phase else {
@@ -163,16 +171,16 @@ impl WindowReadiness {
         true
     }
 
-    /// Start one deferred build after Tauri reports that the old window ended.
+    /// Reset after normal destruction or start one deferred replacement.
     pub fn begin_deferred_build(&mut self, now: Instant) -> Option<u64> {
-        let Phase::Loading(load) = &mut self.phase else {
-            return None;
-        };
-        if !std::mem::take(&mut load.build_after_destroy) {
-            return None;
+        if let Phase::Loading(load) = &mut self.phase
+            && std::mem::take(&mut load.build_after_destroy)
+        {
+            load.started_at = now;
+            return Some(load.generation);
         }
-        load.started_at = now;
-        Some(load.generation)
+        self.reset();
+        None
     }
 
     /// Mark the matching renderer ready and return its one reveal action.
@@ -263,6 +271,99 @@ mod tests {
             OpenAction::StartLoading { generation } => generation,
             _ => panic!("an idle lifecycle must start loading"),
         }
+    }
+
+    #[test]
+    fn a_prewarmed_renderer_stays_hidden_when_it_becomes_ready() {
+        let started_at = Instant::now();
+        let mut readiness = WindowReadiness::default();
+
+        let PrewarmAction::StartLoading { generation } = readiness.request_prewarm(started_at)
+        else {
+            panic!("an idle lifecycle must start the prewarm load")
+        };
+
+        assert_eq!(
+            readiness.renderer_ready(generation, started_at + Duration::from_secs(1)),
+            ReadyAction::StayHidden {
+                loading_for: Duration::from_secs(1)
+            }
+        );
+        assert_eq!(
+            readiness.request_prewarm(started_at + Duration::from_secs(2)),
+            PrewarmAction::KeepExisting
+        );
+    }
+
+    #[test]
+    fn a_click_during_prewarm_reveals_the_same_renderer() {
+        let started_at = Instant::now();
+        let mut readiness = WindowReadiness::default();
+
+        let PrewarmAction::StartLoading { generation } = readiness.request_prewarm(started_at)
+        else {
+            panic!("an idle lifecycle must start the prewarm load")
+        };
+
+        assert_eq!(
+            readiness.toggle_open(started_at + Duration::from_millis(250)),
+            ToggleAction::AwaitReady
+        );
+        assert_eq!(
+            readiness.renderer_ready(generation, started_at + Duration::from_secs(1)),
+            ReadyAction::Reveal {
+                loading_for: Duration::from_secs(1)
+            }
+        );
+    }
+
+    #[test]
+    fn an_expired_prewarm_replacement_keeps_the_pending_click() {
+        let started_at = Instant::now();
+        let mut readiness = WindowReadiness::default();
+        let PrewarmAction::StartLoading {
+            generation: _generation,
+        } = readiness.request_prewarm(started_at)
+        else {
+            panic!("an idle lifecycle must start the prewarm load")
+        };
+
+        let pending_generation = match readiness.request_open(started_at + Duration::from_secs(64))
+        {
+            OpenAction::Rebuild { generation } => generation,
+            _ => panic!("the stale prewarm starts its one replacement"),
+        };
+        let replaced_at = started_at + Duration::from_secs(65);
+        let replacement = readiness
+            .replace_expired_loading(pending_generation, replaced_at)
+            .expect("the pending click starts a replacement");
+        assert!(readiness.defer_build_until_destroyed(replacement));
+        assert_eq!(
+            readiness.begin_deferred_build(replaced_at),
+            Some(replacement)
+        );
+        assert!(matches!(
+            readiness.renderer_ready(replacement, replaced_at + Duration::from_secs(1)),
+            ReadyAction::Reveal { .. }
+        ));
+    }
+
+    #[test]
+    fn prewarm_does_not_cancel_an_existing_reveal_request() {
+        let started_at = Instant::now();
+        let mut readiness = WindowReadiness::default();
+        let generation = start_loading(&mut readiness, started_at);
+
+        assert_eq!(
+            readiness.request_prewarm(started_at + Duration::from_millis(250)),
+            PrewarmAction::KeepExisting
+        );
+        assert_eq!(
+            readiness.renderer_ready(generation, started_at + Duration::from_secs(1)),
+            ReadyAction::Reveal {
+                loading_for: Duration::from_secs(1)
+            }
+        );
     }
 
     #[test]
@@ -472,8 +573,29 @@ mod tests {
         );
         assert!(readiness.defer_build_until_destroyed(2));
         assert_eq!(readiness.begin_deferred_build(rebuilt_at), Some(2));
-        assert_eq!(readiness.begin_deferred_build(rebuilt_at), None);
         assert_eq!(readiness.loading_generation(), Some(2));
+    }
+
+    #[test]
+    fn destroying_a_ready_renderer_starts_the_next_open_from_idle() {
+        let started_at = Instant::now();
+        let mut readiness = WindowReadiness::default();
+        let generation = start_loading(&mut readiness, started_at);
+        assert_eq!(
+            readiness.renderer_ready(generation, started_at + Duration::from_secs(1)),
+            ReadyAction::Reveal {
+                loading_for: Duration::from_secs(1)
+            }
+        );
+
+        assert_eq!(
+            readiness.begin_deferred_build(started_at + Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(
+            readiness.request_open(started_at + Duration::from_secs(3)),
+            OpenAction::StartLoading { generation: 2 }
+        );
     }
 
     #[test]
@@ -488,70 +610,6 @@ mod tests {
             readiness.renderer_ready(generation, started_at + Duration::from_secs(1)),
             ReadyAction::StayHidden {
                 loading_for: Duration::from_secs(1)
-            }
-        );
-    }
-
-    #[test]
-    fn prewarming_starts_one_hidden_renderer_load() {
-        let started_at = Instant::now();
-        let mut readiness = WindowReadiness::default();
-
-        assert_eq!(
-            readiness.request_prewarm(started_at),
-            PrewarmAction::StartLoading { generation: 1 }
-        );
-        assert_eq!(
-            readiness.request_prewarm(started_at + Duration::from_millis(10)),
-            PrewarmAction::AwaitReady
-        );
-        assert_eq!(
-            readiness.renderer_ready(1, started_at + Duration::from_millis(50)),
-            ReadyAction::StayHidden {
-                loading_for: Duration::from_millis(50)
-            }
-        );
-        assert_eq!(
-            readiness.request_prewarm(started_at + Duration::from_secs(1)),
-            PrewarmAction::AlreadyReady
-        );
-    }
-
-    #[test]
-    fn an_open_during_prewarm_reuses_and_reveals_the_hidden_load() {
-        let started_at = Instant::now();
-        let mut readiness = WindowReadiness::default();
-
-        assert_eq!(
-            readiness.request_prewarm(started_at),
-            PrewarmAction::StartLoading { generation: 1 }
-        );
-        assert_eq!(
-            readiness.request_open(started_at + Duration::from_millis(10)),
-            OpenAction::AwaitReady
-        );
-        assert_eq!(
-            readiness.renderer_ready(1, started_at + Duration::from_millis(50)),
-            ReadyAction::Reveal {
-                loading_for: Duration::from_millis(50)
-            }
-        );
-    }
-
-    #[test]
-    fn prewarming_does_not_cancel_an_open_that_is_already_loading() {
-        let started_at = Instant::now();
-        let mut readiness = WindowReadiness::default();
-        let generation = start_loading(&mut readiness, started_at);
-
-        assert_eq!(
-            readiness.request_prewarm(started_at + Duration::from_millis(10)),
-            PrewarmAction::AwaitReady
-        );
-        assert_eq!(
-            readiness.renderer_ready(generation, started_at + Duration::from_millis(50)),
-            ReadyAction::Reveal {
-                loading_for: Duration::from_millis(50)
             }
         );
     }

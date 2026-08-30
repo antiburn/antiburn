@@ -11,6 +11,7 @@ import { StatusText } from "../../components/ui/StatusText"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import {
   cancelScan,
+  closeCurrentWindow,
   restartOnboarding,
   scanNow,
   type AppInfo,
@@ -96,6 +97,7 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
 
       setRestartingSetup(true)
       await restartOnboarding()
+      await closeCurrentWindow()
     } catch {
       setRestartFailed(true)
     } finally {

@@ -40,6 +40,8 @@ impl Run {
 #[derive(Default)]
 pub struct InsightsController {
     slot: Mutex<Option<Arc<Run>>>,
+    #[cfg(test)]
+    cancel_requests: std::sync::atomic::AtomicUsize,
 }
 
 impl InsightsController {
@@ -53,9 +55,16 @@ impl InsightsController {
     /// This is the only cancellation signal. A new report request joins
     /// the running reduction instead of cancelling it.
     pub fn cancel(&self) {
+        #[cfg(test)]
+        self.cancel_requests.fetch_add(1, Ordering::SeqCst);
         if let Some(run) = self.lock_slot().as_ref() {
             run.cancel.store(true, Ordering::SeqCst);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel_requests(&self) -> usize {
+        self.cancel_requests.load(Ordering::SeqCst)
     }
 
     /// Resolves one report, sharing the running reduction when one runs.

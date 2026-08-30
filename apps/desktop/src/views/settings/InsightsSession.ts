@@ -33,10 +33,8 @@ const STATUS_POLL_MS = 5_000
  * reduction still in flight, so closing the pane never leaves the shell
  * computing for nobody.
  *
- * The shell hides the settings window on close instead of destroying it,
- * so a close does not unmount the pane. The session therefore also pauses
- * on `visibilitychange`: a hidden window stops the status poll and cancels
- * report work, and a shown window starts both again (FR-16).
+ * Unmounting stops the status poll and cancels report work. The session also
+ * pauses on `visibilitychange` when the operating system hides the window.
  */
 export class InsightsSession {
   private listeners = new Set<() => void>()
