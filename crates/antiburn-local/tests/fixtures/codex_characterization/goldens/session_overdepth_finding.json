@@ -1,46 +1,39 @@
 {
   "evidence": {
     "cache": {
-      "state": "partial",
+      "state": "complete",
       "value": {
-        "observed": {
-          "cacheCreationTokens": 0,
-          "cacheReadTokens": 0,
-          "freshInputTokens": 0,
-          "idleGapMsTotal": 0,
-          "longestIdleGapMs": 0,
-          "modelTransitions": [],
-          "previousTurn": {
-            "state": "partial",
-            "value": {
-              "observed": null,
-              "reason": "unrecognized_record_type"
-            }
-          },
-          "providerEviction": {
-            "state": "unsupported"
-          },
-          "userControlledChurn": {
-            "manualCompactions": 0
-          }
+        "cacheCreationTokens": 0,
+        "cacheReadTokens": 0,
+        "freshInputTokens": 200000,
+        "idleGapMsTotal": 0,
+        "longestIdleGapMs": 0,
+        "modelTransitions": [],
+        "previousTurn": {
+          "state": "unsupported"
         },
-        "reason": "unrecognized_record_type"
+        "providerEviction": {
+          "state": "unsupported"
+        },
+        "userControlledChurn": {
+          "manualCompactions": 0
+        }
       }
     },
     "capabilities": {
-      "cacheWriteTokens": true,
+      "cacheWriteTokens": false,
       "compactionBoundaries": true,
-      "fastTier": false,
+      "fastTier": true,
       "harnessVersion": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
-      "recordIdentity": true,
+      "recordIdentity": false,
       "requestContextTokens": true,
       "serviceTier": false,
       "skillMcpAttribution": false,
-      "subagentModels": false,
-      "subagentRelationships": false,
+      "subagentModels": true,
+      "subagentRelationships": true,
       "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
@@ -48,30 +41,28 @@
       "toolInvocations": true
     },
     "compactions": {
-      "state": "partial",
+      "state": "complete",
       "value": {
-        "observed": {
-          "boundaries": []
-        },
-        "reason": "unrecognized_record_type"
+        "boundaries": []
       }
     },
     "context": {
-      "state": "partial",
+      "state": "complete",
       "value": {
-        "observed": {
-          "maxRequestContextTokens": 0,
-          "topDepthExamples": []
-        },
-        "reason": "unrecognized_record_type"
+        "maxRequestContextTokens": 200000,
+        "topDepthExamples": [
+          {
+            "depthTokens": 200000,
+            "model": "gpt-test",
+            "tsMs": 1786615202000
+          }
+        ]
       }
     },
     "contextSources": {
       "state": "unsupported"
     },
-    "coverage": {
-      "partial": "unrecognized_record_type"
-    },
+    "coverage": "complete",
     "diagnostics": {
       "cappedCollections": [],
       "childrenDiscovered": 0,
@@ -79,52 +70,57 @@
       "duplicateTurnIdentities": 0,
       "recordsObserved": 1,
       "recordsUnrecognizedInert": 0,
-      "recordsUnusable": 1,
+      "recordsUnusable": 0,
       "truncatedStrings": [],
-      "unrecognizedTypes": [
-        "future_row"
-      ],
-      "unusableReasons": {
-        "unrecognized_record_type": 1
-      }
+      "unrecognizedTypes": [],
+      "unusableReasons": {}
     },
     "eligibility": {
-      "state": "partial",
+      "state": "complete",
       "value": {
-        "observed": {
-          "assistantTurns": 0,
-          "depthEligibleTurns": 0,
-          "toolTurns": 0,
-          "turns": 0
-        },
-        "reason": "unrecognized_record_type"
+        "assistantTurns": 1,
+        "depthEligibleTurns": 1,
+        "toolTurns": 0,
+        "turns": 1
       }
     },
     "identity": {
-      "agent": "pi",
-      "sessionId": "unknown_row_type"
+      "agent": "codex",
+      "sessionId": "session_overdepth_finding"
     },
     "models": {
-      "state": "partial",
+      "state": "complete",
       "value": {
-        "observed": {
-          "byModel": {},
-          "effortSignal": {
-            "eligibleTurns": 0,
-            "presentTurns": 0
-          },
-          "effortTiers": {},
-          "fastModes": {},
-          "serviceTiers": {
-            "state": "unsupported"
-          },
-          "speedSignal": {
-            "eligibleTurns": 0,
-            "presentTurns": 0
-          },
-          "unattributedTurns": 0
+        "byModel": {
+          "gpt-test": {
+            "cacheCreation": 0,
+            "cacheRead": 0,
+            "firstTsMs": 1786615202000,
+            "input": 200000,
+            "lastTsMs": 1786615202000,
+            "output": 50,
+            "turns": 1
+          }
         },
-        "reason": "unrecognized_record_type"
+        "effortSignal": {
+          "eligibleTurns": 1,
+          "presentTurns": 1
+        },
+        "effortTiers": {
+          "medium": {
+            "delegated": 0,
+            "mainLoop": 1
+          }
+        },
+        "fastModes": {},
+        "serviceTiers": {
+          "state": "unsupported"
+        },
+        "speedSignal": {
+          "eligibleTurns": 1,
+          "presentTurns": 0
+        },
+        "unattributedTurns": 0
       }
     },
     "provenance": {
@@ -143,36 +139,37 @@
     },
     "schemaRevision": 8,
     "subagents": {
-      "state": "unsupported"
+      "state": "complete",
+      "value": {
+        "children": [],
+        "delegatedModels": [],
+        "delegatedTurns": 0,
+        "examples": [],
+        "spawnCount": 0
+      }
     },
     "timeRange": {
-      "state": "partial",
+      "state": "complete",
       "value": {
-        "observed": {
-          "firstTsMs": 0,
-          "lastTsMs": 0,
-          "timestampedTurns": 0
-        },
-        "reason": "unrecognized_record_type"
+        "firstTsMs": 1786615202000,
+        "lastTsMs": 1786615202000,
+        "timestampedTurns": 1
       }
     },
     "tools": {
-      "state": "partial",
+      "state": "complete",
       "value": {
-        "observed": {
-          "byName": {}
-        },
-        "reason": "unrecognized_record_type"
+        "byName": {}
       }
     }
   },
   "metrics": {
     "activeSecs": 0,
-    "agent": "pi",
+    "agent": "codex",
     "billableCacheCreationTokens": 0,
     "billableCacheReadTokens": 0,
-    "billableInputTokens": 0,
-    "billableOutputTokens": 0,
+    "billableInputTokens": 200000,
+    "billableOutputTokens": 50,
     "buckets": [
       {
         "cacheReadTokens": 0,
@@ -180,20 +177,20 @@
         "compactionPostTokens": null,
         "compactionPreTokens": null,
         "compactionTrigger": null,
-        "contextTokens": 0,
+        "contextTokens": 200000,
         "hasThinking": false,
         "isCacheRehydration": false,
         "isCacheRoutingMiss": false,
         "isCompactionBoundary": false,
         "lastTool": null,
-        "model": null,
+        "model": "gpt-test",
         "secsSincePriorTurn": null,
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
-        "thinkingMode": null,
-        "tokensIn": 0,
-        "tokensOut": 0,
+        "thinkingMode": "medium",
+        "tokensIn": 200000,
+        "tokensOut": 50,
         "userPrompts": 0
       },
       {
@@ -4139,7 +4136,8 @@
     "cacheRoutingMissCount": 0,
     "compactionCount": 0,
     "contextAvailable": true,
-    "contextWindow": 200000,
+    "contextWindow": 300000,
+    "cost": null,
     "durationSecs": 0,
     "efficiency": {
       "carryUsd": 0.0,
@@ -4149,27 +4147,62 @@
       "pricedTurns": 0,
       "rewriteUsd": 0.0,
       "totalUsd": 0.0,
-      "unpricedTurns": 0
+      "unpricedTurns": 1
     },
-    "eventCount": 0,
-    "initialContext": null,
-    "model": null,
-    "modelBreakdown": {},
-    "modelRuns": [],
-    "peakContextTokens": 0,
-    "sessionId": "unknown_row_type",
-    "tokensIn": 0,
-    "tokensOut": 0
+    "eventCount": 1,
+    "initialContext": {
+      "sources": []
+    },
+    "model": "gpt-test",
+    "modelBreakdown": {
+      "gpt-test": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "input_tokens": 200000,
+        "output_tokens": 50
+      }
+    },
+    "modelRuns": [
+      {
+        "model": "gpt-test",
+        "thinkingMode": "medium"
+      }
+    ],
+    "peakContextTokens": 200000,
+    "sessionId": "session_overdepth_finding",
+    "tokensIn": 200000,
+    "tokensOut": 50
   },
   "normalizedSession": {
-    "agent": "pi",
-    "cacheWriteTokensAvailable": true,
-    "contextWindow": null,
-    "events": [],
-    "model": null,
-    "sessionId": "unknown_row_type"
+    "agent": "codex",
+    "cacheWriteTokensAvailable": false,
+    "contextWindow": 300000,
+    "events": [
+      {
+        "compactionPostTokens": null,
+        "compactionPreTokens": null,
+        "compactionTrigger": null,
+        "hasThinking": false,
+        "isCompactionBoundary": false,
+        "messageId": null,
+        "model": "gpt-test",
+        "role": "assistant",
+        "source": "parent",
+        "speed": null,
+        "thinkingMode": "medium",
+        "tools": [],
+        "tsMs": 1786615202000,
+        "usage": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 0,
+          "inputTokens": 200000,
+          "outputTokens": 50
+        }
+      }
+    ],
+    "model": "gpt-test",
+    "sessionId": "session_overdepth_finding"
   },
-  "partialReasons": [
-    "UnrecognizedRecordType"
-  ]
+  "partialReasons": []
 }

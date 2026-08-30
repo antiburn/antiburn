@@ -93,7 +93,7 @@ pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 12;
-pub const ANALYZER_REVISION: i64 = 10;
+pub const ANALYZER_REVISION: i64 = 11;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 8;
 

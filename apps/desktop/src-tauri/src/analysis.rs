@@ -37,7 +37,7 @@ use antiburn_local::analysis::{
     ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, VendorAdapter,
 };
 #[cfg(test)]
-use antiburn_local::insights::{DetectorId, GroupState, requirements};
+use antiburn_local::insights::{DetectorId, eligible};
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
@@ -1941,19 +1941,9 @@ mod tests {
             "the model_change between the two messages must count as one transition on their shared thread"
         );
 
-        let overdepth = requirements(DetectorId::SessionsOverDepth);
         assert!(
-            overdepth.capabilities.iter().all(|clause| clause
-                .iter()
-                .any(|flag| flag.is_set(&evidence.capabilities))),
-            "SessionsOverDepth's capability requirements must hold once thread_identity is set"
-        );
-        assert!(
-            overdepth
-                .groups
-                .iter()
-                .all(|group| group.state(&evidence) != GroupState::Unsupported),
-            "SessionsOverDepth's evidence groups must not be unsupported"
+            eligible(DetectorId::SessionsOverDepth, &evidence),
+            "SessionsOverDepth must be eligible once thread_identity is set"
         );
     }
 
@@ -1980,20 +1970,13 @@ mod tests {
         assert!(evidence.capabilities.thread_identity);
         assert!(!evidence.capabilities.record_identity);
 
-        let overdepth = requirements(DetectorId::SessionsOverDepth);
         assert!(
-            overdepth.capabilities.iter().all(|clause| clause
-                .iter()
-                .any(|flag| flag.is_set(&evidence.capabilities))),
-            "SessionsOverDepth's capability requirements must hold for Codex"
+            eligible(DetectorId::SessionsOverDepth, &evidence),
+            "SessionsOverDepth must be eligible for Codex"
         );
-
-        let cache_churn = requirements(DetectorId::CacheChurn);
         assert!(
-            !cache_churn.capabilities.iter().all(|clause| clause
-                .iter()
-                .any(|flag| flag.is_set(&evidence.capabilities))),
-            "CacheChurn's capability requirements must not hold for Codex"
+            !eligible(DetectorId::CacheChurn, &evidence),
+            "CacheChurn must not be eligible for Codex"
         );
     }
 

@@ -37,6 +37,9 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | `compaction_continues_thread.jsonl` | A `compact_boundary` record's `parentUuid` is null, but its `logicalParentUuid` names the last pre-compaction record, so the main loop stays one thread across it. The model switch on either side of the boundary still counts as a transition, and the boundary itself is one manual compaction. |
 | `inline_sidechain_own_thread.jsonl` | Four `isSidechain: true` records inline in the parent transcript, rooted at `parentUuid: null` on a different model, get their own thread. The main loop's own transitions and idle gaps never see the sidechain's turns or model. |
 | `within_file_duplicate_uuid.jsonl` | An assistant record is re-logged with the same `uuid`, `parentUuid`, `timestamp`, and `message.id` as an earlier copy (the same re-logging Claude Code does mid-stream). The chain stays one thread, the existing `message.id` usage de-duplication keeps its tokens from double counting, and the duplicate-identity diagnostic — a cross-source-key signal — stays at zero. |
+| `session_overdepth_finding.jsonl` | One main-loop turn reports input tokens above the Sessions Over Depth cap, giving that badge a finding. |
+| `model_overthinking_finding.jsonl` | One main-loop turn reports explicit effort `max`, giving Model Overthinking a finding. |
+| `fast_mode_overuse_clean.jsonl` | A main-loop and a delegated turn both report explicit speed `standard`, so Fast-Mode Overuse reads clean instead of not-assessed. |
 
 The following policy fixtures carry no metrics golden. `tests/unrecognized_records.rs` exercises them directly.
 

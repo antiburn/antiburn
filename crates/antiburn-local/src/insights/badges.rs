@@ -2,7 +2,7 @@ use crate::analysis::{EvidenceCoverage, SessionEvidence};
 
 use super::DetectorId;
 use super::detectors::{self, NotAssessedReason, Observation, ReportCatalogs};
-use super::report::{GroupState, requirements};
+use super::report::{clean_facts_complete, eligible};
 
 /// Identifies one session-level hygiene badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,17 +65,7 @@ fn badge_status(
     evidence: &SessionEvidence,
     catalogs: &ReportCatalogs,
 ) -> BadgeStatus {
-    let required = requirements(detector);
-    let capabilities_hold = required.capabilities.iter().all(|clause| {
-        clause
-            .iter()
-            .any(|flag| flag.is_set(&evidence.capabilities))
-    });
-    let groups_supported = required
-        .groups
-        .iter()
-        .all(|group| group.state(evidence) != GroupState::Unsupported);
-    if !capabilities_hold || !groups_supported {
+    if !eligible(detector, evidence) {
         return BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing);
     }
 
@@ -86,11 +76,9 @@ fn badge_status(
         }
         Observation::SignalMissing => BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
         Observation::NoFinding => {
-            let groups_complete = required
-                .groups
-                .iter()
-                .all(|group| group.state(evidence) == GroupState::Complete);
-            if groups_complete && evidence.coverage == EvidenceCoverage::Complete {
+            if clean_facts_complete(detector, evidence)
+                && evidence.coverage == EvidenceCoverage::Complete
+            {
                 BadgeStatus::Clean
             } else {
                 BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
@@ -105,8 +93,9 @@ mod tests {
 
     use crate::analysis::{
         ANALYZER_REVISION, ContextEvidence, CoverageReason, EVIDENCE_SCHEMA_REVISION,
-        EvidenceValue, ModelTokens, ModelTransition, PARSER_REVISION, RelationConfidence,
-        RelationProvenance, SessionEvidence, SubagentChild, TurnCounts,
+        EvidenceSource, EvidenceValue, ModelTokens, ModelTransition, PARSER_REVISION,
+        RelationConfidence, RelationProvenance, SessionEvidence, SessionEvidenceAccumulator,
+        SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
     };
     use crate::insights::detectors::test_support::claude_evidence;
     use crate::insights::{
@@ -293,17 +282,34 @@ mod tests {
 
     #[test]
     fn a_missing_capability_is_not_assessed() {
-        let mut evidence = claude_evidence("synthetic-capability");
-        evidence.capabilities.request_context_tokens = false;
-        evidence.capabilities.model_identity = false;
-        evidence.capabilities.reasoning_effort_tier = false;
-        evidence.capabilities.fast_tier = false;
-        evidence.capabilities.subagent_models = false;
+        // Every fact each badge's finding depends on must be
+        // `Unsupported`. Facts a badge's evaluate body reads straight
+        // off an evidence group (`MainLoopContext`, `ModelIdentity`,
+        // `CacheWriteAccounting`, ...) are derived at evidence-
+        // construction time from the capabilities below, so this
+        // builds a fresh session instead of mutating an already-built
+        // one: mutating `capabilities` after the fact would leave
+        // those already-computed groups untouched.
+        let mut capabilities = SourceCapabilities::claude();
+        capabilities.request_context_tokens = false;
+        capabilities.model_identity = false;
+        capabilities.reasoning_effort_tier = false;
+        capabilities.fast_tier = false;
+        capabilities.subagent_models = false;
+        capabilities.cache_write_tokens = false;
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: "synthetic-capability".to_owned(),
+            kind: SourceKind::File,
+            capabilities,
+        })
+        .evidence(&TurnFacts::default());
 
         for id in BadgeId::ALL {
             assert_eq!(
                 badge(&evidence, id).status,
-                BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
+                BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+                "{id:?}"
             );
         }
     }

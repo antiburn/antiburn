@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{
-    CoverageReason, EvidenceCoverage, EvidenceValue, SessionEvidence, SourceAcceptance,
-    SourceCapabilities,
+    CacheEvidence, CoverageReason, EvidenceCoverage, EvidenceValue, SessionEvidence,
+    SourceAcceptance,
 };
 
 use super::detectors::{self, DetectorFold, DetectorStatus, ReportCatalogs};
@@ -32,168 +32,234 @@ pub struct SessionExample {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapabilityFlag {
-    RequestContextTokens,
-    CacheWriteTokens,
-    TimestampsAndOrder,
+/// One fact a detector's finding or clean claim depends on. Each fact's
+/// state comes from the evidence the sink already wrote — a static
+/// capability boolean gates a fact only where no evidence value carries
+/// it, per [`Fact::state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Fact {
+    MainLoopContext,
+    ModelIdentity,
+    EffortSignal,
+    SpeedSignal,
     ToolInvocations,
     SkillMcpAttribution,
     ToolDefinitions,
-    ModelIdentity,
-    TokenClasses,
-    ReasoningEffortTier,
-    FastTier,
-    ServiceTier,
     SubagentRelationships,
-    SubagentModels,
+    DelegatedModels,
+    CacheWriteAccounting,
+    RecordLinkage,
+    ThreadMembership,
     CompactionBoundaries,
-    ThreadIdentity,
-    RecordIdentity,
-}
-
-impl CapabilityFlag {
-    pub fn is_set(self, capabilities: &SourceCapabilities) -> bool {
-        match self {
-            Self::RequestContextTokens => capabilities.request_context_tokens,
-            Self::CacheWriteTokens => capabilities.cache_write_tokens,
-            Self::TimestampsAndOrder => capabilities.timestamps_and_order,
-            Self::ToolInvocations => capabilities.tool_invocations,
-            Self::SkillMcpAttribution => capabilities.skill_mcp_attribution,
-            Self::ToolDefinitions => capabilities.tool_definitions,
-            Self::ModelIdentity => capabilities.model_identity,
-            Self::TokenClasses => capabilities.token_classes,
-            Self::ReasoningEffortTier => capabilities.reasoning_effort_tier,
-            Self::FastTier => capabilities.fast_tier,
-            Self::ServiceTier => capabilities.service_tier,
-            Self::SubagentRelationships => capabilities.subagent_relationships,
-            Self::SubagentModels => capabilities.subagent_models,
-            Self::CompactionBoundaries => capabilities.compaction_boundaries,
-            Self::ThreadIdentity => capabilities.thread_identity,
-            Self::RecordIdentity => capabilities.record_identity,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvidenceGroup {
-    Context,
-    Eligibility,
-    Tools,
-    ContextSources,
-    Models,
-    Subagents,
-    Cache,
-    Compactions,
     TimeRange,
+    Eligibility,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GroupState {
+pub enum FactState {
     Unsupported,
     Partial,
     Complete,
 }
 
-impl EvidenceGroup {
-    pub fn state(self, evidence: &SessionEvidence) -> GroupState {
+impl Fact {
+    pub fn state(self, evidence: &SessionEvidence) -> FactState {
         match self {
-            Self::Context => state(&evidence.context),
-            Self::Eligibility => state(&evidence.eligibility),
-            Self::Tools => state(&evidence.tools),
-            Self::ContextSources => state(&evidence.context_sources),
-            Self::Models => state(&evidence.models),
-            Self::Subagents => state(&evidence.subagents),
-            Self::Cache => state(&evidence.cache),
-            Self::Compactions => state(&evidence.compactions),
+            Self::MainLoopContext => state(&evidence.context),
+            Self::ModelIdentity => state(&evidence.models),
+            Self::EffortSignal => {
+                if !evidence.capabilities.reasoning_effort_tier {
+                    FactState::Unsupported
+                } else {
+                    state(&evidence.models)
+                }
+            }
+            Self::SpeedSignal => {
+                if !(evidence.capabilities.fast_tier || evidence.capabilities.service_tier) {
+                    FactState::Unsupported
+                } else {
+                    state(&evidence.models)
+                }
+            }
+            Self::ToolInvocations => state(&evidence.tools),
+            // `evidence.context_sources` already reports `Unsupported`
+            // when `capabilities.skill_mcp_attribution` is unset (the
+            // sink's own gate), so this fact does not test the flag again.
+            Self::SkillMcpAttribution => state(&evidence.context_sources),
+            // Unlike `SkillMcpAttribution`, the sink never gates
+            // `context_sources` on `capabilities.tool_definitions` — that
+            // group stays supported (Claude, for example) while its
+            // nested `tool_definitions` marker is always `Unsupported`.
+            // This fact must test the flag itself.
+            Self::ToolDefinitions => {
+                if !evidence.capabilities.tool_definitions {
+                    FactState::Unsupported
+                } else {
+                    state(&evidence.context_sources)
+                }
+            }
+            Self::SubagentRelationships => state(&evidence.subagents),
+            Self::DelegatedModels => {
+                if !evidence.capabilities.subagent_models {
+                    FactState::Unsupported
+                } else {
+                    state(&evidence.subagents)
+                }
+            }
+            Self::CacheWriteAccounting => {
+                if !evidence.capabilities.cache_write_tokens {
+                    FactState::Unsupported
+                } else {
+                    state(&evidence.cache)
+                }
+            }
+            Self::RecordLinkage => match cache_group_and_marker(&evidence.cache) {
+                None => FactState::Unsupported,
+                Some((_, FactState::Unsupported)) => FactState::Unsupported,
+                Some((group, marker)) => weaker(group, marker),
+            },
+            // No row fact for thread membership exists yet: the source
+            // either promises it outright or it stays unsupported.
+            Self::ThreadMembership => {
+                if evidence.capabilities.thread_identity {
+                    FactState::Complete
+                } else {
+                    FactState::Unsupported
+                }
+            }
+            Self::CompactionBoundaries => state(&evidence.compactions),
             Self::TimeRange => state(&evidence.time_range),
+            Self::Eligibility => state(&evidence.eligibility),
         }
     }
 }
 
-fn state<T>(value: &EvidenceValue<T>) -> GroupState {
+fn state<T>(value: &EvidenceValue<T>) -> FactState {
     match value {
-        EvidenceValue::Unsupported => GroupState::Unsupported,
-        EvidenceValue::Partial { .. } => GroupState::Partial,
-        EvidenceValue::Complete(_) => GroupState::Complete,
+        EvidenceValue::Unsupported => FactState::Unsupported,
+        EvidenceValue::Partial { .. } => FactState::Partial,
+        EvidenceValue::Complete(_) => FactState::Complete,
+    }
+}
+
+fn weaker(a: FactState, b: FactState) -> FactState {
+    match (a, b) {
+        (FactState::Unsupported, _) | (_, FactState::Unsupported) => FactState::Unsupported,
+        (FactState::Partial, _) | (_, FactState::Partial) => FactState::Partial,
+        (FactState::Complete, FactState::Complete) => FactState::Complete,
+    }
+}
+
+/// Returns the cache group's own state alongside its nested
+/// `previous_turn` marker's state, or `None` when the cache group itself
+/// is `Unsupported` (no `CacheEvidence` to read a marker from).
+fn cache_group_and_marker(cache: &EvidenceValue<CacheEvidence>) -> Option<(FactState, FactState)> {
+    match cache {
+        EvidenceValue::Unsupported => None,
+        EvidenceValue::Partial { observed, .. } => {
+            Some((FactState::Partial, state(&observed.previous_turn)))
+        }
+        EvidenceValue::Complete(observed) => {
+            Some((FactState::Complete, state(&observed.previous_turn)))
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetectorRequirements {
-    pub capabilities: &'static [&'static [CapabilityFlag]],
-    pub groups: &'static [EvidenceGroup],
+    /// Facts a finding needs. Every one must not be `Unsupported` for
+    /// the session to be eligible.
+    pub finding: &'static [Fact],
+    /// Facts a clean claim needs. Every one must be `Complete`. A
+    /// superset of `finding`.
+    pub clean: &'static [Fact],
 }
 
-const REQUEST_CONTEXT_TOKENS: &[CapabilityFlag] = &[CapabilityFlag::RequestContextTokens];
-const CACHE_WRITE_TOKENS: &[CapabilityFlag] = &[CapabilityFlag::CacheWriteTokens];
-const TIMESTAMPS_AND_ORDER: &[CapabilityFlag] = &[CapabilityFlag::TimestampsAndOrder];
-const TOOL_INVOCATIONS: &[CapabilityFlag] = &[CapabilityFlag::ToolInvocations];
-const SKILL_MCP_ATTRIBUTION: &[CapabilityFlag] = &[CapabilityFlag::SkillMcpAttribution];
-const TOOL_DEFINITIONS: &[CapabilityFlag] = &[CapabilityFlag::ToolDefinitions];
-const MODEL_IDENTITY: &[CapabilityFlag] = &[CapabilityFlag::ModelIdentity];
-const TOKEN_CLASSES: &[CapabilityFlag] = &[CapabilityFlag::TokenClasses];
-const REASONING_EFFORT_TIER: &[CapabilityFlag] = &[CapabilityFlag::ReasoningEffortTier];
-const FAST_OR_SERVICE_TIER: &[CapabilityFlag] =
-    &[CapabilityFlag::FastTier, CapabilityFlag::ServiceTier];
-const SUBAGENT_RELATIONSHIPS: &[CapabilityFlag] = &[CapabilityFlag::SubagentRelationships];
-const SUBAGENT_MODELS: &[CapabilityFlag] = &[CapabilityFlag::SubagentModels];
-const COMPACTION_BOUNDARIES: &[CapabilityFlag] = &[CapabilityFlag::CompactionBoundaries];
-const THREAD_IDENTITY: &[CapabilityFlag] = &[CapabilityFlag::ThreadIdentity];
-const RECORD_IDENTITY: &[CapabilityFlag] = &[CapabilityFlag::RecordIdentity];
-
 pub fn requirements(detector: DetectorId) -> DetectorRequirements {
-    use EvidenceGroup as Group;
-
     match detector {
         DetectorId::SessionsOverDepth => DetectorRequirements {
-            capabilities: &[
-                REQUEST_CONTEXT_TOKENS,
-                MODEL_IDENTITY,
-                THREAD_IDENTITY,
-                TIMESTAMPS_AND_ORDER,
+            finding: &[Fact::MainLoopContext],
+            clean: &[
+                Fact::MainLoopContext,
+                Fact::ThreadMembership,
+                Fact::ModelIdentity,
+                Fact::TimeRange,
             ],
-            groups: &[Group::Context],
         },
         DetectorId::ModelOverthinking => DetectorRequirements {
-            capabilities: &[REASONING_EFFORT_TIER, MODEL_IDENTITY],
-            groups: &[Group::Models, Group::Eligibility],
+            finding: &[Fact::EffortSignal],
+            clean: &[Fact::EffortSignal, Fact::Eligibility],
         },
         DetectorId::OverpoweredSubagents => DetectorRequirements {
-            capabilities: &[MODEL_IDENTITY, SUBAGENT_MODELS, SUBAGENT_RELATIONSHIPS],
-            groups: &[Group::Subagents, Group::Models],
+            finding: &[
+                Fact::SubagentRelationships,
+                Fact::DelegatedModels,
+                Fact::ModelIdentity,
+            ],
+            clean: &[
+                Fact::SubagentRelationships,
+                Fact::DelegatedModels,
+                Fact::ModelIdentity,
+            ],
         },
         DetectorId::UnusedMcpServers => DetectorRequirements {
-            capabilities: &[SKILL_MCP_ATTRIBUTION, TOOL_INVOCATIONS],
-            groups: &[Group::ContextSources, Group::Tools, Group::Eligibility],
+            finding: &[Fact::SkillMcpAttribution, Fact::ToolInvocations],
+            clean: &[
+                Fact::SkillMcpAttribution,
+                Fact::ToolInvocations,
+                Fact::Eligibility,
+            ],
         },
         DetectorId::UnusedBuiltInTools => DetectorRequirements {
-            capabilities: &[TOOL_DEFINITIONS, TOOL_INVOCATIONS],
-            groups: &[Group::ContextSources, Group::Tools],
+            finding: &[Fact::ToolDefinitions, Fact::ToolInvocations],
+            clean: &[Fact::ToolDefinitions, Fact::ToolInvocations],
         },
         DetectorId::UnusedSkills => DetectorRequirements {
-            capabilities: &[SKILL_MCP_ATTRIBUTION, TOOL_INVOCATIONS],
-            groups: &[Group::ContextSources, Group::Tools, Group::Eligibility],
+            finding: &[Fact::SkillMcpAttribution, Fact::ToolInvocations],
+            clean: &[
+                Fact::SkillMcpAttribution,
+                Fact::ToolInvocations,
+                Fact::Eligibility,
+            ],
         },
         DetectorId::OldModelUsage => DetectorRequirements {
-            capabilities: &[MODEL_IDENTITY, TIMESTAMPS_AND_ORDER, TOKEN_CLASSES],
-            groups: &[Group::Models, Group::TimeRange],
+            finding: &[Fact::ModelIdentity],
+            clean: &[Fact::ModelIdentity, Fact::TimeRange],
         },
         DetectorId::OveruseOfFastMode => DetectorRequirements {
-            capabilities: &[FAST_OR_SERVICE_TIER, SUBAGENT_RELATIONSHIPS],
-            groups: &[Group::Models, Group::Subagents],
+            finding: &[Fact::SpeedSignal],
+            clean: &[Fact::SpeedSignal, Fact::SubagentRelationships],
         },
         DetectorId::CacheChurn => DetectorRequirements {
-            capabilities: &[
-                TIMESTAMPS_AND_ORDER,
-                RECORD_IDENTITY,
-                MODEL_IDENTITY,
-                CACHE_WRITE_TOKENS,
-                COMPACTION_BOUNDARIES,
+            finding: &[Fact::CacheWriteAccounting],
+            clean: &[
+                Fact::CacheWriteAccounting,
+                Fact::RecordLinkage,
+                Fact::CompactionBoundaries,
+                Fact::ModelIdentity,
+                Fact::TimeRange,
             ],
-            groups: &[Group::Cache, Group::Compactions, Group::Models],
         },
     }
+}
+
+/// A session is eligible for `detector` when every finding fact is not
+/// `Unsupported`. Eligibility is the sole gate for a finding: a directly
+/// observed finding needs no more than this.
+pub fn eligible(detector: DetectorId, evidence: &SessionEvidence) -> bool {
+    requirements(detector)
+        .finding
+        .iter()
+        .all(|fact| fact.state(evidence) != FactState::Unsupported)
+}
+
+/// A session supports a clean claim for `detector` when every clean fact
+/// is `Complete`. Only complete evidence can prove absence.
+pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) -> bool {
+    requirements(detector)
+        .clean
+        .iter()
+        .all(|fact| fact.state(evidence) == FactState::Complete)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -343,29 +409,15 @@ impl EfficiencyReportAccumulator {
         let mut bounded_example: Option<SessionExample> = None;
 
         for detector in DetectorId::ALL {
-            let requirements = requirements(detector);
-            let capabilities_hold = requirements.capabilities.iter().all(|clause| {
-                clause
-                    .iter()
-                    .any(|flag| flag.is_set(&evidence.capabilities))
-            });
-            let groups_supported = requirements
-                .groups
-                .iter()
-                .all(|group| group.state(&evidence) != GroupState::Unsupported);
-            let eligible = capabilities_hold && groups_supported;
-            if eligible && !detectors::in_denominator(detector, &evidence) {
+            let is_eligible = eligible(detector, &evidence);
+            if is_eligible && !detectors::in_denominator(detector, &evidence) {
                 // A zero-work session is neither eligible nor a capability gap.
                 continue;
             }
-            if eligible {
+            if is_eligible {
                 let counts = &mut self.detectors[detector.index()];
                 counts.eligible += 1;
-                if requirements
-                    .groups
-                    .iter()
-                    .all(|group| group.state(&evidence) == GroupState::Complete)
-                {
+                if clean_facts_complete(detector, &evidence) {
                     counts.assessed += 1;
                 }
                 let observation = detectors::evaluate(detector, &evidence, &self.catalogs);
@@ -449,10 +501,10 @@ impl EfficiencyReportAccumulator {
 mod tests {
     use super::*;
     use crate::analysis::{
-        ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, ModelTokens, PARSER_REVISION,
-        QuotaConfidence, QuotaHitSeverity, QuotaIncident, QuotaLimitKind,
-        SessionEvidenceAccumulator, SessionQuotaEvidence, SignalCoverage, SourceKind, TurnCounts,
-        TurnFacts,
+        ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, FAST_SPEED_KEY, LoadedSource,
+        ModelTokens, ModelTransition, PARSER_REVISION, QuotaConfidence, QuotaHitSeverity,
+        QuotaIncident, QuotaLimitKind, SessionEvidenceAccumulator, SessionQuotaEvidence,
+        SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
     };
     use crate::insights::detectors::{ModelReplacement, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
@@ -927,129 +979,138 @@ mod tests {
         }
     }
 
+    /// Complete claude evidence with every capability force-set and one
+    /// observed assistant turn, so every detector is eligible and fully
+    /// assessed before degradation.
+    fn complete_row(session_id: &str) -> SessionEvidence {
+        let mut row = evidence_with_work(session_id);
+        row.capabilities = SourceCapabilities {
+            request_context_tokens: true,
+            cache_write_tokens: true,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            skill_mcp_attribution: true,
+            tool_definitions: true,
+            model_identity: true,
+            token_classes: true,
+            reasoning_effort_tier: true,
+            fast_tier: true,
+            service_tier: true,
+            subagent_relationships: true,
+            subagent_models: true,
+            compaction_boundaries: true,
+            thread_identity: true,
+            record_identity: true,
+            quota_incidents: true,
+            harness_version: true,
+        };
+        row
+    }
+
+    fn to_partial<T>(slot: &mut EvidenceValue<T>) {
+        let value = std::mem::replace(slot, EvidenceValue::Unsupported);
+        let EvidenceValue::Complete(observed) = value else {
+            panic!("the complete row must carry complete evidence");
+        };
+        *slot = EvidenceValue::Partial {
+            observed,
+            reason: CoverageReason::MalformedRecord,
+        };
+    }
+
+    /// Degrades one fact's backing evidence from `Complete` to `Partial`.
+    /// `ThreadMembership` has no partial state (`Fact::state` maps its
+    /// capability flag straight to `Complete`/`Unsupported`), so this
+    /// unsets the capability instead: the fact still stops being
+    /// `Complete`, which is all a clean-only degrade needs to prove.
+    fn degrade_fact_to_partial(row: &mut SessionEvidence, fact: Fact) {
+        match fact {
+            Fact::MainLoopContext => to_partial(&mut row.context),
+            Fact::ModelIdentity | Fact::EffortSignal | Fact::SpeedSignal => {
+                to_partial(&mut row.models)
+            }
+            Fact::ToolInvocations => to_partial(&mut row.tools),
+            Fact::SkillMcpAttribution | Fact::ToolDefinitions => {
+                to_partial(&mut row.context_sources)
+            }
+            Fact::SubagentRelationships | Fact::DelegatedModels => to_partial(&mut row.subagents),
+            Fact::CacheWriteAccounting | Fact::RecordLinkage => to_partial(&mut row.cache),
+            Fact::ThreadMembership => row.capabilities.thread_identity = false,
+            Fact::CompactionBoundaries => to_partial(&mut row.compactions),
+            Fact::TimeRange => to_partial(&mut row.time_range),
+            Fact::Eligibility => to_partial(&mut row.eligibility),
+        }
+    }
+
+    /// Sets one fact's state to `Unsupported`, either by clearing the
+    /// capability the fact tests directly or by unsupporting its
+    /// backing evidence group.
+    fn degrade_fact_to_unsupported(row: &mut SessionEvidence, fact: Fact) {
+        match fact {
+            Fact::MainLoopContext => row.context = EvidenceValue::Unsupported,
+            Fact::ModelIdentity => row.models = EvidenceValue::Unsupported,
+            Fact::EffortSignal => row.capabilities.reasoning_effort_tier = false,
+            Fact::SpeedSignal => {
+                row.capabilities.fast_tier = false;
+                row.capabilities.service_tier = false;
+            }
+            Fact::ToolInvocations => row.tools = EvidenceValue::Unsupported,
+            Fact::SkillMcpAttribution => row.context_sources = EvidenceValue::Unsupported,
+            Fact::ToolDefinitions => row.capabilities.tool_definitions = false,
+            Fact::SubagentRelationships => row.subagents = EvidenceValue::Unsupported,
+            Fact::DelegatedModels => row.capabilities.subagent_models = false,
+            Fact::CacheWriteAccounting => row.capabilities.cache_write_tokens = false,
+            Fact::RecordLinkage => row.cache = EvidenceValue::Unsupported,
+            Fact::ThreadMembership => row.capabilities.thread_identity = false,
+            Fact::CompactionBoundaries => row.compactions = EvidenceValue::Unsupported,
+            Fact::TimeRange => row.time_range = EvidenceValue::Unsupported,
+            Fact::Eligibility => row.eligibility = EvidenceValue::Unsupported,
+        }
+    }
+
+    fn status_for_with_catalogs(
+        row: SessionEvidence,
+        detector: DetectorId,
+        catalogs: ReportCatalogs,
+    ) -> DetectorStatus {
+        let mut accumulator = EfficiencyReportAccumulator::with_catalogs(catalogs);
+        accumulator.observe_session(row);
+        let report = accumulator.finish(context(CoverageCounts::default()));
+        report.detector_statuses[detector.index()].clone()
+    }
+
+    fn status_for(row: SessionEvidence, detector: DetectorId) -> DetectorStatus {
+        status_for_with_catalogs(row, detector, ReportCatalogs::default())
+    }
+
     #[test]
-    fn degrading_any_required_group_never_reads_clean() {
-        use EvidenceGroup as Group;
-
-        // A deliberate duplicate of each detector's required groups as
-        // they exist in `requirements()` today. Silently dropping a
-        // group from `requirements()` fails the table comparison below.
-        const EXPECTED_GROUPS: [(DetectorId, &[EvidenceGroup]); 9] = [
-            (DetectorId::SessionsOverDepth, &[Group::Context]),
-            (
-                DetectorId::ModelOverthinking,
-                &[Group::Models, Group::Eligibility],
-            ),
-            (
-                DetectorId::OverpoweredSubagents,
-                &[Group::Subagents, Group::Models],
-            ),
-            (
-                DetectorId::UnusedMcpServers,
-                &[Group::ContextSources, Group::Tools, Group::Eligibility],
-            ),
-            (
-                DetectorId::UnusedBuiltInTools,
-                &[Group::ContextSources, Group::Tools],
-            ),
-            (
-                DetectorId::UnusedSkills,
-                &[Group::ContextSources, Group::Tools, Group::Eligibility],
-            ),
-            (
-                DetectorId::OldModelUsage,
-                &[Group::Models, Group::TimeRange],
-            ),
-            (
-                DetectorId::OveruseOfFastMode,
-                &[Group::Models, Group::Subagents],
-            ),
-            (
-                DetectorId::CacheChurn,
-                &[Group::Cache, Group::Compactions, Group::Models],
-            ),
-        ];
-
-        /// Complete claude evidence with every capability force-set
-        /// and one observed assistant turn, so every detector is
-        /// eligible and fully assessed before degradation.
-        fn complete_row(session_id: &str) -> SessionEvidence {
-            let mut row = evidence_with_work(session_id);
-            row.capabilities = SourceCapabilities {
-                request_context_tokens: true,
-                cache_write_tokens: true,
-                timestamps_and_order: true,
-                tool_invocations: true,
-                skill_mcp_attribution: true,
-                tool_definitions: true,
-                model_identity: true,
-                token_classes: true,
-                reasoning_effort_tier: true,
-                fast_tier: true,
-                service_tier: true,
-                subagent_relationships: true,
-                subagent_models: true,
-                compaction_boundaries: true,
-                thread_identity: true,
-                record_identity: true,
-                quota_incidents: true,
-                harness_version: true,
-            };
-            row
-        }
-
-        fn degrade(row: &mut SessionEvidence, group: EvidenceGroup) {
-            fn to_partial<T>(slot: &mut EvidenceValue<T>) {
-                let value = std::mem::replace(slot, EvidenceValue::Unsupported);
-                let EvidenceValue::Complete(observed) = value else {
-                    panic!("the complete row must carry complete evidence");
-                };
-                *slot = EvidenceValue::Partial {
-                    observed,
-                    reason: CoverageReason::MalformedRecord,
-                };
-            }
-            match group {
-                EvidenceGroup::Context => to_partial(&mut row.context),
-                EvidenceGroup::Eligibility => to_partial(&mut row.eligibility),
-                EvidenceGroup::Tools => to_partial(&mut row.tools),
-                EvidenceGroup::ContextSources => to_partial(&mut row.context_sources),
-                EvidenceGroup::Models => to_partial(&mut row.models),
-                EvidenceGroup::Subagents => to_partial(&mut row.subagents),
-                EvidenceGroup::Cache => to_partial(&mut row.cache),
-                EvidenceGroup::Compactions => to_partial(&mut row.compactions),
-                EvidenceGroup::TimeRange => to_partial(&mut row.time_range),
-            }
-        }
-
-        fn status_for(row: SessionEvidence, detector: DetectorId) -> DetectorStatus {
-            let mut accumulator = EfficiencyReportAccumulator::new();
-            accumulator.observe_session(row);
-            let report = accumulator.finish(context(CoverageCounts::default()));
-            report.detector_statuses[detector.index()].clone()
-        }
-
-        for (detector, groups) in EXPECTED_GROUPS {
-            assert_eq!(
-                requirements(detector).groups,
-                groups,
-                "the requirements() groups changed for {detector:?}"
-            );
-
-            let baseline = status_for(complete_row("complete"), detector);
-            if detector == DetectorId::UnusedBuiltInTools {
-                // The rule is a permanent marker-contract gap until
-                // CH-009 carries built-in definition payloads: even the
-                // undegrated baseline cannot read clean.
-                assert_eq!(
-                    baseline,
-                    DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
-                    "baseline for {detector:?}"
+    fn clean_facts_are_a_superset_of_finding_facts() {
+        for detector in DetectorId::ALL {
+            let required = requirements(detector);
+            for fact in required.finding {
+                assert!(
+                    required.clean.contains(fact),
+                    "{detector:?}'s clean facts must contain finding fact {fact:?}"
                 );
-            } else if detector == DetectorId::OldModelUsage {
-                // The production catalog default carries no curated
-                // deprecated models: even the undegraded baseline
-                // cannot read clean.
+            }
+        }
+    }
+
+    #[test]
+    fn degrading_a_clean_only_fact_to_partial_blocks_clean() {
+        // (a) Every clean fact, degraded to Partial (or unsupported for
+        // ThreadMembership, which has no partial state), must stop the
+        // detector from reading Clean.
+        for detector in DetectorId::ALL {
+            let baseline = status_for(complete_row("complete"), detector);
+            if matches!(
+                detector,
+                DetectorId::UnusedBuiltInTools | DetectorId::OldModelUsage
+            ) {
+                // Both rules carry a permanent contract gap independent
+                // of fact degradation: Unused Built-In Tools has no
+                // definition-name payload yet, and the production
+                // catalog default carries no curated deprecated models.
                 assert_eq!(
                     baseline,
                     DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
@@ -1063,14 +1124,191 @@ mod tests {
                 );
             }
 
-            for group in groups {
+            for fact in requirements(detector).clean {
                 let mut row = complete_row("degraded");
-                degrade(&mut row, *group);
+                degrade_fact_to_partial(&mut row, *fact);
                 let status = status_for(row, detector);
                 assert_ne!(
                     status,
                     DetectorStatus::Clean,
-                    "degrading {group:?} for {detector:?} must not read clean"
+                    "degrading {fact:?} for {detector:?} must not read clean"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unsupporting_a_finding_fact_makes_the_session_ineligible() {
+        // (b) Every finding fact, set to Unsupported, must make the
+        // session ineligible for that detector.
+        for detector in DetectorId::ALL {
+            assert!(
+                eligible(detector, &complete_row("complete")),
+                "the undegraded row must be eligible for {detector:?}"
+            );
+            for fact in requirements(detector).finding {
+                let mut row = complete_row("degraded");
+                degrade_fact_to_unsupported(&mut row, *fact);
+                assert!(
+                    !eligible(detector, &row),
+                    "unsupporting {fact:?} for {detector:?} must clear eligibility"
+                );
+            }
+        }
+    }
+
+    /// Builds evidence carrying a concrete finding for `detector`, using
+    /// `complete_row` as the base so every fact starts `Complete`.
+    /// `UnusedBuiltInTools` and `OverpoweredSubagents` are absent: the
+    /// former can never produce a finding (permanent contract gap), and
+    /// the latter's clean facts equal its finding facts, so it has no
+    /// clean-only fact left to degrade in test (c) below.
+    fn trigger_finding(detector: DetectorId, catalogs: &ReportCatalogs) -> SessionEvidence {
+        let mut row = complete_row("finding");
+        match detector {
+            DetectorId::SessionsOverDepth => {
+                let EvidenceValue::Complete(context) = &mut row.context else {
+                    unreachable!()
+                };
+                context.max_request_context_tokens = catalogs.depth_cap_tokens + 1;
+            }
+            DetectorId::ModelOverthinking => {
+                let EvidenceValue::Complete(models) = &mut row.models else {
+                    unreachable!()
+                };
+                let tier = catalogs.effort_tiers_above_cap.first().unwrap().clone();
+                models.effort_tiers.insert(
+                    tier,
+                    TurnCounts {
+                        main_loop: 1,
+                        delegated: 0,
+                    },
+                );
+            }
+            DetectorId::UnusedMcpServers => {
+                let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                    unreachable!()
+                };
+                sources.mcp_servers.insert(
+                    "server-a".to_owned(),
+                    LoadedSource {
+                        description: None,
+                        invoked: false,
+                        origin: EvidenceValue::Unsupported,
+                    },
+                );
+            }
+            DetectorId::UnusedSkills => {
+                let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                    unreachable!()
+                };
+                sources.skills.insert(
+                    "skill-a".to_owned(),
+                    LoadedSource {
+                        description: None,
+                        invoked: false,
+                        origin: EvidenceValue::Unsupported,
+                    },
+                );
+            }
+            DetectorId::OldModelUsage => {
+                let EvidenceValue::Complete(models) = &mut row.models else {
+                    unreachable!()
+                };
+                let (model, replacement) = catalogs
+                    .model_replacements
+                    .iter()
+                    .next()
+                    .expect("caller must supply a non-empty replacement catalog");
+                models.by_model.insert(
+                    model.clone(),
+                    ModelTokens {
+                        turns: 4,
+                        last_ts_ms: replacement.available_since_ts_ms + 1,
+                        ..ModelTokens::default()
+                    },
+                );
+            }
+            DetectorId::OveruseOfFastMode => {
+                let EvidenceValue::Complete(models) = &mut row.models else {
+                    unreachable!()
+                };
+                models.fast_modes.insert(
+                    FAST_SPEED_KEY.to_owned(),
+                    TurnCounts {
+                        main_loop: 0,
+                        delegated: 2,
+                    },
+                );
+            }
+            DetectorId::CacheChurn => {
+                let EvidenceValue::Complete(cache) = &mut row.cache else {
+                    unreachable!()
+                };
+                cache.cache_creation_tokens = 5_000;
+                cache.model_transitions.push(ModelTransition {
+                    ts_ms: 10,
+                    from_model: "model-a".to_owned(),
+                    to_model: "model-b".to_owned(),
+                });
+            }
+            DetectorId::OverpoweredSubagents | DetectorId::UnusedBuiltInTools => {
+                unreachable!("no clean-only fact exists for {detector:?}")
+            }
+        }
+        row
+    }
+
+    #[test]
+    fn a_finding_wins_over_a_partial_clean_only_fact_at_report_level() {
+        // (c) A finding observed alongside a Partial clean-only fact
+        // must still report Findings.
+        let mut catalogs = ReportCatalogs::default();
+        catalogs.model_replacements.insert(
+            "old-model-1".to_owned(),
+            ModelReplacement {
+                replacement: "new-model-2".to_owned(),
+                available_since_ts_ms: 100,
+            },
+        );
+
+        for detector in DetectorId::ALL {
+            if matches!(
+                detector,
+                DetectorId::OverpoweredSubagents
+                    | DetectorId::UnusedBuiltInTools
+                    | DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedSkills
+            ) {
+                // OverpoweredSubagents and UnusedBuiltInTools have no
+                // clean-only fact (see `trigger_finding`'s doc comment).
+                // UnusedMcpServers and UnusedSkills have exactly one,
+                // Eligibility, but their own `evaluate` bodies (unchanged
+                // in this seam) require a complete eligibility group to
+                // report any finding at all — Partial eligibility reads
+                // NoFinding there, not Finding, by that rule's own
+                // documented partial-evidence policy. Degrading their
+                // only clean-only fact cannot demonstrate (c).
+                continue;
+            }
+            let required = requirements(detector);
+            let clean_only: Vec<Fact> = required
+                .clean
+                .iter()
+                .copied()
+                .filter(|fact| !required.finding.contains(fact))
+                .collect();
+            assert!(
+                !clean_only.is_empty(),
+                "{detector:?} must have a clean-only fact to degrade"
+            );
+            for fact in clean_only {
+                let mut row = trigger_finding(detector, &catalogs);
+                degrade_fact_to_partial(&mut row, fact);
+                let status = status_for_with_catalogs(row, detector, catalogs.clone());
+                assert!(
+                    matches!(status, DetectorStatus::Findings(_)),
+                    "degrading clean-only fact {fact:?} for {detector:?} must still report a finding, got {status:?}"
                 );
             }
         }

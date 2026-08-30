@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-08-12T10:10:00Z","message":{"id":"msg-speed-1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":20,"output_tokens":5,"speed":"standard"},"content":[{"type":"text","text":"Synthetic main-loop standard-speed turn."}]}}
+{"type":"assistant","timestamp":"2026-08-12T10:10:01Z","isSidechain":true,"speed":"standard","message":{"id":"msg-speed-2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":15,"output_tokens":4},"content":[{"type":"text","text":"Synthetic delegated standard-speed turn."}]}}

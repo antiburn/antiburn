@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-08-12T10:00:00Z","message":{"id":"msg-depth-1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":200000,"output_tokens":50},"content":[{"type":"text","text":"Synthetic above-cap main-loop turn."}]}}
+{"type":"user","timestamp":"2026-08-12T10:00:01Z","message":{"role":"user","content":"Synthetic follow-up prompt."}}

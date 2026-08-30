@@ -8,14 +8,14 @@ use antiburn_local::analysis::{
     AppendOnlyGuarantee, CompositeSink, CoverageReason, EvidenceCoverage, EvidenceSource,
     EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, NormalizedSession, PartialReason, RawSource,
     RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnCounts,
+    SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnCounts, TurnFacts,
     TurnRowSink, TurnRowStore, VisitOutcome, adapter_for, analyze_sources_with,
     append_only_guarantee, normalize_source,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
 };
-use antiburn_local::insights::{DetectorId, GroupState, requirements};
+use antiburn_local::insights::{DetectorId, eligible};
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> &'static str {
@@ -67,11 +67,17 @@ fn fixture(name: &str) -> &'static str {
         "token_count_without_usage" => {
             include_str!("fixtures/codex_characterization/token_count_without_usage.jsonl")
         }
+        "session_overdepth_finding" => {
+            include_str!("fixtures/codex_characterization/session_overdepth_finding.jsonl")
+        }
+        "model_overthinking_finding" => {
+            include_str!("fixtures/codex_characterization/model_overthinking_finding.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 17] {
+fn fixture_names() -> [&'static str; 19] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -90,6 +96,8 @@ fn fixture_names() -> [&'static str; 17] {
         "unknown_event_with_usage",
         "unknown_event_with_tool_shape",
         "token_count_without_usage",
+        "session_overdepth_finding",
+        "model_overthinking_finding",
     ]
 }
 
@@ -361,15 +369,16 @@ fn claude_capabilities_still_match_published_evidence() {
 
 #[test]
 fn codex_detector_prerequisites_assess_only_supported_detectors() {
-    let capabilities = SourceCapabilities::codex();
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "codex".to_owned(),
+        session_id: "codex-prerequisites".to_owned(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::codex(),
+    })
+    .evidence(&TurnFacts::default());
     let assessed = DetectorId::ALL
         .into_iter()
-        .filter(|detector| {
-            requirements(*detector)
-                .capabilities
-                .iter()
-                .all(|clause| clause.iter().any(|flag| flag.is_set(&capabilities)))
-        })
+        .filter(|detector| eligible(*detector, &evidence))
         .collect::<Vec<_>>();
 
     assert_eq!(
@@ -611,6 +620,16 @@ fn spawn_agent_codex_fixture_matches_golden() {
 }
 
 #[test]
+fn session_overdepth_finding_codex_fixture_matches_golden() {
+    check_golden("session_overdepth_finding");
+}
+
+#[test]
+fn model_overthinking_finding_codex_fixture_matches_golden() {
+    check_golden("model_overthinking_finding");
+}
+
+#[test]
 fn service_tier_changes_split_fast_modes_and_cover_every_assistant_turn() {
     let (evidence, _) = composite(&input("service_tier_priority"));
 
@@ -672,12 +691,8 @@ fn spawn_agent_call_creates_a_subagent_relationship_and_keeps_detectors_assessab
         DetectorId::OverpoweredSubagents,
         DetectorId::OveruseOfFastMode,
     ] {
-        let assessable = requirements(detector)
-            .groups
-            .iter()
-            .all(|group| !matches!(group.state(&evidence), GroupState::Unsupported));
         assert!(
-            assessable,
+            eligible(detector, &evidence),
             "{detector:?} must be assessable for the spawn_agent fixture"
         );
     }

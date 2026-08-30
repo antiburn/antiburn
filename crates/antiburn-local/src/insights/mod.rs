@@ -15,9 +15,9 @@ pub use quota::{
     QuotaPressureFindings, QuotaPressureSection,
 };
 pub use report::{
-    CapabilityFlag, CoverageCounts, DetectorCounts, DetectorRequirements, EfficiencyReport,
-    EfficiencyReportAccumulator, EvidenceGroup, GroupState, MAX_EXAMPLES_PER_DETECTOR,
+    CoverageCounts, DetectorCounts, DetectorRequirements, EfficiencyReport,
+    EfficiencyReportAccumulator, Fact, FactState, MAX_EXAMPLES_PER_DETECTOR,
     MAX_REPORT_UNRECOGNIZED_TYPES, ReportContext, ReportWindow, SessionExample,
-    UnrecognizedRecords, requirements,
+    UnrecognizedRecords, clean_facts_complete, eligible, requirements,
 };
 pub use status::{CoverageBucket, DetectorId};
