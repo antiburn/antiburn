@@ -23,7 +23,7 @@
     "capabilities": {
       "cacheWriteTokens": false,
       "compactionBoundaries": true,
-      "fastTier": false,
+      "fastTier": true,
       "harnessVersion": false,
       "modelIdentity": true,
       "quotaIncidents": false,
@@ -136,7 +136,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 6,
+      "parserRevision": 7,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },

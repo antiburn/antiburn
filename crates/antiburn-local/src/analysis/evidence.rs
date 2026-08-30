@@ -348,6 +348,13 @@ impl SourceCapabilities {
         }
     }
 
+    /// `fast_tier` is set: the adapter now normalizes each thread's
+    /// `thread_settings_applied.service_tier` into the same `fast`/`standard`
+    /// speed vocabulary Claude reports, so the fast-mode detector and the
+    /// report's `FAST_OR_SERVICE_TIER` clause read it the same way. The
+    /// separate `service_tier` flag stays `false` and `models.service_tiers`
+    /// stays `EvidenceValue::Unsupported` — this source never populates that
+    /// distinct, unread field.
     pub fn codex() -> Self {
         Self {
             request_context_tokens: true,
@@ -359,7 +366,7 @@ impl SourceCapabilities {
             model_identity: true,
             token_classes: true,
             reasoning_effort_tier: true,
-            fast_tier: false,
+            fast_tier: true,
             service_tier: false,
             subagent_relationships: false,
             subagent_models: false,
@@ -673,7 +680,7 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 6,
+                "parserRevision": 7,
                 "analyzerRevision": 9,
                 "evidenceSchemaRevision": 5,
                 "sourceKind": "file",
