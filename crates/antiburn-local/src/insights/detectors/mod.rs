@@ -54,8 +54,11 @@ pub enum NotAssessedReason {
     /// The evidence schema does not yet carry the payload the rule
     /// needs, so neither a finding nor clean is expressible.
     EvidenceContractIncomplete,
-    /// The source supports the signal, but too few turns in this
-    /// session carried it to trust an absence conclusion.
+    /// The source supports the signal, but no turn in this session
+    /// carries it. No conclusion is possible. A turn without the
+    /// signal is not itself negative evidence. See
+    /// `overuse_of_fast_mode` and `model_overthinking` for the rule
+    /// that assesses only the turns that do carry the signal.
     SignalMissing,
 }
 
@@ -76,8 +79,11 @@ pub(crate) enum Observation {
     NoFinding,
     /// The evidence contract cannot express the fact the rule needs.
     ContractIncomplete,
-    /// The source supports the signal, but too few turns in this
-    /// session carried it to trust an absence conclusion.
+    /// The source supports the signal, but no turn in this session
+    /// carries it. No conclusion is possible. A turn without the
+    /// signal is not itself negative evidence. See
+    /// `overuse_of_fast_mode` and `model_overthinking` for the rule
+    /// that assesses only the turns that do carry the signal.
     SignalMissing,
 }
 

@@ -72,6 +72,12 @@ fn claude_fixture(name: &str) -> &'static str {
         "model_overthinking_unrecognized_tier" => include_str!(
             "fixtures/claude_characterization/model_overthinking_unrecognized_tier.jsonl"
         ),
+        "model_overthinking_partial_coverage_clean" => include_str!(
+            "fixtures/claude_characterization/model_overthinking_partial_coverage_clean.jsonl"
+        ),
+        "fast_mode_overuse_partial_coverage_clean" => include_str!(
+            "fixtures/claude_characterization/fast_mode_overuse_partial_coverage_clean.jsonl"
+        ),
         other => panic!("unknown claude fixture: {other}"),
     }
 }
@@ -455,10 +461,22 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
+            // No turn in this fixture carries an effort value.
+            // `present_turns` is zero, so the signal stays missing.
             harness: "claude",
             fixture: "multi_model_session",
             badge: ModelOverthinking,
             expected: NotAssessed(SignalMissing),
+        },
+        Row {
+            // One of two eligible turns carries an effort value. It
+            // shows no finding. Partial coverage now reads clean
+            // instead of SignalMissing. A turn without the signal is
+            // not negative evidence.
+            harness: "claude",
+            fixture: "model_overthinking_partial_coverage_clean",
+            badge: ModelOverthinking,
+            expected: Clean,
         },
         Row {
             harness: "claude",
@@ -513,10 +531,22 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
+            // No turn in this fixture carries a speed value.
+            // `present_turns` is zero, so the signal stays missing.
             harness: "claude",
             fixture: "multi_model_session",
             badge: FastModeOveruse,
             expected: NotAssessed(SignalMissing),
+        },
+        Row {
+            // One of two eligible turns carries a speed value. It
+            // shows no finding. Partial coverage now reads clean
+            // instead of SignalMissing. A turn without the signal is
+            // not negative evidence.
+            harness: "claude",
+            fixture: "fast_mode_overuse_partial_coverage_clean",
+            badge: FastModeOveruse,
+            expected: Clean,
         },
         Row {
             harness: "claude",
