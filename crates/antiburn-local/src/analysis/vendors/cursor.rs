@@ -4,10 +4,10 @@ use anyhow::Context;
 use serde_json::Value;
 use time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
-use super::jsonl::{parse_record, parse_ts};
 use super::read_source;
 use crate::analysis::interface::{SessionInput, VendorAdapter};
 use crate::analysis::model::{NormalizedEvent, NormalizedSession};
+use crate::analysis::records::{RecordShape, parse_record, parse_ts};
 
 pub struct CursorAdapter;
 
@@ -45,7 +45,7 @@ fn parse_cursor(content: &str) -> (Vec<NormalizedEvent>, Option<String>) {
         if session_model.is_none() {
             session_model = model_from(&value).map(str::to_string);
         }
-        let Some(mut event) = parse_record(&value) else {
+        let Some(mut event) = parse_record(&value, RecordShape::Cursor) else {
             continue;
         };
         if event.ts_ms.is_none() {

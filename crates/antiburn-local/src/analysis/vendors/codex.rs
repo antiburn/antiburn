@@ -34,10 +34,6 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use super::jsonl::{
-    compact_json_text, concatenated_text, extract_content_parts_from_container, parse_ts,
-    tool_call_from_input,
-};
 use super::read_source;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::CodexContextAccumulator;
@@ -46,6 +42,10 @@ use crate::analysis::interface::{
     SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
+use crate::analysis::records::{
+    compact_json_text, concatenated_text, extract_content_parts_from_container, parse_ts,
+    tool_call_from_input,
+};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
 const MAX_PENDING_FORK_ROWS: usize = 256;

@@ -14,7 +14,6 @@ use anyhow::Context;
 use rusqlite::{Connection, OpenFlags, Statement, params};
 use serde_json::{Map, Value};
 
-use super::jsonl::{compact_json_text, parse_ts, tool_call_from_input};
 use crate::analysis::EVIDENCE_STRING_CAP;
 use crate::analysis::SourceChangedReason;
 use crate::analysis::framing::{
@@ -27,6 +26,7 @@ use crate::analysis::interface::{
 use crate::analysis::model::{
     CompactionTrigger, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
+use crate::analysis::records::{compact_json_text, parse_ts, tool_call_from_input};
 use crate::discovery::agents::opencode::{
     db_session_fingerprint_connection, db_session_has_parent_id,
 };

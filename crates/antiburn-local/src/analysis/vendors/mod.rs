@@ -9,7 +9,6 @@ pub mod claude;
 mod codex;
 mod cursor;
 mod generic_jsonl;
-mod jsonl;
 mod opencode;
 pub(crate) mod pi;
 
