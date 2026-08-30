@@ -9,15 +9,14 @@ use antiburn_local::analysis::{
     MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedRecord, NormalizedSession, PartialReason,
     PiAdapter, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceClaim, SourceKind, TurnRowSink, TurnRowStore, VendorAdapter,
-    VisitOutcome, adapter_for, analyze_session, append_only_guarantee,
+    SourceCapabilities, SourceClaim, SourceKind, TurnFacts, TurnRowSink, TurnRowStore,
+    VendorAdapter, VisitOutcome, adapter_for, analyze_session, append_only_guarantee,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, DetectorId, NotAssessedReason, ReportCatalogs, requirements,
-    session_badges,
+    BadgeId, BadgeStatus, DetectorId, NotAssessedReason, ReportCatalogs, eligible, session_badges,
 };
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -105,11 +104,20 @@ fn fixture(name: &str) -> &'static str {
         "message_without_id" => {
             include_str!("fixtures/pi_characterization/message_without_id.jsonl")
         }
+        "session_overdepth_finding" => {
+            include_str!("fixtures/pi_characterization/session_overdepth_finding.jsonl")
+        }
+        "model_overthinking_finding" => {
+            include_str!("fixtures/pi_characterization/model_overthinking_finding.jsonl")
+        }
+        "excess_cache_rehydration_finding" => {
+            include_str!("fixtures/pi_characterization/excess_cache_rehydration_finding.jsonl")
+        }
         _ => panic!("unknown Pi characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 32] {
+fn fixture_names() -> [&'static str; 35] {
     [
         "minimal_session",
         "role_ordering",
@@ -143,6 +151,9 @@ fn fixture_names() -> [&'static str; 32] {
         "fork_child_one_thread",
         "unresolved_parent_link",
         "message_without_id",
+        "session_overdepth_finding",
+        "model_overthinking_finding",
+        "excess_cache_rehydration_finding",
     ]
 }
 
@@ -964,15 +975,16 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
 
 #[test]
 fn pi_detector_eligibility_is_frozen() {
-    let capabilities = SourceCapabilities::pi();
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "pi".to_owned(),
+        session_id: "pi-prerequisites".to_owned(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::pi(),
+    })
+    .evidence(&TurnFacts::default());
     let assessed = DetectorId::ALL
         .into_iter()
-        .filter(|detector| {
-            requirements(*detector)
-                .capabilities
-                .iter()
-                .all(|clause| clause.iter().any(|flag| flag.is_set(&capabilities)))
-        })
+        .filter(|detector| eligible(*detector, &evidence))
         .collect::<Vec<_>>();
     assert_eq!(
         assessed,
@@ -1173,6 +1185,9 @@ fn selected_pi_fixtures_match_reviewable_goldens() {
         "usage_all_buckets",
         "unknown_row_type",
         "unknown_content_block",
+        "session_overdepth_finding",
+        "model_overthinking_finding",
+        "excess_cache_rehydration_finding",
     ] {
         check_golden(name);
     }

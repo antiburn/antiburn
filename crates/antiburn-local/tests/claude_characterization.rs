@@ -110,6 +110,15 @@ fn fixture(name: &str) -> &'static str {
         "within_file_duplicate_uuid" => {
             include_str!("fixtures/claude_characterization/within_file_duplicate_uuid.jsonl")
         }
+        "session_overdepth_finding" => {
+            include_str!("fixtures/claude_characterization/session_overdepth_finding.jsonl")
+        }
+        "model_overthinking_finding" => {
+            include_str!("fixtures/claude_characterization/model_overthinking_finding.jsonl")
+        }
+        "fast_mode_overuse_clean" => {
+            include_str!("fixtures/claude_characterization/fast_mode_overuse_clean.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -258,7 +267,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
     composite
 }
 
-fn fixture_names() -> [&'static str; 24] {
+fn fixture_names() -> [&'static str; 27] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -284,6 +293,9 @@ fn fixture_names() -> [&'static str; 24] {
         "compaction_continues_thread",
         "inline_sidechain_own_thread",
         "within_file_duplicate_uuid",
+        "session_overdepth_finding",
+        "model_overthinking_finding",
+        "fast_mode_overuse_clean",
     ]
 }
 
@@ -1106,6 +1118,9 @@ fn supplemental_fixture_goldens() {
         "rehydration_gap_none",
         "disorder_ladder",
         "subagent_single_timestamp",
+        "session_overdepth_finding",
+        "model_overthinking_finding",
+        "fast_mode_overuse_clean",
     ] {
         check_fixture_golden(name);
     }

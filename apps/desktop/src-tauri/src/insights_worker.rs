@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{SessionEvidence, TurnRowStore};
-use antiburn_local::insights::{DetectorId, requirements};
+use antiburn_local::insights::{DetectorId, eligible};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Notify, Semaphore};
@@ -174,19 +174,15 @@ pub(crate) fn permit_for_source_kind(source_kind: &str) -> PermitKind {
     }
 }
 
-/// Classifies a provider against the shipped detector prerequisite
-/// sets. A source whose capability set satisfies no detector's
-/// capability clauses publishes Unsupported: its rows can never
-/// join an assessed cohort, and the report's coverage denominator
-/// shows the session as unsupported instead of ready.
+/// Classifies a provider against the shipped detector fact
+/// requirements. A source whose evidence satisfies no detector's
+/// finding facts publishes Unsupported: its rows can never join an
+/// assessed cohort, and the report's coverage denominator shows the
+/// session as unsupported instead of ready.
 fn published_status(evidence: &SessionEvidence) -> PublishedEvidence {
-    let supported = DetectorId::ALL.into_iter().any(|detector| {
-        requirements(detector).capabilities.iter().all(|clause| {
-            clause
-                .iter()
-                .any(|flag| flag.is_set(&evidence.capabilities))
-        })
-    });
+    let supported = DetectorId::ALL
+        .into_iter()
+        .any(|detector| eligible(detector, evidence));
     if supported {
         PublishedEvidence::Ready
     } else {
@@ -560,11 +556,13 @@ mod tests {
         let source = store.session(&claim.key).unwrap().unwrap();
         let mut published = published_pass(&source);
         published.analysis.analyzed_generation = claim.source_generation;
-        published
-            .evidence
-            .as_mut()
-            .expect("a published pass carries evidence")
-            .capabilities = no_capabilities();
+        // Replace the whole evidence value rather than only its
+        // `capabilities` field: every fact this session's evidence
+        // already carries (`context`, `models`, ...) was derived from
+        // the real Claude capability set the fixture streamed under,
+        // and swapping only the `capabilities` field afterward leaves
+        // that already-derived evidence untouched.
+        published.evidence = Some(evidence_with(no_capabilities()));
 
         assert!(apply_outcome(&store, &claim, &published, 100).unwrap());
         assert_eq!(

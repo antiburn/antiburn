@@ -23,3 +23,7 @@ Every entry after the `session` header carries a top-level `id` and
 root. Every fixture below gives its rows a realistic `id` / `parentId` chain
 unless the fixture's own purpose is to be malformed, in which case the
 missing or broken chain is the point.
+
+- `session_overdepth_finding.jsonl` reports one turn's input tokens above the Sessions Over Depth cap, giving that badge a finding.
+- `model_overthinking_finding.jsonl` sets `thinkingLevel` to `max`, giving Model Overthinking a finding.
+- `excess_cache_rehydration_finding.jsonl` pairs a model switch with paid cache writes on both turns, giving Excess Context Reprocessing a finding.

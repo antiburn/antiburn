@@ -45,6 +45,8 @@ An unrecognized `(type, payload.type)` combination no longer fails coverage clos
 - `service_tier_priority.jsonl` changes `thread_settings.service_tier` from `default` to `priority` and back, and checks the resulting `fast`/`standard` split.
 - `service_tier_absent.jsonl` records no `thread_settings_applied` at all, so `speed_signal` reports zero present turns.
 - `spawn_agent.jsonl` has a parent turn call `spawn_agent`, and checks that the call publishes a subagent relationship and keeps the subagent-evidence detectors assessable.
+- `session_overdepth_finding.jsonl` reports one turn's input tokens above the Sessions Over Depth cap, giving that badge a finding.
+- `model_overthinking_finding.jsonl` sets `turn_context.effort` to `max`, giving Model Overthinking a finding.
 
 ### #229-parity cases (no golden; exercised by dedicated assertions in `codex_characterization.rs`)
 
