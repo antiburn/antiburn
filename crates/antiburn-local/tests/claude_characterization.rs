@@ -101,6 +101,15 @@ fn fixture(name: &str) -> &'static str {
         "subagent_single_timestamp" => {
             include_str!("fixtures/claude_characterization/subagent_single_timestamp.jsonl")
         }
+        "compaction_continues_thread" => {
+            include_str!("fixtures/claude_characterization/compaction_continues_thread.jsonl")
+        }
+        "inline_sidechain_own_thread" => {
+            include_str!("fixtures/claude_characterization/inline_sidechain_own_thread.jsonl")
+        }
+        "within_file_duplicate_uuid" => {
+            include_str!("fixtures/claude_characterization/within_file_duplicate_uuid.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -249,7 +258,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
     composite
 }
 
-fn fixture_names() -> [&'static str; 21] {
+fn fixture_names() -> [&'static str; 24] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -272,6 +281,9 @@ fn fixture_names() -> [&'static str; 21] {
         "rehydration_gap_none",
         "disorder_ladder",
         "subagent_single_timestamp",
+        "compaction_continues_thread",
+        "inline_sidechain_own_thread",
+        "within_file_duplicate_uuid",
     ]
 }
 
@@ -422,7 +434,7 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 28] {
+fn evidence_fixture_names() -> [&'static str; 31] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -452,6 +464,9 @@ fn evidence_fixture_names() -> [&'static str; 28] {
         "rehydration_gap_none",
         "disorder_ladder",
         "subagent_single_timestamp",
+        "compaction_continues_thread",
+        "inline_sidechain_own_thread",
+        "within_file_duplicate_uuid",
     ]
 }
 
@@ -780,6 +795,74 @@ fn missing_identity_blocks_a_clean_cache_churn_claim() {
         report.detector_statuses[DetectorId::CacheChurn.index()],
         DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
     );
+}
+
+#[test]
+fn a_compaction_boundary_keeps_the_main_loop_as_one_thread() {
+    let evidence = stream_composite(&input("compaction_continues_thread"))
+        .evidence()
+        .expect("evidence must publish");
+    let EvidenceValue::Complete(cache) = evidence.cache else {
+        panic!("a resolved compaction link must keep the cache group complete");
+    };
+    // The boundary's `parentUuid` is null, but its `logicalParentUuid`
+    // resolves the link, so the chain never looks unlinked.
+    assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));
+    // The model switch on either side of the boundary is still one main
+    // thread, so it still counts as a transition.
+    assert_eq!(cache.model_transitions.len(), 1);
+    assert_eq!(cache.model_transitions[0].from_model, "claude-opus-4-6");
+    assert_eq!(cache.model_transitions[0].to_model, "claude-sonnet-4-6");
+    assert_eq!(cache.user_controlled_churn.manual_compactions, 1);
+    let EvidenceValue::Complete(compactions) = evidence.compactions else {
+        panic!("compactions must be complete");
+    };
+    assert_eq!(compactions.boundaries.len(), 1);
+}
+
+#[test]
+fn an_inline_sidechain_gets_its_own_thread_and_does_not_affect_the_main_loop() {
+    let evidence = stream_composite(&input("inline_sidechain_own_thread"))
+        .evidence()
+        .expect("evidence must publish");
+    let EvidenceValue::Complete(cache) = evidence.cache else {
+        panic!("an inline sidechain must keep the cache group complete");
+    };
+    // The sidechain's own model never reaches the main-thread scan: no
+    // transition, no idle gap contributed by its four turns.
+    assert!(cache.model_transitions.is_empty());
+    assert_eq!(cache.longest_idle_gap_ms, 0);
+    assert_eq!(cache.idle_gap_ms_total, 0);
+    let EvidenceValue::Complete(subagents) = evidence.subagents else {
+        panic!("subagents must be complete");
+    };
+    assert_eq!(subagents.delegated_turns, 4);
+    assert!(subagents.delegated_models.contains("claude-sonnet-4-6"));
+}
+
+#[test]
+fn a_within_file_duplicate_uuid_keeps_one_thread_and_is_not_a_duplicate_identity() {
+    let evidence = stream_composite(&input("within_file_duplicate_uuid"))
+        .evidence()
+        .expect("evidence must publish");
+    // The duplicate-identity diagnostic is a cross-source-key signal — a
+    // within-file re-logged uuid must not trip it.
+    assert_eq!(evidence.diagnostics.duplicate_turn_identities, 0);
+    let EvidenceValue::Complete(cache) = evidence.cache else {
+        panic!("a within-file duplicate uuid must keep the cache group complete");
+    };
+    assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));
+    let EvidenceValue::Complete(models) = evidence.models else {
+        panic!("models must be complete");
+    };
+    let tokens = &models.by_model["claude-opus-4-6"];
+    // `dedup_usage` keeps the re-logged message's final usage from being
+    // counted twice: 15 input from the completed copy (not 15 + 15) plus 5
+    // from the follow-up turn; 6 output from the completed copy (not
+    // double-counted against the partial copy's 0) plus 2 from the
+    // follow-up turn.
+    assert_eq!(tokens.input, 20);
+    assert_eq!(tokens.output, 8);
 }
 
 #[test]
@@ -1116,6 +1199,21 @@ fn golden_thread_identity_chain() {
 #[test]
 fn golden_thread_identity_missing_uuid() {
     check_fixture_golden("thread_identity_missing_uuid");
+}
+
+#[test]
+fn golden_compaction_continues_thread() {
+    check_fixture_golden("compaction_continues_thread");
+}
+
+#[test]
+fn golden_inline_sidechain_own_thread() {
+    check_fixture_golden("inline_sidechain_own_thread");
+}
+
+#[test]
+fn golden_within_file_duplicate_uuid() {
+    check_fixture_golden("within_file_duplicate_uuid");
 }
 
 #[test]

@@ -359,6 +359,15 @@ pub struct NormalizedEvent {
     /// record of the main loop or of a sidechain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_uuid: Option<String>,
+    /// The identity of the record this one logically continues from when the
+    /// direct link is null (Claude's `logicalParentUuid` on a compaction
+    /// boundary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_parent_uuid: Option<String>,
+    /// The thread this turn belongs to, when the adapter derives one. `None`
+    /// means the row store uses the source key as the thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 impl NormalizedEvent {
@@ -383,6 +392,8 @@ impl NormalizedEvent {
             late_tool_candidate_is_builtin: false,
             uuid: None,
             parent_uuid: None,
+            logical_parent_uuid: None,
+            thread_id: None,
         }
     }
 }

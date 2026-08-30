@@ -16,6 +16,7 @@
         "source": "parent",
         "speed": null,
         "thinkingMode": null,
+        "threadId": "55555555-5555-4555-8555-000000000001",
         "tools": [
           {
             "category": "other",
@@ -43,6 +44,7 @@
         "source": "subagent",
         "speed": null,
         "thinkingMode": null,
+        "threadId": "55555555-5555-4555-8555-000000000002",
         "tools": [],
         "tsMs": 1786183205000,
         "usage": {

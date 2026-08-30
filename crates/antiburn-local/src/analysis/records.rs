@@ -124,9 +124,13 @@ pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
 
     // Per-record thread identity (Claude's top-level `uuid` / `parentUuid`).
     // Emitted for every record that carries either field, so the evidence
-    // sink can verify parent links even through eventless records.
+    // sink can verify parent links even through eventless records. A null
+    // `parentUuid` falls back to `logicalParentUuid`, Claude's link across a
+    // compaction boundary, so a boundary record does not read as an
+    // unlinked root.
     let uuid = thread_identity_field(value, "uuid");
-    let parent_uuid = thread_identity_field(value, "parentUuid");
+    let parent_uuid = thread_identity_field(value, "parentUuid")
+        .or_else(|| thread_identity_field(value, "logicalParentUuid"));
     if uuid.is_some() || parent_uuid.is_some() {
         observations.push(EvidenceObservation::ThreadLink { uuid, parent_uuid });
     }
@@ -623,6 +627,12 @@ pub(crate) fn parse_record(value: &Value, shape: RecordShape) -> Option<Normaliz
         ev.parent_uuid = thread_identity_field(value, "parentUuid");
     }
 
+    // The link across a compaction boundary (Claude's `logicalParentUuid`),
+    // read only for Claude's own shape: no other vendor writes this key.
+    if shape == RecordShape::Claude {
+        ev.logical_parent_uuid = thread_identity_field(value, "logicalParentUuid");
+    }
+
     // Provider message id (Anthropic `message.id`), used by the Claude adapter to
     // de-duplicate re-logged copies of the same assistant message.
     if matches!(shape, RecordShape::Claude | RecordShape::Generic) {
@@ -999,7 +1009,7 @@ mod tests {
 
     #[test]
     fn parse_record_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 12_458_132_889_981_452_038;
+        const EXPECTED_FINGERPRINT: u64 = 9_324_180_013_535_080_082;
         let source = include_str!("records.rs").replace("\r\n", "\n");
         let start = source.find("pub(crate) fn parse_record").unwrap();
         let end = source[start..].find("\n#[cfg(test)]\nmod tests").unwrap() + start;

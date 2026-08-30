@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use anyhow::Context;
 use serde_json::Value;
 
-use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
+use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::ClaudeContextAccumulator;
 use crate::analysis::interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
@@ -25,6 +25,7 @@ use crate::analysis::records::{
     is_inert_unrecognized, is_recognized_eventless, parse_record, record_discriminator,
 };
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
+use crate::analysis::threads::ThreadResolver;
 
 /// The marker Claude Code writes into a `Skill` tool's transcript output,
 /// naming the skill's base directory. Its presence records the skill as one
@@ -323,6 +324,11 @@ impl ClaudeAdapter {
                         continue;
                     };
 
+                    let link = event
+                        .parent_uuid
+                        .as_deref()
+                        .or(event.logical_parent_uuid.as_deref());
+                    event.thread_id = state.threads.resolve(event.uuid.as_deref(), link);
                     state.observe_model(event.model.as_deref());
                     state.dedup_usage(&mut event);
                     if has_command_name {
@@ -365,6 +371,7 @@ struct ClaudeStreamState {
     pending_commands: Vec<(usize, Vec<String>)>,
     ordinal: usize,
     context: ClaudeContextAccumulator,
+    threads: ThreadResolver,
 }
 
 impl ClaudeStreamState {
@@ -448,12 +455,19 @@ impl ClaudeStreamState {
                 }
             }
         }
+        // A capped thread resolver means some records past the cap could not
+        // be linked into their real thread: the same kind of attribution
+        // loss the cache group's unresolved-parent-link check reports.
+        let mut coverage_gaps = Vec::new();
+        if self.threads.capped() {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
         SessionSummary {
             cache_write_tokens_available: true,
             context_window: self.context_window,
             model,
             started_at_ms: None,
-            coverage_gaps: Vec::new(),
+            coverage_gaps,
             late_tools,
             initial_context,
             skill_descriptions,

@@ -1671,6 +1671,32 @@ mod tests {
     }
 
     #[test]
+    fn a_compaction_boundarys_logical_parent_resolves_the_link() {
+        // `records::evidence_observations` reports a compaction boundary's
+        // `ThreadLink.parent_uuid` as `parentUuid` falling back to
+        // `logicalParentUuid`, so this accumulator never sees the boundary's
+        // real (null) `parentUuid` directly — only the resolved fallback.
+        let mut accumulator = accumulator(true);
+        for record in thread_record(Some("u-1"), None, 0) {
+            accumulator.record(record);
+        }
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::ThreadLink {
+                uuid: Some("boundary".to_owned()),
+                parent_uuid: Some("u-1".to_owned()),
+            },
+        )));
+        for record in thread_record(Some("u-2"), Some("boundary"), 1) {
+            accumulator.record(record);
+        }
+        let facts = TurnFacts::default();
+        let EvidenceValue::Complete(cache) = accumulator.evidence(&facts).cache else {
+            panic!("a resolved logical parent must keep the cache group complete");
+        };
+        assert_eq!(cache.previous_turn, EvidenceValue::Complete(()));
+    }
+
+    #[test]
     fn a_counted_turn_without_a_uuid_degrades_previous_turn() {
         assert_eq!(
             previous_turn_for(&[(Some("u-1"), None), (None, None)]),

@@ -161,20 +161,26 @@ fn role_key(role: Role) -> &'static str {
 /// Build one row from a normalized event.
 ///
 /// `source_key` names the parent transcript or child file this event comes
-/// from. `thread_id` equals `source_key` in this change — a later change
-/// derives finer per-thread identity from provider record links.
+/// from. `thread_id` is the event's own derived thread (an adapter that
+/// links records, like Claude's `uuid` chain, sets [`NormalizedEvent::thread_id`]);
+/// it falls back to `source_key` when the adapter derives no thread.
 ///
-/// Scope is `Delegated` with `child_id = Some(source_key)` when the event's
-/// [`EventSource`] is `Subagent`; otherwise scope is `Main` with no
-/// `child_id`.
+/// Scope is `Delegated` when the event's [`EventSource`] is `Subagent`; its
+/// `child_id` is then the event's own thread, so an inline sidechain gets
+/// its own child identity distinct from its parent file's `source_key`.
+/// Otherwise scope is `Main` with no `child_id`.
 pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index: u64) -> TurnRow {
+    let thread_id = event
+        .thread_id
+        .clone()
+        .unwrap_or_else(|| source_key.to_owned());
     let (scope, child_id) = match event.source {
-        EventSource::Subagent => (TurnScope::Delegated, Some(source_key.to_owned())),
+        EventSource::Subagent => (TurnScope::Delegated, Some(thread_id.clone())),
         EventSource::Parent => (TurnScope::Main, None),
     };
     TurnRow {
         source_key: source_key.to_owned(),
-        thread_id: source_key.to_owned(),
+        thread_id,
         turn_index,
         scope,
         child_id,
@@ -818,6 +824,27 @@ mod tests {
         assert_eq!(row.child_id, None);
     }
 
+    #[test]
+    fn turn_row_from_event_uses_the_events_own_thread_for_a_delegated_child_id() {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.source = EventSource::Subagent;
+        event.thread_id = Some("sidechain-1".to_owned());
+
+        let row = turn_row_from_event(&event, "parent-1", 3);
+        // The row's own source is still the parent file, but its thread and
+        // child identity are the inline sidechain's, not the parent file's.
+        assert_eq!(row.source_key, "parent-1");
+        assert_eq!(row.thread_id, "sidechain-1");
+        assert_eq!(row.child_id.as_deref(), Some("sidechain-1"));
+    }
+
+    #[test]
+    fn turn_row_from_event_falls_back_to_the_source_key_without_a_derived_thread() {
+        let event = NormalizedEvent::new(Role::Assistant);
+        let row = turn_row_from_event(&event, "parent-1", 0);
+        assert_eq!(row.thread_id, "parent-1");
+    }
+
     /// A store that always fails to write, so the sink's error path can be
     /// tested without a real connection. Never read, so
     /// [`TurnRowStore::query_turn_facts`] need not really work.
@@ -1028,6 +1055,66 @@ mod tests {
         assert_eq!(
             writer.scopes(1),
             vec![(TurnScope::Delegated, Some("s1".to_owned()))]
+        );
+    }
+
+    #[test]
+    fn an_inline_sidechain_shares_the_source_key_but_keeps_its_own_thread_and_writes_back() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let writer = Arc::new(RecordingWriter::new(conn));
+        // Both events come from the same source file, so they share
+        // `source_key`; their `thread_id`s differ.
+        let mut sink = TurnRowSink::new(Arc::clone(&writer) as Arc<dyn TurnRowStore>, "s1", None);
+
+        let mut main_turn = NormalizedEvent::new(Role::Assistant);
+        main_turn.thread_id = Some("main-thread".to_owned());
+        let mut sidechain_turn = NormalizedEvent::new(Role::Assistant);
+        sidechain_turn.source = EventSource::Subagent;
+        sidechain_turn.thread_id = Some("sidechain-thread".to_owned());
+
+        sink.observe(&NormalizedRecord::MetricsEvent(Box::new(main_turn)));
+        sink.observe(&NormalizedRecord::MetricsEvent(Box::new(sidechain_turn)));
+        sink.finish(SessionSummary::default());
+
+        assert_eq!(writer.count(1), 2);
+        let rows: Vec<(String, String, Option<String>, i64)> = {
+            let conn = writer.conn.lock().expect("lock");
+            let mut statement = conn
+                .prepare(
+                    "SELECT thread_id, scope, child_id, turn_index FROM turn
+                      WHERE environment_key = 'native' AND agent = 'claude'
+                        AND session_id = 's1' AND claim_fence = 1
+                      ORDER BY rowid",
+                )
+                .expect("prepare");
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .expect("query")
+                .map(|row| row.expect("row"))
+                .collect()
+        };
+        // Two threads share the source file, and their `turn_index` values
+        // interleave (0 and 1, assigned in file order), but each row still
+        // reads back under its own thread and child identity.
+        assert_eq!(
+            rows,
+            vec![
+                ("main-thread".to_owned(), "main".to_owned(), None, 0),
+                (
+                    "sidechain-thread".to_owned(),
+                    "delegated".to_owned(),
+                    Some("sidechain-thread".to_owned()),
+                    1
+                ),
+            ]
         );
     }
 
