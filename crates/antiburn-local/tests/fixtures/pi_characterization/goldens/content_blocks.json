@@ -10,7 +10,8 @@
         "longestIdleGapMs": 1000,
         "modelTransitions": [],
         "previousTurn": {
-          "state": "unsupported"
+          "state": "complete",
+          "value": null
         },
         "providerEviction": {
           "state": "unsupported"
@@ -33,7 +34,7 @@
       "skillMcpAttribution": false,
       "subagentModels": false,
       "subagentRelationships": false,
-      "threadIdentity": false,
+      "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
       "toolDefinitions": false,
@@ -118,7 +119,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 9,
+      "parserRevision": 10,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4169,6 +4170,7 @@
         "source": "parent",
         "speed": null,
         "thinkingMode": null,
+        "threadId": "cb-1",
         "tools": [
           {
             "category": "read",
@@ -4189,7 +4191,8 @@
           "cacheReadTokens": 0,
           "inputTokens": 0,
           "outputTokens": 0
-        }
+        },
+        "uuid": "cb-1"
       },
       {
         "compactionPostTokens": null,
@@ -4199,10 +4202,12 @@
         "isCompactionBoundary": false,
         "messageId": null,
         "model": null,
+        "parentUuid": "cb-1",
         "role": "tool",
         "source": "parent",
         "speed": null,
         "thinkingMode": null,
+        "threadId": "cb-1",
         "tools": [],
         "tsMs": 1767225602000,
         "usage": {
@@ -4210,7 +4215,8 @@
           "cacheReadTokens": 0,
           "inputTokens": 0,
           "outputTokens": 0
-        }
+        },
+        "uuid": "cb-2"
       }
     ],
     "model": "model-a",

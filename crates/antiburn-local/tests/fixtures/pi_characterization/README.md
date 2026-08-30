@@ -14,6 +14,12 @@ metadata, or API metadata.
 
 Pi supports request occupancy, cache writes when the selected API reports
 them, timestamps, tool calls, model identity, token classes, thinking levels,
-and compaction boundaries. It does not claim tool catalogs, MCP attribution,
-speed or service tiers, subagent links, thread identity, quota events, or a
+compaction boundaries, and thread identity. It does not claim tool catalogs,
+MCP attribution, speed or service tiers, subagent links, quota events, or a
 harness version.
+
+Every entry after the `session` header carries a top-level `id` and
+`parentId`. Exactly one entry per file has `parentId: null` — the thread
+root. Every fixture below gives its rows a realistic `id` / `parentId` chain
+unless the fixture's own purpose is to be malformed, in which case the
+missing or broken chain is the point.

@@ -1,3 +1,3 @@
-{"type":"custom","timestamp":"2026-01-01T00:00:00Z","customType":"extension-one","data":{}}
-{"type":"custom","timestamp":"2026-01-01T00:00:01Z","customType":"extension-two","data":{}}
-{"type":"custom_message","timestamp":"2026-01-01T00:00:02Z","customType":"extension-three","content":"synthetic display","display":true,"details":{}}
+{"type":"custom","id":"cr-1","parentId":null,"timestamp":"2026-01-01T00:00:00Z","customType":"extension-one","data":{}}
+{"type":"custom","id":"cr-2","parentId":"cr-1","timestamp":"2026-01-01T00:00:01Z","customType":"extension-two","data":{}}
+{"type":"custom_message","id":"cr-3","parentId":"cr-2","timestamp":"2026-01-01T00:00:02Z","customType":"extension-three","content":"synthetic display","display":true,"details":{}}

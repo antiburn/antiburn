@@ -10,7 +10,8 @@
         "longestIdleGapMs": 1000,
         "modelTransitions": [],
         "previousTurn": {
-          "state": "unsupported"
+          "state": "complete",
+          "value": null
         },
         "providerEviction": {
           "state": "unsupported"
@@ -33,7 +34,7 @@
       "skillMcpAttribution": false,
       "subagentModels": false,
       "subagentRelationships": false,
-      "threadIdentity": false,
+      "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
       "toolDefinitions": false,
@@ -129,7 +130,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 9,
+      "parserRevision": 10,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4179,6 +4180,7 @@
         "source": "parent",
         "speed": null,
         "thinkingMode": null,
+        "threadId": "uab-1",
         "tools": [],
         "tsMs": 1767225601000,
         "usage": {
@@ -4186,7 +4188,8 @@
           "cacheReadTokens": 5,
           "inputTokens": 2,
           "outputTokens": 3
-        }
+        },
+        "uuid": "uab-1"
       },
       {
         "compactionPostTokens": null,
@@ -4196,10 +4199,12 @@
         "isCompactionBoundary": false,
         "messageId": null,
         "model": "model-a",
+        "parentUuid": "uab-1",
         "role": "assistant",
         "source": "parent",
         "speed": null,
         "thinkingMode": null,
+        "threadId": "uab-1",
         "tools": [],
         "tsMs": 1767225602000,
         "usage": {
@@ -4207,7 +4212,8 @@
           "cacheReadTokens": 11,
           "inputTokens": 3,
           "outputTokens": 4
-        }
+        },
+        "uuid": "uab-2"
       }
     ],
     "model": "model-a",

@@ -171,10 +171,11 @@ pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
     observations
 }
 
-/// A top-level thread-identity field (`uuid` / `parentUuid`), when present
-/// and non-empty. A JSON `null` (Claude's explicit thread-root marker) reads
-/// as `None`, exactly like an absent field.
-fn thread_identity_field(value: &Value, key: &str) -> Option<String> {
+/// A top-level thread-identity field (Claude's `uuid` / `parentUuid`, Pi's
+/// `id` / `parentId`), when present and non-empty. A JSON `null` (a vendor's
+/// explicit thread-root marker) reads as `None`, exactly like an absent
+/// field.
+pub(super) fn thread_identity_field(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -627,6 +628,14 @@ pub(crate) fn parse_record(value: &Value, shape: RecordShape) -> Option<Normaliz
         ev.parent_uuid = thread_identity_field(value, "parentUuid");
     }
 
+    // Pi's own per-record thread identity (`id` / `parentId`). `parentId:
+    // null` marks a thread root and stays `None`. Pi never writes
+    // `logicalParentUuid` or nests an id under `message`.
+    if shape == RecordShape::Pi {
+        ev.uuid = thread_identity_field(value, "id");
+        ev.parent_uuid = thread_identity_field(value, "parentId");
+    }
+
     // The link across a compaction boundary (Claude's `logicalParentUuid`),
     // read only for Claude's own shape: no other vendor writes this key.
     if shape == RecordShape::Claude {
@@ -1009,7 +1018,12 @@ mod tests {
 
     #[test]
     fn parse_record_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 9_324_180_013_535_080_082;
+        // Seam 4f: `parse_record` now reads Pi's own `id` / `parentId` pair
+        // into `ev.uuid` / `ev.parent_uuid` for `RecordShape::Pi`, mirroring
+        // Claude's `uuid` / `parentUuid` read. This is an addition, not a
+        // change to any inertness-reviewed key, so `INERTNESS_MIRROR_CASES`
+        // needs no update.
+        const EXPECTED_FINGERPRINT: u64 = 12_239_640_525_636_906_098;
         let source = include_str!("records.rs").replace("\r\n", "\n");
         let start = source.find("pub(crate) fn parse_record").unwrap();
         let end = source[start..].find("\n#[cfg(test)]\nmod tests").unwrap() + start;

@@ -26,8 +26,11 @@ use crate::analysis::interface::{
     SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
-use crate::analysis::records::{RecordShape, extract_content_parts, parse_record, parse_ts};
+use crate::analysis::records::{
+    RecordShape, extract_content_parts, parse_record, parse_ts, thread_identity_field,
+};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
+use crate::analysis::threads::ThreadResolver;
 
 /// Parses Pi transcript files without retaining transcript content.
 pub struct PiAdapter;
@@ -171,11 +174,30 @@ struct PiStreamState {
     fork_header_present: bool,
     fork_start_ms: Option<i64>,
     fork_attribution_incomplete: bool,
+    /// Derives each row's thread from the `id` / `parentId` chain. Every row
+    /// after the session header carries both fields, so this resolves over
+    /// message rows and non-message rows (`model_change`,
+    /// `thinking_level_change`, `compaction`, …) alike — a message whose
+    /// `parentId` names a `model_change` row still joins that row's thread.
+    threads: ThreadResolver,
 }
 
 impl PiStreamState {
     fn observe(&mut self, value: Value, sink: &mut dyn RecordSink) {
         let row_type = value.get("type").and_then(Value::as_str);
+        // Every row carrying `id` / `parentId` joins the thread chain, in
+        // file order, before the row-type dispatch below — including a row
+        // about to be dropped as inherited. That keeps an owned row's
+        // `parentId` resolving to a seen id even when the row it names was
+        // itself inherited, so a fork file stays one thread. A row with no
+        // `id` resolves to the resolver's current thread (rule c) without
+        // recording anything new.
+        let id = thread_identity_field(&value, "id");
+        let parent_id = thread_identity_field(&value, "parentId");
+        let thread_id = self.threads.resolve(id.as_deref(), parent_id.as_deref());
+        if let Some(observation) = thread_link_observation(id.as_deref(), parent_id.as_deref()) {
+            sink.record(NormalizedRecord::Observation(Box::new(observation)));
+        }
         if row_type != Some("session") && self.fork_header_present {
             match (
                 self.fork_start_ms,
@@ -210,10 +232,10 @@ impl PiStreamState {
         }
         match row_type {
             Some("session") if is_inert_shape(&value) => self.observe_session(&value, sink),
-            Some("message") => self.observe_message(&value, sink),
+            Some("message") => self.observe_message(&value, thread_id, sink),
             Some("model_change") => self.observe_model_change(&value, sink),
             Some("thinking_level_change") => self.observe_thinking_level_change(&value, sink),
-            Some("compaction") => self.observe_compaction(&value, sink),
+            Some("compaction") => self.observe_compaction(&value, thread_id, sink),
             Some("session_info") if is_inert_shape(&value) => observe_inert(&value, sink),
             Some("custom" | "custom_message") if is_inert_shape(&value) => {
                 observe_inert(&value, sink)
@@ -249,7 +271,12 @@ impl PiStreamState {
         }
     }
 
-    fn observe_message(&mut self, value: &Value, sink: &mut dyn RecordSink) {
+    fn observe_message(
+        &mut self,
+        value: &Value,
+        thread_id: Option<String>,
+        sink: &mut dyn RecordSink,
+    ) {
         let role = value
             .pointer("/message/role")
             .and_then(Value::as_str)
@@ -277,6 +304,7 @@ impl PiStreamState {
         };
         event.ts_ms = Some(timestamp);
         event.speed = None;
+        event.thread_id = thread_id;
 
         if role == "assistant" {
             self.observe_assistant_metadata(value);
@@ -362,13 +390,21 @@ impl PiStreamState {
         self.current_thinking_mode = next;
     }
 
-    fn observe_compaction(&mut self, value: &Value, sink: &mut dyn RecordSink) {
+    fn observe_compaction(
+        &mut self,
+        value: &Value,
+        thread_id: Option<String>,
+        sink: &mut dyn RecordSink,
+    ) {
         let Some(timestamp) = value.get("timestamp").and_then(parse_ts) else {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         };
         let mut event = NormalizedEvent::new(Role::System);
         event.ts_ms = Some(timestamp);
+        event.thread_id = thread_id;
+        event.uuid = thread_identity_field(value, "id");
+        event.parent_uuid = thread_identity_field(value, "parentId");
         event.is_compaction_boundary = true;
         event.compaction_pre_tokens = value.get("tokensBefore").and_then(Value::as_u64);
         event.model = self.current_model.clone();
@@ -391,21 +427,44 @@ impl PiStreamState {
     }
 
     fn finish(self) -> SessionSummary {
+        let mut coverage_gaps: Vec<PartialReason> = self
+            .fork_attribution_incomplete
+            .then_some(PartialReason::AttributionIncomplete)
+            .into_iter()
+            .collect();
+        // A capped thread resolver means some records past the cap could not
+        // be linked into their real thread: the same kind of attribution
+        // loss the cache group's unresolved-parent-link check reports. See
+        // `ClaudeStreamState::into_summary` in `claude.rs`.
+        if self.threads.capped() {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
         SessionSummary {
             cache_write_tokens_available: self.cache_write_tokens_available.unwrap_or(true),
             context_window: None,
             model: self.model.or(self.current_model),
             started_at_ms: self.started_at_ms,
-            coverage_gaps: self
-                .fork_attribution_incomplete
-                .then_some(PartialReason::AttributionIncomplete)
-                .into_iter()
-                .collect(),
+            coverage_gaps,
             late_tools: Vec::new(),
             initial_context: None,
             skill_descriptions: HashMap::new(),
         }
     }
+}
+
+/// This row's `ThreadLink` observation (Pi's `id` / `parentId`), when either
+/// field is present. Mirrors `records::evidence_observations`'s Claude
+/// `ThreadLink` emission (`uuid` / `parentUuid`) with Pi's own field names,
+/// since that helper reads only Claude's shape and Pi has no `message`-
+/// nested id to fall back on.
+fn thread_link_observation(
+    id: Option<&str>,
+    parent_id: Option<&str>,
+) -> Option<EvidenceObservation> {
+    (id.is_some() || parent_id.is_some()).then(|| EvidenceObservation::ThreadLink {
+        uuid: id.map(str::to_owned),
+        parent_uuid: parent_id.map(str::to_owned),
+    })
 }
 
 fn observe_inert(value: &Value, sink: &mut dyn RecordSink) {

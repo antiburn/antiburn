@@ -1,3 +1,3 @@
-{"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"start"}}
-{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"read","arguments":{}}]}}
-{"type":"message","timestamp":"2026-01-01T00:00:03Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","isError":false,"content":[{"type":"text","text":"ok"}]}}
+{"type":"message","id":"ro-1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"start"}}
+{"type":"message","id":"ro-2","parentId":"ro-1","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"read","arguments":{}}]}}
+{"type":"message","id":"ro-3","parentId":"ro-2","timestamp":"2026-01-01T00:00:03Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","isError":false,"content":[{"type":"text","text":"ok"}]}}

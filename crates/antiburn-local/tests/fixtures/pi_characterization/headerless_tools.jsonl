@@ -1,5 +1,5 @@
-{"type":"message","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll inspect first."},{"type":"toolCall","id":"call_read","name":"read","arguments":{"path":"src/lib.rs"}}]}}
-{"type":"message","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit","name":"edit","arguments":{"path":"src/lib.rs","old":"a","new":"b"}}]}}
-{"type":"message","timestamp":"2024-06-01T12:02:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_test","name":"bash","arguments":{"command":"cargo test"}}]}}
-{"type":"message","timestamp":"2024-06-01T12:03:00Z","message":{"role":"toolResult","toolCallId":"call_test","toolName":"bash","isError":true,"content":[{"type":"text","text":"FAILED"}]}}
-{"type":"message","timestamp":"2024-06-01T12:04:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Need another approach."}]}}
+{"type":"message","id":"ht-1","parentId":null,"timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll inspect first."},{"type":"toolCall","id":"call_read","name":"read","arguments":{"path":"src/lib.rs"}}]}}
+{"type":"message","id":"ht-2","parentId":"ht-1","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_edit","name":"edit","arguments":{"path":"src/lib.rs","old":"a","new":"b"}}]}}
+{"type":"message","id":"ht-3","parentId":"ht-2","timestamp":"2024-06-01T12:02:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_test","name":"bash","arguments":{"command":"cargo test"}}]}}
+{"type":"message","id":"ht-4","parentId":"ht-3","timestamp":"2024-06-01T12:03:00Z","message":{"role":"toolResult","toolCallId":"call_test","toolName":"bash","isError":true,"content":[{"type":"text","text":"FAILED"}]}}
+{"type":"message","id":"ht-5","parentId":"ht-4","timestamp":"2024-06-01T12:04:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Need another approach."}]}}
