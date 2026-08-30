@@ -868,9 +868,12 @@ fn usage_free_token_count_records_are_recognized_eventless() {
     assert_eq!(evidence.diagnostics.records_unusable, 0);
     assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
     assert!(evidence.diagnostics.unrecognized_types.is_empty());
-    // Only the third `token_count` carries usage. The heartbeat and the
-    // zero-usage record add nothing. `codex_usage` splits the 100 cached
-    // tokens out of the 300 `input_tokens`.
+    // Only the third `token_count` carries usage. The heartbeat, the
+    // zero-usage record, and the trailing zero-component heartbeat (whose
+    // `last_token_usage` components are all zero beside a nonzero derived
+    // `total_tokens`, beside a real nonzero `total_token_usage` cumulative)
+    // add nothing. `codex_usage` splits the 100 cached tokens out of the
+    // 300 `input_tokens`.
     assert_eq!(metrics.metrics().tokens_in, 200);
     assert_eq!(metrics.metrics().tokens_out, 40);
 }
