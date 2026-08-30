@@ -780,9 +780,9 @@ Settled:
 11. Tier policies (seam 5c) are keyed by model family from the normalized
     model-key prefix (`claude-` → Claude, `gpt-`/`o*` → OpenAI, else
     Unknown), not by harness, because OpenCode and Pi run any vendor's
-    models. Effort: Claude above cap = {max, ultrathink}, recognized = {low,
-    medium, high, max, ultrathink}; OpenAI above cap = {xhigh}, recognized =
-    {minimal, low, medium, high, xhigh}. Speed: exactly {fast, standard} after
+    models. Effort: above cap = {xhigh, max, ultra, ultrathink} in both
+    families (Cadence's fleet-derived policy, 2026-08-13); recognized floor
+    Claude = {low, medium, high}, OpenAI = {none, minimal, low, medium, high}. Speed: exactly {fast, standard} after
     normalization. Premium: Claude = `claude-opus-*` and `claude-fable-*`;
     OpenAI = `gpt-5.6-sol*` (OpenAI states Sol, Terra, Luna are capability
     tiers with Sol at the top). A tier or model outside a reviewed policy
