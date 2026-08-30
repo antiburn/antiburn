@@ -28,11 +28,13 @@ Codex writes `{timestamp,type,payload}` JSONL under `~/.codex/sessions/YYYY/MM/D
 
 Model Overthinking, Overpowered Subagents, Old Model Usage, and Fast-Mode Overuse have all capability prerequisites. Every other detector remains not assessed. Fast-mode overuse needed Subagent relationships in addition to `fast_tier`; now that the adapter publishes the subagent relationship, both it and Overpowered Subagents move into the assessed set.
 
+An unrecognized `(type, payload.type)` combination no longer fails coverage closed by default (#229 parity). `is_inert_codex_record` proves a record structurally inert — no usage, model, effort, service tier, role, tool-shaped, or compaction-shaped keys at the depth its readers cover — before the record is skipped with `Complete` coverage and its discriminator retained. A record that fails the proof stays `Unusable(UnrecognizedRecordType)`, exactly as before. `event_msg`/`item_completed` and top-level `inter_agent_communication_metadata` are allowlisted as proven echoes of records this adapter already models (measured against 1,034 local rollouts: no sampled record of either family carried usage, a model, or an effort) and pass the lighter check that only reads the record's root and root `payload` object; every other unrecognized family is proved inert one record at a time by the strict, any-depth check. `session_meta`, `turn_context`, `world_state`, and the pre-existing `event_msg` housekeeping payloads bypass the structural check entirely: their own evidence-bearing fields (`turn_context.model`/`.effort`, `thread_settings_applied`'s `service_tier`) are read by `observe_model_and_effort` / `service_tier_speed` on every record, before classification runs, so nothing about them is left unproven.
+
 ## Coverage cases
 
 - `records_all_kinds.jsonl` covers supported legacy records and duplicate compaction markers.
 - `malformed_between_valid.jsonl` keeps valid neighbors and reports partial coverage.
-- `unrecognized_type.jsonl` records a fixed technical discriminator and reports partial coverage.
+- `unrecognized_type.jsonl` carries a single `event_msg`/`item_completed` record with a made-up `item.type`. Since `item_completed` is now allowlisted and structurally inert (the unknown `item.type` sits inside the echoed `item`, past the light check's depth), this now reports `Complete` coverage and records no discriminator; see `inert_unknown_event.jsonl` for a genuinely unrecognized `event_msg` payload type instead.
 - `absent_model_and_effort.jsonl` reports incomplete attribution instead of a clean model result.
 - `resolved_fork.jsonl` excludes replayed parent token counts and keeps child-owned usage.
 - `fork_developer_lookbehind.jsonl` includes the developer row immediately before the owned task boundary.
@@ -42,3 +44,10 @@ Model Overthinking, Overpowered Subagents, Old Model Usage, and Fast-Mode Overus
 - `service_tier_priority.jsonl` changes `thread_settings.service_tier` from `default` to `priority` and back, and checks the resulting `fast`/`standard` split.
 - `service_tier_absent.jsonl` records no `thread_settings_applied` at all, so `speed_signal` reports zero present turns.
 - `spawn_agent.jsonl` has a parent turn call `spawn_agent`, and checks that the call publishes a subagent relationship and keeps the subagent-evidence detectors assessable.
+
+### #229-parity cases (no golden; exercised by dedicated assertions in `codex_characterization.rs`)
+
+- `item_completed_echo.jsonl` has an `event_msg`/`item_completed` record after each of a user message, an assistant message, and a function call (`item.type` `UserMessage` / `AgentMessage` / `CommandExecution`, the last with `command`, `exit_code`, `stdout`, `aggregated_output` keys). Coverage stays `Complete`; metrics and evidence match the same fixture with the echo lines removed; `records_unrecognized_inert` stays `0` because an allowlisted inert record is not counted as unrecognized.
+- `inert_unknown_event.jsonl` has an `event_msg` with a made-up `payload.type` (`synthetic_progress`) carrying only ids, a `text`, and a duration. Coverage stays `Complete`, `records_unrecognized_inert` is `1`, and the `event_msg.synthetic_progress` discriminator is retained.
+- `unknown_event_with_usage.jsonl` has an `event_msg` with a made-up type whose payload carries `last_token_usage`. Coverage is `Partial(UnrecognizedRecordType)`, the record is not inert, and the usage is not counted.
+- `unknown_event_with_tool_shape.jsonl` has an unrecognized `response_item` payload with a nested `name` + `arguments` + `call_id`. Fails closed the same way as `unknown_event_with_usage.jsonl`.

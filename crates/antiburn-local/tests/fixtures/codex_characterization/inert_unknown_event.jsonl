@@ -1,0 +1,5 @@
+{"timestamp":"2026-08-20T11:00:00Z","type":"session_meta","payload":{"id":"synthetic-inert-unknown","timestamp":"2026-08-20T10:59:58Z","cwd":"/home/avery/projects/demo-app","cli_version":"0.0.0-test","source":"cli"}}
+{"timestamp":"2026-08-20T11:00:01Z","type":"turn_context","payload":{"model":"gpt-test","effort":"medium"}}
+{"timestamp":"2026-08-20T11:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Run the synthetic check."}]}}
+{"timestamp":"2026-08-20T11:00:03Z","type":"event_msg","payload":{"type":"synthetic_progress","turn_id":"turn-1","step_id":"step-1","text":"Working on it.","duration_ms":250}}
+{"timestamp":"2026-08-20T11:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}

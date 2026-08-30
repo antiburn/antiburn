@@ -52,11 +52,23 @@ fn fixture(name: &str) -> &'static str {
             include_str!("fixtures/codex_characterization/service_tier_absent.jsonl")
         }
         "spawn_agent" => include_str!("fixtures/codex_characterization/spawn_agent.jsonl"),
+        "item_completed_echo" => {
+            include_str!("fixtures/codex_characterization/item_completed_echo.jsonl")
+        }
+        "inert_unknown_event" => {
+            include_str!("fixtures/codex_characterization/inert_unknown_event.jsonl")
+        }
+        "unknown_event_with_usage" => {
+            include_str!("fixtures/codex_characterization/unknown_event_with_usage.jsonl")
+        }
+        "unknown_event_with_tool_shape" => {
+            include_str!("fixtures/codex_characterization/unknown_event_with_tool_shape.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 12] {
+fn fixture_names() -> [&'static str; 16] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -70,6 +82,10 @@ fn fixture_names() -> [&'static str; 12] {
         "service_tier_priority",
         "service_tier_absent",
         "spawn_agent",
+        "item_completed_echo",
+        "inert_unknown_event",
+        "unknown_event_with_usage",
+        "unknown_event_with_tool_shape",
     ]
 }
 
@@ -659,4 +675,115 @@ fn spawn_agent_call_creates_a_subagent_relationship_and_keeps_detectors_assessab
             "{detector:?} must be assessable for the spawn_agent fixture"
         );
     }
+}
+
+#[test]
+fn item_completed_echoes_are_allowlisted_and_add_no_signal() {
+    let with_echoes = fixture("item_completed_echo");
+    let without_echoes: String = with_echoes
+        .lines()
+        .filter(|line| !line.contains(r#""type":"item_completed""#))
+        .map(|line| format!("{line}\n"))
+        .collect();
+
+    let echoed_input = input("item_completed_echo");
+    let bare_input = SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "item_completed_echo_bare".to_owned(),
+        source: RawSource::Jsonl(without_echoes),
+    };
+
+    let (evidence, metrics) = composite(&echoed_input);
+    let (bare_evidence, bare_metrics) = composite(&bare_input);
+
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
+    assert!(evidence.diagnostics.unrecognized_types.is_empty());
+
+    // The echoes add three extra lines but no extra signal: metrics and
+    // evidence match a version of the same fixture with the echoes removed.
+    assert_eq!(
+        metrics.metrics().event_count,
+        bare_metrics.metrics().event_count
+    );
+    assert_eq!(
+        metrics.metrics().tokens_in,
+        bare_metrics.metrics().tokens_in
+    );
+    assert_eq!(
+        metrics.metrics().tokens_out,
+        bare_metrics.metrics().tokens_out
+    );
+    assert_eq!(evidence.tools, bare_evidence.tools);
+    assert_eq!(evidence.models, bare_evidence.models);
+}
+
+#[test]
+fn inert_unknown_event_keeps_complete_coverage_and_records_its_discriminator() {
+    let (evidence, _) = composite(&input("inert_unknown_event"));
+
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 1);
+    assert_eq!(evidence.diagnostics.records_unusable, 0);
+    assert!(
+        evidence
+            .diagnostics
+            .unrecognized_types
+            .contains("event_msg.synthetic_progress")
+    );
+
+    // Every group Complete coverage would normally publish stays published —
+    // an inert unknown record degrades nothing.
+    for group in [
+        is_supported(&evidence.context),
+        is_supported(&evidence.time_range),
+        is_supported(&evidence.tools),
+        is_supported(&evidence.models),
+        is_supported(&evidence.compactions),
+    ] {
+        assert!(group, "a supported group must stay supported");
+    }
+    assert!(!matches!(evidence.context, EvidenceValue::Partial { .. }));
+    assert!(!matches!(evidence.models, EvidenceValue::Partial { .. }));
+}
+
+#[test]
+fn unknown_event_with_usage_fails_closed_and_drops_the_usage() {
+    let (evidence, _) = composite(&input("unknown_event_with_usage"));
+
+    assert_eq!(
+        evidence.coverage,
+        EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
+    );
+    assert!(
+        evidence
+            .diagnostics
+            .unrecognized_types
+            .contains("event_msg.synthetic_usage_probe")
+    );
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
+    assert_eq!(evidence.diagnostics.records_unusable, 1);
+
+    let EvidenceValue::Partial { observed, .. } = &evidence.context else {
+        panic!("unknown_event_with_usage must publish partial context evidence");
+    };
+    assert_eq!(observed.max_request_context_tokens, 0);
+}
+
+#[test]
+fn unknown_event_with_tool_shape_fails_closed_like_usage() {
+    let (evidence, _) = composite(&input("unknown_event_with_tool_shape"));
+
+    assert_eq!(
+        evidence.coverage,
+        EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
+    );
+    assert!(
+        evidence
+            .diagnostics
+            .unrecognized_types
+            .contains("response_item.synthetic_tool_echo")
+    );
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
+    assert_eq!(evidence.diagnostics.records_unusable, 1);
 }
