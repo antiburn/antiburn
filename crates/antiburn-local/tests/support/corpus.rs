@@ -557,7 +557,8 @@ pub fn write_provider_db(path: &Path, session: &GeneratedSession) -> anyhow::Res
     let mut connection = rusqlite::Connection::open(path)?;
     connection.execute_batch(
         "CREATE TABLE session (
-             id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER
+             id TEXT PRIMARY KEY, parent_id TEXT, title TEXT,
+             time_created INTEGER, time_updated INTEGER
          );
          CREATE TABLE message (
              id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
@@ -576,7 +577,7 @@ pub fn write_provider_db(path: &Path, session: &GeneratedSession) -> anyhow::Res
     let transaction = connection.transaction()?;
     {
         transaction.execute(
-            "INSERT INTO session VALUES (?1, NULL, 0, 0)",
+            "INSERT INTO session (id, parent_id, time_created, time_updated) VALUES (?1, NULL, 0, 0)",
             [&session.session_id],
         )?;
         let mut insert_message =

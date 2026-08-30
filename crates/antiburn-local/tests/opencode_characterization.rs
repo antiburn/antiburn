@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedRecord, PartialReason, RawSource,
-    RecordSink, SessionCollector, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, VisitOutcome, adapter_for,
+    CompositeSink, CoverageReason, EventSource, EvidenceSource, EvidenceValue, MemoryTurnRowStore,
+    NormalizedRecord, PartialReason, RawSource, RecordSink, SessionCollector, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, VisitOutcome, adapter_for,
 };
 use rusqlite::{Connection, params};
 use serde_json::json;
@@ -17,7 +17,8 @@ fn create_database() -> (TempDir, std::path::PathBuf) {
     connection
         .execute_batch(
             "CREATE TABLE session (
-                 id TEXT PRIMARY KEY, parent_id TEXT, time_created INTEGER, time_updated INTEGER
+                 id TEXT PRIMARY KEY, parent_id TEXT, title TEXT,
+                 time_created INTEGER, time_updated INTEGER
              );
              CREATE TABLE message (
                  id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
@@ -41,13 +42,80 @@ fn sqlite_input(path: &std::path::Path, session_id: &str) -> SessionInput {
     }
 }
 
-fn insert_session(connection: &Connection, id: &str, parent: Option<&str>, timestamp: i64) {
+fn insert_session(
+    connection: &Connection,
+    id: &str,
+    parent: Option<&str>,
+    title: Option<&str>,
+    timestamp: i64,
+) {
     connection
         .execute(
-            "INSERT INTO session VALUES (?1, ?2, ?3, ?3)",
-            params![id, parent, timestamp],
+            "INSERT INTO session (id, parent_id, title, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, parent, title, timestamp],
         )
         .expect("session");
+}
+
+/// Streams `session_id` through the OpenCode adapter and the real evidence
+/// and turn-row pipeline, the same path production uses. Returns the
+/// published evidence plus the row store, so a test can also read rows back
+/// directly with [`MemoryTurnRowStore::with_connection`].
+fn evidence_and_rows(input: &SessionInput) -> (SessionEvidence, Arc<MemoryTurnRowStore>) {
+    let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::opencode(),
+    });
+    let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        &input.session_id,
+        None,
+    );
+    let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let outcome = adapter_for("opencode")
+        .visit(input, &mut sink)
+        .expect("stream opencode source");
+    sink.observe_source_outcome(outcome);
+    let evidence = sink.evidence().expect("published evidence");
+    (evidence, store)
+}
+
+/// Reads back `(scope, thread_id, child_id)` for every row of one session,
+/// in turn order, straight off [`MemoryTurnRowStore`]'s in-memory database.
+fn turn_identities(
+    store: &MemoryTurnRowStore,
+    session_id: &str,
+) -> Vec<(String, String, Option<String>)> {
+    store.with_connection(|connection| {
+        let mut statement = connection
+            .prepare(
+                "SELECT scope, thread_id, child_id FROM turn
+                  WHERE environment_key = 'native' AND agent = 'opencode'
+                    AND session_id = ?1 AND claim_fence = 1
+                  ORDER BY turn_index",
+            )
+            .expect("prepare");
+        statement
+            .query_map(params![session_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("query")
+            .map(|row| row.expect("row"))
+            .collect()
+    })
+}
+
+fn observed<T: Clone>(value: &EvidenceValue<T>) -> T {
+    match value {
+        EvidenceValue::Complete(observed) => observed.clone(),
+        EvidenceValue::Partial { observed, .. } => observed.clone(),
+        EvidenceValue::Unsupported => panic!("evidence unexpectedly unsupported"),
+    }
 }
 
 fn insert_message(connection: &Connection, id: &str, session_id: &str, timestamp: i64, data: &str) {
@@ -91,10 +159,10 @@ fn opencode_capabilities_match_the_observed_contract() {
             reasoning_effort_tier: true,
             fast_tier: false,
             service_tier: false,
-            subagent_relationships: false,
-            subagent_models: false,
+            subagent_relationships: true,
+            subagent_models: true,
             compaction_boundaries: true,
-            thread_identity: false,
+            thread_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -105,8 +173,8 @@ fn opencode_capabilities_match_the_observed_contract() {
 fn native_sqlite_streams_root_and_descendant_messages_in_order() {
     let (_directory, path) = create_database();
     let connection = Connection::open(&path).expect("database");
-    insert_session(&connection, "root", None, 10);
-    insert_session(&connection, "child", Some("root"), 20);
+    insert_session(&connection, "root", None, None, 10);
+    insert_session(&connection, "child", Some("root"), None, 20);
     insert_message(
         &connection,
         "later",
@@ -173,9 +241,15 @@ fn native_sqlite_streams_root_and_descendant_messages_in_order() {
 
     assert_eq!(session.events.len(), 3);
     assert_eq!(session.events[0].role, antiburn_local::analysis::Role::User);
+    // The child's messages carry the child's own session as their thread and
+    // stream as a descendant, even interleaved before the root's message.
+    assert_eq!(session.events[0].thread_id.as_deref(), Some("child"));
+    assert_eq!(session.events[0].source, EventSource::Subagent);
     let child_assistant = &session.events[1];
     assert_eq!(child_assistant.model.as_deref(), Some("model-child"));
     assert_eq!(child_assistant.tools.len(), 1);
+    assert_eq!(child_assistant.thread_id.as_deref(), Some("child"));
+    assert_eq!(child_assistant.source, EventSource::Subagent);
     let assistant = &session.events[2];
     assert_eq!(assistant.usage.input_tokens, 100);
     assert_eq!(assistant.usage.output_tokens, 25);
@@ -186,6 +260,10 @@ fn native_sqlite_streams_root_and_descendant_messages_in_order() {
     assert!(assistant.has_thinking);
     assert!(assistant.is_compaction_boundary);
     assert_eq!(assistant.tools.len(), 2);
+    // The root's own message carries the root session as its thread and
+    // stays main-scope.
+    assert_eq!(assistant.thread_id.as_deref(), Some("root"));
+    assert_eq!(assistant.source, EventSource::Parent);
 
     let retained = serde_json::to_string(&session).expect("serialize normalized session");
     for private in [
@@ -197,6 +275,268 @@ fn native_sqlite_streams_root_and_descendant_messages_in_order() {
     ] {
         assert!(!retained.contains(private));
     }
+}
+
+#[test]
+fn subagent_children_stream_as_delegated_threads() {
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).expect("database");
+    insert_session(&connection, "root", None, None, 10);
+    insert_session(&connection, "child", Some("root"), None, 20);
+    insert_session(&connection, "grandchild", Some("child"), None, 22);
+    insert_message(
+        &connection,
+        "r1",
+        "root",
+        10,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}"#,
+    );
+    insert_message(&connection, "c1", "child", 20, r#"{"role":"user"}"#);
+    insert_message(
+        &connection,
+        "c2",
+        "child",
+        30,
+        r#"{"role":"assistant","modelID":"model-b","tokens":{"input":2,"output":2}}"#,
+    );
+    insert_message(
+        &connection,
+        "g1",
+        "grandchild",
+        32,
+        r#"{"role":"assistant","modelID":"model-c","tokens":{"input":1,"output":1}}"#,
+    );
+    insert_message(
+        &connection,
+        "r2",
+        "root",
+        60,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}"#,
+    );
+    drop(connection);
+
+    let input = sqlite_input(&path, "root");
+    let (evidence, store) = evidence_and_rows(&input);
+
+    let rows = turn_identities(&store, "root");
+    assert_eq!(
+        rows,
+        vec![
+            ("main".to_owned(), "root".to_owned(), None),
+            (
+                "delegated".to_owned(),
+                "child".to_owned(),
+                Some("child".to_owned())
+            ),
+            (
+                "delegated".to_owned(),
+                "child".to_owned(),
+                Some("child".to_owned())
+            ),
+            (
+                "delegated".to_owned(),
+                "grandchild".to_owned(),
+                Some("grandchild".to_owned())
+            ),
+            ("main".to_owned(), "root".to_owned(), None),
+        ]
+    );
+
+    assert!(matches!(evidence.subagents, EvidenceValue::Complete(_)));
+    assert!(
+        matches!(evidence.cache, EvidenceValue::Complete(_)),
+        "every row carries its message id, so the thread-identity claim holds: {:?}",
+        evidence.cache
+    );
+    let subagents = observed(&evidence.subagents);
+    assert_eq!(subagents.spawn_count, 2);
+    assert!(subagents.delegated_models.contains("model-b"));
+
+    let facts = store.query_turn_facts().expect("turn facts");
+    assert!(
+        facts.model_transitions.is_empty(),
+        "the child's model switch must not read as a root transition"
+    );
+    assert_eq!(
+        facts.longest_idle_gap_ms, 50_000,
+        "the child's activity between the root's two messages must not split the root's own gap"
+    );
+}
+
+#[test]
+fn a_fork_is_its_own_root() {
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).expect("database");
+    insert_session(
+        &connection,
+        "parent",
+        None,
+        Some("Investigate the outage"),
+        10,
+    );
+    insert_session(
+        &connection,
+        "fork",
+        None,
+        Some("Investigate the outage (fork #1)"),
+        50,
+    );
+    insert_message(&connection, "p1", "parent", 10, r#"{"role":"user"}"#);
+    insert_message(
+        &connection,
+        "p2",
+        "parent",
+        20,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}"#,
+    );
+    insert_message(&connection, "p3", "parent", 30, r#"{"role":"user"}"#);
+    // Copied prefix: the fork's first three messages carry new ids but keep
+    // the parent's own `time_created`, older than the fork session itself.
+    insert_message(&connection, "f1", "fork", 10, r#"{"role":"user"}"#);
+    insert_message(
+        &connection,
+        "f2",
+        "fork",
+        20,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}"#,
+    );
+    insert_message(&connection, "f3", "fork", 30, r#"{"role":"user"}"#);
+    insert_message(&connection, "f4", "fork", 60, r#"{"role":"user"}"#);
+    drop(connection);
+
+    let parent_input = sqlite_input(&path, "parent");
+    let mut parent_collector = SessionCollector::new("opencode", "parent");
+    adapter_for("opencode")
+        .visit(&parent_input, &mut parent_collector)
+        .expect("stream parent");
+    let parent_session = parent_collector.into_session().expect("finished parent");
+    assert_eq!(parent_session.events.len(), 3);
+    assert!(
+        parent_session
+            .events
+            .iter()
+            .all(|event| event.thread_id.as_deref() == Some("parent"))
+    );
+    let (parent_evidence, _) = evidence_and_rows(&parent_input);
+    assert_eq!(observed(&parent_evidence.subagents).spawn_count, 0);
+
+    let fork_input = sqlite_input(&path, "fork");
+    let mut fork_collector = SessionCollector::new("opencode", "fork");
+    adapter_for("opencode")
+        .visit(&fork_input, &mut fork_collector)
+        .expect("stream fork");
+    let fork_session = fork_collector.into_session().expect("finished fork");
+    assert_eq!(fork_session.events.len(), 4);
+    assert!(
+        fork_session
+            .events
+            .iter()
+            .all(|event| event.thread_id.as_deref() == Some("fork"))
+    );
+    let (fork_evidence, _) = evidence_and_rows(&fork_input);
+    assert_eq!(observed(&fork_evidence.subagents).spawn_count, 0);
+}
+
+#[test]
+fn a_fork_title_without_a_copied_prefix_is_an_ordinary_root() {
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).expect("database");
+    insert_session(
+        &connection,
+        "lonely",
+        None,
+        Some("Refactor payments (fork #2)"),
+        10,
+    );
+    insert_message(&connection, "m1", "lonely", 10, r#"{"role":"user"}"#);
+    insert_message(
+        &connection,
+        "m2",
+        "lonely",
+        20,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}"#,
+    );
+    drop(connection);
+
+    let input = sqlite_input(&path, "lonely");
+    let (evidence, _) = evidence_and_rows(&input);
+
+    assert_eq!(observed(&evidence.subagents).spawn_count, 0);
+    assert!(matches!(evidence.subagents, EvidenceValue::Complete(_)));
+}
+
+#[test]
+fn a_parent_id_child_with_a_fork_title_degrades_attribution() {
+    let (_directory, path) = create_database();
+    let connection = Connection::open(&path).expect("database");
+    insert_session(&connection, "root", None, Some("Ship the release"), 10);
+    insert_session(
+        &connection,
+        "child",
+        Some("root"),
+        Some("Ship the release (fork #1)"),
+        20,
+    );
+    insert_message(
+        &connection,
+        "r1",
+        "root",
+        10,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}"#,
+    );
+    insert_message(&connection, "c1", "child", 20, r#"{"role":"user"}"#);
+    insert_message(
+        &connection,
+        "c2",
+        "child",
+        30,
+        r#"{"role":"assistant","modelID":"model-b","tokens":{"input":1,"output":1}}"#,
+    );
+    drop(connection);
+
+    let input = sqlite_input(&path, "root");
+    let (evidence, _) = evidence_and_rows(&input);
+
+    match &evidence.subagents {
+        EvidenceValue::Partial { reason, .. } => {
+            assert_eq!(*reason, CoverageReason::AttributionIncomplete);
+        }
+        other => panic!("expected partial subagents evidence, got {other:?}"),
+    }
+}
+
+#[test]
+fn export_stream_marks_a_child_message_as_delegated_with_one_spawn() {
+    let jsonl = concat!(
+        r#"{"type":"session_meta","sessionID":"root","sessionRole":"root","time":{"created":1000},"payload":{"id":"root","title":"Root session"}}"#,
+        "\n",
+        r#"{"type":"session_member","rootSessionID":"root","originSessionID":"child","sessionRole":"child","parentSessionID":"root","time":{"created":1500},"payload":{"id":"child","title":"Child session"}}"#,
+        "\n",
+        r#"{"type":"message","rootSessionID":"root","sessionID":"root","sessionRole":"root","messageID":"m1","time":{"created":1000},"payload":{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}}"#,
+        "\n",
+        r#"{"type":"message","rootSessionID":"root","sessionID":"child","sessionRole":"child","parentSessionID":"root","messageID":"m2","time":{"created":1600},"payload":{"role":"user"}}"#,
+        "\n",
+    );
+    let input = SessionInput {
+        agent: "opencode".to_owned(),
+        session_id: "root".to_owned(),
+        source: RawSource::Jsonl(jsonl.to_owned()),
+    };
+
+    let mut collector = SessionCollector::new("opencode", "root");
+    adapter_for("opencode")
+        .visit(&input, &mut collector)
+        .expect("stream export");
+    let session = collector.into_session().expect("finished session");
+
+    assert_eq!(session.events.len(), 2);
+    assert_eq!(session.events[0].thread_id.as_deref(), Some("root"));
+    assert_eq!(session.events[0].source, EventSource::Parent);
+    assert_eq!(session.events[1].thread_id.as_deref(), Some("child"));
+    assert_eq!(session.events[1].source, EventSource::Subagent);
+
+    let (evidence, _) = evidence_and_rows(&input);
+    assert_eq!(observed(&evidence.subagents).spawn_count, 1);
 }
 
 #[cfg(feature = "test-instrumentation")]
@@ -227,7 +567,7 @@ fn malformed_unknown_and_oversized_rows_report_partial_without_payload() {
     const PRIVATE: &str = "PRIVATE_OVERSIZED_CONTENT";
     let (_directory, path) = create_database();
     let connection = Connection::open(&path).expect("database");
-    insert_session(&connection, "root", None, 10);
+    insert_session(&connection, "root", None, None, 10);
     insert_message(&connection, "malformed", "root", 20, "{not-json");
     insert_message(
         &connection,
@@ -281,7 +621,7 @@ fn malformed_unknown_and_oversized_rows_report_partial_without_payload() {
 fn database_claim_is_checked_inside_the_snapshot() {
     let (_directory, path) = create_database();
     let connection = Connection::open(&path).expect("database");
-    insert_session(&connection, "root", None, 100);
+    insert_session(&connection, "root", None, None, 100);
     insert_message(&connection, "message", "root", 120, r#"{"role":"user"}"#);
     drop(connection);
     let input = sqlite_input(&path, "root");
