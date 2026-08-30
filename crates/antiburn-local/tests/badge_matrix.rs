@@ -99,6 +99,9 @@ fn codex_fixture(name: &str) -> &'static str {
         "obsolete_model_finding" => {
             include_str!("fixtures/codex_characterization/obsolete_model_finding.jsonl")
         }
+        "context_reread" => {
+            include_str!("fixtures/codex_characterization/context_reread.jsonl")
+        }
         other => panic!("unknown codex fixture: {other}"),
     }
 }
@@ -606,10 +609,21 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(SignalMissing),
         },
         Row {
+            // Codex has no `cache_write_tokens`, but `repeated_context`
+            // resolves to uncached-input accounting from `token_classes`
+            // and `request_context_tokens`, so the badge is eligible; it
+            // never reads clean, because Codex has no `record_identity`
+            // (the matrix's "Conditional using uncached-input accounting").
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ExcessCacheRehydration,
-            expected: NotAssessed(CapabilityMissing),
+            expected: NotAssessed(IncompleteEvidence),
+        },
+        Row {
+            harness: "codex",
+            fixture: "context_reread",
+            badge: ExcessCacheRehydration,
+            expected: Finding,
         },
         // ---------------- Pi ----------------
         Row {

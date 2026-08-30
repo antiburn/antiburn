@@ -11,7 +11,8 @@
 //! never labels.
 
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, EfficiencyTotals, ModelRun, QuotaLimitKind, SessionCost,
+    ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, ModelRun, QuotaLimitKind,
+    RepeatedContextAccounting, SessionCost, SessionEvidence,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
@@ -540,6 +541,11 @@ pub struct SessionHygieneBadgePayload {
     pub id: &'static str,
     pub status: SessionHygieneStatus,
     pub not_assessed_reason: Option<&'static str>,
+    /// Which vendor billing mechanism backs an `excessCacheRehydration`
+    /// verdict. Absent for every other badge and for old evidence with no
+    /// `repeated_context` marker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<&'static str>,
 }
 
 /// The session badge set and its stored evidence state.
@@ -562,7 +568,7 @@ fn badge_id_str(id: BadgeId) -> &'static str {
 }
 
 impl SessionHygieneBadgePayload {
-    fn from_badge(badge: SessionBadge) -> Self {
+    fn from_badge(badge: SessionBadge, accounting: Option<&'static str>) -> Self {
         let (status, not_assessed_reason) = match badge.status {
             BadgeStatus::Finding => (SessionHygieneStatus::Finding, None),
             BadgeStatus::Clean => (SessionHygieneStatus::Clean, None),
@@ -571,23 +577,68 @@ impl SessionHygieneBadgePayload {
                 Some(not_assessed_reason_str(reason)),
             ),
         };
+        // Only `ExcessCacheRehydration` carries repeated-context
+        // accounting; every other badge's payload leaves it absent.
+        let accounting = if badge.id == BadgeId::ExcessCacheRehydration {
+            accounting
+        } else {
+            None
+        };
         Self {
             id: badge_id_str(badge.id),
             status,
             not_assessed_reason,
+            accounting,
         }
     }
 }
 
+/// Reads the accounting `Cache Churn` used for this session's
+/// `repeated_context`, or `None` when neither cache-write nor
+/// uncached-input accounting applies.
+fn repeated_context_accounting_str(evidence: &SessionEvidence) -> Option<&'static str> {
+    let cache = match &evidence.cache {
+        EvidenceValue::Complete(cache)
+        | EvidenceValue::Partial {
+            observed: cache, ..
+        } => cache,
+        EvidenceValue::Unsupported => return None,
+    };
+    let repeated_context = match &cache.repeated_context {
+        EvidenceValue::Complete(observed) | EvidenceValue::Partial { observed, .. } => observed,
+        EvidenceValue::Unsupported => return None,
+    };
+    Some(match repeated_context.accounting {
+        RepeatedContextAccounting::CacheWrite => "cacheWrite",
+        RepeatedContextAccounting::UncachedInput => "uncachedInput",
+    })
+}
+
 impl SessionHygienePayload {
-    pub fn from_badges(badges: [SessionBadge; 6], evidence_state: &'static str) -> Self {
+    pub fn from_badges(
+        badges: [SessionBadge; 6],
+        accounting: Option<&'static str>,
+        evidence_state: &'static str,
+    ) -> Self {
         Self {
             badges: badges
                 .into_iter()
-                .map(SessionHygieneBadgePayload::from_badge)
+                .map(|badge| SessionHygieneBadgePayload::from_badge(badge, accounting))
                 .collect(),
             evidence_state,
         }
+    }
+
+    pub fn for_evidence(
+        badges: [SessionBadge; 6],
+        evidence: &SessionEvidence,
+        evidence_state: &'static str,
+    ) -> Self {
+        Self::from_badges(
+            badges,
+            repeated_context_accounting_str(evidence),
+            evidence_state,
+        )
     }
 
     pub fn not_assessed(evidence_state: &'static str, reason: NotAssessedReason) -> Self {
@@ -596,6 +647,7 @@ impl SessionHygienePayload {
                 id,
                 status: BadgeStatus::NotAssessed(reason),
             }),
+            None,
             evidence_state,
         )
     }
@@ -1206,6 +1258,7 @@ mod tests {
                         status: BadgeStatus::Clean,
                     },
                 ],
+                None,
                 "ready",
             );
 

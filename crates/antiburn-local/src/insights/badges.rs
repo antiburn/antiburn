@@ -293,7 +293,7 @@ mod tests {
         // Every fact each badge's finding depends on must be
         // `Unsupported`. Facts a badge's evaluate body reads straight
         // off an evidence group (`MainLoopContext`, `ModelIdentity`,
-        // `CacheWriteAccounting`, ...) are derived at evidence-
+        // `RepeatedContextAccounting`, ...) are derived at evidence-
         // construction time from the capabilities below, so this
         // builds a fresh session instead of mutating an already-built
         // one: mutating `capabilities` after the fact would leave

@@ -4,10 +4,10 @@
       "state": "complete",
       "value": {
         "cacheCreationTokens": 0,
-        "cacheReadTokens": 0,
-        "freshInputTokens": 450000,
-        "idleGapMsTotal": 0,
-        "longestIdleGapMs": 0,
+        "cacheReadTokens": 58000,
+        "freshInputTokens": 64000,
+        "idleGapMsTotal": 601000,
+        "longestIdleGapMs": 600000,
         "modelTransitions": [],
         "previousTurn": {
           "state": "unsupported"
@@ -19,9 +19,9 @@
           "state": "complete",
           "value": {
             "accounting": "uncached_input",
-            "pairsConsidered": 0,
+            "pairsConsidered": 2,
             "pairsSkipped": 0,
-            "repeatedTokens": 0
+            "repeatedTokens": 60000
           }
         },
         "userControlledChurn": {
@@ -58,12 +58,22 @@
     "context": {
       "state": "complete",
       "value": {
-        "maxRequestContextTokens": 450000,
+        "maxRequestContextTokens": 60000,
         "topDepthExamples": [
           {
-            "depthTokens": 450000,
+            "depthTokens": 60000,
             "model": "gpt-test",
-            "tsMs": 1786615202000
+            "tsMs": 1787220003000
+          },
+          {
+            "depthTokens": 60000,
+            "model": "gpt-test",
+            "tsMs": 1787220603000
+          },
+          {
+            "depthTokens": 2000,
+            "model": "gpt-test",
+            "tsMs": 1787220002000
           }
         ]
       }
@@ -77,7 +87,7 @@
       "childrenDiscovered": 0,
       "childrenUnreadable": 0,
       "duplicateTurnIdentities": 0,
-      "recordsObserved": 1,
+      "recordsObserved": 3,
       "recordsUnrecognizedInert": 0,
       "recordsUnusable": 0,
       "truncatedStrings": [],
@@ -87,15 +97,15 @@
     "eligibility": {
       "state": "complete",
       "value": {
-        "assistantTurns": 1,
-        "depthEligibleTurns": 1,
+        "assistantTurns": 3,
+        "depthEligibleTurns": 3,
         "toolTurns": 0,
-        "turns": 1
+        "turns": 3
       }
     },
     "identity": {
       "agent": "codex",
-      "sessionId": "session_overdepth_finding"
+      "sessionId": "context_reread"
     },
     "models": {
       "state": "complete",
@@ -103,23 +113,23 @@
         "byModel": {
           "gpt-test": {
             "cacheCreation": 0,
-            "cacheRead": 0,
-            "firstTsMs": 1786615202000,
-            "input": 450000,
-            "lastTsMs": 1786615202000,
-            "output": 50,
-            "turns": 1
+            "cacheRead": 58000,
+            "firstTsMs": 1787220002000,
+            "input": 64000,
+            "lastTsMs": 1787220603000,
+            "output": 170,
+            "turns": 3
           }
         },
         "dominantMainModel": "gpt-test",
         "effortSignal": {
-          "eligibleTurns": 1,
-          "presentTurns": 1
+          "eligibleTurns": 3,
+          "presentTurns": 3
         },
         "effortTiers": {
           "medium": {
             "delegated": 0,
-            "mainLoop": 1
+            "mainLoop": 3
           }
         },
         "fastModes": {},
@@ -127,7 +137,7 @@
           "state": "unsupported"
         },
         "speedSignal": {
-          "eligibleTurns": 1,
+          "eligibleTurns": 3,
           "presentTurns": 0
         },
         "unattributedTurns": 0
@@ -161,9 +171,9 @@
     "timeRange": {
       "state": "complete",
       "value": {
-        "firstTsMs": 1786615202000,
-        "lastTsMs": 1786615202000,
-        "timestampedTurns": 1
+        "firstTsMs": 1787220002000,
+        "lastTsMs": 1787220603000,
+        "timestampedTurns": 3
       }
     },
     "tools": {
@@ -174,33 +184,33 @@
     }
   },
   "metrics": {
-    "activeSecs": 0,
+    "activeSecs": 301,
     "agent": "codex",
     "billableCacheCreationTokens": 0,
-    "billableCacheReadTokens": 0,
-    "billableInputTokens": 450000,
-    "billableOutputTokens": 50,
+    "billableCacheReadTokens": 58000,
+    "billableInputTokens": 64000,
+    "billableOutputTokens": 170,
     "buckets": [
       {
-        "cacheReadTokens": 0,
+        "cacheReadTokens": 58000,
         "cacheWriteTokens": 0,
         "compactionPostTokens": null,
         "compactionPreTokens": null,
         "compactionTrigger": null,
-        "contextTokens": 450000,
+        "contextTokens": 60000,
         "hasThinking": false,
         "isCacheRehydration": false,
         "isCacheRoutingMiss": false,
         "isCompactionBoundary": false,
         "lastTool": null,
         "model": "gpt-test",
-        "secsSincePriorTurn": null,
+        "secsSincePriorTurn": 1,
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
         "thinkingMode": "medium",
-        "tokensIn": 450000,
-        "tokensOut": 50,
+        "tokensIn": 4000,
+        "tokensOut": 100,
         "userPrompts": 0
       },
       {
@@ -4125,20 +4135,20 @@
         "compactionPostTokens": null,
         "compactionPreTokens": null,
         "compactionTrigger": null,
-        "contextTokens": 0,
+        "contextTokens": 60000,
         "hasThinking": false,
         "isCacheRehydration": false,
         "isCacheRoutingMiss": false,
         "isCompactionBoundary": false,
         "lastTool": null,
-        "model": null,
-        "secsSincePriorTurn": null,
+        "model": "gpt-test",
+        "secsSincePriorTurn": 600,
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
-        "thinkingMode": null,
-        "tokensIn": 0,
-        "tokensOut": 0,
+        "thinkingMode": "medium",
+        "tokensIn": 60000,
+        "tokensOut": 70,
         "userPrompts": 0
       }
     ],
@@ -4146,9 +4156,9 @@
     "cacheRoutingMissCount": 0,
     "compactionCount": 0,
     "contextAvailable": true,
-    "contextWindow": 600000,
+    "contextWindow": 200000,
     "cost": null,
-    "durationSecs": 0,
+    "durationSecs": 601,
     "efficiency": {
       "carryUsd": 0.0,
       "growthTokens": 0,
@@ -4157,9 +4167,9 @@
       "pricedTurns": 0,
       "rewriteUsd": 0.0,
       "totalUsd": 0.0,
-      "unpricedTurns": 1
+      "unpricedTurns": 3
     },
-    "eventCount": 1,
+    "eventCount": 3,
     "initialContext": {
       "sources": []
     },
@@ -4168,9 +4178,9 @@
       "gpt-test": {
         "cache_creation_1h_tokens": 0,
         "cache_creation_tokens": 0,
-        "cache_read_tokens": 0,
-        "input_tokens": 450000,
-        "output_tokens": 50
+        "cache_read_tokens": 58000,
+        "input_tokens": 64000,
+        "output_tokens": 170
       }
     },
     "modelRuns": [
@@ -4179,15 +4189,15 @@
         "thinkingMode": "medium"
       }
     ],
-    "peakContextTokens": 450000,
-    "sessionId": "session_overdepth_finding",
-    "tokensIn": 450000,
-    "tokensOut": 50
+    "peakContextTokens": 60000,
+    "sessionId": "context_reread",
+    "tokensIn": 64000,
+    "tokensOut": 170
   },
   "normalizedSession": {
     "agent": "codex",
     "cacheWriteTokensAvailable": false,
-    "contextWindow": 600000,
+    "contextWindow": 200000,
     "events": [
       {
         "compactionPostTokens": null,
@@ -4202,17 +4212,59 @@
         "speed": null,
         "thinkingMode": "medium",
         "tools": [],
-        "tsMs": 1786615202000,
+        "tsMs": 1787220002000,
         "usage": {
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
-          "inputTokens": 450000,
-          "outputTokens": 50
+          "inputTokens": 2000,
+          "outputTokens": 40
+        }
+      },
+      {
+        "compactionPostTokens": null,
+        "compactionPreTokens": null,
+        "compactionTrigger": null,
+        "hasThinking": false,
+        "isCompactionBoundary": false,
+        "messageId": null,
+        "model": "gpt-test",
+        "role": "assistant",
+        "source": "parent",
+        "speed": null,
+        "thinkingMode": "medium",
+        "tools": [],
+        "tsMs": 1787220003000,
+        "usage": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 58000,
+          "inputTokens": 2000,
+          "outputTokens": 60
+        }
+      },
+      {
+        "compactionPostTokens": null,
+        "compactionPreTokens": null,
+        "compactionTrigger": null,
+        "hasThinking": false,
+        "isCompactionBoundary": false,
+        "messageId": null,
+        "model": "gpt-test",
+        "role": "assistant",
+        "source": "parent",
+        "speed": null,
+        "thinkingMode": "medium",
+        "tools": [],
+        "tsMs": 1787220603000,
+        "usage": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 0,
+          "inputTokens": 60000,
+          "outputTokens": 70
         }
       }
     ],
     "model": "gpt-test",
-    "sessionId": "session_overdepth_finding"
+    "sessionId": "context_reread"
   },
   "partialReasons": []
 }

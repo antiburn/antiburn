@@ -15,7 +15,9 @@ use antiburn_local::analysis::{
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
 };
-use antiburn_local::insights::{DetectorId, eligible};
+use antiburn_local::insights::{
+    BadgeId, BadgeStatus, DetectorId, ReportCatalogs, eligible, session_badges,
+};
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> &'static str {
@@ -73,11 +75,14 @@ fn fixture(name: &str) -> &'static str {
         "model_overthinking_finding" => {
             include_str!("fixtures/codex_characterization/model_overthinking_finding.jsonl")
         }
+        "context_reread" => {
+            include_str!("fixtures/codex_characterization/context_reread.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 19] {
+fn fixture_names() -> [&'static str; 20] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -98,6 +103,7 @@ fn fixture_names() -> [&'static str; 19] {
         "token_count_without_usage",
         "session_overdepth_finding",
         "model_overthinking_finding",
+        "context_reread",
     ]
 }
 
@@ -389,6 +395,12 @@ fn codex_detector_prerequisites_assess_only_supported_detectors() {
             DetectorId::OverpoweredSubagents,
             DetectorId::OldModelUsage,
             DetectorId::OveruseOfFastMode,
+            // Codex reports `token_classes` and `request_context_tokens`
+            // but no `cache_write_tokens`: `repeated_context` resolves to
+            // uncached-input accounting, so Cache Churn is now eligible —
+            // it just never reads clean, since Codex has no
+            // `record_identity`.
+            DetectorId::CacheChurn,
         ]
     );
 }
@@ -627,6 +639,41 @@ fn session_overdepth_finding_codex_fixture_matches_golden() {
 #[test]
 fn model_overthinking_finding_codex_fixture_matches_golden() {
     check_golden("model_overthinking_finding");
+}
+
+#[test]
+fn context_reread_codex_fixture_matches_golden() {
+    check_golden("context_reread");
+}
+
+#[test]
+fn context_reread_reads_complete_uncached_input_repeated_context_and_a_finding_badge() {
+    let (evidence, _) = composite(&input("context_reread"));
+    let EvidenceValue::Complete(cache) = &evidence.cache else {
+        panic!("Codex cache evidence must be complete for this fixture");
+    };
+    let EvidenceValue::Complete(repeated_context) = &cache.repeated_context else {
+        panic!("repeated_context must be complete: no record loss, no skipped pairs");
+    };
+    assert_eq!(
+        repeated_context.accounting,
+        antiburn_local::analysis::RepeatedContextAccounting::UncachedInput
+    );
+    // Turn two grows the window from 2000 to 60000 (+58000); turn three
+    // re-sends the same 60000-token window fully uncached after the idle
+    // gap, so growth is 0 and the whole 60000 is repeated.
+    assert_eq!(repeated_context.repeated_tokens, 60_000);
+    assert!(
+        repeated_context.repeated_tokens
+            >= ReportCatalogs::default().repeated_context_tokens_threshold
+    );
+
+    let badges = session_badges(&evidence, &ReportCatalogs::default());
+    let cache_churn_badge = badges
+        .iter()
+        .find(|badge| badge.id == BadgeId::ExcessCacheRehydration)
+        .expect("BadgeId::ALL covers ExcessCacheRehydration");
+    assert_eq!(cache_churn_badge.status, BadgeStatus::Finding);
 }
 
 #[test]

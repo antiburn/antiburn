@@ -90,6 +90,64 @@ describe("sessionHygieneChecks", () => {
     ])
   })
 
+  it("names the accounting-specific detail copy for a cache-write finding", () => {
+    const cacheWritePayload: SessionHygienePayload = {
+      ...PAYLOAD,
+      badges: PAYLOAD.badges.map((badge) =>
+        badge.id === "excessCacheRehydration"
+          ? {
+              id: "excessCacheRehydration" as const,
+              status: "finding" as const,
+              notAssessedReason: null,
+              accounting: "cacheWrite" as const,
+            }
+          : badge,
+      ),
+    }
+    const check = sessionHygieneChecks(cacheWritePayload).find(
+      (candidate) => candidate.id === "excessCacheRehydration",
+    )
+    expect(check?.detail).toBe("Reduce repeated cache writes")
+  })
+
+  it("names the accounting-specific detail copy for an uncached-input finding", () => {
+    const uncachedInputPayload: SessionHygienePayload = {
+      ...PAYLOAD,
+      badges: PAYLOAD.badges.map((badge) =>
+        badge.id === "excessCacheRehydration"
+          ? {
+              id: "excessCacheRehydration" as const,
+              status: "finding" as const,
+              notAssessedReason: null,
+              accounting: "uncachedInput" as const,
+            }
+          : badge,
+      ),
+    }
+    const check = sessionHygieneChecks(uncachedInputPayload).find(
+      (candidate) => candidate.id === "excessCacheRehydration",
+    )
+    expect(check?.detail).toBe("Reduce full-price context re-reads")
+  })
+
+  it("leaves detail null for a finding with no accounting, and for every non-finding check", () => {
+    const uncachedInputPayload: SessionHygienePayload = {
+      ...PAYLOAD,
+      badges: PAYLOAD.badges.map((badge) =>
+        badge.id === "excessCacheRehydration"
+          ? {
+              id: "excessCacheRehydration" as const,
+              status: "finding" as const,
+              notAssessedReason: null,
+            }
+          : badge,
+      ),
+    }
+    for (const check of sessionHygieneChecks(uncachedInputPayload)) {
+      expect(check.detail).toBeNull()
+    }
+  })
+
   it("starts every badge as not assessed while evidence is pending", () => {
     const checks = sessionHygieneChecks(INITIAL_SESSION_HYGIENE)
     expect(checks).toHaveLength(6)

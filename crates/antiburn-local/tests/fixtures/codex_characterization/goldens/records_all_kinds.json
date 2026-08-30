@@ -15,6 +15,15 @@
         "providerEviction": {
           "state": "unsupported"
         },
+        "repeatedContext": {
+          "state": "complete",
+          "value": {
+            "accounting": "uncached_input",
+            "pairsConsidered": 3,
+            "pairsSkipped": 0,
+            "repeatedTokens": 0
+          }
+        },
         "userControlledChurn": {
           "manualCompactions": 0
         }
@@ -133,7 +142,7 @@
     },
     "provenance": {
       "analyzerRevision": 13,
-      "evidenceSchemaRevision": 9,
+      "evidenceSchemaRevision": 10,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -145,7 +154,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 9,
+    "schemaRevision": 10,
     "subagents": {
       "state": "complete",
       "value": {

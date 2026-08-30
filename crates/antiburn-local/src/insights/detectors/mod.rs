@@ -225,6 +225,10 @@ pub struct ReportCatalogs {
     pub fast_mode_delegated_turns_threshold: u64,
     /// An idle gap at or above this duration counts as cache expiry.
     pub cache_idle_expiry_ms: i64,
+    /// Repeated-context tokens (`RepeatedContext::repeated_tokens`) at or
+    /// above this count are a Cache Churn finding. A proposal: roughly one
+    /// re-read of a mid-sized context. Flagged for maintainer review.
+    pub repeated_context_tokens_threshold: u64,
 }
 
 /// Effort tiers above the recommended cap in every reviewed family:
@@ -312,6 +316,7 @@ impl Default for ReportCatalogs {
             model_replacements: model_registry::default_registry(),
             fast_mode_delegated_turns_threshold: 1,
             cache_idle_expiry_ms: 300_000,
+            repeated_context_tokens_threshold: 50_000,
         }
     }
 }
