@@ -65,9 +65,9 @@ pub use framing::{
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
 pub use interface::{
-    ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordCoverage,
-    RecordSink, RelationProvenance, SessionCollector, SessionInput, SessionSummary,
-    SourceChangedReason, VendorAdapter, VisitOutcome,
+    ContentKind, ContentPart, ContextSourceKind, EvidenceObservation, MAX_CONTENT_PART_BYTES,
+    NormalizedRecord, RawSource, RecordCoverage, RecordSink, RelationProvenance, SessionCollector,
+    SessionInput, SessionSummary, SourceChangedReason, TurnContent, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
@@ -77,8 +77,9 @@ pub use model::{
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
 pub use rows::{
     TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TurnRow, TurnRowSink, TurnRowWriteError, TurnRowWriter,
-    TurnScope, TurnSessionKey, count_turn_rows, delete_turn_rows, delete_turn_rows_except_fence,
-    delete_turn_rows_for_fence, insert_turn_rows, turn_row_from_event,
+    TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_turn_rows,
+    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
+    turn_row_from_event,
 };
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,

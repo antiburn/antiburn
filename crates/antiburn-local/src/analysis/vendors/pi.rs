@@ -20,11 +20,11 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use anyhow::Context;
 use serde_json::Value;
 
-use super::jsonl::{parse_record, parse_ts};
+use super::jsonl::{extract_content_parts, parse_record, parse_ts};
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
-    EvidenceObservation, NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput,
-    SessionSummary, VendorAdapter, VisitOutcome,
+    ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink, SessionCollector,
+    SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
@@ -290,7 +290,8 @@ impl PiStreamState {
         }
 
         let unknown_blocks = unknown_content_blocks(value);
-        self.emit_event(event, sink);
+        let content_parts = extract_content_parts(value, event.role);
+        self.emit_event(event, content_parts, sink);
         for discriminator in &unknown_blocks {
             sink.record(NormalizedRecord::Observation(Box::new(
                 EvidenceObservation::UnrecognizedType {
@@ -372,11 +373,21 @@ impl PiStreamState {
         event.compaction_pre_tokens = value.get("tokensBefore").and_then(Value::as_u64);
         event.model = self.current_model.clone();
         event.thinking_mode = self.current_thinking_mode.clone();
-        self.emit_event(event, sink);
+        self.emit_event(event, Vec::new(), sink);
     }
 
-    fn emit_event(&mut self, event: NormalizedEvent, sink: &mut dyn RecordSink) {
+    fn emit_event(
+        &mut self,
+        event: NormalizedEvent,
+        content_parts: Vec<ContentPart>,
+        sink: &mut dyn RecordSink,
+    ) {
         sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        if !content_parts.is_empty() {
+            sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
+                parts: content_parts,
+            })));
+        }
     }
 
     fn finish(self) -> SessionSummary {
@@ -516,7 +527,77 @@ fn unknown_content_blocks(value: &Value) -> Vec<String> {
 mod tests {
     use serde_json::json;
 
-    use super::is_inert_shape;
+    use super::*;
+    use crate::analysis::interface::ContentKind;
+
+    /// Collects every `TurnContent` record a visit emits, in order.
+    #[derive(Default)]
+    struct ContentCapturingSink {
+        contents: Vec<TurnContent>,
+    }
+
+    impl RecordSink for ContentCapturingSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            if let NormalizedRecord::TurnContent(content) = record {
+                self.contents.push(*content);
+            }
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
+    #[test]
+    fn content_capture_maps_text_thinking_tool_call_and_tool_result() {
+        let assistant_record = json!({
+            "type": "message",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "hello there"},
+                    {"type": "thinking", "thinking": "pondering"},
+                    {"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {"command": "ls"}},
+                ]
+            }
+        })
+        .to_string();
+        let tool_result_record = json!({
+            "type": "message",
+            "timestamp": "2026-01-01T00:00:02Z",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+                "content": [{"type": "text", "text": "ok"}]
+            }
+        })
+        .to_string();
+        let input = SessionInput {
+            agent: "pi".to_string(),
+            session_id: "content-session".to_string(),
+            source: RawSource::Jsonl(format!("{assistant_record}\n{tool_result_record}\n")),
+        };
+        let mut sink = ContentCapturingSink::default();
+
+        PiAdapter
+            .visit(&input, &mut sink)
+            .expect("visit content session");
+
+        assert_eq!(sink.contents.len(), 2, "one TurnContent per turn");
+        let assistant_parts = &sink.contents[0].parts;
+        assert_eq!(assistant_parts.len(), 3);
+        assert_eq!(assistant_parts[0].kind, ContentKind::AssistantText);
+        assert_eq!(assistant_parts[0].text, "hello there");
+        assert_eq!(assistant_parts[1].kind, ContentKind::Thinking);
+        assert_eq!(assistant_parts[1].text, "pondering");
+        assert_eq!(assistant_parts[2].kind, ContentKind::ToolInput);
+        assert_eq!(assistant_parts[2].text, r#"{"command":"ls"}"#);
+
+        let tool_result_parts = &sink.contents[1].parts;
+        assert_eq!(tool_result_parts.len(), 1);
+        assert_eq!(tool_result_parts[0].kind, ContentKind::ToolResult);
+        assert_eq!(tool_result_parts[0].text, "ok");
+    }
 
     #[test]
     fn inert_shape_checks_only_shared_parser_locations() {

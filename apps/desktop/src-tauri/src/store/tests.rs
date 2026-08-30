@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use antiburn_local::analysis::{TurnScope, count_turn_rows};
+use antiburn_local::analysis::{
+    ContentKind, ContentPart, TurnScope, count_turn_content_rows, count_turn_rows,
+};
 
 use super::model::PublishedEvidence;
 use super::*;
@@ -2985,6 +2987,7 @@ fn turn_row(turn_index: u64) -> TurnRow {
         message_id: None,
         uuid: None,
         parent_uuid: None,
+        content: Vec::new(),
     }
 }
 
@@ -3216,4 +3219,68 @@ fn deleting_the_session_row_directly_cascades_to_its_turn_rows() {
         count_turn_rows(&connection, &turn_session_key(&key), 1).unwrap(),
         0
     );
+}
+
+fn turn_row_with_content(turn_index: u64, text: &str) -> TurnRow {
+    TurnRow {
+        content: vec![ContentPart::new(ContentKind::AssistantText, text)],
+        ..turn_row(turn_index)
+    }
+}
+
+#[test]
+fn deleting_a_session_removes_turn_content_written_through_the_fenced_writer() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "turn-content-delete-session");
+    store
+        .upsert_sessions(
+            &[session("turn-content-delete-session", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), 1);
+    writer
+        .write_turn_rows(&[turn_row_with_content(0, "PRIVATE_TURN_CONTENT")])
+        .unwrap();
+    assert_eq!(
+        count_turn_content_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        1
+    );
+
+    assert!(store.delete_session(&key).unwrap());
+
+    assert_eq!(
+        count_turn_content_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn clearing_local_session_data_removes_turn_content_written_through_the_fenced_writer() {
+    let store = store();
+    let mut record = session("turn-content-clear", 1_000);
+    record.source_fingerprint = Some("sv1:turn-content-clear".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let key = record.key.clone();
+    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), 1);
+    writer
+        .write_turn_rows(&[turn_row_with_content(0, "PRIVATE_TURN_CONTENT")])
+        .unwrap();
+    assert_eq!(
+        count_turn_content_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        1
+    );
+
+    store.clear_local_session_data().unwrap();
+
+    let remaining: i64 = store
+        .lock()
+        .query_row("SELECT COUNT(*) FROM turn_content", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(remaining, 0);
 }
