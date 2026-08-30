@@ -13,6 +13,8 @@
   Standing-default fast-mode rule deferred.
 - rev 3 (2026-08-30): Phase 4 gains a shared-parser cleanup item. Open
   decisions gain the generic fallback capability claim.
+- rev 4 (2026-08-30): Phase 3 rewritten with the row-query design and its
+  scope rules, split into 3a (query, no behaviour change) and 3b (switch).
 
 ## Summary
 
@@ -446,23 +448,70 @@ content sentinels are asserted per fixture. Memory baselines hold.
 
 ### Phase 3: Logical-session evidence from rows
 
-**Risk:** Medium
+**Risk:** Medium. Two pull requests.
 
-Files: `crates/antiburn-local/src/analysis/{evidence,evidence_sink}.rs`, a new
-`crates/antiburn-local/src/analysis/evidence_query.rs`, `apps/desktop/src-tauri/src/analysis.rs`.
+Files: `crates/antiburn-local/src/analysis/{evidence,evidence_sink,rows}.rs`, a new
+`crates/antiburn-local/src/analysis/evidence_query.rs`,
+`apps/desktop/src-tauri/src/{analysis,insights_worker}.rs`,
+`apps/desktop/src-tauri/src/store/{mod,schema}.rs`.
 
-- Replace `evidence.first()` with `SessionEvidence` built from a query over all
-  rows for the session key.
-- Child sources write rows with `scope='delegated'` and their own `thread_id`.
-- Unreadable discovered child records `child_unreadable` and degrades
-  child-dependent groups.
-- `SessionEvidenceAccumulator` shrinks to what rows cannot express
-  (context sources, tool names, unrecognized record types).
-- Bump `EVIDENCE_SCHEMA_REVISION` 3 → 4 and `ANALYZER_REVISION` 6 → 7.
+**Measured before design (2026-08-30, 76 local Claude sessions):** no parent
+transcript contains an inline `isSidechain` record; 61 sessions have child
+files; every child-file record carries `isSidechain: true`. Child rows
+therefore already land as `scope='delegated'`. The inline shape is an older
+Claude Code layout and stays a Phase 4 reconciliation item.
+
+**3a — the query (no evidence behaviour change).**
+
+- `turn` gains `compaction_trigger`, `compaction_pre_tokens`,
+  `compaction_post_tokens` (V16, `ALTER TABLE`; the crate exports
+  `TURN_MIGRATIONS`). Compactions become row facts.
+- `TurnRowWriter` becomes `TurnRowStore` with a read side:
+  `query_turn_facts()` returns the facts below for the store's own session
+  key and claim fence. The sink owns an `Arc<dyn TurnRowStore>`.
+- Child inputs write rows with a forced `scope='delegated'`; the adapter's
+  `EventSource` flag is no longer the only source of scope.
+- `query_turn_facts` in `evidence_query.rs` runs SQL aggregates plus one
+  ordered streaming scan. It never loads the session's rows into memory.
+- `MemoryTurnRowStore` gives tests and tools an in-memory row store.
+- A parity test streams every characterization fixture through both the
+  accumulator and the query and compares the shared groups. Known
+  divergences are recorded, not hidden.
+
+**Scope rules for the facts.** These are the semantic decisions of this
+phase:
+
+| Fact | Rows used | Reason |
+|---|---|---|
+| eligibility, context depth, time range, token sums, models, effort and speed tiers, signal coverage | all scopes | The logical session is the union of parent and children. |
+| delegated turns and models | `scope='delegated'` | Child facts reach the parent's hygiene checks. |
+| model transitions, idle gaps, manual compactions, compaction boundaries | `scope='main'`, computed per `thread_id` | A child model switch or a child idle gap never reads as parent reprocessing. Two child threads never form an adjacent pair. |
+| duplicate turn identities | all scopes | The same `uuid` under two `source_key`s marks parent-child overlap. It degrades the subagent and model groups instead of double counting. |
+
+**3b — the switch.**
+
+- `SessionEvidenceAccumulator::evidence` takes `&TurnFacts`. The accumulator
+  keeps only what rows cannot express: tools, context sources, diagnostics
+  and coverage, ordering, subagent spawn observations, and thread-link
+  verification (a parent link can point at an eventless record, which has no
+  row).
+- `stream_vendor_with_hooks` queries the facts once after every input has
+  streamed, then builds one `SessionEvidence`. Without a row store the pass
+  publishes no evidence. `evidence.first()` is gone.
+- A discovered child that cannot be read, or that streams with record loss,
+  degrades every child-dependent group to `Partial`. `ParseDiagnostics`
+  records the child counts.
+- Bump `EVIDENCE_SCHEMA_REVISION` 4 → 5 and `ANALYZER_REVISION` 7 → 8.
+
+**Deferred from this phase:** tool names and context sources from child
+streams stay parent-only; a child's own idle gaps and compactions are not
+folded into the parent's cache group.
 
 **Acceptance:** A child-only model or speed signal reaches parent hygiene. A
 child model switch never creates parent reprocessing. An unreadable known
 child prevents false clean. Two child threads never form an adjacent pair.
+The parity test explains every difference between the query and the old
+accumulator.
 
 ### Phase 4: Adapter enrichment
 
