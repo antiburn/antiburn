@@ -766,28 +766,38 @@ Settled:
    requires `record_identity`; overdepth requires `thread_identity`. Codex
    (one rollout is one thread, no record ids) gets `thread_identity` only.
 
-10. Model replacement registry (verified 2026-08-30 against vendor pages,
-    ships in seam 5c as a compiled table with `REGISTRY_REVISION`): Claude
-    Opus 4.5–4.8 → `claude-opus-5`, available 2026-07-24
-    (anthropic.com/news/claude-opus-5); Claude Sonnet 4.5–4.6 →
-    `claude-sonnet-5`, available 2026-06-30 (anthropic.com/news/claude-sonnet-5);
-    GPT-5.4, GPT-5.5, GPT-5.5-fast → `gpt-5.6-sol` and GPT-5.4-mini →
-    `gpt-5.6-luna`, available 2026-07-09 (openai.com/index/gpt-5-6). The
-    mini → Luna size mapping is a judgment call; no Haiku entry exists because
-    no Haiku 5 has been announced. Aliases are matched after
-    `normalize_model_key` and lowercasing. Usage before the effective date is
-    not a finding.
-11. Tier policies (seam 5c) are keyed by model family from the normalized
+10. Model replacement registry (ships in seam 5c as a compiled table with
+    `REGISTRY_REVISION`). Source of truth: Cadence's
+    `crates/harness-kb/facts/model-replacements.json`, derived from
+    production fleet data and verified against vendor pages. Claude Opus
+    4.5–4.8 (including `antigravity-claude-opus-4-6-thinking`) →
+    `claude-opus-5`, available 2026-07-24; Claude Sonnet 4.5–4.6 →
+    `claude-sonnet-5`, available 2026-06-30; GPT-5.5 and GPT-5.5-fast →
+    `gpt-5.6-sol`, GPT-5.4 → `gpt-5.6-terra`, GPT-5.4-mini → `gpt-5.6-luna`,
+    all available 2026-07-09. No Haiku entry exists because no Haiku 5 has
+    been announced. Aliases are matched on the canonical model key (provider
+    prefix stripped, date suffix stripped, lowercased). Usage before the
+    effective date is not a finding.
+11. Tier policies (seam 5c) are keyed by model family from the canonical
     model-key prefix (`claude-` → Claude, `gpt-`/`o*` → OpenAI, else
     Unknown), not by harness, because OpenCode and Pi run any vendor's
-    models. Effort: above cap = {xhigh, max, ultra, ultrathink} in both
-    families (Cadence's fleet-derived policy, 2026-08-13); recognized floor
-    Claude = {low, medium, high}, OpenAI = {none, minimal, low, medium, high}. Speed: exactly {fast, standard} after
-    normalization. Premium: Claude = `claude-opus-*` and `claude-fable-*`;
-    OpenAI = `gpt-5.6-sol*` (OpenAI states Sol, Terra, Luna are capability
-    tiers with Sol at the top). A tier or model outside a reviewed policy
-    never reads clean. Overdepth cap moves to 400,000 in the catalog
-    (decision 2) in the same seam.
+    models. Cadence's fleet-derived rules (2026-08-13 census) are golden;
+    antiburn extends them to OpenCode and Pi by model family, which Cadence
+    leaves out of scope. Effort: above cap = {xhigh, max, ultra} in both
+    families; recognized floor Claude = {low, medium, high}, OpenAI = {none,
+    minimal, low, medium, high}. Speed: exactly {fast, standard} after
+    normalization. Premium (Cadence `SubagentTier::classify`): Claude = key
+    contains `opus`, `fable`, or `mythos`; OpenAI = key starts with `gpt-5.6`
+    or `gpt-5.5` except `gpt-5.6-terra`, `gpt-5.6-luna`,
+    `gpt-5.3-codex-spark`, `codex-auto-review`. The dominant main model is
+    the one with the most main-loop output tokens. Excess context
+    reprocessing (seam 5d) scores the overpay multiple
+    `paid / (paid − repeated)` against Cadence's per-family "average
+    efficiency" band bound (Claude 2.35, OpenAI 2.0; bands
+    [1.9, 2.35, 3.35, 4.45] and [1.7, 2.0, 2.35, 2.8], 2026-08-05 corpus),
+    not an absolute token count; the legacy churn-event rule is removed. A
+    tier or model outside a reviewed policy never reads clean. Overdepth cap
+    moves to 400,000 in the catalog (decision 2) in the same seam.
 12. Crate boundary for rows: `antiburn-local` stays storage-neutral at the
     detector layer. Detectors and fact requirements read `SessionEvidence`
     only; row queries live behind `analysis/evidence_query.rs` and the
