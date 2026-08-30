@@ -182,19 +182,36 @@ mod tests {
     }
 
     #[test]
-    fn xhigh_is_above_cap_for_openai_but_not_claude() {
+    fn xhigh_and_max_are_above_cap_for_both_families() {
+        let catalogs = ReportCatalogs::default();
+
+        for (tier, model) in [
+            ("xhigh", "gpt-5.6"),
+            ("xhigh", "claude-sonnet-4-6"),
+            ("max", "gpt-5.6"),
+            ("max", "claude-sonnet-4-6"),
+        ] {
+            assert_eq!(
+                evaluate(&with_tier_and_model(tier, model, false), &catalogs),
+                Observation::Finding,
+                "{tier} on {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_family_floor_tier_is_recognized_only_by_that_family() {
         let catalogs = ReportCatalogs::default();
 
         assert_eq!(
-            evaluate(&with_tier_and_model("xhigh", "gpt-5.6", false), &catalogs),
-            Observation::Finding
+            evaluate(&with_tier_and_model("minimal", "gpt-5.6", false), &catalogs),
+            Observation::NoFinding
         );
-        // The same label with no OpenAI family present is unrecognized
-        // by the only present family (Claude), so it blocks clean
-        // instead of reading as no-finding.
+        // Claude never emits `minimal`, so the only present family
+        // cannot classify it and it blocks clean.
         assert_eq!(
             evaluate(
-                &with_tier_and_model("xhigh", "claude-sonnet-4-6", false),
+                &with_tier_and_model("minimal", "claude-sonnet-4-6", false),
                 &catalogs
             ),
             Observation::ContractIncomplete

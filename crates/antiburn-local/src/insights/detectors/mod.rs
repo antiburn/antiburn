@@ -198,6 +198,16 @@ pub struct ReportCatalogs {
     pub cache_idle_expiry_ms: i64,
 }
 
+/// Effort tiers above the recommended cap in every reviewed family.
+/// Claude Code and Codex both expose `xhigh` and `max`; `ultra` and
+/// `ultrathink` are the older Claude spellings of the same top tier.
+fn above_cap_effort_tiers() -> BTreeSet<String> {
+    ["xhigh", "max", "ultra", "ultrathink"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 impl Default for ReportCatalogs {
     fn default() -> Self {
         let mut families = BTreeMap::new();
@@ -205,13 +215,11 @@ impl Default for ReportCatalogs {
             ModelFamily::Claude,
             FamilyPolicy {
                 effort: EffortPolicy {
-                    above_cap: ["max", "ultrathink"]
+                    above_cap: above_cap_effort_tiers(),
+                    recognized: ["low", "medium", "high"]
                         .into_iter()
                         .map(str::to_owned)
-                        .collect(),
-                    recognized: ["low", "medium", "high", "max", "ultrathink"]
-                        .into_iter()
-                        .map(str::to_owned)
+                        .chain(above_cap_effort_tiers())
                         .collect(),
                 },
                 speed: SpeedPolicy {
@@ -244,10 +252,11 @@ impl Default for ReportCatalogs {
             ModelFamily::OpenAi,
             FamilyPolicy {
                 effort: EffortPolicy {
-                    above_cap: ["xhigh"].into_iter().map(str::to_owned).collect(),
-                    recognized: ["minimal", "low", "medium", "high", "xhigh"]
+                    above_cap: above_cap_effort_tiers(),
+                    recognized: ["none", "minimal", "low", "medium", "high"]
                         .into_iter()
                         .map(str::to_owned)
+                        .chain(above_cap_effort_tiers())
                         .collect(),
                 },
                 speed: SpeedPolicy {
