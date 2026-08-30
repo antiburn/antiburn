@@ -355,6 +355,14 @@ impl SourceCapabilities {
     /// separate `service_tier` flag stays `false` and `models.service_tiers`
     /// stays `EvidenceValue::Unsupported` — this source never populates that
     /// distinct, unread field.
+    ///
+    /// `subagent_relationships` and `subagent_models` are set. The adapter
+    /// emits `SubagentSpawn` for each owned `spawn_agent` call. Discovery
+    /// relates the spawned child rollout to its parent, the same way it
+    /// relates a Claude sidechain. The child's `turn_context.model` reaches
+    /// `subagents.delegated_models` through the child's `Delegated`-scope
+    /// rows. This adds `OverpoweredSubagents` and `OveruseOfFastMode` to
+    /// the assessed detector set for this source.
     pub fn codex() -> Self {
         Self {
             request_context_tokens: true,
@@ -368,8 +376,8 @@ impl SourceCapabilities {
             reasoning_effort_tier: true,
             fast_tier: true,
             service_tier: false,
-            subagent_relationships: false,
-            subagent_models: false,
+            subagent_relationships: true,
+            subagent_models: true,
             compaction_boundaries: true,
             thread_identity: false,
             quota_incidents: false,
@@ -656,7 +664,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 5,
+            "schemaRevision": 6,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -680,9 +688,9 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 7,
+                "parserRevision": 8,
                 "analyzerRevision": 9,
-                "evidenceSchemaRevision": 5,
+                "evidenceSchemaRevision": 6,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
