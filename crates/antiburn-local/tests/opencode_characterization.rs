@@ -343,6 +343,11 @@ fn subagent_children_stream_as_delegated_threads() {
     );
 
     assert!(matches!(evidence.subagents, EvidenceValue::Complete(_)));
+    assert!(
+        matches!(evidence.cache, EvidenceValue::Complete(_)),
+        "every row carries its message id, so the thread-identity claim holds: {:?}",
+        evidence.cache
+    );
     let subagents = observed(&evidence.subagents);
     assert_eq!(subagents.spawn_count, 2);
     assert!(subagents.delegated_models.contains("model-b"));

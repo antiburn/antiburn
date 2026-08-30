@@ -223,6 +223,9 @@ fn visit_database_connection(
             drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         };
+        // The message id is the record identity. The sink reads a missing
+        // `uuid` as a thread-identity gap and degrades the cache group.
+        event.uuid = Some(message_id.clone());
         state.apply_session(&mut event, &session_id, session_id != root_session_id, sink);
         state.observe_model(&event);
         let mut pending = PendingMessage {
@@ -420,6 +423,7 @@ impl OpenCodeStreamState {
                     report_invalid_message(payload, sink);
                     return;
                 };
+                event.uuid = Some(id.to_owned());
                 if let Some(session_id) = value.get("sessionID").and_then(Value::as_str) {
                     let session_role = value.get("sessionRole").and_then(Value::as_str);
                     let is_child = session_role == Some("child")
