@@ -69,7 +69,7 @@ gtk = { version = "0.18", features = ["v3_24"] }
 # same GLib family as gtk 0.18) and Plasma's `Inhibited` property over a
 # bounded, no-auto-start D-Bus call through zbus. Both probes run on demand
 # and hold no connection at idle.
-gio = "0.18"
+gio = "0.22"
 zbus = "5"
 
 [dev-dependencies]
