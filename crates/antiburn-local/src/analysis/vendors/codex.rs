@@ -396,7 +396,8 @@ impl CodexStreamState {
                 })));
             }
         } else {
-            let allowlisted = is_recognized_eventless(record_type, payload_type);
+            let allowlisted = is_recognized_eventless(record_type, payload_type)
+                || (is_token_count && is_usage_free_token_count(&value));
             let inert = if !allowlisted {
                 is_inert_codex_record(&value, true)
             } else if is_proven_echo(record_type, payload_type) {
@@ -1389,6 +1390,44 @@ fn token_count_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<No
     Some(ev)
 }
 
+/// The usage keys `codex_usage` reads, plus the `total_tokens` sum Codex
+/// writes beside them.
+const CODEX_USAGE_KEYS: &[&str] = &[
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+];
+
+/// Returns true when a `token_count` record carries no usage to count.
+///
+/// Codex writes two such shapes: `info: null` beside a `rate_limits` object
+/// (a rate-limit heartbeat), and an `info` whose usage objects hold only zero
+/// counts. `token_count_event` returns `None` for both, so `process_value`
+/// would otherwise treat the record as unrecognized and fail closed on the
+/// `info` key. A usage object with a key this adapter does not read is not
+/// usage-free: it may be a renamed count, so it still fails closed.
+fn is_usage_free_token_count(value: &Value) -> bool {
+    let Some(info) = value.pointer("/payload/info") else {
+        return true;
+    };
+    let Some(info) = info.as_object() else {
+        return info.is_null();
+    };
+    ["last_token_usage", "total_token_usage"]
+        .iter()
+        .filter_map(|key| info.get(*key))
+        .all(|usage| {
+            usage.as_object().is_some_and(|usage| {
+                usage.iter().all(|(key, count)| {
+                    CODEX_USAGE_KEYS.contains(&key.as_str())
+                        && count.as_u64().is_some_and(|count| count == 0)
+                })
+            })
+        })
+}
+
 /// The usage pair that identifies one `token_count` row.
 type TokenCountKey = (Value, Value);
 
@@ -1613,7 +1652,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 1_469_656_163_493_354_995;
+        const EXPECTED_FINGERPRINT: u64 = 5_417_986_718_514_963_732;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -1664,6 +1703,56 @@ mod tests {
         });
         assert!(is_inert_codex_record(&record, false));
         assert!(!is_inert_codex_record(&record, true));
+    }
+
+    /// A `token_count` heartbeat with `info: null` and one whose usage holds
+    /// only zero counts carry nothing to count: both are usage-free, so
+    /// `process_value` treats them as recognized-eventless.
+    #[test]
+    fn token_count_without_usage_is_usage_free() {
+        let heartbeat = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": null, "rate_limits": {"primary": {}}}
+        });
+        let zero = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "rate_limits": {}, "info": {
+                "last_token_usage": {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": 0},
+                "total_token_usage": {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": 0},
+                "model_context_window": 100000
+            }}
+        });
+        assert!(is_usage_free_token_count(&heartbeat));
+        assert!(is_usage_free_token_count(&zero));
+        // The strict check still rejects both on the `info` key. Only the
+        // usage-free rule lets them through.
+        assert!(!is_inert_codex_record(&heartbeat, true));
+        assert!(!is_inert_codex_record(&zero, true));
+    }
+
+    /// A `token_count` whose usage object names a key this adapter does not
+    /// read, or a non-zero count, is not usage-free and still fails closed.
+    #[test]
+    fn token_count_with_unread_or_non_zero_usage_is_not_usage_free() {
+        let renamed = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {
+                "last_token_usage": {"prompt_tokens": 0, "output_tokens": 0}
+            }}
+        });
+        let counted = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": 12, "output_tokens": 0}
+            }}
+        });
+        let not_an_object = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"last_token_usage": 7}}
+        });
+        assert!(!is_usage_free_token_count(&renamed));
+        assert!(!is_usage_free_token_count(&counted));
+        assert!(!is_usage_free_token_count(&not_an_object));
     }
 
     /// `session_meta`, `turn_context`, and `thread_settings_applied` carry

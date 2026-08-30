@@ -64,11 +64,14 @@ fn fixture(name: &str) -> &'static str {
         "unknown_event_with_tool_shape" => {
             include_str!("fixtures/codex_characterization/unknown_event_with_tool_shape.jsonl")
         }
+        "token_count_without_usage" => {
+            include_str!("fixtures/codex_characterization/token_count_without_usage.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 16] {
+fn fixture_names() -> [&'static str; 17] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -86,6 +89,7 @@ fn fixture_names() -> [&'static str; 16] {
         "inert_unknown_event",
         "unknown_event_with_usage",
         "unknown_event_with_tool_shape",
+        "token_count_without_usage",
     ]
 }
 
@@ -786,4 +790,19 @@ fn unknown_event_with_tool_shape_fails_closed_like_usage() {
     );
     assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
     assert_eq!(evidence.diagnostics.records_unusable, 1);
+}
+
+#[test]
+fn usage_free_token_count_records_are_recognized_eventless() {
+    let (evidence, metrics) = composite(&input("token_count_without_usage"));
+
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    assert_eq!(evidence.diagnostics.records_unusable, 0);
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
+    assert!(evidence.diagnostics.unrecognized_types.is_empty());
+    // Only the third `token_count` carries usage. The heartbeat and the
+    // zero-usage record add nothing. `codex_usage` splits the 100 cached
+    // tokens out of the 300 `input_tokens`.
+    assert_eq!(metrics.metrics().tokens_in, 200);
+    assert_eq!(metrics.metrics().tokens_out, 40);
 }

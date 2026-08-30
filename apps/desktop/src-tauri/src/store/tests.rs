@@ -2011,7 +2011,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 11,
+            parser_revision: 12,
             analyzer_revision: 9,
             metrics_schema_revision: 1,
             evidence_schema_revision: 7,
