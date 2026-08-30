@@ -2987,6 +2987,9 @@ fn turn_row(turn_index: u64) -> TurnRow {
         message_id: None,
         uuid: None,
         parent_uuid: None,
+        compaction_trigger: None,
+        compaction_pre_tokens: None,
+        compaction_post_tokens: None,
         content: Vec::new(),
     }
 }
@@ -2996,10 +2999,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 15);
+    assert_eq!(super::schema::MIGRATIONS.len(), 16);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 15);
+    assert_eq!(store.schema_version().unwrap(), 16);
 }
 
 #[test]
@@ -3015,7 +3018,7 @@ fn a_fenced_turn_row_writer_inserts_rows_the_store_can_count() {
         .unwrap();
     let key = record.key.clone();
 
-    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), 7);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), 7);
     writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
 
     let connection = store.lock();
@@ -3046,7 +3049,7 @@ fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
         )
         .unwrap();
     }
-    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), claim.claim_fence);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
 
@@ -3084,7 +3087,7 @@ fn a_lost_publish_race_deletes_only_its_own_fences_turn_rows() {
         )
         .unwrap();
     }
-    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), claim.claim_fence);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
     // Bumping the source generation makes the fenced UPDATE inside
     // `publish_projections` affect zero rows — the same "lost the race"
@@ -3238,7 +3241,7 @@ fn deleting_a_session_removes_turn_content_written_through_the_fenced_writer() {
             &crate::agents::evidence_cohort(),
         )
         .unwrap();
-    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), 1);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), 1);
     writer
         .write_turn_rows(&[turn_row_with_content(0, "PRIVATE_TURN_CONTENT")])
         .unwrap();
@@ -3267,7 +3270,7 @@ fn clearing_local_session_data_removes_turn_content_written_through_the_fenced_w
         )
         .unwrap();
     let key = record.key.clone();
-    let writer = FencedTurnRowWriter::new(store.clone(), key.clone(), 1);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), 1);
     writer
         .write_turn_rows(&[turn_row_with_content(0, "PRIVATE_TURN_CONTENT")])
         .unwrap();

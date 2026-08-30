@@ -227,6 +227,28 @@ pub enum CompactionTrigger {
     Auto,
 }
 
+impl CompactionTrigger {
+    /// The stable lowercase name a `turn` row stores in its
+    /// `compaction_trigger` column. Matches this type's serde form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompactionTrigger::Manual => "manual",
+            CompactionTrigger::Auto => "auto",
+        }
+    }
+
+    /// Reads back a value [`Self::as_str`] wrote. Returns `None` for any
+    /// other text, so a row with an unrecognized trigger reads as no
+    /// trigger instead of failing the query.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(CompactionTrigger::Manual),
+            "auto" => Some(CompactionTrigger::Auto),
+            _ => None,
+        }
+    }
+}
+
 /// Which transcript an event comes from, after [`crate::analysis::merge_subagent_events`]
 /// concatenates a parent session with its sub-agents into one stream.
 ///

@@ -33,8 +33,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    TurnRow, TurnRowWriteError, TurnRowWriter, TurnSessionKey, count_turn_rows, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
+    TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
+    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
+    query_turn_facts,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -117,7 +118,7 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 ///
 /// `connection` is behind an `Arc` so a cheap [`Store::clone`] shares the
 /// same underlying connection rather than opening a second one. The worker
-/// uses this to hand a [`FencedTurnRowWriter`] a handle to the same database
+/// uses this to hand a [`FencedTurnRowStore`] a handle to the same database
 /// without threading `Store` state through every call site as `Arc<Store>`.
 #[derive(Clone)]
 pub struct Store {
@@ -1979,21 +1980,21 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
     })
 }
 
-/// Writes turn rows for one claimed evidence pass.
+/// Writes and reads turn rows for one claimed evidence pass.
 ///
 /// Holds an owned [`Store`] handle (cheap: it shares the app's one
 /// connection, see [`Store`]'s doc comment) plus the session key and claim
 /// fence the durable worker already knows for this pass. `Store` cannot
-/// implement [`TurnRowWriter`] directly — writing a row needs the session
-/// key and fence, and `Store` itself does not carry either.
+/// implement [`TurnRowStore`] directly — reading and writing rows needs the
+/// session key and fence, and `Store` itself does not carry either.
 #[derive(Clone)]
-pub struct FencedTurnRowWriter {
+pub struct FencedTurnRowStore {
     store: Store,
     key: SessionKey,
     claim_fence: i64,
 }
 
-impl FencedTurnRowWriter {
+impl FencedTurnRowStore {
     pub fn new(store: Store, key: SessionKey, claim_fence: i64) -> Self {
         Self {
             store,
@@ -2003,8 +2004,8 @@ impl FencedTurnRowWriter {
     }
 }
 
-impl TurnRowWriter for FencedTurnRowWriter {
-    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+impl TurnRowStore for FencedTurnRowStore {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError> {
         // One transaction per batch: one fsync for the batch instead of
         // one for each row, and the lock is held only for the batch.
         let mut connection = self.store.lock();
@@ -2017,5 +2018,14 @@ impl TurnRowWriter for FencedTurnRowWriter {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+        let connection = self.store.lock();
+        Ok(query_turn_facts(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+        )?)
     }
 }

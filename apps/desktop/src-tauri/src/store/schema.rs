@@ -11,7 +11,7 @@
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -379,3 +379,11 @@ ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 /// the crate owns the DDL and the read/write functions over a borrowed
 /// connection, and never opens this database itself.
 const V15: &str = antiburn_local::analysis::TURN_SCHEMA_SQL;
+
+/// v16 adds the three compaction columns `query_turn_facts` reads:
+/// `compaction_trigger`, `compaction_pre_tokens`, `compaction_post_tokens`.
+///
+/// `antiburn_local::analysis::TURN_SCHEMA_V2_SQL` owns the column list, for
+/// the same reason [`V15`] re-exports `TURN_SCHEMA_SQL` instead of stating
+/// its own DDL.
+const V16: &str = antiburn_local::analysis::TURN_SCHEMA_V2_SQL;

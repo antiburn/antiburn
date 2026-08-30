@@ -64,7 +64,7 @@ fn file_input(session_id: &str, path: &Path) -> SessionInput {
     }
 }
 
-fn composite_for(input: &SessionInput) -> CompositeSink<'static> {
+fn composite_for(input: &SessionInput) -> CompositeSink {
     CompositeSink::new(
         SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone()),
         SessionEvidenceAccumulator::new(EvidenceSource {

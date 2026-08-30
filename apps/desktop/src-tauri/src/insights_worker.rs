@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use antiburn_local::analysis::{SessionEvidence, TurnRowWriter};
+use antiburn_local::analysis::{SessionEvidence, TurnRowStore};
 use antiburn_local::insights::{DetectorId, requirements};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
@@ -15,7 +15,7 @@ use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal};
 use crate::commands;
 use crate::dto::ActivityEntry;
 use crate::store::{
-    EvidenceClaim, EvidenceCompletion, EvidenceFailure, FencedTurnRowWriter, PublishedEvidence,
+    EvidenceClaim, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore, PublishedEvidence,
     RelationKind, RelationRecord, SessionKey, SessionRecord, Store,
 };
 
@@ -65,7 +65,7 @@ type RecordAnalyzer<'a> = dyn Fn(
         Option<String>,
         analysis::ClaimedSource,
         PassSignal,
-        Option<Arc<dyn TurnRowWriter>>,
+        Option<Arc<dyn TurnRowStore>>,
     ) -> PassFuture
     + Send
     + Sync
@@ -78,7 +78,7 @@ pub(crate) enum PermitKind {
 }
 
 /// `store` is a cheap handle (see [`Store`]'s doc comment): this clones it
-/// once per pass into a [`FencedTurnRowWriter`] stamped with `claim_fence`,
+/// once per pass into a [`FencedTurnRowStore`] stamped with `claim_fence`,
 /// so turn rows this pass writes are attributable and cleaned up correctly
 /// if the pass loses the claim race.
 fn run_record_pass(
@@ -92,7 +92,7 @@ fn run_record_pass(
         signal,
         claim_fence,
         store,
-        &|agent, session_id, wsl_distro, claimed, signal, turn_row_writer| {
+        &|agent, session_id, wsl_distro, claimed, signal, turn_row_store| {
             Box::pin(async move {
                 analysis::analyze_for_evidence(
                     agent,
@@ -100,7 +100,7 @@ fn run_record_pass(
                     wsl_distro.as_deref(),
                     claimed,
                     signal,
-                    turn_row_writer,
+                    turn_row_store,
                 )
                 .await
             })
@@ -118,7 +118,7 @@ fn run_record_pass_with(
     let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
         return Box::pin(async { analysis::unsupported_evidence_pass() });
     };
-    let writer: Arc<dyn TurnRowWriter> = Arc::new(FencedTurnRowWriter::new(
+    let writer: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
         store,
         record.key.clone(),
         claim_fence,
@@ -1295,7 +1295,7 @@ mod tests {
         // A custom analyzer, like the fixture-backed tests above: it
         // bypasses real filesystem discovery, but runs the real
         // `evidence_pass_with_turn_rows` -> `stream_vendor_with_hooks` ->
-        // `TurnRowSink` -> `FencedTurnRowWriter` path the worker uses in
+        // `TurnRowSink` -> `FencedTurnRowStore` path the worker uses in
         // production, so this test proves rows a published pass writes
         // actually land under the claim's fence.
         let analyzer = |_agent: AgentKind,
@@ -1303,7 +1303,7 @@ mod tests {
                         _wsl_distro: Option<String>,
                         claimed: analysis::ClaimedSource,
                         signal: PassSignal,
-                        turn_row_writer: Option<Arc<dyn TurnRowWriter>>| {
+                        turn_row_store: Option<Arc<dyn TurnRowStore>>| {
             Box::pin(async move {
                 let mut pass = analysis::evidence_pass_with_turn_rows(
                     &[SessionInput {
@@ -1318,7 +1318,7 @@ mod tests {
                         .into()),
                     }],
                     &|| signal.observe(),
-                    turn_row_writer.as_deref(),
+                    turn_row_store,
                 );
                 if let Some(fingerprint) = claimed.fingerprint {
                     pass.analysis.fingerprint = fingerprint;
@@ -1378,39 +1378,38 @@ mod tests {
             .upsert_sessions(std::slice::from_ref(&pi), &crate::agents::evidence_cohort())
             .unwrap();
         let pi_source = source_path.clone();
-        let analyzer =
-            move |agent: AgentKind,
-                  session_id: String,
-                  wsl_distro: Option<String>,
-                  claimed: analysis::ClaimedSource,
-                  signal: PassSignal,
-                  turn_row_writer: Option<Arc<dyn TurnRowWriter>>| {
-                if agent != AgentKind::Pi || session_id != "pi-worker-report" {
-                    return Box::pin(async move {
-                        analysis::analyze_for_evidence(
-                            agent,
-                            &session_id,
-                            wsl_distro.as_deref(),
-                            claimed,
-                            signal,
-                            turn_row_writer,
-                        )
-                        .await
-                    }) as PassFuture;
-                }
-                let input = antiburn_local::analysis::SessionInput {
-                    agent: crate::agents::vendor_label(agent).to_owned(),
-                    session_id,
-                    source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
-                };
-                Box::pin(async move {
-                    let mut pass = analysis::evidence_pass(&[input], &|| signal.observe());
-                    if let Some(fingerprint) = claimed.fingerprint {
-                        pass.analysis.fingerprint = fingerprint;
-                    }
-                    pass
-                }) as PassFuture
+        let analyzer = move |agent: AgentKind,
+                             session_id: String,
+                             wsl_distro: Option<String>,
+                             claimed: analysis::ClaimedSource,
+                             signal: PassSignal,
+                             turn_row_store: Option<Arc<dyn TurnRowStore>>| {
+            if agent != AgentKind::Pi || session_id != "pi-worker-report" {
+                return Box::pin(async move {
+                    analysis::analyze_for_evidence(
+                        agent,
+                        &session_id,
+                        wsl_distro.as_deref(),
+                        claimed,
+                        signal,
+                        turn_row_store,
+                    )
+                    .await
+                }) as PassFuture;
+            }
+            let input = antiburn_local::analysis::SessionInput {
+                agent: crate::agents::vendor_label(agent).to_owned(),
+                session_id,
+                source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
             };
+            Box::pin(async move {
+                let mut pass = analysis::evidence_pass(&[input], &|| signal.observe());
+                if let Some(fingerprint) = claimed.fingerprint {
+                    pass.analysis.fingerprint = fingerprint;
+                }
+                pass
+            }) as PassFuture
+        };
         let store_for_runner = store.clone();
         let runner = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
             run_record_pass_with(

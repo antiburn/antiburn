@@ -8,10 +8,13 @@
 //! functions over a borrowed [`rusqlite::Connection`]. The crate does not open
 //! the app database and does not know any other app table.
 
+use std::sync::{Arc, Mutex};
+
 use rusqlite::{Connection, params};
 
+use crate::analysis::evidence_query::{TurnFacts, query_turn_facts};
 use crate::analysis::interface::{ContentPart, NormalizedRecord, RecordSink, SessionSummary};
-use crate::analysis::model::{EventSource, NormalizedEvent, Role};
+use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
 
 /// DDL for the `turn` and `turn_content` tables.
 ///
@@ -71,6 +74,27 @@ CREATE TABLE turn_content (
 ) WITHOUT ROWID, STRICT;
 "#;
 
+/// DDL that adds the compaction columns [`TurnRow::compaction_trigger`],
+/// [`TurnRow::compaction_pre_tokens`], and [`TurnRow::compaction_post_tokens`]
+/// to an existing `turn` table.
+///
+/// [`TURN_SCHEMA_SQL`] is already applied as schema version 15 on user
+/// machines, so this change adds its three new columns through a migration
+/// instead of editing that constant. See [`TURN_MIGRATIONS`].
+pub const TURN_SCHEMA_V2_SQL: &str = r#"
+ALTER TABLE turn ADD COLUMN compaction_trigger TEXT;
+ALTER TABLE turn ADD COLUMN compaction_pre_tokens INTEGER;
+ALTER TABLE turn ADD COLUMN compaction_post_tokens INTEGER;
+"#;
+
+/// Every migration that builds the `turn` and `turn_content` schema, in
+/// order. A caller that creates this schema from scratch (a test, an
+/// in-memory store) applies every entry in order; the app applies
+/// [`TURN_SCHEMA_SQL`] and [`TURN_SCHEMA_V2_SQL`] as its own separately
+/// numbered migrations instead, since [`TURN_SCHEMA_SQL`] is already applied
+/// on user machines.
+pub const TURN_MIGRATIONS: &[&str] = &[TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL];
+
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
 /// caller picks a different size with [`TurnRowSink::with_batch_size`].
 pub const TURN_ROW_BATCH_SIZE: usize = 512;
@@ -116,6 +140,9 @@ pub struct TurnRow {
     pub message_id: Option<String>,
     pub uuid: Option<String>,
     pub parent_uuid: Option<String>,
+    pub compaction_trigger: Option<CompactionTrigger>,
+    pub compaction_pre_tokens: Option<u64>,
+    pub compaction_post_tokens: Option<u64>,
     /// This turn's captured message content, when the source adapter emitted
     /// a `TurnContent` record for it. Attached by [`TurnRowSink`] after
     /// [`turn_row_from_event`] builds the row — an event alone carries none.
@@ -164,6 +191,9 @@ pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index
         message_id: event.message_id.clone(),
         uuid: event.uuid.clone(),
         parent_uuid: event.parent_uuid.clone(),
+        compaction_trigger: event.compaction_trigger,
+        compaction_pre_tokens: event.compaction_pre_tokens,
+        compaction_post_tokens: event.compaction_post_tokens,
         content: Vec::new(),
     }
 }
@@ -177,36 +207,40 @@ pub struct TurnSessionKey<'a> {
     pub session_id: &'a str,
 }
 
-/// One `turn`-row write failed.
+/// One `turn`-row store operation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnRowWriteError(pub String);
+pub struct TurnRowError(pub String);
 
-impl std::fmt::Display for TurnRowWriteError {
+impl std::fmt::Display for TurnRowError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "turn row write failed: {}", self.0)
+        write!(formatter, "turn row store failed: {}", self.0)
     }
 }
 
-impl std::error::Error for TurnRowWriteError {}
+impl std::error::Error for TurnRowError {}
 
-impl From<rusqlite::Error> for TurnRowWriteError {
+impl From<rusqlite::Error> for TurnRowError {
     fn from(error: rusqlite::Error) -> Self {
-        TurnRowWriteError(error.to_string())
+        TurnRowError(error.to_string())
     }
 }
 
-/// Writes a batch of turn rows for one session.
+/// Writes and reads a session's batch of turn rows.
 ///
 /// `&self` so a shared handle (an `Arc<Store>`, or an app type that wraps
 /// one) can implement this and move into the blocking thread that runs the
 /// analysis pass.
-pub trait TurnRowWriter: Send + Sync {
-    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError>;
+pub trait TurnRowStore: Send + Sync {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError>;
+
+    /// Reads the facts for every row this store wrote under its own session
+    /// key and fence.
+    fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError>;
 }
 
 /// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s,
 /// attaches each row's `TurnContent` record (when one arrives), and writes
-/// the rows through a [`TurnRowWriter`] in bounded batches.
+/// the rows through a [`TurnRowStore`] in bounded batches.
 ///
 /// `turn_index` is monotonic per `source_key`, starting at zero. After each
 /// call to [`Self::observe`] the buffer holds at most `batch_size` rows: once
@@ -217,29 +251,40 @@ pub trait TurnRowWriter: Send + Sync {
 /// promises arrives right after the `MetricsEvent` it belongs to — can still
 /// attach before that row is written. The first write error is kept and
 /// stops further writes; [`Self::into_error`] lets the caller surface it.
-pub struct TurnRowSink<'a> {
-    writer: &'a dyn TurnRowWriter,
+pub struct TurnRowSink {
+    store: Arc<dyn TurnRowStore>,
     source_key: String,
+    forced_scope: Option<TurnScope>,
     next_index: u64,
     buffer: Vec<TurnRow>,
     batch_size: usize,
-    error: Option<TurnRowWriteError>,
+    error: Option<TurnRowError>,
 }
 
-impl<'a> TurnRowSink<'a> {
-    pub fn new(writer: &'a dyn TurnRowWriter, source_key: impl Into<String>) -> Self {
-        Self::with_batch_size(writer, source_key, TURN_ROW_BATCH_SIZE)
+impl TurnRowSink {
+    /// `scope` overrides the scope [`turn_row_from_event`] derives from each
+    /// event's [`EventSource`]. `Some(TurnScope::Delegated)` still sets
+    /// `child_id = Some(source_key)`, as if the event had come from a
+    /// sub-agent transcript. `None` keeps today's derived scope.
+    pub fn new(
+        store: Arc<dyn TurnRowStore>,
+        source_key: impl Into<String>,
+        scope: Option<TurnScope>,
+    ) -> Self {
+        Self::with_batch_size(store, source_key, scope, TURN_ROW_BATCH_SIZE)
     }
 
     pub fn with_batch_size(
-        writer: &'a dyn TurnRowWriter,
+        store: Arc<dyn TurnRowStore>,
         source_key: impl Into<String>,
+        scope: Option<TurnScope>,
         batch_size: usize,
     ) -> Self {
         let batch_size = batch_size.max(1);
         Self {
-            writer,
+            store,
             source_key: source_key.into(),
+            forced_scope: scope,
             next_index: 0,
             buffer: Vec::with_capacity(batch_size.min(TURN_ROW_BATCH_SIZE)),
             batch_size,
@@ -247,14 +292,14 @@ impl<'a> TurnRowSink<'a> {
         }
     }
 
-    /// True once a write has failed. No further row reaches the writer after
+    /// True once a write has failed. No further row reaches the store after
     /// this, but rows already accepted before the failure stay written.
     pub fn has_error(&self) -> bool {
         self.error.is_some()
     }
 
     /// Consumes the sink and returns the write error, if one occurred.
-    pub fn into_error(self) -> Option<TurnRowWriteError> {
+    pub fn into_error(self) -> Option<TurnRowError> {
         self.error
     }
 
@@ -268,7 +313,14 @@ impl<'a> TurnRowSink<'a> {
         }
         match record {
             NormalizedRecord::MetricsEvent(event) => {
-                let row = turn_row_from_event(event, &self.source_key, self.next_index);
+                let mut row = turn_row_from_event(event, &self.source_key, self.next_index);
+                if let Some(scope) = self.forced_scope {
+                    row.scope = scope;
+                    row.child_id = match scope {
+                        TurnScope::Delegated => Some(self.source_key.clone()),
+                        TurnScope::Main => None,
+                    };
+                }
                 self.next_index += 1;
                 self.buffer.push(row);
                 if self.buffer.len() > self.batch_size {
@@ -289,7 +341,7 @@ impl<'a> TurnRowSink<'a> {
         if self.error.is_some() || self.buffer.is_empty() {
             return;
         }
-        if let Err(error) = self.writer.write_turn_rows(&self.buffer) {
+        if let Err(error) = self.store.write_turn_rows(&self.buffer) {
             self.error = Some(error);
         }
         self.buffer.clear();
@@ -306,7 +358,7 @@ impl<'a> TurnRowSink<'a> {
         let Some(last) = self.buffer.pop() else {
             return;
         };
-        if let Err(error) = self.writer.write_turn_rows(&self.buffer) {
+        if let Err(error) = self.store.write_turn_rows(&self.buffer) {
             self.error = Some(error);
         }
         self.buffer.clear();
@@ -314,7 +366,7 @@ impl<'a> TurnRowSink<'a> {
     }
 }
 
-impl RecordSink for TurnRowSink<'_> {
+impl RecordSink for TurnRowSink {
     fn record(&mut self, record: NormalizedRecord) {
         self.observe(&record);
     }
@@ -328,10 +380,11 @@ const INSERT_TURN_SQL: &str = "INSERT INTO turn (
     environment_key, agent, session_id, claim_fence, source_key, thread_id,
     turn_index, scope, child_id, role, ts_ms, model, effort, speed,
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
-    is_compaction_boundary, message_id, uuid, parent_uuid
+    is_compaction_boundary, message_id, uuid, parent_uuid,
+    compaction_trigger, compaction_pre_tokens, compaction_post_tokens
 ) VALUES (
     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
 )";
 
 const INSERT_TURN_CONTENT_SQL: &str = "INSERT INTO turn_content (
@@ -376,6 +429,9 @@ pub fn insert_turn_rows(
             row.message_id,
             row.uuid,
             row.parent_uuid,
+            row.compaction_trigger.map(CompactionTrigger::as_str),
+            row.compaction_pre_tokens.map(|tokens| tokens as i64),
+            row.compaction_post_tokens.map(|tokens| tokens as i64),
         ])?;
         if !row.content.is_empty() {
             let turn_rowid = conn.last_insert_rowid();
@@ -499,28 +555,110 @@ pub fn count_turn_content_rows(
     Ok(count.max(0) as u64)
 }
 
+/// A minimal `session` table, just enough for the `turn` schema's foreign
+/// key to be valid. Shared by [`MemoryTurnRowStore`] and this module's own
+/// tests — neither owns the app's real `session` table.
+const MEMORY_SESSION_SQL: &str = "CREATE TABLE session (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id)
+) STRICT;";
+
+/// An in-memory [`TurnRowStore`], for tests and tools.
+///
+/// Holds a private `rusqlite::Connection` with every [`TURN_MIGRATIONS`]
+/// entry applied, under one fixed [`TurnSessionKey`] and claim fence. The
+/// app writes through the fenced store in `apps/desktop/src-tauri`'s
+/// `store` module instead; this type lets a test stream a fixture through a
+/// [`TurnRowSink`] and then read the rows back — through
+/// [`Self::query_turn_facts`] or [`Self::with_connection`] — without a real
+/// database.
+pub struct MemoryTurnRowStore {
+    connection: Mutex<Connection>,
+    environment_key: String,
+    agent: String,
+    session_id: String,
+    claim_fence: i64,
+}
+
+impl MemoryTurnRowStore {
+    /// Builds a store scoped to one session, under claim fence `1`.
+    pub fn new(agent: impl Into<String>, session_id: impl Into<String>) -> Arc<Self> {
+        let agent = agent.into();
+        let session_id = session_id.into();
+        let environment_key = "native".to_owned();
+        let connection = Connection::open_in_memory().expect("open in-memory connection");
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .expect("enable foreign keys");
+        connection
+            .execute_batch(MEMORY_SESSION_SQL)
+            .expect("create session table");
+        for migration in TURN_MIGRATIONS {
+            connection
+                .execute_batch(migration)
+                .expect("apply turn schema migration");
+        }
+        connection
+            .execute(
+                "INSERT INTO session (environment_key, agent, session_id) VALUES (?1, ?2, ?3)",
+                params![environment_key, agent, session_id],
+            )
+            .expect("insert session");
+        Arc::new(Self {
+            connection: Mutex::new(connection),
+            environment_key,
+            agent,
+            session_id,
+            claim_fence: 1,
+        })
+    }
+
+    fn key(&self) -> TurnSessionKey<'_> {
+        TurnSessionKey {
+            environment_key: &self.environment_key,
+            agent: &self.agent,
+            session_id: &self.session_id,
+        }
+    }
+
+    /// Runs `f` against the underlying connection, for a test that reads
+    /// rows directly instead of through [`Self::query_turn_facts`].
+    pub fn with_connection<R>(&self, f: impl FnOnce(&Connection) -> R) -> R {
+        let connection = self.connection.lock().expect("lock");
+        f(&connection)
+    }
+}
+
+impl TurnRowStore for MemoryTurnRowStore {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        insert_turn_rows(&connection, &self.key(), self.claim_fence, rows)
+            .map_err(TurnRowError::from)
+    }
+
+    fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        query_turn_facts(&connection, &self.key(), self.claim_fence).map_err(TurnRowError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
     use crate::analysis::model::Usage;
-
-    const TEST_SESSION_SQL: &str = "CREATE TABLE session (
-        environment_key TEXT NOT NULL,
-        agent TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        PRIMARY KEY (environment_key, agent, session_id)
-    ) STRICT;";
 
     fn test_connection() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory connection");
         conn.pragma_update(None, "foreign_keys", true)
             .expect("enable foreign keys");
-        conn.execute_batch(TEST_SESSION_SQL)
+        conn.execute_batch(MEMORY_SESSION_SQL)
             .expect("create session table");
-        conn.execute_batch(TURN_SCHEMA_SQL)
-            .expect("create turn schema");
+        for migration in TURN_MIGRATIONS {
+            conn.execute_batch(migration)
+                .expect("apply turn schema migration");
+        }
         conn
     }
 
@@ -552,6 +690,9 @@ mod tests {
             message_id: None,
             uuid: None,
             parent_uuid: None,
+            compaction_trigger: None,
+            compaction_pre_tokens: None,
+            compaction_post_tokens: None,
             content: Vec::new(),
         }
     }
@@ -669,18 +810,25 @@ mod tests {
         assert_eq!(row.child_id, None);
     }
 
-    /// A writer that always fails, so the sink's error path can be tested
-    /// without a real connection.
+    /// A store that always fails to write, so the sink's error path can be
+    /// tested without a real connection. Never read, so
+    /// [`TurnRowStore::query_turn_facts`] need not really work.
     struct FailingWriter;
 
-    impl TurnRowWriter for FailingWriter {
-        fn write_turn_rows(&self, _rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
-            Err(TurnRowWriteError("boom".to_owned()))
+    impl TurnRowStore for FailingWriter {
+        fn write_turn_rows(&self, _rows: &[TurnRow]) -> Result<(), TurnRowError> {
+            Err(TurnRowError("boom".to_owned()))
+        }
+
+        fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+            Err(TurnRowError("not readable".to_owned()))
         }
     }
 
-    /// A writer over a real connection, so batching tests can assert on rows
-    /// actually reaching the table.
+    /// A store over a real connection, so batching tests can assert on rows
+    /// actually reaching the table. Never read through
+    /// [`TurnRowStore::query_turn_facts`] — the tests here inspect the
+    /// table directly.
     struct RecordingWriter {
         conn: Mutex<Connection>,
         key: String,
@@ -721,10 +869,34 @@ mod tests {
             )
             .expect("count")
         }
+
+        fn scopes(&self, claim_fence: i64) -> Vec<(TurnScope, Option<String>)> {
+            let conn = self.conn.lock().expect("lock");
+            let mut statement = conn
+                .prepare(
+                    "SELECT scope, child_id FROM turn
+                      WHERE environment_key = 'native' AND agent = 'claude'
+                        AND session_id = ?1 AND claim_fence = ?2
+                      ORDER BY turn_index",
+                )
+                .expect("prepare");
+            statement
+                .query_map(params![self.key, claim_fence], |row| {
+                    let scope: String = row.get(0)?;
+                    let scope = match scope.as_str() {
+                        "main" => TurnScope::Main,
+                        _ => TurnScope::Delegated,
+                    };
+                    Ok((scope, row.get(1)?))
+                })
+                .expect("query")
+                .map(|row| row.expect("row"))
+                .collect()
+        }
     }
 
-    impl TurnRowWriter for RecordingWriter {
-        fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+    impl TurnRowStore for RecordingWriter {
+        fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError> {
             let conn = self.conn.lock().expect("lock");
             insert_turn_rows(
                 &conn,
@@ -736,7 +908,21 @@ mod tests {
                 1,
                 rows,
             )
-            .map_err(TurnRowWriteError::from)
+            .map_err(TurnRowError::from)
+        }
+
+        fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            query_turn_facts(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                1,
+            )
+            .map_err(TurnRowError::from)
         }
     }
 
@@ -753,8 +939,13 @@ mod tests {
             session_id: "s1",
         };
         insert_session(&conn, &key);
-        let writer = RecordingWriter::new(conn);
-        let mut sink = TurnRowSink::with_batch_size(&writer, "s1", 4);
+        let writer = Arc::new(RecordingWriter::new(conn));
+        let mut sink = TurnRowSink::with_batch_size(
+            Arc::clone(&writer) as Arc<dyn TurnRowStore>,
+            "s1",
+            None,
+            4,
+        );
 
         for _ in 0..10 {
             sink.observe(&metric_record(Role::Assistant));
@@ -768,8 +959,8 @@ mod tests {
 
     #[test]
     fn a_write_error_stops_further_writes_and_is_surfaced() {
-        let writer = FailingWriter;
-        let mut sink = TurnRowSink::with_batch_size(&writer, "s1", 1);
+        let writer = Arc::new(FailingWriter);
+        let mut sink = TurnRowSink::with_batch_size(writer, "s1", None, 1);
 
         // A row stays buffered, unflushed, until a later row pushes the
         // buffer over `batch_size` — so the first write attempt (and the
@@ -792,8 +983,8 @@ mod tests {
             session_id: "s1",
         };
         insert_session(&conn, &key);
-        let writer = RecordingWriter::new(conn);
-        let mut sink = TurnRowSink::new(&writer, "s1");
+        let writer = Arc::new(RecordingWriter::new(conn));
+        let mut sink = TurnRowSink::new(Arc::clone(&writer) as Arc<dyn TurnRowStore>, "s1", None);
 
         sink.observe(&metric_record(Role::Assistant));
         sink.observe(&NormalizedRecord::Unusable(
@@ -802,6 +993,34 @@ mod tests {
         sink.finish(SessionSummary::default());
 
         assert_eq!(writer.count(1), 1);
+    }
+
+    #[test]
+    fn a_forced_scope_overrides_the_event_derived_scope_and_sets_child_id() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let writer = Arc::new(RecordingWriter::new(conn));
+        // Every event here is `EventSource::Parent`, which
+        // `turn_row_from_event` would otherwise map to `TurnScope::Main`
+        // with no `child_id`.
+        let mut sink = TurnRowSink::new(
+            Arc::clone(&writer) as Arc<dyn TurnRowStore>,
+            "s1",
+            Some(TurnScope::Delegated),
+        );
+
+        sink.observe(&metric_record(Role::Assistant));
+        sink.finish(SessionSummary::default());
+
+        assert_eq!(
+            writer.scopes(1),
+            vec![(TurnScope::Delegated, Some("s1".to_owned()))]
+        );
     }
 
     fn content_record(text: &str) -> NormalizedRecord {
@@ -822,8 +1041,8 @@ mod tests {
             session_id: "s1",
         };
         insert_session(&conn, &key);
-        let writer = RecordingWriter::new(conn);
-        let mut sink = TurnRowSink::new(&writer, "s1");
+        let writer = Arc::new(RecordingWriter::new(conn));
+        let mut sink = TurnRowSink::new(Arc::clone(&writer) as Arc<dyn TurnRowStore>, "s1", None);
 
         sink.observe(&metric_record(Role::User));
         sink.observe(&content_record("hello"));
@@ -843,8 +1062,13 @@ mod tests {
             session_id: "s1",
         };
         insert_session(&conn, &key);
-        let writer = RecordingWriter::new(conn);
-        let mut sink = TurnRowSink::with_batch_size(&writer, "s1", 2);
+        let writer = Arc::new(RecordingWriter::new(conn));
+        let mut sink = TurnRowSink::with_batch_size(
+            Arc::clone(&writer) as Arc<dyn TurnRowStore>,
+            "s1",
+            None,
+            2,
+        );
 
         sink.observe(&metric_record(Role::Assistant));
         sink.observe(&metric_record(Role::Assistant));
