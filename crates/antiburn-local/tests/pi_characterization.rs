@@ -877,6 +877,7 @@ fn pi_capabilities_match_published_evidence_and_session_cache_support() {
         subagent_models: false,
         compaction_boundaries: true,
         thread_identity: true,
+        record_identity: true,
         quota_incidents: false,
         harness_version: false,
     };
@@ -930,7 +931,7 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // deprecated models, so the rule can never prove absence.
             BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            // Thread identity now qualifies cache churn for Pi, and this
+            // Record identity now qualifies cache churn for Pi, and this
             // fixture shows no churn.
             BadgeStatus::Clean,
         ]
@@ -954,7 +955,7 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // deprecated models, so the rule can never prove absence.
             BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            // Thread identity now qualifies cache churn for Pi, but the
+            // Record identity now qualifies cache churn for Pi, but the
             // same incomplete coverage keeps it unassessed too.
             BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
         ]

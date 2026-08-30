@@ -28,12 +28,13 @@
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
+      "recordIdentity": false,
       "requestContextTokens": true,
       "serviceTier": false,
       "skillMcpAttribution": false,
       "subagentModels": true,
       "subagentRelationships": true,
-      "threadIdentity": false,
+      "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
       "toolDefinitions": false,
@@ -128,8 +129,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 9,
-      "evidenceSchemaRevision": 7,
+      "analyzerRevision": 10,
+      "evidenceSchemaRevision": 8,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -141,7 +142,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 7,
+    "schemaRevision": 8,
     "subagents": {
       "state": "complete",
       "value": {

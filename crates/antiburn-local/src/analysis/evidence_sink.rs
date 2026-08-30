@@ -507,15 +507,18 @@ impl SessionEvidenceAccumulator {
         // turn carried its own identity and every parent link resolved to an
         // identity this source declared earlier. `provider_eviction` stays
         // unsupported — no transcript record states an eviction.
-        let thread_identity_gap = facts.thread_identity_missing || self.thread_parent_unresolved;
-        let previous_turn = if !self.capabilities.thread_identity {
+        // `thread_identity_missing` feeds the record-identity claim here: a
+        // row with no `uuid` is a record-identity gap, not a thread-identity
+        // gap.
+        let record_identity_gap = facts.thread_identity_missing || self.thread_parent_unresolved;
+        let previous_turn = if !self.capabilities.record_identity {
             EvidenceValue::Unsupported
         } else if let Some(reason) = self.record_loss_reason {
             EvidenceValue::Partial {
                 observed: (),
                 reason,
             }
-        } else if thread_identity_gap {
+        } else if record_identity_gap {
             EvidenceValue::Partial {
                 observed: (),
                 reason: CoverageReason::AttributionIncomplete,
@@ -664,7 +667,7 @@ impl SessionEvidenceAccumulator {
                     observed: cache,
                     reason: CoverageReason::CapExceeded,
                 }
-            } else if self.capabilities.thread_identity && thread_identity_gap {
+            } else if self.capabilities.record_identity && record_identity_gap {
                 // The source promised per-record identity but a counted turn
                 // lacked it (or a parent link did not resolve): the cache
                 // group's linkage claim is incomplete, so the group degrades
@@ -1707,22 +1710,30 @@ mod tests {
         );
     }
 
+    /// A source with thread identity but no record identity (Codex's
+    /// shape) never claimed per-record linkage, so a counted turn without
+    /// a `uuid` is not a gap: `previous_turn` stays unsupported and the
+    /// cache group stays complete.
     #[test]
-    fn a_source_without_thread_identity_keeps_previous_turn_unsupported() {
+    fn a_source_without_record_identity_keeps_previous_turn_unsupported() {
         let mut capabilities = SourceCapabilities::claude();
-        capabilities.thread_identity = false;
+        capabilities.thread_identity = true;
+        capabilities.record_identity = false;
         let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
             agent: "claude".to_owned(),
             session_id: "s1".to_owned(),
             kind: SourceKind::Jsonl,
             capabilities,
         });
-        for record in thread_record(Some("u-1"), None, 1) {
+        for record in thread_record(None, None, 1) {
             accumulator.record(record);
         }
-        let EvidenceValue::Complete(cache) = accumulator.evidence(&TurnFacts::default()).cache
-        else {
-            panic!("cache must be complete");
+        let facts = TurnFacts {
+            thread_identity_missing: true,
+            ..TurnFacts::default()
+        };
+        let EvidenceValue::Complete(cache) = accumulator.evidence(&facts).cache else {
+            panic!("cache must stay complete: this source never claimed record identity");
         };
         assert_eq!(cache.previous_turn, EvidenceValue::Unsupported);
     }

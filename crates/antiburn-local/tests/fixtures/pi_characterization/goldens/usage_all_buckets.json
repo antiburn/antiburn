@@ -29,6 +29,7 @@
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
+      "recordIdentity": true,
       "requestContextTokens": true,
       "serviceTier": false,
       "skillMcpAttribution": false,
@@ -124,8 +125,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 9,
-      "evidenceSchemaRevision": 7,
+      "analyzerRevision": 10,
+      "evidenceSchemaRevision": 8,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -137,7 +138,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 7,
+    "schemaRevision": 8,
     "subagents": {
       "state": "unsupported"
     },

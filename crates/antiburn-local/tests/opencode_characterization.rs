@@ -163,6 +163,7 @@ fn opencode_capabilities_match_the_observed_contract() {
             subagent_models: true,
             compaction_boundaries: true,
             thread_identity: true,
+            record_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
