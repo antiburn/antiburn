@@ -752,6 +752,16 @@ Settled:
    prefix is not a fork. Copied messages keep the parent's `time_created`,
    which is older than the fork session itself; that is a structural
    fork-point signal that does not need the title.
+9. Split the `thread_identity` capability (decided 2026-08-30). Today two
+   consumers read one flag as two claims: `report.rs` reads "each row knows
+   its thread" (the overdepth prerequisite), and `evidence_sink.rs` reads
+   "each counted row carries a record identity" (`SUM(uuid IS NULL)` sets
+   `thread_identity_missing`, which degrades the `cache` group and
+   `previous_turn` to `AttributionIncomplete`). Phase 5 keeps
+   `thread_identity` for thread membership and adds `record_identity` for
+   the per-record linkage `previous_turn` verifies. Cache churn then
+   requires `record_identity`; overdepth requires `thread_identity`. Codex
+   (one rollout is one thread, no record ids) gets `thread_identity` only.
 
 Open, needs a human decision before the relevant seam:
 
@@ -765,16 +775,3 @@ Open, needs a human decision before the relevant seam:
 2. **Crate boundary for rows** (see "Where the row logic lives").
 3. **Premium-tier and effort-tier policies** per model family, needed by
    Phase 5. Not yet drafted.
-4. **Split the `thread_identity` capability.** Found 2026-09-01 while
-   flipping the flag for Codex. Two consumers read it as two different
-   claims. `report.rs` reads it as "each row knows its thread", the
-   overdepth prerequisite. `evidence_sink.rs` reads it as "each counted row
-   carries a record identity": `SUM(uuid IS NULL)` sets
-   `thread_identity_missing`, and with the flag set the `cache` group and
-   `previous_turn` degrade to `AttributionIncomplete`. OpenCode carries its
-   message id as `uuid`, so both claims hold. A Codex rollout is one thread
-   but its records have no id, so the flag cannot be set for Codex without
-   degrading every Codex cache group. Proposal for Phase 5: keep
-   `thread_identity` for thread membership and add `record_identity` for
-   the per-record linkage that `previous_turn` verifies; cache churn then
-   requires `record_identity`, overdepth requires `thread_identity`.
