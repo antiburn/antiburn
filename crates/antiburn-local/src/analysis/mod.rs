@@ -99,10 +99,14 @@ pub const PARSER_REVISION: i64 = 12;
 // and premium-policy rewrites, and dominant-main-model-by-output-tokens
 // (`insights::detectors`), on top of the pre-existing +1 for per-thread
 // repeated-context accounting (`RepeatedContext`, below).
-pub const ANALYZER_REVISION: i64 = 13;
+// +1 more for part F: Cache Churn now scores `RepeatedContext` by overpay
+// multiple instead of an absolute token threshold (`insights::detectors::
+// cache_churn`), so an old assessed outcome no longer matches this rule.
+pub const ANALYZER_REVISION: i64 = 14;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 10;
+// +1 more for `RepeatedContext::paid_tokens` (part F).
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 11;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

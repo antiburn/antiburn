@@ -65,6 +65,12 @@ pub struct TurnFacts {
     /// The same sum under uncached-input billing: paid context
     /// (`input_tokens`) beyond positive growth.
     pub repeated_context_uncached_input_tokens: u64,
+    /// Sum of the raw cache-write bucket over every considered pair's
+    /// current turn, before subtracting growth
+    /// (`RepeatedContext::paid_tokens` under cache-write accounting).
+    pub repeated_context_cache_write_paid_tokens: u64,
+    /// The same sum under uncached-input accounting.
+    pub repeated_context_uncached_input_paid_tokens: u64,
     pub repeated_context_pairs_considered: u64,
     /// Adjacent pairs skipped for a missing or non-monotonic `ts_ms`.
     pub repeated_context_pairs_skipped: u64,
@@ -145,6 +151,8 @@ pub fn query_turn_facts(
         thread_identity_missing: core.thread_identity_missing,
         repeated_context_cache_write_tokens: repeated_context.cache_write_tokens,
         repeated_context_uncached_input_tokens: repeated_context.uncached_input_tokens,
+        repeated_context_cache_write_paid_tokens: repeated_context.cache_write_paid_tokens,
+        repeated_context_uncached_input_paid_tokens: repeated_context.uncached_input_paid_tokens,
         repeated_context_pairs_considered: repeated_context.pairs_considered,
         repeated_context_pairs_skipped: repeated_context.pairs_skipped,
         diagnostics,
@@ -774,6 +782,12 @@ const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
 struct RepeatedContextTotals {
     cache_write_tokens: u64,
     uncached_input_tokens: u64,
+    /// Sum of the raw cache-write bucket (`RepeatedContext::paid_tokens`
+    /// under `CacheAccounting::CacheWrite`) over every considered pair's
+    /// current turn, before subtracting growth.
+    cache_write_paid_tokens: u64,
+    /// The same sum under uncached-input accounting.
+    uncached_input_paid_tokens: u64,
     pairs_considered: u64,
     pairs_skipped: u64,
 }
@@ -803,6 +817,8 @@ fn query_repeated_context(
     ])?;
     let mut cache_write_tokens: u64 = 0;
     let mut uncached_input_tokens: u64 = 0;
+    let mut cache_write_paid_tokens: u64 = 0;
+    let mut uncached_input_paid_tokens: u64 = 0;
     let mut pairs_considered: u64 = 0;
     let mut pairs_skipped: u64 = 0;
     let mut current_thread: Option<String> = None;
@@ -830,6 +846,9 @@ fn query_repeated_context(
                     cache_write_tokens.saturating_add(paid_cache_write.saturating_sub(growth));
                 uncached_input_tokens = uncached_input_tokens
                     .saturating_add(paid_uncached_input.saturating_sub(growth));
+                cache_write_paid_tokens = cache_write_paid_tokens.saturating_add(paid_cache_write);
+                uncached_input_paid_tokens =
+                    uncached_input_paid_tokens.saturating_add(paid_uncached_input);
             } else {
                 pairs_skipped += 1;
             }
@@ -839,6 +858,8 @@ fn query_repeated_context(
     Ok(RepeatedContextTotals {
         cache_write_tokens,
         uncached_input_tokens,
+        cache_write_paid_tokens,
+        uncached_input_paid_tokens,
         pairs_considered,
         pairs_skipped,
     })

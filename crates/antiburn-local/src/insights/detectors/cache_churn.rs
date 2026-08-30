@@ -1,36 +1,45 @@
-//! Cache Churn: per-thread repeated-context accounting, plus the legacy
-//! churn-event rule under cache-write accounting.
+//! Cache Churn: per-thread repeated-context accounting scored as an
+//! overpay multiple, matching Cadence's `detect_cache_rehydration`
+//! (`crates/analysis/src/efficiency_findings.rs`).
 //!
-//! The primary rule reads `repeated_context`: paid context beyond
-//! positive growth, summed over adjacent main-thread turn pairs (see
-//! `evidence_query::query_repeated_context`). At or above
-//! `catalogs.repeated_context_tokens_threshold`, that is a finding on
-//! its own, under either accounting — cache-write (Anthropic) or
-//! uncached-input (OpenAI).
+//! Cadence has no absolute token threshold. It computes
+//! `paid_per_unique_token = total_paid / unique_paid_tokens` where
+//! `unique_paid_tokens = total_paid - overpaid`, and calls a finding
+//! when that multiple reaches the family's reviewed "avg efficiency"
+//! band bound. This rule ports that math onto
+//! `RepeatedContext::{paid_tokens, repeated_tokens}` (`repeated_tokens`
+//! is antiburn's name for Cadence's `overpaid`), summed per session
+//! instead of per 30-day user.
 //!
-//! A second, sufficient condition stays for compatibility, so an
-//! existing Claude finding never vanishes: an observed churn event —
-//! idle expiry, model switching, or manual compaction — next to paid
-//! cache writes, under cache-write accounting only (uncached-input
-//! accounting has no `cache_creation_tokens` to read). A report never
-//! distinguishes which of the two conditions fired.
+//! The bound comes from `catalogs.families[family]
+//! .cache_overpay_multiple_threshold`, where `family` is
+//! `ModelEvidence::dominant_main_model`'s family, falling back to the
+//! family of the first model key in `by_model` (`BTreeMap` order) when
+//! no dominant model was computed. Neither present, or the resolved
+//! family's premium policy is not reviewed (including
+//! `ModelFamily::Unknown`, which is never reviewed), reports a
+//! contract gap: the rule reuses the premium policy's `reviewed` flag
+//! rather than adding a second per-family flag, since both flags mean
+//! the same thing — a maintainer has classified this family's models.
 //!
-//! Provider-eviction estimates are not part of either rule: the
-//! `provider_eviction` marker carries no estimate yet. The legacy rule
-//! uses only user-visible churn events the transcript proves.
+//! The finding fires only when `repeated_tokens > 0` (Cadence: "only
+//! ever fires when overpaid > 0") and the multiple reaches the bound.
+//! `unique_paid_tokens == 0` (every paid token in a considered pair was
+//! a repeat) is treated as an infinite multiple, so it is always a
+//! finding.
 //!
 //! Partial-evidence rules:
-//! - Partial cache evidence still permits a finding. Repeated tokens at
-//!   or above the threshold, or an observed churn event next to paid
-//!   cache writes, both prove presence.
+//! - Partial cache evidence still permits a finding: repeated and paid
+//!   tokens read from partial evidence prove presence.
 //! - Partial cache evidence prevents clean. A missed record may hide
-//!   churn or understate repeated context.
-//! - `repeated_context` `Unsupported` reports a contract gap: the source
-//!   supports neither cache-write nor uncached-input accounting.
+//!   repeated context or understate the paid total.
+//! - `repeated_context` `Unsupported` reports a contract gap: the
+//!   source supports neither cache-write nor uncached-input
+//!   accounting.
 
-use crate::analysis::{EvidenceValue, RepeatedContextAccounting, SessionEvidence};
+use crate::analysis::{EvidenceValue, SessionEvidence};
 
-use super::{Observation, ReportCatalogs, observed};
+use super::{ModelFamily, Observation, ReportCatalogs, model_family, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> Observation {
     let Some(cache) = observed(&evidence.cache) else {
@@ -41,19 +50,45 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         EvidenceValue::Partial { observed, .. } => observed,
         EvidenceValue::Complete(observed) => observed,
     };
-    if repeated_context.repeated_tokens >= catalogs.repeated_context_tokens_threshold {
+    if repeated_context.repeated_tokens == 0 {
+        return Observation::NoFinding;
+    }
+
+    let Some(family) = dominant_family(evidence) else {
+        return Observation::ContractIncomplete;
+    };
+    let Some(policy) = catalogs.families.get(&family) else {
+        return Observation::ContractIncomplete;
+    };
+    if !policy.premium.reviewed {
+        return Observation::ContractIncomplete;
+    }
+
+    let unique_paid_tokens = repeated_context
+        .paid_tokens
+        .saturating_sub(repeated_context.repeated_tokens);
+    if unique_paid_tokens == 0 {
         return Observation::Finding;
     }
-    let cache_write_accounting =
-        repeated_context.accounting == RepeatedContextAccounting::CacheWrite;
-    let churn_event = !cache.model_transitions.is_empty()
-        || (cache.longest_idle_gap_ms > 0
-            && cache.longest_idle_gap_ms >= catalogs.cache_idle_expiry_ms)
-        || cache.user_controlled_churn.manual_compactions > 0;
-    if cache_write_accounting && churn_event && cache.cache_creation_tokens > 0 {
-        return Observation::Finding;
+    let multiple = repeated_context.paid_tokens as f64 / unique_paid_tokens as f64;
+    if multiple >= policy.cache_overpay_multiple_threshold {
+        Observation::Finding
+    } else {
+        Observation::NoFinding
     }
-    Observation::NoFinding
+}
+
+/// Resolves the model family the overpay bound is judged under:
+/// `ModelEvidence::dominant_main_model`'s family, or, when that is
+/// absent, the family of the first model key in `by_model` (`BTreeMap`
+/// order, so this is deterministic). `None` when neither is present.
+fn dominant_family(evidence: &SessionEvidence) -> Option<ModelFamily> {
+    let models = observed(&evidence.models)?;
+    if let Some(dominant) = models.dominant_main_model.as_deref() {
+        return Some(model_family(dominant));
+    }
+    let first_model = models.by_model.keys().next()?;
+    Some(model_family(first_model))
 }
 
 #[cfg(test)]
@@ -61,8 +96,7 @@ mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
     use crate::analysis::{
-        CacheEvidence, CoverageReason, EvidenceValue, ModelTransition, RepeatedContext,
-        RepeatedContextAccounting,
+        CacheEvidence, CoverageReason, EvidenceValue, ModelTokens, RepeatedContextAccounting,
     };
 
     fn edit_cache(
@@ -84,18 +118,33 @@ mod tests {
         };
     }
 
+    fn repeated_context(
+        accounting: RepeatedContextAccounting,
+        repeated_tokens: u64,
+        paid_tokens: u64,
+    ) -> crate::analysis::RepeatedContext {
+        crate::analysis::RepeatedContext {
+            accounting,
+            repeated_tokens,
+            paid_tokens,
+            pairs_considered: 1,
+            pairs_skipped: 0,
+        }
+    }
+
     #[test]
-    fn model_switch_with_paid_cache_writes_is_a_finding_even_from_partial_evidence() {
+    fn claude_at_the_bound_is_a_finding() {
         for partial in [false, true] {
-            let mut evidence = claude_evidence("churn");
+            let mut evidence = claude_evidence("claude-at-bound");
             edit_cache(&mut evidence, partial, |cache| {
-                cache.cache_creation_tokens = 5_000;
-                cache.model_transitions.push(ModelTransition {
-                    ts_ms: 10,
-                    from_model: "model-a".to_owned(),
-                    to_model: "model-b".to_owned(),
-                });
+                // multiple = 235 / (235 - 135) = 2.35, exactly the bound.
+                cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                    RepeatedContextAccounting::CacheWrite,
+                    135,
+                    235,
+                ));
             });
+            set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
 
             assert_eq!(evaluate(&evidence, &ReportCatalogs::default()), {
                 Observation::Finding
@@ -104,27 +153,178 @@ mod tests {
     }
 
     #[test]
-    fn idle_gap_past_expiry_with_paid_cache_writes_is_a_finding() {
-        let catalogs = ReportCatalogs::default();
-        let mut evidence = claude_evidence("idle");
+    fn claude_above_the_bound_is_a_finding() {
+        let mut evidence = claude_evidence("claude-above-bound");
         edit_cache(&mut evidence, false, |cache| {
-            cache.cache_creation_tokens = 1;
-            cache.longest_idle_gap_ms = catalogs.cache_idle_expiry_ms;
+            // multiple = 400 / (400 - 300) = 4.0, above 2.35.
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::CacheWrite,
+                300,
+                400,
+            ));
         });
+        set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
 
-        assert_eq!(evaluate(&evidence, &catalogs), Observation::Finding);
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
+        );
     }
 
     #[test]
-    fn churn_event_without_paid_cache_writes_is_no_finding() {
-        let mut evidence = claude_evidence("free-churn");
+    fn claude_below_the_bound_is_no_finding() {
+        let mut evidence = claude_evidence("claude-below-bound");
         edit_cache(&mut evidence, false, |cache| {
-            cache.user_controlled_churn.manual_compactions = 2;
+            // multiple = 200 / (200 - 50) = 1.333..., below 2.35.
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::CacheWrite,
+                50,
+                200,
+            ));
         });
+        set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
             Observation::NoFinding
+        );
+    }
+
+    #[test]
+    fn openai_at_the_bound_is_a_finding() {
+        let mut evidence = claude_evidence("openai-at-bound");
+        edit_cache(&mut evidence, false, |cache| {
+            // multiple = 200 / (200 - 100) = 2.0, exactly the OpenAI bound.
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::UncachedInput,
+                100,
+                200,
+            ));
+        });
+        set_dominant_main_model(&mut evidence, "gpt-5.6-sol");
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
+        );
+    }
+
+    #[test]
+    fn openai_below_the_bound_is_no_finding() {
+        let mut evidence = claude_evidence("openai-below-bound");
+        edit_cache(&mut evidence, false, |cache| {
+            // multiple = 150 / (150 - 50) = 1.5, below 2.0.
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::UncachedInput,
+                50,
+                150,
+            ));
+        });
+        set_dominant_main_model(&mut evidence, "gpt-5.6-sol");
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::NoFinding
+        );
+    }
+
+    #[test]
+    fn zero_overpaid_is_no_finding_whatever_the_paid_total() {
+        let mut evidence = claude_evidence("zero-overpaid");
+        edit_cache(&mut evidence, false, |cache| {
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::CacheWrite,
+                0,
+                50_000,
+            ));
+        });
+        set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::NoFinding
+        );
+    }
+
+    #[test]
+    fn every_paid_token_repeated_is_a_finding_via_the_infinite_multiple_guard() {
+        let mut evidence = claude_evidence("all-repeated");
+        edit_cache(&mut evidence, false, |cache| {
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::CacheWrite,
+                80,
+                80,
+            ));
+        });
+        set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
+        );
+    }
+
+    #[test]
+    fn unknown_family_is_a_contract_gap_even_above_the_claude_bound() {
+        let mut evidence = claude_evidence("unknown-family");
+        edit_cache(&mut evidence, false, |cache| {
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::CacheWrite,
+                300,
+                400,
+            ));
+        });
+        set_dominant_main_model(&mut evidence, "some-unlisted-model");
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::ContractIncomplete
+        );
+    }
+
+    #[test]
+    fn no_dominant_model_falls_back_to_the_first_by_model_key() {
+        let mut evidence = claude_evidence("fallback-family");
+        edit_cache(&mut evidence, false, |cache| {
+            // multiple = 400 / (400 - 300) = 4.0, above the Claude bound.
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::CacheWrite,
+                300,
+                400,
+            ));
+        });
+        // `dominant_main_model` stays `None` (the fixture's default);
+        // only `by_model` carries a key, so the fallback must resolve
+        // the family from it.
+        let EvidenceValue::Complete(mut models) = evidence.models.clone() else {
+            unreachable!()
+        };
+        models
+            .by_model
+            .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
+        evidence.models = EvidenceValue::Complete(models);
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
+        );
+    }
+
+    #[test]
+    fn no_present_family_at_all_is_a_contract_gap() {
+        let mut evidence = claude_evidence("no-family");
+        edit_cache(&mut evidence, false, |cache| {
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::CacheWrite,
+                300,
+                400,
+            ));
+        });
+        evidence.models = EvidenceValue::Unsupported;
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::ContractIncomplete
         );
     }
 
@@ -134,48 +334,6 @@ mod tests {
             evaluate(&claude_evidence("quiet"), &ReportCatalogs::default()),
             Observation::NoFinding
         );
-    }
-
-    #[test]
-    fn repeated_context_at_the_threshold_is_a_finding_without_a_churn_event() {
-        let catalogs = ReportCatalogs::default();
-        let mut evidence = claude_evidence("repeated");
-        edit_cache(&mut evidence, false, |cache| {
-            cache.repeated_context = EvidenceValue::Complete(RepeatedContext {
-                accounting: RepeatedContextAccounting::CacheWrite,
-                repeated_tokens: catalogs.repeated_context_tokens_threshold,
-                pairs_considered: 1,
-                pairs_skipped: 0,
-            });
-        });
-
-        assert_eq!(evaluate(&evidence, &catalogs), Observation::Finding);
-    }
-
-    #[test]
-    fn uncached_input_accounting_below_threshold_with_a_churn_event_is_no_finding() {
-        // The legacy churn-event rule reads `cache_creation_tokens`, which
-        // uncached-input sources never populate: it must not fire under
-        // this accounting even when a churn event and repeated tokens both
-        // sit below the threshold.
-        let catalogs = ReportCatalogs::default();
-        let mut evidence = claude_evidence("uncached-churn");
-        edit_cache(&mut evidence, false, |cache| {
-            cache.cache_creation_tokens = 5_000;
-            cache.model_transitions.push(ModelTransition {
-                ts_ms: 10,
-                from_model: "model-a".to_owned(),
-                to_model: "model-b".to_owned(),
-            });
-            cache.repeated_context = EvidenceValue::Complete(RepeatedContext {
-                accounting: RepeatedContextAccounting::UncachedInput,
-                repeated_tokens: 1,
-                pairs_considered: 1,
-                pairs_skipped: 0,
-            });
-        });
-
-        assert_eq!(evaluate(&evidence, &catalogs), Observation::NoFinding);
     }
 
     #[test]
@@ -189,5 +347,19 @@ mod tests {
             evaluate(&evidence, &ReportCatalogs::default()),
             Observation::ContractIncomplete
         );
+    }
+
+    /// Overwrites `evidence.models.dominant_main_model` (and its
+    /// matching `by_model` entry), keeping the rest of the fixture's
+    /// model evidence.
+    fn set_dominant_main_model(evidence: &mut SessionEvidence, model: &str) {
+        let EvidenceValue::Complete(mut models) = evidence.models.clone() else {
+            unreachable!()
+        };
+        models.dominant_main_model = Some(model.to_owned());
+        models
+            .by_model
+            .insert(model.to_owned(), ModelTokens::default());
+        evidence.models = EvidenceValue::Complete(models);
     }
 }

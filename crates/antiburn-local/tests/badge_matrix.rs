@@ -348,14 +348,14 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 "m1",
                 "root",
                 20,
-                r#"{"role":"assistant","modelID":"model-a","tokens":{"input":40,"output":8,"cache":{"read":0,"write":9000}}}"#,
+                r#"{"role":"assistant","modelID":"claude-sonnet-4-6","tokens":{"input":40,"output":8,"cache":{"read":0,"write":9000}}}"#,
             );
             insert_message(
                 &connection,
                 "m2",
                 "root",
                 30,
-                r#"{"role":"assistant","modelID":"model-b","tokens":{"input":30,"output":6,"cache":{"read":0,"write":8000}}}"#,
+                r#"{"role":"assistant","modelID":"claude-opus-4-6","tokens":{"input":30,"output":6,"cache":{"read":0,"write":8000}}}"#,
             );
         }
         "excess_cache_rehydration_clean" => {

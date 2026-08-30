@@ -184,12 +184,13 @@ pub struct ModelEvidence {
     /// so it deserializes as `0/0`, which reads as missing.
     #[serde(default)]
     pub speed_signal: SignalCoverage,
-    /// The `scope = 'main'` assistant model with the most turns in
-    /// this session, ties broken by the earliest `last_ts_ms`, then
-    /// the earliest `turn_index`. Overpowered Subagents uses this as
-    /// the main-loop model; `SubagentChild::parent_model` is the
-    /// fallback when this is `None`. Old persisted evidence has no
-    /// field here, so it deserializes as `None`.
+    /// The `scope = 'main'` assistant model with the most summed
+    /// output tokens in this session, ties broken by turn count, then
+    /// the latest `ts_ms`, then the earliest `turn_index`. Overpowered
+    /// Subagents uses this as the main-loop model; `SubagentChild::
+    /// parent_model` is the fallback when this is `None`. Old
+    /// persisted evidence has no field here, so it deserializes as
+    /// `None`.
     #[serde(default)]
     pub dominant_main_model: Option<String>,
 }
@@ -266,6 +267,14 @@ pub struct RepeatedContext {
     pub repeated_tokens: u64,
     pub pairs_considered: u64,
     pub pairs_skipped: u64,
+    /// Sum of `paid` (the accounting's billed bucket) over every
+    /// considered pair's current turn, same accounting as
+    /// `repeated_tokens`. `repeated_tokens <= paid_tokens` by
+    /// construction: a pair's overpay never exceeds what it paid.
+    /// Old persisted evidence has no field here, so it deserializes as
+    /// `0`.
+    #[serde(default)]
+    pub paid_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -754,7 +763,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 10,
+            "schemaRevision": 11,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -780,8 +789,8 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 12,
-                "analyzerRevision": 13,
-                "evidenceSchemaRevision": 10,
+                "analyzerRevision": 14,
+                "evidenceSchemaRevision": 11,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -805,7 +814,7 @@ mod tests {
             "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
             "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}, "effortSignal": {"eligibleTurns": 0, "presentTurns": 0}, "speedSignal": {"eligibleTurns": 0, "presentTurns": 0}, "dominantMainModel": null}},
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
-            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0}}}},
+            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0}}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
             "quotaIncidents": {"state": "unsupported"}
         })

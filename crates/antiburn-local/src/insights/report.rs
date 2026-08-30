@@ -523,9 +523,10 @@ mod tests {
     use super::*;
     use crate::analysis::{
         ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, FAST_SPEED_KEY, LoadedSource,
-        ModelTokens, ModelTransition, PARSER_REVISION, QuotaConfidence, QuotaHitSeverity,
-        QuotaIncident, QuotaLimitKind, SessionEvidenceAccumulator, SessionQuotaEvidence,
-        SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
+        ModelTokens, PARSER_REVISION, QuotaConfidence, QuotaHitSeverity, QuotaIncident,
+        QuotaLimitKind, RepeatedContext, RepeatedContextAccounting, SessionEvidenceAccumulator,
+        SessionQuotaEvidence, SignalCoverage, SourceCapabilities, SourceKind, TurnCounts,
+        TurnFacts,
     };
     use crate::insights::detectors::{ModelFamily, ModelReplacementEntry, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
@@ -1282,14 +1283,25 @@ mod tests {
                 );
             }
             DetectorId::CacheChurn => {
+                let EvidenceValue::Complete(models) = &mut row.models else {
+                    unreachable!()
+                };
+                // A `by_model` entry establishes a reviewed Claude family,
+                // the same way `ModelOverthinking`'s branch above does.
+                models
+                    .by_model
+                    .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
                 let EvidenceValue::Complete(cache) = &mut row.cache else {
                     unreachable!()
                 };
-                cache.cache_creation_tokens = 5_000;
-                cache.model_transitions.push(ModelTransition {
-                    ts_ms: 10,
-                    from_model: "model-a".to_owned(),
-                    to_model: "model-b".to_owned(),
+                // Every paid token is a repeat: the overpay multiple is
+                // infinite, a finding at any reviewed family's bound.
+                cache.repeated_context = EvidenceValue::Complete(RepeatedContext {
+                    accounting: RepeatedContextAccounting::CacheWrite,
+                    repeated_tokens: 5_000,
+                    paid_tokens: 5_000,
+                    pairs_considered: 1,
+                    pairs_skipped: 0,
                 });
             }
             DetectorId::OverpoweredSubagents | DetectorId::UnusedBuiltInTools => {

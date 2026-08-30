@@ -563,17 +563,20 @@ impl SessionEvidenceAccumulator {
         let repeated_context = match repeated_context_accounting {
             None => EvidenceValue::Unsupported,
             Some(accounting) => {
-                let repeated_tokens = match accounting {
-                    RepeatedContextAccounting::CacheWrite => {
-                        facts.repeated_context_cache_write_tokens
-                    }
-                    RepeatedContextAccounting::UncachedInput => {
-                        facts.repeated_context_uncached_input_tokens
-                    }
+                let (repeated_tokens, paid_tokens) = match accounting {
+                    RepeatedContextAccounting::CacheWrite => (
+                        facts.repeated_context_cache_write_tokens,
+                        facts.repeated_context_cache_write_paid_tokens,
+                    ),
+                    RepeatedContextAccounting::UncachedInput => (
+                        facts.repeated_context_uncached_input_tokens,
+                        facts.repeated_context_uncached_input_paid_tokens,
+                    ),
                 };
                 let observed = RepeatedContext {
                     accounting,
                     repeated_tokens,
+                    paid_tokens,
                     pairs_considered: facts.repeated_context_pairs_considered,
                     pairs_skipped: facts.repeated_context_pairs_skipped,
                 };

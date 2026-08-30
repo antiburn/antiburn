@@ -659,14 +659,18 @@ fn context_reread_reads_complete_uncached_input_repeated_context_and_a_finding_b
         repeated_context.accounting,
         antiburn_local::analysis::RepeatedContextAccounting::UncachedInput
     );
-    // Turn two grows the window from 2000 to 60000 (+58000); turn three
-    // re-sends the same 60000-token window fully uncached after the idle
-    // gap, so growth is 0 and the whole 60000 is repeated.
+    // Turn two grows the window from 2000 to 60000 (+58000), paying 2000
+    // fresh uncached-input tokens; turn three re-sends the same
+    // 60000-token window fully uncached after the idle gap, so growth is
+    // 0 and the whole 60000 it pays is repeated. paid_tokens sums both
+    // turns' paid buckets: 2000 + 60000 = 62000.
     assert_eq!(repeated_context.repeated_tokens, 60_000);
-    assert!(
-        repeated_context.repeated_tokens
-            >= ReportCatalogs::default().repeated_context_tokens_threshold
-    );
+    assert_eq!(repeated_context.paid_tokens, 62_000);
+    // multiple = 62000 / (62000 - 60000) = 31, far above the OpenAI
+    // bound of 2.0.
+    let unique_paid_tokens = repeated_context.paid_tokens - repeated_context.repeated_tokens;
+    let multiple = repeated_context.paid_tokens as f64 / unique_paid_tokens as f64;
+    assert!(multiple >= 2.0);
 
     let badges = session_badges(&evidence, &ReportCatalogs::default());
     let cache_churn_badge = badges

@@ -200,16 +200,23 @@ impl PremiumPolicy {
 }
 
 /// One model family's full tier policy.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FamilyPolicy {
     pub effort: EffortPolicy,
     pub speed: SpeedPolicy,
     pub premium: PremiumPolicy,
+    /// The overpay multiple (`RepeatedContext::paid_tokens` divided by
+    /// unique paid tokens) at or above which Cache Churn calls a
+    /// finding, matching Cadence's `CACHE_OVERPAY_BAND_BOUNDS` "avg
+    /// efficiency" band bound. `premium.reviewed` gates this field the
+    /// same way it gates premium status: an unreviewed family's models
+    /// never prove a finding under this bound.
+    pub cache_overpay_multiple_threshold: f64,
 }
 
 /// Report-time policy inputs. Catalogs change without reparsing
 /// transcripts and without touching persisted evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReportCatalogs {
     pub revision: i64,
     /// A request whose observed context depth exceeds this cap is a
@@ -223,12 +230,6 @@ pub struct ReportCatalogs {
     /// Delegated fast-tier turns at or above this count are a finding.
     /// Zero observed delegated turns never fire, whatever the value.
     pub fast_mode_delegated_turns_threshold: u64,
-    /// An idle gap at or above this duration counts as cache expiry.
-    pub cache_idle_expiry_ms: i64,
-    /// Repeated-context tokens (`RepeatedContext::repeated_tokens`) at or
-    /// above this count are a Cache Churn finding. A proposal: roughly one
-    /// re-read of a mid-sized context. Flagged for maintainer review.
-    pub repeated_context_tokens_threshold: u64,
 }
 
 /// Effort tiers above the recommended cap in every reviewed family:
@@ -243,6 +244,20 @@ fn above_cap_effort_tiers() -> BTreeSet<String> {
         .collect()
 }
 
+/// Cadence's per-family cache-overpay "avg efficiency" bands
+/// (`CACHE_OVERPAY_BAND_BOUNDS`,
+/// `web/src/components/efficiency/EfficiencyContent.tsx`), from the
+/// 2026-08-05 Cadence corpus: 115 Claude Code users and 33 Codex users
+/// with over 500k paid tokens in 30 days. Each band is four bounds —
+/// `[good, fair, poor, very poor]` — and `cache_overpay_multiple_threshold`
+/// below takes the "fair" bound, the point Cadence calls a finding:
+/// - Claude: `[1.9, 2.35, 3.35, 4.45]`, threshold `2.35`.
+/// - Codex (OpenAI): `[1.7, 2.0, 2.35, 2.8]`, threshold `2.0`.
+///
+/// Cadence computes this multiple per user over a 30-day window; this
+/// rule computes it per session. A very small session's multiple is
+/// noisier than Cadence's per-user aggregate, so a session that trips
+/// the bound on a handful of paid tokens deserves a skeptical read.
 impl Default for ReportCatalogs {
     fn default() -> Self {
         let mut families = BTreeMap::new();
@@ -272,6 +287,7 @@ impl Default for ReportCatalogs {
                     prefixes: Vec::new(),
                     exceptions: BTreeSet::new(),
                 },
+                cache_overpay_multiple_threshold: 2.35,
             },
         );
         families.insert(
@@ -305,18 +321,20 @@ impl Default for ReportCatalogs {
                     .map(str::to_owned)
                     .collect(),
                 },
+                cache_overpay_multiple_threshold: 2.0,
             },
         );
+        // `Unknown` stays fully default: `premium.reviewed` is `false`
+        // and `cache_overpay_multiple_threshold` is `0.0`. Neither
+        // matters, since an unreviewed family is never scored.
         families.insert(ModelFamily::Unknown, FamilyPolicy::default());
 
         Self {
-            revision: 5,
+            revision: 6,
             depth_cap_tokens: 400_000,
             families,
             model_replacements: model_registry::default_registry(),
             fast_mode_delegated_turns_threshold: 1,
-            cache_idle_expiry_ms: 300_000,
-            repeated_context_tokens_threshold: 50_000,
         }
     }
 }
