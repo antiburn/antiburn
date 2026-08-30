@@ -25,6 +25,8 @@ pub mod model;
 mod schema;
 
 #[cfg(test)]
+mod privacy_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, HashSet};
