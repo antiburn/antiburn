@@ -9,6 +9,10 @@
 //!   above-cap tier with turns proves presence.
 //! - Partial model evidence prevents clean. A missed record may hide
 //!   an above-cap tier, so absence cannot be concluded.
+//! - A finding still wins on partial effort-signal coverage. Otherwise,
+//!   when fewer eligible turns carried an effort value than the source
+//!   saw (including zero eligible turns), the rule reports the signal
+//!   as missing instead of clean.
 
 use crate::analysis::SessionEvidence;
 
@@ -23,6 +27,10 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
                 return Observation::Finding;
             }
         }
+        let coverage = models.effort_signal;
+        if coverage.eligible_turns == 0 || coverage.present_turns < coverage.eligible_turns {
+            return Observation::SignalMissing;
+        }
     }
     Observation::NoFinding
 }
@@ -31,8 +39,10 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
 mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
-    use crate::analysis::{CoverageReason, EvidenceValue, TurnCounts};
+    use crate::analysis::{CoverageReason, EvidenceValue, SignalCoverage, TurnCounts};
 
+    /// Builds evidence with one effort-tier entry and full effort-
+    /// signal coverage: every eligible turn carried an effort value.
     fn with_tier(tier: &str, partial: bool) -> SessionEvidence {
         let mut evidence = claude_evidence("effort");
         let EvidenceValue::Complete(mut models) = evidence.models else {
@@ -45,6 +55,10 @@ mod tests {
                 delegated: 0,
             },
         );
+        models.effort_signal = SignalCoverage {
+            eligible_turns: 1,
+            present_turns: 1,
+        };
         evidence.models = if partial {
             EvidenceValue::Partial {
                 observed: models,
@@ -79,5 +93,46 @@ mod tests {
             evaluate(&with_tier("medium", false), &catalogs),
             Observation::NoFinding
         );
+    }
+
+    #[test]
+    fn zero_eligible_effort_turns_report_the_signal_as_missing() {
+        let catalogs = ReportCatalogs::default();
+        let evidence = claude_evidence("no-eligible-turns");
+
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::SignalMissing);
+    }
+
+    #[test]
+    fn partial_effort_signal_coverage_without_a_finding_is_signal_missing() {
+        let catalogs = ReportCatalogs::default();
+        let mut evidence = claude_evidence("partial-effort-coverage");
+        let EvidenceValue::Complete(mut models) = evidence.models else {
+            unreachable!()
+        };
+        models.effort_signal = SignalCoverage {
+            eligible_turns: 3,
+            present_turns: 1,
+        };
+        evidence.models = EvidenceValue::Complete(models);
+
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::SignalMissing);
+    }
+
+    #[test]
+    fn a_finding_wins_over_partial_effort_signal_coverage() {
+        let catalogs = ReportCatalogs::default();
+        let tier = catalogs.effort_tiers_above_cap.first().unwrap().clone();
+        let mut evidence = with_tier(&tier, false);
+        let EvidenceValue::Complete(mut models) = evidence.models else {
+            unreachable!()
+        };
+        models.effort_signal = SignalCoverage {
+            eligible_turns: 3,
+            present_turns: 1,
+        };
+        evidence.models = EvidenceValue::Complete(models);
+
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::Finding);
     }
 }

@@ -443,6 +443,25 @@ describe("InsightsPane categories", () => {
       screen.getAllByText("Not assessed — no processed sessions in this window").length,
     ).toBe(4)
   })
+
+  it("names a missing recorded setting without claiming a clean result", async () => {
+    const categories = notAssessedCategories()
+    categories[0] = { ...categories[0]!, notAssessedReason: "signalMissing" }
+    mockCommands({
+      get_insights_report: report({
+        coverage: coverage({ discovered: 4, ready: 4 }),
+        assessedSessions: 4,
+        categories,
+      }),
+    })
+    render(<InsightsPane />)
+
+    expect(
+      await screen.findByText(
+        "Not assessed — this session did not record the setting this check needs",
+      ),
+    ).toBeInTheDocument()
+  })
 })
 
 describe("InsightsPane quota pressure", () => {

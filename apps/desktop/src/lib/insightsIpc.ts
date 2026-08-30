@@ -31,6 +31,7 @@ export type InsightsNotAssessedReason =
   | "capabilityMissing"
   | "incompleteEvidence"
   | "evidenceContractIncomplete"
+  | "signalMissing"
 
 /** One of the nine report categories, with its status and denominators. */
 export interface InsightsCategoryPayload {

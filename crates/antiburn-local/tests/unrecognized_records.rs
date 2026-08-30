@@ -44,9 +44,11 @@ fn an_inert_unknown_session_enters_the_denominator_and_is_assessed() {
     let counts = report.detectors[DetectorId::ModelOverthinking.index()];
     assert_eq!(counts.eligible, 1);
     assert_eq!(counts.assessed, 1);
+    // The session carries zero assistant turns, so zero turns are
+    // eligible to carry an effort value: the signal reads as missing.
     assert_eq!(
         report.detector_statuses[DetectorId::ModelOverthinking.index()],
-        DetectorStatus::Clean
+        DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
     );
     assert_eq!(report.unrecognized_records.sessions_with_types, 1);
     assert_eq!(report.unrecognized_records.inert_sessions, 1);
@@ -92,9 +94,11 @@ fn an_unrecognized_role_with_usage_fails_closed_and_keeps_neighbours() {
     let counts = report.detectors[DetectorId::ModelOverthinking.index()];
     assert_eq!(counts.eligible, 1);
     assert_eq!(counts.assessed, 0);
+    // The session carries zero assistant turns, so zero turns are
+    // eligible to carry an effort value: the signal reads as missing.
     assert_eq!(
         report.detector_statuses[DetectorId::ModelOverthinking.index()],
-        DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
     );
 }
 
@@ -246,9 +250,11 @@ fn a_capped_unknown_session_is_eligible_but_not_assessed() {
     assert_eq!(report.unrecognized_records.capped_sessions, 1);
     assert_eq!(report.unrecognized_records.truncated_sessions, 0);
     assert!(report.unrecognized_records.types_truncated);
+    // The session carries zero assistant turns, so zero turns are
+    // eligible to carry an effort value: the signal reads as missing.
     assert_eq!(
         report.detector_statuses[DetectorId::ModelOverthinking.index()],
-        DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
     );
 }
 
@@ -273,9 +279,11 @@ fn an_overlong_type_is_truncated_without_claiming_set_overflow() {
     let counts = report.detectors[DetectorId::ModelOverthinking.index()];
     assert_eq!(counts.eligible, 1);
     assert_eq!(counts.assessed, 0);
+    // The session carries zero assistant turns, so zero turns are
+    // eligible to carry an effort value: the signal reads as missing.
     assert_eq!(
         report.detector_statuses[DetectorId::ModelOverthinking.index()],
-        DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
     );
 
     let summary = report.unrecognized_records;

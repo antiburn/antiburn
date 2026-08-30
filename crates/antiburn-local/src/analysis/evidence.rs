@@ -142,6 +142,23 @@ pub struct TurnCounts {
     pub delegated: u64,
 }
 
+/// The `speed` label Claude's transcript uses for its fast-mode
+/// signal. `overuse_of_fast_mode` reads only this key from
+/// `ModelEvidence::fast_modes`; every other observed label (for
+/// example `"standard"`) never counts toward the finding.
+pub const FAST_SPEED_KEY: &str = "fast";
+
+/// Counts how many eligible turns carried one signal, and how many
+/// of those turns observed a value for it. `present_turns <
+/// eligible_turns` (including `0/0`) means the signal is missing,
+/// not that the session used it zero times.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalCoverage {
+    pub eligible_turns: u64,
+    pub present_turns: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelEvidence {
@@ -150,6 +167,14 @@ pub struct ModelEvidence {
     pub effort_tiers: BTreeMap<String, TurnCounts>,
     pub fast_modes: BTreeMap<String, TurnCounts>,
     pub service_tiers: EvidenceValue<()>,
+    /// Reasoning-effort-tier coverage. Old persisted evidence has no
+    /// field here, so it deserializes as `0/0`, which reads as missing.
+    #[serde(default)]
+    pub effort_signal: SignalCoverage,
+    /// Fast-tier coverage. Old persisted evidence has no field here,
+    /// so it deserializes as `0/0`, which reads as missing.
+    #[serde(default)]
+    pub speed_signal: SignalCoverage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -615,7 +640,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 3,
+            "schemaRevision": 4,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -640,8 +665,8 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 5,
-                "analyzerRevision": 6,
-                "evidenceSchemaRevision": 3,
+                "analyzerRevision": 7,
+                "evidenceSchemaRevision": 4,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -660,7 +685,7 @@ mod tests {
             "eligibility": {"state": "complete", "value": {"turns": 0, "assistantTurns": 0, "toolTurns": 0, "depthEligibleTurns": 0}},
             "tools": {"state": "complete", "value": {"byName": {}}},
             "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
-            "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}}},
+            "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}, "effortSignal": {"eligibleTurns": 0, "presentTurns": 0}, "speedSignal": {"eligibleTurns": 0, "presentTurns": 0}}},
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
             "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},

@@ -66,6 +66,7 @@ const NOT_ASSESSED_WORDING: Record<InsightsNotAssessedReason, string> = {
   incompleteEvidence:
     "Not assessed — evidence is incomplete, so a clean result cannot be claimed",
   evidenceContractIncomplete: "Not assessed — stored evidence cannot express this check yet",
+  signalMissing: "Not assessed — this session did not record the setting this check needs",
 }
 
 /** Reader-facing names for the quota limit-kind identifiers. */

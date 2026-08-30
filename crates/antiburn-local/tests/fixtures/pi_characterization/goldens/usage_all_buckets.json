@@ -103,17 +103,25 @@
             "turns": 2
           }
         },
+        "effortSignal": {
+          "eligibleTurns": 2,
+          "presentTurns": 0
+        },
         "effortTiers": {},
         "fastModes": {},
         "serviceTiers": {
           "state": "unsupported"
         },
+        "speedSignal": {
+          "eligibleTurns": 2,
+          "presentTurns": 0
+        },
         "unattributedTurns": 0
       }
     },
     "provenance": {
-      "analyzerRevision": 6,
-      "evidenceSchemaRevision": 3,
+      "analyzerRevision": 7,
+      "evidenceSchemaRevision": 4,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -125,7 +133,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 3,
+    "schemaRevision": 4,
     "subagents": {
       "state": "unsupported"
     },

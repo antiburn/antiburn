@@ -448,7 +448,7 @@ mod tests {
     use crate::analysis::{
         ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, ModelTokens, PARSER_REVISION,
         QuotaConfidence, QuotaHitSeverity, QuotaIncident, QuotaLimitKind,
-        SessionEvidenceAccumulator, SessionQuotaEvidence, SourceKind, TurnCounts,
+        SessionEvidenceAccumulator, SessionQuotaEvidence, SignalCoverage, SourceKind, TurnCounts,
     };
     use crate::insights::detectors::{ModelReplacement, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
@@ -465,13 +465,26 @@ mod tests {
 
     /// The same claude evidence with one observed assistant turn, so
     /// the zero-work denominator exclusion does not remove the session
-    /// from the absence detectors' eligible denominators.
+    /// from the absence detectors' eligible denominators. The one turn
+    /// carries full effort and speed signal coverage, so Model
+    /// Overthinking and Overuse of Fast Mode can read clean from it.
     fn evidence_with_work(session_id: &str) -> SessionEvidence {
         let mut row = evidence(session_id);
         let EvidenceValue::Complete(eligibility) = &mut row.eligibility else {
             unreachable!()
         };
         eligibility.assistant_turns = 1;
+        let EvidenceValue::Complete(models) = &mut row.models else {
+            unreachable!()
+        };
+        models.effort_signal = SignalCoverage {
+            eligible_turns: 1,
+            present_turns: 1,
+        };
+        models.speed_signal = SignalCoverage {
+            eligible_turns: 1,
+            present_turns: 1,
+        };
         row
     }
 
@@ -644,7 +657,7 @@ mod tests {
             ),
         ];
         for (fast_tier, service_tier, expected_status) in cases {
-            let mut row = evidence("mode");
+            let mut row = evidence_with_work("mode");
             row.capabilities.fast_tier = fast_tier;
             row.capabilities.service_tier = service_tier;
             let mut accumulator = EfficiencyReportAccumulator::new();
@@ -837,7 +850,6 @@ mod tests {
             DetectorId::OverpoweredSubagents,
             DetectorId::UnusedMcpServers,
             DetectorId::UnusedSkills,
-            DetectorId::OldModelUsage,
             DetectorId::OveruseOfFastMode,
             DetectorId::CacheChurn,
         ] {
@@ -850,6 +862,12 @@ mod tests {
         assert_eq!(
             report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
             DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
+        );
+        // The production catalog default carries no curated deprecated
+        // models, so the rule can never prove absence.
+        assert_eq!(
+            report.detector_statuses[DetectorId::OldModelUsage.index()],
+            DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
         );
     }
 
@@ -1023,6 +1041,15 @@ mod tests {
                     DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
                     "baseline for {detector:?}"
                 );
+            } else if detector == DetectorId::OldModelUsage {
+                // The production catalog default carries no curated
+                // deprecated models: even the undegraded baseline
+                // cannot read clean.
+                assert_eq!(
+                    baseline,
+                    DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
+                    "baseline for {detector:?}"
+                );
             } else {
                 assert_eq!(
                     baseline,
@@ -1049,7 +1076,7 @@ mod tests {
         // One of two eligible sessions carries only partial model
         // evidence and shows no finding. Overthinking must not read
         // clean from that incomplete absence.
-        let mut partial = evidence("partial");
+        let mut partial = evidence_with_work("partial");
         partial.models = match partial.models {
             EvidenceValue::Complete(observed) => EvidenceValue::Partial {
                 observed,
@@ -1058,7 +1085,7 @@ mod tests {
             _ => unreachable!(),
         };
         let mut accumulator = EfficiencyReportAccumulator::new();
-        accumulator.observe_session(evidence("complete"));
+        accumulator.observe_session(evidence_with_work("complete"));
         accumulator.observe_session(partial);
         let report = accumulator.finish(context(CoverageCounts::default()));
 

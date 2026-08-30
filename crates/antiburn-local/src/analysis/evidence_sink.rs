@@ -7,7 +7,7 @@ use crate::analysis::evidence::{
     MAX_EVIDENCE_EXAMPLES, MAX_MODEL_TRANSITIONS, MAX_MODELS, MAX_SUBAGENT_CHILDREN,
     MAX_SUBAGENT_MODELS, MAX_TIER_LABELS, MAX_TOOL_NAMES, MAX_UNRECOGNIZED_TYPES, ModelEvidence,
     ModelTokens, ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence,
-    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionTimeRange,
+    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SignalCoverage,
     SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
     SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts, cap_string,
     insert_diagnostic_field, record_diagnostic_set_cap,
@@ -50,6 +50,10 @@ pub struct SessionEvidenceAccumulator {
     unattributed_turns: u64,
     effort_tiers: BTreeMap<String, TurnCounts>,
     fast_modes: BTreeMap<String, TurnCounts>,
+    effort_eligible_turns: u64,
+    effort_present_turns: u64,
+    speed_eligible_turns: u64,
+    speed_present_turns: u64,
     models_cap_exceeded: bool,
     subagent_spawn_count: u64,
     delegated_turns: u64,
@@ -110,6 +114,10 @@ impl SessionEvidenceAccumulator {
             unattributed_turns: 0,
             effort_tiers: BTreeMap::new(),
             fast_modes: BTreeMap::new(),
+            effort_eligible_turns: 0,
+            effort_present_turns: 0,
+            speed_eligible_turns: 0,
+            speed_present_turns: 0,
             models_cap_exceeded: false,
             subagent_spawn_count: 0,
             delegated_turns: 0,
@@ -259,6 +267,19 @@ impl SessionEvidenceAccumulator {
                 }
             } else {
                 self.unattributed_turns = self.unattributed_turns.saturating_add(1);
+            }
+            // Every model-attributed assistant turn (parent or delegated)
+            // is eligible to carry an effort or speed value. Synthetic
+            // records have no model and never carry a setting.
+            if event.model.is_some() {
+                self.effort_eligible_turns = self.effort_eligible_turns.saturating_add(1);
+                self.speed_eligible_turns = self.speed_eligible_turns.saturating_add(1);
+                if event.thinking_mode.is_some() {
+                    self.effort_present_turns = self.effort_present_turns.saturating_add(1);
+                }
+                if event.speed.is_some() {
+                    self.speed_present_turns = self.speed_present_turns.saturating_add(1);
+                }
             }
         }
         if let Some(tier) = event.thinking_mode.as_deref() {
@@ -630,6 +651,14 @@ impl SessionEvidenceAccumulator {
             effort_tiers: self.effort_tiers.clone(),
             fast_modes: self.fast_modes.clone(),
             service_tiers: EvidenceValue::Unsupported,
+            effort_signal: SignalCoverage {
+                eligible_turns: self.effort_eligible_turns,
+                present_turns: self.effort_present_turns,
+            },
+            speed_signal: SignalCoverage {
+                eligible_turns: self.speed_eligible_turns,
+                present_turns: self.speed_present_turns,
+            },
         };
         let subagents = SubagentEvidence {
             spawn_count: self.subagent_spawn_count,
@@ -1224,6 +1253,37 @@ mod tests {
             accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
         }
         accumulator.evidence()
+    }
+
+    #[test]
+    fn synthetic_assistant_turns_are_not_signal_eligible() {
+        // Claude writes zero-usage `<synthetic>` assistant records. The
+        // adapter blanks their model. They never carry effort or speed,
+        // so they must not count against signal coverage.
+        let mut accumulator = accumulator(true);
+        let mut real = assistant_event(0);
+        real.model = Some("model".to_owned());
+        real.thinking_mode = Some("high".to_owned());
+        real.speed = Some("standard".to_owned());
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(real)));
+        let mut synthetic = assistant_event(1);
+        synthetic.model = None;
+        synthetic.usage.input_tokens = 0;
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(synthetic)));
+
+        // The unattributed synthetic turn leaves the group partial. The
+        // coverage counts must still exclude it.
+        let EvidenceValue::Partial {
+            observed: models,
+            reason: CoverageReason::AttributionIncomplete,
+        } = accumulator.evidence().models
+        else {
+            panic!("expected attribution-incomplete model evidence");
+        };
+        assert_eq!(models.effort_signal.eligible_turns, 1);
+        assert_eq!(models.effort_signal.present_turns, 1);
+        assert_eq!(models.speed_signal.eligible_turns, 1);
+        assert_eq!(models.speed_signal.present_turns, 1);
     }
 
     #[test]

@@ -50,12 +50,12 @@ pub use engine::{
 pub use evidence::{
     CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
     ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP, EligibilityEvidence,
-    EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource, ModelEvidence, ModelTokens,
-    ModelTransition, OrderingObservation, ParseDiagnostics, QuotaConfidence, QuotaHitSeverity,
-    QuotaIncident, QuotaLimitKind, RelationConfidence, SessionEvidence, SessionEvidenceIdentity,
-    SessionProvenance, SessionQuotaEvidence, SessionTimeRange, SourceAcceptance,
-    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
-    ToolEvidence, ToolUse, TurnCounts,
+    EvidenceCoverage, EvidenceSource, EvidenceValue, FAST_SPEED_KEY, LoadedSource, ModelEvidence,
+    ModelTokens, ModelTransition, OrderingObservation, ParseDiagnostics, QuotaConfidence,
+    QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RelationConfidence, SessionEvidence,
+    SessionEvidenceIdentity, SessionProvenance, SessionQuotaEvidence, SessionTimeRange,
+    SignalCoverage, SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild,
+    SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
 pub use framing::{
@@ -82,9 +82,9 @@ pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 5;
-pub const ANALYZER_REVISION: i64 = 6;
+pub const ANALYZER_REVISION: i64 = 7;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 3;
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 4;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

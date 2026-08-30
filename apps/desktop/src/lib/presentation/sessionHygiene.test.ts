@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { SessionHygienePayload } from "../insightsIpc"
 import {
   INITIAL_SESSION_HYGIENE,
+  notAssessedReasonLabel,
   sessionHygieneChecks,
   sessionHygieneStateLabel,
 } from "./sessionHygiene"
@@ -43,13 +44,39 @@ describe("sessionHygieneChecks", () => {
 
   it("names every check without a verdict, whatever the status", () => {
     expect(sessionHygieneChecks(PAYLOAD).map((check) => check.name)).toEqual([
-      "Session overdepth detected",
-      "Model overthinking detected",
-      "Overpowered subagents detected",
-      "Obsolete model detected",
-      "Fast mode overuse detected",
-      "Excess cache rehydration detected",
+      "Session overdepth",
+      "Model overthinking",
+      "Overpowered subagents",
+      "Obsolete model",
+      "Fast-mode overuse",
+      "Excess context reprocessing",
     ])
+  })
+
+  it("keeps every name free of verdict wording, whatever the status", () => {
+    for (const check of sessionHygieneChecks(PAYLOAD)) {
+      expect(check.name.toLowerCase()).not.toContain("detected")
+      expect(check.name.toLowerCase()).not.toContain("not assessed")
+    }
+  })
+
+  it("names the not-assessed obsolete-model check without its verdict", () => {
+    const notAssessedPayload: SessionHygienePayload = {
+      ...PAYLOAD,
+      badges: PAYLOAD.badges.map((badge) =>
+        badge.id === "obsoleteModel"
+          ? {
+              id: "obsoleteModel" as const,
+              status: "notAssessed" as const,
+              notAssessedReason: "incompleteEvidence" as const,
+            }
+          : badge,
+      ),
+    }
+    const obsoleteModel = sessionHygieneChecks(notAssessedPayload).find(
+      (check) => check.id === "obsoleteModel",
+    )
+    expect(obsoleteModel?.name).toBe("Obsolete model")
   })
 
   it("maps finding, clean, and not-assessed states to semantic ink", () => {
@@ -68,6 +95,12 @@ describe("sessionHygieneChecks", () => {
     expect(checks).toHaveLength(6)
     expect(checks.every((check) => check.status === "notAssessed")).toBe(true)
     expect(sessionHygieneStateLabel(INITIAL_SESSION_HYGIENE.evidenceState)).toBe("Computing")
+  })
+
+  it("names the signal-missing reason without claiming a clean result", () => {
+    expect(notAssessedReasonLabel("signalMissing")).toBe(
+      "this session did not record the setting this check needs",
+    )
   })
 
   it("names every non-ready state and leaves ready evidence unlabeled", () => {
