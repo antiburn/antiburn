@@ -6,13 +6,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use antiburn_local::analysis::{
-    BoundedJsonlReader, CompositeSink, EvidenceSource, NormalizedEvent, NormalizedRecord,
-    RETAINED_METRICS_BYTES_BOUND, RawSource, RecordSink, Role, SCAN_QUANTUM_BYTES,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, TURN_ROW_BATCH_SIZE, ToolCall, TurnFacts, TurnRow,
-    TurnRowError, TurnRowSink, TurnRowStore, Usage, adapter_for,
+    BoundedJsonlReader, CompositeSink, ContextSourceKind, EvidenceObservation, EvidenceSource,
+    MemoryTurnRowStore, NormalizedEvent, NormalizedRecord, RETAINED_EVIDENCE_BYTES_BOUND,
+    RETAINED_METRICS_BYTES_BOUND, RawSource, RecordSink, RelationProvenance, Role,
+    SCAN_QUANTUM_BYTES, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
+    SessionSummary, SourceCapabilities, SourceKind, TURN_ROW_BATCH_SIZE, ToolCall, TurnFacts,
+    TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey, Usage,
+    adapter_for, count_turn_content_rows, count_turn_rows, merge_metrics,
 };
-use corpus::generate_session_of_bytes;
+use corpus::{SessionSpec, generate_session, generate_session_of_bytes};
 
 #[test]
 fn streamed_corpus_keeps_framing_and_metrics_bounded() {
@@ -182,4 +184,341 @@ fn the_turn_row_sink_stays_bounded_over_a_streamed_corpus() {
         TURN_ROW_BATCH_SIZE
     );
     assert!(writer.total_rows.load(Ordering::SeqCst) > 0);
+}
+
+/// Builds an evidence accumulator and floods every capped collection
+/// (`tools`, `context_sources`, `subagents`, and `diagnostics.
+/// unrecognized_types`) with `record_count` distinct entries. Every name
+/// is unique, so a bound this reaches proves the caps hold, not that the
+/// flood happened to repeat a name.
+fn saturated_evidence_accumulator(record_count: usize) -> SessionEvidenceAccumulator {
+    let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "synthetic".to_owned(),
+        session_id: "bounded-evidence".to_owned(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::claude(),
+    });
+    for index in 0..record_count {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.ts_ms = Some(index as i64);
+        event
+            .tools
+            .push(ToolCall::new(format!("synthetic-tool-{index}")));
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::ContextSource {
+                kind: ContextSourceKind::Skill,
+                name: format!("synthetic-skill-{index}"),
+                description: Some(format!("Synthetic skill description {index}.")),
+            },
+        )));
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::ContextSource {
+                kind: ContextSourceKind::McpServer,
+                name: format!("synthetic-mcp-{index}"),
+                description: None,
+            },
+        )));
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::SubagentSpawn {
+                ts_ms: Some(index as i64),
+                parent_model: Some(format!("synthetic-model-{index}")),
+                provenance: RelationProvenance::TaskToolUse,
+            },
+        )));
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::UnrecognizedType {
+                discriminator: format!("synthetic-unrecognized-{index}"),
+                inert: true,
+            },
+        )));
+    }
+    accumulator.finish(SessionSummary::default());
+    accumulator
+}
+
+#[test]
+fn evidence_retained_state_is_bounded_for_a_name_flood() {
+    let accumulator = saturated_evidence_accumulator(5_000);
+    assert!(
+        accumulator.retained_bytes() <= RETAINED_EVIDENCE_BYTES_BOUND,
+        "retained {} bytes",
+        accumulator.retained_bytes()
+    );
+}
+
+#[test]
+fn evidence_retained_state_stops_growing_once_saturated() {
+    let at_40k = saturated_evidence_accumulator(40_000);
+    let at_400k = saturated_evidence_accumulator(400_000);
+    assert!(
+        at_40k.retained_bytes().abs_diff(at_400k.retained_bytes()) <= 4 * 1_024,
+        "retained state varied from {} to {} bytes",
+        at_40k.retained_bytes(),
+        at_400k.retained_bytes()
+    );
+    assert!(
+        at_400k.retained_bytes() <= RETAINED_EVIDENCE_BYTES_BOUND,
+        "retained {} bytes",
+        at_400k.retained_bytes()
+    );
+}
+
+/// Streams one [`SessionInput`] through a fresh metrics accumulator, an
+/// evidence accumulator, and a [`TurnRowSink`] against `store`, the same
+/// way production ingest streams one source. `scope` forces
+/// [`TurnScope::Delegated`] for a child; `None` keeps the parent's derived
+/// scope.
+fn stream_into(
+    input: &SessionInput,
+    store: &Arc<MemoryTurnRowStore>,
+    scope: Option<TurnScope>,
+) -> (SessionMetricsAccumulator, SessionEvidenceAccumulator) {
+    let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::claude(),
+    });
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        scope,
+    );
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let outcome = adapter_for("claude")
+        .visit(input, &mut composite)
+        .expect("synthetic source must stream");
+    composite.observe_source_outcome(outcome);
+    composite
+        .into_parts()
+        .expect("a finished synthetic pass must publish")
+}
+
+#[test]
+fn a_parent_and_thirty_children_keep_every_accumulator_bounded() {
+    const CHILD_COUNT: usize = 30;
+
+    let mut parent_spec = SessionSpec::tier_s(701, 0, 600);
+    parent_spec.task_spawns = CHILD_COUNT;
+    let parent_session = generate_session(&parent_spec);
+    let store = MemoryTurnRowStore::new("claude", parent_session.session_id.clone());
+    let parent_input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: parent_session.session_id.clone(),
+        source: RawSource::Jsonl(parent_session.jsonl.clone()),
+    };
+    let (parent_metrics, mut parent_evidence) = stream_into(&parent_input, &store, None);
+    assert!(parent_metrics.retained_bytes() <= RETAINED_METRICS_BYTES_BOUND);
+    assert!(parent_evidence.retained_bytes() <= RETAINED_EVIDENCE_BYTES_BOUND);
+
+    let mut child_metrics_list = Vec::with_capacity(CHILD_COUNT);
+    for child_index in 0..CHILD_COUNT {
+        let mut child_spec = SessionSpec::tier_s(701, child_index + 1, 400);
+        child_spec.delegated = true;
+        let child_session = generate_session(&child_spec);
+        let child_input = SessionInput {
+            agent: "claude".to_string(),
+            session_id: child_session.session_id.clone(),
+            source: RawSource::Jsonl(child_session.jsonl.clone()),
+        };
+        let (child_metrics, child_evidence) =
+            stream_into(&child_input, &store, Some(TurnScope::Delegated));
+        assert!(
+            child_metrics.retained_bytes() <= RETAINED_METRICS_BYTES_BOUND,
+            "child {child_index} metrics retained {} bytes",
+            child_metrics.retained_bytes()
+        );
+        assert!(
+            child_evidence.retained_bytes() <= RETAINED_EVIDENCE_BYTES_BOUND,
+            "child {child_index} evidence retained {} bytes",
+            child_evidence.retained_bytes()
+        );
+        // The aggregate evidence path: the parent folds each child's
+        // coverage as it streams, the way `TurnScope::Delegated` sub-agent
+        // discovery does in production.
+        parent_evidence.observe_child_coverage(&child_evidence);
+        child_metrics_list.push(child_metrics);
+    }
+
+    // Folding thirty children's coverage must not push the parent's
+    // residual past the same bound a single session observes.
+    assert!(
+        parent_evidence.retained_bytes() <= RETAINED_EVIDENCE_BYTES_BOUND,
+        "parent evidence retained {} bytes after folding {CHILD_COUNT} children",
+        parent_evidence.retained_bytes()
+    );
+
+    // The aggregate metrics path: `merge_metrics` holds the parent and
+    // every child accumulator live at once. Each already proved bounded
+    // above; this proves the merge itself completes and reports every
+    // child's contribution.
+    let merged = merge_metrics(&parent_metrics, &child_metrics_list);
+    assert!(merged.event_count > 0);
+    assert!(
+        merged
+            .buckets
+            .iter()
+            .map(|bucket| bucket.subagent_tokens)
+            .sum::<u64>()
+            > 0,
+        "the merged buckets must carry the children's token contribution"
+    );
+
+    let facts = store
+        .query_turn_facts()
+        .expect("the shared store must answer a facts query");
+    assert!(
+        facts.delegated_turns > 0,
+        "the children's rows must count as delegated turns"
+    );
+}
+
+/// Forwards every record to `inner` and, before doing so, sums the bytes of
+/// every `TurnContent` part it carries. This is the byte count the source
+/// actually fed the row sink, independent of how SQLite ends up storing it.
+struct ContentByteCountingSink {
+    inner: CompositeSink,
+    content_bytes: usize,
+}
+
+impl RecordSink for ContentByteCountingSink {
+    fn record(&mut self, record: NormalizedRecord) {
+        if let NormalizedRecord::TurnContent(content) = &record {
+            self.content_bytes = self.content_bytes.saturating_add(
+                content
+                    .parts
+                    .iter()
+                    .map(|part| part.text.len())
+                    .sum::<usize>(),
+            );
+        }
+        self.inner.record(record);
+    }
+
+    fn finish(&mut self, summary: SessionSummary) {
+        self.inner.finish(summary);
+    }
+}
+
+/// Forwards every write to a real [`MemoryTurnRowStore`] and separately
+/// tallies the row count the sink handed it, so a test can compare that
+/// tally against the store's own count without re-deriving it from SQL.
+struct CountingRealStore {
+    inner: Arc<MemoryTurnRowStore>,
+    total_rows: AtomicUsize,
+}
+
+impl TurnRowStore for CountingRealStore {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError> {
+        self.total_rows.fetch_add(rows.len(), Ordering::SeqCst);
+        self.inner.write_turn_rows(rows)
+    }
+
+    fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+        self.inner.query_turn_facts()
+    }
+}
+
+#[test]
+fn disk_bytes_per_row_stay_bounded_with_content_enabled() {
+    let session = generate_session_of_bytes(801, 0, 4 * 1024 * 1024);
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: session.session_id.clone(),
+        source: RawSource::Jsonl(session.jsonl.clone()),
+    };
+
+    // `MemoryTurnRowStore` is real SQLite (in memory), so `PRAGMA
+    // page_count` and `PRAGMA page_size` read its true on-disk shape.
+    // Content storage needs no separate switch: every Claude adapter pass
+    // emits a `TurnContent` record after each turn's `MetricsEvent`, and
+    // `TurnRowSink::observe` always attaches it to the buffered row before
+    // any real `TurnRowStore` (unlike the `CountingWriter` test double
+    // above) writes it into `turn_content`.
+    let inner_store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let counting_store = Arc::new(CountingRealStore {
+        inner: Arc::clone(&inner_store),
+        total_rows: AtomicUsize::new(0),
+    });
+    let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::claude(),
+    });
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&counting_store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let mut counted = ContentByteCountingSink {
+        inner: composite,
+        content_bytes: 0,
+    };
+    let outcome = adapter_for("claude")
+        .visit(&input, &mut counted)
+        .expect("synthetic source streams");
+    counted.inner.observe_source_outcome(outcome);
+    assert!(!counted.inner.turn_row_write_failed());
+
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent: &input.agent,
+        session_id: &input.session_id,
+    };
+    let (turn_row_count, content_row_count, content_stored_bytes, total_db_bytes) = inner_store
+        .with_connection(|conn| {
+            let turn_row_count = count_turn_rows(conn, &key, 1).expect("turn rows must count");
+            let content_row_count =
+                count_turn_content_rows(conn, &key, 1).expect("content rows must count");
+            let content_stored_bytes: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM turn_content",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("content bytes must sum");
+            let page_count: i64 = conn
+                .query_row("PRAGMA page_count", [], |row| row.get(0))
+                .expect("page_count must read");
+            let page_size: i64 = conn
+                .query_row("PRAGMA page_size", [], |row| row.get(0))
+                .expect("page_size must read");
+            (
+                turn_row_count,
+                content_row_count,
+                content_stored_bytes.max(0) as u64,
+                (page_count * page_size).max(0) as u64,
+            )
+        });
+
+    assert_eq!(
+        counting_store.total_rows.load(Ordering::SeqCst) as u64,
+        turn_row_count,
+        "the store's row count must match what the sink wrote"
+    );
+    assert!(turn_row_count > 0);
+    assert!(content_row_count > 0);
+
+    // The whole database's bytes, minus the raw content blob bytes it
+    // holds, approximates the `turn` table's own footprint (rows plus its
+    // index). Content is computed separately below, so it is never
+    // counted twice.
+    let turn_table_bytes = total_db_bytes.saturating_sub(content_stored_bytes);
+    let bytes_per_row = turn_table_bytes / turn_row_count;
+    assert!(
+        bytes_per_row <= 2_048,
+        "turn-table bytes/row was {bytes_per_row} ({turn_table_bytes} bytes over {turn_row_count} rows)"
+    );
+
+    assert!(counted.content_bytes > 0);
+    assert!(
+        content_stored_bytes <= (counted.content_bytes as u64).saturating_mul(2),
+        "turn_content stored {content_stored_bytes} bytes for {} fed bytes",
+        counted.content_bytes
+    );
 }
