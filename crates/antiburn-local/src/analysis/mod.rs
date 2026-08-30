@@ -93,7 +93,11 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
-pub const PARSER_REVISION: i64 = 12;
+pub const PARSER_REVISION: i64 = 13;
+// +1 for the Codex `token_count` fix: a heartbeat with zero-component usage
+// beside a nonzero derived `total_tokens` is now inert, and
+// `cache_write_input_tokens` is now a known usage key
+// (`vendors::codex::is_usage_free_token_count`).
 // +1 for parts A-E of the Cadence model-tier-policy parity fixups: dropped
 // `ultrathink`, canonical model-key namespacing, the replacement registry
 // and premium-policy rewrites, and dominant-main-model-by-output-tokens

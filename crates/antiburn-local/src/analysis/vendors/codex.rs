@@ -1390,11 +1390,14 @@ fn token_count_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<No
     Some(ev)
 }
 
-/// The usage keys `codex_usage` reads, plus the `total_tokens` sum Codex
-/// writes beside them.
+/// The usage keys `codex_usage` reads, plus `cache_write_input_tokens` and
+/// the `total_tokens` sum Codex writes beside them. `codex_usage` does not
+/// read `cache_write_input_tokens`; it is listed only so a heartbeat that
+/// carries it is not mistaken for an unknown key.
 const CODEX_USAGE_KEYS: &[&str] = &[
     "input_tokens",
     "cached_input_tokens",
+    "cache_write_input_tokens",
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
@@ -1402,12 +1405,24 @@ const CODEX_USAGE_KEYS: &[&str] = &[
 
 /// Returns true when a `token_count` record carries no usage to count.
 ///
-/// Codex writes two such shapes: `info: null` beside a `rate_limits` object
-/// (a rate-limit heartbeat), and an `info` whose usage objects hold only zero
-/// counts. `token_count_event` returns `None` for both, so `process_value`
-/// would otherwise treat the record as unrecognized and fail closed on the
-/// `info` key. A usage object with a key this adapter does not read is not
-/// usage-free: it may be a renamed count, so it still fails closed.
+/// This reads the same usage object `token_count_event` reads:
+/// `last_token_usage`, falling back to `total_token_usage` only when
+/// `last_token_usage` is absent. `total_token_usage` is Codex's lifetime
+/// cumulative; once a session has real history it is never all-zero, but it
+/// is not what this heartbeat contributes, so a nonzero cumulative in the
+/// object this record does not use never disqualifies the record.
+///
+/// Codex writes three usage-free shapes: `info: null` beside a
+/// `rate_limits` object (a rate-limit heartbeat); a selected usage object
+/// that holds only zero counts; and a selected usage object that holds zero
+/// counts in every component key beside a nonzero derived `total_tokens`
+/// (the component sum still reports zero usage). `token_count_event`
+/// returns `None` for all three: for the first two, because no usage object
+/// is read; for the third, because `codex_usage` reads only the zero-valued
+/// components. `process_value` would otherwise treat the record as
+/// unrecognized and fail closed on the `info` key. A usage object with a
+/// key this adapter does not read is not usage-free: it may be a renamed
+/// count, so it still fails closed.
 fn is_usage_free_token_count(value: &Value) -> bool {
     let Some(info) = value.pointer("/payload/info") else {
         return true;
@@ -1415,17 +1430,22 @@ fn is_usage_free_token_count(value: &Value) -> bool {
     let Some(info) = info.as_object() else {
         return info.is_null();
     };
-    ["last_token_usage", "total_token_usage"]
-        .iter()
-        .filter_map(|key| info.get(*key))
-        .all(|usage| {
-            usage.as_object().is_some_and(|usage| {
-                usage.iter().all(|(key, count)| {
-                    CODEX_USAGE_KEYS.contains(&key.as_str())
-                        && count.as_u64().is_some_and(|count| count == 0)
-                })
-            })
+    let Some(usage) = info
+        .get("last_token_usage")
+        .or_else(|| info.get("total_token_usage"))
+    else {
+        return true;
+    };
+    usage.as_object().is_some_and(|usage| {
+        usage.iter().all(|(key, count)| {
+            if !CODEX_USAGE_KEYS.contains(&key.as_str()) {
+                return false;
+            }
+            // `total_tokens` is a derived sum: a nonzero value beside
+            // all-zero components still reports zero usage.
+            key == "total_tokens" || count.as_u64().is_some_and(|count| count == 0)
         })
+    })
 }
 
 /// The usage pair that identifies one `token_count` row.
@@ -1652,7 +1672,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 5_417_986_718_514_963_732;
+        const EXPECTED_FINGERPRINT: u64 = 6_909_707_080_568_099_114;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -1705,9 +1725,15 @@ mod tests {
         assert!(!is_inert_codex_record(&record, true));
     }
 
-    /// A `token_count` heartbeat with `info: null` and one whose usage holds
-    /// only zero counts carry nothing to count: both are usage-free, so
-    /// `process_value` treats them as recognized-eventless.
+    /// A `token_count` heartbeat with `info: null`, one whose usage holds
+    /// only zero counts, and one whose selected usage object holds zero
+    /// counts in every component key beside a nonzero derived
+    /// `total_tokens` carry nothing to count: all three are usage-free, so
+    /// `process_value` treats them as recognized-eventless. The third case
+    /// mirrors a real Codex 2026-08 heartbeat: `last_token_usage`'s own
+    /// component keys are all zero, but `total_token_usage` — not read for
+    /// this record — carries the session's real nonzero lifetime
+    /// cumulative, and does not disqualify it.
     #[test]
     fn token_count_without_usage_is_usage_free() {
         let heartbeat = serde_json::json!({
@@ -1722,16 +1748,36 @@ mod tests {
                 "model_context_window": 100000
             }}
         });
+        let zero_components_nonzero_total = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "rate_limits": {}, "info": {
+                "model_context_window": 272000,
+                "last_token_usage": {
+                    "input_tokens": 0, "cached_input_tokens": 0, "cache_write_input_tokens": 0,
+                    "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": 13989
+                },
+                "total_token_usage": {
+                    "input_tokens": 9000000, "cached_input_tokens": 8000000, "cache_write_input_tokens": 0,
+                    "output_tokens": 400000, "reasoning_output_tokens": 100000, "total_tokens": 9500000
+                }
+            }}
+        });
         assert!(is_usage_free_token_count(&heartbeat));
         assert!(is_usage_free_token_count(&zero));
-        // The strict check still rejects both on the `info` key. Only the
-        // usage-free rule lets them through.
+        assert!(is_usage_free_token_count(&zero_components_nonzero_total));
+        // The strict check still rejects all three on the `info` key. Only
+        // the usage-free rule lets them through.
         assert!(!is_inert_codex_record(&heartbeat, true));
         assert!(!is_inert_codex_record(&zero, true));
+        assert!(!is_inert_codex_record(&zero_components_nonzero_total, true));
     }
 
     /// A `token_count` whose usage object names a key this adapter does not
     /// read, or a non-zero count, is not usage-free and still fails closed.
+    /// This holds even when the only non-zero count sits in a known key
+    /// (`cache_write_input_tokens`) this adapter does not read into
+    /// evidence, and even when the unknown key sits beside an otherwise
+    /// all-zero usage object.
     #[test]
     fn token_count_with_unread_or_non_zero_usage_is_not_usage_free() {
         let renamed = serde_json::json!({
@@ -1750,9 +1796,29 @@ mod tests {
             "type": "event_msg",
             "payload": {"type": "token_count", "info": {"last_token_usage": 7}}
         });
+        let non_zero_cache_write = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {
+                "last_token_usage": {
+                    "input_tokens": 0, "cached_input_tokens": 0, "cache_write_input_tokens": 5,
+                    "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": 0
+                }
+            }}
+        });
+        let unknown_key = serde_json::json!({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {
+                "last_token_usage": {
+                    "input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+                    "reasoning_output_tokens": 0, "total_tokens": 0, "speculation_tokens": 5
+                }
+            }}
+        });
         assert!(!is_usage_free_token_count(&renamed));
         assert!(!is_usage_free_token_count(&counted));
         assert!(!is_usage_free_token_count(&not_an_object));
+        assert!(!is_usage_free_token_count(&non_zero_cache_write));
+        assert!(!is_usage_free_token_count(&unknown_key));
     }
 
     /// `session_meta`, `turn_context`, and `thread_settings_applied` carry
@@ -1794,6 +1860,41 @@ mod tests {
             sink.observations.is_empty(),
             "unexpected observations: {:?}",
             sink.observations
+        );
+    }
+
+    /// A synthetic Codex 2026-08 heartbeat: `last_token_usage` reports zero
+    /// in every component key beside a nonzero derived `total_tokens`, and
+    /// `total_token_usage` carries a large nonzero lifetime cumulative. A
+    /// collector must not mark it unusable, and must not emit a
+    /// non-inert `UnrecognizedType` observation for it, or the whole
+    /// session degrades to `Partial` coverage over one inert heartbeat.
+    #[test]
+    fn a_zero_component_heartbeat_beside_a_nonzero_cumulative_is_inert() {
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-28T19:52:18.490Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{},"info":{"model_context_window":272000,"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":13989},"total_token_usage":{"input_tokens":9000000,"cached_input_tokens":8000000,"cache_write_input_tokens":0,"output_tokens":400000,"reasoning_output_tokens":100000,"total_tokens":9500000}}}}"#,
+            "\n",
+        );
+        let input = SessionInput {
+            agent: "codex".to_string(),
+            session_id: "zero-component-heartbeat".to_string(),
+            source: RawSource::Jsonl(jsonl.to_string()),
+        };
+        let mut sink = ObservationCapturingSink::default();
+
+        CodexAdapter
+            .visit(&input, &mut sink)
+            .expect("visit zero-component-heartbeat session");
+
+        assert!(
+            sink.observations.is_empty(),
+            "unexpected observations: {:?}",
+            sink.observations
+        );
+        assert!(
+            sink.unusable.is_empty(),
+            "unexpected unusable reasons: {:?}",
+            sink.unusable
         );
     }
 
@@ -2018,16 +2119,22 @@ mod tests {
         assert_eq!(owned_event.speed.as_deref(), Some("fast"));
     }
 
-    /// Collects every `EvidenceObservation` a visit emits, in order.
+    /// Collects every `EvidenceObservation` and `Unusable` reason a visit
+    /// emits, in order.
     #[derive(Default)]
     struct ObservationCapturingSink {
         observations: Vec<EvidenceObservation>,
+        unusable: Vec<PartialReason>,
     }
 
     impl RecordSink for ObservationCapturingSink {
         fn record(&mut self, record: NormalizedRecord) {
-            if let NormalizedRecord::Observation(observation) = record {
-                self.observations.push(*observation);
+            match record {
+                NormalizedRecord::Observation(observation) => {
+                    self.observations.push(*observation);
+                }
+                NormalizedRecord::Unusable(reason) => self.unusable.push(reason),
+                NormalizedRecord::MetricsEvent(_) | NormalizedRecord::TurnContent(_) => {}
             }
         }
 
