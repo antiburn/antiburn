@@ -109,6 +109,7 @@
             "turns": 4
           }
         },
+        "dominantMainModel": "gpt-test",
         "effortSignal": {
           "eligibleTurns": 4,
           "presentTurns": 4
@@ -131,8 +132,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 11,
-      "evidenceSchemaRevision": 8,
+      "analyzerRevision": 13,
+      "evidenceSchemaRevision": 9,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -144,7 +145,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 8,
+    "schemaRevision": 9,
     "subagents": {
       "state": "complete",
       "value": {

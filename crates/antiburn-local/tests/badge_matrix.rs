@@ -63,6 +63,15 @@ fn claude_fixture(name: &str) -> &'static str {
         "fast_mode_overuse_clean" => {
             include_str!("fixtures/claude_characterization/fast_mode_overuse_clean.jsonl")
         }
+        "obsolete_model_finding" => {
+            include_str!("fixtures/claude_characterization/obsolete_model_finding.jsonl")
+        }
+        "obsolete_model_before_effective_date" => include_str!(
+            "fixtures/claude_characterization/obsolete_model_before_effective_date.jsonl"
+        ),
+        "model_overthinking_unrecognized_tier" => include_str!(
+            "fixtures/claude_characterization/model_overthinking_unrecognized_tier.jsonl"
+        ),
         other => panic!("unknown claude fixture: {other}"),
     }
 }
@@ -86,6 +95,9 @@ fn codex_fixture(name: &str) -> &'static str {
         }
         "model_overthinking_finding" => {
             include_str!("fixtures/codex_characterization/model_overthinking_finding.jsonl")
+        }
+        "obsolete_model_finding" => {
+            include_str!("fixtures/codex_characterization/obsolete_model_finding.jsonl")
         }
         other => panic!("unknown codex fixture: {other}"),
     }
@@ -205,7 +217,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 "m1",
                 "root",
                 20,
-                r#"{"role":"assistant","modelID":"model-a","tokens":{"input":200000,"output":50}}"#,
+                r#"{"role":"assistant","modelID":"model-a","tokens":{"input":450000,"output":50}}"#,
             );
         }
         "session_overdepth_clean" => {
@@ -231,12 +243,14 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         }
         "model_overthinking_finding" => {
             insert_session(&connection, "root", None, 10);
+            // A recognized model ID puts the Claude family present, so
+            // the reviewed policy can classify `variant` at all.
             insert_message(
                 &connection,
                 "m1",
                 "root",
                 20,
-                r#"{"role":"assistant","modelID":"model-a","variant":"max","tokens":{"input":10,"output":5}}"#,
+                r#"{"role":"assistant","modelID":"claude-opus-4-6","variant":"max","tokens":{"input":10,"output":5}}"#,
             );
         }
         "model_overthinking_clean" => {
@@ -246,7 +260,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 "m1",
                 "root",
                 20,
-                r#"{"role":"assistant","modelID":"model-a","variant":"high","tokens":{"input":10,"output":5}}"#,
+                r#"{"role":"assistant","modelID":"claude-sonnet-4-6","variant":"high","tokens":{"input":10,"output":5}}"#,
             );
         }
         "model_overthinking_signal_missing" => {
@@ -285,6 +299,43 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 "root",
                 20,
                 r#"{"role":"assistant","modelID":"model-a","tokens":{"input":10,"output":5}}"#,
+            );
+        }
+        "overpowered_subagents_openai_finding" => {
+            insert_session(&connection, "root", None, 10);
+            insert_message(
+                &connection,
+                "root-assistant",
+                "root",
+                20,
+                r#"{"role":"assistant","modelID":"gpt-5.6-sol","tokens":{"input":10,"output":5}}"#,
+            );
+            insert_session(&connection, "child", Some("root"), 30);
+            insert_message(
+                &connection,
+                "child-assistant",
+                "child",
+                40,
+                r#"{"role":"assistant","modelID":"gpt-5.6-sol","tokens":{"input":10,"output":5}}"#,
+            );
+        }
+        "overpowered_subagents_openai_luna_no_finding" => {
+            insert_session(&connection, "root", None, 10);
+            insert_message(
+                &connection,
+                "root-assistant",
+                "root",
+                20,
+                r#"{"role":"assistant","modelID":"gpt-5.6-sol","tokens":{"input":10,"output":5}}"#,
+            );
+            insert_session(&connection, "child", Some("root"), 30);
+            insert_message(
+                &connection,
+                "child-assistant",
+                "child",
+                40,
+                // GPT-5.6 Luna is not premium: only the Sol prefix is.
+                r#"{"role":"assistant","modelID":"gpt-5.6-luna","tokens":{"input":10,"output":5}}"#,
             );
         }
         "excess_cache_rehydration_finding" => {
@@ -419,9 +470,31 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
+            // A reviewed, non-empty registry with an uncatalogued
+            // model reads clean: this fixture's model is not deprecated.
             harness: "claude",
             fixture: "records_all_kinds",
             badge: ObsoleteModel,
+            expected: Clean,
+        },
+        Row {
+            harness: "claude",
+            fixture: "obsolete_model_finding",
+            badge: ObsoleteModel,
+            expected: Finding,
+        },
+        Row {
+            // Usage of a since-replaced model, dated before the
+            // replacement's effective date, is not a finding.
+            harness: "claude",
+            fixture: "obsolete_model_before_effective_date",
+            badge: ObsoleteModel,
+            expected: Clean,
+        },
+        Row {
+            harness: "claude",
+            fixture: "model_overthinking_unrecognized_tier",
+            badge: ModelOverthinking,
             expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
@@ -505,10 +578,18 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
+            // A reviewed, non-empty registry with an uncatalogued
+            // model reads clean: this fixture's model is not deprecated.
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ObsoleteModel,
-            expected: NotAssessed(EvidenceContractIncomplete),
+            expected: Clean,
+        },
+        Row {
+            harness: "codex",
+            fixture: "obsolete_model_finding",
+            badge: ObsoleteModel,
+            expected: Finding,
         },
         // FastModeOveruse:Finding has the same `scope = 'delegated'` gap as
         // OverpoweredSubagents:Finding above.
@@ -574,10 +655,12 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // A reviewed, non-empty registry with an uncatalogued
+            // model reads clean: this fixture's model is not deprecated.
             harness: "pi",
             fixture: "minimal_session",
             badge: ObsoleteModel,
-            expected: NotAssessed(EvidenceContractIncomplete),
+            expected: Clean,
         },
         Row {
             harness: "pi",
@@ -648,9 +731,25 @@ fn matrix() -> Vec<Row> {
         },
         Row {
             harness: "opencode",
+            fixture: "overpowered_subagents_openai_finding",
+            badge: OverpoweredSubagents,
+            expected: Finding,
+        },
+        Row {
+            // GPT-5.6 Luna is not a premium model, so a Sol parent with
+            // a Luna child is no finding.
+            harness: "opencode",
+            fixture: "overpowered_subagents_openai_luna_no_finding",
+            badge: OverpoweredSubagents,
+            expected: Clean,
+        },
+        Row {
+            // A reviewed, non-empty registry with an uncatalogued
+            // model reads clean: this fixture's model is not deprecated.
+            harness: "opencode",
             fixture: "obsolete_model",
             badge: ObsoleteModel,
-            expected: NotAssessed(EvidenceContractIncomplete),
+            expected: Clean,
         },
         Row {
             harness: "opencode",

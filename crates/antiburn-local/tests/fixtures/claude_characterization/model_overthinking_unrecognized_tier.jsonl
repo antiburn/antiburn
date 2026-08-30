@@ -1,0 +1,1 @@
+{"type":"assistant","timestamp":"2026-08-12T10:06:00Z","effort":"synthetic-tier","message":{"id":"msg-unrecognized-tier-1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":40,"output_tokens":10},"content":[{"type":"text","text":"Synthetic unrecognized-tier turn."}]}}

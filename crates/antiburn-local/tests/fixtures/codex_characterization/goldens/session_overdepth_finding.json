@@ -5,7 +5,7 @@
       "value": {
         "cacheCreationTokens": 0,
         "cacheReadTokens": 0,
-        "freshInputTokens": 200000,
+        "freshInputTokens": 450000,
         "idleGapMsTotal": 0,
         "longestIdleGapMs": 0,
         "modelTransitions": [],
@@ -49,10 +49,10 @@
     "context": {
       "state": "complete",
       "value": {
-        "maxRequestContextTokens": 200000,
+        "maxRequestContextTokens": 450000,
         "topDepthExamples": [
           {
-            "depthTokens": 200000,
+            "depthTokens": 450000,
             "model": "gpt-test",
             "tsMs": 1786615202000
           }
@@ -96,12 +96,13 @@
             "cacheCreation": 0,
             "cacheRead": 0,
             "firstTsMs": 1786615202000,
-            "input": 200000,
+            "input": 450000,
             "lastTsMs": 1786615202000,
             "output": 50,
             "turns": 1
           }
         },
+        "dominantMainModel": "gpt-test",
         "effortSignal": {
           "eligibleTurns": 1,
           "presentTurns": 1
@@ -124,8 +125,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 11,
-      "evidenceSchemaRevision": 8,
+      "analyzerRevision": 13,
+      "evidenceSchemaRevision": 9,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -137,7 +138,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 8,
+    "schemaRevision": 9,
     "subagents": {
       "state": "complete",
       "value": {
@@ -168,7 +169,7 @@
     "agent": "codex",
     "billableCacheCreationTokens": 0,
     "billableCacheReadTokens": 0,
-    "billableInputTokens": 200000,
+    "billableInputTokens": 450000,
     "billableOutputTokens": 50,
     "buckets": [
       {
@@ -177,7 +178,7 @@
         "compactionPostTokens": null,
         "compactionPreTokens": null,
         "compactionTrigger": null,
-        "contextTokens": 200000,
+        "contextTokens": 450000,
         "hasThinking": false,
         "isCacheRehydration": false,
         "isCacheRoutingMiss": false,
@@ -189,7 +190,7 @@
         "subagentLaunches": 0,
         "subagentTokens": 0,
         "thinkingMode": "medium",
-        "tokensIn": 200000,
+        "tokensIn": 450000,
         "tokensOut": 50,
         "userPrompts": 0
       },
@@ -4136,7 +4137,7 @@
     "cacheRoutingMissCount": 0,
     "compactionCount": 0,
     "contextAvailable": true,
-    "contextWindow": 300000,
+    "contextWindow": 600000,
     "cost": null,
     "durationSecs": 0,
     "efficiency": {
@@ -4159,7 +4160,7 @@
         "cache_creation_1h_tokens": 0,
         "cache_creation_tokens": 0,
         "cache_read_tokens": 0,
-        "input_tokens": 200000,
+        "input_tokens": 450000,
         "output_tokens": 50
       }
     },
@@ -4169,15 +4170,15 @@
         "thinkingMode": "medium"
       }
     ],
-    "peakContextTokens": 200000,
+    "peakContextTokens": 450000,
     "sessionId": "session_overdepth_finding",
-    "tokensIn": 200000,
+    "tokensIn": 450000,
     "tokensOut": 50
   },
   "normalizedSession": {
     "agent": "codex",
     "cacheWriteTokensAvailable": false,
-    "contextWindow": 300000,
+    "contextWindow": 600000,
     "events": [
       {
         "compactionPostTokens": null,
@@ -4196,7 +4197,7 @@
         "usage": {
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
-          "inputTokens": 200000,
+          "inputTokens": 450000,
           "outputTokens": 50
         }
       }

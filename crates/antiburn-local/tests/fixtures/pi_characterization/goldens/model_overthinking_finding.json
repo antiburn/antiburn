@@ -54,7 +54,7 @@
         "topDepthExamples": [
           {
             "depthTokens": 10,
-            "model": "model-a",
+            "model": "claude-opus-4-6",
             "tsMs": 1767312301000
           }
         ]
@@ -93,7 +93,7 @@
       "state": "complete",
       "value": {
         "byModel": {
-          "model-a": {
+          "claude-opus-4-6": {
             "cacheCreation": 0,
             "cacheRead": 0,
             "firstTsMs": 1767312301000,
@@ -103,6 +103,7 @@
             "turns": 1
           }
         },
+        "dominantMainModel": "claude-opus-4-6",
         "effortSignal": {
           "eligibleTurns": 1,
           "presentTurns": 1
@@ -125,8 +126,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 11,
-      "evidenceSchemaRevision": 8,
+      "analyzerRevision": 13,
+      "evidenceSchemaRevision": 9,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -138,7 +139,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 8,
+    "schemaRevision": 9,
     "subagents": {
       "state": "unsupported"
     },
@@ -177,7 +178,7 @@
         "isCacheRoutingMiss": false,
         "isCompactionBoundary": false,
         "lastTool": null,
-        "model": "model-a",
+        "model": "claude-opus-4-6",
         "secsSincePriorTurn": null,
         "speed": null,
         "subagentLaunches": 0,
@@ -4134,19 +4135,19 @@
     "durationSecs": 0,
     "efficiency": {
       "carryUsd": 0.0,
-      "growthTokens": 0,
-      "newWorkUsd": 0.0,
-      "outputTokens": 0,
-      "pricedTurns": 0,
+      "growthTokens": 10,
+      "newWorkUsd": 0.000175,
+      "outputTokens": 5,
+      "pricedTurns": 1,
       "rewriteUsd": 0.0,
-      "totalUsd": 0.0,
-      "unpricedTurns": 1
+      "totalUsd": 0.000175,
+      "unpricedTurns": 0
     },
     "eventCount": 1,
     "initialContext": null,
-    "model": "model-a",
+    "model": "claude-opus-4-6",
     "modelBreakdown": {
-      "model-a": {
+      "claude-opus-4-6": {
         "cache_creation_1h_tokens": 0,
         "cache_creation_tokens": 0,
         "cache_read_tokens": 0,
@@ -4156,7 +4157,7 @@
     },
     "modelRuns": [
       {
-        "model": "model-a",
+        "model": "claude-opus-4-6",
         "thinkingMode": "max"
       }
     ],
@@ -4177,7 +4178,7 @@
         "hasThinking": false,
         "isCompactionBoundary": false,
         "messageId": null,
-        "model": "model-a",
+        "model": "claude-opus-4-6",
         "parentUuid": "ot-1",
         "role": "assistant",
         "source": "parent",
@@ -4195,7 +4196,7 @@
         "uuid": "ot-2"
       }
     ],
-    "model": "model-a",
+    "model": "claude-opus-4-6",
     "sessionId": "model_overthinking_finding"
   },
   "partialReasons": []

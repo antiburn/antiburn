@@ -57,6 +57,27 @@ pub fn normalize_model_key(model_id: &str) -> &str {
     model_id
 }
 
+/// Strip a leading provider or vendor namespace, apply
+/// [`normalize_model_key`], then lowercase.
+///
+/// Recognizes any prefix up to and including the first `/` (`openai/`,
+/// `anthropic/`, `google/`, ...), plus the literal `openai.` and
+/// `antigravity-` prefixes observed in session metadata. Every detector
+/// that classifies a model's family, looks up its premium or
+/// replacement-registry policy, or compares it against a dominant model
+/// uses this one canonical key (Cadence `crates/analysis/src/efficiency_findings.rs`,
+/// `SubagentTier::classify`).
+pub fn canonical_model_key(model: &str) -> String {
+    let trimmed = model.trim();
+    let without_namespace = trimmed
+        .split_once('/')
+        .map(|(_, rest)| rest)
+        .or_else(|| trimmed.strip_prefix("openai."))
+        .or_else(|| trimmed.strip_prefix("antigravity-"))
+        .unwrap_or(trimmed);
+    normalize_model_key(without_namespace).to_lowercase()
+}
+
 /// Look up pricing for a model ID, trying exact match then normalized key.
 pub fn lookup_pricing<'a>(
     model_id: &str,
@@ -426,6 +447,45 @@ mod tests {
     fn test_normalize_short_string() {
         assert_eq!(normalize_model_key("short"), "short");
         assert_eq!(normalize_model_key(""), "");
+    }
+
+    #[test]
+    fn test_canonical_model_key_strips_openai_dot_prefix() {
+        assert_eq!(canonical_model_key("openai.gpt-5.6-sol"), "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn test_canonical_model_key_strips_slash_namespace() {
+        assert_eq!(
+            canonical_model_key("anthropic/claude-opus-4.8"),
+            "claude-opus-4.8"
+        );
+        assert_eq!(canonical_model_key("openai/gpt-5.6-terra"), "gpt-5.6-terra");
+        assert_eq!(
+            canonical_model_key("google/gemini-3.1-pro"),
+            "gemini-3.1-pro"
+        );
+    }
+
+    #[test]
+    fn test_canonical_model_key_strips_antigravity_prefix() {
+        assert_eq!(
+            canonical_model_key("antigravity-claude-opus-4-6-thinking"),
+            "claude-opus-4-6-thinking"
+        );
+    }
+
+    #[test]
+    fn test_canonical_model_key_normalizes_date_suffix_and_case() {
+        assert_eq!(
+            canonical_model_key("Claude-Opus-4-8-20260801"),
+            "claude-opus-4-8"
+        );
+    }
+
+    #[test]
+    fn test_canonical_model_key_passes_through_a_bare_key() {
+        assert_eq!(canonical_model_key("claude-sonnet-5"), "claude-sonnet-5");
     }
 
     #[test]

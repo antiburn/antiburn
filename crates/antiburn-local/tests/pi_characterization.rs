@@ -938,9 +938,10 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // zero eligible turns means the effort signal is missing.
             BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            // The production catalog default carries no curated
-            // deprecated models, so the rule can never prove absence.
-            BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
+            // The reviewed production registry is non-empty, and this
+            // fixture observes zero models, so no catalogued model can
+            // have run.
+            BadgeStatus::Clean,
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
             // Record identity now qualifies cache churn for Pi, and this
             // fixture shows no churn.
@@ -962,9 +963,9 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // zero eligible turns means the effort signal is missing.
             BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            // The production catalog default carries no curated
-            // deprecated models, so the rule can never prove absence.
-            BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
+            // The reviewed production registry is non-empty, but the
+            // same incomplete session coverage keeps this unassessed.
+            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
             // Record identity now qualifies cache churn for Pi, but the
             // same incomplete coverage keeps it unassessed too.

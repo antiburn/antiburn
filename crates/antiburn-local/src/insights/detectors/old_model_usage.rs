@@ -28,7 +28,11 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     let mut missing_timestamp = false;
     if let Some(models) = observed(&evidence.models) {
         for (model, tokens) in &models.by_model {
-            let Some(replacement) = catalogs.model_replacements.get(model) else {
+            // The registry keys every source ID and alias by
+            // `canonical_model_key`; match observed model strings the
+            // same way so a provider prefix, a date suffix, or mixed
+            // case does not miss the rule.
+            let Some(replacement) = catalogs.model_replacements.lookup(model) else {
                 continue;
             };
             if tokens.turns == 0 {
@@ -51,28 +55,38 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
 
 #[cfg(test)]
 mod tests {
-    use super::super::ModelReplacement;
     use super::super::test_support::claude_evidence;
+    use super::super::{ModelRegistry, ModelReplacementEntry};
     use super::*;
     use crate::analysis::{CoverageReason, EvidenceValue, ModelTokens};
 
     fn catalogs() -> ReportCatalogs {
-        let mut catalogs = ReportCatalogs::default();
-        catalogs.model_replacements.insert(
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert(
             "old-model-1".to_owned(),
-            ModelReplacement {
+            ModelReplacementEntry {
                 replacement: "new-model-2".to_owned(),
                 available_since_ts_ms: 100,
+                rationale: "test rule".to_owned(),
+                source_url: "https://example.invalid/old-model-1".to_owned(),
             },
         );
-        catalogs.model_replacements.insert(
+        entries.insert(
             "old-model-3".to_owned(),
-            ModelReplacement {
+            ModelReplacementEntry {
                 replacement: "new-model-4".to_owned(),
                 available_since_ts_ms: 100,
+                rationale: "test rule".to_owned(),
+                source_url: "https://example.invalid/old-model-3".to_owned(),
             },
         );
-        catalogs
+        ReportCatalogs {
+            model_replacements: ModelRegistry {
+                revision: 1,
+                entries,
+            },
+            ..ReportCatalogs::default()
+        }
     }
 
     fn insert_model(evidence: &mut SessionEvidence, model: &str, last_ts_ms: i64) {
@@ -167,14 +181,57 @@ mod tests {
 
     #[test]
     fn an_empty_replacement_registry_reports_the_contract_gap() {
-        // Production ships with an empty catalog. An empty catalog can
-        // never prove absence of deprecated-model usage, so the rule
-        // must not read as no-finding.
+        // An empty catalog can never prove absence of deprecated-model
+        // usage, so the rule must not read as no-finding.
         let evidence = with_model("any-model", 200, false);
+        let catalogs = ReportCatalogs {
+            model_replacements: ModelRegistry::empty(),
+            ..ReportCatalogs::default()
+        };
+
+        assert_eq!(
+            evaluate(&evidence, &catalogs),
+            Observation::ContractIncomplete
+        );
+    }
+
+    #[test]
+    fn the_default_registry_finds_claude_opus_4_8_after_opus_5_shipped() {
+        let evidence = with_model("claude-opus-4-8-20260801", 1_784_851_200_001, false);
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::ContractIncomplete
+            Observation::Finding
+        );
+    }
+
+    #[test]
+    fn the_default_registry_finds_gpt_5_5_after_gpt_5_6_shipped() {
+        let evidence = with_model("GPT-5.5", 1_783_555_200_001, false);
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
+        );
+    }
+
+    #[test]
+    fn the_default_registry_reads_no_finding_before_the_effective_date() {
+        let evidence = with_model("claude-opus-4-8", 1_784_851_199_999, false);
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::NoFinding
+        );
+    }
+
+    #[test]
+    fn a_current_model_is_no_finding_under_the_default_registry() {
+        let evidence = with_model("claude-sonnet-5", 2_000_000_000_000, false);
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::NoFinding
         );
     }
 }

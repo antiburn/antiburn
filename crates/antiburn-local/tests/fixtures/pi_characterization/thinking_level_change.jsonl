@@ -1,4 +1,4 @@
 {"type":"thinking_level_change","id":"tlc-1","parentId":null,"timestamp":"2026-01-01T00:00:00Z","thinkingLevel":"low"}
-{"type":"message","id":"tlc-2","parentId":"tlc-1","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}
+{"type":"message","id":"tlc-2","parentId":"tlc-1","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","model":"claude-sonnet-4-6","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}
 {"type":"thinking_level_change","id":"tlc-3","parentId":"tlc-2","timestamp":"2026-01-01T00:00:02Z","thinkingLevel":"high"}
-{"type":"message","id":"tlc-4","parentId":"tlc-3","timestamp":"2026-01-01T00:00:03Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}
+{"type":"message","id":"tlc-4","parentId":"tlc-3","timestamp":"2026-01-01T00:00:03Z","message":{"role":"assistant","model":"claude-sonnet-4-6","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"content":[]}}

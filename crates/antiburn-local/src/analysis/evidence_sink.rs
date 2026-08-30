@@ -23,6 +23,14 @@ use crate::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionMetrics,
 };
 
+/// The suffix after a skill's last `:` (e.g. `deploy` from
+/// `plugin:deploy`), or the whole name when it carries no `:`. Cadence
+/// treats a `Skill` tool call as invoking a loaded skill under either
+/// its full name or this suffix.
+fn skill_suffix(name: &str) -> &str {
+    name.rsplit_once(':').map_or(name, |(_, suffix)| suffix)
+}
+
 pub struct SessionEvidenceAccumulator {
     identity: SessionEvidenceIdentity,
     capabilities: SourceCapabilities,
@@ -493,6 +501,7 @@ impl SessionEvidenceAccumulator {
             service_tiers: EvidenceValue::Unsupported,
             effort_signal: facts.effort_signal,
             speed_signal: facts.speed_signal,
+            dominant_main_model: facts.dominant_main_model.clone(),
         };
         let models_cap_exceeded = facts.models_capped || facts.tiers_capped;
         let subagents = SubagentEvidence {
@@ -689,11 +698,27 @@ impl SessionEvidenceAccumulator {
         }
     }
 
+    /// Returns whether a loaded skill's full name (e.g. `plugin:deploy`)
+    /// was invoked: `invoked_skills` or `tools` names it either by its
+    /// full name or by the suffix after its last `:` (e.g. `deploy`).
+    /// Cadence treats a loaded skill as invoked under either spelling.
+    fn skill_invoked(&self, full_name: &str) -> bool {
+        let suffix = skill_suffix(full_name);
+        self.invoked_skills.contains(full_name)
+            || self.invoked_skills.contains(suffix)
+            || self.tools.contains_key(full_name)
+            || self.tools.contains_key(suffix)
+    }
+
     fn classified_tools(&self) -> BTreeMap<String, ToolUse> {
         self.tools
             .iter()
             .map(|(name, tool)| {
-                let class = if self.invoked_skills.contains(name) || self.skills.contains_key(name)
+                let class = if self.invoked_skills.contains(name)
+                    || self
+                        .skills
+                        .keys()
+                        .any(|loaded| loaded == name || skill_suffix(loaded) == name)
                 {
                     ToolClass::Skill
                 } else if self
@@ -720,7 +745,7 @@ impl SessionEvidenceAccumulator {
         let mut skills = self.skills.clone();
         let mut mcp_servers = self.mcp_servers.clone();
         for (name, source) in &mut skills {
-            source.invoked = self.invoked_skills.contains(name) || self.tools.contains_key(name);
+            source.invoked = self.skill_invoked(name);
         }
         for (name, source) in &mut mcp_servers {
             source.invoked = self
@@ -1232,6 +1257,44 @@ mod tests {
                 .mcp_servers
                 .len(),
             MAX_CONTEXT_SOURCES
+        );
+    }
+
+    #[test]
+    fn a_skill_invoked_by_its_suffix_name_is_marked_invoked_and_classified() {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::ContextSource {
+                kind: ContextSourceKind::Skill,
+                name: "plugin:deploy".to_owned(),
+                description: None,
+            },
+        )));
+        let mut event = assistant_event(0);
+        event.tools.push(crate::analysis::ToolCall::new("deploy"));
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+
+        let evidence = accumulator.evidence(&TurnFacts::default());
+
+        let EvidenceValue::Complete(sources) = &evidence.context_sources else {
+            panic!("context_sources must be complete");
+        };
+        let skill = sources
+            .skills
+            .get("plugin:deploy")
+            .expect("plugin:deploy must be recorded as a loaded skill");
+        assert!(
+            skill.invoked,
+            "a bare `deploy` tool call must invoke the `plugin:deploy` skill by suffix"
+        );
+
+        let EvidenceValue::Complete(tools) = &evidence.tools else {
+            panic!("tools must be complete");
+        };
+        assert_eq!(
+            tools.by_name.get("deploy").map(|tool| tool.class),
+            Some(ToolClass::Skill),
+            "a `deploy` tool call must classify as Skill when `plugin:deploy` is loaded"
         );
     }
 

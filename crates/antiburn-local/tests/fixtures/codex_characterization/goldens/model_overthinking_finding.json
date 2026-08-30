@@ -102,12 +102,13 @@
             "turns": 1
           }
         },
+        "dominantMainModel": "gpt-test",
         "effortSignal": {
           "eligibleTurns": 1,
           "presentTurns": 1
         },
         "effortTiers": {
-          "max": {
+          "xhigh": {
             "delegated": 0,
             "mainLoop": 1
           }
@@ -124,8 +125,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 11,
-      "evidenceSchemaRevision": 8,
+      "analyzerRevision": 13,
+      "evidenceSchemaRevision": 9,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -137,7 +138,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 8,
+    "schemaRevision": 9,
     "subagents": {
       "state": "complete",
       "value": {
@@ -188,7 +189,7 @@
         "speed": null,
         "subagentLaunches": 0,
         "subagentTokens": 0,
-        "thinkingMode": "max",
+        "thinkingMode": "xhigh",
         "tokensIn": 500,
         "tokensOut": 50,
         "userPrompts": 0
@@ -4166,7 +4167,7 @@
     "modelRuns": [
       {
         "model": "gpt-test",
-        "thinkingMode": "max"
+        "thinkingMode": "xhigh"
       }
     ],
     "peakContextTokens": 500,
@@ -4190,7 +4191,7 @@
         "role": "assistant",
         "source": "parent",
         "speed": null,
-        "thinkingMode": "max",
+        "thinkingMode": "xhigh",
         "tools": [],
         "tsMs": 1786615502000,
         "usage": {

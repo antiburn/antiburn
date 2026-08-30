@@ -506,7 +506,7 @@ mod tests {
         QuotaIncident, QuotaLimitKind, SessionEvidenceAccumulator, SessionQuotaEvidence,
         SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
     };
-    use crate::insights::detectors::{ModelReplacement, NotAssessedReason};
+    use crate::insights::detectors::{ModelFamily, ModelReplacementEntry, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
 
     fn evidence(session_id: &str) -> SessionEvidence {
@@ -737,11 +737,13 @@ mod tests {
         // be placed relative to the replacement's availability, so
         // Old Model Usage must surface the contract gap, never clean.
         let mut catalogs = ReportCatalogs::default();
-        catalogs.model_replacements.insert(
+        catalogs.model_replacements.entries.insert(
             "old-model-1".to_owned(),
-            ModelReplacement {
+            ModelReplacementEntry {
                 replacement: "new-model-2".to_owned(),
                 available_since_ts_ms: 100,
+                rationale: "test rule".to_owned(),
+                source_url: "https://example.invalid/old-model-1".to_owned(),
             },
         );
         let mut row = evidence("timestampless");
@@ -908,6 +910,10 @@ mod tests {
             DetectorId::UnusedSkills,
             DetectorId::OveruseOfFastMode,
             DetectorId::CacheChurn,
+            // The reviewed production registry has entries, and this
+            // session carries zero observed models, so no catalogued
+            // model can have run.
+            DetectorId::OldModelUsage,
         ] {
             assert_eq!(
                 report.detector_statuses[detector.index()],
@@ -918,12 +924,6 @@ mod tests {
         assert_eq!(
             report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
             DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
-        );
-        // The production catalog default carries no curated deprecated
-        // models, so the rule can never prove absence.
-        assert_eq!(
-            report.detector_statuses[DetectorId::OldModelUsage.index()],
-            DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
         );
     }
 
@@ -1103,14 +1103,10 @@ mod tests {
         // detector from reading Clean.
         for detector in DetectorId::ALL {
             let baseline = status_for(complete_row("complete"), detector);
-            if matches!(
-                detector,
-                DetectorId::UnusedBuiltInTools | DetectorId::OldModelUsage
-            ) {
-                // Both rules carry a permanent contract gap independent
-                // of fact degradation: Unused Built-In Tools has no
-                // definition-name payload yet, and the production
-                // catalog default carries no curated deprecated models.
+            if matches!(detector, DetectorId::UnusedBuiltInTools) {
+                // Unused Built-In Tools carries a permanent contract
+                // gap independent of fact degradation: it has no
+                // definition-name payload yet.
                 assert_eq!(
                     baseline,
                     DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
@@ -1176,7 +1172,23 @@ mod tests {
                 let EvidenceValue::Complete(models) = &mut row.models else {
                     unreachable!()
                 };
-                let tier = catalogs.effort_tiers_above_cap.first().unwrap().clone();
+                let (family, policy) = catalogs
+                    .families
+                    .iter()
+                    .find(|(_, policy)| !policy.effort.above_cap.is_empty())
+                    .expect("caller must supply a family with an above-cap effort tier");
+                let tier = policy.effort.above_cap.first().unwrap().clone();
+                let model = match family {
+                    ModelFamily::Claude => "claude-sonnet-4-6",
+                    ModelFamily::OpenAi => "gpt-5.6",
+                    ModelFamily::Unknown => unreachable!("Unknown family never recognizes a tier"),
+                };
+                // A `by_model` entry establishes the family as present,
+                // which the reviewed policy needs to classify `tier` as
+                // above the cap.
+                models
+                    .by_model
+                    .insert(model.to_owned(), ModelTokens::default());
                 models.effort_tiers.insert(
                     tier,
                     TurnCounts {
@@ -1217,6 +1229,7 @@ mod tests {
                 };
                 let (model, replacement) = catalogs
                     .model_replacements
+                    .entries
                     .iter()
                     .next()
                     .expect("caller must supply a non-empty replacement catalog");
@@ -1264,11 +1277,13 @@ mod tests {
         // (c) A finding observed alongside a Partial clean-only fact
         // must still report Findings.
         let mut catalogs = ReportCatalogs::default();
-        catalogs.model_replacements.insert(
+        catalogs.model_replacements.entries.insert(
             "old-model-1".to_owned(),
-            ModelReplacement {
+            ModelReplacementEntry {
                 replacement: "new-model-2".to_owned(),
                 available_since_ts_ms: 100,
+                rationale: "test rule".to_owned(),
+                source_url: "https://example.invalid/old-model-1".to_owned(),
             },
         );
 

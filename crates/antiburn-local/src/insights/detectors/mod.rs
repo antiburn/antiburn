@@ -12,6 +12,7 @@
 
 mod cache_churn;
 mod model_overthinking;
+mod model_registry;
 mod old_model_usage;
 mod overpowered_subagents;
 mod overuse_of_fast_mode;
@@ -23,9 +24,14 @@ mod unused_skills;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{EvidenceValue, SessionEvidence};
+use crate::pricing::canonical_model_key;
 
 use super::report::{DetectorCounts, MAX_EXAMPLES_PER_DETECTOR, SessionExample};
 use super::status::DetectorId;
+
+pub use model_registry::{
+    ModelRegistry, ModelReplacementEntry, ModelReplacementRule, REGISTRY_REVISION,
+};
 
 /// One report-level status for one detector.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,11 +109,102 @@ impl DetectorFold {
     }
 }
 
-/// One curated replacement entry for a deprecated model.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelReplacement {
-    pub replacement: String,
-    pub available_since_ts_ms: i64,
+/// A model family, derived from the normalized model key's prefix.
+/// Tier policy is keyed by family, not by harness, because OpenCode and
+/// Pi can run any vendor's models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ModelFamily {
+    Claude,
+    OpenAi,
+    /// No known vendor prefix matched. A tier or premium check can
+    /// never classify an unknown family; it always reports a contract
+    /// gap instead of a finding or clean result.
+    Unknown,
+}
+
+/// Classifies a model key into its family from the canonical model key's
+/// prefix (provider namespace stripped, date suffix stripped, lowercased;
+/// see [`canonical_model_key`]).
+pub fn model_family(model: &str) -> ModelFamily {
+    let canonical = canonical_model_key(model);
+    if canonical.starts_with("claude-") {
+        ModelFamily::Claude
+    } else if canonical.starts_with("gpt-")
+        || canonical.starts_with("o1")
+        || canonical.starts_with("o3")
+        || canonical.starts_with("o4")
+    {
+        ModelFamily::OpenAi
+    } else {
+        ModelFamily::Unknown
+    }
+}
+
+/// One family's reasoning-effort tier policy: which normalized labels
+/// count as above the recommended cap, and which labels the family
+/// recognizes at all. A recognized label that is not above the cap is
+/// clean; an unrecognized label with turns blocks clean until the
+/// policy classifies it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EffortPolicy {
+    pub above_cap: BTreeSet<String>,
+    pub recognized: BTreeSet<String>,
+}
+
+/// One family's fast-mode speed policy: the normalized labels it
+/// recognizes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpeedPolicy {
+    pub recognized: BTreeSet<String>,
+}
+
+/// One family's premium-tier policy for Overpowered Subagents, matching
+/// Cadence `SubagentTier::classify`
+/// (`crates/analysis/src/efficiency_findings.rs`).
+///
+/// `reviewed` states whether a maintainer has classified this family's
+/// premium tier at all. An unreviewed family's models can never prove
+/// premium or non-premium; the detector reports a contract gap.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PremiumPolicy {
+    pub reviewed: bool,
+    /// A canonical model key is premium when it contains any of these
+    /// substrings (Claude: `opus`, `fable`, `mythos`).
+    pub substrings: Vec<String>,
+    /// A canonical model key is premium when it starts with any of these
+    /// prefixes (OpenAI: `gpt-5.6`, `gpt-5.5`), unless it is in
+    /// `exceptions`.
+    pub prefixes: Vec<String>,
+    /// Canonical model keys that a substring or prefix match would
+    /// otherwise call premium, but a maintainer has reviewed as budget
+    /// tiers within that prefix (e.g. `gpt-5.6-terra`, `gpt-5.6-luna`).
+    pub exceptions: BTreeSet<String>,
+}
+
+impl PremiumPolicy {
+    /// Whether a canonical model key is premium under this policy.
+    /// Callers check `reviewed` separately: an unreviewed policy's
+    /// verdict here is not meaningful.
+    pub fn is_premium(&self, canonical: &str) -> bool {
+        if self.exceptions.contains(canonical) {
+            return false;
+        }
+        self.substrings
+            .iter()
+            .any(|s| canonical.contains(s.as_str()))
+            || self
+                .prefixes
+                .iter()
+                .any(|p| canonical.starts_with(p.as_str()))
+    }
+}
+
+/// One model family's full tier policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FamilyPolicy {
+    pub effort: EffortPolicy,
+    pub speed: SpeedPolicy,
+    pub premium: PremiumPolicy,
 }
 
 /// Report-time policy inputs. Catalogs change without reparsing
@@ -118,12 +215,11 @@ pub struct ReportCatalogs {
     /// A request whose observed context depth exceeds this cap is a
     /// Sessions Over Depth finding.
     pub depth_cap_tokens: u64,
-    /// Effort tier labels above the recommended cap.
-    pub effort_tiers_above_cap: BTreeSet<String>,
-    /// Curated deprecated models keyed by normalized model name.
-    pub model_replacements: BTreeMap<String, ModelReplacement>,
-    /// Premium models keyed by normalized model name.
-    pub premium_models: BTreeSet<String>,
+    /// Reviewed tier policy, one entry per known model family.
+    pub families: BTreeMap<ModelFamily, FamilyPolicy>,
+    /// Curated deprecated-model registry, keyed by normalized model
+    /// name and alias.
+    pub model_replacements: ModelRegistry,
     /// Delegated fast-tier turns at or above this count are a finding.
     /// Zero observed delegated turns never fire, whatever the value.
     pub fast_mode_delegated_turns_threshold: u64,
@@ -131,29 +227,89 @@ pub struct ReportCatalogs {
     pub cache_idle_expiry_ms: i64,
 }
 
+/// Effort tiers above the recommended cap in every reviewed family:
+/// `xhigh`, `max`, and `ultra`. Cadence's production census
+/// (`REASONING_EFFORT_TIER_POLICY`,
+/// `crates/analysis/src/efficiency_findings.rs`) never observed
+/// `ultrathink` as an `effort` value, so it is not in this set.
+fn above_cap_effort_tiers() -> BTreeSet<String> {
+    ["xhigh", "max", "ultra"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 impl Default for ReportCatalogs {
     fn default() -> Self {
+        let mut families = BTreeMap::new();
+        families.insert(
+            ModelFamily::Claude,
+            FamilyPolicy {
+                effort: EffortPolicy {
+                    above_cap: above_cap_effort_tiers(),
+                    recognized: ["low", "medium", "high"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .chain(above_cap_effort_tiers())
+                        .collect(),
+                },
+                speed: SpeedPolicy {
+                    recognized: ["fast", "standard"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                },
+                premium: PremiumPolicy {
+                    reviewed: true,
+                    substrings: ["opus", "fable", "mythos"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    prefixes: Vec::new(),
+                    exceptions: BTreeSet::new(),
+                },
+            },
+        );
+        families.insert(
+            ModelFamily::OpenAi,
+            FamilyPolicy {
+                effort: EffortPolicy {
+                    above_cap: above_cap_effort_tiers(),
+                    recognized: ["none", "minimal", "low", "medium", "high"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .chain(above_cap_effort_tiers())
+                        .collect(),
+                },
+                speed: SpeedPolicy {
+                    recognized: ["fast", "standard"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                },
+                premium: PremiumPolicy {
+                    reviewed: true,
+                    substrings: Vec::new(),
+                    prefixes: vec!["gpt-5.6".to_owned(), "gpt-5.5".to_owned()],
+                    exceptions: [
+                        "gpt-5.6-terra",
+                        "gpt-5.6-luna",
+                        "gpt-5.3-codex-spark",
+                        "codex-auto-review",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                },
+            },
+        );
+        families.insert(ModelFamily::Unknown, FamilyPolicy::default());
+
         Self {
-            revision: 3,
-            depth_cap_tokens: 160_000,
-            effort_tiers_above_cap: ["max", "ultrathink", "xhigh"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            model_replacements: BTreeMap::new(),
-            premium_models: [
-                "claude-3-opus",
-                "claude-opus-4",
-                "claude-opus-4-1",
-                "claude-opus-4-5",
-                "claude-opus-4-6",
-                "claude-opus-4-7",
-                "claude-opus-4-8",
-                "claude-opus-5",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
+            revision: 5,
+            depth_cap_tokens: 400_000,
+            families,
+            model_replacements: model_registry::default_registry(),
             fast_mode_delegated_turns_threshold: 1,
             cache_idle_expiry_ms: 300_000,
         }
@@ -358,5 +514,68 @@ mod tests {
             status(counts(2, 2), DetectorFold::default(), 2),
             DetectorStatus::Clean
         );
+    }
+
+    #[test]
+    fn model_family_classifies_a_provider_prefixed_openai_key() {
+        assert_eq!(model_family("openai.gpt-5.6-sol"), ModelFamily::OpenAi);
+    }
+
+    #[test]
+    fn model_family_classifies_a_slash_namespaced_claude_key() {
+        assert_eq!(
+            model_family("anthropic/claude-opus-4.8"),
+            ModelFamily::Claude
+        );
+    }
+
+    #[test]
+    fn model_family_classifies_an_antigravity_prefixed_claude_key() {
+        assert_eq!(
+            model_family("antigravity-claude-opus-4-6-thinking"),
+            ModelFamily::Claude
+        );
+    }
+
+    #[test]
+    fn openai_premium_policy_flags_bare_gpt_5_6() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
+        assert!(policy.is_premium("gpt-5.6"));
+    }
+
+    #[test]
+    fn openai_premium_policy_flags_gpt_5_5_fast() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
+        assert!(policy.is_premium("gpt-5.5-fast"));
+    }
+
+    #[test]
+    fn openai_premium_policy_excepts_gpt_5_6_terra() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
+        assert!(!policy.is_premium("gpt-5.6-terra"));
+    }
+
+    #[test]
+    fn openai_premium_policy_excepts_gpt_5_6_luna() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
+        assert!(!policy.is_premium("gpt-5.6-luna"));
+    }
+
+    #[test]
+    fn claude_premium_policy_flags_mythos() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
+        assert!(policy.is_premium("claude-mythos-5"));
+    }
+
+    #[test]
+    fn claude_premium_policy_does_not_flag_sonnet() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
+        assert!(!policy.is_premium("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn claude_premium_policy_does_not_flag_haiku() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
+        assert!(!policy.is_premium("claude-haiku-4-5"));
     }
 }
