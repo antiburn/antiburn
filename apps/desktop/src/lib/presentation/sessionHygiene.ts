@@ -92,7 +92,10 @@ const NOT_ASSESSED: SessionHygieneBadgePayload = {
 
 /** Reader copy for an `excessCacheRehydration` finding, keyed by the
  *  vendor billing mechanism the badge payload names. */
-const ACCOUNTING_DETAIL: Record<NonNullable<SessionHygieneBadgePayload["accounting"]>, string> = {
+const ACCOUNTING_DETAIL: Record<
+  NonNullable<SessionHygieneBadgePayload["accounting"]>,
+  string
+> = {
   cacheWrite: "Reduce repeated cache writes",
   uncachedInput: "Reduce full-price context re-reads",
 }
@@ -110,7 +113,9 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       id: definition.id,
     }
     const detail =
-      badge.status === "finding" && badge.accounting ? ACCOUNTING_DETAIL[badge.accounting] : null
+      badge.status === "finding" && badge.accounting
+        ? ACCOUNTING_DETAIL[badge.accounting]
+        : null
     if (badge.status === "finding") {
       return {
         ...badge,
