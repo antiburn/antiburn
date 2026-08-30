@@ -47,7 +47,7 @@ pub enum Fact {
     ToolDefinitions,
     SubagentRelationships,
     DelegatedModels,
-    CacheWriteAccounting,
+    RepeatedContextAccounting,
     RecordLinkage,
     ThreadMembership,
     CompactionBoundaries,
@@ -106,11 +106,15 @@ impl Fact {
                     state(&evidence.subagents)
                 }
             }
-            Self::CacheWriteAccounting => {
-                if !evidence.capabilities.cache_write_tokens {
-                    FactState::Unsupported
-                } else {
-                    state(&evidence.cache)
+            // `repeated_context`'s own `EvidenceValue` already carries the
+            // accounting gate (`Unsupported` when neither cache-write nor
+            // uncached-input accounting applies), the same way
+            // `RecordLinkage` reads `previous_turn`.
+            Self::RepeatedContextAccounting => {
+                match cache_group_and_repeated_context(&evidence.cache) {
+                    None => FactState::Unsupported,
+                    Some((_, FactState::Unsupported)) => FactState::Unsupported,
+                    Some((group, marker)) => weaker(group, marker),
                 }
             }
             Self::RecordLinkage => match cache_group_and_marker(&evidence.cache) {
@@ -161,6 +165,23 @@ fn cache_group_and_marker(cache: &EvidenceValue<CacheEvidence>) -> Option<(FactS
         }
         EvidenceValue::Complete(observed) => {
             Some((FactState::Complete, state(&observed.previous_turn)))
+        }
+    }
+}
+
+/// Returns the cache group's own state alongside its nested
+/// `repeated_context` marker's state, or `None` when the cache group
+/// itself is `Unsupported` (no `CacheEvidence` to read a marker from).
+fn cache_group_and_repeated_context(
+    cache: &EvidenceValue<CacheEvidence>,
+) -> Option<(FactState, FactState)> {
+    match cache {
+        EvidenceValue::Unsupported => None,
+        EvidenceValue::Partial { observed, .. } => {
+            Some((FactState::Partial, state(&observed.repeated_context)))
+        }
+        EvidenceValue::Complete(observed) => {
+            Some((FactState::Complete, state(&observed.repeated_context)))
         }
     }
 }
@@ -231,9 +252,9 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
             clean: &[Fact::SpeedSignal, Fact::SubagentRelationships],
         },
         DetectorId::CacheChurn => DetectorRequirements {
-            finding: &[Fact::CacheWriteAccounting],
+            finding: &[Fact::RepeatedContextAccounting],
             clean: &[
-                Fact::CacheWriteAccounting,
+                Fact::RepeatedContextAccounting,
                 Fact::RecordLinkage,
                 Fact::CompactionBoundaries,
                 Fact::ModelIdentity,
@@ -502,9 +523,10 @@ mod tests {
     use super::*;
     use crate::analysis::{
         ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, FAST_SPEED_KEY, LoadedSource,
-        ModelTokens, ModelTransition, PARSER_REVISION, QuotaConfidence, QuotaHitSeverity,
-        QuotaIncident, QuotaLimitKind, SessionEvidenceAccumulator, SessionQuotaEvidence,
-        SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
+        ModelTokens, PARSER_REVISION, QuotaConfidence, QuotaHitSeverity, QuotaIncident,
+        QuotaLimitKind, RepeatedContext, RepeatedContextAccounting, SessionEvidenceAccumulator,
+        SessionQuotaEvidence, SignalCoverage, SourceCapabilities, SourceKind, TurnCounts,
+        TurnFacts,
     };
     use crate::insights::detectors::{ModelFamily, ModelReplacementEntry, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
@@ -1034,7 +1056,7 @@ mod tests {
                 to_partial(&mut row.context_sources)
             }
             Fact::SubagentRelationships | Fact::DelegatedModels => to_partial(&mut row.subagents),
-            Fact::CacheWriteAccounting | Fact::RecordLinkage => to_partial(&mut row.cache),
+            Fact::RepeatedContextAccounting | Fact::RecordLinkage => to_partial(&mut row.cache),
             Fact::ThreadMembership => row.capabilities.thread_identity = false,
             Fact::CompactionBoundaries => to_partial(&mut row.compactions),
             Fact::TimeRange => to_partial(&mut row.time_range),
@@ -1059,8 +1081,14 @@ mod tests {
             Fact::ToolDefinitions => row.capabilities.tool_definitions = false,
             Fact::SubagentRelationships => row.subagents = EvidenceValue::Unsupported,
             Fact::DelegatedModels => row.capabilities.subagent_models = false,
-            Fact::CacheWriteAccounting => row.capabilities.cache_write_tokens = false,
-            Fact::RecordLinkage => row.cache = EvidenceValue::Unsupported,
+            // `RepeatedContextAccounting` and `RecordLinkage` both read a
+            // marker nested inside `CacheEvidence`: unsupporting the whole
+            // group is the only way to force either marker `Unsupported`,
+            // since the marker's state comes from the stored evidence, not
+            // a capability flag re-read at fact-evaluation time.
+            Fact::RepeatedContextAccounting | Fact::RecordLinkage => {
+                row.cache = EvidenceValue::Unsupported
+            }
             Fact::ThreadMembership => row.capabilities.thread_identity = false,
             Fact::CompactionBoundaries => row.compactions = EvidenceValue::Unsupported,
             Fact::TimeRange => row.time_range = EvidenceValue::Unsupported,
@@ -1255,14 +1283,25 @@ mod tests {
                 );
             }
             DetectorId::CacheChurn => {
+                let EvidenceValue::Complete(models) = &mut row.models else {
+                    unreachable!()
+                };
+                // A `by_model` entry establishes a reviewed Claude family,
+                // the same way `ModelOverthinking`'s branch above does.
+                models
+                    .by_model
+                    .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
                 let EvidenceValue::Complete(cache) = &mut row.cache else {
                     unreachable!()
                 };
-                cache.cache_creation_tokens = 5_000;
-                cache.model_transitions.push(ModelTransition {
-                    ts_ms: 10,
-                    from_model: "model-a".to_owned(),
-                    to_model: "model-b".to_owned(),
+                // Every paid token is a repeat: the overpay multiple is
+                // infinite, a finding at any reviewed family's bound.
+                cache.repeated_context = EvidenceValue::Complete(RepeatedContext {
+                    accounting: RepeatedContextAccounting::CacheWrite,
+                    repeated_tokens: 5_000,
+                    paid_tokens: 5_000,
+                    pairs_considered: 1,
+                    pairs_skipped: 0,
                 });
             }
             DetectorId::OverpoweredSubagents | DetectorId::UnusedBuiltInTools => {

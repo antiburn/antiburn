@@ -141,7 +141,7 @@
         "usage": {
           "cacheCreationTokens": 8000,
           "cacheReadTokens": 0,
-          "inputTokens": 30,
+          "inputTokens": 9040,
           "outputTokens": 6
         },
         "uuid": "11111111-1111-4111-8111-000000000006"
@@ -156,7 +156,7 @@
       "agent": "claude",
       "billableCacheCreationTokens": 17004,
       "billableCacheReadTokens": 0,
-      "billableInputTokens": 92,
+      "billableInputTokens": 9102,
       "billableOutputTokens": 19,
       "buckets": [
         {
@@ -4103,7 +4103,7 @@
           "compactionPostTokens": null,
           "compactionPreTokens": null,
           "compactionTrigger": null,
-          "contextTokens": 8030,
+          "contextTokens": 17040,
           "hasThinking": false,
           "isCacheRehydration": false,
           "isCacheRoutingMiss": false,
@@ -4115,7 +4115,7 @@
           "subagentLaunches": 0,
           "subagentTokens": 0,
           "thinkingMode": null,
-          "tokensIn": 8030,
+          "tokensIn": 17040,
           "tokensOut": 6,
           "userPrompts": 0
         }
@@ -4128,19 +4128,19 @@
       "cost": {
         "cacheReadUsd": 0.0,
         "cacheWriteUsd": 0.170024,
-        "inputUsd": 0.00041600000000000003,
+        "inputUsd": 0.045466,
         "outputUsd": 0.00042500000000000003,
-        "totalUsd": 0.17086500000000002
+        "totalUsd": 0.21591500000000002
       },
       "durationSecs": 25,
       "efficiency": {
         "carryUsd": 0.0,
-        "growthTokens": 17060,
-        "newWorkUsd": 0.1706751867995019,
+        "growthTokens": 26070,
+        "newWorkUsd": 0.2157515258215963,
         "outputTokens": 19,
         "pricedTurns": 4,
-        "rewriteUsd": 0.000189813200498132,
-        "totalUsd": 0.17086500000000002,
+        "rewriteUsd": 0.0001634741784037559,
+        "totalUsd": 0.21591500000000002,
         "unpricedTurns": 0
       },
       "eventCount": 6,
@@ -4153,7 +4153,7 @@
           "cache_creation_1h_tokens": 0,
           "cache_creation_tokens": 17000,
           "cache_read_tokens": 0,
-          "input_tokens": 70,
+          "input_tokens": 9080,
           "output_tokens": 14
         },
         "claude-sonnet-4-6": {
@@ -4172,9 +4172,9 @@
           "model": "claude-sonnet-4-6"
         }
       ],
-      "peakContextTokens": 9040,
+      "peakContextTokens": 17040,
       "sessionId": "thread_identity_chain",
-      "tokensIn": 17096,
+      "tokensIn": 26106,
       "tokensOut": 19
     }
   ]

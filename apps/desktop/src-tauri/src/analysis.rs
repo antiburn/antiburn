@@ -37,7 +37,7 @@ use antiburn_local::analysis::{
     ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, VendorAdapter,
 };
 #[cfg(test)]
-use antiburn_local::insights::{DetectorId, eligible};
+use antiburn_local::insights::{DetectorId, clean_facts_complete, eligible};
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
@@ -1952,7 +1952,8 @@ mod tests {
     /// SessionsOverDepth; `record_identity` stays unset and blocks
     /// CacheChurn.
     #[test]
-    fn codex_thread_identity_without_record_identity_supports_overdepth_not_cache_churn() {
+    fn codex_thread_identity_without_record_identity_supports_overdepth_and_a_never_clean_cache_churn()
+     {
         let input = SessionInput {
             agent: "codex".to_owned(),
             session_id: "codex-thread-identity".to_owned(),
@@ -1974,9 +1975,18 @@ mod tests {
             eligible(DetectorId::SessionsOverDepth, &evidence),
             "SessionsOverDepth must be eligible for Codex"
         );
+        // Codex reports `token_classes` and `request_context_tokens` but no
+        // `cache_write_tokens`, so `repeated_context` resolves to
+        // uncached-input accounting: Cache Churn is eligible. It can never
+        // read clean, though, because Codex has no `record_identity` and
+        // `RecordLinkage` stays unsupported.
         assert!(
-            !eligible(DetectorId::CacheChurn, &evidence),
-            "CacheChurn must not be eligible for Codex"
+            eligible(DetectorId::CacheChurn, &evidence),
+            "CacheChurn must be eligible for Codex under uncached-input accounting"
+        );
+        assert!(
+            !clean_facts_complete(DetectorId::CacheChurn, &evidence),
+            "CacheChurn must never read clean for Codex"
         );
     }
 

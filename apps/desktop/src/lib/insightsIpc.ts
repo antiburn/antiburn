@@ -112,6 +112,10 @@ export interface SessionHygieneBadgePayload {
   id: SessionHygieneBadgeId
   status: "finding" | "clean" | "notAssessed"
   notAssessedReason: InsightsNotAssessedReason | null
+  /** Which vendor billing mechanism backs an `excessCacheRehydration`
+   *  verdict. Absent for every other badge and for old evidence with no
+   *  `repeated_context` marker. */
+  accounting?: "cacheWrite" | "uncachedInput"
 }
 
 export type SessionHygieneEvidenceState =

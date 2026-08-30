@@ -58,6 +58,22 @@ pub struct TurnFacts {
     pub compactions_capped: bool,
     pub duplicate_turn_identities: u64,
     pub thread_identity_missing: bool,
+    /// Repeated-context accounting under cache-write billing: paid context
+    /// (`cache_write_tokens`) beyond positive growth, summed over adjacent
+    /// `scope = 'main'` assistant turn pairs within one thread.
+    pub repeated_context_cache_write_tokens: u64,
+    /// The same sum under uncached-input billing: paid context
+    /// (`input_tokens`) beyond positive growth.
+    pub repeated_context_uncached_input_tokens: u64,
+    /// Sum of the raw cache-write bucket over every considered pair's
+    /// current turn, before subtracting growth
+    /// (`RepeatedContext::paid_tokens` under cache-write accounting).
+    pub repeated_context_cache_write_paid_tokens: u64,
+    /// The same sum under uncached-input accounting.
+    pub repeated_context_uncached_input_paid_tokens: u64,
+    pub repeated_context_pairs_considered: u64,
+    /// Adjacent pairs skipped for a missing or non-monotonic `ts_ms`.
+    pub repeated_context_pairs_skipped: u64,
     pub diagnostics: ParseDiagnostics,
 }
 
@@ -100,6 +116,7 @@ pub fn query_turn_facts(
     let (compaction_boundaries, compactions_capped) =
         query_compaction_boundaries(conn, key, claim_fence, &mut diagnostics)?;
     let duplicate_turn_identities = query_duplicate_turn_identities(conn, key, claim_fence)?;
+    let repeated_context = query_repeated_context(conn, key, claim_fence)?;
 
     Ok(TurnFacts {
         eligibility: core.eligibility,
@@ -132,6 +149,12 @@ pub fn query_turn_facts(
         compactions_capped,
         duplicate_turn_identities,
         thread_identity_missing: core.thread_identity_missing,
+        repeated_context_cache_write_tokens: repeated_context.cache_write_tokens,
+        repeated_context_uncached_input_tokens: repeated_context.uncached_input_tokens,
+        repeated_context_cache_write_paid_tokens: repeated_context.cache_write_paid_tokens,
+        repeated_context_uncached_input_paid_tokens: repeated_context.uncached_input_paid_tokens,
+        repeated_context_pairs_considered: repeated_context.pairs_considered,
+        repeated_context_pairs_skipped: repeated_context.pairs_skipped,
         diagnostics,
     })
 }
@@ -740,6 +763,108 @@ fn query_duplicate_turn_identities(
     Ok(as_u64(count))
 }
 
+/* --------------------------------------------------------------------
+ * Repeated-context accounting: paid context beyond positive growth,
+ * summed over adjacent `scope = 'main'` assistant turn pairs within one
+ * thread. See `RepeatedContext` in `evidence.rs`.
+ * ----------------------------------------------------------------- */
+
+/// A sibling scan to [`query_transitions_and_idle_gaps`]'s
+/// `MAIN_THREAD_SCAN_SQL`: it filters to assistant rows only, because a
+/// user or tool row carries no usage to pair.
+const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
+        cache_read_tokens, cache_write_tokens, is_compaction_boundary
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+    AND scope = 'main' AND role = 'assistant'
+  ORDER BY thread_id, turn_index";
+
+struct RepeatedContextTotals {
+    cache_write_tokens: u64,
+    uncached_input_tokens: u64,
+    /// Sum of the raw cache-write bucket (`RepeatedContext::paid_tokens`
+    /// under `CacheAccounting::CacheWrite`) over every considered pair's
+    /// current turn, before subtracting growth.
+    cache_write_paid_tokens: u64,
+    /// The same sum under uncached-input accounting.
+    uncached_input_paid_tokens: u64,
+    pairs_considered: u64,
+    pairs_skipped: u64,
+}
+
+/// One pass over `scope = 'main'` assistant rows, ordered by thread then
+/// turn. Resets the previous row at each `thread_id` boundary, so a pair
+/// never crosses two threads — the same rule
+/// [`query_transitions_and_idle_gaps`] follows. Computes both candidate
+/// sums (cache-write and uncached-input); the sink picks the one the
+/// source's capabilities support.
+///
+/// `is_compaction_boundary` is read but not used here. A compaction
+/// boundary row is a pair member like any other row: the detector
+/// explains a finding's cause from `model_transitions`,
+/// `longest_idle_gap_ms`, and `user_controlled_churn`, not from this sum.
+fn query_repeated_context(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<RepeatedContextTotals> {
+    let mut statement = conn.prepare(REPEATED_CONTEXT_SCAN_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence
+    ])?;
+    let mut cache_write_tokens: u64 = 0;
+    let mut uncached_input_tokens: u64 = 0;
+    let mut cache_write_paid_tokens: u64 = 0;
+    let mut uncached_input_paid_tokens: u64 = 0;
+    let mut pairs_considered: u64 = 0;
+    let mut pairs_skipped: u64 = 0;
+    let mut current_thread: Option<String> = None;
+    let mut previous: Option<(Option<i64>, i64)> = None;
+    while let Some(row) = rows.next()? {
+        let thread_id: String = row.get(0)?;
+        let ts_ms: Option<i64> = row.get(1)?;
+        let input_tokens: i64 = row.get(2)?;
+        let cache_read_tokens: i64 = row.get(3)?;
+        let cache_write: i64 = row.get(4)?;
+        let _is_compaction_boundary: bool = row.get(5)?;
+        let depth = input_tokens + cache_read_tokens + cache_write;
+        if current_thread.as_deref() != Some(thread_id.as_str()) {
+            current_thread = Some(thread_id);
+            previous = None;
+        }
+        if let Some((previous_ts, previous_depth)) = previous {
+            let in_order = matches!((previous_ts, ts_ms), (Some(previous_ts), Some(ts_ms)) if ts_ms >= previous_ts);
+            if in_order {
+                pairs_considered += 1;
+                let growth = as_u64((depth - previous_depth).max(0));
+                let paid_cache_write = as_u64(cache_write);
+                let paid_uncached_input = as_u64(input_tokens);
+                cache_write_tokens =
+                    cache_write_tokens.saturating_add(paid_cache_write.saturating_sub(growth));
+                uncached_input_tokens = uncached_input_tokens
+                    .saturating_add(paid_uncached_input.saturating_sub(growth));
+                cache_write_paid_tokens = cache_write_paid_tokens.saturating_add(paid_cache_write);
+                uncached_input_paid_tokens =
+                    uncached_input_paid_tokens.saturating_add(paid_uncached_input);
+            } else {
+                pairs_skipped += 1;
+            }
+        }
+        previous = Some((ts_ms, depth));
+    }
+    Ok(RepeatedContextTotals {
+        cache_write_tokens,
+        uncached_input_tokens,
+        cache_write_paid_tokens,
+        uncached_input_paid_tokens,
+        pairs_considered,
+        pairs_skipped,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +950,10 @@ mod tests {
         assert!(facts.compaction_boundaries.is_empty());
         assert_eq!(facts.duplicate_turn_identities, 0);
         assert!(!facts.thread_identity_missing);
+        assert_eq!(facts.repeated_context_cache_write_tokens, 0);
+        assert_eq!(facts.repeated_context_uncached_input_tokens, 0);
+        assert_eq!(facts.repeated_context_pairs_considered, 0);
+        assert_eq!(facts.repeated_context_pairs_skipped, 0);
     }
 
     #[test]
@@ -1154,5 +1283,133 @@ mod tests {
         insert(&conn, &rows);
         let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
         assert_eq!(facts.dominant_main_model.as_deref(), Some("model-a"));
+    }
+
+    #[test]
+    fn three_growing_turns_repeat_no_context() {
+        let conn = test_connection();
+        let mut first = base_row("s1", 0);
+        first.input_tokens = 100;
+        first.ts_ms = Some(1_000);
+        let mut second = base_row("s1", 1);
+        second.input_tokens = 150;
+        second.cache_write_tokens = 20;
+        second.ts_ms = Some(1_010);
+        let mut third = base_row("s1", 2);
+        third.input_tokens = 200;
+        third.cache_write_tokens = 10;
+        third.ts_ms = Some(1_020);
+        insert(&conn, &[first, second, third]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.repeated_context_cache_write_tokens, 0);
+        assert_eq!(facts.repeated_context_pairs_considered, 2);
+        assert_eq!(facts.repeated_context_pairs_skipped, 0);
+    }
+
+    #[test]
+    fn a_full_resend_after_a_model_switch_pays_beyond_growth() {
+        let conn = test_connection();
+        let mut first = base_row("s1", 0);
+        first.model = Some("model-a".to_owned());
+        first.input_tokens = 1_000;
+        first.ts_ms = Some(1_000);
+        let mut second = base_row("s1", 1);
+        second.model = Some("model-b".to_owned());
+        second.input_tokens = 0;
+        second.cache_write_tokens = 5_000;
+        second.ts_ms = Some(2_000);
+        insert(&conn, &[first, second]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        // depth grew 1000 -> 5000 (+4000); paid cache-write is 5000, so
+        // 5000 - 4000 = 1000 tokens are repeated, not grown.
+        assert_eq!(facts.repeated_context_cache_write_tokens, 1_000);
+        assert_eq!(facts.repeated_context_pairs_considered, 1);
+    }
+
+    #[test]
+    fn two_threads_never_form_a_cross_thread_pair() {
+        let conn = test_connection();
+        let mut thread_a_first = base_row("thread-a", 0);
+        thread_a_first.input_tokens = 1_000;
+        thread_a_first.ts_ms = Some(0);
+        let mut thread_a_second = base_row("thread-a", 1);
+        // Depth stays flat (1000 -> 1000): the previous turn's content
+        // moves from `input` to `cache_read`, and 50 tokens are paid
+        // again as `cache_write` with no matching growth.
+        thread_a_second.input_tokens = 0;
+        thread_a_second.cache_read_tokens = 950;
+        thread_a_second.cache_write_tokens = 50;
+        thread_a_second.ts_ms = Some(10);
+        let mut thread_b_first = base_row("thread-b", 0);
+        thread_b_first.input_tokens = 100_000;
+        thread_b_first.ts_ms = Some(20);
+        insert(&conn, &[thread_a_first, thread_a_second, thread_b_first]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        // A wrongly-crossed pair between thread-a's last row and
+        // thread-b's huge first row would swamp this sum.
+        assert_eq!(facts.repeated_context_cache_write_tokens, 50);
+        assert_eq!(facts.repeated_context_pairs_considered, 1);
+    }
+
+    #[test]
+    fn a_delegated_row_between_two_main_rows_is_ignored() {
+        let conn = test_connection();
+        let mut first_main = base_row("s1", 0);
+        first_main.input_tokens = 1_000;
+        first_main.ts_ms = Some(0);
+        let mut delegated = base_row("s1", 1);
+        delegated.scope = TurnScope::Delegated;
+        delegated.child_id = Some("s1".to_owned());
+        delegated.input_tokens = 900_000;
+        delegated.ts_ms = Some(5);
+        let mut second_main = base_row("s1", 2);
+        // Depth stays flat, so the whole cache write (30) is repeated.
+        second_main.input_tokens = 0;
+        second_main.cache_read_tokens = 970;
+        second_main.cache_write_tokens = 30;
+        second_main.ts_ms = Some(10);
+        insert(&conn, &[first_main, delegated, second_main]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        // The delegated row's huge input never enters the scan (scope =
+        // 'main' only), so the pair forms directly between the two main
+        // rows: growth is 0 and the whole cache write (30) is repeated.
+        assert_eq!(facts.repeated_context_cache_write_tokens, 30);
+        assert_eq!(facts.repeated_context_pairs_considered, 1);
+    }
+
+    #[test]
+    fn a_null_ts_ms_pair_is_skipped_and_counted() {
+        let conn = test_connection();
+        let mut first = base_row("s1", 0);
+        first.ts_ms = Some(0);
+        let mut second = base_row("s1", 1);
+        second.ts_ms = None;
+        second.cache_write_tokens = 40;
+        insert(&conn, &[first, second]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.repeated_context_pairs_skipped, 1);
+        assert_eq!(facts.repeated_context_pairs_considered, 0);
+        assert_eq!(facts.repeated_context_cache_write_tokens, 0);
+    }
+
+    #[test]
+    fn uncached_input_accounting_reads_repeated_input_beyond_growth_on_codex_shaped_rows() {
+        let conn = test_connection();
+        let mut first = base_row("s1", 0);
+        first.input_tokens = 1_000;
+        first.cache_write_tokens = 0;
+        first.ts_ms = Some(0);
+        let mut second = base_row("s1", 1);
+        // Codex never writes cache_write_tokens; a full uncached resend
+        // after cache expiry shows up as input_tokens alone.
+        second.input_tokens = 6_000;
+        second.cache_write_tokens = 0;
+        second.ts_ms = Some(1_000);
+        insert(&conn, &[first, second]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        // depth grew 1000 -> 6000 (+5000); paid uncached input is 6000, so
+        // 6000 - 5000 = 1000 tokens are repeated.
+        assert_eq!(facts.repeated_context_uncached_input_tokens, 1_000);
+        assert_eq!(facts.repeated_context_cache_write_tokens, 0);
     }
 }

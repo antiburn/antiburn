@@ -10,8 +10,8 @@
         "longestIdleGapMs": 2000,
         "modelTransitions": [
           {
-            "fromModel": "model-a",
-            "toModel": "model-b",
+            "fromModel": "claude-sonnet-4-6",
+            "toModel": "claude-opus-4-6",
             "tsMs": 1767312603000
           }
         ],
@@ -21,6 +21,16 @@
         },
         "providerEviction": {
           "state": "unsupported"
+        },
+        "repeatedContext": {
+          "state": "complete",
+          "value": {
+            "accounting": "cache_write",
+            "paidTokens": 8000,
+            "pairsConsidered": 1,
+            "pairsSkipped": 0,
+            "repeatedTokens": 8000
+          }
         },
         "userControlledChurn": {
           "manualCompactions": 0
@@ -60,12 +70,12 @@
         "topDepthExamples": [
           {
             "depthTokens": 9040,
-            "model": "model-a",
+            "model": "claude-sonnet-4-6",
             "tsMs": 1767312601000
           },
           {
             "depthTokens": 8030,
-            "model": "model-b",
+            "model": "claude-opus-4-6",
             "tsMs": 1767312603000
           }
         ]
@@ -104,16 +114,7 @@
       "state": "complete",
       "value": {
         "byModel": {
-          "model-a": {
-            "cacheCreation": 9000,
-            "cacheRead": 0,
-            "firstTsMs": 1767312601000,
-            "input": 40,
-            "lastTsMs": 1767312601000,
-            "output": 8,
-            "turns": 1
-          },
-          "model-b": {
+          "claude-opus-4-6": {
             "cacheCreation": 8000,
             "cacheRead": 0,
             "firstTsMs": 1767312603000,
@@ -121,9 +122,18 @@
             "lastTsMs": 1767312603000,
             "output": 6,
             "turns": 1
+          },
+          "claude-sonnet-4-6": {
+            "cacheCreation": 9000,
+            "cacheRead": 0,
+            "firstTsMs": 1767312601000,
+            "input": 40,
+            "lastTsMs": 1767312601000,
+            "output": 8,
+            "turns": 1
           }
         },
-        "dominantMainModel": "model-a",
+        "dominantMainModel": "claude-sonnet-4-6",
         "effortSignal": {
           "eligibleTurns": 2,
           "presentTurns": 0
@@ -141,8 +151,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 13,
-      "evidenceSchemaRevision": 9,
+      "analyzerRevision": 14,
+      "evidenceSchemaRevision": 11,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -154,7 +164,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 9,
+    "schemaRevision": 11,
     "subagents": {
       "state": "unsupported"
     },
@@ -193,7 +203,7 @@
         "isCacheRoutingMiss": false,
         "isCompactionBoundary": false,
         "lastTool": null,
-        "model": "model-a",
+        "model": "claude-sonnet-4-6",
         "secsSincePriorTurn": null,
         "speed": null,
         "subagentLaunches": 0,
@@ -4131,7 +4141,7 @@
         "isCacheRoutingMiss": false,
         "isCompactionBoundary": false,
         "lastTool": null,
-        "model": "model-b",
+        "model": "claude-opus-4-6",
         "secsSincePriorTurn": 2,
         "speed": null,
         "subagentLaunches": 0,
@@ -4150,39 +4160,39 @@
     "durationSecs": 2,
     "efficiency": {
       "carryUsd": 0.0,
-      "growthTokens": 0,
-      "newWorkUsd": 0.0,
-      "outputTokens": 0,
-      "pricedTurns": 0,
-      "rewriteUsd": 0.0,
-      "totalUsd": 0.0,
-      "unpricedTurns": 2
+      "growthTokens": 9040,
+      "newWorkUsd": 0.05439,
+      "outputTokens": 14,
+      "pricedTurns": 2,
+      "rewriteUsd": 0.08015,
+      "totalUsd": 0.13454,
+      "unpricedTurns": 0
     },
     "eventCount": 2,
     "initialContext": null,
-    "model": "model-a",
+    "model": "claude-sonnet-4-6",
     "modelBreakdown": {
-      "model-a": {
-        "cache_creation_1h_tokens": 0,
-        "cache_creation_tokens": 9000,
-        "cache_read_tokens": 0,
-        "input_tokens": 40,
-        "output_tokens": 8
-      },
-      "model-b": {
+      "claude-opus-4-6": {
         "cache_creation_1h_tokens": 0,
         "cache_creation_tokens": 8000,
         "cache_read_tokens": 0,
         "input_tokens": 30,
         "output_tokens": 6
+      },
+      "claude-sonnet-4-6": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 9000,
+        "cache_read_tokens": 0,
+        "input_tokens": 40,
+        "output_tokens": 8
       }
     },
     "modelRuns": [
       {
-        "model": "model-a"
+        "model": "claude-sonnet-4-6"
       },
       {
-        "model": "model-b"
+        "model": "claude-opus-4-6"
       }
     ],
     "peakContextTokens": 9040,
@@ -4202,7 +4212,7 @@
         "hasThinking": false,
         "isCompactionBoundary": false,
         "messageId": null,
-        "model": "model-a",
+        "model": "claude-sonnet-4-6",
         "parentUuid": "cc-1",
         "role": "assistant",
         "source": "parent",
@@ -4226,7 +4236,7 @@
         "hasThinking": false,
         "isCompactionBoundary": false,
         "messageId": null,
-        "model": "model-b",
+        "model": "claude-opus-4-6",
         "parentUuid": "cc-3",
         "role": "assistant",
         "source": "parent",
@@ -4244,7 +4254,7 @@
         "uuid": "cc-4"
       }
     ],
-    "model": "model-a",
+    "model": "claude-sonnet-4-6",
     "sessionId": "excess_cache_rehydration_finding"
   },
   "partialReasons": []

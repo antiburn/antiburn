@@ -56,10 +56,11 @@ pub use evidence::{
     ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP, EligibilityEvidence,
     EvidenceCoverage, EvidenceSource, EvidenceValue, FAST_SPEED_KEY, LoadedSource, ModelEvidence,
     ModelTokens, ModelTransition, OrderingObservation, ParseDiagnostics, QuotaConfidence,
-    QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RelationConfidence, SessionEvidence,
-    SessionEvidenceIdentity, SessionProvenance, SessionQuotaEvidence, SessionTimeRange,
-    SignalCoverage, SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild,
-    SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts,
+    QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RelationConfidence, RepeatedContext,
+    RepeatedContextAccounting, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
+    SessionQuotaEvidence, SessionTimeRange, SignalCoverage, SourceAcceptance, SourceCapabilities,
+    SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse,
+    TurnCounts,
 };
 pub use evidence_query::{TurnFacts, query_turn_facts};
 pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
@@ -96,11 +97,16 @@ pub const PARSER_REVISION: i64 = 12;
 // +1 for parts A-E of the Cadence model-tier-policy parity fixups: dropped
 // `ultrathink`, canonical model-key namespacing, the replacement registry
 // and premium-policy rewrites, and dominant-main-model-by-output-tokens
-// (`insights::detectors`). Same evidence fields, different assessable
-// outcome, so `EVIDENCE_SCHEMA_REVISION` is unchanged.
-pub const ANALYZER_REVISION: i64 = 13;
+// (`insights::detectors`), on top of the pre-existing +1 for per-thread
+// repeated-context accounting (`RepeatedContext`, below).
+// +1 more for part F: Cache Churn now scores `RepeatedContext` by overpay
+// multiple instead of an absolute token threshold (`insights::detectors::
+// cache_churn`), so an old assessed outcome no longer matches this rule.
+pub const ANALYZER_REVISION: i64 = 14;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 9;
+// +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
+// +1 more for `RepeatedContext::paid_tokens` (part F).
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 11;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

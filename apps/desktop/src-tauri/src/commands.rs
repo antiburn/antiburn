@@ -1243,8 +1243,9 @@ fn session_hygiene_payload(row: Option<crate::store::EvidenceRow>) -> SessionHyg
             } else {
                 "ready"
             };
-            SessionHygienePayload::from_badges(
+            SessionHygienePayload::for_evidence(
                 session_badges(&evidence, &ReportCatalogs::default()),
+                &evidence,
                 evidence_state,
             )
         }

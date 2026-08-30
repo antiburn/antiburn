@@ -26,6 +26,15 @@ pub enum EvidenceValue<T> {
     Complete(T),
 }
 
+/// The default state for evidence a source has not computed. Old
+/// persisted evidence deserializes a missing `EvidenceValue` field into
+/// this state through `#[serde(default)]`, without requiring `T: Default`.
+impl<T> Default for EvidenceValue<T> {
+    fn default() -> Self {
+        Self::Unsupported
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageReason {
@@ -175,12 +184,13 @@ pub struct ModelEvidence {
     /// so it deserializes as `0/0`, which reads as missing.
     #[serde(default)]
     pub speed_signal: SignalCoverage,
-    /// The `scope = 'main'` assistant model with the most turns in
-    /// this session, ties broken by the earliest `last_ts_ms`, then
-    /// the earliest `turn_index`. Overpowered Subagents uses this as
-    /// the main-loop model; `SubagentChild::parent_model` is the
-    /// fallback when this is `None`. Old persisted evidence has no
-    /// field here, so it deserializes as `None`.
+    /// The `scope = 'main'` assistant model with the most summed
+    /// output tokens in this session, ties broken by turn count, then
+    /// the latest `ts_ms`, then the earliest `turn_index`. Overpowered
+    /// Subagents uses this as the main-loop model; `SubagentChild::
+    /// parent_model` is the fallback when this is `None`. Old
+    /// persisted evidence has no field here, so it deserializes as
+    /// `None`.
     #[serde(default)]
     pub dominant_main_model: Option<String>,
 }
@@ -233,6 +243,40 @@ pub struct ChurnCounts {
     pub manual_compactions: u64,
 }
 
+/// Which vendor billing contract backs [`RepeatedContext::repeated_tokens`].
+/// Anthropic (Claude, and Claude models run through OpenCode or Pi) bills
+/// cache creation separately, so `cache_write_tokens` measures paid
+/// repeated context. OpenAI (Codex) bills repeated input at full price
+/// unless it lands in the automatic prompt cache, so uncached
+/// `input_tokens` measures it instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepeatedContextAccounting {
+    CacheWrite,
+    UncachedInput,
+}
+
+/// Per-thread repeated-context accounting: paid context beyond positive
+/// growth, summed over adjacent `scope = 'main'` assistant turn pairs
+/// within one thread. See "Excess context reprocessing" in
+/// `docs/plans/session-evidence-harness-parity.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepeatedContext {
+    pub accounting: RepeatedContextAccounting,
+    pub repeated_tokens: u64,
+    pub pairs_considered: u64,
+    pub pairs_skipped: u64,
+    /// Sum of `paid` (the accounting's billed bucket) over every
+    /// considered pair's current turn, same accounting as
+    /// `repeated_tokens`. `repeated_tokens <= paid_tokens` by
+    /// construction: a pair's overpay never exceeds what it paid.
+    /// Old persisted evidence has no field here, so it deserializes as
+    /// `0`.
+    #[serde(default)]
+    pub paid_tokens: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheEvidence {
@@ -245,6 +289,10 @@ pub struct CacheEvidence {
     pub user_controlled_churn: ChurnCounts,
     pub previous_turn: EvidenceValue<()>,
     pub provider_eviction: EvidenceValue<()>,
+    /// Old persisted evidence has no field here, so it deserializes as
+    /// `Unsupported`.
+    #[serde(default)]
+    pub repeated_context: EvidenceValue<RepeatedContext>,
 }
 
 /// Names the limit family that a transcript-observed quota incident reports.
@@ -715,7 +763,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 9,
+            "schemaRevision": 11,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -741,8 +789,8 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 12,
-                "analyzerRevision": 13,
-                "evidenceSchemaRevision": 9,
+                "analyzerRevision": 14,
+                "evidenceSchemaRevision": 11,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -766,7 +814,7 @@ mod tests {
             "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
             "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}, "effortSignal": {"eligibleTurns": 0, "presentTurns": 0}, "speedSignal": {"eligibleTurns": 0, "presentTurns": 0}, "dominantMainModel": null}},
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
-            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}}},
+            "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0}}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
             "quotaIncidents": {"state": "unsupported"}
         })

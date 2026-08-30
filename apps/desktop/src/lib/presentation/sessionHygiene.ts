@@ -18,6 +18,12 @@ export interface SessionHygieneCheck {
    * carries the verdict, so the two do not repeat each other.
    */
   name: string
+  /**
+   * Accounting-specific remediation copy for a finding, when the badge
+   * payload names the mechanism. Null for every other status, and for a
+   * finding with no `accounting` (old evidence).
+   */
+  detail: string | null
   ink: SessionHygieneInk
 }
 
@@ -84,6 +90,16 @@ const NOT_ASSESSED: SessionHygieneBadgePayload = {
   notAssessedReason: "incompleteEvidence",
 }
 
+/** Reader copy for an `excessCacheRehydration` finding, keyed by the
+ *  vendor billing mechanism the badge payload names. */
+const ACCOUNTING_DETAIL: Record<
+  NonNullable<SessionHygieneBadgePayload["accounting"]>,
+  string
+> = {
+  cacheWrite: "Reduce repeated cache writes",
+  uncachedInput: "Reduce full-price context re-reads",
+}
+
 export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
   badges: CHECKS.map((check) => ({ ...NOT_ASSESSED, id: check.id })),
   evidenceState: "pending",
@@ -96,11 +112,16 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       ...NOT_ASSESSED,
       id: definition.id,
     }
+    const detail =
+      badge.status === "finding" && badge.accounting
+        ? ACCOUNTING_DETAIL[badge.accounting]
+        : null
     if (badge.status === "finding") {
       return {
         ...badge,
         title: definition.findingTitle,
         name: definition.name,
+        detail,
         ink: "system-red-text" as const,
       }
     }
@@ -109,6 +130,7 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
         ...badge,
         title: definition.cleanTitle,
         name: definition.name,
+        detail,
         ink: "system-green" as const,
       }
     }
@@ -116,6 +138,7 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
       ...badge,
       title: definition.notAssessedTitle,
       name: definition.name,
+      detail,
       ink: "label-tertiary" as const,
     }
   })

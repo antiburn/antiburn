@@ -93,9 +93,10 @@ mod tests {
 
     use crate::analysis::{
         ANALYZER_REVISION, ContextEvidence, CoverageReason, EVIDENCE_SCHEMA_REVISION,
-        EvidenceSource, EvidenceValue, ModelTokens, ModelTransition, PARSER_REVISION,
-        RelationConfidence, RelationProvenance, SessionEvidence, SessionEvidenceAccumulator,
-        SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
+        EvidenceSource, EvidenceValue, ModelTokens, PARSER_REVISION, RelationConfidence,
+        RelationProvenance, RepeatedContext, RepeatedContextAccounting, SessionEvidence,
+        SessionEvidenceAccumulator, SourceCapabilities, SourceKind, SubagentChild, TurnCounts,
+        TurnFacts,
     };
     use crate::insights::detectors::test_support::claude_evidence;
     use crate::insights::{
@@ -199,14 +200,25 @@ mod tests {
                 }
             }
             BadgeId::ExcessCacheRehydration => {
+                let EvidenceValue::Complete(models) = &mut evidence.models else {
+                    unreachable!()
+                };
+                // A `by_model` entry establishes a reviewed Claude family
+                // for the overpay-multiple bound.
+                models
+                    .by_model
+                    .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
                 let EvidenceValue::Complete(cache) = &mut evidence.cache else {
                     unreachable!()
                 };
-                cache.cache_creation_tokens = 1;
-                cache.model_transitions.push(ModelTransition {
-                    ts_ms: 1,
-                    from_model: "model-a".to_owned(),
-                    to_model: "model-b".to_owned(),
+                // Every paid token is a repeat: the overpay multiple is
+                // infinite, a finding at any reviewed family's bound.
+                cache.repeated_context = EvidenceValue::Complete(RepeatedContext {
+                    accounting: RepeatedContextAccounting::CacheWrite,
+                    repeated_tokens: 1,
+                    paid_tokens: 1,
+                    pairs_considered: 1,
+                    pairs_skipped: 0,
                 });
                 if partial {
                     evidence.cache = make_partial(evidence.cache);
@@ -293,7 +305,7 @@ mod tests {
         // Every fact each badge's finding depends on must be
         // `Unsupported`. Facts a badge's evaluate body reads straight
         // off an evidence group (`MainLoopContext`, `ModelIdentity`,
-        // `CacheWriteAccounting`, ...) are derived at evidence-
+        // `RepeatedContextAccounting`, ...) are derived at evidence-
         // construction time from the capabilities below, so this
         // builds a fresh session instead of mutating an already-built
         // one: mutating `capabilities` after the fact would leave

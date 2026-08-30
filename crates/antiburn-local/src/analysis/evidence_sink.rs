@@ -6,10 +6,10 @@ use crate::analysis::evidence::{
     CoverageReason, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
     MAX_CONTEXT_SOURCES, MAX_EVIDENCE_EXAMPLES, MAX_SUBAGENT_CHILDREN, MAX_TOOL_NAMES,
     MAX_UNRECOGNIZED_TYPES, ModelEvidence, OrderingObservation, ParseDiagnostics,
-    RelationConfidence, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
-    SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
-    SubagentExample, ToolClass, ToolEvidence, ToolUse, cap_string, insert_diagnostic_field,
-    record_diagnostic_set_cap,
+    RelationConfidence, RepeatedContext, RepeatedContextAccounting, SessionEvidence,
+    SessionEvidenceIdentity, SessionProvenance, SourceAcceptance, SourceCapabilities, SourceKind,
+    SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse, cap_string,
+    insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::evidence_query::TurnFacts;
 use crate::analysis::interface::{
@@ -535,6 +535,63 @@ impl SessionEvidenceAccumulator {
         } else {
             EvidenceValue::Complete(())
         };
+        // The same precedence the `cache` group's own `EvidenceValue` below
+        // resolves to: this source's own record loss outranks a lossy
+        // child, which outranks the transitions cap, which outranks a
+        // record-identity gap. `repeated_context` degrades on the same
+        // reason, because it is computed from the same rows.
+        let cache_partial_reason: Option<CoverageReason> = self
+            .record_loss_reason
+            .or(child_dependent_partial)
+            .or(facts
+                .transitions_capped
+                .then_some(CoverageReason::CapExceeded))
+            .or((self.capabilities.record_identity && record_identity_gap)
+                .then_some(CoverageReason::AttributionIncomplete));
+        // Chosen once per session from capabilities, per the vendor
+        // billing contract `RepeatedContextAccounting` documents:
+        // cache-write accounting when the source bills cache creation
+        // separately, else uncached-input accounting when the source
+        // reports token classes and context occupancy, else unsupported.
+        let repeated_context_accounting = if self.capabilities.cache_write_tokens {
+            Some(RepeatedContextAccounting::CacheWrite)
+        } else if self.capabilities.token_classes && self.capabilities.request_context_tokens {
+            Some(RepeatedContextAccounting::UncachedInput)
+        } else {
+            None
+        };
+        let repeated_context = match repeated_context_accounting {
+            None => EvidenceValue::Unsupported,
+            Some(accounting) => {
+                let (repeated_tokens, paid_tokens) = match accounting {
+                    RepeatedContextAccounting::CacheWrite => (
+                        facts.repeated_context_cache_write_tokens,
+                        facts.repeated_context_cache_write_paid_tokens,
+                    ),
+                    RepeatedContextAccounting::UncachedInput => (
+                        facts.repeated_context_uncached_input_tokens,
+                        facts.repeated_context_uncached_input_paid_tokens,
+                    ),
+                };
+                let observed = RepeatedContext {
+                    accounting,
+                    repeated_tokens,
+                    paid_tokens,
+                    pairs_considered: facts.repeated_context_pairs_considered,
+                    pairs_skipped: facts.repeated_context_pairs_skipped,
+                };
+                if let Some(reason) = cache_partial_reason {
+                    EvidenceValue::Partial { observed, reason }
+                } else if facts.repeated_context_pairs_skipped > 0 {
+                    EvidenceValue::Partial {
+                        observed,
+                        reason: CoverageReason::AttributionIncomplete,
+                    }
+                } else {
+                    EvidenceValue::Complete(observed)
+                }
+            }
+        };
         let cache = CacheEvidence {
             cache_read_tokens: facts.cache_read_tokens,
             cache_creation_tokens: facts.cache_creation_tokens,
@@ -547,6 +604,7 @@ impl SessionEvidenceAccumulator {
             },
             previous_turn,
             provider_eviction: EvidenceValue::Unsupported,
+            repeated_context,
         };
         let compactions = CompactionEvidence {
             boundaries: facts.compaction_boundaries.clone(),
@@ -661,32 +719,18 @@ impl SessionEvidenceAccumulator {
             } else {
                 EvidenceValue::Complete(subagents)
             },
-            cache: if let Some(reason) = self.record_loss_reason {
-                EvidenceValue::Partial {
+            // The source promised per-record identity but a counted turn
+            // lacked it (or a parent link did not resolve): the cache
+            // group's linkage claim is incomplete, so the group degrades
+            // and Cache Churn cannot read clean from it (no false clean).
+            // `cache_partial_reason` computes this same precedence above,
+            // shared with `repeated_context`.
+            cache: match cache_partial_reason {
+                Some(reason) => EvidenceValue::Partial {
                     observed: cache,
                     reason,
-                }
-            } else if let Some(reason) = child_dependent_partial {
-                EvidenceValue::Partial {
-                    observed: cache,
-                    reason,
-                }
-            } else if facts.transitions_capped {
-                EvidenceValue::Partial {
-                    observed: cache,
-                    reason: CoverageReason::CapExceeded,
-                }
-            } else if self.capabilities.record_identity && record_identity_gap {
-                // The source promised per-record identity but a counted turn
-                // lacked it (or a parent link did not resolve): the cache
-                // group's linkage claim is incomplete, so the group degrades
-                // and Cache Churn cannot read clean from it (no false clean).
-                EvidenceValue::Partial {
-                    observed: cache,
-                    reason: CoverageReason::AttributionIncomplete,
-                }
-            } else {
-                EvidenceValue::Complete(cache)
+                },
+                None => EvidenceValue::Complete(cache),
             },
             compactions: self.supported_value(
                 compactions,
