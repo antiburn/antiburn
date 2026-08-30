@@ -65,7 +65,11 @@ describe("sessionHygieneChecks", () => {
       ...PAYLOAD,
       badges: PAYLOAD.badges.map((badge) =>
         badge.id === "obsoleteModel"
-          ? { id: "obsoleteModel" as const, status: "notAssessed" as const, notAssessedReason: "incompleteEvidence" as const }
+          ? {
+              id: "obsoleteModel" as const,
+              status: "notAssessed" as const,
+              notAssessedReason: "incompleteEvidence" as const,
+            }
           : badge,
       ),
     }
