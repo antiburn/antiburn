@@ -63,7 +63,7 @@ pub use evidence::{
     TurnCounts,
 };
 pub use evidence_query::{TurnFacts, query_turn_facts};
-pub use evidence_sink::{CompositeSink, SessionEvidenceAccumulator};
+pub use evidence_sink::{CompositeSink, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,

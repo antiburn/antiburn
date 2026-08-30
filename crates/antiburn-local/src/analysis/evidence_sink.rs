@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::mem::size_of;
 
 use crate::analysis::evidence::{
     CacheEvidence, ChurnCounts, CompactionEvidence, ContextEvidence, ContextSourceEvidence,
@@ -30,6 +31,16 @@ use crate::analysis::{
 fn skill_suffix(name: &str) -> &str {
     name.rsplit_once(':').map_or(name, |(_, suffix)| suffix)
 }
+
+/// Tests enforce this ceiling for the accumulator's retained heap bytes.
+/// A saturated accumulator (every collection at its cap) measures about
+/// 29,900 bytes; this bound rounds that up generously (over 2x).
+pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 64 * 1_024;
+
+/// A `BTreeMap` or `BTreeSet` has no queryable capacity: each insert grows
+/// exactly one B-tree node. This estimates one entry's node overhead —
+/// pointers and per-node slack — on top of its own key or value bytes.
+const BTREE_ENTRY_OVERHEAD_BYTES: usize = 48;
 
 pub struct SessionEvidenceAccumulator {
     identity: SessionEvidenceIdentity,
@@ -847,6 +858,106 @@ impl SessionEvidenceAccumulator {
                 SourceAcceptance::NotObserved | SourceAcceptance::SourceChanged
             )
     }
+
+    /// Estimates this accumulator's retained heap bytes: every capped
+    /// collection's held strings and entries, plus each interned string's
+    /// own capacity. Mirrors [`crate::analysis::metrics_sink::
+    /// SessionMetricsAccumulator::retained_bytes`]'s approach, adapted for
+    /// `BTreeMap`/`BTreeSet` fields, which carry no queryable capacity.
+    pub fn retained_bytes(&self) -> usize {
+        self.identity
+            .agent
+            .capacity()
+            .saturating_add(self.identity.session_id.capacity())
+            .saturating_add(diagnostics_retained_bytes(&self.diagnostics))
+            .saturating_add(tools_retained_bytes(&self.tools))
+            .saturating_add(string_set_retained_bytes(&self.invoked_skills))
+            .saturating_add(context_sources_retained_bytes(&self.skills))
+            .saturating_add(context_sources_retained_bytes(&self.mcp_servers))
+            .saturating_add(subagent_children_retained_bytes(
+                &self.subagent_children,
+                self.subagent_children.capacity(),
+            ))
+            .saturating_add(subagent_examples_retained_bytes(
+                &self.subagent_examples,
+                self.subagent_examples.capacity(),
+            ))
+            .saturating_add(hash_string_set_retained_bytes(&self.seen_thread_uuids))
+    }
+}
+
+/// One `BTreeSet<String>` entry's retained bytes: its string capacity plus
+/// the tree's own per-entry overhead.
+fn string_set_retained_bytes(set: &BTreeSet<String>) -> usize {
+    set.iter()
+        .map(|value| value.capacity().saturating_add(BTREE_ENTRY_OVERHEAD_BYTES))
+        .sum()
+}
+
+fn diagnostics_retained_bytes(diagnostics: &ParseDiagnostics) -> usize {
+    diagnostics
+        .unusable_reasons
+        .len()
+        .saturating_mul(
+            size_of::<(CoverageReason, u64)>().saturating_add(BTREE_ENTRY_OVERHEAD_BYTES),
+        )
+        .saturating_add(string_set_retained_bytes(&diagnostics.unrecognized_types))
+        .saturating_add(string_set_retained_bytes(&diagnostics.truncated_strings))
+        .saturating_add(string_set_retained_bytes(&diagnostics.capped_collections))
+}
+
+fn tools_retained_bytes(tools: &BTreeMap<String, ToolUse>) -> usize {
+    tools
+        .keys()
+        .map(|name| {
+            name.capacity()
+                .saturating_add(size_of::<ToolUse>())
+                .saturating_add(BTREE_ENTRY_OVERHEAD_BYTES)
+        })
+        .sum()
+}
+
+/// One `context_sources` map's (`skills` or `mcp_servers`) retained bytes:
+/// each name's capacity, each entry's own size, and each held description's
+/// capacity.
+fn context_sources_retained_bytes(sources: &BTreeMap<String, LoadedSource>) -> usize {
+    sources
+        .iter()
+        .map(|(name, source)| {
+            name.capacity()
+                .saturating_add(size_of::<LoadedSource>())
+                .saturating_add(source.description.as_ref().map_or(0, String::capacity))
+                .saturating_add(BTREE_ENTRY_OVERHEAD_BYTES)
+        })
+        .sum()
+}
+
+fn subagent_children_retained_bytes(children: &[SubagentChild], capacity: usize) -> usize {
+    capacity
+        .saturating_mul(size_of::<SubagentChild>())
+        .saturating_add(
+            children
+                .iter()
+                .map(|child| child.parent_model.as_ref().map_or(0, String::capacity))
+                .sum::<usize>(),
+        )
+}
+
+fn subagent_examples_retained_bytes(examples: &[SubagentExample], capacity: usize) -> usize {
+    capacity
+        .saturating_mul(size_of::<SubagentExample>())
+        .saturating_add(
+            examples
+                .iter()
+                .map(|example| example.parent_model.as_ref().map_or(0, String::capacity))
+                .sum::<usize>(),
+        )
+}
+
+fn hash_string_set_retained_bytes(set: &HashSet<String>) -> usize {
+    set.capacity()
+        .saturating_mul(size_of::<String>())
+        .saturating_add(set.iter().map(String::capacity).sum::<usize>())
 }
 
 impl RecordSink for SessionEvidenceAccumulator {
