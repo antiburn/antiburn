@@ -93,7 +93,11 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
-pub const PARSER_REVISION: i64 = 14;
+pub const PARSER_REVISION: i64 = 15;
+// +1 for Codex cache-write tokens: `codex_usage` now splits
+// `cache_write_input_tokens` into `cache_creation_tokens` instead of
+// folding it into `input_tokens`, so a stored Codex session must re-ingest
+// to pick up the new split (`vendors::codex::codex_usage`).
 // +1 for the fork sub-agent replay fix: the Claude adapter skips a fork
 // transcript's replayed parent records at the ingest boundary, so a stored
 // fork session must re-ingest to drop its duplicate turn rows and usage.
