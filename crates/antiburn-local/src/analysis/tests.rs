@@ -82,7 +82,7 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
     let EvidenceValue::Complete(cache) = evidence.cache else {
         panic!("cache must be complete");
     };
-    // `thread_identity` is evidenced now: the identified turn verifies
+    // `record_identity` is evidenced now: the identified turn verifies
     // `previous_turn`, while `provider_eviction` stays unsupported because
     // no transcript record states an eviction.
     assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));

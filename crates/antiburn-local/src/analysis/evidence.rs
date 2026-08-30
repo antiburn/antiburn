@@ -320,12 +320,20 @@ pub struct SourceCapabilities {
     pub subagent_relationships: bool,
     pub subagent_models: bool,
     pub compaction_boundaries: bool,
+    /// Every row's `thread_id` names the logical thread it belongs to.
     pub thread_identity: bool,
+    /// Every counted row carries its own record id (`uuid`) and its parent
+    /// link (`parent_uuid`) resolves to an id this source declared earlier.
+    pub record_identity: bool,
     pub quota_incidents: bool,
     pub harness_version: bool,
 }
 
 impl SourceCapabilities {
+    /// `record_identity` is set: every record carries a `uuid`, and a
+    /// non-root record's `parentUuid` (or its `logicalParentUuid` fallback
+    /// at a compaction boundary) resolves to an id declared earlier in the
+    /// same source.
     pub fn claude() -> Self {
         Self {
             request_context_tokens: true,
@@ -343,6 +351,7 @@ impl SourceCapabilities {
             subagent_models: true,
             compaction_boundaries: true,
             thread_identity: true,
+            record_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -363,6 +372,12 @@ impl SourceCapabilities {
     /// `subagents.delegated_models` through the child's `Delegated`-scope
     /// rows. This adds `OverpoweredSubagents` and `OveruseOfFastMode` to
     /// the assessed detector set for this source.
+    ///
+    /// `thread_identity` is set: one rollout is one thread, and a
+    /// discovered child rollout streams with `Delegated` scope, so a
+    /// child thread never merges into the parent's main-scope facts.
+    /// `record_identity` stays unset: Codex records carry no per-record
+    /// id, so `previous_turn` stays unsupported.
     pub fn codex() -> Self {
         Self {
             request_context_tokens: true,
@@ -379,7 +394,8 @@ impl SourceCapabilities {
             subagent_relationships: true,
             subagent_models: true,
             compaction_boundaries: true,
-            thread_identity: false,
+            thread_identity: true,
+            record_identity: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -400,6 +416,10 @@ impl SourceCapabilities {
     /// so a child model switch or idle gap never reads as parent
     /// reprocessing. A fork (null `parent_id`) is a separate root and never
     /// enters this relationship.
+    ///
+    /// `record_identity` is set: every message row carries its own id, and
+    /// a non-root row's `parent_id` resolves to an id declared earlier in
+    /// the same session.
     pub fn opencode() -> Self {
         Self {
             request_context_tokens: true,
@@ -417,6 +437,7 @@ impl SourceCapabilities {
             subagent_models: true,
             compaction_boundaries: true,
             thread_identity: true,
+            record_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -440,6 +461,10 @@ impl SourceCapabilities {
     /// same ids, then continues with its own; the adapter still resolves the
     /// copied rows into the chain (so the first owned row's `parentId`
     /// finds a seen id) even though it keeps dropping their events.
+    ///
+    /// `record_identity` is set for the same chain: every counted row
+    /// carries its own `id`, and its `parentId` resolves to an id declared
+    /// earlier in the same source.
     pub fn pi() -> Self {
         Self {
             request_context_tokens: true,
@@ -457,6 +482,7 @@ impl SourceCapabilities {
             subagent_models: false,
             compaction_boundaries: true,
             thread_identity: true,
+            record_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -681,7 +707,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 7,
+            "schemaRevision": 8,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -700,14 +726,15 @@ mod tests {
                 "subagentModels": true,
                 "compactionBoundaries": true,
                 "threadIdentity": true,
+                "recordIdentity": true,
                 "quotaIncidents": false,
                 "harnessVersion": false
             },
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 12,
-                "analyzerRevision": 9,
-                "evidenceSchemaRevision": 7,
+                "analyzerRevision": 10,
+                "evidenceSchemaRevision": 8,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",

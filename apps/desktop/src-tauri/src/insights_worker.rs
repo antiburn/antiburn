@@ -519,6 +519,7 @@ mod tests {
             subagent_models: false,
             compaction_boundaries: false,
             thread_identity: false,
+            record_identity: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -1442,10 +1443,10 @@ mod tests {
         let stored = store.evidence(&pi.key).unwrap().unwrap();
         assert_eq!(stored.status, EvidenceStatus::Ready);
         let evidence_json = stored.evidence_json.as_deref().unwrap();
-        assert!(evidence_json.contains("\"schemaRevision\":7"));
+        assert!(evidence_json.contains("\"schemaRevision\":8"));
         let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
         assert_eq!(evidence.capabilities, SourceCapabilities::pi());
-        assert_eq!(evidence.schema_revision, 7);
+        assert_eq!(evidence.schema_revision, 8);
 
         let report = crate::insights_report::reduce_report(
             data_dir.path().to_path_buf(),

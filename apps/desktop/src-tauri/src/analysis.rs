@@ -1957,6 +1957,46 @@ mod tests {
         );
     }
 
+    /// Seam 5a: a Codex rollout is one thread, but its records carry no
+    /// per-record id. `thread_identity` stays set and unblocks
+    /// SessionsOverDepth; `record_identity` stays unset and blocks
+    /// CacheChurn.
+    #[test]
+    fn codex_thread_identity_without_record_identity_supports_overdepth_not_cache_churn() {
+        let input = SessionInput {
+            agent: "codex".to_owned(),
+            session_id: "codex-thread-identity".to_owned(),
+            source: RawSource::Jsonl(codex_record()),
+        };
+
+        let pass = evidence_pass_with_turn_rows(
+            &[input],
+            &|| false,
+            Some(turn_row_store("codex", "codex-thread-identity")),
+        );
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        let evidence = pass.evidence.expect("published evidence");
+
+        assert!(evidence.capabilities.thread_identity);
+        assert!(!evidence.capabilities.record_identity);
+
+        let overdepth = requirements(DetectorId::SessionsOverDepth);
+        assert!(
+            overdepth.capabilities.iter().all(|clause| clause
+                .iter()
+                .any(|flag| flag.is_set(&evidence.capabilities))),
+            "SessionsOverDepth's capability requirements must hold for Codex"
+        );
+
+        let cache_churn = requirements(DetectorId::CacheChurn);
+        assert!(
+            !cache_churn.capabilities.iter().all(|clause| clause
+                .iter()
+                .any(|flag| flag.is_set(&evidence.capabilities))),
+            "CacheChurn's capability requirements must not hold for Codex"
+        );
+    }
+
     #[test]
     fn a_changed_codex_source_publishes_neither_projection() {
         let directory = tempfile::TempDir::new().expect("tempdir");

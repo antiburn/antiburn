@@ -49,6 +49,7 @@ pub enum CapabilityFlag {
     SubagentModels,
     CompactionBoundaries,
     ThreadIdentity,
+    RecordIdentity,
 }
 
 impl CapabilityFlag {
@@ -69,6 +70,7 @@ impl CapabilityFlag {
             Self::SubagentModels => capabilities.subagent_models,
             Self::CompactionBoundaries => capabilities.compaction_boundaries,
             Self::ThreadIdentity => capabilities.thread_identity,
+            Self::RecordIdentity => capabilities.record_identity,
         }
     }
 }
@@ -138,6 +140,7 @@ const SUBAGENT_RELATIONSHIPS: &[CapabilityFlag] = &[CapabilityFlag::SubagentRela
 const SUBAGENT_MODELS: &[CapabilityFlag] = &[CapabilityFlag::SubagentModels];
 const COMPACTION_BOUNDARIES: &[CapabilityFlag] = &[CapabilityFlag::CompactionBoundaries];
 const THREAD_IDENTITY: &[CapabilityFlag] = &[CapabilityFlag::ThreadIdentity];
+const RECORD_IDENTITY: &[CapabilityFlag] = &[CapabilityFlag::RecordIdentity];
 
 pub fn requirements(detector: DetectorId) -> DetectorRequirements {
     use EvidenceGroup as Group;
@@ -183,7 +186,7 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
         DetectorId::CacheChurn => DetectorRequirements {
             capabilities: &[
                 TIMESTAMPS_AND_ORDER,
-                THREAD_IDENTITY,
+                RECORD_IDENTITY,
                 MODEL_IDENTITY,
                 CACHE_WRITE_TOKENS,
                 COMPACTION_BOUNDARIES,
@@ -988,6 +991,7 @@ mod tests {
                 subagent_models: true,
                 compaction_boundaries: true,
                 thread_identity: true,
+                record_identity: true,
                 quota_incidents: true,
                 harness_version: true,
             };

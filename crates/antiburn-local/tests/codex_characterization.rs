@@ -270,7 +270,8 @@ fn codex_capabilities_match_published_evidence() {
     assert!(!capabilities.service_tier);
     assert!(capabilities.subagent_relationships && is_supported(&evidence.subagents));
     assert!(capabilities.subagent_models);
-    assert!(!capabilities.thread_identity);
+    assert!(capabilities.thread_identity);
+    assert!(!capabilities.record_identity);
     assert!(!capabilities.quota_incidents);
     assert!(!capabilities.harness_version);
     assert!(matches!(
@@ -374,6 +375,7 @@ fn codex_detector_prerequisites_assess_only_supported_detectors() {
     assert_eq!(
         assessed,
         vec![
+            DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
             DetectorId::OverpoweredSubagents,
             DetectorId::OldModelUsage,
