@@ -30,6 +30,12 @@
 //! or under `message`, so it drops every Codex line — the data is nested under
 //! `payload` and the top-level `type` is `response_item`. This adapter unwraps
 //! the envelope.
+//!
+//! A `(type, payload.type)` combination none of the readers above models does
+//! not fail the session closed by default (#229 parity). `is_inert_codex_record`
+//! proves a record carries none of the keys a reader consumes before the
+//! record is skipped with `Complete` coverage; see its doc comment and
+//! `is_recognized_eventless`'s for the allowlist and the structural proof.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
@@ -389,16 +395,28 @@ impl CodexStreamState {
                     parts: content_parts,
                 })));
             }
-        } else if !is_recognized_eventless(record_type, payload_type) {
-            sink.record(NormalizedRecord::Observation(Box::new(
-                EvidenceObservation::UnrecognizedType {
-                    discriminator: "codex.unrecognized".to_owned(),
-                    inert: false,
-                },
-            )));
-            sink.record(NormalizedRecord::Unusable(
-                PartialReason::UnrecognizedRecordType,
-            ));
+        } else {
+            let allowlisted = is_recognized_eventless(record_type, payload_type);
+            let inert = if !allowlisted {
+                is_inert_codex_record(&value, true)
+            } else if is_proven_echo(record_type, payload_type) {
+                is_inert_codex_record(&value, false)
+            } else {
+                true
+            };
+            if !inert || !allowlisted {
+                sink.record(NormalizedRecord::Observation(Box::new(
+                    EvidenceObservation::UnrecognizedType {
+                        discriminator: codex_discriminator(&value),
+                        inert,
+                    },
+                )));
+            }
+            if !inert {
+                sink.record(NormalizedRecord::Unusable(
+                    PartialReason::UnrecognizedRecordType,
+                ));
+            }
         }
     }
 
@@ -499,10 +517,36 @@ fn is_spawn_agent_call(
         && value.pointer("/payload/name").and_then(Value::as_str) == Some("spawn_agent")
 }
 
+/// Returns true for a Codex `(type, payload.type)` pair this adapter treats as
+/// carrying no per-turn signal.
+///
+/// `session_meta`, `turn_context`, `world_state`, the listed `event_msg`
+/// payloads, and `response_item`/`agent_message` are proven eventless by
+/// shape alone: their own evidence-bearing fields — `turn_context.model` /
+/// `.effort`, `thread_settings_applied.thread_settings.service_tier` — are
+/// read by `observe_model_and_effort` / `service_tier_speed` on every record,
+/// before this predicate ever runs, so nothing about them is left unproven.
+///
+/// `item_completed` and top-level `inter_agent_communication_metadata` are
+/// different: #229-parity measurement (1,034 local rollouts) found
+/// `item_completed` is a completion echo of a `response_item` this adapter
+/// already models — its `item.type` is one of `Reasoning`, `AgentMessage`,
+/// `CommandExecution`, `FileChange`, `UserMessage`, `Extension`,
+/// `SubAgentActivity`, `CollabAgentToolCall`, `ContextCompaction`,
+/// `McpToolCall`, or `ImageView`, and no sampled record carried usage, a
+/// model, or an effort. Its `McpToolCall` and `CommandExecution` items do
+/// carry tool-like keys (`tool`, `server`, `arguments`, `command`), so a
+/// strict scan rejects them; `is_proven_echo` names below route these two
+/// through the light structural check instead (`is_inert_codex_record`'s
+/// `reject_nested = false` pass), so a record that starts carrying real
+/// evidence still fails closed. `inter_agent_communication_metadata` carries
+/// only a `trigger_turn` link id.
 fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
     matches!(
         record_type,
-        Some("session_meta" | "turn_context" | "world_state")
+        Some(
+            "session_meta" | "turn_context" | "world_state" | "inter_agent_communication_metadata"
+        )
     ) || matches!(
         (record_type, payload_type),
         (
@@ -516,12 +560,155 @@ fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>
                     | "agent_message"
                     | "turn_aborted"
                     | "thread_settings_applied"
+                    | "item_completed"
             )
         )
     ) || matches!(
         (record_type, payload_type),
         (Some("response_item"), Some("agent_message"))
     )
+}
+
+/// The subset of `is_recognized_eventless` names that must still pass the
+/// light structural check (`is_inert_codex_record`'s `reject_nested = false`
+/// pass) before an unrecognized-record observation is skipped. See
+/// `is_recognized_eventless`'s doc comment for why the rest of the allowlist
+/// does not need this: their fields are already read elsewhere.
+fn is_proven_echo(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
+    record_type == Some("inter_agent_communication_metadata")
+        || matches!(
+            (record_type, payload_type),
+            (Some("event_msg"), Some("item_completed"))
+        )
+}
+
+/// Scalar keys a CODEX reader reads directly, at the top level of a record or
+/// inside its `payload` object: `token_count_event` / `codex_usage` (usage
+/// buckets), `observe_model_and_effort` (model, effort), `service_tier_speed`
+/// (service tier), and `message_event` (role). Presence of any of these at a
+/// location [`is_inert_codex_record`]'s light check covers blocks the record
+/// from clearing that check, no matter the value.
+const CODEX_SCALAR_EVIDENCE_KEYS: &[&str] = &[
+    "usage",
+    "last_token_usage",
+    "total_token_usage",
+    "info",
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "reasoning_output_tokens",
+    "model",
+    "effort",
+    "reasoning_effort",
+    "service_tier",
+    "thread_settings",
+    "role",
+];
+
+/// `payload.type` values `record_to_event` dispatches to a reader, plus the
+/// top-level `compacted` envelope type. A record carrying one of these values
+/// as its own `type` field proves it holds a shape a reader consumes, even
+/// through a `(type, payload.type)` combination `record_to_event` does not
+/// (yet) match.
+const CODEX_DISPATCHED_TYPES: &[&str] = &[
+    "message",
+    "reasoning",
+    "function_call_output",
+    "custom_tool_call_output",
+    "tool_search_output",
+    "mcp_tool_call_output",
+    "custom_tool_call",
+    "local_shell_call",
+    "tool_search_call",
+    "web_search_call",
+    "image_generation_call",
+    "compaction",
+    "context_compaction",
+    "context_compacted",
+    "token_count",
+    "compacted",
+];
+
+/// Returns true when an object carries the `function_call_event` /
+/// `custom_tool_call_event` tool shape: a non-empty `name`, together with
+/// `arguments`, `input`, or `call_id`. A `name` with no non-empty value, or no
+/// sibling of the three, is inert — `push_named_tool_str`'s Claude/generic
+/// counterpart likewise ignores an empty tool name.
+fn has_named_tool_shape(object: &Map<String, Value>) -> bool {
+    object
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| !name.is_empty())
+        && (object.contains_key("arguments")
+            || object.contains_key("input")
+            || object.contains_key("call_id"))
+}
+
+/// Returns true when an unrecognized Codex envelope carries no evidence any
+/// CODEX reader consumes.
+///
+/// Mirrors `records::is_inert_record`, but for the Codex envelope shape
+/// (`payload` in place of Claude's `message`) and the readers this file
+/// defines. `reject_nested` selects the strict any-depth scan, for a
+/// genuinely unrecognized `(type, payload.type)` pair, or the light scan that
+/// only reads the root and the root's `payload` object, for a name
+/// `is_proven_echo` names (an echo record whose nested `item` cannot carry
+/// evidence a reader reads — see `is_recognized_eventless`). A non-object
+/// record fails closed.
+fn is_inert_codex_record(value: &Value, reject_nested: bool) -> bool {
+    if !value.is_object() {
+        return false;
+    }
+
+    let mut pending = vec![(value, true)];
+    while let Some((value, reads_scalar_keys)) = pending.pop() {
+        match value {
+            Value::Object(object) => {
+                if reads_scalar_keys
+                    && (CODEX_SCALAR_EVIDENCE_KEYS
+                        .iter()
+                        .any(|key| object.contains_key(*key))
+                        || object
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(|kind| CODEX_DISPATCHED_TYPES.contains(&kind))
+                        || has_named_tool_shape(object))
+                {
+                    return false;
+                }
+
+                pending.extend(object.iter().map(|(key, child)| {
+                    let reads_scalar_keys =
+                        reject_nested || (reads_scalar_keys && key == "payload");
+                    (child, reads_scalar_keys)
+                }));
+            }
+            Value::Array(items) => {
+                pending.extend(items.iter().map(|item| (item, reject_nested)));
+            }
+            _ => {}
+        }
+    }
+
+    true
+}
+
+/// A Codex record's discriminator: `<type>` alone, or `<type>.<payload.type>`
+/// when the record carries a `payload.type`. Codex discriminators are enum
+/// names the vendor writes, never user content, so unlike Claude's
+/// `record_discriminator` this need not fall back to a fixed placeholder.
+/// `evidence_sink.rs`'s `observe_observation` bounds and caps the returned
+/// string the same way regardless of vendor (`EVIDENCE_STRING_CAP`,
+/// `MAX_UNRECOGNIZED_TYPES`).
+fn codex_discriminator(value: &Value) -> String {
+    let record_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("<missing>");
+    match value.pointer("/payload/type").and_then(Value::as_str) {
+        Some(payload_type) => format!("{record_type}.{payload_type}"),
+        None => record_type.to_owned(),
+    }
 }
 
 /// Read the per-turn speed a `thread_settings_applied` record sets, from its
@@ -1256,6 +1443,270 @@ fn codex_usage(u: &Map<String, Value>) -> Usage {
 mod tests {
     use super::*;
     use crate::analysis::SessionCollector;
+
+    /// One synthetic record per CODEX reader `is_inert_codex_record` mirrors,
+    /// each asserted evidence-bearing under the strict (any-depth) scan, plus
+    /// the exemptions the scan deliberately leaves inert. Mirrors
+    /// `records.rs`'s `INERTNESS_MIRROR_CASES`.
+    const CODEX_INERTNESS_MIRROR_CASES: &[(&str, bool)] = &[
+        (r#"{"type":"new_event","payload":{"usage":{}}}"#, false),
+        (
+            r#"{"type":"new_event","payload":{"last_token_usage":{}}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"total_token_usage":{}}}"#,
+            false,
+        ),
+        (r#"{"type":"new_event","payload":{"info":{}}}"#, false),
+        (
+            r#"{"type":"new_event","payload":{"input_tokens":1}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"output_tokens":1}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"cached_input_tokens":1}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"reasoning_output_tokens":1}}"#,
+            false,
+        ),
+        (r#"{"type":"new_event","payload":{"model":"m"}}"#, false),
+        (r#"{"type":"new_event","payload":{"effort":"high"}}"#, false),
+        (
+            r#"{"type":"new_event","payload":{"reasoning_effort":"high"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"service_tier":"priority"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"thread_settings":{}}}"#,
+            false,
+        ),
+        (r#"{"type":"new_event","payload":{"role":"agent"}}"#, false),
+        (
+            r#"{"type":"new_event","payload":{"type":"message"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"reasoning"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"function_call_output"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"custom_tool_call_output"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"tool_search_output"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"mcp_tool_call_output"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"custom_tool_call"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"local_shell_call"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"tool_search_call"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"web_search_call"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"image_generation_call"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"compaction"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"context_compaction"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"context_compacted"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"type":"token_count"}}"#,
+            false,
+        ),
+        (r#"{"type":"compacted"}"#, false),
+        (
+            r#"{"type":"new_event","payload":{"name":"Bash","arguments":{}}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"name":"Bash","input":{}}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"name":"Bash","call_id":"c1"}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"nested":{"usage":{}}}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"items":[{"name":"Bash","arguments":{}}]}}"#,
+            false,
+        ),
+        (
+            r#"{"type":"new_event","timestamp":"2026-01-01T00:00:00Z"}"#,
+            true,
+        ),
+        (
+            r#"{"type":"new_event","payload":{"name":"","arguments":{}}}"#,
+            true,
+        ),
+        (r#"{"type":"new_event","payload":{"call_id":"c1"}}"#, true),
+        (
+            r#"{"type":"new_event","payload":{"note":"free text"}}"#,
+            true,
+        ),
+    ];
+
+    #[test]
+    fn every_key_record_to_event_reads_appears_in_the_codex_inertness_table() {
+        for (record, expected_inert) in CODEX_INERTNESS_MIRROR_CASES {
+            let value: Value = serde_json::from_str(record).unwrap();
+            assert_eq!(
+                is_inert_codex_record(&value, true),
+                *expected_inert,
+                "unexpected strict classification for {record}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_object_codex_records_fail_closed() {
+        for record in [
+            serde_json::json!([]),
+            serde_json::json!(7),
+            serde_json::json!("text"),
+            Value::Null,
+        ] {
+            assert!(!is_inert_codex_record(&record, true));
+            assert!(!is_inert_codex_record(&record, false));
+        }
+    }
+
+    #[test]
+    fn record_to_event_changes_require_an_inertness_review() {
+        const EXPECTED_FINGERPRINT: u64 = 1_469_656_163_493_354_995;
+        let source = include_str!("codex.rs").replace("\r\n", "\n");
+        let start = source.find("fn observe_model_and_effort").unwrap();
+        let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
+        let fingerprint = source.as_bytes()[start..end]
+            .iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+
+        assert_eq!(fingerprint, EXPECTED_FINGERPRINT);
+    }
+
+    /// An allowlisted `item_completed` whose own payload also carries a
+    /// root-level `model` key is NOT inert: the light check still guards the
+    /// root and root `payload` object, exactly as it guards a genuine
+    /// `item_completed` echo's absence of one.
+    #[test]
+    fn item_completed_with_a_root_level_model_key_is_not_inert() {
+        let record = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "model": "m",
+                "item": {"type": "UserMessage"}
+            }
+        });
+        assert!(is_proven_echo(Some("event_msg"), Some("item_completed")));
+        assert!(!is_inert_codex_record(&record, false));
+    }
+
+    /// A nested `name` + `arguments` pair inside `item_completed.item` is
+    /// inert under the light check (the echoed item cannot carry evidence a
+    /// reader reads — see `is_recognized_eventless`) but NOT inert under the
+    /// strict check (a genuinely unrecognized record stays conservative at
+    /// any depth).
+    #[test]
+    fn nested_arguments_inside_item_completed_item_is_inert_only_under_the_light_check() {
+        let record = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "McpToolCall",
+                    "name": "search",
+                    "arguments": {"query": "synthetic"}
+                }
+            }
+        });
+        assert!(is_inert_codex_record(&record, false));
+        assert!(!is_inert_codex_record(&record, true));
+    }
+
+    /// `session_meta`, `turn_context`, and `thread_settings_applied` carry
+    /// their own model / effort / service-tier fields by design — that data
+    /// is read by `observe_model_and_effort` / `service_tier_speed` on every
+    /// record before classification runs, so these names bypass the
+    /// structural check entirely and never emit an observation or `Unusable`,
+    /// exactly as before this change.
+    #[test]
+    fn old_allowlisted_names_bypass_the_structural_check_even_with_model_or_service_tier() {
+        for (record_type, payload_type) in [
+            (Some("session_meta"), None),
+            (Some("turn_context"), None),
+            (Some("world_state"), None),
+            (Some("event_msg"), Some("thread_settings_applied")),
+        ] {
+            assert!(is_recognized_eventless(record_type, payload_type));
+            assert!(!is_proven_echo(record_type, payload_type));
+        }
+
+        let jsonl = concat!(
+            r#"{"timestamp":"2026-08-10T10:00:00Z","type":"turn_context","payload":{"model":"gpt-test","effort":"high"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-10T10:00:01Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}"#,
+            "\n",
+        );
+        let input = SessionInput {
+            agent: "codex".to_string(),
+            session_id: "old-allowlist-with-signal".to_string(),
+            source: RawSource::Jsonl(jsonl.to_string()),
+        };
+        let mut sink = ObservationCapturingSink::default();
+
+        CodexAdapter
+            .visit(&input, &mut sink)
+            .expect("visit old-allowlist-with-signal session");
+
+        assert!(
+            sink.observations.is_empty(),
+            "unexpected observations: {:?}",
+            sink.observations
+        );
+    }
 
     #[test]
     fn unresolved_fork_rows_stop_accumulating_at_the_cap() {
