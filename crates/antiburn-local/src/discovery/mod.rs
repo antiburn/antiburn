@@ -920,6 +920,14 @@ pub struct SubagentMeta {
     pub agent_type: Option<String>,
     #[serde(rename = "toolUseId", default)]
     pub tool_use_id: Option<String>,
+    /// True for a fork sub-agent. A fork's transcript replays its parent
+    /// agent's records before it appends its own new records.
+    #[serde(rename = "isFork", default)]
+    pub is_fork: bool,
+    /// The direct parent agent's id for a fork sub-agent. Absent when the
+    /// fork's parent is the top-level session, not another sub-agent.
+    #[serde(rename = "parentAgentId", default)]
+    pub parent_agent_id: Option<String>,
 }
 
 impl SessionLog {
