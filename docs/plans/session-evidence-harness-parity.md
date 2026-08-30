@@ -15,6 +15,9 @@
   decisions gain the generic fallback capability claim.
 - rev 4 (2026-08-30): Phase 3 rewritten with the row-query design and its
   scope rules, split into 3a (query, no behaviour change) and 3b (switch).
+- rev 5 (2026-08-30): decisions 10–12 settle the replacement registry (with
+  verified dates), the per-family tier policies, and the crate boundary.
+  Phase 5 ships as 5a–5d.
 
 ## Summary
 
@@ -763,15 +766,33 @@ Settled:
    requires `record_identity`; overdepth requires `thread_identity`. Codex
    (one rollout is one thread, no record ids) gets `thread_identity` only.
 
-Open, needs a human decision before the relevant seam:
+10. Model replacement registry (verified 2026-08-30 against vendor pages,
+    ships in seam 5c as a compiled table with `REGISTRY_REVISION`): Claude
+    Opus 4.5–4.8 → `claude-opus-5`, available 2026-07-24
+    (anthropic.com/news/claude-opus-5); Claude Sonnet 4.5–4.6 →
+    `claude-sonnet-5`, available 2026-06-30 (anthropic.com/news/claude-sonnet-5);
+    GPT-5.4, GPT-5.5, GPT-5.5-fast → `gpt-5.6-sol` and GPT-5.4-mini →
+    `gpt-5.6-luna`, available 2026-07-09 (openai.com/index/gpt-5-6). The
+    mini → Luna size mapping is a judgment call; no Haiku entry exists because
+    no Haiku 5 has been announced. Aliases are matched after
+    `normalize_model_key` and lowercasing. Usage before the effective date is
+    not a finding.
+11. Tier policies (seam 5c) are keyed by model family from the normalized
+    model-key prefix (`claude-` → Claude, `gpt-`/`o*` → OpenAI, else
+    Unknown), not by harness, because OpenCode and Pi run any vendor's
+    models. Effort: Claude above cap = {max, ultrathink}, recognized = {low,
+    medium, high, max, ultrathink}; OpenAI above cap = {xhigh}, recognized =
+    {minimal, low, medium, high, xhigh}. Speed: exactly {fast, standard} after
+    normalization. Premium: Claude = `claude-opus-*` and `claude-fable-*`;
+    OpenAI = `gpt-5.6-sol*` (OpenAI states Sol, Terra, Luna are capability
+    tiers with Sol at the top). A tier or model outside a reviewed policy
+    never reads clean. Overdepth cap moves to 400,000 in the catalog
+    (decision 2) in the same seam.
+12. Crate boundary for rows: `antiburn-local` stays storage-neutral at the
+    detector layer. Detectors and fact requirements read `SessionEvidence`
+    only; row queries live behind `analysis/evidence_query.rs` and the
+    `TurnRowStore` trait, never in `insights/`. Seam 5d's repeated-context
+    accounting is a query in `evidence_query.rs` whose result is persisted as
+    evidence, so a catalog change never reparses.
 
-1. **Model replacement registry.** Rev 1 proposed nine rules (Claude Opus
-   4.5–4.8 → Opus 5 effective 2026-07-24; Sonnet 4.5–4.6 → Sonnet 5 effective
-   2026-06-30; GPT-5.4/5.4-mini/5.5 → GPT-5.6 variants effective 2026-07-09).
-   The model IDs, replacement targets, and effective dates need verification
-   against vendor announcements before they ship as a compiled offline list
-   that tells users their model is obsolete. Until reviewed, the registry is
-   empty and the check is not assessed, which is honest.
-2. **Crate boundary for rows** (see "Where the row logic lives").
-3. **Premium-tier and effort-tier policies** per model family, needed by
-   Phase 5. Not yet drafted.
+Open: none. Every remaining item is an implementation seam.
