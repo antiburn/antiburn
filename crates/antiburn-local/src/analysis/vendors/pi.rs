@@ -20,13 +20,13 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use anyhow::Context;
 use serde_json::Value;
 
-use super::jsonl::{extract_content_parts, parse_record, parse_ts};
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
     ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink, SessionCollector,
     SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
+use crate::analysis::records::{RecordShape, extract_content_parts, parse_record, parse_ts};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
 /// Parses Pi transcript files without retaining transcript content.
@@ -271,7 +271,7 @@ impl PiStreamState {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         };
-        let Some(mut event) = parse_record(value) else {
+        let Some(mut event) = parse_record(value, RecordShape::Pi) else {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         };
@@ -529,6 +529,7 @@ mod tests {
 
     use super::*;
     use crate::analysis::interface::ContentKind;
+    use crate::analysis::model::ToolCategory;
 
     /// Collects every `TurnContent` record a visit emits, in order.
     #[derive(Default)]
@@ -661,5 +662,76 @@ mod tests {
             }
         });
         assert!(!is_inert_shape(&evidence_bearing));
+    }
+
+    #[test]
+    fn pi_tool_call_content_block_yields_named_tool() {
+        let record = json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "toolCall",
+                    "id": "call_1",
+                    "name": "read",
+                    "arguments": {"path": "src/lib.rs"}
+                }]
+            }
+        });
+
+        let ev = parse_record(&record, RecordShape::Pi).expect("record should parse");
+        assert_eq!(ev.role, Role::Assistant);
+        assert_eq!(ev.tools.len(), 1);
+        assert_eq!(ev.tools[0].name, "read");
+        assert_eq!(ev.tools[0].category, ToolCategory::Read);
+    }
+
+    #[test]
+    fn pi_tool_call_arguments_feed_bash_test_classification() {
+        let record = json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "toolCall",
+                    "id": "call_1",
+                    "name": "bash",
+                    "arguments": {"command": "cargo test --workspace"}
+                }]
+            }
+        });
+
+        let ev = parse_record(&record, RecordShape::Pi).expect("record should parse");
+        assert_eq!(ev.tools.len(), 1);
+        assert_eq!(ev.tools[0].category, ToolCategory::Test);
+    }
+
+    #[test]
+    fn pi_tool_result_message_role_is_parsed() {
+        let errored = json!({
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "call_1",
+                "toolName": "bash",
+                "isError": true,
+                "content": [{"type": "text", "text": "boom"}]
+            }
+        });
+        let ok = json!({
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "call_2",
+                "toolName": "bash",
+                "content": [{"type": "text", "text": "ok"}]
+            }
+        });
+
+        let errored = parse_record(&errored, RecordShape::Pi).expect("tool result should parse");
+        assert_eq!(errored.role, Role::Tool);
+
+        let ok = parse_record(&ok, RecordShape::Pi).expect("tool result should parse");
+        assert_eq!(ok.role, Role::Tool);
     }
 }

@@ -39,6 +39,7 @@ mod merge;
 mod metrics_sink;
 mod model;
 mod pricing;
+pub(crate) mod records;
 mod rows;
 mod source_validity;
 pub mod tool_catalog;

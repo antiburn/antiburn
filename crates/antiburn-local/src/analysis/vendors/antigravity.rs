@@ -23,10 +23,10 @@
 use anyhow::Context;
 use serde_json::Value;
 
-use super::jsonl::{parse_ts, parse_usage, tool_call_from_input};
 use super::read_source;
 use crate::analysis::interface::{SessionInput, VendorAdapter};
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
+use crate::analysis::records::{parse_ts, parse_usage, tool_call_from_input};
 
 pub struct AntigravityAdapter;
 

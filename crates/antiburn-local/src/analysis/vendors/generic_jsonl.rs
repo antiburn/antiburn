@@ -8,10 +8,10 @@
 
 use anyhow::Context;
 
-use super::jsonl::parse_jsonl;
 use super::read_source;
 use crate::analysis::interface::{SessionInput, VendorAdapter};
 use crate::analysis::model::NormalizedSession;
+use crate::analysis::records::parse_jsonl;
 
 pub struct GenericJsonlAdapter;
 

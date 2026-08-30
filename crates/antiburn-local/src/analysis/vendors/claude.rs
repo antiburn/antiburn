@@ -13,20 +13,143 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use anyhow::Context;
 use serde_json::Value;
 
-use super::jsonl::{
-    SKILL_BASE_MARKER, collect_skill_base_names_from_text, command_names_in_text,
-    command_skill_name, evidence_observations, extract_content_parts,
-    is_inert_recognized_eventless, is_inert_unrecognized, is_recognized_eventless, parse_record,
-    record_discriminator, record_text,
-};
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
 use crate::analysis::initial_context::ClaudeContextAccumulator;
 use crate::analysis::interface::{
-    NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionSummary,
-    TurnContent, VendorAdapter, VisitOutcome,
+    ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
+    SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
+use crate::analysis::records::{
+    RecordShape, evidence_observations, extract_content_parts, is_inert_recognized_eventless,
+    is_inert_unrecognized, is_recognized_eventless, parse_record, record_discriminator,
+};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
+
+/// The marker Claude Code writes into a `Skill` tool's transcript output,
+/// naming the skill's base directory. Its presence records the skill as one
+/// that actually ran, distinct from a `<command-name>` that merely typed the
+/// skill's slash command.
+const SKILL_BASE_MARKER: &str = "Base directory for this skill:";
+
+/// Flatten a record's message text — string content, or the `text` of its content
+/// blocks — for scanning `<command-name>` tags and skill base-directory markers.
+fn record_text(value: &Value) -> String {
+    let Some(obj) = value.as_object() else {
+        return String::new();
+    };
+    let content = obj
+        .get("message")
+        .and_then(|m| m.as_object())
+        .and_then(|m| m.get("content"))
+        .or_else(|| obj.get("content"));
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(items)) => {
+            let mut out = String::new();
+            for item in items {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+            }
+            out
+        }
+        _ => String::new(),
+    }
+}
+
+/// Record the skill name from every "Base directory for this skill: <path>" marker
+/// in `text` — the set of skills that actually loaded this session.
+fn collect_skill_base_names_from_text(text: &str, out: &mut HashSet<String>) {
+    for line in text.lines() {
+        if let Some((_, rest)) = line.split_once(SKILL_BASE_MARKER)
+            && let Some(name) = skill_base_name_from_path(rest)
+        {
+            out.insert(name);
+        }
+    }
+}
+
+/// Skill name from a base-directory marker path: the final path segment, or its
+/// parent when the path points straight at the `SKILL.md` file. Cross-platform
+/// (splits on `/` and `\`).
+fn skill_base_name_from_path(path: &str) -> Option<String> {
+    let mut segments: Vec<&str> = path
+        .trim()
+        .trim_matches(['`', '"', '\''])
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let last = segments.pop()?;
+    if last.eq_ignore_ascii_case("SKILL.md") {
+        return segments.pop().map(str::to_string);
+    }
+    Some(last.to_string())
+}
+
+/// The `<command-name>` values in `text`, leading `/` stripped:
+/// `<command-name>/code-review</command-name>` → `"code-review"`.
+fn command_names_in_text(text: &str) -> Vec<String> {
+    const OPEN: &str = "<command-name>";
+    const CLOSE: &str = "</command-name>";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        let after = &rest[start + OPEN.len()..];
+        let Some(end) = after.find(CLOSE) else {
+            break;
+        };
+        let name = after[..end].trim().trim_start_matches('/').trim();
+        if !name.is_empty() {
+            out.push(name.to_string());
+        }
+        rest = &after[end + CLOSE.len()..];
+    }
+    out
+}
+
+/// The skill base name a command resolves to, if any: a direct hit, or a
+/// `plugin:skill` whose bare segment ran. `None` for non-skill commands.
+fn command_skill_name(command: &str, skill_base_names: &HashSet<String>) -> Option<String> {
+    if skill_base_names.contains(command) {
+        return Some(command.to_string());
+    }
+    let bare = command.rsplit(':').next().unwrap_or(command);
+    skill_base_names.contains(bare).then(|| bare.to_string())
+}
+
+/// The skill descriptions from a `skill_listing` attachment: each `- name:
+/// description` line becomes a `ContextSource` observation for the named
+/// skill. Only Claude's transcript writes this attachment type.
+fn skill_listing_observations(value: &Value) -> Vec<EvidenceObservation> {
+    let Some(attachment) = value.get("attachment") else {
+        return Vec::new();
+    };
+    if attachment.get("type").and_then(Value::as_str) != Some("skill_listing") {
+        return Vec::new();
+    }
+    attachment
+        .get("content")
+        .and_then(Value::as_str)
+        .into_iter()
+        .flat_map(|content| content.lines())
+        .filter_map(|line| {
+            let (name, description) = line.trim().strip_prefix("- ")?.split_once(':')?;
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let description = description.trim();
+            Some(EvidenceObservation::ContextSource {
+                kind: ContextSourceKind::Skill,
+                name: name.to_owned(),
+                description: (!description.is_empty()).then(|| description.to_owned()),
+            })
+        })
+        .collect()
+}
 
 pub struct ClaudeAdapter;
 
@@ -158,7 +281,10 @@ impl ClaudeAdapter {
                     };
 
                     state.context.observe(&value);
-                    for observation in evidence_observations(&value) {
+                    for observation in skill_listing_observations(&value)
+                        .into_iter()
+                        .chain(evidence_observations(&value))
+                    {
                         sink.record(NormalizedRecord::Observation(Box::new(observation)));
                     }
                     let has_skill_marker = record.contains(SKILL_BASE_MARKER);
@@ -171,7 +297,7 @@ impl ClaudeAdapter {
                         );
                     }
 
-                    let Some(mut event) = parse_record(&value) else {
+                    let Some(mut event) = parse_record(&value, RecordShape::Claude) else {
                         let allowlisted = is_recognized_eventless(&value);
                         let structurally_inert = if allowlisted {
                             is_inert_recognized_eventless(&value)
@@ -746,5 +872,221 @@ mod tests {
 
             Err(Error::other("synthetic read failure"))
         }
+    }
+
+    #[test]
+    fn skill_base_name_from_path_takes_dir_or_skill_md_parent() {
+        assert_eq!(
+            skill_base_name_from_path("/home/avery/.claude/skills/grill-me"),
+            Some("grill-me".to_string())
+        );
+        assert_eq!(
+            skill_base_name_from_path("/home/avery/.claude/skills/code-review/SKILL.md"),
+            Some("code-review".to_string())
+        );
+        // Windows separators.
+        assert_eq!(
+            skill_base_name_from_path("C:\\u\\.claude\\skills\\plan"),
+            Some("plan".to_string())
+        );
+    }
+
+    #[test]
+    fn command_names_in_text_extracts_and_strips_slash() {
+        let text = "<command-message>code-review</command-message>\n\
+                    <command-name>/code-review</command-name>\n\
+                    <command-args>changelist</command-args>";
+        assert_eq!(command_names_in_text(text), vec!["code-review".to_string()]);
+        assert_eq!(command_names_in_text("no tags here"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn command_skill_name_matches_directly_and_via_plugin_namespace() {
+        let names: HashSet<String> = ["frontend-design".to_string(), "code-review".to_string()]
+            .into_iter()
+            .collect();
+        // Direct hit.
+        assert_eq!(
+            command_skill_name("code-review", &names),
+            Some("code-review".to_string())
+        );
+        // `plugin:skill` resolves to its bare segment.
+        assert_eq!(
+            command_skill_name("frontend-design:frontend-design", &names),
+            Some("frontend-design".to_string())
+        );
+        // A command that didn't run as a skill is rejected (no base-dir marker).
+        assert_eq!(command_skill_name("clear", &names), None);
+    }
+
+    #[test]
+    fn claude_tool_result_user_record_is_a_tool_event() {
+        let result = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+            }
+        });
+        let prompt = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": "go"}]}
+        });
+        assert_eq!(
+            parse_record(&result, RecordShape::Claude).unwrap().role,
+            crate::analysis::model::Role::Tool
+        );
+        assert_eq!(
+            parse_record(&prompt, RecordShape::Claude).unwrap().role,
+            crate::analysis::model::Role::User
+        );
+    }
+
+    #[test]
+    fn message_usage_speed_is_parsed() {
+        let record = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "usage": {"input_tokens": 10, "output_tokens": 5, "speed": "fast"}
+            }
+        });
+        let ev = parse_record(&record, RecordShape::Claude).expect("record should parse");
+        assert_eq!(ev.speed.as_deref(), Some("fast"));
+    }
+
+    #[test]
+    fn top_level_speed_is_parsed_when_usage_carries_none() {
+        let record = serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "usage": {"input_tokens": 10}},
+            "speed": "standard"
+        });
+        let ev = parse_record(&record, RecordShape::Claude).expect("record should parse");
+        assert_eq!(ev.speed.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn missing_speed_leaves_it_none() {
+        let record = serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "usage": {"input_tokens": 10}}
+        });
+        let ev = parse_record(&record, RecordShape::Claude).expect("record should parse");
+        assert_eq!(ev.speed, None);
+    }
+
+    #[test]
+    fn claude_compact_boundary_record_sets_compaction_flag() {
+        let record = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "content": "Compacted conversation"
+        });
+
+        let ev = parse_record(&record, RecordShape::Claude).expect("compact_boundary should parse");
+        assert_eq!(ev.role, crate::analysis::model::Role::System);
+        assert!(ev.is_compaction_boundary);
+    }
+
+    #[test]
+    fn claude_compact_boundary_parses_manual_trigger_and_sizes() {
+        let record = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "compactMetadata": {
+                "trigger": "manual",
+                "preTokens": 196_000,
+                "postTokens": 11_000,
+            }
+        });
+
+        let ev = parse_record(&record, RecordShape::Claude).expect("compact_boundary should parse");
+        assert_eq!(
+            ev.compaction_trigger,
+            Some(crate::analysis::model::CompactionTrigger::Manual)
+        );
+        assert_eq!(ev.compaction_pre_tokens, Some(196_000));
+        assert_eq!(ev.compaction_post_tokens, Some(11_000));
+    }
+
+    #[test]
+    fn claude_compact_boundary_parses_auto_trigger() {
+        let record = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "compactMetadata": {
+                "trigger": "auto",
+                "preTokens": 200_000,
+                "postTokens": 12_000,
+            }
+        });
+
+        let ev = parse_record(&record, RecordShape::Claude).expect("compact_boundary should parse");
+        assert_eq!(
+            ev.compaction_trigger,
+            Some(crate::analysis::model::CompactionTrigger::Auto)
+        );
+    }
+
+    #[test]
+    fn claude_compact_boundary_without_metadata_leaves_trigger_and_sizes_none() {
+        let record = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+        });
+
+        let ev = parse_record(&record, RecordShape::Claude).expect("compact_boundary should parse");
+        assert!(ev.is_compaction_boundary);
+        assert_eq!(ev.compaction_trigger, None);
+        assert_eq!(ev.compaction_pre_tokens, None);
+        assert_eq!(ev.compaction_post_tokens, None);
+    }
+
+    #[test]
+    fn claude_compact_boundary_without_post_tokens_leaves_it_none() {
+        // Some older records omit postTokens entirely.
+        let record = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "compactMetadata": {
+                "trigger": "auto",
+                "preTokens": 196_000,
+            }
+        });
+
+        let ev = parse_record(&record, RecordShape::Claude).expect("compact_boundary should parse");
+        assert_eq!(
+            ev.compaction_trigger,
+            Some(crate::analysis::model::CompactionTrigger::Auto)
+        );
+        assert_eq!(ev.compaction_pre_tokens, Some(196_000));
+        assert_eq!(ev.compaction_post_tokens, None);
+    }
+
+    #[test]
+    fn unrelated_system_records_do_not_set_compaction_flag() {
+        // No subtype at all.
+        let plain = serde_json::json!({
+            "type": "system",
+            "timestamp": "2024-06-01T12:05:00Z",
+            "content": "hook ran"
+        });
+        let ev = parse_record(&plain, RecordShape::Claude).expect("system record should parse");
+        assert!(!ev.is_compaction_boundary);
+
+        // A different subtype.
+        let other = serde_json::json!({
+            "type": "system",
+            "subtype": "turn_limit_reached",
+            "content": "stop"
+        });
+        let ev = parse_record(&other, RecordShape::Claude).expect("system record should parse");
+        assert!(!ev.is_compaction_boundary);
     }
 }

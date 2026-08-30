@@ -180,7 +180,7 @@ pub struct ToolCall {
     pub category: ToolCategory,
     /// Optional, generic per-call detail. Today this carries the skill name for a
     /// `Skill` tool call (the JSON layer populates it via
-    /// `vendors::jsonl::tool_call_from_input`); `None` for every other tool. Kept
+    /// `analysis::records::tool_call_from_input`); `None` for every other tool. Kept
     /// generic so the "skill" concept never leaks into the core tool model — the
     /// engine reads `detail` only when `name` is a skill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
