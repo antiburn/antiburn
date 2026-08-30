@@ -29,9 +29,13 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use antiburn_local::analysis::{
+    TurnRow, TurnRowWriteError, TurnRowWriter, TurnSessionKey, count_turn_rows, delete_turn_rows,
+    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
+};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
@@ -110,8 +114,14 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 }
 
 /// The app's local database.
+///
+/// `connection` is behind an `Arc` so a cheap [`Store::clone`] shares the
+/// same underlying connection rather than opening a second one. The worker
+/// uses this to hand a [`FencedTurnRowWriter`] a handle to the same database
+/// without threading `Store` state through every call site as `Arc<Store>`.
+#[derive(Clone)]
 pub struct Store {
-    connection: Mutex<Connection>,
+    connection: Arc<Mutex<Connection>>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -142,7 +152,7 @@ impl Store {
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
-            connection: Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
             state_dir,
         };
         store.migrate()?;
@@ -1005,6 +1015,8 @@ impl Store {
         tx.execute("DELETE FROM session_relation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
+        tx.execute("DELETE FROM turn_content", [])?;
+        tx.execute("DELETE FROM turn", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM scan_state", [])?;
         tx.execute("UPDATE repository SET session_count = 0", [])?;
@@ -1116,11 +1128,52 @@ impl Store {
             ],
         )?;
         if updated == 0 {
+            // This pass lost the claim race (a newer claim, or a newer
+            // source generation, already moved past it). Dropping the
+            // transaction without a commit rolls back the session_analysis
+            // upsert above, exactly as before this pass wrote turn rows: a
+            // lost race must not publish anything this pass computed. Its
+            // rows were never published either, so they are cleaned up here
+            // under their own fence, in a separate statement, rather than
+            // left to accumulate.
+            drop(transaction);
+            delete_turn_rows_for_fence(
+                &connection,
+                &turn_session_key(&record.key),
+                completion.claim_fence,
+            )?;
             return Ok(false);
         }
+        // Every row from an earlier, superseded pass is dropped now that
+        // this pass's evidence is what published. Rows already carry this
+        // pass's fence — see `analysis::analyze_for_evidence` — so only
+        // stale fences are removed.
+        delete_turn_rows_except_fence(
+            &transaction,
+            &turn_session_key(&record.key),
+            completion.claim_fence,
+        )?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
         transaction.commit()?;
         Ok(true)
+    }
+
+    /// Deletes every turn row for one session. Used by delete paths that do
+    /// not go through [`Self::delete_session`] or
+    /// [`Self::clear_local_session_data`].
+    pub fn delete_turn_rows_for_session(&self, key: &SessionKey) -> Result<usize> {
+        let connection = self.lock();
+        Ok(delete_turn_rows(&connection, &turn_session_key(key))?)
+    }
+
+    /// Counts one session's turn rows stamped with `claim_fence`.
+    pub fn count_turn_rows_for_session(&self, key: &SessionKey, claim_fence: i64) -> Result<u64> {
+        let connection = self.lock();
+        Ok(count_turn_rows(
+            &connection,
+            &turn_session_key(key),
+            claim_fence,
+        )?)
     }
 
     /// Cache one session's derived analysis.
@@ -1850,11 +1903,28 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         parameters,
     )?;
+    // Same reasoning as `session_evidence` above: the v15 cascades from
+    // `session` cover `turn` and `turn_content`, but this stays explicit and
+    // pragma-independent. `turn_content` has no direct session key, so it is
+    // deleted through `turn`'s rowid.
+    delete_turn_rows_in(connection, key)?;
     let removed = connection.execute(
         "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         parameters,
     )?;
     Ok(removed > 0)
+}
+
+fn turn_session_key(key: &SessionKey) -> TurnSessionKey<'_> {
+    TurnSessionKey {
+        environment_key: &key.environment_key,
+        agent: &key.agent,
+        session_id: &key.session_id,
+    }
+}
+
+fn delete_turn_rows_in(connection: &Connection, key: &SessionKey) -> Result<usize> {
+    Ok(delete_turn_rows(connection, &turn_session_key(key))?)
 }
 
 fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
@@ -1907,4 +1977,45 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> 
         fork_parent_session_id: row.get(14)?,
         source_fingerprint: row.get(15)?,
     })
+}
+
+/// Writes turn rows for one claimed evidence pass.
+///
+/// Holds an owned [`Store`] handle (cheap: it shares the app's one
+/// connection, see [`Store`]'s doc comment) plus the session key and claim
+/// fence the durable worker already knows for this pass. `Store` cannot
+/// implement [`TurnRowWriter`] directly — writing a row needs the session
+/// key and fence, and `Store` itself does not carry either.
+#[derive(Clone)]
+pub struct FencedTurnRowWriter {
+    store: Store,
+    key: SessionKey,
+    claim_fence: i64,
+}
+
+impl FencedTurnRowWriter {
+    pub fn new(store: Store, key: SessionKey, claim_fence: i64) -> Self {
+        Self {
+            store,
+            key,
+            claim_fence,
+        }
+    }
+}
+
+impl TurnRowWriter for FencedTurnRowWriter {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+        // One transaction per batch: one fsync for the batch instead of
+        // one for each row, and the lock is held only for the batch.
+        let mut connection = self.store.lock();
+        let transaction = connection.transaction()?;
+        insert_turn_rows(
+            &transaction,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+            rows,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
 }

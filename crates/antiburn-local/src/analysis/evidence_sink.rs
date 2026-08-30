@@ -18,6 +18,7 @@ use crate::analysis::interface::{
 };
 use crate::analysis::metrics_sink::SessionMetricsAccumulator;
 use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
+use crate::analysis::rows::TurnRowSink;
 use crate::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionMetrics,
 };
@@ -972,14 +973,34 @@ impl RecordSink for SessionEvidenceAccumulator {
     }
 }
 
-pub struct CompositeSink {
+pub struct CompositeSink<'a> {
     metrics: SessionMetricsAccumulator,
     evidence: SessionEvidenceAccumulator,
+    turn_rows: Option<TurnRowSink<'a>>,
 }
 
-impl CompositeSink {
+impl<'a> CompositeSink<'a> {
     pub fn new(metrics: SessionMetricsAccumulator, evidence: SessionEvidenceAccumulator) -> Self {
-        Self { metrics, evidence }
+        Self {
+            metrics,
+            evidence,
+            turn_rows: None,
+        }
+    }
+
+    /// Like [`Self::new`], with a [`TurnRowSink`] fanned out alongside
+    /// metrics and evidence. Every recorded `MetricsEvent` becomes a turn
+    /// row through it, in the same pass that builds metrics and evidence.
+    pub fn with_turn_rows(
+        metrics: SessionMetricsAccumulator,
+        evidence: SessionEvidenceAccumulator,
+        turn_rows: TurnRowSink<'a>,
+    ) -> Self {
+        Self {
+            metrics,
+            evidence,
+            turn_rows: Some(turn_rows),
+        }
     }
 
     pub fn metrics(&self) -> Option<SessionMetrics> {
@@ -996,6 +1017,13 @@ impl CompositeSink {
         self.evidence.observe_source_outcome(outcome);
     }
 
+    /// True once the fanned-out [`TurnRowSink`] (if any) has hit a write
+    /// error. The caller must not publish this pass's metrics or evidence
+    /// when this is true — rows and projections would disagree.
+    pub fn turn_row_write_failed(&self) -> bool {
+        self.turn_rows.as_ref().is_some_and(TurnRowSink::has_error)
+    }
+
     pub fn into_parts(self) -> Option<(SessionMetricsAccumulator, SessionEvidenceAccumulator)> {
         self.evidence
             .can_publish()
@@ -1003,14 +1031,20 @@ impl CompositeSink {
     }
 }
 
-impl RecordSink for CompositeSink {
+impl RecordSink for CompositeSink<'_> {
     fn record(&mut self, record: NormalizedRecord) {
         self.evidence.observe(&record);
+        if let Some(turn_rows) = &mut self.turn_rows {
+            turn_rows.observe(&record);
+        }
         self.metrics.record(record);
     }
 
     fn finish(&mut self, summary: SessionSummary) {
         self.evidence.observe_summary(&summary);
+        if let Some(turn_rows) = &mut self.turn_rows {
+            turn_rows.flush();
+        }
         self.metrics.finish(summary);
     }
 }

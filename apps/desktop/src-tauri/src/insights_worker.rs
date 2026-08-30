@@ -2,9 +2,10 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use antiburn_local::analysis::SessionEvidence;
+use antiburn_local::analysis::{SessionEvidence, TurnRowWriter};
 use antiburn_local::insights::{DetectorId, requirements};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
@@ -14,8 +15,8 @@ use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal};
 use crate::commands;
 use crate::dto::ActivityEntry;
 use crate::store::{
-    EvidenceClaim, EvidenceCompletion, EvidenceFailure, PublishedEvidence, RelationKind,
-    RelationRecord, SessionKey, SessionRecord, Store,
+    EvidenceClaim, EvidenceCompletion, EvidenceFailure, FencedTurnRowWriter, PublishedEvidence,
+    RelationKind, RelationRecord, SessionKey, SessionRecord, Store,
 };
 
 pub(crate) const LEASE_SECS: i64 = 300;
@@ -53,9 +54,19 @@ pub struct WorkerHandle {
 }
 
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
+/// The `i64` is the claim's fence: [`process_next`] already holds the claim
+/// when it calls this, so it passes the fence through rather than the
+/// runner re-deriving it.
 pub(crate) type PassRunner<'a> =
-    dyn Fn(&SessionRecord, PassSignal) -> PassFuture + Send + Sync + 'a;
-type RecordAnalyzer<'a> = dyn Fn(AgentKind, String, Option<String>, analysis::ClaimedSource, PassSignal) -> PassFuture
+    dyn Fn(&SessionRecord, PassSignal, i64) -> PassFuture + Send + Sync + 'a;
+type RecordAnalyzer<'a> = dyn Fn(
+        AgentKind,
+        String,
+        Option<String>,
+        analysis::ClaimedSource,
+        PassSignal,
+        Option<Arc<dyn TurnRowWriter>>,
+    ) -> PassFuture
     + Send
     + Sync
     + 'a;
@@ -66,11 +77,22 @@ pub(crate) enum PermitKind {
     ProviderDb,
 }
 
-fn run_record_pass(record: &SessionRecord, signal: PassSignal) -> PassFuture {
+/// `store` is a cheap handle (see [`Store`]'s doc comment): this clones it
+/// once per pass into a [`FencedTurnRowWriter`] stamped with `claim_fence`,
+/// so turn rows this pass writes are attributable and cleaned up correctly
+/// if the pass loses the claim race.
+fn run_record_pass(
+    record: &SessionRecord,
+    signal: PassSignal,
+    claim_fence: i64,
+    store: Store,
+) -> PassFuture {
     run_record_pass_with(
         record,
         signal,
-        &|agent, session_id, wsl_distro, claimed, signal| {
+        claim_fence,
+        store,
+        &|agent, session_id, wsl_distro, claimed, signal, turn_row_writer| {
             Box::pin(async move {
                 analysis::analyze_for_evidence(
                     agent,
@@ -78,6 +100,7 @@ fn run_record_pass(record: &SessionRecord, signal: PassSignal) -> PassFuture {
                     wsl_distro.as_deref(),
                     claimed,
                     signal,
+                    turn_row_writer,
                 )
                 .await
             })
@@ -88,11 +111,18 @@ fn run_record_pass(record: &SessionRecord, signal: PassSignal) -> PassFuture {
 fn run_record_pass_with(
     record: &SessionRecord,
     signal: PassSignal,
+    claim_fence: i64,
+    store: Store,
     analyze: &RecordAnalyzer<'_>,
 ) -> PassFuture {
     let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
         return Box::pin(async { analysis::unsupported_evidence_pass() });
     };
+    let writer: Arc<dyn TurnRowWriter> = Arc::new(FencedTurnRowWriter::new(
+        store,
+        record.key.clone(),
+        claim_fence,
+    ));
     analyze(
         agent,
         record.key.session_id.clone(),
@@ -102,13 +132,17 @@ fn run_record_pass_with(
             generation: 0,
         },
         signal,
+        Some(writer),
     )
 }
 
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let run_pass = |record: &SessionRecord, signal: PassSignal| run_record_pass(record, signal);
+        let store_handle: Store = (*app.state::<Store>()).clone();
+        let run_pass = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
+            run_record_pass(record, signal, claim_fence, store_handle.clone())
+        };
         let announce_app = app.clone();
         let announce = move |entry: ActivityEntry| {
             let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
@@ -296,7 +330,7 @@ pub(crate) async fn process_next(
         .await
         .map_err(|_| anyhow::anyhow!("source permit closed"))?;
     let signal = PassSignal::new();
-    let mut pass = run_pass(&record, signal.clone());
+    let mut pass = run_pass(&record, signal.clone(), claim.claim_fence);
     let mut progress = signal.progress();
     let result = loop {
         tokio::select! {
@@ -492,7 +526,7 @@ mod tests {
         let mut unknown = record("unknown");
         unknown.key.agent = "unknown-agent".to_owned();
 
-        let pass = run_record_pass(&unknown, PassSignal::new()).await;
+        let pass = run_record_pass(&unknown, PassSignal::new(), 1, store()).await;
 
         assert_eq!(pass.outcome, PassOutcome::Unsupported);
         assert!(pass.evidence.is_none());
@@ -756,7 +790,7 @@ mod tests {
         let task_signal = Arc::clone(&signal);
         let task_release = Arc::clone(&release);
         let task = tokio::spawn(async move {
-            let runner = move |_: &SessionRecord, pass_signal: PassSignal| {
+            let runner = move |_: &SessionRecord, pass_signal: PassSignal, _: i64| {
                 *task_signal.lock().unwrap() = Some(pass_signal);
                 let release = Arc::clone(&task_release);
                 Box::pin(async move {
@@ -820,7 +854,7 @@ mod tests {
         let task_entered = Arc::clone(&entered);
         let task_release = Arc::clone(&release);
         let task = tokio::spawn(async move {
-            let runner = move |_: &SessionRecord, _: PassSignal| {
+            let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
                 task_entered.store(true, Ordering::SeqCst);
                 let release = Arc::clone(&task_release);
                 Box::pin(async move {
@@ -879,7 +913,7 @@ mod tests {
         let task_signal = Arc::clone(&signal);
         let task_release = Arc::clone(&release);
         let task = tokio::spawn(async move {
-            let runner = move |_: &SessionRecord, pass_signal: PassSignal| {
+            let runner = move |_: &SessionRecord, pass_signal: PassSignal, _: i64| {
                 *task_signal.lock().unwrap() = Some(pass_signal);
                 let release = Arc::clone(&task_release);
                 Box::pin(async move {
@@ -932,7 +966,7 @@ mod tests {
         let first_task_signal = Arc::clone(&first_signal_slot);
         let first_task_release = Arc::clone(&first_release);
         let first_task = tokio::spawn(async move {
-            let runner = move |_: &SessionRecord, pass_signal: PassSignal| {
+            let runner = move |_: &SessionRecord, pass_signal: PassSignal, _: i64| {
                 *first_task_signal.lock().unwrap() = Some(pass_signal);
                 let release = Arc::clone(&first_task_release);
                 Box::pin(async move {
@@ -970,7 +1004,7 @@ mod tests {
         let second_task_signal = Arc::clone(&second_signal_slot);
         let second_task_release = Arc::clone(&second_release);
         let second_task = tokio::spawn(async move {
-            let runner = move |record: &SessionRecord, pass_signal: PassSignal| {
+            let runner = move |record: &SessionRecord, pass_signal: PassSignal, _: i64| {
                 *second_task_signal.lock().unwrap() = Some(pass_signal);
                 let pass = published_pass(record);
                 let release = Arc::clone(&second_task_release);
@@ -1030,7 +1064,7 @@ mod tests {
         let permit = handle.permits.cpu.acquire().await.unwrap();
         let entered = Arc::new(AtomicBool::new(false));
         let entered_by_pass = entered.clone();
-        let runner = move |_: &SessionRecord, _: PassSignal| {
+        let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
             entered_by_pass.store(true, Ordering::SeqCst);
             Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
         };
@@ -1053,7 +1087,7 @@ mod tests {
             .unwrap();
         let pending = Arc::new(Notify::new());
         let pending_pass = pending.clone();
-        let runner = move |_: &SessionRecord, _: PassSignal| {
+        let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
             let pending = pending_pass.clone();
             Box::pin(async move {
                 pending.notified().await;
@@ -1084,7 +1118,7 @@ mod tests {
         store
             .upsert_sessions(&[record("announcement")], &crate::agents::evidence_cohort())
             .unwrap();
-        let runner = |record: &SessionRecord, _: PassSignal| {
+        let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
             let pass = published_pass(record);
             Box::pin(async move { pass }) as PassFuture
         };
@@ -1118,7 +1152,7 @@ mod tests {
                 &crate::agents::evidence_cohort(),
             )
             .unwrap();
-        let runner = |_: &SessionRecord, _: PassSignal| {
+        let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
             Box::pin(async { failed_pass(PassOutcome::SourceChanged) }) as PassFuture
         };
         let announced = Mutex::new(Vec::new());
@@ -1148,7 +1182,7 @@ mod tests {
                 &crate::agents::evidence_cohort(),
             )
             .unwrap();
-        let runner = |_: &SessionRecord, _: PassSignal| {
+        let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
             Box::pin(async { failed_pass(PassOutcome::SourceChanged) }) as PassFuture
         };
 
@@ -1171,7 +1205,7 @@ mod tests {
                 &crate::agents::evidence_cohort(),
             )
             .unwrap();
-        let runner = |_: &SessionRecord, _: PassSignal| {
+        let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
             Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
         };
 
@@ -1193,7 +1227,7 @@ mod tests {
                 &crate::agents::evidence_cohort(),
             )
             .unwrap();
-        let runner = |_: &SessionRecord, _: PassSignal| {
+        let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
             Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
         };
 
@@ -1221,7 +1255,7 @@ mod tests {
             )
             .unwrap();
         let clock = AtomicI64::new(100);
-        let runner = |_: &SessionRecord, _: PassSignal| {
+        let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
             Box::pin(async { failed_pass(PassOutcome::Unreadable) }) as PassFuture
         };
         let key = SessionKey::new("native", "claude-code", "worker-unreadable");
@@ -1245,6 +1279,78 @@ mod tests {
                 clock.store(row.next_attempt_at_epoch.unwrap(), Ordering::SeqCst);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() {
+        let store = store();
+        let target = record("turn-rows-worker");
+        store
+            .upsert_sessions(
+                std::slice::from_ref(&target),
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+
+        // A custom analyzer, like the fixture-backed tests above: it
+        // bypasses real filesystem discovery, but runs the real
+        // `evidence_pass_with_turn_rows` -> `stream_vendor_with_hooks` ->
+        // `TurnRowSink` -> `FencedTurnRowWriter` path the worker uses in
+        // production, so this test proves rows a published pass writes
+        // actually land under the claim's fence.
+        let analyzer = |_agent: AgentKind,
+                        session_id: String,
+                        _wsl_distro: Option<String>,
+                        claimed: analysis::ClaimedSource,
+                        signal: PassSignal,
+                        turn_row_writer: Option<Arc<dyn TurnRowWriter>>| {
+            Box::pin(async move {
+                let mut pass = analysis::evidence_pass_with_turn_rows(
+                    &[SessionInput {
+                        agent: "claude".into(),
+                        session_id,
+                        source: RawSource::Jsonl(concat!(
+                            r#"{"type":"assistant","timestamp":100,"message":{"id":"m1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}"#,
+                            "\n",
+                            r#"{"type":"assistant","timestamp":200,"message":{"id":"m2","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":4,"output_tokens":6},"content":[]}}"#,
+                            "\n",
+                        )
+                        .into()),
+                    }],
+                    &|| signal.observe(),
+                    turn_row_writer.as_deref(),
+                );
+                if let Some(fingerprint) = claimed.fingerprint {
+                    pass.analysis.fingerprint = fingerprint;
+                }
+                pass
+            }) as PassFuture
+        };
+        let store_for_runner = store.clone();
+        let runner = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
+            run_record_pass_with(
+                record,
+                signal,
+                claim_fence,
+                store_for_runner.clone(),
+                &analyzer,
+            )
+        };
+
+        assert!(
+            process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+                .await
+                .unwrap()
+        );
+
+        let evidence = store.evidence(&target.key).unwrap().unwrap();
+        assert_eq!(evidence.status, EvidenceStatus::Ready);
+        assert_eq!(
+            store
+                .count_turn_rows_for_session(&target.key, evidence.claim_fence)
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -1272,38 +1378,48 @@ mod tests {
             .upsert_sessions(std::slice::from_ref(&pi), &crate::agents::evidence_cohort())
             .unwrap();
         let pi_source = source_path.clone();
-        let analyzer = move |agent: AgentKind,
-                             session_id: String,
-                             wsl_distro: Option<String>,
-                             claimed: analysis::ClaimedSource,
-                             signal: PassSignal| {
-            if agent != AgentKind::Pi || session_id != "pi-worker-report" {
-                return Box::pin(async move {
-                    analysis::analyze_for_evidence(
-                        agent,
-                        &session_id,
-                        wsl_distro.as_deref(),
-                        claimed,
-                        signal,
-                    )
-                    .await
-                }) as PassFuture;
-            }
-            let input = antiburn_local::analysis::SessionInput {
-                agent: crate::agents::vendor_label(agent).to_owned(),
-                session_id,
-                source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
-            };
-            Box::pin(async move {
-                let mut pass = analysis::evidence_pass(&[input], &|| signal.observe());
-                if let Some(fingerprint) = claimed.fingerprint {
-                    pass.analysis.fingerprint = fingerprint;
+        let analyzer =
+            move |agent: AgentKind,
+                  session_id: String,
+                  wsl_distro: Option<String>,
+                  claimed: analysis::ClaimedSource,
+                  signal: PassSignal,
+                  turn_row_writer: Option<Arc<dyn TurnRowWriter>>| {
+                if agent != AgentKind::Pi || session_id != "pi-worker-report" {
+                    return Box::pin(async move {
+                        analysis::analyze_for_evidence(
+                            agent,
+                            &session_id,
+                            wsl_distro.as_deref(),
+                            claimed,
+                            signal,
+                            turn_row_writer,
+                        )
+                        .await
+                    }) as PassFuture;
                 }
-                pass
-            }) as PassFuture
-        };
-        let runner = |record: &SessionRecord, signal: PassSignal| {
-            run_record_pass_with(record, signal, &analyzer)
+                let input = antiburn_local::analysis::SessionInput {
+                    agent: crate::agents::vendor_label(agent).to_owned(),
+                    session_id,
+                    source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
+                };
+                Box::pin(async move {
+                    let mut pass = analysis::evidence_pass(&[input], &|| signal.observe());
+                    if let Some(fingerprint) = claimed.fingerprint {
+                        pass.analysis.fingerprint = fingerprint;
+                    }
+                    pass
+                }) as PassFuture
+            };
+        let store_for_runner = store.clone();
+        let runner = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
+            run_record_pass_with(
+                record,
+                signal,
+                claim_fence,
+                store_for_runner.clone(),
+                &analyzer,
+            )
         };
 
         assert!(

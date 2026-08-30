@@ -2,11 +2,14 @@
 mod corpus;
 
 use std::io::Cursor;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use antiburn_local::analysis::{
-    BoundedJsonlReader, NormalizedEvent, NormalizedRecord, RETAINED_METRICS_BYTES_BOUND, RawSource,
-    RecordSink, Role, SCAN_QUANTUM_BYTES, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    ToolCall, Usage, adapter_for,
+    BoundedJsonlReader, CompositeSink, EvidenceSource, NormalizedEvent, NormalizedRecord,
+    RETAINED_METRICS_BYTES_BOUND, RawSource, RecordSink, Role, SCAN_QUANTUM_BYTES,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceKind, TURN_ROW_BATCH_SIZE, ToolCall, TurnRow, TurnRowSink,
+    TurnRowWriteError, TurnRowWriter, Usage, adapter_for,
 };
 use corpus::generate_session_of_bytes;
 
@@ -121,4 +124,52 @@ fn retained_state_stays_small_for_a_small_session() {
     }
     accumulator.finish(SessionSummary::default());
     assert!(accumulator.retained_bytes() <= 32 * 1_024);
+}
+
+/// Records only the largest batch and the total row count it ever saw, so
+/// the assertions below need no real database.
+#[derive(Default)]
+struct CountingWriter {
+    max_batch: AtomicUsize,
+    total_rows: AtomicUsize,
+}
+
+impl TurnRowWriter for CountingWriter {
+    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowWriteError> {
+        self.max_batch.fetch_max(rows.len(), Ordering::SeqCst);
+        self.total_rows.fetch_add(rows.len(), Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn the_turn_row_sink_stays_bounded_over_a_streamed_corpus() {
+    let session = generate_session_of_bytes(402, 0, 3 * 1024 * 1024);
+    let input = SessionInput {
+        agent: "claude".to_string(),
+        session_id: session.session_id.clone(),
+        source: RawSource::Jsonl(session.jsonl.clone()),
+    };
+    let writer = CountingWriter::default();
+    let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::claude(),
+    });
+    let sink = TurnRowSink::new(&writer, input.session_id.clone());
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, sink);
+    adapter_for("claude")
+        .visit(&input, &mut composite)
+        .expect("synthetic source streams");
+
+    assert!(!composite.turn_row_write_failed());
+    assert!(
+        writer.max_batch.load(Ordering::SeqCst) <= TURN_ROW_BATCH_SIZE,
+        "largest batch was {} rows, batch size is {}",
+        writer.max_batch.load(Ordering::SeqCst),
+        TURN_ROW_BATCH_SIZE
+    );
+    assert!(writer.total_rows.load(Ordering::SeqCst) > 0);
 }

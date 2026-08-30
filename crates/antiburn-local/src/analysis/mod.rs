@@ -38,6 +38,7 @@ mod merge;
 mod metrics_sink;
 mod model;
 mod pricing;
+mod rows;
 mod source_validity;
 pub mod tool_catalog;
 mod vendors;
@@ -74,6 +75,11 @@ pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
+pub use rows::{
+    TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TurnRow, TurnRowSink, TurnRowWriteError, TurnRowWriter,
+    TurnScope, TurnSessionKey, count_turn_rows, delete_turn_rows, delete_turn_rows_except_fence,
+    delete_turn_rows_for_fence, insert_turn_rows, turn_row_from_event,
+};
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
 };

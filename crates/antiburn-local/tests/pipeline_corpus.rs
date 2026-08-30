@@ -64,7 +64,7 @@ fn write_session(directory: &TempDir, session: &GeneratedSession) -> PathBuf {
     path
 }
 
-fn composite_for(input: &SessionInput) -> CompositeSink {
+fn composite_for(input: &SessionInput) -> CompositeSink<'static> {
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
@@ -76,7 +76,7 @@ fn composite_for(input: &SessionInput) -> CompositeSink {
 }
 
 /// Runs framing → normalization → metrics + evidence for one input.
-fn run_pipeline(input: &SessionInput) -> CompositeSink {
+fn run_pipeline(input: &SessionInput) -> CompositeSink<'static> {
     let mut composite = composite_for(input);
     let outcome = adapter_for("claude")
         .visit(input, &mut composite)
@@ -388,7 +388,7 @@ fn provider_db_backed_source_flows_end_to_end_into_a_report() {
 /// Forwards to a composite sink and appends to the source file mid-read,
 /// like an agent still writing its transcript.
 struct AppendingSink {
-    inner: CompositeSink,
+    inner: CompositeSink<'static>,
     path: PathBuf,
     append_after_records: usize,
     seen: usize,
