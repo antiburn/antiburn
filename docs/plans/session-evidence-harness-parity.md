@@ -745,6 +745,13 @@ Settled:
 7. The generic fallback adapter reports the minimum capability set, so the
    badges read not-assessed for an unknown vendor (decided 2026-08-31; ships
    with the Codex adapter change in Phase 4).
+8. OpenCode fork semantics, verified 2026-08-31 against an anonymised real
+   OpenCode 1.1.25 capture (cadence `session_forks/opencode` fixtures): a
+   subagent has `parent_id`; a fork is a new root with null `parent_id`, a
+   ` (fork #N)` title, and a copied prefix. A fork title without a copied
+   prefix is not a fork. Copied messages keep the parent's `time_created`,
+   which is older than the fork session itself; that is a structural
+   fork-point signal that does not need the title.
 
 Open, needs a human decision before the relevant seam:
 
@@ -755,9 +762,6 @@ Open, needs a human decision before the relevant seam:
    against vendor announcements before they ship as a compiled offline list
    that tells users their model is obsolete. Until reviewed, the registry is
    empty and the check is not assessed, which is honest.
-2. **OpenCode fork semantics.** `parent_id` = subagent, null `parent_id` +
-   copied prefix = fork. Plausible; verify against fixtures from a real
-   OpenCode database before Phase 4.
-3. **Crate boundary for rows** (see "Where the row logic lives").
-4. **Premium-tier and effort-tier policies** per model family, needed by
+2. **Crate boundary for rows** (see "Where the row logic lives").
+3. **Premium-tier and effort-tier policies** per model family, needed by
    Phase 5. Not yet drafted.
