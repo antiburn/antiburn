@@ -2063,7 +2063,7 @@ mod tests {
     }
 
     fn synthetic_evidence() -> SessionEvidence {
-        synthetic_evidence_accumulator().evidence()
+        synthetic_evidence_accumulator().evidence(&antiburn_local::analysis::TurnFacts::default())
     }
 
     #[test]
@@ -2127,7 +2127,7 @@ mod tests {
         accumulator.observe_source_outcome(
             antiburn_local::analysis::VisitOutcome::AcceptedPrefix { boundary: 1 },
         );
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&antiburn_local::analysis::TurnFacts::default());
         assert!(matches!(
             evidence.coverage,
             antiburn_local::analysis::EvidenceCoverage::Partial(

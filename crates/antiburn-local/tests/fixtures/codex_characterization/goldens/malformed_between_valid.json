@@ -75,6 +75,9 @@
     },
     "diagnostics": {
       "cappedCollections": [],
+      "childrenDiscovered": 0,
+      "childrenUnreadable": 0,
+      "duplicateTurnIdentities": 0,
       "recordsObserved": 2,
       "recordsUnrecognizedInert": 0,
       "recordsUnusable": 1,
@@ -139,8 +142,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 7,
-      "evidenceSchemaRevision": 4,
+      "analyzerRevision": 8,
+      "evidenceSchemaRevision": 5,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -152,7 +155,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 4,
+    "schemaRevision": 5,
     "subagents": {
       "state": "unsupported"
     },

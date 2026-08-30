@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, NormalizedRecord, PartialReason, RawSource, RecordSink,
-    SessionCollector, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceKind, VisitOutcome, adapter_for,
+    CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedRecord, PartialReason, RawSource,
+    RecordSink, SessionCollector, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
+    TurnRowStore, VisitOutcome, adapter_for,
 };
 use rusqlite::{Connection, params};
 use serde_json::json;
@@ -362,16 +365,22 @@ fn metrics_and_evidence_publish_from_the_stream() {
         kind: SourceKind::Jsonl,
         capabilities: SourceCapabilities::opencode(),
     });
-    let mut sink = CompositeSink::new(metrics, evidence);
+    let store = MemoryTurnRowStore::new("opencode", "evidence");
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        "evidence",
+        None,
+    );
+    let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
     let outcome = adapter_for("opencode")
         .visit(&input, &mut sink)
         .expect("stream export");
     sink.observe_source_outcome(outcome);
-    let (metrics, evidence) = sink.into_parts().expect("published evidence");
-    let evidence = evidence.evidence();
+    let evidence = sink.evidence().expect("published evidence");
+    let metrics = sink.metrics().expect("published metrics");
 
-    assert_eq!(metrics.metrics().tokens_out, 5);
-    assert_eq!(metrics.metrics().tokens_in, 15);
+    assert_eq!(metrics.tokens_out, 5);
+    assert_eq!(metrics.tokens_in, 15);
     assert_eq!(evidence.capabilities, SourceCapabilities::opencode());
     assert!(!json!(evidence).to_string().contains("PRIVATE_PATH"));
 }

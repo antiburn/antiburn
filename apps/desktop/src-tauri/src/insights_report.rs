@@ -209,7 +209,7 @@ mod tests {
 
     use antiburn_local::analysis::{
         EVIDENCE_SCHEMA_REVISION, EvidenceSource, METRICS_SCHEMA_REVISION,
-        SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
+        SessionEvidenceAccumulator, SourceCapabilities, SourceKind, TurnFacts,
     };
     use tempfile::TempDir;
 
@@ -271,7 +271,7 @@ mod tests {
             kind: SourceKind::File,
             capabilities: SourceCapabilities::claude(),
         })
-        .evidence();
+        .evidence(&TurnFacts::default());
         let analysis = AnalysisRecord {
             key: session.key,
             model_breakdown_json: "{}".to_owned(),

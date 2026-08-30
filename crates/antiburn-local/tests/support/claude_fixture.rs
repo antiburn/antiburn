@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceKind, adapter_for,
+    CompositeSink, EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator,
+    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnRowSink,
+    TurnRowStore, adapter_for,
 };
 
 pub fn read_fixture(name: &str) -> String {
@@ -39,7 +42,13 @@ fn stream_input(input: SessionInput) -> CompositeSink {
         kind: SourceKind::from(&input.source),
         capabilities: SourceCapabilities::claude(),
     });
-    let mut composite = CompositeSink::new(metrics, evidence);
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
     let outcome = adapter_for("claude")
         .visit(&input, &mut composite)
         .expect("synthetic Claude fixture must stream");

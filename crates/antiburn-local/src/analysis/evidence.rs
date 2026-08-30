@@ -54,7 +54,7 @@ impl From<PartialReason> for CoverageReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionTimeRange {
     pub first_ts_ms: i64,
@@ -62,7 +62,7 @@ pub struct SessionTimeRange {
     pub timestamped_turns: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EligibilityEvidence {
     pub turns: u64,
@@ -500,7 +500,7 @@ pub struct SessionProvenance {
 ///
 /// `records_observed` counts metrics events, unusable records, and observed inert unknowns.
 /// It excludes known eventless records when their parser-readable shapes are inert.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseDiagnostics {
     pub records_observed: u64,
@@ -510,19 +510,24 @@ pub struct ParseDiagnostics {
     pub unrecognized_types: BTreeSet<String>,
     pub truncated_strings: BTreeSet<String>,
     pub capped_collections: BTreeSet<String>,
+    /// Discovered child transcripts, whether or not they streamed. Set by
+    /// [`super::evidence_sink::SessionEvidenceAccumulator::observe_child_unreadable`]
+    /// and
+    /// [`super::evidence_sink::SessionEvidenceAccumulator::observe_child_coverage`].
+    #[serde(default)]
+    pub children_discovered: u64,
+    /// Discovered child transcripts that could not be read.
+    #[serde(default)]
+    pub children_unreadable: u64,
+    /// Turn identities (`uuid`) the row store observed under more than one
+    /// `source_key` in this session. Copied from [`super::evidence_query::TurnFacts`].
+    #[serde(default)]
+    pub duplicate_turn_identities: u64,
 }
 
 impl ParseDiagnostics {
     pub(crate) fn new() -> Self {
-        Self {
-            records_observed: 0,
-            records_unusable: 0,
-            records_unrecognized_inert: 0,
-            unusable_reasons: BTreeMap::new(),
-            unrecognized_types: BTreeSet::new(),
-            truncated_strings: BTreeSet::new(),
-            capped_collections: BTreeSet::new(),
-        }
+        Self::default()
     }
 }
 
@@ -557,7 +562,10 @@ pub(crate) fn cap_string(
     value[..end].to_owned()
 }
 
-pub(crate) fn insert_diagnostic_field(set: &mut BTreeSet<String>, field: &'static str) -> bool {
+/// `field` need not be `'static`: a caller that merges an already-owned
+/// field name (for example one read back out of another session's
+/// diagnostics) can pass a borrowed `&str` too.
+pub(crate) fn insert_diagnostic_field(set: &mut BTreeSet<String>, field: &str) -> bool {
     if set.contains(field) {
         return false;
     }
@@ -623,6 +631,7 @@ mod tests {
 
     use super::*;
     use crate::analysis::SessionEvidenceAccumulator;
+    use crate::analysis::evidence_query::TurnFacts;
 
     fn empty_evidence(session_id: &str) -> SessionEvidence {
         SessionEvidenceAccumulator::new(EvidenceSource {
@@ -631,7 +640,7 @@ mod tests {
             kind: SourceKind::File,
             capabilities: SourceCapabilities::claude(),
         })
-        .evidence()
+        .evidence(&TurnFacts::default())
     }
 
     fn expected_empty_evidence(
@@ -640,7 +649,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 4,
+            "schemaRevision": 5,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -665,8 +674,8 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 5,
-                "analyzerRevision": 7,
-                "evidenceSchemaRevision": 4,
+                "analyzerRevision": 8,
+                "evidenceSchemaRevision": 5,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -679,7 +688,10 @@ mod tests {
                 "unusableReasons": {},
                 "unrecognizedTypes": [],
                 "truncatedStrings": truncated_strings,
-                "cappedCollections": []
+                "cappedCollections": [],
+                "childrenDiscovered": 0,
+                "childrenUnreadable": 0,
+                "duplicateTurnIdentities": 0
             },
             "timeRange": {"state": "complete", "value": {"firstTsMs": 0, "lastTsMs": 0, "timestampedTurns": 0}},
             "eligibility": {"state": "complete", "value": {"turns": 0, "assistantTurns": 0, "toolTurns": 0, "depthEligibleTurns": 0}},

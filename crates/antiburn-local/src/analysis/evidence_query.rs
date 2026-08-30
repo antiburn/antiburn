@@ -26,7 +26,7 @@ use crate::analysis::rows::TurnSessionKey;
 /// A later change computes most of `SessionEvidence` from these instead of
 /// from `SessionEvidenceAccumulator`. The field-by-field rule each fact
 /// follows is documented next to the query that computes it, below.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurnFacts {
     pub eligibility: EligibilityEvidence,
     pub max_request_context_tokens: u64,
@@ -571,6 +571,9 @@ fn query_transitions_and_idle_gaps(
                 let from_model =
                     cap_string("cache.model_transitions.from_model", previous, diagnostics);
                 let to_model = cap_string("cache.model_transitions.to_model", model, diagnostics);
+                if from_model.len() != previous.len() || to_model.len() != model.len() {
+                    capped = true;
+                }
                 if transitions.len() == MAX_MODEL_TRANSITIONS {
                     capped = true;
                     note_collection_cap(diagnostics, "cache.model_transitions");
@@ -697,6 +700,7 @@ fn query_duplicate_turn_identities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::EVIDENCE_STRING_CAP;
     use crate::analysis::rows::{TURN_MIGRATIONS, TurnRow, TurnScope, insert_turn_rows};
 
     const KEY: TurnSessionKey<'static> = TurnSessionKey {
@@ -862,6 +866,130 @@ mod tests {
         let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
         assert_eq!(facts.model_transitions.len(), MAX_MODEL_TRANSITIONS);
         assert!(facts.transitions_capped);
+    }
+
+    #[test]
+    fn a_long_transition_model_name_flags_the_overflow_without_capping_the_count() {
+        let conn = test_connection();
+        let mut first = base_row("s1", 0);
+        first.model = Some("model-a".to_owned());
+        let mut second = base_row("s1", 1);
+        second.model = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
+        insert(&conn, &[first, second]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.model_transitions.len(), 1);
+        assert_eq!(
+            facts.model_transitions[0].to_model.len(),
+            EVIDENCE_STRING_CAP
+        );
+        assert!(facts.transitions_capped);
+    }
+
+    #[test]
+    fn models_by_model_key_truncation_flags_the_overflow_without_capping_the_count() {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        row.model = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
+        insert(&conn, &[row]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.by_model.len(), 1);
+        assert_eq!(
+            facts.by_model.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+        assert!(facts.models_capped);
+    }
+
+    fn tier_label_key_truncation(effort: bool) -> TurnFacts {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        if effort {
+            row.effort = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
+        } else {
+            row.speed = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
+        }
+        insert(&conn, &[row]);
+        query_turn_facts(&conn, &KEY, 1).expect("query facts")
+    }
+
+    #[test]
+    fn effort_tier_key_truncation_flags_the_overflow() {
+        let facts = tier_label_key_truncation(true);
+        assert_eq!(facts.effort_tiers.len(), 1);
+        assert_eq!(
+            facts.effort_tiers.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+        assert!(facts.tiers_capped);
+    }
+
+    #[test]
+    fn fast_mode_key_truncation_flags_the_overflow() {
+        let facts = tier_label_key_truncation(false);
+        assert_eq!(facts.fast_modes.len(), 1);
+        assert_eq!(
+            facts.fast_modes.keys().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+        assert!(facts.tiers_capped);
+    }
+
+    #[test]
+    fn delegated_models_cap_at_max_subagent_models_and_flag_the_overflow() {
+        let conn = test_connection();
+        let rows: Vec<TurnRow> = (0..(MAX_SUBAGENT_MODELS * 2))
+            .map(|index| {
+                let mut row = base_row("s1", index as u64);
+                row.scope = TurnScope::Delegated;
+                row.child_id = Some("s1".to_owned());
+                row.model = Some(format!("model-{index}"));
+                row
+            })
+            .collect();
+        insert(&conn, &rows);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.delegated_models.len(), MAX_SUBAGENT_MODELS);
+        assert!(facts.delegated_models_capped);
+    }
+
+    #[test]
+    fn a_long_delegated_model_name_flags_the_overflow_without_capping_the_count() {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        row.scope = TurnScope::Delegated;
+        row.child_id = Some("s1".to_owned());
+        row.model = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
+        insert(&conn, &[row]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.delegated_models.len(), 1);
+        assert_eq!(
+            facts.delegated_models.iter().next().unwrap().len(),
+            EVIDENCE_STRING_CAP
+        );
+        assert!(facts.delegated_models_capped);
+    }
+
+    #[test]
+    fn signal_coverage_counts_only_model_attributed_assistant_rows() {
+        // A row without a model (a synthetic `<synthetic>` assistant record,
+        // or any non-assistant row) is never signal-eligible: it can never
+        // carry an effort or speed value.
+        let conn = test_connection();
+        let mut with_signal = base_row("s1", 0);
+        with_signal.effort = Some("high".to_owned());
+        with_signal.speed = Some("standard".to_owned());
+        let mut unattributed = base_row("s1", 1);
+        unattributed.model = None;
+        let tool_row = TurnRow {
+            role: "tool",
+            ..base_row("s1", 2)
+        };
+        insert(&conn, &[with_signal, unattributed, tool_row]);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.effort_signal.eligible_turns, 1);
+        assert_eq!(facts.effort_signal.present_turns, 1);
+        assert_eq!(facts.speed_signal.eligible_turns, 1);
+        assert_eq!(facts.speed_signal.present_turns, 1);
     }
 
     #[test]

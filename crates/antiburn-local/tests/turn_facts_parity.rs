@@ -1,24 +1,25 @@
-//! Parity check between `query_turn_facts` (the row-derived read side) and
-//! `SessionEvidenceAccumulator` (today's evidence source). See Phase 3 in
-//! `docs/plans/session-evidence-harness-parity.md`.
+//! Assembly check between `query_turn_facts` (the row-derived read side)
+//! and `SessionEvidenceAccumulator::evidence` (the published projection).
+//! See Phase 3 in `docs/plans/session-evidence-harness-parity.md`.
 //!
-//! Each vendor test streams every characterization fixture once, through a
-//! `CompositeSink` fanned out to a `MemoryTurnRowStore`, then compares the
-//! two projections field by field. The set of differences must equal the
-//! documented set in each test, exactly. A new difference is a bug in the
-//! query or a semantic change that needs a documented reason. A documented
-//! difference that no longer appears is a stale entry. Do not weaken a
-//! comparison to make a difference pass.
+//! `SessionEvidence` is now built directly from `TurnFacts`, so this is a
+//! cheap check that the assembly carries every row-derived field through
+//! unchanged, not a comparison between two independent computations. Each
+//! vendor test streams every characterization fixture once, through a
+//! `CompositeSink` fanned out to a `MemoryTurnRowStore`, then asserts the
+//! published `SessionEvidence` groups equal the queried `TurnFacts` values
+//! field by field, for every fixture, with no exceptions.
 //!
-//! The documented differences all come from three rules of the row query:
+//! Row-derived fields still follow three rules, now built into
+//! `query_turn_facts` and no longer worth a per-fixture allowlist:
 //!
-//! - `time_range`: rows hold turns only. The accumulator also folds the
-//!   timestamps of eventless records (`RecordTimestamp` observations).
-//! - `delegated_turns`: rows count delegated turns only. The accumulator
-//!   counts every sidechain record, including inert ones.
-//! - `model_transitions` and idle gaps: rows use `scope='main'` only, per
-//!   thread. The accumulator runs one scan over every event, so an inline
-//!   sidechain event can form a transition or a gap with a main-loop event.
+//! - `time_range` spans turn rows only. An eventless record (a
+//!   `RecordTimestamp` observation with no turn behind it) never moves it.
+//! - `delegated_turns` counts delegated turn rows only. An inert
+//!   sidechain record never becomes a row, so it never counts.
+//! - `model_transitions` and idle gaps use `scope='main'` rows only, per
+//!   thread. A sidechain turn never forms a transition or a gap with a
+//!   main-loop turn.
 
 use std::sync::Arc;
 
@@ -39,50 +40,26 @@ fn published<T: Clone>(value: &EvidenceValue<T>) -> Option<T> {
     }
 }
 
-/// Records a mismatch when `accumulator` and `facts` differ for one field of
-/// one fixture.
+/// Records a mismatch when the published `SessionEvidence` group and the
+/// queried `TurnFacts` differ for one field of one fixture.
 fn diff<T: std::fmt::Debug + PartialEq>(
     mismatches: &mut Vec<Mismatch>,
     fixture: &str,
     field: &str,
-    accumulator: T,
+    evidence_value: T,
     facts: T,
 ) {
-    if accumulator != facts {
+    if evidence_value != facts {
         mismatches.push(Mismatch {
-            fixture: fixture.to_owned(),
-            field: field.to_owned(),
             detail: format!(
-                "fixture={fixture} field={field}\n  accumulator = {accumulator:?}\n  facts       = {facts:?}"
+                "fixture={fixture} field={field}\n  evidence = {evidence_value:?}\n  facts    = {facts:?}"
             ),
         });
     }
 }
 
 struct Mismatch {
-    fixture: String,
-    field: String,
     detail: String,
-}
-
-/// One documented difference: the fixture, the field, and the query rule
-/// that explains it.
-struct Documented {
-    fixture: &'static str,
-    field: &'static str,
-    rule: &'static str,
-}
-
-const TIME_RANGE_RULE: &str = "time_range comes from turn rows only";
-const DELEGATED_TURNS_RULE: &str = "delegated_turns counts turn rows only";
-const MAIN_SCOPE_RULE: &str = "transitions and idle gaps use scope='main' rows only";
-
-const fn documented(fixture: &'static str, field: &'static str, rule: &'static str) -> Documented {
-    Documented {
-        fixture,
-        field,
-        rule,
-    }
 }
 
 /// Streams `jsonl` through the named vendor's adapter into both an evidence
@@ -292,126 +269,20 @@ fn compare_fixture(
     }
 }
 
-/// Asserts that the observed differences are exactly the documented ones.
-const CLAUDE_DIFFERENCES: &[Documented] = &[
-    documented(
-        "unrecognized_inert_sidechain",
-        "subagents.delegatedTurns",
-        DELEGATED_TURNS_RULE,
-    ),
-    documented(
-        "reasoning_and_fast_mode",
-        "cache.modelTransitions",
-        MAIN_SCOPE_RULE,
-    ),
-    documented(
-        "reasoning_and_fast_mode",
-        "cache.longestIdleGapMs",
-        MAIN_SCOPE_RULE,
-    ),
-    documented("delegated_turns", "cache.modelTransitions", MAIN_SCOPE_RULE),
-    documented("delegated_turns", "cache.longestIdleGapMs", MAIN_SCOPE_RULE),
-    documented("delegated_turns", "cache.idleGapMsTotal", MAIN_SCOPE_RULE),
-    documented(
-        "delegated_models",
-        "cache.modelTransitions",
-        MAIN_SCOPE_RULE,
-    ),
-    documented(
-        "delegated_models",
-        "cache.longestIdleGapMs",
-        MAIN_SCOPE_RULE,
-    ),
-    documented("delegated_models", "cache.idleGapMsTotal", MAIN_SCOPE_RULE),
-    documented(
-        "delegated_model_missing",
-        "cache.longestIdleGapMs",
-        MAIN_SCOPE_RULE,
-    ),
-    documented(
-        "delegated_model_missing",
-        "cache.idleGapMsTotal",
-        MAIN_SCOPE_RULE,
-    ),
-    documented(
-        "thread_identity_chain",
-        "cache.modelTransitions",
-        MAIN_SCOPE_RULE,
-    ),
-    documented(
-        "thread_identity_chain",
-        "cache.longestIdleGapMs",
-        MAIN_SCOPE_RULE,
-    ),
-    documented(
-        "sidechain_in_parent",
-        "cache.modelTransitions",
-        MAIN_SCOPE_RULE,
-    ),
-    documented(
-        "sidechain_in_parent",
-        "cache.longestIdleGapMs",
-        MAIN_SCOPE_RULE,
-    ),
-];
-
-const CODEX_DIFFERENCES: &[Documented] = &[];
-
-const PI_DIFFERENCES: &[Documented] = &[
-    documented("minimal_session", "timeRange", TIME_RANGE_RULE),
-    documented("model_change", "timeRange", TIME_RANGE_RULE),
-    documented("thinking_level_change", "timeRange", TIME_RANGE_RULE),
-    documented("compaction_and_inert", "timeRange", TIME_RANGE_RULE),
-    documented("unknown_row_type", "timeRange", TIME_RANGE_RULE),
-    documented("custom_rows", "timeRange", TIME_RANGE_RULE),
-    documented("header_only", "timeRange", TIME_RANGE_RULE),
-    documented("unsupported_version", "timeRange", TIME_RANGE_RULE),
-    documented("fork_hazard_parent", "timeRange", TIME_RANGE_RULE),
-    documented("fork_hazard_child", "timeRange", TIME_RANGE_RULE),
-    documented("fork_no_inherited", "timeRange", TIME_RANGE_RULE),
-    documented("bash_execution_role", "timeRange", TIME_RANGE_RULE),
-    documented("bash_execution_with_usage", "timeRange", TIME_RANGE_RULE),
-    documented("inert_signal_guard", "timeRange", TIME_RANGE_RULE),
-    documented("non_turn_timestamp_ordering", "timeRange", TIME_RANGE_RULE),
-    documented("session_start", "timeRange", TIME_RANGE_RULE),
-];
-
-/// Asserts that the observed differences are exactly the documented ones.
-fn assert_documented_differences(vendor: &str, mismatches: Vec<Mismatch>, expected: &[Documented]) {
-    let undocumented: Vec<&str> = mismatches
+/// Asserts every fixture's published `SessionEvidence` groups carry the
+/// queried `TurnFacts` values through with no change. `evidence()` builds
+/// each group straight from `facts`, so any mismatch here is a bug in that
+/// assembly, not a semantic difference to document.
+fn assert_no_mismatches(vendor: &str, mismatches: Vec<Mismatch>) {
+    let details: Vec<&str> = mismatches
         .iter()
-        .filter(|mismatch| {
-            !expected
-                .iter()
-                .any(|entry| entry.fixture == mismatch.fixture && entry.field == mismatch.field)
-        })
         .map(|mismatch| mismatch.detail.as_str())
         .collect();
     assert!(
-        undocumented.is_empty(),
-        "{vendor}: {} undocumented difference(s) between query_turn_facts and SessionEvidenceAccumulator:\n\n{}",
-        undocumented.len(),
-        undocumented.join("\n\n")
-    );
-    let stale: Vec<String> = expected
-        .iter()
-        .filter(|entry| {
-            !mismatches
-                .iter()
-                .any(|mismatch| mismatch.fixture == entry.fixture && mismatch.field == entry.field)
-        })
-        .map(|entry| {
-            format!(
-                "fixture={} field={} ({})",
-                entry.fixture, entry.field, entry.rule
-            )
-        })
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "{vendor}: {} documented difference(s) no longer appear; remove them:\n{}",
-        stale.len(),
-        stale.join("\n")
+        details.is_empty(),
+        "{vendor}: {} mismatch(es) between the published SessionEvidence and query_turn_facts:\n\n{}",
+        details.len(),
+        details.join("\n\n")
     );
 }
 
@@ -554,7 +425,7 @@ fn claude_facts_match_evidence_for_every_fixture() {
         );
         compare_fixture(&mut mismatches, name, &evidence, &facts);
     }
-    assert_documented_differences("claude", mismatches, CLAUDE_DIFFERENCES);
+    assert_no_mismatches("claude", mismatches);
 }
 
 /* --------------------------------------------------------------------
@@ -619,7 +490,7 @@ fn codex_facts_match_evidence_for_every_fixture() {
         );
         compare_fixture(&mut mismatches, name, &evidence, &facts);
     }
-    assert_documented_differences("codex", mismatches, CODEX_DIFFERENCES);
+    assert_no_mismatches("codex", mismatches);
 }
 
 /* --------------------------------------------------------------------
@@ -742,5 +613,5 @@ fn pi_facts_match_evidence_for_every_fixture() {
         let (evidence, facts) = run_fixture("pi", name, pi_fixture(name), SourceCapabilities::pi());
         compare_fixture(&mut mismatches, name, &evidence, &facts);
     }
-    assert_documented_differences("pi", mismatches, PI_DIFFERENCES);
+    assert_no_mismatches("pi", mismatches);
 }
