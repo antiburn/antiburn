@@ -1,2 +1,2 @@
 {"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z"}
-{"type":"message","id":"shared-row","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":2,"cacheRead":3,"cacheWrite":4},"content":[]}}
+{"type":"message","id":"shared-row","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","model":"model-a","usage":{"input":1,"output":2,"cacheRead":3,"cacheWrite":4},"content":[]}}

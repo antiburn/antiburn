@@ -1,3 +1,3 @@
-{"type":"message","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":10000,"output":2,"cacheRead":90000,"cacheWrite":0},"content":[]}}
-{"type":"message","timestamp":"2026-01-01T04:00:00Z","message":{"role":"assistant","api":"openai-completions","model":"model-a","usage":{"input":95000,"output":3,"cacheRead":5000,"cacheWrite":0},"content":[]}}
-{"type":"message","timestamp":"2026-01-01T04:00:08Z","message":{"role":"assistant","api":"openai-completions","model":"model-a","usage":{"input":10000,"output":5,"cacheRead":92000,"cacheWrite":0},"content":[]}}
+{"type":"message","id":"ma-1","parentId":null,"timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":10000,"output":2,"cacheRead":90000,"cacheWrite":0},"content":[]}}
+{"type":"message","id":"ma-2","parentId":"ma-1","timestamp":"2026-01-01T04:00:00Z","message":{"role":"assistant","api":"openai-completions","model":"model-a","usage":{"input":95000,"output":3,"cacheRead":5000,"cacheWrite":0},"content":[]}}
+{"type":"message","id":"ma-3","parentId":"ma-2","timestamp":"2026-01-01T04:00:08Z","message":{"role":"assistant","api":"openai-completions","model":"model-a","usage":{"input":10000,"output":5,"cacheRead":92000,"cacheWrite":0},"content":[]}}

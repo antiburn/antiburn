@@ -1,4 +1,4 @@
 {"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z"}
-{"type":"session_info","timestamp":"2026-01-01T00:00:01Z","name":"synthetic title"}
-{"type":"custom","timestamp":"2026-01-01T00:00:02Z","customType":"extension-one","data":{}}
-{"type":"compaction","timestamp":"2026-01-01T00:00:03Z","tokensBefore":100,"firstKeptEntryId":"row-1","summary":"synthetic summary","fromHook":false}
+{"type":"session_info","id":"ci-1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","name":"synthetic title"}
+{"type":"custom","id":"ci-2","parentId":"ci-1","timestamp":"2026-01-01T00:00:02Z","customType":"extension-one","data":{}}
+{"type":"compaction","id":"ci-3","parentId":"ci-2","timestamp":"2026-01-01T00:00:03Z","tokensBefore":100,"firstKeptEntryId":"row-1","summary":"synthetic summary","fromHook":false}

@@ -430,8 +430,16 @@ impl SourceCapabilities {
     /// Thinking-level rows provide reasoning effort but no speed or service tier.
     /// Pi files provide no safe subagent relationship or child-model contract.
     /// Compaction rows provide boundaries and pre-compaction token counts.
-    /// Parent identifiers describe write order, not verified conversation depth.
     /// The adapter ingests no quota incident or harness-version record.
+    ///
+    /// `thread_identity` is set. Every entry after the session header carries
+    /// its own `id`, and names the entry it continues from in `parentId`
+    /// (`null` for the one root). The chain covers message and non-message
+    /// rows alike, so a Pi file — one root, no in-file branching — is one
+    /// thread. A fork file copies its parent's entries verbatim, with the
+    /// same ids, then continues with its own; the adapter still resolves the
+    /// copied rows into the chain (so the first owned row's `parentId`
+    /// finds a seen id) even though it keeps dropping their events.
     pub fn pi() -> Self {
         Self {
             request_context_tokens: true,
@@ -448,7 +456,7 @@ impl SourceCapabilities {
             subagent_relationships: false,
             subagent_models: false,
             compaction_boundaries: true,
-            thread_identity: false,
+            thread_identity: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -697,7 +705,7 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 9,
+                "parserRevision": 10,
                 "analyzerRevision": 9,
                 "evidenceSchemaRevision": 7,
                 "sourceKind": "file",

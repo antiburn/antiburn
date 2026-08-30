@@ -1,0 +1,2 @@
+{"type":"session","version":3,"timestamp":"2026-01-07T00:00:00Z"}
+{"type":"message","timestamp":"2026-01-07T00:00:01Z","message":{"role":"assistant","model":"model-a","usage":{"input":3,"output":4,"cacheRead":0,"cacheWrite":0},"content":[]}}

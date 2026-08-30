@@ -19,6 +19,7 @@ use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, NotAssessedReason, ReportCatalogs, requirements,
     session_badges,
 };
+use rusqlite::params;
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> &'static str {
@@ -92,11 +93,23 @@ fn fixture(name: &str) -> &'static str {
         "headerless_usage" => {
             include_str!("fixtures/pi_characterization/headerless_usage.jsonl")
         }
+        "thread_chain_through_non_message_rows" => {
+            include_str!("fixtures/pi_characterization/thread_chain_through_non_message_rows.jsonl")
+        }
+        "fork_child_one_thread" => {
+            include_str!("fixtures/pi_characterization/fork_child_one_thread.jsonl")
+        }
+        "unresolved_parent_link" => {
+            include_str!("fixtures/pi_characterization/unresolved_parent_link.jsonl")
+        }
+        "message_without_id" => {
+            include_str!("fixtures/pi_characterization/message_without_id.jsonl")
+        }
         _ => panic!("unknown Pi characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 28] {
+fn fixture_names() -> [&'static str; 32] {
     [
         "minimal_session",
         "role_ordering",
@@ -126,6 +139,10 @@ fn fixture_names() -> [&'static str; 28] {
         "session_start",
         "headerless_tools",
         "headerless_usage",
+        "thread_chain_through_non_message_rows",
+        "fork_child_one_thread",
+        "unresolved_parent_link",
+        "message_without_id",
     ]
 }
 
@@ -859,7 +876,7 @@ fn pi_capabilities_match_published_evidence_and_session_cache_support() {
         subagent_relationships: false,
         subagent_models: false,
         compaction_boundaries: true,
-        thread_identity: false,
+        thread_identity: true,
         quota_incidents: false,
         harness_version: false,
     };
@@ -902,7 +919,9 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
     assert_eq!(
         complete_badges.map(|badge| badge.status),
         [
-            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            // Thread identity now qualifies session-overdepth for Pi, and
+            // this fixture's depth stays under the cap.
+            BadgeStatus::Clean,
             // The fixture's assistant turns carry no effort value, so
             // zero eligible turns means the effort signal is missing.
             BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
@@ -911,7 +930,9 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // deprecated models, so the rule can never prove absence.
             BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            // Thread identity now qualifies cache churn for Pi, and this
+            // fixture shows no churn.
+            BadgeStatus::Clean,
         ]
     );
 
@@ -921,7 +942,10 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
     assert_eq!(
         partial_badges.map(|badge| badge.status),
         [
-            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            // Thread identity now qualifies session-overdepth for Pi, but
+            // the unrecognized row leaves session coverage short of
+            // Complete, so the badge stays unassessed.
+            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
             // The fixture's assistant turns carry no effort value, so
             // zero eligible turns means the effort signal is missing.
             BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
@@ -930,7 +954,9 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // deprecated models, so the rule can never prove absence.
             BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
+            // Thread identity now qualifies cache churn for Pi, but the
+            // same incomplete coverage keeps it unassessed too.
+            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
         ]
     );
 }
@@ -949,7 +975,12 @@ fn pi_detector_eligibility_is_frozen() {
         .collect::<Vec<_>>();
     assert_eq!(
         assessed,
-        vec![DetectorId::ModelOverthinking, DetectorId::OldModelUsage]
+        vec![
+            DetectorId::SessionsOverDepth,
+            DetectorId::ModelOverthinking,
+            DetectorId::OldModelUsage,
+            DetectorId::CacheChurn,
+        ]
     );
 }
 
@@ -990,6 +1021,148 @@ fn cache_rehydration_behavior_matches_the_generic_fallback_when_neither_supports
         adapter_for("pi-generic-fallback"),
     );
     assert_eq!(generic_metrics.metrics().cache_rehydration_count, 1);
+}
+
+/// Like [`composite`], with the backing [`MemoryTurnRowStore`] returned
+/// alongside the published evidence, so a test can read `thread_id` straight
+/// off the rows the pass wrote — the same way `opencode_characterization.rs`
+/// reads `turn_identities` off its own row store.
+fn composite_with_store(input: &SessionInput) -> (SessionEvidence, Arc<MemoryTurnRowStore>) {
+    let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::pi(),
+    });
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let outcome = PiAdapter
+        .visit(input, &mut sink)
+        .expect("Pi fixture must stream into both sinks");
+    sink.observe_source_outcome(outcome);
+    let evidence = sink.evidence().expect("Pi evidence must publish");
+    (evidence, store)
+}
+
+/// Reads back every row's `thread_id`, in turn order, straight off
+/// [`MemoryTurnRowStore`]'s in-memory database.
+fn turn_thread_ids(store: &MemoryTurnRowStore, session_id: &str) -> Vec<String> {
+    store.with_connection(|connection| {
+        let mut statement = connection
+            .prepare(
+                "SELECT thread_id FROM turn
+                  WHERE environment_key = 'native' AND agent = 'pi'
+                    AND session_id = ?1 AND claim_fence = 1
+                  ORDER BY turn_index",
+            )
+            .expect("prepare");
+        statement
+            .query_map(params![session_id], |row| row.get(0))
+            .expect("query")
+            .map(|row| row.expect("row"))
+            .collect()
+    })
+}
+
+/// Reads the value out of an `EvidenceValue`, for `Complete` and `Partial`
+/// alike. Panics on `Unsupported`.
+fn observed<T: Clone>(value: &EvidenceValue<T>) -> T {
+    match value {
+        EvidenceValue::Complete(observed) | EvidenceValue::Partial { observed, .. } => {
+            observed.clone()
+        }
+        EvidenceValue::Unsupported => panic!("evidence group must be supported"),
+    }
+}
+
+#[test]
+fn a_message_chained_through_non_message_rows_stays_one_thread() {
+    let input = input("thread_chain_through_non_message_rows");
+    let (evidence, store) = composite_with_store(&input);
+
+    let thread_ids = turn_thread_ids(&store, "thread_chain_through_non_message_rows");
+    // Five rows become turns: the user prompt, the two assistant turns
+    // (model A then model B), the compaction boundary, and the final
+    // assistant turn. All five share one thread — a `model_change` or
+    // `thinking_level_change` row between them never starts a new one.
+    assert_eq!(thread_ids.len(), 5);
+    assert!(
+        thread_ids.iter().all(|id| id == &thread_ids[0]),
+        "every row must share one thread: {thread_ids:?}"
+    );
+
+    assert!(matches!(evidence.cache, EvidenceValue::Complete(_)));
+    let cache = observed(&evidence.cache);
+    assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));
+    assert_eq!(cache.model_transitions.len(), 1);
+    assert_eq!(cache.model_transitions[0].from_model, "model-a");
+    assert_eq!(cache.model_transitions[0].to_model, "model-b");
+
+    assert!(matches!(evidence.compactions, EvidenceValue::Complete(_)));
+    assert_eq!(observed(&evidence.compactions).boundaries.len(), 1);
+}
+
+#[test]
+fn a_fork_child_with_no_owned_root_still_reads_as_one_thread() {
+    let input = input("fork_child_one_thread");
+    let (evidence, store) = composite_with_store(&input);
+
+    let thread_ids = turn_thread_ids(&store, "fork_child_one_thread");
+    // Only the two owned rows become turns; the three copied, pre-fork rows
+    // are inherited and dropped. Both owned rows still read as one thread,
+    // continuing the parent's (dropped) chain.
+    assert_eq!(thread_ids.len(), 2);
+    assert_eq!(thread_ids[0], thread_ids[1]);
+
+    let EvidenceValue::Complete(models) = &evidence.models else {
+        panic!("models evidence must be complete");
+    };
+    // The inherited assistant turn's usage (input/output/cache all 9) never
+    // counts; only the owned assistant turn's usage (2 in, 3 out) does.
+    let totals = &models.by_model["model-a"];
+    assert_eq!(totals.input, 2);
+    assert_eq!(totals.output, 3);
+    assert!(matches!(evidence.cache, EvidenceValue::Complete(_)));
+}
+
+#[test]
+fn an_unresolved_parent_link_degrades_without_panicking_or_looping() {
+    let (evidence, _) = composite(&input("unresolved_parent_link"));
+
+    let EvidenceValue::Partial {
+        observed: cache, ..
+    } = &evidence.cache
+    else {
+        panic!("cache evidence must be partial: {:?}", evidence.cache);
+    };
+    assert!(matches!(
+        cache.previous_turn,
+        EvidenceValue::Partial {
+            reason: antiburn_local::analysis::CoverageReason::AttributionIncomplete,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_message_without_an_id_still_counts_its_tokens_but_loses_thread_identity() {
+    let (evidence, metrics) = composite(&input("message_without_id"));
+
+    assert!(matches!(
+        evidence.cache,
+        EvidenceValue::Partial {
+            reason: antiburn_local::analysis::CoverageReason::AttributionIncomplete,
+            ..
+        }
+    ));
+    assert_eq!(metrics.metrics().billable_input_tokens, 3);
+    assert_eq!(metrics.metrics().billable_output_tokens, 4);
 }
 
 #[test]

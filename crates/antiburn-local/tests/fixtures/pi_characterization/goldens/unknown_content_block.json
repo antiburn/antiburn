@@ -11,7 +11,11 @@
           "longestIdleGapMs": 0,
           "modelTransitions": [],
           "previousTurn": {
-            "state": "unsupported"
+            "state": "partial",
+            "value": {
+              "observed": null,
+              "reason": "unrecognized_record_type"
+            }
           },
           "providerEviction": {
             "state": "unsupported"
@@ -36,7 +40,7 @@
       "skillMcpAttribution": false,
       "subagentModels": false,
       "subagentRelationships": false,
-      "threadIdentity": false,
+      "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
       "toolDefinitions": false,
@@ -147,7 +151,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 9,
+      "parserRevision": 10,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4203,6 +4207,7 @@
         "source": "parent",
         "speed": null,
         "thinkingMode": null,
+        "threadId": "ucb-1",
         "tools": [],
         "tsMs": 1767225600000,
         "usage": {
@@ -4210,7 +4215,8 @@
           "cacheReadTokens": 3,
           "inputTokens": 1,
           "outputTokens": 2
-        }
+        },
+        "uuid": "ucb-1"
       }
     ],
     "model": "model-a",

@@ -36,6 +36,8 @@ use antiburn_local::pricing::ModelTokens;
 use antiburn_local::analysis::{
     ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, VendorAdapter,
 };
+#[cfg(test)]
+use antiburn_local::insights::{DetectorId, GroupState, requirements};
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
@@ -1898,6 +1900,60 @@ mod tests {
         assert_eq!(
             pass.evidence.unwrap().capabilities,
             SourceCapabilities::pi()
+        );
+    }
+
+    /// Seam 4f: a Pi file whose messages chain through a `model_change`
+    /// stays one thread, so `cache` publishes `Complete` and the
+    /// over-depth check becomes assessable — the capability the Pi
+    /// `thread_identity` flip is for.
+    #[test]
+    fn pi_thread_chain_through_a_model_change_supports_cache_and_overdepth() {
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: "pi-thread-chain".to_owned(),
+            source: RawSource::Jsonl(
+                [
+                    r#"{"type":"session","version":3,"timestamp":"2026-08-01T09:59:58Z"}"#,
+                    r#"{"type":"message","id":"pi-thread-1","parentId":null,"timestamp":"2026-08-01T10:00:00Z","message":{"role":"assistant","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
+                    r#"{"type":"model_change","id":"pi-thread-2","parentId":"pi-thread-1","timestamp":"2026-08-01T10:00:01Z","modelId":"model-b"}"#,
+                    r#"{"type":"message","id":"pi-thread-3","parentId":"pi-thread-2","timestamp":"2026-08-01T10:00:02Z","message":{"role":"assistant","model":"model-b","usage":{"input":3,"output":4,"cacheRead":1,"cacheWrite":0},"content":[]}}"#,
+                ]
+                .join("\n")
+                    + "\n",
+            ),
+        };
+
+        let pass = evidence_pass_with_turn_rows(
+            &[input],
+            &|| false,
+            Some(turn_row_store("pi", "pi-thread-chain")),
+        );
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        let evidence = pass.evidence.expect("published evidence");
+
+        assert!(evidence.capabilities.thread_identity);
+        assert!(matches!(evidence.cache, EvidenceValue::Complete(_)));
+        let cache = observed(&evidence.cache);
+        assert_eq!(
+            cache.model_transitions.len(),
+            1,
+            "the model_change between the two messages must count as one transition on their shared thread"
+        );
+
+        let overdepth = requirements(DetectorId::SessionsOverDepth);
+        assert!(
+            overdepth.capabilities.iter().all(|clause| clause
+                .iter()
+                .any(|flag| flag.is_set(&evidence.capabilities))),
+            "SessionsOverDepth's capability requirements must hold once thread_identity is set"
+        );
+        assert!(
+            overdepth
+                .groups
+                .iter()
+                .all(|group| group.state(&evidence) != GroupState::Unsupported),
+            "SessionsOverDepth's evidence groups must not be unsupported"
         );
     }
 

@@ -1,1 +1,1 @@
-{"type":"message","timestamp":"2026-01-01T00:00:00Z","message":{"role":"bashExecution","command":"synthetic command","output":"synthetic output","exitCode":0,"cancelled":false,"truncated":false}}
+{"type":"message","id":"bxr-1","parentId":null,"timestamp":"2026-01-01T00:00:00Z","message":{"role":"bashExecution","command":"synthetic command","output":"synthetic output","exitCode":0,"cancelled":false,"truncated":false}}
