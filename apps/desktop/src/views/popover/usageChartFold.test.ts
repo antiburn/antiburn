@@ -71,6 +71,17 @@ describe("foldUsageChart", () => {
     expect(s.folded()).toBe(25)
   })
 
+  it("keeps the offset when the affordable fold lands between two pixels", () => {
+    // Sixty pixels of overflow. At an offset of 29.3 the list can spare 30.7,
+    // which is not a whole number of pixels. A height that rounds down folds
+    // 31, the reader falls past the end, and the browser jumps the offset
+    // back. The height rounds up instead, so the fold stays affordable.
+    const s = scene(460, 400)
+    const at = s.scrollTo(29.3)
+    expect(at.clamped).toBe(false)
+    expect(s.folded()).toBe(30)
+  })
+
   it("settles instead of oscillating on a list barely longer than the viewport", () => {
     const s = scene(460, 400)
     const seen: number[] = []
