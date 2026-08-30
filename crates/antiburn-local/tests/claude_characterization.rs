@@ -1,14 +1,15 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, CompositeSink, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage,
-    EvidenceSource, EvidenceValue, MAX_RECORD_BYTES, NormalizedSession, OrderingObservation,
-    PARSER_REVISION, PartialReason, RawSource, RecordCoverage, SessionCollector,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
-    SourceKind, adapter_for, analyze_session, analyze_sources_with, merge_metrics,
-    merge_subagent_events, normalize_source,
+    EvidenceSource, EvidenceValue, MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedSession,
+    OrderingObservation, PARSER_REVISION, PartialReason, RawSource, RecordCoverage,
+    SessionCollector, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
+    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, adapter_for, analyze_session,
+    analyze_sources_with, merge_metrics, merge_subagent_events, normalize_source,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator,
@@ -234,7 +235,13 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
         kind: SourceKind::from(&input.source),
         capabilities: SourceCapabilities::claude(),
     });
-    let mut composite = CompositeSink::new(metrics, evidence);
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
     let outcome = adapter_for("claude")
         .visit(input, &mut composite)
         .expect("Claude source must be visited");
@@ -751,13 +758,15 @@ fn thread_identity_unblocks_sessions_over_depth_and_cache_churn() {
         report.detector_statuses[DetectorId::SessionsOverDepth.index()],
         DetectorStatus::Clean
     );
-    // The chain switches models next to paid cache writes: a real finding.
-    assert!(matches!(
+    // The model switch sits on the delegated sidechain, not the main
+    // loop: a real clean verdict, not CapabilityMissing. Row-derived
+    // transitions never cross a thread boundary into a different scope.
+    assert_eq!(
         report.detector_statuses[DetectorId::CacheChurn.index()],
-        DetectorStatus::Findings(_)
-    ));
+        DetectorStatus::Clean
+    );
     let cache = fixture_cache("thread_identity_chain");
-    assert!(!cache.model_transitions.is_empty());
+    assert!(cache.model_transitions.is_empty());
     assert!(cache.cache_creation_tokens > 0);
 }
 

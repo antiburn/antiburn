@@ -1,10 +1,12 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::analysis::engine::analyze_session;
 use crate::analysis::merge::merge_subagent_events;
 use crate::analysis::model::{
     CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCategory,
 };
+use crate::analysis::rows::{MemoryTurnRowStore, TurnRowSink, TurnRowStore};
 use crate::analysis::{
     CompositeSink, EvidenceSource, EvidenceValue, NormalizedRecord, PartialReason, RawSource,
     RecordCoverage, RecordSink, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
@@ -14,7 +16,9 @@ use crate::analysis::{
 
 fn claude_evidence(jsonl: &str) -> SessionEvidence {
     let input = jsonl_input("claude", jsonl);
-    let mut composite = CompositeSink::new(
+    let store = MemoryTurnRowStore::new("claude", "s");
+    let turn_rows = TurnRowSink::new(Arc::clone(&store) as Arc<dyn TurnRowStore>, "s", None);
+    let mut composite = CompositeSink::with_turn_rows(
         SessionMetricsAccumulator::new("claude", "s"),
         SessionEvidenceAccumulator::new(EvidenceSource {
             agent: "claude".to_owned(),
@@ -22,6 +26,7 @@ fn claude_evidence(jsonl: &str) -> SessionEvidence {
             kind: SourceKind::Jsonl,
             capabilities: SourceCapabilities::claude(),
         }),
+        turn_rows,
     );
     let outcome = adapter_for("claude")
         .visit(&input, &mut composite)

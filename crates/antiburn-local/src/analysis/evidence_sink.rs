@@ -1,23 +1,23 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::analysis::evidence::{
-    CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
-    ContextSourceEvidence, CoverageReason, DepthExample, EligibilityEvidence, EvidenceCoverage,
-    EvidenceSource, EvidenceValue, LoadedSource, MAX_COMPACTION_BOUNDARIES, MAX_CONTEXT_SOURCES,
-    MAX_EVIDENCE_EXAMPLES, MAX_MODEL_TRANSITIONS, MAX_MODELS, MAX_SUBAGENT_CHILDREN,
-    MAX_SUBAGENT_MODELS, MAX_TIER_LABELS, MAX_TOOL_NAMES, MAX_UNRECOGNIZED_TYPES, ModelEvidence,
-    ModelTokens, ModelTransition, OrderingObservation, ParseDiagnostics, RelationConfidence,
-    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionTimeRange, SignalCoverage,
+    CacheEvidence, ChurnCounts, CompactionEvidence, ContextEvidence, ContextSourceEvidence,
+    CoverageReason, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
+    MAX_CONTEXT_SOURCES, MAX_EVIDENCE_EXAMPLES, MAX_SUBAGENT_CHILDREN, MAX_TOOL_NAMES,
+    MAX_UNRECOGNIZED_TYPES, ModelEvidence, OrderingObservation, ParseDiagnostics,
+    RelationConfidence, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
     SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
-    SubagentExample, ToolClass, ToolEvidence, ToolUse, TurnCounts, cap_string,
-    insert_diagnostic_field, record_diagnostic_set_cap,
+    SubagentExample, ToolClass, ToolEvidence, ToolUse, cap_string, insert_diagnostic_field,
+    record_diagnostic_set_cap,
 };
+use crate::analysis::evidence_query::TurnFacts;
 use crate::analysis::interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RecordSink, SessionSummary,
     VisitOutcome,
 };
 use crate::analysis::metrics_sink::SessionMetricsAccumulator;
-use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
+use crate::analysis::model::NormalizedEvent;
 use crate::analysis::rows::TurnRowSink;
 use crate::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionMetrics,
@@ -32,53 +32,27 @@ pub struct SessionEvidenceAccumulator {
     diagnostics: ParseDiagnostics,
     record_loss_reason: Option<CoverageReason>,
     session_cap_exceeded: bool,
+    /// The latest record timestamp seen so far, kept only to detect
+    /// out-of-order records. The published time range comes from the
+    /// row-derived [`TurnFacts`] instead.
     last_ts_ms: Option<i64>,
-    first_ts_ms: Option<i64>,
-    timestamped_turns: u64,
-    turns: u64,
-    assistant_turns: u64,
-    tool_turns: u64,
-    depth_eligible_turns: u64,
-    max_request_context_tokens: u64,
-    depth_examples: Vec<DepthExample>,
     tools: BTreeMap<String, ToolUse>,
     invoked_skills: BTreeSet<String>,
     tools_cap_exceeded: bool,
     skills: BTreeMap<String, LoadedSource>,
     mcp_servers: BTreeMap<String, LoadedSource>,
     context_sources_cap_exceeded: bool,
-    models: BTreeMap<String, ModelTokens>,
-    unattributed_turns: u64,
-    effort_tiers: BTreeMap<String, TurnCounts>,
-    fast_modes: BTreeMap<String, TurnCounts>,
-    effort_eligible_turns: u64,
-    effort_present_turns: u64,
-    speed_eligible_turns: u64,
-    speed_present_turns: u64,
-    models_cap_exceeded: bool,
     subagent_spawn_count: u64,
-    delegated_turns: u64,
-    delegated_models: BTreeSet<String>,
-    delegated_model_missing: bool,
     subagent_children: Vec<SubagentChild>,
     subagent_examples: Vec<SubagentExample>,
     subagents_cap_exceeded: bool,
-    cache_read_tokens: u64,
-    cache_creation_tokens: u64,
-    fresh_input_tokens: u64,
-    model_transitions: Vec<ModelTransition>,
-    active_model: Option<String>,
-    previous_turn_ts: Option<i64>,
-    longest_idle_gap_ms: i64,
-    idle_gap_ms_total: i64,
-    manual_compactions: u64,
-    cache_cap_exceeded: bool,
     seen_thread_uuids: HashSet<String>,
-    thread_identity_missing: bool,
     thread_parent_unresolved: bool,
-    compaction_boundaries: Vec<CompactionBoundary>,
-    compactions_cap_exceeded: bool,
     summary_observed: bool,
+    /// The worst [`CoverageReason`] any streamed child reported, folded in
+    /// by [`Self::observe_child_coverage`]. `None` when every streamed
+    /// child (if any) reported none.
+    child_loss_reason: Option<CoverageReason>,
 }
 
 impl SessionEvidenceAccumulator {
@@ -97,52 +71,20 @@ impl SessionEvidenceAccumulator {
             record_loss_reason: None,
             session_cap_exceeded,
             last_ts_ms: None,
-            first_ts_ms: None,
-            timestamped_turns: 0,
-            turns: 0,
-            assistant_turns: 0,
-            tool_turns: 0,
-            depth_eligible_turns: 0,
-            max_request_context_tokens: 0,
-            depth_examples: Vec::new(),
             tools: BTreeMap::new(),
             invoked_skills: BTreeSet::new(),
             tools_cap_exceeded: false,
             skills: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
             context_sources_cap_exceeded: false,
-            models: BTreeMap::new(),
-            unattributed_turns: 0,
-            effort_tiers: BTreeMap::new(),
-            fast_modes: BTreeMap::new(),
-            effort_eligible_turns: 0,
-            effort_present_turns: 0,
-            speed_eligible_turns: 0,
-            speed_present_turns: 0,
-            models_cap_exceeded: false,
             subagent_spawn_count: 0,
-            delegated_turns: 0,
-            delegated_models: BTreeSet::new(),
-            delegated_model_missing: false,
             subagent_children: Vec::new(),
             subagent_examples: Vec::new(),
             subagents_cap_exceeded: false,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
-            fresh_input_tokens: 0,
-            model_transitions: Vec::new(),
-            active_model: None,
-            previous_turn_ts: None,
-            longest_idle_gap_ms: 0,
-            idle_gap_ms_total: 0,
-            manual_compactions: 0,
-            cache_cap_exceeded: false,
             seen_thread_uuids: HashSet::new(),
-            thread_identity_missing: false,
             thread_parent_unresolved: false,
-            compaction_boundaries: Vec::new(),
-            compactions_cap_exceeded: false,
             summary_observed: false,
+            child_loss_reason: None,
         }
     }
 
@@ -170,54 +112,18 @@ impl SessionEvidenceAccumulator {
     }
 
     fn observe_event(&mut self, event: &NormalizedEvent) {
-        self.turns = self.turns.saturating_add(1);
-        self.assistant_turns = self
-            .assistant_turns
-            .saturating_add(u64::from(event.role == Role::Assistant));
-        self.tool_turns = self
-            .tool_turns
-            .saturating_add(u64::from(event.role == Role::Tool));
-        let depth = event.usage.context_tokens();
-        self.depth_eligible_turns = self
-            .depth_eligible_turns
-            .saturating_add(u64::from(depth > 0));
-        self.max_request_context_tokens = self.max_request_context_tokens.max(depth);
-
+        // Turn counts, context depth, per-model tokens, cache accounting,
+        // and compaction boundaries all come from the row-derived
+        // `TurnFacts` now. This only tracks ordering (from the timestamp)
+        // and tool usage — neither of which a row query can give back,
+        // since a tool call is not its own row and ordering must be seen
+        // live to catch an out-of-order record.
         if let Some(timestamp) = event.ts_ms {
             if self.last_ts_ms.is_some_and(|last| timestamp < last) {
                 self.ordering = OrderingObservation::OutOfOrder;
             }
             self.last_ts_ms = Some(timestamp);
-            self.first_ts_ms = Some(
-                self.first_ts_ms
-                    .map_or(timestamp, |first| first.min(timestamp)),
-            );
-            self.timestamped_turns = self.timestamped_turns.saturating_add(1);
-            if depth > 0 {
-                let model = event.model.as_deref().map(|model| {
-                    cap_string(
-                        "context.top_depth_examples.model",
-                        model,
-                        &mut self.diagnostics,
-                    )
-                });
-                self.push_depth_example(DepthExample {
-                    ts_ms: timestamp,
-                    depth_tokens: depth,
-                    model,
-                });
-            }
         }
-
-        // A counted turn without a per-record identity breaks verified
-        // previous-turn linkage for the whole session. Only sources whose
-        // capability set claims thread identity read this flag back out.
-        if event.uuid.is_none() {
-            self.thread_identity_missing = true;
-        }
-
-        self.observe_model(event);
-        self.observe_cache_and_compaction(event);
 
         for tool in &event.tools {
             let source_name = if tool.name.eq_ignore_ascii_case("skill") {
@@ -249,146 +155,6 @@ impl SessionEvidenceAccumulator {
         }
     }
 
-    fn observe_model(&mut self, event: &NormalizedEvent) {
-        let delegated = event.source == EventSource::Subagent;
-        if event.role == Role::Assistant {
-            if let Some(model) = event.model.as_deref() {
-                let capped = cap_string("models.by_model", model, &mut self.diagnostics);
-                if capped.len() != model.len() {
-                    self.models_cap_exceeded = true;
-                }
-                if let Some(tokens) = self.models.get_mut(&capped) {
-                    add_model_tokens(tokens, event);
-                } else if self.models.len() == MAX_MODELS {
-                    self.models_cap_exceeded = true;
-                    self.note_collection_cap("models.by_model");
-                } else {
-                    let mut tokens = ModelTokens::default();
-                    add_model_tokens(&mut tokens, event);
-                    self.models.insert(capped, tokens);
-                }
-            } else {
-                self.unattributed_turns = self.unattributed_turns.saturating_add(1);
-            }
-            // Every model-attributed assistant turn (parent or delegated)
-            // is eligible to carry an effort or speed value. Synthetic
-            // records have no model and never carry a setting.
-            if event.model.is_some() {
-                self.effort_eligible_turns = self.effort_eligible_turns.saturating_add(1);
-                self.speed_eligible_turns = self.speed_eligible_turns.saturating_add(1);
-                if event.thinking_mode.is_some() {
-                    self.effort_present_turns = self.effort_present_turns.saturating_add(1);
-                }
-                if event.speed.is_some() {
-                    self.speed_present_turns = self.speed_present_turns.saturating_add(1);
-                }
-            }
-        }
-        if let Some(tier) = event.thinking_mode.as_deref() {
-            let (truncated, capped, diagnostic_capped) = insert_turn_count(
-                &mut self.effort_tiers,
-                tier,
-                "models.effort_tiers",
-                delegated,
-                &mut self.diagnostics,
-            );
-            self.models_cap_exceeded |= truncated || capped;
-            self.session_cap_exceeded |= diagnostic_capped;
-        }
-        if let Some(tier) = event.speed.as_deref() {
-            let (truncated, capped, diagnostic_capped) = insert_turn_count(
-                &mut self.fast_modes,
-                tier,
-                "models.fast_modes",
-                delegated,
-                &mut self.diagnostics,
-            );
-            self.models_cap_exceeded |= truncated || capped;
-            self.session_cap_exceeded |= diagnostic_capped;
-        }
-    }
-
-    fn observe_cache_and_compaction(&mut self, event: &NormalizedEvent) {
-        self.cache_read_tokens = self
-            .cache_read_tokens
-            .saturating_add(event.usage.cache_read_tokens);
-        self.cache_creation_tokens = self
-            .cache_creation_tokens
-            .saturating_add(event.usage.cache_creation_tokens);
-        self.fresh_input_tokens = self
-            .fresh_input_tokens
-            .saturating_add(event.usage.input_tokens);
-        if let Some(ts_ms) = event.ts_ms {
-            if let Some(previous) = self.previous_turn_ts {
-                let gap = ts_ms.saturating_sub(previous).max(0);
-                self.longest_idle_gap_ms = self.longest_idle_gap_ms.max(gap);
-                self.idle_gap_ms_total = self.idle_gap_ms_total.saturating_add(gap);
-            }
-            self.previous_turn_ts = Some(ts_ms);
-        }
-        if let Some(model) = event.model.as_deref() {
-            if let Some(previous) = self.active_model.as_deref()
-                && previous != model
-                && let Some(ts_ms) = event.ts_ms
-            {
-                let from_model = cap_string(
-                    "cache.model_transitions.from_model",
-                    previous,
-                    &mut self.diagnostics,
-                );
-                let to_model = cap_string(
-                    "cache.model_transitions.to_model",
-                    model,
-                    &mut self.diagnostics,
-                );
-                if from_model.len() != previous.len() || to_model.len() != model.len() {
-                    self.cache_cap_exceeded = true;
-                }
-                if self.model_transitions.len() == MAX_MODEL_TRANSITIONS {
-                    self.cache_cap_exceeded = true;
-                    self.note_collection_cap("cache.model_transitions");
-                } else {
-                    self.model_transitions.push(ModelTransition {
-                        ts_ms,
-                        from_model,
-                        to_model,
-                    });
-                }
-            }
-            self.active_model = Some(model.to_owned());
-        }
-        if event.is_compaction_boundary {
-            self.manual_compactions = self.manual_compactions.saturating_add(u64::from(
-                event.compaction_trigger == Some(CompactionTrigger::Manual),
-            ));
-            if self.compaction_boundaries.len() == MAX_COMPACTION_BOUNDARIES {
-                self.compactions_cap_exceeded = true;
-                self.note_collection_cap("compactions.boundaries");
-            } else {
-                self.compaction_boundaries.push(CompactionBoundary {
-                    ts_ms: event.ts_ms.unwrap_or(0),
-                    trigger: event.compaction_trigger,
-                    pre_tokens: event.compaction_pre_tokens,
-                    post_tokens: event.compaction_post_tokens,
-                });
-            }
-        }
-    }
-
-    fn push_depth_example(&mut self, example: DepthExample) {
-        self.depth_examples.push(example);
-        self.depth_examples.sort_by(|left, right| {
-            right
-                .depth_tokens
-                .cmp(&left.depth_tokens)
-                .then_with(|| left.ts_ms.cmp(&right.ts_ms))
-        });
-        if self.depth_examples.len() > MAX_EVIDENCE_EXAMPLES {
-            self.depth_examples.truncate(MAX_EVIDENCE_EXAMPLES);
-            self.note_collection_cap("context.top_depth_examples");
-        }
-    }
-
     fn observe_observation(&mut self, observation: &EvidenceObservation) {
         match observation {
             EvidenceObservation::ContextSource {
@@ -401,15 +167,10 @@ impl SessionEvidenceAccumulator {
                 parent_model,
                 provenance,
             } => self.observe_subagent_spawn(*ts_ms, parent_model.as_deref(), *provenance),
-            EvidenceObservation::DelegatedTurn {
-                is_sidechain,
-                is_assistant,
-                model,
-            } => {
-                if *is_sidechain {
-                    self.observe_delegated_turn(*is_assistant, model.as_deref());
-                }
-            }
+            // Delegated-turn counting and modeling now come entirely from
+            // the row-derived `TurnFacts`; the accumulator does not fold
+            // this observation.
+            EvidenceObservation::DelegatedTurn { .. } => {}
             EvidenceObservation::ThreadLink { uuid, parent_uuid } => {
                 // A parent link is verified only against identities this
                 // source already declared. An unresolved link (a resumed
@@ -429,7 +190,6 @@ impl SessionEvidenceAccumulator {
                     self.ordering = OrderingObservation::OutOfOrder;
                 }
                 self.last_ts_ms = Some(*ts_ms);
-                self.first_ts_ms = Some(self.first_ts_ms.map_or(*ts_ms, |first| first.min(*ts_ms)));
             }
             EvidenceObservation::InheritedRecord => {
                 self.diagnostics.records_observed =
@@ -472,30 +232,6 @@ impl SessionEvidenceAccumulator {
                     }
                 }
             }
-        }
-    }
-
-    fn observe_delegated_turn(&mut self, is_assistant: bool, model: Option<&str>) {
-        self.delegated_turns = self.delegated_turns.saturating_add(1);
-        if !is_assistant {
-            return;
-        }
-        let Some(model) = model else {
-            self.delegated_model_missing = true;
-            return;
-        };
-        let capped = cap_string("subagents.delegated_models", model, &mut self.diagnostics);
-        if capped.len() != model.len() {
-            self.subagents_cap_exceeded = true;
-        }
-        if self.delegated_models.contains(&capped) {
-            return;
-        }
-        if self.delegated_models.len() == MAX_SUBAGENT_MODELS {
-            self.subagents_cap_exceeded = true;
-            self.note_collection_cap("subagents.delegated_models");
-        } else {
-            self.delegated_models.insert(capped);
         }
     }
 
@@ -612,6 +348,85 @@ impl SessionEvidenceAccumulator {
         }
     }
 
+    /// Folds one discovered child transcript that could not be read.
+    pub fn observe_child_unreadable(&mut self) {
+        self.diagnostics.children_discovered =
+            self.diagnostics.children_discovered.saturating_add(1);
+        self.diagnostics.children_unreadable =
+            self.diagnostics.children_unreadable.saturating_add(1);
+    }
+
+    /// Folds one streamed child's residual into this (the parent's)
+    /// residual. Folds the child's record loss, diagnostics counts, and
+    /// out-of-order ordering. Does not fold the child's tools or context
+    /// sources — those stay parent-only by design (deferred: a later
+    /// change may decide a child's skill or MCP use belongs in the
+    /// session's own coverage).
+    pub fn observe_child_coverage(&mut self, child: &SessionEvidenceAccumulator) {
+        self.diagnostics.children_discovered =
+            self.diagnostics.children_discovered.saturating_add(1);
+        if let Some(reason) = child.record_loss_reason {
+            self.set_child_loss_reason(reason);
+        }
+        self.fold_child_diagnostics(&child.diagnostics);
+        if child.ordering == OrderingObservation::OutOfOrder {
+            self.ordering = OrderingObservation::OutOfOrder;
+        }
+    }
+
+    /// A specific child loss reason replaces a cap reason. The cap is the
+    /// weakest claim — the same rule [`Self::set_record_loss_reason`] uses.
+    fn set_child_loss_reason(&mut self, reason: CoverageReason) {
+        if self.child_loss_reason.is_none()
+            || (self.child_loss_reason == Some(CoverageReason::CapExceeded)
+                && reason != CoverageReason::CapExceeded)
+        {
+            self.child_loss_reason = Some(reason);
+        }
+    }
+
+    /// Folds one child's record diagnostics into the parent's own,
+    /// capping the merged collections the same way the parent caps its
+    /// own records.
+    fn fold_child_diagnostics(&mut self, child: &ParseDiagnostics) {
+        self.diagnostics.records_observed = self
+            .diagnostics
+            .records_observed
+            .saturating_add(child.records_observed);
+        self.diagnostics.records_unusable = self
+            .diagnostics
+            .records_unusable
+            .saturating_add(child.records_unusable);
+        self.diagnostics.records_unrecognized_inert = self
+            .diagnostics
+            .records_unrecognized_inert
+            .saturating_add(child.records_unrecognized_inert);
+        for (reason, count) in &child.unusable_reasons {
+            let entry = self
+                .diagnostics
+                .unusable_reasons
+                .entry(*reason)
+                .or_default();
+            *entry = entry.saturating_add(*count);
+        }
+        for discriminator in &child.unrecognized_types {
+            if self.diagnostics.unrecognized_types.contains(discriminator) {
+                continue;
+            }
+            if self.diagnostics.unrecognized_types.len() == MAX_UNRECOGNIZED_TYPES {
+                self.session_cap_exceeded = true;
+                // A capped set means antiburn no longer understands the record format.
+                // Treat the cap as loss so no supported group reports complete.
+                self.set_record_loss_reason(CoverageReason::CapExceeded);
+                self.note_collection_cap("diagnostics.unrecognized_types");
+            } else {
+                self.diagnostics
+                    .unrecognized_types
+                    .insert(discriminator.clone());
+            }
+        }
+    }
+
     /// Folds the end-of-stream facts without taking them.
     pub fn observe_summary(&mut self, summary: &SessionSummary) {
         self.capabilities.cache_write_tokens = summary.cache_write_tokens_available;
@@ -629,51 +444,70 @@ impl SessionEvidenceAccumulator {
         self.source_acceptance = SourceAcceptance::from(outcome);
     }
 
-    pub fn evidence(&self) -> SessionEvidence {
+    /// Builds this session's [`SessionEvidence`] from the row-derived
+    /// `facts` plus whatever this residual observed directly. Most groups
+    /// come from `facts` outright; `tools`, `context_sources`, and the
+    /// subagent relationship shape (`spawn_count`, `children`, `examples`)
+    /// still come from this residual — a row query has no tool catalog and
+    /// no context-source contract, and a child's spawn is only ever seen
+    /// live, as an `EvidenceObservation`.
+    pub fn evidence(&self, facts: &TurnFacts) -> SessionEvidence {
+        // A discovered child that never streamed (or streamed but lost
+        // records of its own) makes every group computed over the union of
+        // rows — models, subagents, cache, context, eligibility, time
+        // range, compactions — no better than that child's worst claim.
+        // `record_loss_reason` (this source's own loss) still outranks it.
+        // Neither degrades `tools` or `context_sources`: those are
+        // parent-only, so a child's coverage cannot touch them. Neither
+        // changes the session-level `coverage` — the child's own evidence
+        // (when it streamed) already reports its own loss.
+        let child_dependent_partial: Option<CoverageReason> = self.child_loss_reason.or({
+            (self.diagnostics.children_unreadable > 0).then_some(CoverageReason::ReadFailed)
+        });
+
+        let mut diagnostics = self.diagnostics.clone();
+        diagnostics.duplicate_turn_identities = facts.duplicate_turn_identities;
+        for field in &facts.diagnostics.truncated_strings {
+            if insert_diagnostic_field(&mut diagnostics.truncated_strings, field) {
+                record_diagnostic_set_cap(&mut diagnostics, "diagnostics.truncated_strings");
+            }
+        }
+        for field in &facts.diagnostics.capped_collections {
+            if insert_diagnostic_field(&mut diagnostics.capped_collections, field) {
+                record_diagnostic_set_cap(&mut diagnostics, "diagnostics.capped_collections");
+            }
+        }
+
         let context = ContextEvidence {
-            max_request_context_tokens: self.max_request_context_tokens,
-            top_depth_examples: self.depth_examples.clone(),
+            max_request_context_tokens: facts.max_request_context_tokens,
+            top_depth_examples: facts.top_depth_examples.clone(),
         };
-        let time_range = SessionTimeRange {
-            first_ts_ms: self.first_ts_ms.unwrap_or(0),
-            last_ts_ms: self.last_ts_ms.unwrap_or(0),
-            timestamped_turns: self.timestamped_turns,
-        };
-        let eligibility = EligibilityEvidence {
-            turns: self.turns,
-            assistant_turns: self.assistant_turns,
-            tool_turns: self.tool_turns,
-            depth_eligible_turns: self.depth_eligible_turns,
-        };
+        let eligibility = facts.eligibility.clone();
         let tools = self.classified_tools();
         let context_sources = self.context_sources();
         let models = ModelEvidence {
-            by_model: self.models.clone(),
-            unattributed_turns: self.unattributed_turns,
-            effort_tiers: self.effort_tiers.clone(),
-            fast_modes: self.fast_modes.clone(),
+            by_model: facts.by_model.clone(),
+            unattributed_turns: facts.unattributed_turns,
+            effort_tiers: facts.effort_tiers.clone(),
+            fast_modes: facts.fast_modes.clone(),
             service_tiers: EvidenceValue::Unsupported,
-            effort_signal: SignalCoverage {
-                eligible_turns: self.effort_eligible_turns,
-                present_turns: self.effort_present_turns,
-            },
-            speed_signal: SignalCoverage {
-                eligible_turns: self.speed_eligible_turns,
-                present_turns: self.speed_present_turns,
-            },
+            effort_signal: facts.effort_signal,
+            speed_signal: facts.speed_signal,
         };
+        let models_cap_exceeded = facts.models_capped || facts.tiers_capped;
         let subagents = SubagentEvidence {
             spawn_count: self.subagent_spawn_count,
-            delegated_turns: self.delegated_turns,
-            delegated_models: self.delegated_models.clone(),
+            delegated_turns: facts.delegated_turns,
+            delegated_models: facts.delegated_models.clone(),
             children: self.subagent_children.clone(),
             examples: self.subagent_examples.clone(),
         };
+        let subagents_cap_exceeded = self.subagents_cap_exceeded || facts.delegated_models_capped;
         // Verified previous-turn linkage: complete only when every counted
         // turn carried its own identity and every parent link resolved to an
         // identity this source declared earlier. `provider_eviction` stays
         // unsupported — no transcript record states an eviction.
-        let thread_identity_gap = self.thread_identity_missing || self.thread_parent_unresolved;
+        let thread_identity_gap = facts.thread_identity_missing || self.thread_parent_unresolved;
         let previous_turn = if !self.capabilities.thread_identity {
             EvidenceValue::Unsupported
         } else if let Some(reason) = self.record_loss_reason {
@@ -690,27 +524,25 @@ impl SessionEvidenceAccumulator {
             EvidenceValue::Complete(())
         };
         let cache = CacheEvidence {
-            cache_read_tokens: self.cache_read_tokens,
-            cache_creation_tokens: self.cache_creation_tokens,
-            fresh_input_tokens: self.fresh_input_tokens,
-            model_transitions: self.model_transitions.clone(),
-            longest_idle_gap_ms: self.longest_idle_gap_ms,
-            idle_gap_ms_total: self.idle_gap_ms_total,
+            cache_read_tokens: facts.cache_read_tokens,
+            cache_creation_tokens: facts.cache_creation_tokens,
+            fresh_input_tokens: facts.fresh_input_tokens,
+            model_transitions: facts.model_transitions.clone(),
+            longest_idle_gap_ms: facts.longest_idle_gap_ms,
+            idle_gap_ms_total: facts.idle_gap_ms_total,
             user_controlled_churn: ChurnCounts {
-                manual_compactions: self.manual_compactions,
+                manual_compactions: facts.manual_compactions,
             },
             previous_turn,
             provider_eviction: EvidenceValue::Unsupported,
         };
         let compactions = CompactionEvidence {
-            boundaries: self.compaction_boundaries.clone(),
+            boundaries: facts.compaction_boundaries.clone(),
         };
-        let diagnostic_cap_exceeded = self
-            .diagnostics
+        let diagnostic_cap_exceeded = diagnostics
             .capped_collections
             .contains("diagnostics.truncated_strings")
-            || self
-                .diagnostics
+            || diagnostics
                 .capped_collections
                 .contains("diagnostics.capped_collections");
         let coverage_reason = self
@@ -723,12 +555,17 @@ impl SessionEvidenceAccumulator {
         SessionEvidence {
             schema_revision: EVIDENCE_SCHEMA_REVISION,
             identity: self.identity.clone(),
-            // No cap can make this group partial. The group holds an exact
-            // maximum and a list of examples. The sink folds the maximum on
-            // every turn, and it keeps the deepest examples. A dropped
-            // example is always less deep than the maximum, so it hides
-            // nothing. Record loss still makes the group partial.
-            context: self.supported_value(context, self.capabilities.request_context_tokens, false),
+            // No cap can make this group partial. The row query folds the
+            // maximum over every row, and it keeps the deepest examples. A
+            // dropped example is always less deep than the maximum, so it
+            // hides nothing. Record loss and a lossy child still make the
+            // group partial.
+            context: self.supported_value(
+                context,
+                self.capabilities.request_context_tokens,
+                child_dependent_partial,
+                false,
+            ),
             capabilities: self.capabilities,
             coverage,
             provenance: SessionProvenance {
@@ -740,21 +577,24 @@ impl SessionEvidenceAccumulator {
                 ordering: self.ordering,
                 harness_version: EvidenceValue::Unsupported,
             },
-            diagnostics: self.diagnostics.clone(),
+            diagnostics,
             time_range: self.supported_value(
-                time_range,
+                facts.time_range.clone(),
                 self.capabilities.timestamps_and_order,
+                child_dependent_partial,
                 false,
             ),
-            eligibility: self.supported_value(eligibility, true, false),
+            eligibility: self.supported_value(eligibility, true, child_dependent_partial, false),
             tools: self.supported_value(
                 ToolEvidence { by_name: tools },
                 self.capabilities.tool_invocations,
+                None,
                 self.tools_cap_exceeded,
             ),
             context_sources: self.supported_value(
                 context_sources,
                 self.capabilities.skill_mcp_attribution,
+                None,
                 self.context_sources_cap_exceeded,
             ),
             models: if !self.capabilities.model_identity || !self.capabilities.token_classes {
@@ -764,12 +604,17 @@ impl SessionEvidenceAccumulator {
                     observed: models,
                     reason,
                 }
-            } else if self.models_cap_exceeded {
+            } else if let Some(reason) = child_dependent_partial {
+                EvidenceValue::Partial {
+                    observed: models,
+                    reason,
+                }
+            } else if models_cap_exceeded {
                 EvidenceValue::Partial {
                     observed: models,
                     reason: CoverageReason::CapExceeded,
                 }
-            } else if self.unattributed_turns > 0 {
+            } else if facts.unattributed_turns > 0 || facts.duplicate_turn_identities > 0 {
                 EvidenceValue::Partial {
                     observed: models,
                     reason: CoverageReason::AttributionIncomplete,
@@ -784,12 +629,19 @@ impl SessionEvidenceAccumulator {
                     observed: subagents,
                     reason,
                 }
-            } else if self.subagents_cap_exceeded {
+            } else if let Some(reason) = child_dependent_partial {
+                EvidenceValue::Partial {
+                    observed: subagents,
+                    reason,
+                }
+            } else if subagents_cap_exceeded {
                 EvidenceValue::Partial {
                     observed: subagents,
                     reason: CoverageReason::CapExceeded,
                 }
-            } else if self.capabilities.subagent_models && self.delegated_model_missing {
+            } else if (self.capabilities.subagent_models && facts.delegated_model_missing)
+                || facts.duplicate_turn_identities > 0
+            {
                 EvidenceValue::Partial {
                     observed: subagents,
                     reason: CoverageReason::AttributionIncomplete,
@@ -802,7 +654,12 @@ impl SessionEvidenceAccumulator {
                     observed: cache,
                     reason,
                 }
-            } else if self.cache_cap_exceeded {
+            } else if let Some(reason) = child_dependent_partial {
+                EvidenceValue::Partial {
+                    observed: cache,
+                    reason,
+                }
+            } else if facts.transitions_capped {
                 EvidenceValue::Partial {
                     observed: cache,
                     reason: CoverageReason::CapExceeded,
@@ -822,7 +679,8 @@ impl SessionEvidenceAccumulator {
             compactions: self.supported_value(
                 compactions,
                 self.capabilities.compaction_boundaries,
-                self.compactions_cap_exceeded,
+                child_dependent_partial,
+                facts.compactions_capped,
             ),
             quota_incidents: EvidenceValue::Unsupported,
         }
@@ -874,15 +732,21 @@ impl SessionEvidenceAccumulator {
         }
     }
 
+    /// `child_dependent_reason` degrades a group that is computed over the
+    /// union of rows (parent and child); pass `None` for a parent-only
+    /// group such as `tools` or `context_sources`.
     fn supported_value<T>(
         &self,
         observed: T,
         supported: bool,
+        child_dependent_reason: Option<CoverageReason>,
         cap_exceeded: bool,
     ) -> EvidenceValue<T> {
         if !supported {
             EvidenceValue::Unsupported
         } else if let Some(reason) = self.record_loss_reason {
+            EvidenceValue::Partial { observed, reason }
+        } else if let Some(reason) = child_dependent_reason {
             EvidenceValue::Partial { observed, reason }
         } else if cap_exceeded {
             EvidenceValue::Partial {
@@ -913,57 +777,6 @@ impl SessionEvidenceAccumulator {
     }
 }
 
-fn add_model_tokens(tokens: &mut ModelTokens, event: &NormalizedEvent) {
-    tokens.input = tokens.input.saturating_add(event.usage.input_tokens);
-    tokens.output = tokens.output.saturating_add(event.usage.output_tokens);
-    tokens.cache_read = tokens
-        .cache_read
-        .saturating_add(event.usage.cache_read_tokens);
-    tokens.cache_creation = tokens
-        .cache_creation
-        .saturating_add(event.usage.cache_creation_tokens);
-    tokens.turns = tokens.turns.saturating_add(1);
-    if let Some(ts_ms) = event.ts_ms {
-        if tokens.turns == 1 || tokens.first_ts_ms == 0 {
-            tokens.first_ts_ms = ts_ms;
-        } else {
-            tokens.first_ts_ms = tokens.first_ts_ms.min(ts_ms);
-        }
-        tokens.last_ts_ms = tokens.last_ts_ms.max(ts_ms);
-    }
-}
-
-fn insert_turn_count(
-    map: &mut BTreeMap<String, TurnCounts>,
-    value: &str,
-    field: &'static str,
-    delegated: bool,
-    diagnostics: &mut ParseDiagnostics,
-) -> (bool, bool, bool) {
-    let capped_value = cap_string(field, value, diagnostics);
-    let truncated = capped_value.len() != value.len();
-    if let Some(counts) = map.get_mut(&capped_value) {
-        increment_turn_count(counts, delegated);
-        return (truncated, false, false);
-    }
-    if map.len() == MAX_TIER_LABELS {
-        let diagnostic_capped = insert_diagnostic_field(&mut diagnostics.capped_collections, field);
-        return (truncated, true, diagnostic_capped);
-    }
-    let mut counts = TurnCounts::default();
-    increment_turn_count(&mut counts, delegated);
-    map.insert(capped_value, counts);
-    (truncated, false, false)
-}
-
-fn increment_turn_count(counts: &mut TurnCounts, delegated: bool) {
-    if delegated {
-        counts.delegated = counts.delegated.saturating_add(1);
-    } else {
-        counts.main_loop = counts.main_loop.saturating_add(1);
-    }
-}
-
 impl RecordSink for SessionEvidenceAccumulator {
     fn record(&mut self, record: NormalizedRecord) {
         self.observe(&record);
@@ -978,6 +791,10 @@ pub struct CompositeSink {
     metrics: SessionMetricsAccumulator,
     evidence: SessionEvidenceAccumulator,
     turn_rows: Option<TurnRowSink>,
+    /// Set once [`Self::evidence`] queries the row store and the query
+    /// fails. `Cell` because the query happens from `evidence(&self)` —
+    /// see that method's doc comment for why `&self` is enough.
+    turn_row_query_failed: Cell<bool>,
 }
 
 impl CompositeSink {
@@ -986,6 +803,7 @@ impl CompositeSink {
             metrics,
             evidence,
             turn_rows: None,
+            turn_row_query_failed: Cell::new(false),
         }
     }
 
@@ -1001,6 +819,7 @@ impl CompositeSink {
             metrics,
             evidence,
             turn_rows: Some(turn_rows),
+            turn_row_query_failed: Cell::new(false),
         }
     }
 
@@ -1008,10 +827,27 @@ impl CompositeSink {
         self.evidence.can_publish().then(|| self.metrics.metrics())
     }
 
+    /// `None` when there is no fanned-out [`TurnRowSink`] — a pass without a
+    /// row store publishes no evidence — or when the finished residual
+    /// cannot publish yet. Otherwise reads the row-derived facts back out
+    /// of the store and builds evidence from them. A query error is kept
+    /// (see [`Self::turn_row_query_failed`]) and this returns `None`.
+    ///
+    /// `&self`, not `&mut self`: [`RecordSink::finish`] already flushes the
+    /// row sink's buffer, so by the time a caller asks for evidence the
+    /// buffer is empty and the store's own query sees every row.
     pub fn evidence(&self) -> Option<SessionEvidence> {
-        self.evidence
-            .can_publish()
-            .then(|| self.evidence.evidence())
+        if !self.evidence.can_publish() {
+            return None;
+        }
+        let turn_rows = self.turn_rows.as_ref()?;
+        match turn_rows.query_turn_facts() {
+            Ok(facts) => Some(self.evidence.evidence(&facts)),
+            Err(_) => {
+                self.turn_row_query_failed.set(true);
+                None
+            }
+        }
     }
 
     pub fn observe_source_outcome(&mut self, outcome: VisitOutcome) {
@@ -1023,6 +859,13 @@ impl CompositeSink {
     /// when this is true — rows and projections would disagree.
     pub fn turn_row_write_failed(&self) -> bool {
         self.turn_rows.as_ref().is_some_and(TurnRowSink::has_error)
+    }
+
+    /// True once a call to [`Self::evidence`] queried the row store and the
+    /// query failed. The caller treats this like a write failure: the pass
+    /// must not publish metrics whose rows it could not read back.
+    pub fn turn_row_query_failed(&self) -> bool {
+        self.turn_row_query_failed.get()
     }
 
     pub fn into_parts(self) -> Option<(SessionMetricsAccumulator, SessionEvidenceAccumulator)> {
@@ -1052,8 +895,11 @@ impl RecordSink for CompositeSink {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::analysis::model::{EventSource, Usage};
+    use crate::analysis::model::Role;
+    use crate::analysis::rows::{MemoryTurnRowStore, TurnRowStore};
     use crate::analysis::{EVIDENCE_STRING_CAP, PartialReason, RawSource, VendorAdapter};
 
     fn accumulator(request_context_tokens: bool) -> SessionEvidenceAccumulator {
@@ -1067,28 +913,25 @@ mod tests {
         })
     }
 
-    fn metric_record(context_tokens: u64, ts_ms: Option<i64>) -> NormalizedRecord {
-        let mut event = NormalizedEvent::new(Role::Assistant);
-        event.source = EventSource::Parent;
-        event.ts_ms = ts_ms;
-        event.usage = Usage {
-            input_tokens: context_tokens,
-            ..Usage::default()
-        };
-        NormalizedRecord::MetricsEvent(Box::new(event))
-    }
-
-    #[test]
-    fn context_depth_is_the_maximum_across_events() {
-        let mut accumulator = accumulator(true);
-        accumulator.record(metric_record(5, Some(1)));
-        accumulator.record(metric_record(12, Some(2)));
-        accumulator.finish(SessionSummary::default());
-
-        let EvidenceValue::Complete(context) = accumulator.evidence().context else {
-            panic!("context must be complete");
-        };
-        assert_eq!(context.max_request_context_tokens, 12);
+    /// A `CompositeSink` with a fresh in-memory row store attached, so
+    /// `composite.evidence()` has facts to build from.
+    fn composite_with_rows(agent: &str, session_id: &str) -> CompositeSink {
+        let store = MemoryTurnRowStore::new(agent, session_id);
+        let turn_rows = crate::analysis::rows::TurnRowSink::new(
+            Arc::clone(&store) as Arc<dyn TurnRowStore>,
+            session_id.to_owned(),
+            None,
+        );
+        CompositeSink::with_turn_rows(
+            SessionMetricsAccumulator::new(agent, session_id),
+            SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: agent.to_owned(),
+                session_id: session_id.to_owned(),
+                kind: SourceKind::Jsonl,
+                capabilities: SourceCapabilities::claude(),
+            }),
+            turn_rows,
+        )
     }
 
     #[test]
@@ -1100,15 +943,7 @@ mod tests {
                 r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- orbit: Synthetic source."}}"#.to_owned(),
             ),
         };
-        let mut composite = CompositeSink::new(
-            SessionMetricsAccumulator::new("claude", "attachment"),
-            SessionEvidenceAccumulator::new(EvidenceSource {
-                agent: "claude".to_owned(),
-                session_id: "attachment".to_owned(),
-                kind: SourceKind::Jsonl,
-                capabilities: SourceCapabilities::claude(),
-            }),
-        );
+        let mut composite = composite_with_rows("claude", "attachment");
         let outcome = crate::analysis::ClaudeAdapter
             .visit(&input, &mut composite)
             .expect("attachment must parse");
@@ -1126,15 +961,7 @@ mod tests {
             session_id: "unknown".to_owned(),
             source: RawSource::Jsonl(r#"{"type":"telemetry_ping","payload":"private"}"#.to_owned()),
         };
-        let mut composite = CompositeSink::new(
-            SessionMetricsAccumulator::new("claude", "unknown"),
-            SessionEvidenceAccumulator::new(EvidenceSource {
-                agent: "claude".to_owned(),
-                session_id: "unknown".to_owned(),
-                kind: SourceKind::Jsonl,
-                capabilities: SourceCapabilities::claude(),
-            }),
-        );
+        let mut composite = composite_with_rows("claude", "unknown");
         let outcome = crate::analysis::ClaudeAdapter
             .visit(&input, &mut composite)
             .expect("unknown record must be skipped");
@@ -1163,7 +990,7 @@ mod tests {
             kind: SourceKind::Jsonl,
             capabilities: SourceCapabilities::claude(),
         };
-        SessionEvidenceAccumulator::new(source).evidence()
+        SessionEvidenceAccumulator::new(source).evidence(&TurnFacts::default())
     }
 
     #[test]
@@ -1199,7 +1026,7 @@ mod tests {
         let mut accumulator = SessionEvidenceAccumulator::new(source);
         accumulator.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
         assert_eq!(
-            accumulator.evidence().coverage,
+            accumulator.evidence(&TurnFacts::default()).coverage,
             EvidenceCoverage::Partial(CoverageReason::MalformedRecord)
         );
     }
@@ -1237,108 +1064,117 @@ mod tests {
         );
     }
 
+    /// The row query bounds `top_depth_examples`, not the sink — the sink's
+    /// own rule is that no cap can make `context` partial. `models.byModel`,
+    /// `models.effortTiers`, `models.fastModes`, `cache.modelTransitions`,
+    /// `compactions.boundaries`, and `subagents.delegatedModels` caps have
+    /// moved with their fields to `query_turn_facts`'s own tests in
+    /// `evidence_query.rs`.
     #[test]
     fn context_top_depth_examples_cap_keeps_the_group_complete() {
-        let count = MAX_EVIDENCE_EXAMPLES * 2;
-        let mut accumulator = accumulator(true);
-        for index in 0..count {
-            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(assistant_event(
-                index,
-            ))));
-        }
-        let evidence = accumulator.evidence();
-        assert_capped_collection(&evidence, "context.top_depth_examples");
-        let EvidenceValue::Complete(context) = evidence.context else {
-            panic!("an example cap must not make the context group partial");
+        let accumulator = accumulator(true);
+        let facts = TurnFacts {
+            depth_examples_capped: true,
+            ..TurnFacts::default()
         };
-        assert_eq!(context.top_depth_examples.len(), MAX_EVIDENCE_EXAMPLES);
-        // The dropped examples are the shallow ones. The maximum survives.
-        assert_eq!(
-            context.max_request_context_tokens,
-            u64::try_from(count).unwrap()
+        let evidence = accumulator.evidence(&facts);
+        assert!(
+            matches!(evidence.context, EvidenceValue::Complete(_)),
+            "an example cap must not make the context group partial"
         );
     }
 
     #[test]
-    fn models_by_model_overflows_to_partial() {
-        let mut accumulator = accumulator(true);
-        for index in 0..(MAX_MODELS * 2) {
-            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(assistant_event(
-                index,
-            ))));
-        }
-        let evidence = accumulator.evidence();
-        assert_capped_collection(&evidence, "models.by_model");
-        assert_eq!(
-            assert_cap_partial(evidence.models).by_model.len(),
-            MAX_MODELS
-        );
+    fn models_cap_from_facts_overflows_models_to_partial() {
+        let accumulator = accumulator(true);
+        let facts = TurnFacts {
+            models_capped: true,
+            ..TurnFacts::default()
+        };
+        let evidence = accumulator.evidence(&facts);
+        assert_cap_partial(evidence.models);
     }
 
-    fn tier_labels_overflow(effort: bool) -> SessionEvidence {
-        let mut accumulator = accumulator(true);
-        for index in 0..(MAX_TIER_LABELS * 2) {
-            let mut event = assistant_event(index);
-            event.model = Some("model".to_owned());
-            if effort {
-                event.thinking_mode = Some(format!("tier-{index}"));
-            } else {
-                event.speed = Some(format!("speed-{index}"));
+    #[test]
+    fn duplicate_turn_identities_degrade_models_and_subagents_to_attribution_incomplete() {
+        let accumulator = accumulator(true);
+        let facts = TurnFacts {
+            duplicate_turn_identities: 1,
+            ..TurnFacts::default()
+        };
+        let evidence = accumulator.evidence(&facts);
+        assert!(matches!(
+            evidence.models,
+            EvidenceValue::Partial {
+                reason: CoverageReason::AttributionIncomplete,
+                ..
             }
-            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        ));
+        assert!(matches!(
+            evidence.subagents,
+            EvidenceValue::Partial {
+                reason: CoverageReason::AttributionIncomplete,
+                ..
+            }
+        ));
+        assert_eq!(evidence.diagnostics.duplicate_turn_identities, 1);
+    }
+
+    #[test]
+    fn observe_child_coverage_with_a_lossy_child_degrades_child_dependent_groups_but_not_tools() {
+        let mut parent = accumulator(true);
+        let mut child = accumulator(true);
+        child.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+
+        parent.observe_child_coverage(&child);
+        let evidence = parent.evidence(&TurnFacts::default());
+
+        for reason in [
+            evidence_reason(&evidence.models),
+            evidence_reason(&evidence.subagents),
+            evidence_reason(&evidence.cache),
+            evidence_reason(&evidence.context),
+            evidence_reason(&evidence.eligibility),
+            evidence_reason(&evidence.time_range),
+            evidence_reason(&evidence.compactions),
+        ] {
+            assert_eq!(reason, Some(CoverageReason::MalformedRecord));
         }
-        accumulator.evidence()
+        // Tools stay parent-only: a child's loss does not reach them.
+        assert!(matches!(evidence.tools, EvidenceValue::Complete(_)));
+        // A child's loss does not change the session-level coverage either.
+        assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
     }
 
     #[test]
-    fn synthetic_assistant_turns_are_not_signal_eligible() {
-        // Claude writes zero-usage `<synthetic>` assistant records. The
-        // adapter blanks their model. They never carry effort or speed,
-        // so they must not count against signal coverage.
-        let mut accumulator = accumulator(true);
-        let mut real = assistant_event(0);
-        real.model = Some("model".to_owned());
-        real.thinking_mode = Some("high".to_owned());
-        real.speed = Some("standard".to_owned());
-        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(real)));
-        let mut synthetic = assistant_event(1);
-        synthetic.model = None;
-        synthetic.usage.input_tokens = 0;
-        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(synthetic)));
+    fn observe_child_unreadable_degrades_child_dependent_groups_with_read_failed() {
+        let mut parent = accumulator(true);
+        parent.observe_child_unreadable();
+        let evidence = parent.evidence(&TurnFacts::default());
 
-        // The unattributed synthetic turn leaves the group partial. The
-        // coverage counts must still exclude it.
-        let EvidenceValue::Partial {
-            observed: models,
-            reason: CoverageReason::AttributionIncomplete,
-        } = accumulator.evidence().models
-        else {
-            panic!("expected attribution-incomplete model evidence");
-        };
-        assert_eq!(models.effort_signal.eligible_turns, 1);
-        assert_eq!(models.effort_signal.present_turns, 1);
-        assert_eq!(models.speed_signal.eligible_turns, 1);
-        assert_eq!(models.speed_signal.present_turns, 1);
-    }
-
-    #[test]
-    fn models_effort_tiers_overflows_to_partial() {
-        let evidence = tier_labels_overflow(true);
-        assert_capped_collection(&evidence, "models.effort_tiers");
         assert_eq!(
-            assert_cap_partial(evidence.models).effort_tiers.len(),
-            MAX_TIER_LABELS
+            evidence_reason(&evidence.models),
+            Some(CoverageReason::ReadFailed)
         );
+        assert_eq!(
+            evidence_reason(&evidence.subagents),
+            Some(CoverageReason::ReadFailed)
+        );
+        assert!(matches!(evidence.tools, EvidenceValue::Complete(_)));
+        assert_eq!(evidence.diagnostics.children_discovered, 1);
+        assert_eq!(evidence.diagnostics.children_unreadable, 1);
+        assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
     }
 
-    #[test]
-    fn models_fast_modes_overflows_to_partial() {
-        let evidence = tier_labels_overflow(false);
-        assert_capped_collection(&evidence, "models.fast_modes");
-        assert_eq!(
-            assert_cap_partial(evidence.models).fast_modes.len(),
-            MAX_TIER_LABELS
-        );
+    /// The `CoverageReason` an `EvidenceValue` carries, or `None` for
+    /// `Complete`. Panics on `Unsupported` — every group this helper checks
+    /// is supported by the Claude capability set `accumulator` uses.
+    fn evidence_reason<T>(value: &EvidenceValue<T>) -> Option<CoverageReason> {
+        match value {
+            EvidenceValue::Complete(_) => None,
+            EvidenceValue::Partial { reason, .. } => Some(*reason),
+            EvidenceValue::Unsupported => panic!("group must be supported"),
+        }
     }
 
     #[test]
@@ -1352,7 +1188,7 @@ mod tests {
                 .push(crate::analysis::ToolCall::new(format!("tool-{index}")));
             accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
         }
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_capped_collection(&evidence, "tools.by_name");
         assert_eq!(
             assert_cap_partial(evidence.tools).by_name.len(),
@@ -1371,7 +1207,7 @@ mod tests {
                 },
             )));
         }
-        accumulator.evidence()
+        accumulator.evidence(&TurnFacts::default())
     }
 
     #[test]
@@ -1407,7 +1243,7 @@ mod tests {
                 },
             )));
         }
-        accumulator.evidence()
+        accumulator.evidence(&TurnFacts::default())
     }
 
     #[test]
@@ -1431,61 +1267,6 @@ mod tests {
     }
 
     #[test]
-    fn subagents_delegated_models_overflow_to_partial() {
-        let mut accumulator = accumulator(true);
-        for index in 0..(MAX_SUBAGENT_MODELS * 2) {
-            accumulator.record(NormalizedRecord::Observation(Box::new(
-                EvidenceObservation::DelegatedTurn {
-                    is_sidechain: true,
-                    is_assistant: true,
-                    model: Some(format!("model-{index}")),
-                },
-            )));
-        }
-        let evidence = accumulator.evidence();
-        assert_capped_collection(&evidence, "subagents.delegated_models");
-        assert_eq!(
-            assert_cap_partial(evidence.subagents)
-                .delegated_models
-                .len(),
-            MAX_SUBAGENT_MODELS
-        );
-    }
-
-    #[test]
-    fn cache_model_transitions_overflows_to_partial() {
-        let mut accumulator = accumulator(true);
-        for index in 0..((MAX_MODEL_TRANSITIONS + 1) * 2) {
-            let mut event = assistant_event(index);
-            event.model = Some(format!("transition-{index}"));
-            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
-        }
-        let evidence = accumulator.evidence();
-        assert_capped_collection(&evidence, "cache.model_transitions");
-        assert_eq!(
-            assert_cap_partial(evidence.cache).model_transitions.len(),
-            MAX_MODEL_TRANSITIONS
-        );
-    }
-
-    #[test]
-    fn compactions_boundaries_overflows_to_partial() {
-        let mut accumulator = accumulator(true);
-        for index in 0..(MAX_COMPACTION_BOUNDARIES * 2) {
-            let mut event = assistant_event(index);
-            event.model = Some("model".to_owned());
-            event.is_compaction_boundary = true;
-            accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
-        }
-        let evidence = accumulator.evidence();
-        assert_capped_collection(&evidence, "compactions.boundaries");
-        assert_eq!(
-            assert_cap_partial(evidence.compactions).boundaries.len(),
-            MAX_COMPACTION_BOUNDARIES
-        );
-    }
-
-    #[test]
     fn an_inert_unrecognized_record_keeps_complete_coverage() {
         let mut accumulator = accumulator(true);
         accumulator.record(NormalizedRecord::Observation(Box::new(
@@ -1495,7 +1276,7 @@ mod tests {
             },
         )));
 
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
         assert_eq!(evidence.diagnostics.records_observed, 1);
         assert_eq!(evidence.diagnostics.records_unrecognized_inert, 1);
@@ -1522,7 +1303,7 @@ mod tests {
             crate::analysis::framing::PartialReason::UnrecognizedRecordType,
         ));
 
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_eq!(
             evidence.coverage,
             EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
@@ -1564,7 +1345,7 @@ mod tests {
                 },
             )));
         }
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_eq!(
             evidence.diagnostics.unrecognized_types.len(),
             MAX_UNRECOGNIZED_TYPES
@@ -1602,7 +1383,7 @@ mod tests {
         ));
 
         assert_eq!(
-            accumulator.evidence().coverage,
+            accumulator.evidence(&TurnFacts::default()).coverage,
             EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType)
         );
     }
@@ -1616,7 +1397,7 @@ mod tests {
         ] {
             accumulator.note_collection_cap(field);
         }
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_eq!(
             evidence.diagnostics.capped_collections.len(),
             crate::analysis::evidence::MAX_DIAGNOSTIC_FIELDS
@@ -1638,7 +1419,7 @@ mod tests {
         ] {
             cap_string(field, &long, &mut accumulator.diagnostics);
         }
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_eq!(
             evidence.diagnostics.truncated_strings.len(),
             crate::analysis::evidence::MAX_DIAGNOSTIC_FIELDS
@@ -1655,73 +1436,6 @@ mod tests {
     }
 
     #[test]
-    fn context_top_depth_example_model_cap_keeps_the_group_complete() {
-        let mut accumulator = accumulator(true);
-        let mut event = assistant_event(1);
-        event.model = Some(long_string());
-        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
-        let evidence = accumulator.evidence();
-        assert_truncated_string(&evidence, "context.top_depth_examples.model");
-        let EvidenceValue::Complete(context) = evidence.context else {
-            panic!("a shortened example name must not make the group partial");
-        };
-        assert_eq!(
-            context.top_depth_examples[0].model.as_ref().unwrap().len(),
-            EVIDENCE_STRING_CAP
-        );
-    }
-
-    #[test]
-    fn models_by_model_key_overflows_to_partial() {
-        let mut accumulator = accumulator(true);
-        let mut event = assistant_event(1);
-        event.model = Some(long_string());
-        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
-        let evidence = accumulator.evidence();
-        assert_truncated_string(&evidence, "models.by_model");
-        let models = assert_cap_partial(evidence.models);
-        assert_eq!(
-            models.by_model.keys().next().unwrap().len(),
-            EVIDENCE_STRING_CAP
-        );
-    }
-
-    fn tier_string_overflow(effort: bool) -> SessionEvidence {
-        let mut accumulator = accumulator(true);
-        let mut event = assistant_event(1);
-        event.model = Some("model".to_owned());
-        if effort {
-            event.thinking_mode = Some(long_string());
-        } else {
-            event.speed = Some(long_string());
-        }
-        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
-        accumulator.evidence()
-    }
-
-    #[test]
-    fn models_effort_tier_key_overflows_to_partial() {
-        let evidence = tier_string_overflow(true);
-        assert_truncated_string(&evidence, "models.effort_tiers");
-        let models = assert_cap_partial(evidence.models);
-        assert_eq!(
-            models.effort_tiers.keys().next().unwrap().len(),
-            EVIDENCE_STRING_CAP
-        );
-    }
-
-    #[test]
-    fn models_fast_mode_key_overflows_to_partial() {
-        let evidence = tier_string_overflow(false);
-        assert_truncated_string(&evidence, "models.fast_modes");
-        let models = assert_cap_partial(evidence.models);
-        assert_eq!(
-            models.fast_modes.keys().next().unwrap().len(),
-            EVIDENCE_STRING_CAP
-        );
-    }
-
-    #[test]
     fn tools_by_name_key_overflows_to_partial() {
         let mut accumulator = accumulator(true);
         let mut event = assistant_event(1);
@@ -1730,7 +1444,7 @@ mod tests {
             .tools
             .push(crate::analysis::ToolCall::new(long_string()));
         accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_truncated_string(&evidence, "tools.by_name");
         let tools = assert_cap_partial(evidence.tools);
         assert_eq!(
@@ -1756,7 +1470,7 @@ mod tests {
                 }),
             },
         )));
-        accumulator.evidence()
+        accumulator.evidence(&TurnFacts::default())
     }
 
     #[test]
@@ -1829,7 +1543,7 @@ mod tests {
                 provenance: crate::analysis::RelationProvenance::TaskToolUse,
             },
         )));
-        accumulator.evidence()
+        accumulator.evidence(&TurnFacts::default())
     }
 
     #[test]
@@ -1855,66 +1569,6 @@ mod tests {
     }
 
     #[test]
-    fn subagents_delegated_model_overflows_to_partial() {
-        let mut accumulator = accumulator(true);
-        accumulator.record(NormalizedRecord::Observation(Box::new(
-            EvidenceObservation::DelegatedTurn {
-                is_sidechain: true,
-                is_assistant: true,
-                model: Some(long_string()),
-            },
-        )));
-        let evidence = accumulator.evidence();
-        assert_truncated_string(&evidence, "subagents.delegated_models");
-        let subagents = assert_cap_partial(evidence.subagents);
-        assert_eq!(
-            subagents.delegated_models.first().unwrap().len(),
-            EVIDENCE_STRING_CAP
-        );
-    }
-
-    fn transition_string_overflow(long_from: bool) -> SessionEvidence {
-        let mut accumulator = accumulator(true);
-        let mut first = assistant_event(1);
-        first.model = Some(if long_from {
-            long_string()
-        } else {
-            "from-model".to_owned()
-        });
-        let mut second = assistant_event(2);
-        second.model = Some(if long_from {
-            "to-model".to_owned()
-        } else {
-            long_string()
-        });
-        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(first)));
-        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(second)));
-        accumulator.evidence()
-    }
-
-    #[test]
-    fn cache_transition_from_model_overflows_to_partial() {
-        let evidence = transition_string_overflow(true);
-        assert_truncated_string(&evidence, "cache.model_transitions.from_model");
-        let cache = assert_cap_partial(evidence.cache);
-        assert_eq!(
-            cache.model_transitions[0].from_model.len(),
-            EVIDENCE_STRING_CAP
-        );
-    }
-
-    #[test]
-    fn cache_transition_to_model_overflows_to_partial() {
-        let evidence = transition_string_overflow(false);
-        assert_truncated_string(&evidence, "cache.model_transitions.to_model");
-        let cache = assert_cap_partial(evidence.cache);
-        assert_eq!(
-            cache.model_transitions[0].to_model.len(),
-            EVIDENCE_STRING_CAP
-        );
-    }
-
-    #[test]
     fn diagnostics_unrecognized_type_string_overflows_to_partial() {
         let mut accumulator = accumulator(true);
         accumulator.record(NormalizedRecord::Observation(Box::new(
@@ -1923,7 +1577,7 @@ mod tests {
                 inert: true,
             },
         )));
-        let evidence = accumulator.evidence();
+        let evidence = accumulator.evidence(&TurnFacts::default());
         assert_eq!(
             evidence
                 .diagnostics
@@ -1963,14 +1617,26 @@ mod tests {
         records
     }
 
+    /// `thread_identity_missing` is row-derived now (`TurnFacts`), not
+    /// something the accumulator sees turn by turn. This mirrors what the
+    /// row query would report for the same chain: missing whenever any
+    /// counted turn in it carries no `uuid`.
     fn previous_turn_for(chain: &[(Option<&str>, Option<&str>)]) -> EvidenceValue<()> {
         let mut accumulator = accumulator(true);
+        let mut thread_identity_missing = false;
         for (index, (uuid, parent_uuid)) in chain.iter().enumerate() {
+            if uuid.is_none() {
+                thread_identity_missing = true;
+            }
             for record in thread_record(*uuid, *parent_uuid, index) {
                 accumulator.record(record);
             }
         }
-        match accumulator.evidence().cache {
+        let facts = TurnFacts {
+            thread_identity_missing,
+            ..TurnFacts::default()
+        };
+        match accumulator.evidence(&facts).cache {
             EvidenceValue::Complete(cache)
             | EvidenceValue::Partial {
                 observed: cache, ..
@@ -2028,7 +1694,8 @@ mod tests {
         for record in thread_record(Some("u-1"), None, 1) {
             accumulator.record(record);
         }
-        let EvidenceValue::Complete(cache) = accumulator.evidence().cache else {
+        let EvidenceValue::Complete(cache) = accumulator.evidence(&TurnFacts::default()).cache
+        else {
             panic!("cache must be complete");
         };
         assert_eq!(cache.previous_turn, EvidenceValue::Unsupported);
@@ -2040,7 +1707,8 @@ mod tests {
         let mut event = assistant_event(1);
         event.tools.push(crate::analysis::ToolCall::new("Mystery"));
         accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
-        let EvidenceValue::Complete(tools) = accumulator.evidence().tools else {
+        let EvidenceValue::Complete(tools) = accumulator.evidence(&TurnFacts::default()).tools
+        else {
             panic!("tools must be complete");
         };
         assert_eq!(tools.by_name["Mystery"].class, ToolClass::Unclassified);

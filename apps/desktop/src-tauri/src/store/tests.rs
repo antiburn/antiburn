@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use antiburn_local::analysis::{
-    ContentKind, ContentPart, TurnScope, count_turn_content_rows, count_turn_rows,
+    ContentKind, ContentPart, MemoryTurnRowStore, TurnRowStore, TurnScope, count_turn_content_rows,
+    count_turn_rows,
 };
 
 use super::model::PublishedEvidence;
@@ -157,7 +158,9 @@ fn seed_revision_one_placeholder(store: &Store, session_id: &str) -> SessionReco
 }
 
 fn published_evidence_pass(record: &SessionRecord) -> crate::analysis::EvidencePass {
-    let mut pass = crate::analysis::evidence_pass(
+    let store: Arc<dyn TurnRowStore> =
+        MemoryTurnRowStore::new("claude", record.key.session_id.clone());
+    let mut pass = crate::analysis::evidence_pass_with_turn_rows(
         &[antiburn_local::analysis::SessionInput {
             agent: "claude".into(),
             session_id: record.key.session_id.clone(),
@@ -168,6 +171,7 @@ fn published_evidence_pass(record: &SessionRecord) -> crate::analysis::EvidenceP
             ),
         }],
         &|| false,
+        Some(store),
     );
     pass.analysis.fingerprint = record
         .source_fingerprint
@@ -2008,9 +2012,9 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
             parser_revision: 5,
-            analyzer_revision: 7,
+            analyzer_revision: 8,
             metrics_schema_revision: 1,
-            evidence_schema_revision: 4,
+            evidence_schema_revision: 5,
         }
     );
 }
@@ -2080,7 +2084,7 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(ready.status, EvidenceStatus::Ready);
-    assert_eq!(ready.evidence_schema_revision, Some(4));
+    assert_eq!(ready.evidence_schema_revision, Some(5));
     assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
 }
 
@@ -2121,7 +2125,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
 
     let failed = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(failed.status, EvidenceStatus::Failed);
-    assert_eq!(failed.evidence_schema_revision, Some(4));
+    assert_eq!(failed.evidence_schema_revision, Some(5));
     assert!(failed.evidence_json.is_none());
     assert!(failed.diagnostics_json.is_none());
 }
@@ -2842,7 +2846,8 @@ fn clearing_local_session_data_removes_every_session_evidence_row() {
 #[test]
 fn a_session_evidence_payload_round_trips_through_the_store() {
     use antiburn_local::analysis::{
-        EvidenceSource, SessionEvidence, SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
+        EvidenceSource, SessionEvidence, SessionEvidenceAccumulator, SourceCapabilities,
+        SourceKind, TurnFacts,
     };
 
     let store = store();
@@ -2853,7 +2858,7 @@ fn a_session_evidence_payload_round_trips_through_the_store() {
         kind: SourceKind::Jsonl,
         capabilities: SourceCapabilities::claude(),
     })
-    .evidence();
+    .evidence(&TurnFacts::default());
     let payload_json = serde_json::to_string(&payload).unwrap();
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, payload_json);
 

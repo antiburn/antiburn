@@ -11,7 +11,7 @@ use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SourceCapabilities, SourceKind, TURN_MIGRATIONS, TurnFacts, TurnRow,
     TurnRowError, TurnRowSink, TurnRowStore, TurnSessionKey, adapter_for, count_turn_content_rows,
-    delete_turn_rows, insert_turn_rows, normalize_source,
+    delete_turn_rows, insert_turn_rows, normalize_source, query_turn_facts,
 };
 use rusqlite::{Connection, params};
 
@@ -116,10 +116,13 @@ impl TurnRowStore for TestWriter {
         insert_turn_rows(&conn, &key(), 1, rows).map_err(TurnRowError::from)
     }
 
-    // Never read: this test inspects `turn_content` through its own
-    // connection handle instead of through the store trait.
+    // Published evidence now reads its facts back through this same
+    // query, so the store must answer it for real, not just accept
+    // writes. The test still inspects `turn_content` through its own
+    // connection handle below, alongside this query.
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
-        Err(TurnRowError("not readable".to_owned()))
+        let conn = self.0.lock().expect("lock");
+        query_turn_facts(&conn, &key(), 1).map_err(TurnRowError::from)
     }
 }
 

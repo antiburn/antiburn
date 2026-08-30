@@ -336,6 +336,14 @@ impl TurnRowSink {
         }
     }
 
+    /// Reads the row-derived facts for every row this sink's store holds
+    /// under its own session key and fence. Correct only after
+    /// [`Self::flush`] (or [`RecordSink::finish`], which flushes) — a row
+    /// still buffered here is invisible to the store's own query.
+    pub fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
+        self.store.query_turn_facts()
+    }
+
     /// Writes any buffered rows and clears the buffer.
     pub fn flush(&mut self) {
         if self.error.is_some() || self.buffer.is_empty() {

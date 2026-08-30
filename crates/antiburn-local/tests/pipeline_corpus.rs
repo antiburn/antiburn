@@ -12,14 +12,16 @@ mod corpus;
 use std::fs::OpenOptions;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, AppendOnlyGuarantee, BoundedJsonlReader, ClaudeAdapter, CompositeSink,
     CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue,
-    MAX_RECORD_BYTES, NormalizedRecord, PARSER_REVISION, RETAINED_METRICS_BYTES_BOUND, RawSource,
-    RecordSink, SCAN_QUANTUM_BYTES, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceChangedReason,
-    SourceClaim, SourceKind, VisitOutcome, adapter_for,
+    MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedRecord, PARSER_REVISION,
+    RETAINED_METRICS_BYTES_BOUND, RawSource, RecordSink, SCAN_QUANTUM_BYTES, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceChangedReason, SourceClaim, SourceKind, TurnRowSink, TurnRowStore,
+    VisitOutcome, adapter_for,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
@@ -72,7 +74,13 @@ fn composite_for(input: &SessionInput) -> CompositeSink {
         kind: SourceKind::from(&input.source),
         capabilities: SourceCapabilities::claude(),
     });
-    CompositeSink::new(metrics, evidence)
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    CompositeSink::with_turn_rows(metrics, evidence, turn_rows)
 }
 
 /// Runs framing → normalization → metrics + evidence for one input.
@@ -206,7 +214,10 @@ fn large_session_respects_bounded_memory_contracts() {
     assert!(reader.retained_record_bytes_high_water() <= SCAN_QUANTUM_BYTES * 4);
 
     let composite = run_pipeline(&input);
-    let (metrics, evidence) = composite
+    let evidence = composite
+        .evidence()
+        .expect("large clean session must publish");
+    let (metrics, _evidence_accumulator) = composite
         .into_parts()
         .expect("large clean session must publish");
     assert!(metrics.observed_turns() > 0);
@@ -216,7 +227,7 @@ fn large_session_respects_bounded_memory_contracts() {
         metrics.retained_bytes(),
         metrics.observed_turns()
     );
-    assert_eq!(evidence.evidence().coverage, EvidenceCoverage::Complete);
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
 }
 
 #[test]

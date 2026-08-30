@@ -33,7 +33,9 @@ use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
 
 #[cfg(test)]
-use antiburn_local::analysis::{ClaudeAdapter, VendorAdapter};
+use antiburn_local::analysis::{
+    ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, VendorAdapter,
+};
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
@@ -523,6 +525,15 @@ fn capabilities_for_vendor(agent: &str) -> Option<SourceCapabilities> {
     }
 }
 
+/// Records one discovered child that this pass could not read. The parent
+/// streams at index 0, so the residual exists for every child path; the
+/// guard keeps a broken invariant from panicking the blocking thread.
+fn note_child_unreadable(parent_residual: &mut Option<SessionEvidenceAccumulator>) {
+    if let Some(parent) = parent_residual.as_mut() {
+        parent.observe_child_unreadable();
+    }
+}
+
 fn stream_vendor_with_hooks(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
@@ -530,7 +541,14 @@ fn stream_vendor_with_hooks(
     database_claim: Option<&str>,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> StreamOutcome {
-    let mut accumulators = Vec::with_capacity(inputs.len());
+    let mut metrics_accumulators = Vec::with_capacity(inputs.len());
+    // The parent's residual evidence accumulator. Set once index 0 streams
+    // successfully, then folded into by every child that streams after it —
+    // see `SessionEvidenceAccumulator::observe_child_coverage` and
+    // `observe_child_unreadable`. One document covers the parent and every
+    // child, so this must outlive the loop rather than live inside the
+    // per-index accumulator the loop below builds.
+    let mut parent_residual: Option<SessionEvidenceAccumulator> = None;
     let mut parent_fingerprint = None;
     for (index, input) in inputs.iter().enumerate() {
         if cancelled() {
@@ -581,7 +599,10 @@ fn stream_vendor_with_hooks(
                         return StreamOutcome::ParentMissing;
                     }
                     Err(_) if index == 0 => return StreamOutcome::ParentUnreadable,
-                    Err(_) => continue,
+                    Err(_) => {
+                        note_child_unreadable(&mut parent_residual);
+                        continue;
+                    }
                 };
                 let fingerprint = claim.fingerprint.clone();
                 after_claim(index, path);
@@ -637,25 +658,36 @@ fn stream_vendor_with_hooks(
                 if accumulator.turn_row_write_failed() {
                     return StreamOutcome::ParentUnreadable;
                 }
-                let Some(parts) = accumulator.into_parts() else {
-                    return StreamOutcome::ParentUnreadable;
+                let Some((metrics, residual)) = accumulator.into_parts() else {
+                    if index == 0 {
+                        return StreamOutcome::ParentUnreadable;
+                    }
+                    note_child_unreadable(&mut parent_residual);
+                    continue;
                 };
-                accumulators.push(parts);
+                if index == 0 {
+                    parent_residual = Some(residual);
+                } else if let Some(parent) = parent_residual.as_mut() {
+                    parent.observe_child_coverage(&residual);
+                }
+                metrics_accumulators.push(metrics);
             }
             Err(_) if cancelled() || index == 0 => {
                 return StreamOutcome::ParentUnreadable;
             }
-            Err(_) => continue,
+            Err(_) => {
+                note_child_unreadable(&mut parent_residual);
+                continue;
+            }
         }
     }
     if cancelled() {
         return StreamOutcome::ParentUnreadable;
     }
-    let (metrics, evidence): (Vec<_>, Vec<_>) = accumulators.into_iter().unzip();
-    let Some((parent, children)) = metrics.split_first() else {
+    let Some((parent, children)) = metrics_accumulators.split_first() else {
         return StreamOutcome::ParentUnreadable;
     };
-    let started_at_epoch = metrics
+    let started_at_epoch = metrics_accumulators
         .iter()
         .filter_map(SessionMetricsAccumulator::started_at_ms)
         .min()
@@ -666,13 +698,25 @@ fn stream_vendor_with_hooks(
         .map(|child| (child.metrics(), child.started_at_ms().map(|ts| ts / 1000)))
         .collect();
     let merged = merge_metrics(parent, children);
+    // A pass without a row store publishes no evidence: the residual alone
+    // cannot build a `SessionEvidence`, since every row-derived group comes
+    // from `TurnFacts`. A row query failure fails the whole pass, the same
+    // way a turn-row write failure does above — published metrics must
+    // never disagree with rows this pass could not read back.
+    let evidence = match turn_row_store {
+        Some(store) => match store.query_turn_facts() {
+            Ok(facts) => parent_residual.map(|residual| residual.evidence(&facts)),
+            Err(_) => return StreamOutcome::ParentUnreadable,
+        },
+        None => None,
+    };
     StreamOutcome::Published {
         session: Box::new(StreamedSession {
             parent: parent_metrics,
             merged,
             subagents,
             started_at_epoch,
-            evidence: evidence.first().map(SessionEvidenceAccumulator::evidence),
+            evidence,
         }),
         parent_fingerprint,
     }
@@ -1480,6 +1524,25 @@ pub fn price_cached_breakdown(model_breakdown_json: &str) -> (Option<SessionCost
 mod tests {
     use super::*;
 
+    /// A row store for a test pass that wants published evidence. A pass
+    /// without a row store publishes no evidence, so any test that reads
+    /// `session.evidence` or `pass.evidence` needs one of these.
+    fn turn_row_store(agent: &str, session_id: &str) -> Arc<dyn TurnRowStore> {
+        MemoryTurnRowStore::new(agent, session_id)
+    }
+
+    /// Reads the value out of an `EvidenceValue`, for `Complete` and
+    /// `Partial` alike. Panics on `Unsupported` — every group these tests
+    /// read is supported by the Claude capability set.
+    fn observed<T: Clone>(value: &EvidenceValue<T>) -> T {
+        match value {
+            EvidenceValue::Complete(observed) | EvidenceValue::Partial { observed, .. } => {
+                observed.clone()
+            }
+            EvidenceValue::Unsupported => panic!("evidence group must be supported"),
+        }
+    }
+
     #[tokio::test]
     async fn opencode_lineage_does_not_render_an_ordinary_database_session() {
         let directory = tempfile::TempDir::new().expect("tempdir");
@@ -1554,6 +1617,17 @@ mod tests {
         )
     }
 
+    /// Like [`claude_record`], with an explicit model and an optional
+    /// top-level `speed` signal.
+    fn claude_record_with(id: &str, timestamp: i64, model: &str, speed: Option<&str>) -> String {
+        let speed_field = speed
+            .map(|speed| format!(",\"speed\":\"{speed}\""))
+            .unwrap_or_default();
+        format!(
+            "{{\"type\":\"assistant\",\"timestamp\":{timestamp}{speed_field},\"message\":{{\"id\":\"{id}\",\"role\":\"assistant\",\"model\":\"{model}\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":3}},\"content\":[{{\"type\":\"text\",\"text\":\"Synthetic output.\"}}]}}}}\n"
+        )
+    }
+
     fn file_input(path: &std::path::Path, id: &str) -> SessionInput {
         SessionInput {
             agent: "claude".to_string(),
@@ -1619,8 +1693,13 @@ mod tests {
             source: RawSource::Sqlite(path),
         };
 
-        let outcome =
-            stream_vendor_with_hooks(&[input], &|| false, &|_, _| {}, Some(&fingerprint), None);
+        let outcome = stream_vendor_with_hooks(
+            &[input],
+            &|| false,
+            &|_, _| {},
+            Some(&fingerprint),
+            Some(turn_row_store("opencode", "root")),
+        );
 
         let StreamOutcome::Published {
             session,
@@ -1704,12 +1783,15 @@ mod tests {
             panic!("Codex source must publish");
         };
         assert_eq!(session.started_at_epoch, Some(1_785_578_398));
-        assert_eq!(
-            session.evidence.unwrap().capabilities,
-            SourceCapabilities::codex()
-        );
+        // `stream_vendor` attaches no row store, so this pass alone
+        // publishes no evidence; the row-backed pass below does.
+        assert!(session.evidence.is_none());
 
-        let pass = evidence_pass(&[input], &|| false);
+        let pass = evidence_pass_with_turn_rows(
+            &[input],
+            &|| false,
+            Some(turn_row_store("codex", "codex-inline")),
+        );
         assert_eq!(pass.outcome, PassOutcome::Published);
         assert_eq!(
             pass.evidence.unwrap().capabilities,
@@ -1732,12 +1814,15 @@ mod tests {
         };
         assert_eq!(session.started_at_epoch, Some(1_785_578_398));
         assert_eq!(session.parent.peak_context_tokens, 14);
-        assert_eq!(
-            session.evidence.unwrap().capabilities,
-            SourceCapabilities::pi()
-        );
+        // `stream_vendor` attaches no row store, so this pass alone
+        // publishes no evidence; the row-backed pass below does.
+        assert!(session.evidence.is_none());
 
-        let pass = evidence_pass(&[input], &|| false);
+        let pass = evidence_pass_with_turn_rows(
+            &[input],
+            &|| false,
+            Some(turn_row_store("pi", "pi-inline")),
+        );
         assert_eq!(pass.outcome, PassOutcome::Published);
         assert_eq!(
             pass.evidence.unwrap().capabilities,
@@ -1955,17 +2040,168 @@ mod tests {
 
     #[test]
     fn a_published_claude_pass_carries_evidence() {
-        let pass = evidence_pass(
+        let pass = evidence_pass_with_turn_rows(
             &[inline_input(
                 claude_record("inline-evidence", 1_760_000_000),
                 "inline-evidence",
             )],
             &|| false,
+            Some(turn_row_store("claude", "inline-evidence")),
         );
 
         let evidence = pass.evidence.expect("published evidence");
         assert_eq!(pass.outcome, PassOutcome::Published);
         assert_eq!(evidence.schema_revision, EVIDENCE_SCHEMA_REVISION);
+    }
+
+    #[test]
+    fn a_child_only_fast_signal_reaches_the_parents_evidence() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, claude_record("fast-signal-parent", 1_760_000_000))
+            .expect("write parent");
+        std::fs::write(
+            &child,
+            claude_record_with(
+                "fast-signal-child",
+                1_760_000_001,
+                "claude-opus-4-6",
+                Some("fast"),
+            ),
+        )
+        .expect("write child");
+
+        let pass = evidence_pass_with_turn_rows(
+            &[
+                file_input(&parent, "fast-signal-parent"),
+                file_input(&child, "fast-signal-child"),
+            ],
+            &|| false,
+            Some(turn_row_store("claude", "fast-signal-parent")),
+        );
+        let evidence = pass.evidence.expect("published evidence");
+
+        let models = observed(&evidence.models);
+        let fast = models
+            .fast_modes
+            .get(FAST_SPEED_KEY)
+            .expect("the child's fast signal must reach the parent's evidence");
+        assert_eq!(fast.delegated, 1);
+        assert_eq!(fast.main_loop, 0);
+
+        let subagents = observed(&evidence.subagents);
+        assert!(subagents.delegated_models.contains("claude-opus-4-6"));
+    }
+
+    #[test]
+    fn a_model_switch_confined_to_one_child_produces_no_transition() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, claude_record("switch-parent", 1_760_000_000))
+            .expect("write parent");
+        std::fs::write(
+            &child,
+            claude_record_with("switch-child-1", 1_760_000_001, "model-a", None)
+                + &claude_record_with("switch-child-2", 1_760_000_002, "model-b", None),
+        )
+        .expect("write child");
+
+        let pass = evidence_pass_with_turn_rows(
+            &[
+                file_input(&parent, "switch-parent"),
+                file_input(&child, "switch-child"),
+            ],
+            &|| false,
+            Some(turn_row_store("claude", "switch-parent")),
+        );
+        let evidence = pass.evidence.expect("published evidence");
+
+        let cache = observed(&evidence.cache);
+        assert!(
+            cache.model_transitions.is_empty(),
+            "a model switch inside one child must not become a parent-thread transition"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_discovered_child_degrades_child_dependent_groups() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        std::fs::write(&parent, claude_record("unreadable-parent", 1_760_000_000))
+            .expect("write parent");
+        let missing_child = directory.path().join("missing-child.jsonl");
+
+        let pass = evidence_pass_with_turn_rows(
+            &[
+                file_input(&parent, "unreadable-parent"),
+                file_input(&missing_child, "unreadable-child"),
+            ],
+            &|| false,
+            Some(turn_row_store("claude", "unreadable-parent")),
+        );
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        let evidence = pass.evidence.expect("published evidence");
+
+        assert_eq!(evidence.diagnostics.children_unreadable, 1);
+        assert!(matches!(
+            evidence.subagents,
+            EvidenceValue::Partial {
+                reason: CoverageReason::ReadFailed,
+                ..
+            }
+        ));
+        assert!(matches!(
+            evidence.models,
+            EvidenceValue::Partial {
+                reason: CoverageReason::ReadFailed,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn two_children_with_different_models_share_no_transition_or_idle_gap() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let first_child = directory.path().join("first-child.jsonl");
+        let second_child = directory.path().join("second-child.jsonl");
+        std::fs::write(&parent, claude_record("siblings-parent", 1_760_000_000))
+            .expect("write parent");
+        std::fs::write(
+            &first_child,
+            claude_record_with("siblings-child-1", 1_760_000_001, "model-a", None),
+        )
+        .expect("write first child");
+        std::fs::write(
+            &second_child,
+            // Far enough past the first child's turn that a single shared
+            // clock would read as a long idle gap.
+            claude_record_with("siblings-child-2", 1_760_100_000, "model-b", None),
+        )
+        .expect("write second child");
+
+        let pass = evidence_pass_with_turn_rows(
+            &[
+                file_input(&parent, "siblings-parent"),
+                file_input(&first_child, "siblings-child-1"),
+                file_input(&second_child, "siblings-child-2"),
+            ],
+            &|| false,
+            Some(turn_row_store("claude", "siblings-parent")),
+        );
+        let evidence = pass.evidence.expect("published evidence");
+
+        let cache = observed(&evidence.cache);
+        assert!(
+            cache.model_transitions.is_empty(),
+            "two children never share a thread, so they form no transition"
+        );
+        assert_eq!(
+            cache.longest_idle_gap_ms, 0,
+            "two children never share a thread, so they form no idle gap"
+        );
     }
 
     #[test]

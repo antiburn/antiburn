@@ -254,7 +254,8 @@ pub(crate) fn complete<T>(value: &EvidenceValue<T>) -> Option<&T> {
 #[cfg(test)]
 pub(crate) mod test_support {
     use crate::analysis::{
-        EvidenceSource, SessionEvidence, SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
+        EvidenceSource, SessionEvidence, SessionEvidenceAccumulator, SourceCapabilities,
+        SourceKind, TurnFacts,
     };
 
     /// Builds empty complete evidence with the Claude capability set.
@@ -265,7 +266,7 @@ pub(crate) mod test_support {
             kind: SourceKind::File,
             capabilities: SourceCapabilities::claude(),
         })
-        .evidence()
+        .evidence(&TurnFacts::default())
     }
 }
 

@@ -2,13 +2,15 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use antiburn_local::analysis::{
     AppendOnlyGuarantee, CompositeSink, CoverageReason, EvidenceCoverage, EvidenceSource,
-    EvidenceValue, NormalizedSession, PartialReason, RawSource, RecordCoverage, SessionCollector,
-    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceCapabilities, SourceClaim, SourceKind, VisitOutcome, adapter_for, analyze_sources_with,
-    append_only_guarantee, normalize_source,
+    EvidenceValue, MemoryTurnRowStore, NormalizedSession, PartialReason, RawSource, RecordCoverage,
+    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnRowSink,
+    TurnRowStore, VisitOutcome, adapter_for, analyze_sources_with, append_only_guarantee,
+    normalize_source,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -88,13 +90,20 @@ fn composite(input: &SessionInput) -> (SessionEvidence, SessionMetricsAccumulato
         kind: SourceKind::from(&input.source),
         capabilities: SourceCapabilities::codex(),
     });
-    let mut sink = CompositeSink::new(metrics, evidence);
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
     let outcome = adapter_for("codex")
         .visit(input, &mut sink)
         .expect("Codex fixture must stream");
     sink.observe_source_outcome(outcome);
-    let (metrics, evidence) = sink.into_parts().expect("Codex evidence must publish");
-    (evidence.evidence(), metrics)
+    let evidence = sink.evidence().expect("Codex evidence must publish");
+    let (metrics, _evidence_accumulator) = sink.into_parts().expect("Codex metrics must publish");
+    (evidence, metrics)
 }
 
 fn golden_path(name: &str) -> PathBuf {
@@ -279,11 +288,16 @@ fn claude_capabilities_still_match_published_evidence() {
         kind: SourceKind::from(&input.source),
         capabilities: SourceCapabilities::claude(),
     });
-    let mut sink = CompositeSink::new(metrics, accumulator);
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let mut sink = CompositeSink::with_turn_rows(metrics, accumulator, turn_rows);
     let outcome = adapter_for("claude").visit(&input, &mut sink).unwrap();
     sink.observe_source_outcome(outcome);
-    let (_, accumulator) = sink.into_parts().unwrap();
-    let evidence = accumulator.evidence();
+    let evidence = sink.evidence().unwrap();
 
     assert_eq!(evidence.capabilities, SourceCapabilities::claude());
     assert!(is_supported(&evidence.context));

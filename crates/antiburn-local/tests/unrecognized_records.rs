@@ -330,8 +330,10 @@ fn a_session_of_only_inert_unknowns_is_a_zero_work_session() {
     for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
         assert_eq!(report.detectors[detector.index()].eligible, 0);
     }
+    // The inert sidechain marker never becomes a turn row, so it carries no
+    // delegated turn or spawn: a real clean verdict, not a contract gap.
     assert_eq!(
         report.detector_statuses[DetectorId::OverpoweredSubagents.index()],
-        DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
+        DetectorStatus::Clean
     );
 }

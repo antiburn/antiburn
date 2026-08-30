@@ -398,8 +398,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use antiburn_local::analysis::{
-        EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput, SourceCapabilities,
-        SourceKind,
+        EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator, SessionInput,
+        SourceCapabilities, SourceKind, TurnFacts, TurnRowStore,
     };
 
     use super::*;
@@ -447,7 +447,9 @@ mod tests {
     }
 
     fn published_pass(record: &SessionRecord) -> EvidencePass {
-        let mut pass = analysis::evidence_pass(
+        let store: Arc<dyn TurnRowStore> =
+            MemoryTurnRowStore::new("claude", record.key.session_id.clone());
+        let mut pass = analysis::evidence_pass_with_turn_rows(
             &[SessionInput {
                 agent: "claude".into(),
                 session_id: record.key.session_id.clone(),
@@ -458,6 +460,7 @@ mod tests {
                 ),
             }],
             &|| false,
+            Some(store),
         );
         pass.analysis.fingerprint = record
             .source_fingerprint
@@ -496,7 +499,7 @@ mod tests {
             kind: SourceKind::File,
             capabilities,
         })
-        .evidence()
+        .evidence(&TurnFacts::default())
     }
 
     fn no_capabilities() -> SourceCapabilities {
@@ -1403,7 +1406,11 @@ mod tests {
                 source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
             };
             Box::pin(async move {
-                let mut pass = analysis::evidence_pass(&[input], &|| signal.observe());
+                let mut pass = analysis::evidence_pass_with_turn_rows(
+                    &[input],
+                    &|| signal.observe(),
+                    turn_row_store,
+                );
                 if let Some(fingerprint) = claimed.fingerprint {
                     pass.analysis.fingerprint = fingerprint;
                 }
@@ -1434,9 +1441,11 @@ mod tests {
         );
         let stored = store.evidence(&pi.key).unwrap().unwrap();
         assert_eq!(stored.status, EvidenceStatus::Ready);
-        let evidence: SessionEvidence =
-            serde_json::from_str(stored.evidence_json.as_deref().unwrap()).unwrap();
+        let evidence_json = stored.evidence_json.as_deref().unwrap();
+        assert!(evidence_json.contains("\"schemaRevision\":5"));
+        let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
         assert_eq!(evidence.capabilities, SourceCapabilities::pi());
+        assert_eq!(evidence.schema_revision, 5);
 
         let report = crate::insights_report::reduce_report(
             data_dir.path().to_path_buf(),

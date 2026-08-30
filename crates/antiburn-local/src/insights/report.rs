@@ -449,6 +449,7 @@ mod tests {
         ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, ModelTokens, PARSER_REVISION,
         QuotaConfidence, QuotaHitSeverity, QuotaIncident, QuotaLimitKind,
         SessionEvidenceAccumulator, SessionQuotaEvidence, SignalCoverage, SourceKind, TurnCounts,
+        TurnFacts,
     };
     use crate::insights::detectors::{ModelReplacement, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
@@ -460,7 +461,7 @@ mod tests {
             kind: SourceKind::File,
             capabilities: SourceCapabilities::claude(),
         })
-        .evidence()
+        .evidence(&TurnFacts::default())
     }
 
     /// The same claude evidence with one observed assistant turn, so

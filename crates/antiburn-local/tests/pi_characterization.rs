@@ -2,13 +2,15 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use antiburn_local::analysis::{
     AppendOnlyGuarantee, CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue,
-    MAX_RECORD_BYTES, NormalizedRecord, NormalizedSession, PartialReason, PiAdapter, RawSource,
-    RecordCoverage, RecordSink, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceClaim,
-    SourceKind, VendorAdapter, VisitOutcome, adapter_for, analyze_session, append_only_guarantee,
+    MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedRecord, NormalizedSession, PartialReason,
+    PiAdapter, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceClaim, SourceKind, TurnRowSink, TurnRowStore, VendorAdapter,
+    VisitOutcome, adapter_for, analyze_session, append_only_guarantee,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -162,13 +164,20 @@ fn composite_with(
         kind: SourceKind::from(&input.source),
         capabilities,
     });
-    let mut sink = CompositeSink::new(metrics, evidence);
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
     let outcome = adapter
         .visit(input, &mut sink)
         .expect("Pi fixture must stream into both sinks");
     sink.observe_source_outcome(outcome);
-    let (metrics, evidence) = sink.into_parts().expect("Pi evidence must publish");
-    (evidence.evidence(), metrics)
+    let evidence = sink.evidence().expect("Pi evidence must publish");
+    let (metrics, _evidence_accumulator) = sink.into_parts().expect("Pi metrics must publish");
+    (evidence, metrics)
 }
 
 fn golden_path(name: &str) -> PathBuf {
@@ -683,10 +692,10 @@ fn fork_ownership_drops_inherited_usage_without_persisting_parent_paths() {
     let EvidenceValue::Complete(child_time) = &child_evidence.time_range else {
         panic!("child time range must be complete");
     };
-    assert_eq!(
-        Some(child_time.first_ts_ms),
-        summary("fork_hazard_child").started_at_ms
-    );
+    // The row-derived time range spans only real turns. "shared-row"
+    // is dropped as inherited, so the child's first turn is its own
+    // "child-row" at 00:00:11, not the session header's 00:00:10.
+    assert_eq!(child_time.first_ts_ms, 1_767_312_011_000);
     assert!(!child_evidence.capabilities.subagent_relationships);
     assert!(matches!(
         child_evidence.subagents,
@@ -759,7 +768,11 @@ fn top_level_timestamps_and_session_start_are_authoritative() {
     let EvidenceValue::Complete(time_range) = evidence.time_range else {
         panic!("Pi time-range evidence must be complete");
     };
-    assert_eq!(time_range.first_ts_ms, 1_767_225_600_000);
+    // The row-derived time range spans only real turns: the earlier
+    // `model_change` and `session_info` markers carry top-level
+    // timestamps but are not turns, so the first turn's own 00:00:02
+    // is authoritative, not their earlier 00:00:00.
+    assert_eq!(time_range.first_ts_ms, 1_767_225_602_000);
     assert_eq!(time_range.last_ts_ms, 1_767_225_603_000);
 
     let (_, metrics) = composite(&input("session_start"));
