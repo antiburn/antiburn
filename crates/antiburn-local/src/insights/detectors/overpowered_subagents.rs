@@ -24,7 +24,7 @@
 //!   finding is already proven from another observed model.
 
 use crate::analysis::{EvidenceValue, SessionEvidence, SubagentEvidence};
-use crate::pricing::normalize_model_key;
+use crate::pricing::canonical_model_key;
 
 use super::{Observation, ReportCatalogs, model_family, observed};
 
@@ -128,14 +128,8 @@ fn premium_verdict(model: &str, catalogs: &ReportCatalogs) -> Option<bool> {
     if !policy.reviewed {
         return None;
     }
-    let normalized = normalize_model_key(model).to_lowercase();
-    Some(
-        policy.models.contains(&normalized)
-            || policy
-                .prefixes
-                .iter()
-                .any(|prefix| normalized.starts_with(prefix.as_str())),
-    )
+    let canonical = canonical_model_key(model);
+    Some(policy.is_premium(&canonical))
 }
 
 #[cfg(test)]
@@ -306,6 +300,62 @@ mod tests {
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
             Observation::ContractIncomplete
+        );
+    }
+
+    #[test]
+    fn premium_verdict_flags_bare_gpt_5_6() {
+        assert_eq!(
+            premium_verdict("gpt-5.6", &ReportCatalogs::default()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn premium_verdict_flags_gpt_5_5_fast() {
+        assert_eq!(
+            premium_verdict("gpt-5.5-fast", &ReportCatalogs::default()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn premium_verdict_excepts_gpt_5_6_terra() {
+        assert_eq!(
+            premium_verdict("gpt-5.6-terra", &ReportCatalogs::default()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn premium_verdict_excepts_gpt_5_6_luna() {
+        assert_eq!(
+            premium_verdict("gpt-5.6-luna", &ReportCatalogs::default()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn premium_verdict_flags_claude_mythos_5() {
+        assert_eq!(
+            premium_verdict("claude-mythos-5", &ReportCatalogs::default()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn premium_verdict_does_not_flag_claude_sonnet_5() {
+        assert_eq!(
+            premium_verdict("claude-sonnet-5", &ReportCatalogs::default()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn premium_verdict_does_not_flag_a_date_suffixed_claude_haiku() {
+        assert_eq!(
+            premium_verdict("claude-haiku-4-5-20251001", &ReportCatalogs::default()),
+            Some(false)
         );
     }
 }

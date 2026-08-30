@@ -93,7 +93,12 @@ pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
 pub const PARSER_REVISION: i64 = 12;
-pub const ANALYZER_REVISION: i64 = 12;
+// +1 for parts A-E of the Cadence model-tier-policy parity fixups: dropped
+// `ultrathink`, canonical model-key namespacing, the replacement registry
+// and premium-policy rewrites, and dominant-main-model-by-output-tokens
+// (`insights::detectors`). Same evidence fields, different assessable
+// outcome, so `EVIDENCE_SCHEMA_REVISION` is unchanged.
+pub const ANALYZER_REVISION: i64 = 13;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 9;
 

@@ -382,16 +382,23 @@ fn add_model_tokens(
  * ----------------------------------------------------------------- */
 
 /// Groups `scope = 'main'` assistant turns by model and picks the one
-/// with the most turns. A tie breaks on the earliest `last_ts_ms`
-/// (`MAX(ts_ms)` per model, ascending — the model whose activity ended
-/// soonest), then the earliest `turn_index` (`MIN(turn_index)` per
-/// model, ascending). `LIMIT 1` keeps this a single bounded row.
+/// with the most summed `output_tokens` (Cadence
+/// `dominant_subagent_tier`, `crates/analysis/src/efficiency_findings.rs`:
+/// the dominant tier is the one with the most output tokens, not the
+/// most turns). A tie breaks on turn count (`COUNT(*)` per model,
+/// descending), then the earliest `last_ts_ms` (`MAX(ts_ms)` per model,
+/// ascending — the model whose activity ended soonest), then the
+/// earliest `turn_index` (`MIN(turn_index)` per model, ascending).
+/// Cadence breaks ties by a fixed tier-priority order instead; that
+/// order has no antiburn equivalent (this query has no premium/tier
+/// concept), so this tie-break is only a stable, deterministic
+/// substitute. `LIMIT 1` keeps this a single bounded row.
 const DOMINANT_MAIN_MODEL_SQL: &str = "SELECT model
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
     AND scope = 'main' AND role = 'assistant' AND model IS NOT NULL
   GROUP BY model
-  ORDER BY COUNT(*) DESC, MAX(ts_ms) ASC, MIN(turn_index) ASC
+  ORDER BY SUM(output_tokens) DESC, COUNT(*) DESC, MAX(ts_ms) ASC, MIN(turn_index) ASC
   LIMIT 1";
 
 fn query_dominant_main_model(
@@ -1105,5 +1112,47 @@ mod tests {
         insert(&conn, &[first, second, unique]);
         let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
         assert_eq!(facts.duplicate_turn_identities, 1);
+    }
+
+    #[test]
+    fn dominant_main_model_picks_the_most_output_tokens_not_the_most_turns() {
+        let conn = test_connection();
+        let mut rows = Vec::new();
+        // model-a: three turns, five output tokens each (15 total).
+        for index in 0..3 {
+            let mut row = base_row("s1", index);
+            row.model = Some("model-a".to_owned());
+            row.output_tokens = 5;
+            rows.push(row);
+        }
+        // model-b: one turn, 100 output tokens. Fewer turns, more output.
+        let mut single = base_row("s1", 3);
+        single.model = Some("model-b".to_owned());
+        single.output_tokens = 100;
+        rows.push(single);
+        insert(&conn, &rows);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.dominant_main_model.as_deref(), Some("model-b"));
+    }
+
+    #[test]
+    fn dominant_main_model_breaks_an_output_token_tie_by_turn_count() {
+        let conn = test_connection();
+        let mut rows = Vec::new();
+        // model-a: two turns totalling 10 output tokens.
+        for index in 0..2 {
+            let mut row = base_row("s1", index);
+            row.model = Some("model-a".to_owned());
+            row.output_tokens = 5;
+            rows.push(row);
+        }
+        // model-b: one turn with 10 output tokens. Same total, fewer turns.
+        let mut single = base_row("s1", 2);
+        single.model = Some("model-b".to_owned());
+        single.output_tokens = 10;
+        rows.push(single);
+        insert(&conn, &rows);
+        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        assert_eq!(facts.dominant_main_model.as_deref(), Some("model-a"));
     }
 }

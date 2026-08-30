@@ -29,9 +29,9 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     if let Some(models) = observed(&evidence.models) {
         for (model, tokens) in &models.by_model {
             // The registry keys every source ID and alias by
-            // `normalize_model_key` plus lowercase; match observed model
-            // strings the same way so a date suffix or mixed case does
-            // not miss the rule.
+            // `canonical_model_key`; match observed model strings the
+            // same way so a provider prefix, a date suffix, or mixed
+            // case does not miss the rule.
             let Some(replacement) = catalogs.model_replacements.lookup(model) else {
                 continue;
             };

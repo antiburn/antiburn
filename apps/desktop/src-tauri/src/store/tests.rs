@@ -2012,7 +2012,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
             parser_revision: 12,
-            analyzer_revision: 12,
+            analyzer_revision: 13,
             metrics_schema_revision: 1,
             evidence_schema_revision: 9,
         }

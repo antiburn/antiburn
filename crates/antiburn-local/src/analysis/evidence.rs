@@ -741,7 +741,7 @@ mod tests {
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 12,
-                "analyzerRevision": 12,
+                "analyzerRevision": 13,
                 "evidenceSchemaRevision": 9,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",

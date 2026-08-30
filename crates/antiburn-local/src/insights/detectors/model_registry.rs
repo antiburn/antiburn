@@ -1,8 +1,8 @@
 //! The compiled, reviewed model-replacement registry for the Obsolete
 //! Model detector.
 //!
-//! Every rule below is a maintainer-reviewed judgment about when a
-//! vendor's replacement model became available. Verified 2026-08-30
+//! Source of truth: Cadence's reviewed registry at
+//! `crates/harness-kb/facts/model-replacements.json`, cross-checked
 //! against these vendor announcements:
 //!
 //! - Claude Opus 5: <https://www.anthropic.com/news/claude-opus-5>
@@ -12,17 +12,18 @@
 //! - GPT-5.6: <https://openai.com/index/gpt-5-6/> (also reported by
 //!   TechCrunch and Axios on 2026-07-09). Released 2026-07-09.
 //!
-//! The GPT-5.4 mini to GPT-5.6 Luna mapping is a judgment call: OpenAI
-//! has not published an explicit size-tier successor for the mini
-//! model. Treat it as provisional until a maintainer confirms it.
+//! GPT-5.4 maps to GPT-5.6 Terra (the balanced tier), GPT-5.5 and
+//! GPT-5.5 Fast map to GPT-5.6 Sol (the flagship tier), and GPT-5.4 mini
+//! maps to GPT-5.6 Luna: Cadence's registry documents all three as
+//! OpenAI's own stated successors, not maintainer judgment calls.
 
 use std::collections::BTreeMap;
 
-use crate::pricing::normalize_model_key;
+use crate::pricing::canonical_model_key;
 
 /// This registry's revision. Bump it whenever a rule changes, so a
 /// cached report can tell that its replacement facts are stale.
-pub const REGISTRY_REVISION: u32 = 1;
+pub const REGISTRY_REVISION: u32 = 2;
 
 /// One compiled rule: every source ID and alias it lists maps to the
 /// same replacement, effective date, and rationale.
@@ -67,12 +68,12 @@ impl ModelRegistry {
         self.entries.is_empty()
     }
 
-    /// Looks up one observed model, normalized with
-    /// [`normalize_model_key`] and lowercased the same way the
-    /// registry's own keys were built.
+    /// Looks up one observed model, canonicalized with
+    /// [`canonical_model_key`] the same way the registry's own keys were
+    /// built.
     pub fn lookup(&self, model: &str) -> Option<&ModelReplacementEntry> {
-        let normalized = normalize_model_key(model).to_lowercase();
-        self.entries.get(&normalized)
+        let canonical = canonical_model_key(model);
+        self.entries.get(&canonical)
     }
 }
 
@@ -91,6 +92,11 @@ const RULES: &[ModelReplacementRule] = &[
             "claude-opus-4.8",
             "anthropic/claude-opus-4.8",
             "claude-opus-4-8-thinking-high",
+            // Canonicalizes (strip `antigravity-`, then
+            // `normalize_model_key`) to `claude-opus-4-6-thinking`, which
+            // is a distinct key from `claude-opus-4-6`; register it
+            // explicitly so the alias resolves.
+            "antigravity-claude-opus-4-6-thinking",
         ],
         replacement: "claude-opus-5",
         // 2026-07-24T00:00:00Z
@@ -111,11 +117,19 @@ const RULES: &[ModelReplacementRule] = &[
         source_url: "https://www.anthropic.com/news/claude-sonnet-5",
     },
     ModelReplacementRule {
-        source_ids: &["gpt-5.5", "gpt-5.5-fast", "gpt-5.4"],
+        source_ids: &["gpt-5.4"],
+        replacement: "gpt-5.6-terra",
+        // 2026-07-09T00:00:00Z
+        available_since_ts_ms: 1_783_555_200_000,
+        rationale: "GPT-5.6 Terra succeeds GPT-5.4 in the balanced capability-and-cost role.",
+        source_url: "https://openai.com/index/gpt-5-6/",
+    },
+    ModelReplacementRule {
+        source_ids: &["gpt-5.5", "gpt-5.5-fast"],
         replacement: "gpt-5.6-sol",
         // 2026-07-09T00:00:00Z
         available_since_ts_ms: 1_783_555_200_000,
-        rationale: "GPT-5.6 Sol succeeds GPT-5.4 and GPT-5.5 at the top capability tier.",
+        rationale: "GPT-5.6 Sol succeeds GPT-5.5 at the top capability tier.",
         source_url: "https://openai.com/index/gpt-5-6/",
     },
     ModelReplacementRule {
@@ -123,9 +137,8 @@ const RULES: &[ModelReplacementRule] = &[
         replacement: "gpt-5.6-luna",
         // 2026-07-09T00:00:00Z
         available_since_ts_ms: 1_783_555_200_000,
-        rationale: "Judgment call: GPT-5.6 Luna is treated as GPT-5.4 mini's \
-            size-tier successor. OpenAI has not published an explicit \
-            mini-to-Luna mapping.",
+        rationale: "GPT-5.6 Luna is OpenAI's documented Codex replacement for \
+            GPT-5.4 mini in efficient, high-volume work.",
         source_url: "https://openai.com/index/gpt-5-6/",
     },
 ];
@@ -135,9 +148,9 @@ pub fn default_registry() -> ModelRegistry {
     let mut entries = BTreeMap::new();
     for rule in RULES {
         for source_id in rule.source_ids {
-            let normalized = normalize_model_key(source_id).to_lowercase();
+            let canonical = canonical_model_key(source_id);
             entries.insert(
-                normalized,
+                canonical,
                 ModelReplacementEntry {
                     replacement: rule.replacement.to_owned(),
                     available_since_ts_ms: rule.available_since_ts_ms,
@@ -185,13 +198,45 @@ mod tests {
         let registry = default_registry();
         let entry = registry
             .lookup("GPT-5.4")
-            .expect("mixed-case gpt-5.4 must resolve to gpt-5.6-sol");
-        assert_eq!(entry.replacement, "gpt-5.6-sol");
+            .expect("mixed-case gpt-5.4 must resolve to gpt-5.6-terra");
+        assert_eq!(entry.replacement, "gpt-5.6-terra");
     }
 
     #[test]
     fn an_unlisted_model_does_not_resolve() {
         let registry = default_registry();
         assert!(registry.lookup("claude-haiku-4-5").is_none());
+    }
+
+    #[test]
+    fn the_antigravity_opus_4_6_alias_resolves_to_opus_5() {
+        let registry = default_registry();
+        let entry = registry
+            .lookup("antigravity-claude-opus-4-6-thinking")
+            .expect("antigravity alias must resolve");
+        assert_eq!(entry.replacement, "claude-opus-5");
+    }
+
+    #[test]
+    fn gpt_5_4_resolves_to_terra_not_sol() {
+        let registry = default_registry();
+        let entry = registry.lookup("gpt-5.4").expect("gpt-5.4 must resolve");
+        assert_eq!(entry.replacement, "gpt-5.6-terra");
+    }
+
+    #[test]
+    fn gpt_5_5_resolves_to_sol() {
+        let registry = default_registry();
+        let entry = registry.lookup("gpt-5.5").expect("gpt-5.5 must resolve");
+        assert_eq!(entry.replacement, "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn a_provider_namespaced_source_id_resolves_through_canonicalization() {
+        let registry = default_registry();
+        let entry = registry
+            .lookup("openai.gpt-5.4")
+            .expect("provider-prefixed gpt-5.4 must canonicalize and resolve");
+        assert_eq!(entry.replacement, "gpt-5.6-terra");
     }
 }
