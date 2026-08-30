@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-08-21T10:00:00Z","message":{"id":"msg-partial-speed-1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":20,"output_tokens":5,"speed":"standard"},"content":[{"type":"text","text":"Synthetic turn with a recognized standard-speed tier."}]}}
+{"type":"assistant","timestamp":"2026-08-21T10:00:05Z","message":{"id":"msg-partial-speed-2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":15,"output_tokens":4},"content":[{"type":"text","text":"Synthetic turn where the harness omitted the speed field."}]}}

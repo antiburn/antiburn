@@ -24,10 +24,19 @@
 //!   nor `standard` blocks clean with a contract gap: the policy has
 //!   not classified the label, so absence is never provable. A finding
 //!   still wins over this gap.
-//! - A finding still wins on partial speed-signal coverage. Otherwise,
-//!   when fewer eligible turns carried a speed value than the source
-//!   saw (including zero eligible turns), the rule reports the signal
-//!   as missing instead of clean.
+//! - A finding still wins when no turn reports a speed value.
+//!   Otherwise the rule assesses only the turns that do report a
+//!   value. A turn without the signal is not negative evidence.
+//!   Claude Code writes `speed` on every main-loop turn. It omits
+//!   `speed` on most delegated turns. A full-coverage rule never
+//!   clears a session with subagent work. Cadence, the golden source,
+//!   applies the same principle in
+//!   `crates/analysis/src/efficiency_findings.rs`: its turn `speed`
+//!   field doc states that absence is never negative evidence of "not
+//!   fast", and its `detect_fast_mode` function skips a no-signal turn
+//!   instead of failing the whole session. The rule reports the
+//!   signal as missing only when no turn in the session carries a
+//!   speed value.
 
 use crate::analysis::{FAST_SPEED_KEY, SessionEvidence};
 
@@ -63,8 +72,13 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         if contract_incomplete {
             return Observation::ContractIncomplete;
         }
+        // A turn without a speed value is not negative evidence. The
+        // rule assesses only the turns that report one. The rule
+        // reports the signal as missing only when no turn reports one.
+        // This rule also covers zero eligible turns, because
+        // `present_turns` is then zero too.
         let coverage = models.speed_signal;
-        if coverage.eligible_turns == 0 || coverage.present_turns < coverage.eligible_turns {
+        if coverage.present_turns == 0 {
             return Observation::SignalMissing;
         }
     }
@@ -177,7 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn zero_eligible_speed_turns_report_the_signal_as_missing() {
+    fn no_speed_signal_present_reports_the_signal_as_missing() {
+        // Zero eligible turns leaves `present_turns` at zero too. This
+        // also proves the eligible_turns == 0 case stays missing.
         let catalogs = ReportCatalogs::default();
         let evidence = claude_evidence("no-eligible-turns");
 
@@ -185,7 +201,10 @@ mod tests {
     }
 
     #[test]
-    fn partial_speed_signal_coverage_without_a_finding_is_signal_missing() {
+    fn partial_speed_signal_coverage_without_a_finding_is_no_finding() {
+        // At least one turn carries a speed value. The rule assesses
+        // that turn instead of reporting the signal as missing. A turn
+        // without the signal is not negative evidence.
         let catalogs = ReportCatalogs::default();
         let mut evidence = claude_evidence("partial-speed-coverage");
         let EvidenceValue::Complete(mut models) = evidence.models else {
@@ -197,7 +216,17 @@ mod tests {
         };
         evidence.models = EvidenceValue::Complete(models);
 
-        assert_eq!(evaluate(&evidence, &catalogs), Observation::SignalMissing);
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::NoFinding);
+    }
+
+    #[test]
+    fn full_speed_signal_coverage_without_a_finding_is_no_finding() {
+        let catalogs = ReportCatalogs::default();
+
+        assert_eq!(
+            evaluate(&with_fast_turns(5, 0, false), &catalogs),
+            Observation::NoFinding
+        );
     }
 
     #[test]

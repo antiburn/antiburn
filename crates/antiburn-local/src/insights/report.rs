@@ -544,8 +544,10 @@ mod tests {
     /// The same claude evidence with one observed assistant turn, so
     /// the zero-work denominator exclusion does not remove the session
     /// from the absence detectors' eligible denominators. The one turn
-    /// carries full effort and speed signal coverage, so Model
-    /// Overthinking and Overuse of Fast Mode can read clean from it.
+    /// carries an effort and a speed value. Model Overthinking and
+    /// Overuse of Fast Mode can read clean from it. Neither detector
+    /// needs every eligible turn to carry the signal. Each needs only
+    /// one turn to carry it.
     fn evidence_with_work(session_id: &str) -> SessionEvidence {
         let mut row = evidence(session_id);
         let EvidenceValue::Complete(eligibility) = &mut row.eligibility else {

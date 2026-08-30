@@ -109,7 +109,11 @@ pub const PARSER_REVISION: i64 = 14;
 // +1 more for part F: Cache Churn now scores `RepeatedContext` by overpay
 // multiple instead of an absolute token threshold (`insights::detectors::
 // cache_churn`), so an old assessed outcome no longer matches this rule.
-pub const ANALYZER_REVISION: i64 = 14;
+// +1 for the partial signal coverage fix: Overuse of Fast Mode and Model
+// Overthinking now assess only the turns that report a speed or effort
+// value, instead of demanding every eligible turn carry one. A session
+// with subagent work is no longer always `SignalMissing`.
+pub const ANALYZER_REVISION: i64 = 15;
 pub const METRICS_SCHEMA_REVISION: i64 = 1;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
