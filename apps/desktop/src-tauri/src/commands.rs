@@ -1241,6 +1241,22 @@ fn session_hygiene_payloads(
         .collect()
 }
 
+/// Parses `evidence_json` and, when it parses, serves its badges under
+/// `evidence_state`. Returns `None` when there is no prior evidence to
+/// serve, so the caller falls back to a `not_assessed` payload.
+fn hygiene_payload_from_prior_evidence(
+    evidence_json: Option<String>,
+    evidence_state: &'static str,
+) -> Option<SessionHygienePayload> {
+    let evidence_json = evidence_json?;
+    let evidence = serde_json::from_str::<SessionEvidence>(&evidence_json).ok()?;
+    Some(SessionHygienePayload::for_evidence(
+        session_badges(&evidence, &ReportCatalogs::default()),
+        &evidence,
+        evidence_state,
+    ))
+}
+
 fn session_hygiene_payload(
     row: Option<crate::store::EvidenceRow>,
     source_generation: Option<i64>,
@@ -1264,10 +1280,19 @@ fn session_hygiene_payload(
             let generation_is_current =
                 row.analyzed_generation.is_some() && row.analyzed_generation == source_generation;
             if !revisions_are_current || !generation_is_current {
-                return SessionHygienePayload::not_assessed(
-                    "stale",
-                    NotAssessedReason::IncompleteEvidence,
-                );
+                // The session UI deliberately shows the previous
+                // generation's verdict while the requeue runs, marked
+                // "stale" so the caller knows it is not current.
+                // `CURRENT_EVIDENCE_PREDICATE` in `insights_report.rs` is
+                // unchanged: the report cohort still excludes stale
+                // evidence.
+                return hygiene_payload_from_prior_evidence(row.evidence_json, "stale")
+                    .unwrap_or_else(|| {
+                        SessionHygienePayload::not_assessed(
+                            "stale",
+                            NotAssessedReason::IncompleteEvidence,
+                        )
+                    });
             }
             let Some(evidence_json) = row.evidence_json else {
                 return SessionHygienePayload::not_assessed(
@@ -1298,10 +1323,24 @@ fn session_hygiene_payload(
         crate::store::EvidenceStatus::Unsupported => {
             SessionHygienePayload::not_assessed("unsupported", NotAssessedReason::CapabilityMissing)
         }
-        status => SessionHygienePayload::not_assessed(
-            status.as_str(),
-            NotAssessedReason::IncompleteEvidence,
-        ),
+        crate::store::EvidenceStatus::Pending | crate::store::EvidenceStatus::Processing => {
+            // A row that is pending or processing again (fingerprint
+            // churn on an actively growing session) keeps its last
+            // published evidence_json until the requeue lands. Serve that
+            // last verdict as "stale" instead of a blank not-assessed
+            // state; only a row with no prior evidence falls back to the
+            // status label.
+            let status_label = row.status.as_str();
+            hygiene_payload_from_prior_evidence(row.evidence_json, "stale").unwrap_or_else(|| {
+                SessionHygienePayload::not_assessed(
+                    status_label,
+                    NotAssessedReason::IncompleteEvidence,
+                )
+            })
+        }
+        crate::store::EvidenceStatus::Failed => {
+            SessionHygienePayload::not_assessed("failed", NotAssessedReason::IncompleteEvidence)
+        }
     }
 }
 
@@ -2028,69 +2067,108 @@ mod tests {
             SYNTHETIC_GENERATION,
         );
         assert_eq!(processing.evidence_state, "processing");
-    }
-
-    #[test]
-    fn session_hygiene_marks_old_ready_evidence_as_stale() {
-        let mut row = evidence_row(
-            crate::store::EvidenceStatus::Ready,
-            Some(synthetic_evidence()),
-        );
-        row.parser_revision = Some(PARSER_REVISION - 1);
-
-        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
-        assert_eq!(payload.evidence_state, "stale");
         assert!(
-            payload
+            processing
                 .badges
                 .iter()
-                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed))
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+            "a processing row with no prior evidence has nothing to serve"
+        );
+
+        let pending_without_evidence = session_hygiene_payload(
+            Some(evidence_row(crate::store::EvidenceStatus::Pending, None)),
+            SYNTHETIC_GENERATION,
+        );
+        assert_eq!(pending_without_evidence.evidence_state, "pending");
+        assert!(
+            pending_without_evidence
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+            "a pending row with no prior evidence has nothing to serve"
+        );
+    }
+
+    /// Debug strings of a payload's badge statuses, in badge order — a
+    /// cheap stand-in for `PartialEq` (the DTO derives `Debug` only).
+    fn badge_signature(payload: &SessionHygienePayload) -> Vec<String> {
+        payload
+            .badges
+            .iter()
+            .map(|badge| format!("{:?}", badge.status))
+            .collect()
+    }
+
+    #[test]
+    fn session_hygiene_serves_the_last_verdict_while_old_revisions_recompute() {
+        // The row's revisions fell behind (a parser/analyzer/schema bump),
+        // so a requeue is pending, but the row still carries the evidence
+        // from its last publish. The session UI shows that last verdict,
+        // marked "stale", instead of a blank not-assessed result.
+        let evidence = synthetic_evidence();
+        let mut stale_row =
+            evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence.clone()));
+        stale_row.parser_revision = Some(PARSER_REVISION - 1);
+        let fresh_row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
+
+        let stale_payload = session_hygiene_payload(Some(stale_row), SYNTHETIC_GENERATION);
+        let fresh_payload = session_hygiene_payload(Some(fresh_row), SYNTHETIC_GENERATION);
+
+        assert_eq!(stale_payload.evidence_state, "stale");
+        assert_eq!(
+            badge_signature(&stale_payload),
+            badge_signature(&fresh_payload),
+            "a stale row serves the same verdict as the last publish, only marked stale"
         );
     }
 
     #[test]
-    fn session_hygiene_never_serves_a_requeued_rows_leftover_evidence() {
+    fn session_hygiene_serves_the_last_verdict_while_a_requeued_row_recomputes() {
         // `reconcile_evidence_revisions` flips a stale Ready row's status to
         // Pending but keeps its old `evidence_json` by design (see
         // `store/mod.rs`). This row copies that shape: a non-Ready status
-        // next to fully current evidence from a previous pass.
-        let mut row = evidence_row(
+        // next to fully current evidence from a previous pass. The
+        // maintainer's ruling: show that last verdict, marked "stale",
+        // instead of "Computing checks…" while the requeue runs.
+        let evidence = synthetic_evidence();
+        let mut pending_row = evidence_row(
             crate::store::EvidenceStatus::Pending,
-            Some(synthetic_evidence()),
+            Some(evidence.clone()),
         );
-        row.retry_count = 0;
+        pending_row.retry_count = 0;
+        let ready_row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
 
-        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
-        assert_eq!(payload.evidence_state, "pending");
-        assert!(
-            payload
-                .badges
-                .iter()
-                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
-            "leftover evidence_json on a requeued row must never surface a Clean or Finding badge"
+        let pending_payload = session_hygiene_payload(Some(pending_row), SYNTHETIC_GENERATION);
+        let ready_payload = session_hygiene_payload(Some(ready_row), SYNTHETIC_GENERATION);
+
+        assert_eq!(pending_payload.evidence_state, "stale");
+        assert_eq!(
+            badge_signature(&pending_payload),
+            badge_signature(&ready_payload),
+            "leftover evidence_json on a requeued row serves the last real verdict, not a blank one"
         );
     }
 
     #[test]
-    fn session_hygiene_marks_evidence_from_an_earlier_source_generation_as_stale() {
+    fn session_hygiene_serves_the_last_verdict_from_an_earlier_source_generation() {
         // The source grew a new generation (a requeue not yet run, or still
         // pending) while this row's evidence is still Ready and carries
-        // current revisions from the previous generation.
-        let row = evidence_row(
-            crate::store::EvidenceStatus::Ready,
-            Some(synthetic_evidence()),
-        );
+        // current revisions from the previous generation. The row's own
+        // evidence is served as "stale" rather than blanked out.
+        let evidence = synthetic_evidence();
+        let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence.clone()));
         assert_eq!(row.analyzed_generation, SYNTHETIC_GENERATION);
         let newer_source_generation = Some(2);
+        let current_row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
 
-        let payload = session_hygiene_payload(Some(row), newer_source_generation);
-        assert_eq!(payload.evidence_state, "stale");
-        assert!(
-            payload
-                .badges
-                .iter()
-                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
-            "evidence analyzed against a superseded source generation must never surface a Clean or Finding badge"
+        let stale_payload = session_hygiene_payload(Some(row), newer_source_generation);
+        let current_payload = session_hygiene_payload(Some(current_row), SYNTHETIC_GENERATION);
+
+        assert_eq!(stale_payload.evidence_state, "stale");
+        assert_eq!(
+            badge_signature(&stale_payload),
+            badge_signature(&current_payload),
+            "evidence analyzed against a superseded source generation still serves its own verdict, marked stale"
         );
     }
 

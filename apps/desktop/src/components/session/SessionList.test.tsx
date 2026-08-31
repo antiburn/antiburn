@@ -219,6 +219,30 @@ describe("SessionList — rows", () => {
     ])
   })
 
+  it("keeps the last verdict on screen, marked stale, while a live session recomputes", async () => {
+    getSessionHygiene.mockResolvedValueOnce([
+      {
+        evidenceState: "stale",
+        badges: [
+          { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
+          { id: "modelOverthinking", status: "clean", notAssessedReason: null },
+          { id: "overpoweredSubagents", status: "clean", notAssessedReason: null },
+          { id: "obsoleteModel", status: "clean", notAssessedReason: null },
+          { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
+          { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
+        ],
+      },
+    ])
+    list({ entries: [entry({ sessionId: "synthetic-hygiene-stale" })] })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Refreshing — 5 of 6 burn checks pass").textContent).toBe(
+        "5/6 burn checks",
+      )
+    })
+    expect(screen.queryByLabelText("Refreshing session hygiene checks")).toBeNull()
+  })
+
   it("states the last-activity time", () => {
     list({ entries: [entry({ timestamp: at(0, 9) })] })
     expect(screen.getByLabelText(/^Last activity /)).toBeTruthy()
