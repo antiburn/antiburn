@@ -81,11 +81,14 @@ fn fixture(name: &str) -> &'static str {
         "cache_write_tokens" => {
             include_str!("fixtures/codex_characterization/cache_write_tokens.jsonl")
         }
+        "collab_agent_records" => {
+            include_str!("fixtures/codex_characterization/collab_agent_records.jsonl")
+        }
         _ => panic!("unknown Codex characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 21] {
+fn fixture_names() -> [&'static str; 22] {
     [
         "records_all_kinds",
         "malformed_between_valid",
@@ -108,6 +111,7 @@ fn fixture_names() -> [&'static str; 21] {
         "model_overthinking_finding",
         "context_reread",
         "cache_write_tokens",
+        "collab_agent_records",
     ]
 }
 
@@ -655,6 +659,63 @@ fn context_reread_codex_fixture_matches_golden() {
 #[test]
 fn cache_write_tokens_codex_fixture_matches_golden() {
     check_golden("cache_write_tokens");
+}
+
+#[test]
+fn collab_agent_records_codex_fixture_matches_golden() {
+    check_golden("collab_agent_records");
+}
+
+#[test]
+fn collab_agent_records_are_allowlisted_and_add_no_signal() {
+    let with_collab = fixture("collab_agent_records");
+    let without_collab: String = with_collab
+        .lines()
+        .filter(|line| !line.contains(r#""type":"collab_"#))
+        .map(|line| format!("{line}\n"))
+        .collect();
+
+    let collab_input = input("collab_agent_records");
+    let bare_input = SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "collab_agent_records_bare".to_owned(),
+        source: RawSource::Jsonl(without_collab),
+    };
+
+    let (evidence, metrics) = composite(&collab_input);
+    let (bare_evidence, bare_metrics) = composite(&bare_input);
+
+    // The ten collab-family records clear coverage instead of degrading it
+    // to `Partial` — this is the coverage fix the fixture exists to prove.
+    assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    assert_eq!(evidence.diagnostics.records_unusable, 0);
+    assert_eq!(evidence.diagnostics.records_unrecognized_inert, 0);
+    assert!(evidence.diagnostics.unrecognized_types.is_empty());
+
+    // The collab records add eight extra lines but no extra signal: metrics
+    // match a version of the same fixture with those lines removed.
+    assert_eq!(
+        metrics.metrics().event_count,
+        bare_metrics.metrics().event_count
+    );
+    assert_eq!(
+        metrics.metrics().tokens_in,
+        bare_metrics.metrics().tokens_in
+    );
+    assert_eq!(
+        metrics.metrics().tokens_out,
+        bare_metrics.metrics().tokens_out
+    );
+    assert_eq!(evidence.tools, bare_evidence.tools);
+    assert_eq!(evidence.models, bare_evidence.models);
+
+    // The `spawn_agent` function call still publishes its subagent
+    // relationship exactly once — the collab family duplicates the same
+    // fact but never emits a second `SubagentSpawn`.
+    let EvidenceValue::Complete(subagents) = &evidence.subagents else {
+        panic!("collab_agent_records fixture must publish complete subagent evidence");
+    };
+    assert_eq!(subagents.spawn_count, 1);
 }
 
 #[test]
