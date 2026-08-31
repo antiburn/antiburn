@@ -19,7 +19,7 @@ use crate::analysis::evidence::{
     cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::model::CompactionTrigger;
-use crate::analysis::rows::TurnSessionKey;
+use crate::analysis::rows::{TurnRow, TurnScope, TurnSessionKey, parse_role};
 
 /// The row-derived facts for one session, at one claim fence.
 ///
@@ -262,6 +262,81 @@ fn query_core(
             })
         },
     )
+}
+
+const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, child_id,
+        role, ts_ms, model, effort, speed, input_tokens, cache_read_tokens,
+        cache_write_tokens, output_tokens, is_compaction_boundary, message_id,
+        uuid, parent_uuid, compaction_trigger, compaction_pre_tokens,
+        compaction_post_tokens
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  ORDER BY source_key, turn_index";
+
+/// Reads the full ordered turn rows for `key` at `claim_fence`, without
+/// their `turn_content` text. A later change adds a separate content read.
+///
+/// Rows come back ordered by `(source_key, turn_index)`, the same order a
+/// pass wrote them in. Every returned row carries an empty
+/// [`TurnRow::content`] — this query never joins `turn_content`.
+pub fn query_turn_rows(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<Vec<TurnRow>> {
+    let mut statement = conn.prepare(TURN_ROWS_SQL)?;
+    let rows = statement.query_map(
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        |row| {
+            let scope_text: String = row.get(3)?;
+            let scope = TurnScope::parse(&scope_text).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    format!("unrecognized turn scope {scope_text:?}").into(),
+                )
+            })?;
+            let role_text: String = row.get(5)?;
+            let role = parse_role(&role_text).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Text,
+                    format!("unrecognized turn role {role_text:?}").into(),
+                )
+            })?;
+            let is_compaction_boundary: i64 = row.get(14)?;
+            let compaction_pre_tokens: Option<i64> = row.get(19)?;
+            let compaction_post_tokens: Option<i64> = row.get(20)?;
+            let compaction_trigger: Option<String> = row.get(18)?;
+            Ok(TurnRow {
+                source_key: row.get(0)?,
+                thread_id: row.get(1)?,
+                turn_index: as_u64(row.get(2)?),
+                scope,
+                child_id: row.get(4)?,
+                role,
+                ts_ms: row.get(6)?,
+                model: row.get(7)?,
+                effort: row.get(8)?,
+                speed: row.get(9)?,
+                input_tokens: as_u64(row.get(10)?),
+                cache_read_tokens: as_u64(row.get(11)?),
+                cache_write_tokens: as_u64(row.get(12)?),
+                output_tokens: as_u64(row.get(13)?),
+                is_compaction_boundary: is_compaction_boundary != 0,
+                message_id: row.get(15)?,
+                uuid: row.get(16)?,
+                parent_uuid: row.get(17)?,
+                compaction_trigger: compaction_trigger
+                    .as_deref()
+                    .and_then(CompactionTrigger::parse),
+                compaction_pre_tokens: compaction_pre_tokens.map(as_u64),
+                compaction_post_tokens: compaction_post_tokens.map(as_u64),
+                content: Vec::new(),
+            })
+        },
+    )?;
+    rows.collect()
 }
 
 /* --------------------------------------------------------------------
@@ -962,6 +1037,85 @@ mod tests {
         insert_turn_rows(&conn, &KEY, 2, &[base_row("s1", 0)]).expect("insert other fence");
         let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
         assert_eq!(facts.eligibility.turns, 0);
+    }
+
+    #[test]
+    fn turn_rows_come_back_ordered_by_source_key_then_turn_index() {
+        let conn = test_connection();
+        insert(
+            &conn,
+            &[
+                base_row("s2", 1),
+                base_row("s1", 1),
+                base_row("s2", 0),
+                base_row("s1", 0),
+            ],
+        );
+        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        let order: Vec<(&str, u64)> = rows
+            .iter()
+            .map(|row| (row.source_key.as_str(), row.turn_index))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("s1", 0), ("s1", 1), ("s2", 0), ("s2", 1)],
+            "rows must sort by (source_key, turn_index)"
+        );
+    }
+
+    #[test]
+    fn turn_rows_omits_rows_under_another_fence() {
+        let conn = test_connection();
+        insert_turn_rows(&conn, &KEY, 2, &[base_row("s1", 0)]).expect("insert other fence");
+        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        assert!(rows.is_empty(), "another fence's rows must not appear");
+    }
+
+    #[test]
+    fn turn_rows_carries_every_scalar_column_and_leaves_content_empty() {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        row.scope = TurnScope::Delegated;
+        row.child_id = Some("s1".to_owned());
+        row.role = "tool";
+        row.effort = Some("high".to_owned());
+        row.speed = Some("fast".to_owned());
+        row.cache_read_tokens = 3;
+        row.cache_write_tokens = 4;
+        row.is_compaction_boundary = true;
+        row.message_id = Some("msg-1".to_owned());
+        row.uuid = Some("uuid-1".to_owned());
+        row.parent_uuid = Some("uuid-0".to_owned());
+        row.compaction_trigger = Some(CompactionTrigger::Manual);
+        row.compaction_pre_tokens = Some(100);
+        row.compaction_post_tokens = Some(20);
+        row.content = vec![crate::analysis::interface::ContentPart::new(
+            crate::analysis::interface::ContentKind::ToolResult,
+            "captured text",
+        )];
+        insert(&conn, &[row]);
+
+        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.scope, TurnScope::Delegated);
+        assert_eq!(row.child_id.as_deref(), Some("s1"));
+        assert_eq!(row.role, "tool");
+        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert_eq!(row.speed.as_deref(), Some("fast"));
+        assert_eq!(row.cache_read_tokens, 3);
+        assert_eq!(row.cache_write_tokens, 4);
+        assert!(row.is_compaction_boundary);
+        assert_eq!(row.message_id.as_deref(), Some("msg-1"));
+        assert_eq!(row.uuid.as_deref(), Some("uuid-1"));
+        assert_eq!(row.parent_uuid.as_deref(), Some("uuid-0"));
+        assert_eq!(row.compaction_trigger, Some(CompactionTrigger::Manual));
+        assert_eq!(row.compaction_pre_tokens, Some(100));
+        assert_eq!(row.compaction_post_tokens, Some(20));
+        assert!(
+            row.content.is_empty(),
+            "this query never joins turn_content"
+        );
     }
 
     #[test]

@@ -62,7 +62,7 @@ pub use evidence::{
     SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse,
     TurnCounts,
 };
-pub use evidence_query::{TurnFacts, query_turn_facts};
+pub use evidence_query::{TurnFacts, query_turn_facts, query_turn_rows};
 pub use evidence_sink::{CompositeSink, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,

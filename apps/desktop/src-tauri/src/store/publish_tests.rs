@@ -267,3 +267,179 @@ fn a_won_race_removes_turn_rows_from_every_superseded_fence_and_keeps_only_its_o
         "the winning fence's own rows must survive untouched"
     );
 }
+
+/* R1: `Store::published_turn_rows` only exposes a complete, published
+ * fence — never a claim in flight, never a superseded fence, and never a
+ * status other than `ready`. */
+
+fn revisions() -> ProjectionRevisions {
+    ProjectionRevisions {
+        parser_revision: 1,
+        analyzer_revision: 1,
+        metrics_schema_revision: 1,
+        evidence_schema_revision: 1,
+    }
+}
+
+#[test]
+fn published_turn_rows_returns_the_winning_pass_rows_in_order() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "published-rows-order", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    let written = [turn_row(2), turn_row(0), turn_row(1)];
+    writer.write_turn_rows(&written).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    let rows = store.published_turn_rows(&key).unwrap().expect("ready");
+    assert_eq!(
+        rows,
+        vec![turn_row(0), turn_row(1), turn_row(2)],
+        "rows must come back sorted by (source_key, turn_index), not insertion order"
+    );
+}
+
+#[test]
+fn published_turn_rows_is_none_while_a_newer_claim_is_in_flight() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "claim-in-flight", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+    assert!(store.published_turn_rows(&key).unwrap().is_some());
+
+    // A newer pass claims the session: status flips to `processing` and the
+    // fence bumps, while the earlier published fence's rows are still on
+    // disk — only a publish deletes a superseded fence. This pass then
+    // writes some, but not all, of its own rows before this check runs.
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    let next_claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("reclaimable");
+    assert_eq!(next_claim.claim_fence, claim.claim_fence + 1);
+    let next_writer = FencedTurnRowStore::new(store.clone(), key.clone(), next_claim.claim_fence);
+    next_writer.write_turn_rows(&[turn_row(0)]).unwrap();
+
+    assert_eq!(
+        store.published_turn_rows(&key).unwrap(),
+        None,
+        "a claim in flight must never expose the old fence or a partial new one"
+    );
+}
+
+#[test]
+fn published_turn_rows_is_none_with_no_evidence_row() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "never-claimed");
+    assert_eq!(store.published_turn_rows(&key).unwrap(), None);
+}
+
+#[test]
+fn published_turn_rows_is_none_while_pending() {
+    let store = store();
+    let mut record = session("pending-status", 1_000);
+    record.source_fingerprint = Some("sv1:pending-status".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    assert_eq!(store.published_turn_rows(&record.key).unwrap(), None);
+}
+
+#[test]
+fn published_turn_rows_is_none_when_failed() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "failed-status", 100, 60);
+    let key = record.key.clone();
+    assert!(
+        store
+            .fail_evidence(
+                &claim,
+                EvidenceFailure::Failed {
+                    revisions: revisions(),
+                },
+                "source-unreadable",
+            )
+            .unwrap()
+    );
+    assert_eq!(store.published_turn_rows(&key).unwrap(), None);
+}
+
+#[test]
+fn published_turn_rows_is_none_when_unsupported() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "unsupported-status", 100, 60);
+    let key = record.key.clone();
+    let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap(),
+        "an unsupported completion still publishes"
+    );
+    assert_eq!(
+        store.published_turn_rows(&key).unwrap(),
+        None,
+        "only status `ready` names a complete row projection"
+    );
+}
+
+#[test]
+fn a_second_publish_supersedes_the_first_in_published_turn_rows() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "second-publish-supersedes", 100, 60);
+    let key = record.key.clone();
+    let first_writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    first_writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    let first_completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &first_completion, &[])
+            .unwrap()
+    );
+    assert_eq!(
+        store.published_turn_rows(&key).unwrap().expect("ready"),
+        vec![turn_row(0)]
+    );
+
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    let next_claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("reclaimable");
+    let next_record = projection_record(
+        key.clone(),
+        "sv1:second-publish-supersedes",
+        next_claim.source_generation,
+    );
+    let next_writer = FencedTurnRowStore::new(store.clone(), key.clone(), next_claim.claim_fence);
+    next_writer
+        .write_turn_rows(&[turn_row(0), turn_row(1)])
+        .unwrap();
+    let next_completion = evidence_completion(&next_claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&next_record, None, &next_completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store.published_turn_rows(&key).unwrap().expect("ready"),
+        vec![turn_row(0), turn_row(1)],
+        "only the new pass's rows must come back, none of the superseded fence's"
+    );
+}
