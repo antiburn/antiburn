@@ -123,6 +123,7 @@ describe("PopoverSession live analysis poll", () => {
     sourcePath: null,
     startedAtEpoch: null,
     analysisPending: false,
+    analysisStale: false,
     ...overrides,
   })
 
@@ -248,6 +249,41 @@ describe("PopoverSession live analysis poll", () => {
     await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 2)
 
     expect(getSubagentAnalysis).toHaveBeenCalledTimes(3)
+    unsubscribe()
+  })
+
+  it("re-loads on every tick while the analysis is stale, fingerprint unchanged", async () => {
+    getSessionAnalysis.mockResolvedValue({ ...usableAnalysis(), analysisStale: true })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
+
+    // Unbounded, the same as a pending drilldown: a stale analysis keeps
+    // refetching every tick until the fresher pass the worker already
+    // queued or is already running actually publishes.
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(6)
+    unsubscribe()
+  })
+
+  it("stops re-loading once a stale analysis comes back fresh", async () => {
+    getSessionAnalysis
+      .mockResolvedValueOnce({ ...usableAnalysis(), analysisStale: true })
+      .mockResolvedValueOnce({ ...usableAnalysis(), analysisStale: true })
+      .mockResolvedValue(usableAnalysis())
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
+
+    // 1 initial load + 2 stale re-loads, then the third re-load lands fresh
+    // and the poll goes back to comparing fingerprints alone.
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(3)
     unsubscribe()
   })
 

@@ -196,6 +196,13 @@ pub struct SessionAnalysis {
     ///
     /// [`SessionAnalysis::unavailable`]: crate::analysis::SessionAnalysis::unavailable
     pub analysis_pending: bool,
+    /// True when the fields above come from a published fence that a fresher
+    /// pass is already queued or running behind, or whose transcript has
+    /// since moved on. The data on screen is real, just not the latest —
+    /// unlike [`Self::analysis_pending`], which means there is nothing to
+    /// show yet. The view keeps polling and swaps in the fresh pass once the
+    /// worker publishes it.
+    pub analysis_stale: bool,
 }
 
 /// A protected directory the last pass declined to read, and how many working

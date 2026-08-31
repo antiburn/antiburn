@@ -97,6 +97,19 @@ function isAnalysisPending(state: PopoverAnalysisState, key: string): boolean {
   )
 }
 
+/**
+ * Whether the settled analysis for `key` reports itself as stale: it comes
+ * from a published fence a fresher pass is already queued or running
+ * behind, or whose transcript has since moved on. The data on screen is
+ * real, so this does not gate what renders — it only keeps the poll running
+ * so the fresh pass swaps in once the worker publishes it.
+ */
+function isAnalysisStale(state: PopoverAnalysisState, key: string): boolean {
+  return (
+    state !== null && state.key === key && state.payload !== null && state.payload.analysisStale
+  )
+}
+
 export interface PopoverSnapshot {
   appVersion: string | null
   debugBuild: boolean
@@ -760,12 +773,13 @@ export class PopoverSession {
    * its own, and the next interval simply tries again.
    *
    * A pending analysis (the worker has not published rows for this session
-   * yet) re-loads on every tick, unbounded, whether or not the fingerprint
-   * moved: there is nothing to compare against until the worker's first
-   * pass lands, and that pass is what this poll is waiting for. That check
-   * runs before, and short-circuits, the bounded unavailable-analysis retry
-   * below, which answers a different question — a published pass that
-   * turned up nothing to show.
+   * yet) or a stale one (rows are published, but a fresher pass is queued or
+   * running behind them) re-loads on every tick, unbounded, whether or not
+   * the fingerprint moved: there is nothing newer to compare against until
+   * the worker's next pass lands, and that pass is what this poll is
+   * waiting for. That check runs before, and short-circuits, the bounded
+   * unavailable-analysis retry below, which answers a different question —
+   * a published pass that turned up nothing to show.
    */
   private tickAnalysisPoll = (): void => {
     if (this.analysisPollInFlight) return
@@ -783,7 +797,10 @@ export class PopoverSession {
           void this.refreshAnalysis()
           return
         }
-        if (isAnalysisPending(this.snapshot.analysis, key)) {
+        if (
+          isAnalysisPending(this.snapshot.analysis, key) ||
+          isAnalysisStale(this.snapshot.analysis, key)
+        ) {
           void this.refreshAnalysis()
           return
         }

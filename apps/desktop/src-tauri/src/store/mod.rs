@@ -71,7 +71,7 @@ const EVIDENCE_BY_KEY_SQL: &str = "SELECT environment_key, agent, session_id, st
             parser_revision, analyzer_revision, evidence_schema_revision,
             evidence_json, diagnostics_json, retry_count, claim_fence,
             claimed_at_epoch, lease_expires_at_epoch,
-            next_attempt_at_epoch, analyzed_at_epoch, last_error
+            next_attempt_at_epoch, analyzed_at_epoch, last_error, published_fence
        FROM session_evidence
       WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3";
 
@@ -1162,7 +1162,7 @@ impl Store {
                     evidence_json = ?10, diagnostics_json = ?11,
                     analyzed_at_epoch = ?12, retry_count = 0, last_error = NULL,
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
-                    next_attempt_at_epoch = NULL
+                    next_attempt_at_epoch = NULL, published_fence = ?13
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
                 AND evidence.status = 'processing' AND evidence.claim_fence = ?13
@@ -1251,24 +1251,21 @@ impl Store {
         )?)
     }
 
-    /// One session's published turn rows, or `None` when no complete,
-    /// published set of rows exists to read.
+    /// One session's last published turn rows, or `None` when this session
+    /// has never published.
     ///
     /// A claim bumps `session_evidence.claim_fence` and writes new rows
     /// under that fence while the last published pass's rows still sit
-    /// under the old fence. A publish that wins deletes every other
-    /// fence's rows and sets status `ready` or `unsupported`; a publish
-    /// that loses its race deletes only its own fence's rows and leaves the
-    /// earlier published fence in place. So `claim_fence` names a complete
-    /// set of rows when status is `ready` or `unsupported` — both are
-    /// terminal states a winning publish reached, so both name a complete
-    /// fence. `unsupported` means no detector was eligible for this source,
-    /// an insights verdict, not a parse-quality one; the rows and the
-    /// session_analysis record are still complete for it. With status
-    /// `pending`, `processing`, or `failed`, `claim_fence` may point at
-    /// partial or missing rows, and this method returns `None` for those.
-    /// The evidence lookup and the row query run under one lock, so a claim
-    /// racing this read cannot swap the fence in between them.
+    /// under `published_fence`. Only a winning publish moves
+    /// `published_fence`, and it always moves it to a complete row set —
+    /// see `EvidenceRow::published_fence`'s doc comment and the `v21`
+    /// migration in `store::schema` for the full contract. So a claim in
+    /// flight, a requeue back to `pending`, or a run that later fails
+    /// changes `status` and `claim_fence` but never touches
+    /// `published_fence`, and this method keeps serving the same rows it
+    /// served before that started. The evidence lookup and the row query
+    /// run under one lock, so a concurrent claim cannot swap
+    /// `published_fence` in between them.
     pub fn published_turn_rows(&self, key: &SessionKey) -> Result<Option<Vec<TurnRow>>> {
         let connection = self.lock();
         let Some(evidence) = connection
@@ -1281,16 +1278,13 @@ impl Store {
         else {
             return Ok(None);
         };
-        if !matches!(
-            evidence.status,
-            EvidenceStatus::Ready | EvidenceStatus::Unsupported
-        ) {
+        let Some(published_fence) = evidence.published_fence else {
             return Ok(None);
-        }
+        };
         Ok(Some(query_turn_rows(
             &connection,
             &turn_session_key(key),
-            evidence.claim_fence,
+            published_fence,
         )?))
     }
 
@@ -2130,6 +2124,7 @@ fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
         next_attempt_at_epoch: row.get(15)?,
         analyzed_at_epoch: row.get(16)?,
         last_error: row.get(17)?,
+        published_fence: row.get(18)?,
     })
 }
 
