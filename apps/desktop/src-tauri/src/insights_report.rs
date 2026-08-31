@@ -544,6 +544,40 @@ mod tests {
         }
 
         #[test]
+        fn stale_generation_evidence_never_joins_the_cohort() {
+            // `denominator_partitions_non_cohort_rows_by_reason` above pins
+            // the coverage bucket this row lands in. This test pins the
+            // narrower claim I5 asks for: `COHORT_SQL` itself excludes it,
+            // so the report's badge computation never runs on it.
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+
+            publish_ready(&store, "current", 120);
+            publish_ready(&store, "stale", 121);
+            // The source grows a new generation and no requeue has run yet:
+            // this row is still 'ready', with current revisions, but was
+            // analyzed against the generation the source has since moved
+            // past.
+            change_source(&store, "stale", &[]);
+
+            let report = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+
+            assert_eq!(report.context.coverage.discovered, 2);
+            assert_eq!(report.context.coverage.ready, 1);
+            assert_eq!(report.context.coverage.stale, 1);
+            assert_eq!(
+                report.assessed_sessions, 1,
+                "evidence analyzed against a superseded source generation must not join the cohort"
+            );
+        }
+
+        #[test]
         fn pi_backfill_moves_awaiting_support_into_the_pending_queue() {
             let data_dir = TempDir::new().unwrap();
             let store = Store::open(data_dir.path()).unwrap();

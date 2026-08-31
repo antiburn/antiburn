@@ -1205,8 +1205,10 @@ pub async fn get_session_hygiene(
                 )
             })
             .collect::<Vec<_>>();
-        let rows = app.state::<Store>().evidence_batch(&keys).map_err(fail)?;
-        Ok(session_hygiene_payloads(rows))
+        let store = app.state::<Store>();
+        let rows = store.evidence_batch(&keys).map_err(fail)?;
+        let source_generations = store.source_generation_batch(&keys).map_err(fail)?;
+        Ok(session_hygiene_payloads(rows, source_generations))
     })
     .await
     .map_err(fail)?
@@ -1214,11 +1216,18 @@ pub async fn get_session_hygiene(
 
 fn session_hygiene_payloads(
     rows: Vec<Option<crate::store::EvidenceRow>>,
+    source_generations: Vec<Option<i64>>,
 ) -> Vec<SessionHygienePayload> {
-    rows.into_iter().map(session_hygiene_payload).collect()
+    rows.into_iter()
+        .zip(source_generations)
+        .map(|(row, source_generation)| session_hygiene_payload(row, source_generation))
+        .collect()
 }
 
-fn session_hygiene_payload(row: Option<crate::store::EvidenceRow>) -> SessionHygienePayload {
+fn session_hygiene_payload(
+    row: Option<crate::store::EvidenceRow>,
+    source_generation: Option<i64>,
+) -> SessionHygienePayload {
     let Some(row) = row else {
         return SessionHygienePayload::not_assessed(
             "pending",
@@ -1231,7 +1240,13 @@ fn session_hygiene_payload(row: Option<crate::store::EvidenceRow>) -> SessionHyg
             let revisions_are_current = row.parser_revision == Some(PARSER_REVISION)
                 && row.analyzer_revision == Some(ANALYZER_REVISION)
                 && row.evidence_schema_revision == Some(EVIDENCE_SCHEMA_REVISION);
-            if !revisions_are_current {
+            // A session whose source grew a new generation, with the
+            // requeue not yet run or still pending, must not serve badges
+            // from the previous generation's evidence. This mirrors
+            // `CURRENT_EVIDENCE_PREDICATE` in `insights_report.rs`.
+            let generation_is_current =
+                row.analyzed_generation.is_some() && row.analyzed_generation == source_generation;
+            if !revisions_are_current || !generation_is_current {
                 return SessionHygienePayload::not_assessed(
                     "stale",
                     NotAssessedReason::IncompleteEvidence,
@@ -2099,9 +2114,14 @@ mod tests {
         synthetic_evidence_accumulator().evidence(&antiburn_local::analysis::TurnFacts::default())
     }
 
+    // The generation `evidence_row` stamps as `analyzed_generation`. Tests
+    // that are not exercising a generation mismatch pass this back as the
+    // session's current source generation, so the row reads as current.
+    const SYNTHETIC_GENERATION: Option<i64> = Some(1);
+
     #[test]
     fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
-        let missing = session_hygiene_payload(None);
+        let missing = session_hygiene_payload(None, SYNTHETIC_GENERATION);
         assert_eq!(missing.evidence_state, "pending");
         assert!(
             missing
@@ -2110,10 +2130,10 @@ mod tests {
                 .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed))
         );
 
-        let processing = session_hygiene_payload(Some(evidence_row(
-            crate::store::EvidenceStatus::Processing,
-            None,
-        )));
+        let processing = session_hygiene_payload(
+            Some(evidence_row(crate::store::EvidenceStatus::Processing, None)),
+            SYNTHETIC_GENERATION,
+        );
         assert_eq!(processing.evidence_state, "processing");
     }
 
@@ -2125,7 +2145,7 @@ mod tests {
         );
         row.parser_revision = Some(PARSER_REVISION - 1);
 
-        let payload = session_hygiene_payload(Some(row));
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
         assert_eq!(payload.evidence_state, "stale");
         assert!(
             payload
@@ -2136,17 +2156,70 @@ mod tests {
     }
 
     #[test]
+    fn session_hygiene_never_serves_a_requeued_rows_leftover_evidence() {
+        // `reconcile_evidence_revisions` flips a stale Ready row's status to
+        // Pending but keeps its old `evidence_json` by design (see
+        // `store/mod.rs`). This row copies that shape: a non-Ready status
+        // next to fully current evidence from a previous pass.
+        let mut row = evidence_row(
+            crate::store::EvidenceStatus::Pending,
+            Some(synthetic_evidence()),
+        );
+        row.retry_count = 0;
+
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+        assert_eq!(payload.evidence_state, "pending");
+        assert!(
+            payload
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+            "leftover evidence_json on a requeued row must never surface a Clean or Finding badge"
+        );
+    }
+
+    #[test]
+    fn session_hygiene_marks_evidence_from_an_earlier_source_generation_as_stale() {
+        // The source grew a new generation (a requeue not yet run, or still
+        // pending) while this row's evidence is still Ready and carries
+        // current revisions from the previous generation.
+        let row = evidence_row(
+            crate::store::EvidenceStatus::Ready,
+            Some(synthetic_evidence()),
+        );
+        assert_eq!(row.analyzed_generation, SYNTHETIC_GENERATION);
+        let newer_source_generation = Some(2);
+
+        let payload = session_hygiene_payload(Some(row), newer_source_generation);
+        assert_eq!(payload.evidence_state, "stale");
+        assert!(
+            payload
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+            "evidence analyzed against a superseded source generation must never surface a Clean or Finding badge"
+        );
+    }
+
+    #[test]
     fn session_hygiene_batches_preserve_order_and_isolate_invalid_rows() {
         let mut invalid = evidence_row(crate::store::EvidenceStatus::Ready, None);
         invalid.evidence_json = Some("{".to_owned());
-        let payloads = session_hygiene_payloads(vec![
-            None,
-            Some(invalid),
-            Some(evidence_row(
-                crate::store::EvidenceStatus::Ready,
-                Some(synthetic_evidence()),
-            )),
-        ]);
+        let payloads = session_hygiene_payloads(
+            vec![
+                None,
+                Some(invalid),
+                Some(evidence_row(
+                    crate::store::EvidenceStatus::Ready,
+                    Some(synthetic_evidence()),
+                )),
+            ],
+            vec![
+                SYNTHETIC_GENERATION,
+                SYNTHETIC_GENERATION,
+                SYNTHETIC_GENERATION,
+            ],
+        );
 
         assert_eq!(payloads.len(), 3);
         assert_eq!(payloads[0].evidence_state, "pending");
@@ -2169,7 +2242,7 @@ mod tests {
         ));
         let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
 
-        let payload = session_hygiene_payload(Some(row));
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
         assert_eq!(payload.evidence_state, "activelyGrowing");
         assert!(payload.badges.iter().all(|badge| {
             // Model Overthinking / Fast Mode Overuse report a missing
