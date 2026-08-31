@@ -40,6 +40,7 @@ mod metrics_sink;
 mod model;
 mod pricing;
 pub(crate) mod records;
+mod replay;
 mod rows;
 mod source_validity;
 pub(crate) mod threads;
@@ -82,6 +83,7 @@ pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
+pub use replay::{event_from_row, metrics_from_rows};
 pub use rows::{
     MemoryTurnRowStore, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
     TURN_SCHEMA_V3_SQL, TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope,
