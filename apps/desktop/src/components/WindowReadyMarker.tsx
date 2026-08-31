@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 
-import { windowReady } from "../lib/ipc"
+import { hasShell, windowReady } from "../lib/ipc"
 
 declare global {
   interface Window {
@@ -9,9 +9,19 @@ declare global {
 }
 
 function reportReady(node: HTMLSpanElement | null): void {
+  if (!node) return
   const generation = window.__ANTIBURN_WINDOW_GENERATION__
-  if (node && typeof generation === "number" && Number.isSafeInteger(generation)) {
+  if (typeof generation === "number" && Number.isSafeInteger(generation)) {
     void windowReady(generation).catch(() => undefined)
+    return
+  }
+  // The shell injects the generation before the page loads. A shell page
+  // without the value cannot report readiness, so the window stays hidden.
+  // A plain browser has no shell and no generation; stay quiet there.
+  if (hasShell()) {
+    console.warn(
+      "WindowReadyMarker: window.__ANTIBURN_WINDOW_GENERATION__ is missing; the window cannot report readiness",
+    )
   }
 }
 

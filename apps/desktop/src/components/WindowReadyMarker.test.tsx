@@ -6,12 +6,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { WindowReadyBoundary } from "./WindowReadyMarker"
 
 const windowReady = vi.hoisted(() => vi.fn(async () => {}))
-vi.mock("../lib/ipc", () => ({ windowReady }))
+const hasShell = vi.hoisted(() => vi.fn(() => true))
+vi.mock("../lib/ipc", () => ({ hasShell, windowReady }))
 
 describe("WindowReadyMarker", () => {
   beforeEach(() => {
     windowReady.mockReset()
     windowReady.mockResolvedValue(undefined)
+    hasShell.mockReset()
+    hasShell.mockReturnValue(true)
     Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
       configurable: true,
       value: 7,
@@ -64,5 +67,37 @@ describe("WindowReadyMarker", () => {
     )
 
     expect(windowReady).not.toHaveBeenCalled()
+  })
+
+  it("warns when the shell page is missing its generation", () => {
+    Reflect.deleteProperty(window, "__ANTIBURN_WINDOW_GENERATION__")
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+    render(
+      <WindowReadyBoundary>
+        <div />
+      </WindowReadyBoundary>,
+    )
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("__ANTIBURN_WINDOW_GENERATION__ is missing"),
+    )
+    warn.mockRestore()
+  })
+
+  it("stays quiet in a plain browser without a shell", () => {
+    Reflect.deleteProperty(window, "__ANTIBURN_WINDOW_GENERATION__")
+    hasShell.mockReturnValue(false)
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+    render(
+      <WindowReadyBoundary>
+        <div />
+      </WindowReadyBoundary>,
+    )
+
+    expect(warn).not.toHaveBeenCalled()
+    expect(windowReady).not.toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

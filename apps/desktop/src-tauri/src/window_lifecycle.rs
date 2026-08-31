@@ -51,7 +51,16 @@ where
             );
             false
         }
-        ReadyAction::None => false,
+        ReadyAction::None => {
+            // A report that does not match the active load never reveals the
+            // window. Record it, or a hidden-forever window leaves no trace.
+            ::tracing::debug!(
+                event = "window_renderer_ready_ignored",
+                window = label,
+                generation
+            );
+            false
+        }
     }
 }
 

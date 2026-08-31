@@ -484,12 +484,26 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                 }
             }
         }
-        WindowEvent::Destroyed => match window.label() {
-            popover::LABEL => popover::rebuild_after_destroy(window.app_handle()),
-            settings::LABEL => settings::rebuild_after_destroy(window.app_handle()),
-            onboarding::LABEL => onboarding::rebuild_after_destroy(window.app_handle()),
-            _ => {}
-        },
+        // The rebuild must not run inside this callback. A webview built
+        // during the `Destroyed` dispatch does not finish its native setup:
+        // its initialization scripts and custom-protocol handlers never
+        // attach, so the renderer cannot report readiness and the window
+        // stays hidden. Queue the rebuild on the next event-loop turn.
+        WindowEvent::Destroyed => {
+            let rebuild: Option<fn(&tauri::AppHandle)> = match window.label() {
+                popover::LABEL => Some(popover::rebuild_after_destroy),
+                settings::LABEL => Some(settings::rebuild_after_destroy),
+                onboarding::LABEL => Some(onboarding::rebuild_after_destroy),
+                _ => None,
+            };
+            if let Some(rebuild) = rebuild {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || rebuild(&handle));
+                });
+            }
+        }
         _ => {}
     }
 }
