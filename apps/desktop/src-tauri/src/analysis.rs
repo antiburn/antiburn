@@ -2035,10 +2035,12 @@ mod tests {
             Some(turn_row_store("codex", "codex-inline")),
         );
         assert_eq!(pass.outcome, PassOutcome::Published);
-        assert_eq!(
-            pass.evidence.unwrap().capabilities,
-            SourceCapabilities::codex()
-        );
+        // `cache_write_tokens` is observed per session: `codex_record`
+        // carries no cache-write alias key, so it reads false even though
+        // `SourceCapabilities::codex()` now defaults it true.
+        let mut expected_capabilities = SourceCapabilities::codex();
+        expected_capabilities.cache_write_tokens = false;
+        assert_eq!(pass.evidence.unwrap().capabilities, expected_capabilities);
     }
 
     #[test]
@@ -2147,11 +2149,11 @@ mod tests {
             eligible(DetectorId::SessionsOverDepth, &evidence),
             "SessionsOverDepth must be eligible for Codex"
         );
-        // Codex reports `token_classes` and `request_context_tokens` but no
-        // `cache_write_tokens`, so `repeated_context` resolves to
-        // uncached-input accounting: Cache Churn is eligible. This fixture
-        // carries no record loss, so the order route reads `RecordLinkage`
-        // complete, and Cache Churn now reads clean for Codex.
+        // Codex reports `token_classes` and `request_context_tokens`.
+        // `evidence_sink` pins Codex to uncached-input accounting for
+        // `repeated_context` regardless of `cache_write_tokens`.
+        // This makes Cache Churn eligible. This fixture has no record loss.
+        // The order route makes `RecordLinkage` complete, so Cache Churn reads clean.
         assert!(
             eligible(DetectorId::CacheChurn, &evidence),
             "CacheChurn must be eligible for Codex under uncached-input accounting"

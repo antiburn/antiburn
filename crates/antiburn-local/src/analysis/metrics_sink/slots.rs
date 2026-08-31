@@ -377,7 +377,6 @@ impl ProgressSlots {
         self.slots = compacted;
         self.quantum = self.quantum.saturating_mul(2).max(1);
         self.compactions = self.compactions.saturating_add(1);
-        tracing::debug!(event = "metrics_progress_slots_compacted");
     }
 
     pub(crate) fn merge_cache_patch(&mut self, key: (i64, u64), patch: CacheSlot) -> bool {

@@ -446,10 +446,16 @@ impl SourceCapabilities {
     /// is always the counted record immediately before it in the file.
     /// This lets `previous_turn` attest linkage structurally, from order
     /// alone, in place of the id-based route.
+    ///
+    /// `cache_write_tokens` is set: the adapter reads a session's
+    /// `cache_write_input_tokens` alias key when present. This flag
+    /// trusts only the reported token count. `evidence_sink` still pins
+    /// Codex to uncached-input accounting for repeated context, as its
+    /// fixed exception documents.
     pub fn codex() -> Self {
         Self {
             request_context_tokens: true,
-            cache_write_tokens: false,
+            cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
             skill_mcp_attribution: false,

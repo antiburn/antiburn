@@ -1717,8 +1717,9 @@ mod tests {
         first.cache_write_tokens = 0;
         first.ts_ms = Some(0);
         let mut second = base_row("s1", 1);
-        // Codex never writes cache_write_tokens; a full uncached resend
-        // after cache expiry shows up as input_tokens alone.
+        // A session with no cache-write tokens (an old Codex CLI, or any
+        // source pinned to uncached-input accounting) shows a full
+        // uncached resend after cache expiry as input_tokens alone.
         second.input_tokens = 6_000;
         second.cache_write_tokens = 0;
         second.ts_ms = Some(1_000);
