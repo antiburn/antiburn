@@ -8,6 +8,14 @@
 //! Callers add their totals instead of combining their context sequences.
 //! The reducer uses usage counters and pricing data. It does not read transcript text.
 //! An unpriced turn increments `unpriced_turns` and no cost field.
+//!
+//! Turns fold in one canonical order. A turn with a known model prices right
+//! away and adds to the running totals in fold order. A turn with no model
+//! of its own waits: its usage joins one fallback aggregate, and that
+//! aggregate prices once, under the session fallback model, after every
+//! priced turn has already summed. `metrics_sink::reference` keeps an
+//! independent implementation of this same order, to check this module's
+//! output turn by turn.
 
 use std::collections::VecDeque;
 use std::mem::size_of;
@@ -24,8 +32,6 @@ const MAX_OPEN_MESSAGES: usize = 64;
 const MAX_EFF_REORDER: usize = 32;
 /// The evicted-id window catches a message that returns after eviction.
 const MAX_EFF_EVICTED: usize = MAX_OPEN_MESSAGES;
-/// The contribution list keeps eight entries per visible chart bucket.
-const MAX_EFF_CONTRIBUTIONS: usize = 1_440;
 
 /// Additive spend totals for one or more threads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -111,20 +117,14 @@ pub(crate) struct EfficiencyInput<'a> {
     pub(crate) usage: Usage,
 }
 
+/// One priced turn's spend, split into the three cost parts.
 #[derive(Clone, Copy)]
-enum Contribution {
-    Priced {
-        new_work: f64,
-        carry: f64,
-        rewrite: f64,
-        growth: u64,
-        output: u64,
-    },
-    Fallback {
-        usage: Usage,
-        growth: u64,
-    },
-    Unpriced,
+struct PricedAmounts {
+    new_work: f64,
+    carry: f64,
+    rewrite: f64,
+    growth: u64,
+    output: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -144,8 +144,7 @@ pub(crate) struct EfficiencyReducer {
     open: VecDeque<Turn>,
     evicted: VecDeque<MessageKey>,
     reorder: Vec<Turn>,
-    contributions: Vec<Contribution>,
-    overflow_totals: EfficiencyTotals,
+    totals: EfficiencyTotals,
     fallback_overflow: FallbackOverflow,
     previous_context: Option<u64>,
     last_folded: Option<(i64, u64)>,
@@ -153,7 +152,6 @@ pub(crate) struct EfficiencyReducer {
     creation: u64,
     pub(crate) open_overflow: u64,
     pub(crate) reorder_overflow: u64,
-    pub(crate) contribution_overflow: u64,
 }
 
 impl Default for EfficiencyReducer {
@@ -162,8 +160,7 @@ impl Default for EfficiencyReducer {
             open: VecDeque::new(),
             evicted: VecDeque::new(),
             reorder: Vec::new(),
-            contributions: Vec::new(),
-            overflow_totals: EfficiencyTotals::default(),
+            totals: EfficiencyTotals::default(),
             fallback_overflow: FallbackOverflow::default(),
             previous_context: None,
             last_folded: None,
@@ -171,7 +168,6 @@ impl Default for EfficiencyReducer {
             creation: 0,
             open_overflow: 0,
             reorder_overflow: 0,
-            contribution_overflow: 0,
         }
     }
 }
@@ -265,27 +261,19 @@ impl EfficiencyReducer {
             .previous_context
             .map_or(context, |prior| context.saturating_sub(prior));
         self.previous_context = Some(context);
-        let contribution = match turn.model {
-            ModelStatus::Missing => Contribution::Fallback {
-                usage: turn.usage,
-                growth,
-            },
-            ModelStatus::Priced(price) => priced_contribution(turn.usage, growth, &price),
-            ModelStatus::Unpriced => Contribution::Unpriced,
-        };
-        if self.contributions.len() < MAX_EFF_CONTRIBUTIONS {
-            self.contributions.push(contribution);
-        } else {
-            // The first overflow shows the cap is hit. Later overflows repeat the same state.
-            if self.contribution_overflow == 0 {
-                tracing::debug!(event = "metrics_efficiency_contributions_capped");
+        match turn.model {
+            // The session fallback model prices a missing-model turn later,
+            // at finish. Until then, only its raw usage can be kept.
+            ModelStatus::Missing => {
+                add_fallback_overflow(&mut self.fallback_overflow, turn.usage, growth)
             }
-            self.contribution_overflow = self.contribution_overflow.saturating_add(1);
-            fold_overflow(
-                contribution,
-                &mut self.overflow_totals,
-                &mut self.fallback_overflow,
-            );
+            ModelStatus::Priced(price) => {
+                let amounts = priced_contribution(turn.usage, growth, &price);
+                add_priced(&mut self.totals, amounts, 1);
+            }
+            ModelStatus::Unpriced => {
+                self.totals.unpriced_turns = self.totals.unpriced_turns.saturating_add(1);
+            }
         }
     }
 
@@ -303,13 +291,8 @@ impl EfficiencyReducer {
     pub(crate) fn finish(mut self, fallback_model: Option<&str>) -> EfficiencyTotals {
         self.flush();
         let fallback = model_status(fallback_model);
-        let mut totals = EfficiencyTotals::default();
-        for contribution in self.contributions {
-            apply_contribution(&mut totals, contribution, &fallback);
-        }
-        totals.add(self.overflow_totals);
-        apply_fallback_overflow(&mut totals, self.fallback_overflow, &fallback);
-        totals
+        apply_fallback_overflow(&mut self.totals, self.fallback_overflow, &fallback);
+        self.totals
     }
 
     pub(crate) fn retained_bytes(&self) -> usize {
@@ -321,11 +304,6 @@ impl EfficiencyReducer {
                 self.evicted
                     .capacity()
                     .saturating_mul(size_of::<MessageKey>()),
-            )
-            .saturating_add(
-                self.contributions
-                    .capacity()
-                    .saturating_mul(size_of::<Contribution>()),
             )
     }
 }
@@ -341,7 +319,7 @@ fn model_status(model: Option<&str>) -> ModelStatus {
     lookup_pricing(model).map_or(ModelStatus::Unpriced, ModelStatus::Priced)
 }
 
-fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> Contribution {
+fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> PricedAmounts {
     let fresh = usage
         .input_tokens
         .saturating_add(usage.cache_creation_tokens);
@@ -354,7 +332,7 @@ fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> Contr
             + usage.cache_creation_tokens as f64 * price.cache_write_cost_per_token)
             / fresh as f64
     };
-    Contribution::Priced {
+    PricedAmounts {
         new_work: usage.output_tokens as f64 * price.output_cost_per_token
             + new_tokens as f64 * fresh_rate,
         carry: usage.cache_read_tokens as f64 * price.cache_read_cost_per_token,
@@ -364,80 +342,27 @@ fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> Contr
     }
 }
 
-fn apply_contribution(
-    totals: &mut EfficiencyTotals,
-    contribution: Contribution,
-    fallback: &ModelStatus,
-) {
-    match contribution {
-        Contribution::Priced {
-            new_work,
-            carry,
-            rewrite,
-            growth,
-            output,
-        } => add_priced_values(totals, new_work, carry, rewrite, growth, output, 1),
-        Contribution::Fallback { usage, growth } => match fallback {
-            ModelStatus::Priced(price) => {
-                if let Contribution::Priced {
-                    new_work,
-                    carry,
-                    rewrite,
-                    output,
-                    ..
-                } = priced_contribution(usage, growth, price)
-                {
-                    add_priced_values(totals, new_work, carry, rewrite, growth, output, 1);
-                }
-            }
-            ModelStatus::Missing | ModelStatus::Unpriced => {
-                totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
-            }
-        },
-        Contribution::Unpriced => {
-            totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
-        }
-    }
-}
-
-fn add_priced_values(
-    totals: &mut EfficiencyTotals,
-    new_work: f64,
-    carry: f64,
-    rewrite: f64,
-    growth: u64,
-    output: u64,
-    turns: u64,
-) {
-    totals.new_work_usd += new_work;
-    totals.carry_usd += carry;
-    totals.rewrite_usd += rewrite;
-    totals.total_usd += new_work + carry + rewrite;
-    totals.growth_tokens = totals.growth_tokens.saturating_add(growth);
-    totals.output_tokens = totals.output_tokens.saturating_add(output);
+/// Adds one priced turn's amounts into the running totals.
+fn add_priced(totals: &mut EfficiencyTotals, amounts: PricedAmounts, turns: u64) {
+    totals.new_work_usd += amounts.new_work;
+    totals.carry_usd += amounts.carry;
+    totals.rewrite_usd += amounts.rewrite;
+    totals.total_usd += amounts.new_work + amounts.carry + amounts.rewrite;
+    totals.growth_tokens = totals.growth_tokens.saturating_add(amounts.growth);
+    totals.output_tokens = totals.output_tokens.saturating_add(amounts.output);
     totals.priced_turns = totals.priced_turns.saturating_add(turns);
 }
 
-fn fold_overflow(
-    contribution: Contribution,
-    totals: &mut EfficiencyTotals,
-    fallback: &mut FallbackOverflow,
-) {
-    match contribution {
-        Contribution::Priced {
-            new_work,
-            carry,
-            rewrite,
-            growth,
-            output,
-        } => add_priced_values(totals, new_work, carry, rewrite, growth, output, 1),
-        Contribution::Fallback { usage, growth } => add_fallback_overflow(fallback, usage, growth),
-        Contribution::Unpriced => {
-            totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
-        }
-    }
-}
-
+/// Accumulates one missing-model turn's raw usage into the running
+/// fallback aggregate, so many turns can price together as one lump at
+/// `finish`.
+///
+/// The op order matters. `metrics_sink::reference` keeps this same order,
+/// independently, to stay bit-exact with this function: compute
+/// `input_share = input / fresh`. Then add, in this order, `new_tokens *
+/// input_share`, `new_tokens * (1.0 - input_share)`, `rewrite_tokens *
+/// input_share`, and `rewrite_tokens * (1.0 - input_share)` to the four
+/// token totals. Add cache-read tokens, growth, and output as integer sums.
 fn add_fallback_overflow(target: &mut FallbackOverflow, usage: Usage, growth: u64) {
     let fresh = usage
         .input_tokens
@@ -461,6 +386,12 @@ fn add_fallback_overflow(target: &mut FallbackOverflow, usage: Usage, growth: u6
     target.turns = target.turns.saturating_add(1);
 }
 
+/// Prices one fallback aggregate as a single lump, after every priced turn
+/// has already summed into `totals`.
+///
+/// The op order matters for bit-exactness with `metrics_sink::reference`:
+/// compute `new_work`, then `carry`, then `rewrite`, and add `new_work +
+/// carry + rewrite` to `total_usd` in that order.
 fn apply_fallback_overflow(
     totals: &mut EfficiencyTotals,
     contribution: FallbackOverflow,
@@ -476,13 +407,15 @@ fn apply_fallback_overflow(
     let carry = contribution.cache_read_tokens as f64 * price.cache_read_cost_per_token;
     let rewrite = contribution.rewrite_input_tokens * price.input_cost_per_token
         + contribution.rewrite_cache_tokens * price.cache_write_cost_per_token;
-    add_priced_values(
+    add_priced(
         totals,
-        new_work,
-        carry,
-        rewrite,
-        contribution.growth_tokens,
-        contribution.output_tokens,
+        PricedAmounts {
+            new_work,
+            carry,
+            rewrite,
+            growth: contribution.growth_tokens,
+            output: contribution.output_tokens,
+        },
         contribution.turns,
     );
 }
@@ -758,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_turns_keep_reference_float_order() {
+    fn fallback_turns_price_within_epsilon_of_reference_order() {
         let mut events = Vec::new();
         for index in 0..100 {
             let mut current = turn(
@@ -780,18 +713,20 @@ mod tests {
             let growth =
                 previous_context.map_or(context, |prior: u64| context.saturating_sub(prior));
             previous_context = Some(context);
-            if let Contribution::Priced {
-                new_work,
-                carry,
-                rewrite,
-                output,
-                ..
-            } = priced_contribution(current.usage, growth, &price)
-            {
-                add_priced_values(&mut expected, new_work, carry, rewrite, growth, output, 1);
-            }
+            let amounts = priced_contribution(current.usage, growth, &price);
+            add_priced(&mut expected, amounts, 1);
         }
-        assert_eq!(actual, expected);
+        // The fallback model prices its turns as one aggregate at finish,
+        // not one at a time. The sum stays correct, but float rounding can
+        // differ from a per-turn reference sum by an epsilon.
+        assert!(close(actual.total_usd, expected.total_usd));
+        assert!(close(actual.new_work_usd, expected.new_work_usd));
+        assert!(close(actual.carry_usd, expected.carry_usd));
+        assert!(close(actual.rewrite_usd, expected.rewrite_usd));
+        assert_eq!(actual.growth_tokens, expected.growth_tokens);
+        assert_eq!(actual.output_tokens, expected.output_tokens);
+        assert_eq!(actual.priced_turns, expected.priced_turns);
+        assert_eq!(actual.unpriced_turns, expected.unpriced_turns);
     }
 
     #[test]
@@ -808,7 +743,7 @@ mod tests {
     #[test]
     fn efficiency_overflow_counters_report_each_degradation() {
         let mut reducer = EfficiencyReducer::default();
-        for index in 0..(MAX_EFF_CONTRIBUTIONS + MAX_OPEN_MESSAGES + MAX_EFF_REORDER + 10) {
+        for index in 0..(MAX_OPEN_MESSAGES + MAX_EFF_REORDER + 210) {
             let message_id = format!("message-{index}");
             // One stale timestamp arrives after older turns already folded.
             let ts_ms = if index == 200 { 0 } else { index as i64 };
@@ -831,7 +766,50 @@ mod tests {
         // at zero.
         assert_eq!(reducer.open_overflow, 0);
         assert!(reducer.reorder_overflow > 0);
-        assert!(reducer.contribution_overflow > 0);
+    }
+
+    #[test]
+    fn streaming_totals_match_per_turn_pricing_past_the_old_cap() {
+        // 1_500 turns exceed the old contribution-buffer cap of 1_440. Every
+        // third turn omits its own model and prices from the session
+        // fallback model instead. Streaming totals must still match a
+        // from-scratch, per-turn sum under the same model.
+        let mut events = Vec::new();
+        for index in 0..1_500 {
+            let mut current = turn(
+                index,
+                101 + index as u64,
+                17 + index as u64,
+                503 + index as u64,
+                211 + index as u64,
+            );
+            if index % 3 == 0 {
+                current.model = None;
+            }
+            events.push(current);
+        }
+        let actual = thread_efficiency(&events, Some(MODEL));
+
+        let mut expected = EfficiencyTotals::default();
+        let mut previous_context = None;
+        let price = price();
+        for current in &events {
+            let context = current.usage.context_tokens();
+            let growth =
+                previous_context.map_or(context, |prior: u64| context.saturating_sub(prior));
+            previous_context = Some(context);
+            let amounts = priced_contribution(current.usage, growth, &price);
+            add_priced(&mut expected, amounts, 1);
+        }
+
+        assert!(close(actual.total_usd, expected.total_usd));
+        assert!(close(actual.new_work_usd, expected.new_work_usd));
+        assert!(close(actual.carry_usd, expected.carry_usd));
+        assert!(close(actual.rewrite_usd, expected.rewrite_usd));
+        assert_eq!(actual.growth_tokens, expected.growth_tokens);
+        assert_eq!(actual.output_tokens, expected.output_tokens);
+        assert_eq!(actual.priced_turns, 1_500);
+        assert_eq!(actual.unpriced_turns, 0);
     }
 
     #[test]
