@@ -20,12 +20,13 @@
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
-    SourceKind, TurnRowSink, TurnRowStore, adapter_for,
+    CompositeSink, EvidenceCoverage, EvidenceSource, MemoryTurnRowStore, RawSource,
+    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
+    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, adapter_for,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, NotAssessedReason, ReportCatalogs, session_badges,
+    BadgeId, BadgeStatus, DetectorId, NotAssessedReason, ReportCatalogs, clean_facts_complete,
+    eligible, session_badges,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -853,5 +854,108 @@ fn every_row_matches_the_real_pipeline() {
             "{}/{} {:?}: expected {:?}, got {:?}",
             row.harness, row.fixture, row.badge, row.expected, actual
         );
+    }
+}
+
+/// Maps one badge to the detector it reduces. This mirrors the private
+/// mapping in `insights::badges::BadgeId::detector`. The mirror lets this
+/// test call the public `eligible` and `clean_facts_complete` helpers,
+/// which take a `DetectorId`, without exporting that private mapping.
+fn badge_detector(id: BadgeId) -> DetectorId {
+    match id {
+        BadgeId::SessionOverdepth => DetectorId::SessionsOverDepth,
+        BadgeId::ModelOverthinking => DetectorId::ModelOverthinking,
+        BadgeId::OverpoweredSubagents => DetectorId::OverpoweredSubagents,
+        BadgeId::ObsoleteModel => DetectorId::OldModelUsage,
+        BadgeId::FastModeOveruse => DetectorId::OveruseOfFastMode,
+        BadgeId::ExcessCacheRehydration => DetectorId::CacheChurn,
+    }
+}
+
+/// Builds the real evidence for one matrix row's harness and fixture, the
+/// same way `every_row_matches_the_real_pipeline` does.
+fn evidence_for_row(harness: &str, fixture: &str) -> SessionEvidence {
+    match harness {
+        "claude" => evidence_for(
+            "claude",
+            SourceCapabilities::claude(),
+            fixture,
+            claude_fixture(fixture),
+        ),
+        "codex" => evidence_for(
+            "codex",
+            SourceCapabilities::codex(),
+            fixture,
+            codex_fixture(fixture),
+        ),
+        "pi" => evidence_for("pi", SourceCapabilities::pi(), fixture, pi_fixture(fixture)),
+        "opencode" => opencode_evidence(fixture),
+        other => panic!("unknown harness: {other}"),
+    }
+}
+
+/// Sweeps every honesty invariant a badge status must respect, across
+/// every harness and fixture the matrix already loads. These invariants
+/// hold for every badge on every fixture, regardless of the matrix's
+/// pinned expectation, so a future fixture or detector change cannot
+/// smuggle in a dishonest state:
+///
+/// - Clean implies the detector is eligible, its clean facts are
+///   complete, and the session's overall evidence coverage is complete.
+/// - Finding implies the detector is eligible.
+///
+/// This intentionally does not assert the reverse: that an ineligible
+/// detector never reports `NotAssessed(CapabilityMissing)` while every
+/// finding fact and every clean fact is supported. That reverse mapping
+/// is under active change; the two implications above hold on both
+/// sides of that change.
+#[test]
+fn every_badge_status_respects_the_honesty_invariants() {
+    let catalogs = ReportCatalogs::default();
+    let mut swept = std::collections::BTreeSet::new();
+    for row in matrix() {
+        if !swept.insert((row.harness, row.fixture)) {
+            continue;
+        }
+        let evidence = evidence_for_row(row.harness, row.fixture);
+        for badge in session_badges(&evidence, &catalogs) {
+            let detector = badge_detector(badge.id);
+            match badge.status {
+                BadgeStatus::Clean => {
+                    assert!(
+                        eligible(detector, &evidence),
+                        "{}/{} {:?}: Clean but the detector is not eligible",
+                        row.harness,
+                        row.fixture,
+                        badge.id
+                    );
+                    assert!(
+                        clean_facts_complete(detector, &evidence),
+                        "{}/{} {:?}: Clean but clean facts are not complete",
+                        row.harness,
+                        row.fixture,
+                        badge.id
+                    );
+                    assert_eq!(
+                        evidence.coverage,
+                        EvidenceCoverage::Complete,
+                        "{}/{} {:?}: Clean but session evidence coverage is not complete",
+                        row.harness,
+                        row.fixture,
+                        badge.id
+                    );
+                }
+                BadgeStatus::Finding => {
+                    assert!(
+                        eligible(detector, &evidence),
+                        "{}/{} {:?}: Finding but the detector is not eligible",
+                        row.harness,
+                        row.fixture,
+                        badge.id
+                    );
+                }
+                BadgeStatus::NotAssessed(_) => {}
+            }
+        }
     }
 }
