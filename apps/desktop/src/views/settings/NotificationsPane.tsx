@@ -166,6 +166,14 @@ export function NotificationsPane({ settings, update }: NotificationsPaneProps) 
             dimmed={!on}
             disabled={!on}
           />
+          <ToggleRow
+            label="Respect Do Not Disturb"
+            description="Automated nudges stay quiet while Focus or Do Not Disturb is on. macOS asks once for permission to read the Focus state."
+            checked={settings.nudgesRespectDnd}
+            onChange={(next) => void update({ nudgesRespectDnd: next })}
+            dimmed={!on}
+            disabled={!on}
+          />
           <Row
             label="Auto-dismiss time"
             description="How long a notification stays before it fades. Hovering pauses the timer."

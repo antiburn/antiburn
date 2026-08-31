@@ -139,6 +139,11 @@ export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
   evidenceState: "pending",
 }
 
+/** The reader-facing name of one check, with no verdict attached. */
+export function sessionHygieneCheckName(id: SessionHygieneBadgeId): string {
+  return CHECKS.find((check) => check.id === id)?.name ?? id
+}
+
 /** Add reader copy and semantic ink to the engine badge identifiers. */
 export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHygieneCheck[] {
   return CHECKS.map((definition) => {

@@ -473,9 +473,13 @@ export class PopoverSession {
     const unlisten = await onSettingsChanged((settings) => {
       if (generation !== this.generation) return
       const previousDays = this.windowDays()
+      const previousDisabled = (this.snapshot.settings?.disabledAgents ?? []).join(",")
       applyTheme(settings.theme)
       this.update({ settings })
-      if (settings.activityWindowDays !== previousDays) {
+      if (
+        settings.activityWindowDays !== previousDays ||
+        settings.disabledAgents.join(",") !== previousDisabled
+      ) {
         void this.refreshEntries(settings.activityWindowDays).catch(() => {})
       }
     })

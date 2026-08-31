@@ -5,7 +5,6 @@ import { OnboardingView } from "./OnboardingView"
 
 const invoke = vi.hoisted(() => vi.fn())
 const openDialog = vi.hoisted(() => vi.fn())
-const clipboardWrite = vi.hoisted(() => vi.fn())
 const listeners = vi.hoisted(() => new Map<string, ((event: { payload: unknown }) => void)[]>())
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
@@ -31,6 +30,17 @@ const SETTINGS = {
   autoUpdate: true,
   discoveryPaused: false,
   analyticsEnabled: true,
+  disabledAgents: [],
+  nudgesRespectDnd: false,
+}
+
+/** A finished analysis pass over the four scanned sessions. */
+const HYGIENE_SUMMARY = {
+  totalSessions: 4,
+  settledSessions: 4,
+  analyzedSessions: 4,
+  failingSessions: 1,
+  mostCommonFinding: "modelOverthinking",
 }
 
 /** An analytics-capable official build. Source builds use the unsupported case. */
@@ -98,6 +108,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve((args as Record<string, unknown> | undefined)?.["settings"])
       case "finish_onboarding":
         return Promise.resolve({ ...SETTINGS, onboardingCompleted: true })
+      case "get_hygiene_summary":
+        return Promise.resolve(HYGIENE_SUMMARY)
       case "list_scan_roots":
       case "default_scan_roots":
       case "list_repositories":
@@ -116,10 +128,18 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
 
 async function advanceToReady() {
   await screen.findByRole("heading", { name: "Stop hitting your token limits." })
-  for (let step = 0; step < 2; step += 1) {
+  for (let step = 0; step < 3; step += 1) {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
   }
   await screen.findByRole("heading", { name: "Ready" })
+}
+
+/** Move from Welcome past the agents step to the search-locations step. */
+async function advanceToSources() {
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+  await screen.findByRole("heading", { name: "Tell us about your Coding agents" })
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+  await screen.findByRole("heading", { name: "Repo search locations" })
 }
 
 describe("OnboardingView", () => {
@@ -127,12 +147,6 @@ describe("OnboardingView", () => {
     invoke.mockReset()
     openDialog.mockReset()
     listeners.clear()
-    clipboardWrite.mockReset()
-    clipboardWrite.mockResolvedValue(undefined)
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: clipboardWrite },
-    })
     mockCommands()
   })
 
@@ -173,7 +187,7 @@ describe("OnboardingView", () => {
     })
   })
 
-  it("runs the three-step first-run flow and records that it finished", async () => {
+  it("runs the four-step first-run flow and records that it finished", async () => {
     mockCommands({ default_scan_roots: ["/home/avery/code"] })
     render(<OnboardingView />)
 
@@ -184,39 +198,99 @@ describe("OnboardingView", () => {
     expect(screen.getByText(/nothing from your sessions is ever uploaded/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
-    // 2 — Search locations and repositories share the discovery pass.
+    // 2 — Coding agents. Discovery starts on leaving Welcome.
     expect(
-      await screen.findByRole("heading", { name: "Repo search locations" }),
+      await screen.findByRole("heading", { name: "Tell us about your Coding agents" }),
     ).toBeInTheDocument()
-    expect(screen.getByRole("heading", { name: "Repos found" })).toBeInTheDocument()
-    expect(screen.getByText("/home/avery/code")).toBeInTheDocument()
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("scan_now", { activityWindowDays: 7 }),
     )
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
-    // 3 — Ready.
+    // 3 — Search locations and repositories share the discovery pass.
+    expect(
+      await screen.findByRole("heading", { name: "Repo search locations" }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Repos found" })).toBeInTheDocument()
+    expect(screen.getByText("/home/avery/code")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+
+    // 4 — Ready. The analysis numbers arrive from the summary poll.
     expect(await screen.findByRole("heading", { name: "Ready" })).toBeInTheDocument()
-    expect(screen.getByText(/repositories are never modified/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        "4 sessions from the last 7 days are indexed and waiting in the menu bar.",
+      ),
+    ).toBeInTheDocument()
+    expect(await screen.findByText("sessions analyzed")).toBeInTheDocument()
+    expect(screen.getByText("75%")).toBeInTheDocument()
+    expect(screen.getByText("Model overthinking")).toBeInTheDocument()
     expect(screen.getByRole("switch", { name: "Launch antiburn on startup" })).toBeChecked()
+    expect(
+      screen.getByRole("switch", { name: "Nudges respect Do Not Disturb" }),
+    ).not.toBeChecked()
     fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 7,
         launchAtLogin: true,
+        disabledAgents: [],
+        nudgesRespectDnd: false,
       }),
     )
   })
 
-  it("discloses analytics on the Ready step without offering a switch", async () => {
+  it("lists detected agents and persists switched-off agents on finish", async () => {
+    mockCommands({
+      get_scan_status: {
+        ...SCAN_STATUS,
+        agents: [
+          { agent: "claude-code", lastCompletedAt: null, sessionsSeen: 304 },
+          { agent: "codex", lastCompletedAt: null, sessionsSeen: 41 },
+          { agent: "cursor", lastCompletedAt: null, sessionsSeen: 12 },
+        ],
+      },
+    })
+    render(<OnboardingView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await screen.findByRole("heading", { name: "Tell us about your Coding agents" })
+
+    // Detected agents lead with their evidence and start switched on.
+    expect(screen.getByText("304 sessions")).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Show Claude Code sessions" })).toBeChecked()
+    // An agent with no sessions starts switched off.
+    expect(screen.getByRole("switch", { name: "Show Windsurf sessions" })).not.toBeChecked()
+
+    fireEvent.click(screen.getByRole("switch", { name: "Show Codex sessions" }))
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    await screen.findByRole("heading", { name: "Repo search locations" })
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    await screen.findByRole("heading", { name: "Ready" })
+    fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
+
+    await waitFor(() =>
+      expect(invoke.mock.calls.some(([command]) => command === "finish_onboarding")).toBe(true),
+    )
+    const call = invoke.mock.calls.find(([command]) => command === "finish_onboarding")
+    const disabled = (call?.[1] as { disabledAgents: string[] }).disabledAgents
+    expect(disabled).toContain("codex")
+    expect(disabled).toContain("windsurf")
+    expect(disabled).not.toContain("claude-code")
+    expect(disabled).not.toContain("cursor")
+  })
+
+  it("keeps analytics and privacy copy off the Ready step", async () => {
+    // The v5 redesign moved this disclosure out of onboarding. Settings →
+    // Privacy still carries the switch and the copy.
     render(<OnboardingView />)
     await advanceToReady()
 
     expect(screen.queryByRole("switch", { name: /analytics/i })).not.toBeInTheDocument()
-    expect(screen.getByText(/Never prompts, sessions/i)).toBeInTheDocument()
-    expect(screen.getByText(/check what leaves your computer/i)).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument()
+    expect(screen.queryByText(/Never prompts, sessions/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).not.toBeInTheDocument()
   })
 
   it("records each onboarding step once", async () => {
@@ -225,81 +299,68 @@ describe("OnboardingView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back" }))
     await screen.findByRole("heading", { name: "Repo search locations" })
 
-    for (const step of ["welcome", "sources_and_repos", "ready"]) {
+    for (const step of ["welcome", "agents_detected", "sources_and_repos", "ready"]) {
       expect(invoke).toHaveBeenCalledWith("note_interaction", {
         interaction: { kind: "onboardingStepViewed", step },
       })
     }
     expect(
       invoke.mock.calls.filter(([command]) => command === "note_interaction"),
-    ).toHaveLength(3)
+    ).toHaveLength(4)
   })
 
-  it("omits analytics disclosure from a build without analytics", async () => {
+  it("skips step analytics for a build without analytics", async () => {
     mockCommands({ app_info: { ...APP_INFO, analyticsSupported: false } })
     render(<OnboardingView />)
 
-    expect(await screen.findByText(/This build has no analytics endpoint/i)).toBeInTheDocument()
-
     await advanceToReady()
 
-    expect(screen.queryByText(/Never prompts, sessions/i)).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Copy prompt" })).not.toBeInTheDocument()
     expect(
       invoke.mock.calls.filter(([command]) => command === "note_interaction"),
     ).toHaveLength(0)
   })
 
-  it("explains the process override without hiding analytics support", async () => {
+  it("skips step analytics when the environment disables analytics", async () => {
     mockCommands({ app_info: { ...APP_INFO, analyticsEnvironmentDisabled: true } })
     render(<OnboardingView />)
 
-    expect(
-      await screen.findByText(/Analytics is disabled for this launch by/i),
-    ).toHaveTextContent("ANTIBURN_ANALYTICS_ENABLED=false")
-    expect(screen.queryByText(/This build has no analytics endpoint/i)).not.toBeInTheDocument()
-
     await advanceToReady()
 
-    expect(screen.getByText(/Off for this launch/i)).toHaveTextContent(
-      "ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use the setting in Settings → Privacy.",
-    )
     expect(
       invoke.mock.calls.filter(([command]) => command === "note_interaction"),
     ).toHaveLength(0)
   })
 
-  it("copies the optional privacy prompt for an AI agent", async () => {
+  it("shows analysis progress while sessions are still settling", async () => {
+    mockCommands({
+      get_hygiene_summary: { ...HYGIENE_SUMMARY, settledSessions: 2, analyzedSessions: 2 },
+    })
     render(<OnboardingView />)
     await advanceToReady()
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }))
-
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument()
-    expect(clipboardWrite).toHaveBeenCalledWith(
-      expect.stringContaining("Explain in plain language what stays on my computer"),
-    )
-    await waitFor(
-      () => expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument(),
-      { timeout: 3_000 },
-    )
+    expect(await screen.findByText("Analyzing sessions")).toBeInTheDocument()
+    expect(screen.getByText("2 of 4")).toBeInTheDocument()
+    expect(screen.queryByText("sessions analyzed")).not.toBeInTheDocument()
   })
 
-  it("persists a startup opt-out before finishing onboarding", async () => {
+  it("persists the startup and Do Not Disturb drafts before finishing onboarding", async () => {
     render(<OnboardingView />)
     await advanceToReady()
 
     const launchAtLogin = screen.getByRole("switch", { name: "Launch antiburn on startup" })
     expect(launchAtLogin).toBeChecked()
     fireEvent.click(launchAtLogin)
-    // The choice is a draft until Finish, so there is no earlier settings
-    // round-trip for this click to race.
+    fireEvent.click(screen.getByRole("switch", { name: "Nudges respect Do Not Disturb" }))
+    // The choices are drafts until Finish, so there is no earlier settings
+    // round-trip for these clicks to race.
     fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("finish_onboarding", {
         activityWindowDays: 7,
         launchAtLogin: false,
+        disabledAgents: [],
+        nudgesRespectDnd: true,
       }),
     )
   })
@@ -348,13 +409,21 @@ describe("OnboardingView", () => {
       name: "Stop hitting your token limits.",
     })
     await waitFor(() => expect(welcome).toHaveFocus())
-    expect(screen.getByText("Step 1 of 3")).toBeInTheDocument()
+    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+
+    const agents = await screen.findByRole("heading", {
+      name: "Tell us about your Coding agents",
+    })
+    await waitFor(() => expect(agents).toHaveFocus())
+    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
     const locations = await screen.findByRole("heading", { name: "Repo search locations" })
     await waitFor(() => expect(locations).toHaveFocus())
-    expect(screen.getByText("Step 2 of 3")).toBeInTheDocument()
+    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument()
   })
 
   it("queues a follow-up scan when a folder is added during discovery", async () => {
@@ -366,11 +435,11 @@ describe("OnboardingView", () => {
     openDialog.mockResolvedValue("/home/avery/work")
     render(<OnboardingView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await advanceToSources()
     await waitFor(() =>
       expect(invoke.mock.calls.filter(([command]) => command === "scan_now")).toHaveLength(1),
     )
-    fireEvent.click(await screen.findByRole("button", { name: /Add a folder/ }))
+    fireEvent.click(await screen.findByRole("button", { name: /Add Locations/ }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_scan_root", expect.anything()))
 
     resolveScan(SCAN_STATUS)
@@ -390,7 +459,7 @@ describe("OnboardingView", () => {
     })
     render(<OnboardingView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await advanceToSources()
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Scan did not finish")
     expect(screen.getByRole("alert")).toHaveTextContent("Could not read ~/.claude/projects.")
@@ -418,7 +487,7 @@ describe("OnboardingView", () => {
     })
     render(<OnboardingView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await advanceToSources()
     expect(await screen.findByRole("alert")).toHaveTextContent("Scan did not finish")
     expect(screen.getByText("avery/widgets")).toBeInTheDocument()
 
@@ -441,7 +510,7 @@ describe("OnboardingView", () => {
     mockCommands({ list_scan_roots: ["/home/avery/work"] })
     render(<OnboardingView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
+    await advanceToSources()
     await waitFor(() =>
       expect(invoke.mock.calls.filter(([command]) => command === "scan_now")).toHaveLength(1),
     )
@@ -463,8 +532,8 @@ describe("OnboardingView", () => {
     openDialog.mockResolvedValue("/home/avery/work")
     render(<OnboardingView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
-    fireEvent.click(await screen.findByRole("button", { name: /Add a folder/ }))
+    await advanceToSources()
+    fireEvent.click(await screen.findByRole("button", { name: /Add Locations/ }))
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_scan_root", expect.anything()))
     expect(invoke).not.toHaveBeenCalledWith("begin_popover_hold")

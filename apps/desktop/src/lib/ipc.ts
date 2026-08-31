@@ -77,6 +77,12 @@ export interface AppSettings {
   nudgeAutoDismissSecs: number
   /** Whether a nudge may play the notification chime. */
   notificationSound: boolean
+  /**
+   * Whether Focus and Do Not Disturb suppress automated nudges. Off by
+   * default: the macOS Focus check needs its own authorization prompt, so
+   * the check is an opt-in.
+   */
+  nudgesRespectDnd: boolean
   /** When the menu bar shows the free-disk-space number. */
   diskSpaceDisplay: DiskSpaceDisplay
   /** Free space, in GB, below which the disk counts as low (5–2000). */
@@ -108,6 +114,15 @@ export interface AppSettings {
    * also stops its milestone notifications.
    */
   liveUsageHiddenProviders: string[]
+  /**
+   * Discovery slugs of the coding agents the reader turned off.
+   *
+   * A display filter only: a disabled agent's sessions stay indexed and
+   * analyzed, but the session list does not show them. An agent absent from
+   * this list shows by default, so a newly detected agent surfaces on its
+   * own.
+   */
+  disabledAgents: string[]
   /**
    * The consented analytics channel.
    *
@@ -666,6 +681,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   nudgePlacement: "menuBar",
   nudgeAutoDismissSecs: 10,
   notificationSound: true,
+  nudgesRespectDnd: false,
   diskSpaceDisplay: "whenLow",
   diskSpaceThresholdGb: 50,
   notifyDiskSpaceLow: true,
@@ -673,6 +689,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
   liveUsageHiddenProviders: [],
+  disabledAgents: [],
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
 }
@@ -927,7 +944,7 @@ export async function openPrivacyPolicy(): Promise<void> {
 export type Interaction =
   | {
       kind: "onboardingStepViewed"
-      step: "welcome" | "sources_and_repos" | "ready"
+      step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
   | {
@@ -956,16 +973,25 @@ export function noteInteraction(interaction: Interaction): void {
 export async function finishOnboarding(
   activityWindowDays: number,
   launchAtLogin: boolean,
+  disabledAgents: string[],
+  nudgesRespectDnd: boolean,
 ): Promise<AppSettings> {
   if (!hasShell()) {
     return {
       ...DEFAULT_SETTINGS,
       activityWindowDays,
       launchAtLogin,
+      disabledAgents,
+      nudgesRespectDnd,
       onboardingCompleted: true,
     }
   }
-  return invoke<AppSettings>("finish_onboarding", { activityWindowDays, launchAtLogin })
+  return invoke<AppSettings>("finish_onboarding", {
+    activityWindowDays,
+    launchAtLogin,
+    disabledAgents,
+    nudgesRespectDnd,
+  })
 }
 
 /** The sessions to show in the popover, newest first. */

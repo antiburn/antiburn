@@ -14,6 +14,29 @@ function Write-InstallerInfo {
     Write-Information "antiburn: $Message" -InformationAction Continue
 }
 
+# Print the wordmark and one line about what antiburn does. Art and color
+# appear only on an interactive host that did not opt out.
+function Write-InstallerBanner {
+    if ($env:NO_COLOR -or [Console]::IsOutputRedirected) {
+        Write-InstallerInfo 'Stop hitting your token limits - antiburn finds what burns tokens in your coding agent sessions.'
+        return
+    }
+    $wordmark = @(
+        ' ▄▄        █  ▀ █'
+        ' ▄▄█ █▀▀▄ ▀█▀ █ █▀▀▄ █  █ █▄▀▀ █▀▀▄'
+        '▀▄▄█ █  █  █▄ █ █▄▄▀ ▀▄▄█ █    █  █'
+    )
+    Write-Host ''
+    foreach ($line in $wordmark) {
+        Write-Host $line -ForegroundColor DarkYellow
+    }
+    Write-Host ''
+    Write-Host 'Stop hitting your token limits.'
+    Write-Host 'antiburn reads your coding agent sessions locally, finds what'
+    Write-Host 'burns tokens, and nudges you before you hit a limit.'
+    Write-Host ''
+}
+
 function Get-AntiburnRelease {
     param([string] $RequestedVersion)
 
@@ -129,6 +152,7 @@ function Invoke-AntiburnInstall {
         [Net.ServicePointManager]::SecurityProtocol = $protocol -bor [Net.SecurityProtocolType]::Tls12
     }
 
+    Write-InstallerBanner
     Test-WindowsArchitecture
     $release = Get-AntiburnRelease -RequestedVersion $RequestedVersion
     $assetName = "antiburn_$($release.Version)_x64-setup.exe"
@@ -167,6 +191,7 @@ function Invoke-AntiburnInstall {
             throw "The installer completed, but antiburn was not found at $installedApplication."
         }
         Write-InstallerInfo "Installed antiburn $($release.Version)"
+        Write-InstallerInfo 'Open antiburn - it lives in your menu bar.'
     }
     finally {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue

@@ -22,6 +22,7 @@ import {
   type RepositoryItemPayload,
   type ScanStatus,
 } from "../../lib/ipc"
+import { getHygieneSummary, type HygieneSummary } from "../../lib/insightsIpc"
 import type {
   FolderPermissions,
   LocalRepositoryItem,
@@ -32,6 +33,7 @@ import type {
   FolderPermissionFlow,
   FolderVerdict,
 } from "../../lib/useFolderPermissionFlow"
+import { AGENT_SLUGS } from "../../lib/presentation/agents"
 
 const EMPTY_PERMISSIONS: FolderPermissions = {
   deferred: [],
@@ -57,6 +59,15 @@ export type OnboardingSnapshot = {
   permissions: FolderPermissions
   repositories: LocalRepositoryItem[]
   scanStatus: ScanStatus | null
+  /**
+   * Draft of the disabled-agent set, persisted by `finish`. Seeded once from
+   * scan results: agents with sessions start on, the rest start off.
+   */
+  disabledAgents: string[]
+  /** Draft of the Do Not Disturb opt-in, persisted by `finish`. */
+  nudgesRespectDnd: boolean
+  /** The aggregate check numbers the Ready step shows. Null until fetched. */
+  hygieneSummary: HygieneSummary | null
   recheckingPermissions: boolean
   finishing: boolean
   finishError: string | null
@@ -96,6 +107,8 @@ export class OnboardingSession {
   private permissionTimer: ReturnType<typeof setTimeout> | null = null
   private rescanInFlight = false
   private rescanQueued = false
+  private agentChoicesTouched = false
+  private hygieneTimer: ReturnType<typeof setInterval> | null = null
   private analyticsSteps = new Set<OnboardingStep>()
 
   private snapshot: OnboardingSnapshot
@@ -113,6 +126,9 @@ export class OnboardingSession {
       permissions: EMPTY_PERMISSIONS,
       repositories: [],
       scanStatus: null,
+      disabledAgents: [],
+      nudgesRespectDnd: false,
+      hygieneSummary: null,
       recheckingPermissions: false,
       finishing: false,
       finishError: null,
@@ -139,6 +155,43 @@ export class OnboardingSession {
 
   setLaunchAtLogin = (enabled: boolean): void => {
     this.update({ launchAtLogin: enabled, finishError: null })
+  }
+
+  setNudgesRespectDnd = (enabled: boolean): void => {
+    this.update({ nudgesRespectDnd: enabled, finishError: null })
+  }
+
+  /**
+   * Fetch the check numbers now and re-fetch each second until analysis
+   * settles. The flow calls this when the reader reaches the Ready step,
+   * so the poll never runs behind an earlier step.
+   */
+  beginHygienePolling = (): void => {
+    if (this.hygieneTimer !== null) return
+    this.hygieneTimer = setInterval(() => void this.refreshHygieneSummary(), 1_000)
+    void this.refreshHygieneSummary()
+  }
+
+  private refreshHygieneSummary = async (): Promise<void> => {
+    const generation = this.generation
+    const summary = await getHygieneSummary().catch(() => null)
+    if (summary === null || generation !== this.generation) return
+    this.update({ hygieneSummary: summary })
+    if (summary.settledSessions >= summary.totalSessions) this.stopHygienePolling()
+  }
+
+  private stopHygienePolling(): void {
+    if (this.hygieneTimer === null) return
+    clearInterval(this.hygieneTimer)
+    this.hygieneTimer = null
+  }
+
+  setAgentEnabled = (slug: string, enabled: boolean): void => {
+    this.agentChoicesTouched = true
+    const disabled = new Set(this.snapshot.disabledAgents)
+    if (enabled) disabled.delete(slug)
+    else disabled.add(slug)
+    this.update({ disabledAgents: [...disabled].sort(), finishError: null })
   }
 
   noteOnboardingStep = (step: OnboardingStep): void => {
@@ -175,7 +228,7 @@ export class OnboardingSession {
       do {
         this.rescanQueued = false
         const status = await scanNow(this.snapshot.activityWindowDays).catch(() => null)
-        if (status) this.update({ scanStatus: status })
+        if (status) this.applyScanStatus(status)
         const permissions = await getFolderPermissions().catch(() => null)
         if (permissions) this.update({ permissions })
       } while (this.rescanQueued)
@@ -206,7 +259,12 @@ export class OnboardingSession {
     if (this.snapshot.finishing) return
     this.update({ finishing: true, finishError: null })
     try {
-      await finishOnboarding(this.snapshot.activityWindowDays, this.snapshot.launchAtLogin)
+      await finishOnboarding(
+        this.snapshot.activityWindowDays,
+        this.snapshot.launchAtLogin,
+        this.snapshot.disabledAgents,
+        this.snapshot.nudgesRespectDnd,
+      )
     } catch (error) {
       this.update({
         finishing: false,
@@ -222,8 +280,11 @@ export class OnboardingSession {
     const pendingScanListener = onScanEvent((status, phase) => {
       if (generation !== this.generation) return
       this.scanEventVersion += 1
-      this.update({ scanStatus: status })
-      if (phase === "finished") void this.refreshRepositories()
+      this.applyScanStatus(status)
+      if (phase === "finished") {
+        void this.refreshRepositories()
+        void this.refreshScanStatus()
+      }
     })
 
     try {
@@ -255,14 +316,15 @@ export class OnboardingSession {
         loadError: null,
         activityWindowDays: settings.activityWindowDays,
         launchAtLogin: settings.launchAtLogin,
+        nudgesRespectDnd: settings.nudgesRespectDnd,
         analyticsSupported: info?.analyticsSupported ?? false,
         analyticsEnvironmentDisabled: info?.analyticsEnvironmentDisabled ?? false,
         scanRoots,
         defaultRoots,
         permissions,
         repositories: toRepositories(repositories),
-        ...(scanVersion === this.scanEventVersion ? { scanStatus } : {}),
       })
+      if (scanVersion === this.scanEventVersion && scanStatus) this.applyScanStatus(scanStatus)
       this.noteOnboardingStep("welcome")
     } catch (error) {
       if (generation !== this.generation) return
@@ -278,12 +340,54 @@ export class OnboardingSession {
     this.generation += 1
     this.stopScanListening?.()
     this.stopScanListening = null
+    this.stopHygienePolling()
     this.cancelPermissionFlow()
   }
 
   private refreshRepositories = async (): Promise<void> => {
     const payloads = await listRepositories().catch(() => [])
     this.update({ repositories: toRepositories(payloads) })
+  }
+
+  /**
+   * Apply a scan status while it keeps the known agent list. Scan events carry
+   * an empty `agents` array, so an event must not erase the fetched list.
+   */
+  private applyScanStatus(status: ScanStatus): void {
+    const previous = this.snapshot.scanStatus
+    const agents = status.agents.length > 0 ? status.agents : (previous?.agents ?? [])
+    const merged = { ...status, agents }
+    this.update({ scanStatus: merged })
+    this.seedAgentChoices(merged)
+  }
+
+  /** Fetch the per-agent scan state, which scan events do not carry. */
+  private refreshScanStatus = async (): Promise<void> => {
+    const version = this.scanEventVersion
+    const fetched = await getScanStatus().catch(() => null)
+    if (!fetched) return
+    if (version === this.scanEventVersion) {
+      this.applyScanStatus(fetched)
+      return
+    }
+    // A newer scan event arrived during the fetch. Keep the event's counters
+    // and take only the agent list from the fetched status.
+    const current = this.snapshot.scanStatus
+    if (current === null || fetched.agents.length === 0) return
+    const merged = { ...current, agents: fetched.agents }
+    this.update({ scanStatus: merged })
+    this.seedAgentChoices(merged)
+  }
+
+  /**
+   * Seed the draft toggles from scan results until the user touches one.
+   * Agents with sessions start on; agents with none start off.
+   */
+  private seedAgentChoices(status: ScanStatus): void {
+    if (this.agentChoicesTouched || status.agents.length === 0) return
+    const sessions = new Map(status.agents.map((entry) => [entry.agent, entry.sessionsSeen]))
+    const disabled = AGENT_SLUGS.filter((slug) => (sessions.get(slug) ?? 0) === 0)
+    this.update({ disabledAgents: disabled })
   }
 
   private startPermissionFlow = (): void => {
