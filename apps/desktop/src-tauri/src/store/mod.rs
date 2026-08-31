@@ -27,6 +27,8 @@ mod schema;
 #[cfg(test)]
 mod privacy_tests;
 #[cfg(test)]
+mod publish_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, HashSet};
@@ -679,6 +681,31 @@ impl Store {
                     .query_row(
                         params![key.environment_key, key.agent, key.session_id],
                         evidence_from_row,
+                    )
+                    .optional()
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    /// Each session's current source generation, in request order.
+    ///
+    /// A caller compares this against an evidence row's own
+    /// `analyzed_generation` to find evidence analyzed against a generation
+    /// the source has since moved past — see `session_hygiene_payload` in
+    /// `commands.rs`. `None` marks a key with no `session` row.
+    pub fn source_generation_batch(&self, keys: &[SessionKey]) -> Result<Vec<Option<i64>>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT source_generation FROM session
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+        )?;
+        keys.iter()
+            .map(|key| {
+                statement
+                    .query_row(
+                        params![key.environment_key, key.agent, key.session_id],
+                        |row| row.get(0),
                     )
                     .optional()
                     .map_err(Into::into)
