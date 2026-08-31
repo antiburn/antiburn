@@ -456,6 +456,38 @@ struct ReferenceEfficiencyTurn<'a> {
     usage: Usage,
 }
 
+/// One missing-model turn's raw usage, aggregated for the fallback model.
+///
+/// This mirrors `crate::analysis::efficiency`'s `FallbackOverflow`, but as
+/// an independent sum: it does not call the reducer's helpers. The op
+/// order matters for bit-exactness with the reducer. Per turn, compute
+/// `input_share = input / fresh`. Then add, in this order,
+/// `new_tokens * input_share`, `new_tokens * (1.0 - input_share)`,
+/// `rewrite_tokens * input_share`, and `rewrite_tokens * (1.0 - input_share)`
+/// to the four running token totals. Add cache-read tokens, growth, and
+/// output tokens as integer sums.
+#[derive(Default)]
+struct ReferenceFallbackAggregate {
+    growth_tokens: u64,
+    output_tokens: u64,
+    new_input_tokens: f64,
+    new_cache_tokens: f64,
+    rewrite_input_tokens: f64,
+    rewrite_cache_tokens: f64,
+    cache_read_tokens: u64,
+    turns: u64,
+}
+
+/// Returns the independent reference computation of efficiency totals.
+///
+/// This keeps its own turn-merge and pricing logic instead of calling into
+/// `crate::analysis::efficiency`, so it can catch bugs the reducer shares
+/// with itself. It still folds turns in the reducer's canonical order. A
+/// turn with a known model prices and adds to the totals right away, in
+/// fold (timestamp) order. A turn with no model of its own — `model` is
+/// `None`, not an empty or unpriceable string — joins one fallback
+/// aggregate instead. That aggregate prices once, under the session
+/// fallback model, after every priced turn above has already summed.
 fn reference_efficiency(
     turns: &[(EventSource, &MetricTurn)],
     fallback_model: Option<&str>,
@@ -495,18 +527,44 @@ fn reference_efficiency(
     merged.sort_by_key(|turn| turn.ts);
 
     let mut totals = EfficiencyTotals::default();
+    let mut fallback = ReferenceFallbackAggregate::default();
     let mut previous_context = None;
     for turn in merged {
         let usage = turn.usage;
         let context = usage.context_tokens();
         let growth = previous_context.map_or(context, |prior: u64| context.saturating_sub(prior));
         previous_context = Some(context);
-        let model = turn
-            .model
-            .or(fallback_model)
-            .map(|name| strip_window_tag(name).trim())
-            .filter(|name| !name.is_empty());
-        let Some(price) = model.and_then(lookup_pricing) else {
+
+        let Some(model) = turn.model else {
+            let fresh = usage
+                .input_tokens
+                .saturating_add(usage.cache_creation_tokens);
+            let new_tokens = fresh.min(growth);
+            let rewrite_tokens = fresh.saturating_sub(new_tokens);
+            let input_share = if fresh == 0 {
+                0.0
+            } else {
+                usage.input_tokens as f64 / fresh as f64
+            };
+            fallback.growth_tokens = fallback.growth_tokens.saturating_add(growth);
+            fallback.output_tokens = fallback.output_tokens.saturating_add(usage.output_tokens);
+            fallback.new_input_tokens += new_tokens as f64 * input_share;
+            fallback.new_cache_tokens += new_tokens as f64 * (1.0 - input_share);
+            fallback.rewrite_input_tokens += rewrite_tokens as f64 * input_share;
+            fallback.rewrite_cache_tokens += rewrite_tokens as f64 * (1.0 - input_share);
+            fallback.cache_read_tokens = fallback
+                .cache_read_tokens
+                .saturating_add(usage.cache_read_tokens);
+            fallback.turns = fallback.turns.saturating_add(1);
+            continue;
+        };
+
+        let model = strip_window_tag(model).trim();
+        if model.is_empty() {
+            totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
+            continue;
+        }
+        let Some(price) = lookup_pricing(model) else {
             totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
             continue;
         };
@@ -533,6 +591,33 @@ fn reference_efficiency(
         totals.growth_tokens = totals.growth_tokens.saturating_add(growth);
         totals.output_tokens = totals.output_tokens.saturating_add(usage.output_tokens);
         totals.priced_turns = totals.priced_turns.saturating_add(1);
+    }
+
+    // The fallback aggregate prices once, after every priced turn above has
+    // already summed. This matches `EfficiencyReducer::finish`'s order.
+    let priced_fallback = fallback_model
+        .map(|name| strip_window_tag(name).trim())
+        .filter(|name| !name.is_empty())
+        .and_then(lookup_pricing);
+    match priced_fallback {
+        None => {
+            totals.unpriced_turns = totals.unpriced_turns.saturating_add(fallback.turns);
+        }
+        Some(price) => {
+            let new_work = fallback.output_tokens as f64 * price.output_cost_per_token
+                + fallback.new_input_tokens * price.input_cost_per_token
+                + fallback.new_cache_tokens * price.cache_write_cost_per_token;
+            let carry = fallback.cache_read_tokens as f64 * price.cache_read_cost_per_token;
+            let rewrite = fallback.rewrite_input_tokens * price.input_cost_per_token
+                + fallback.rewrite_cache_tokens * price.cache_write_cost_per_token;
+            totals.new_work_usd += new_work;
+            totals.carry_usd += carry;
+            totals.rewrite_usd += rewrite;
+            totals.total_usd += new_work + carry + rewrite;
+            totals.growth_tokens = totals.growth_tokens.saturating_add(fallback.growth_tokens);
+            totals.output_tokens = totals.output_tokens.saturating_add(fallback.output_tokens);
+            totals.priced_turns = totals.priced_turns.saturating_add(fallback.turns);
+        }
     }
     totals
 }
