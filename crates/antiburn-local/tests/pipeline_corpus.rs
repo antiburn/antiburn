@@ -133,6 +133,18 @@ fn s_tier_session_flows_end_to_end_into_a_report() {
     let session = generate_session(&SessionSpec::tier_s(11, 0, 500));
     assert_eq!(session.tallies.total_records, 500);
     assert!(session.tallies.compaction_boundaries >= 2);
+    // Every generated record falls into exactly one tally bucket.
+    assert_eq!(
+        session.tallies.total_records,
+        session.tallies.assistant_records
+            + session.tallies.user_records
+            + session.tallies.eventless_records
+            + session.tallies.unrecognized_records
+            + session.tallies.evidence_bearing_unrecognized_records
+            + session.tallies.oversized_records
+    );
+    // Every compaction boundary is a recognized eventless record.
+    assert!(session.tallies.eventless_records >= session.tallies.compaction_boundaries);
     let path = write_session(&directory, &session);
     let input = file_input(&session.session_id, &path);
 

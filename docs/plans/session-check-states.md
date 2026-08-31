@@ -1,6 +1,8 @@
 # Session row: check-state copy and edge cases
 
-Branch: `claude/ui-test-state-handling-10db01` · Status: implemented, awaiting Keith's manual test
+Branch: `claude/ui-test-state-handling-10db01` · Status: shipped
+
+Closing note: merged to main in PR #250 (commit 38d3357).
 
 ## Status
 
@@ -9,9 +11,9 @@ Branch: `claude/ui-test-state-handling-10db01` · Status: implemented, awaiting 
 | Investigate why counts vary and why checks are not assessed | Done |
 | Agree the copy rules below | Done (discuss 2026-08-28: ellipsis on transient states; fraction stays) |
 | Implement + tests | Done — 902/902 desktop tests pass |
-| Keith manual test + screenshot | Waiting on Keith — needed before the PR opens |
+| Keith manual test + screenshot | Done |
 | Commit + push | Done — 3 commits on `claude/ui-test-state-handling-10db01` |
-| Draft PR | Blocked on the screenshot |
+| Draft PR | Done — merged as PR #250 |
 
 ## Found during manual test (2026-08-28)
 

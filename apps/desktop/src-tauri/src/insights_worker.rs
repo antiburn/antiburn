@@ -233,7 +233,6 @@ pub(crate) fn apply_outcome(
                 status: published_status(evidence),
                 evidence_schema_revision: evidence.schema_revision,
                 evidence_json: serde_json::to_string(evidence)?,
-                diagnostics_json: Some(serde_json::to_string(&evidence.diagnostics)?),
             };
             store.publish_projections(
                 &record,
@@ -711,10 +710,6 @@ mod tests {
         );
         let evidence_after = store.evidence(&first.key).unwrap().unwrap();
         assert_eq!(evidence_after.evidence_json, evidence_before.evidence_json);
-        assert_eq!(
-            evidence_after.diagnostics_json,
-            evidence_before.diagnostics_json
-        );
         assert_eq!(evidence_after.status, EvidenceStatus::Pending);
         assert_eq!(evidence_after.retry_count, 1);
         assert_eq!(
@@ -769,7 +764,6 @@ mod tests {
         assert_eq!(row.status, EvidenceStatus::Failed);
         assert!(store.analysis(&claim.key).unwrap().is_none());
         assert!(row.evidence_json.is_none());
-        assert!(row.diagnostics_json.is_none());
     }
 
     #[test]

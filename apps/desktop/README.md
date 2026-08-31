@@ -208,6 +208,7 @@ These build-level limits affect desktop development:
   escaped Desktop Entry. New installs are asked on the Ready step (default on),
   General reflects the same preference, and development runs — including
   `cargo run --release` — never change the machine's login items.
-- Agent icons are a single neutral glyph for every agent. Vendor logos are the
-  vendors' marks; original per-agent artwork is a later stream, and
-  `src/lib/agentIcon.tsx` already carries the icon-name seam it will key off.
+- Agent icons use three tiers, in `src/lib/agentIcon.tsx`: a brand mark for
+  agents with a recorded vendor logo, a letter tile for known agents without
+  one, and a neutral surface glyph only for `generic-agent`. Original
+  per-agent artwork beyond vendor marks is a later stream.

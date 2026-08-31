@@ -95,7 +95,6 @@ fn evidence_completion(
         status,
         evidence_schema_revision: 1,
         evidence_json,
-        diagnostics_json: Some("[]".into()),
     }
 }
 
@@ -119,7 +118,7 @@ fn seed_ready_evidence_row(store: &Store, session_id: &str) -> SessionRecord {
                 SET status = 'ready', analyzed_generation = 1,
                     processed_fingerprint = 'sv1:current', parser_revision = 1,
                     analyzer_revision = 1, evidence_schema_revision = 1,
-                    evidence_json = '{\"groups\":[]}', diagnostics_json = '[]',
+                    evidence_json = '{\"groups\":[]}',
                     retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
@@ -149,8 +148,7 @@ fn seed_revision_one_placeholder(store: &Store, session_id: &str) -> SessionReco
         .lock()
         .execute(
             "UPDATE session_evidence
-                SET evidence_json = '{\"state\":\"unimplemented\"}',
-                    diagnostics_json = '[\"stale\"]'
+                SET evidence_json = '{\"state\":\"unimplemented\"}'
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
                 record.key.environment_key,
@@ -629,7 +627,6 @@ fn session_evidence_table_shape_is_stable() {
             "analyzer_revision",
             "evidence_schema_revision",
             "evidence_json",
-            "diagnostics_json",
             "retry_count",
             "claim_fence",
             "claimed_at_epoch",
@@ -1294,6 +1291,25 @@ fn recent_sessions_are_windowed_and_ordered_newest_first() {
 }
 
 #[test]
+fn recent_sessions_query_plan_uses_the_coalesced_recency_index() {
+    let store = store();
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {RECENT_SESSIONS_SQL}"))
+        .unwrap();
+    let plan_lines: Vec<String> = statement
+        .query_map(params![0_i64, 100_i64], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let plan = plan_lines.join("\n");
+    assert!(
+        plan.contains("session_recency_coalesced"),
+        "query plan did not use the coalesced index: {plan}"
+    );
+}
+
+#[test]
 fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
     let store = store();
     store
@@ -1860,167 +1876,6 @@ fn migrating_forward_renames_the_analytics_tables_and_keeps_their_rows() {
 }
 
 #[test]
-fn codex_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..11] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection.pragma_update(None, "user_version", 11).unwrap();
-    connection
-        .execute_batch(
-            "INSERT INTO session (
-                 environment_key, agent, session_id, source_kind, source_label,
-                 surface, first_seen_at, last_seen_at
-             ) VALUES
-                 ('native', 'codex', 'new', 'file', '/tmp/new.jsonl', 'cli', 'x', 'x'),
-                 ('native', 'codex', 'ready', 'file', '/tmp/ready.jsonl', 'cli', 'x', 'x'),
-                 ('native', 'claude-code', 'claude', 'file', '/tmp/claude.jsonl', 'cli', 'x', 'x');
-             INSERT INTO session_evidence (
-                 environment_key, agent, session_id, status
-             ) VALUES ('native', 'codex', 'ready', 'ready');",
-        )
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-codex-cohort-migration-test").to_path_buf(),
-    )
-    .unwrap();
-    let connection = store.lock();
-    let statuses = connection
-        .prepare("SELECT session_id, status FROM session_evidence ORDER BY session_id")
-        .unwrap()
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-
-    assert_eq!(
-        statuses,
-        vec![
-            ("new".to_owned(), "pending".to_owned()),
-            ("ready".to_owned(), "ready".to_owned())
-        ]
-    );
-}
-
-#[test]
-fn pi_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..12] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection.pragma_update(None, "user_version", 12).unwrap();
-    connection
-        .execute_batch(
-            "INSERT INTO session (
-                 environment_key, agent, session_id, source_kind, source_label,
-                 surface, first_seen_at, last_seen_at
-             ) VALUES
-                 ('native', 'pi', 'new', 'file', '/synthetic/new.jsonl', 'cli', 'x', 'x'),
-                 ('native', 'pi', 'ready', 'file', '/synthetic/ready.jsonl', 'cli', 'x', 'x'),
-                 ('native', 'codex', 'codex', 'file', '/synthetic/codex.jsonl', 'cli', 'x', 'x');
-             INSERT INTO session_evidence (
-                 environment_key, agent, session_id, status
-             ) VALUES ('native', 'pi', 'ready', 'ready');",
-        )
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-pi-cohort-migration-test").to_path_buf(),
-    )
-    .unwrap();
-    let connection = store.lock();
-    let statuses = connection
-        .prepare(
-            "SELECT agent, session_id, status FROM session_evidence ORDER BY agent, session_id",
-        )
-        .unwrap()
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-
-    assert_eq!(
-        statuses,
-        vec![
-            ("pi".to_owned(), "new".to_owned(), "pending".to_owned()),
-            ("pi".to_owned(), "ready".to_owned(), "ready".to_owned()),
-        ]
-    );
-}
-
-#[test]
-fn opencode_cohort_migration_queues_existing_sessions_without_resetting_evidence() {
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..13] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection.pragma_update(None, "user_version", 13).unwrap();
-    connection
-        .execute_batch(
-            "INSERT INTO session (
-                 environment_key, agent, session_id, source_kind, source_label,
-                 surface, first_seen_at, last_seen_at
-             ) VALUES
-                 ('native', 'opencode', 'new', 'providerDb', 'opencode:new', 'cli', 'x', 'x'),
-                 ('native', 'opencode', 'ready', 'providerDb', 'opencode:ready', 'cli', 'x', 'x'),
-                 ('native', 'pi', 'pi', 'file', '/synthetic/pi.jsonl', 'cli', 'x', 'x');
-             INSERT INTO session_evidence (
-                 environment_key, agent, session_id, status
-             ) VALUES ('native', 'opencode', 'ready', 'ready');",
-        )
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-opencode-cohort-migration-test").to_path_buf(),
-    )
-    .unwrap();
-    let connection = store.lock();
-    let statuses = connection
-        .prepare(
-            "SELECT agent, session_id, status FROM session_evidence ORDER BY agent, session_id",
-        )
-        .unwrap()
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-
-    assert_eq!(
-        statuses,
-        vec![
-            (
-                "opencode".to_owned(),
-                "new".to_owned(),
-                "pending".to_owned()
-            ),
-            (
-                "opencode".to_owned(),
-                "ready".to_owned(),
-                "ready".to_owned()
-            ),
-        ]
-    );
-}
-
-#[test]
 fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
     for start in 0..super::schema::MIGRATIONS.len() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
@@ -2060,6 +1915,34 @@ fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
             .unwrap();
         assert_eq!(added_columns, 3, "start version {start}");
         assert_eq!(projection_columns, 4, "start version {start}");
+
+        let diagnostics_column: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_evidence')
+                   WHERE name = 'diagnostics_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(diagnostics_column, 0, "start version {start}");
+
+        let index_names: Vec<String> = connection
+            .prepare("SELECT name FROM pragma_index_list('session')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            index_names
+                .iter()
+                .any(|name| name == "session_recency_coalesced"),
+            "start version {start}: {index_names:?}"
+        );
+        assert!(
+            !index_names.iter().any(|name| name == "session_recency"),
+            "start version {start}: {index_names:?}"
+        );
     }
 }
 
@@ -2180,7 +2063,6 @@ fn marking_session_evidence_pending_keeps_the_last_completed_payload() {
     let after = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(after.status, EvidenceStatus::Pending);
     assert_eq!(after.evidence_json, before.evidence_json);
-    assert_eq!(after.diagnostics_json, before.diagnostics_json);
     assert_eq!(after.analyzed_generation, before.analyzed_generation);
     assert_eq!(after.processed_fingerprint, before.processed_fingerprint);
     assert_eq!(after.parser_revision, before.parser_revision);
@@ -2625,7 +2507,6 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
     assert_eq!(failed.status, EvidenceStatus::Failed);
     assert_eq!(failed.evidence_schema_revision, Some(12));
     assert!(failed.evidence_json.is_none());
-    assert!(failed.diagnostics_json.is_none());
 }
 
 #[test]
@@ -3516,10 +3397,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 21);
+    assert_eq!(super::schema::MIGRATIONS.len(), 23);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 21);
+    assert_eq!(store.schema_version().unwrap(), 23);
 }
 
 #[test]

@@ -3,9 +3,10 @@
 //! # Scan policy
 //!
 //! One pass asks every agent explorer for the sessions it can see, reads each
-//! one's metadata, writes the result to the store, tops up derived analysis for
-//! the newest sessions, and refreshes the repository list. Passes never overlap:
-//! a request that arrives while one is running is dropped rather than queued,
+//! one's metadata, writes the result to the store, and refreshes the
+//! repository list. It does not analyze sessions: [`crate::insights_worker`]
+//! drains that work from its own durable queue. Passes never overlap: a
+//! request that arrives while one is running is dropped rather than queued,
 //! because the next tick would produce the same answer.
 //!
 //! antiburn is an always-running background utility. CPU time, memory, open
@@ -53,12 +54,13 @@
 //! a retry), and [`crate::notifications`] once per run of the app, for someone
 //! who is not looking at antiburn at all.
 //!
-//! Every pass is bounded: discovery is windowed to the widest activity view, the
-//! per-session metadata reads run at a fixed concurrency, and analysis is
-//! capped at [`MAX_ANALYSES_PER_PASS`] sessions so one pass cannot grow with
-//! the size of the machine. The separate retention policy expires indexed
-//! sessions; the bounded discovery window does not. The scheduler is a single
-//! handle the app aborts on exit, so nothing outlives the process.
+//! Every pass is bounded: discovery is windowed to the widest activity view,
+//! and the per-session metadata reads run at a fixed concurrency, so one pass
+//! cannot grow with the size of the machine. [`crate::insights_worker`] bounds
+//! its own analysis concurrency separately. The separate retention policy
+//! expires indexed sessions; the bounded discovery window does not. The
+//! scheduler is a single handle the app aborts on exit, so nothing outlives
+//! the process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

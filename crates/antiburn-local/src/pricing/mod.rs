@@ -30,6 +30,6 @@ pub use calc::{CostResult, calculate_cost};
 pub use model::{Cost, ModelPricing, ModelTokens};
 pub use table::{
     ANTIGRAVITY_PLACEHOLDER_M26_MODEL_KEY, ANTIGRAVITY_PLACEHOLDER_M35_MODEL_KEY,
-    GPT_55_FAST_MODEL_KEY, authoritative_openai_pricing, canonical_model_key, classify_model,
-    fallback_pricing, gpt_55_fast_priority_pricing, lookup_pricing, normalize_model_key,
+    GPT_55_FAST_MODEL_KEY, authoritative_openai_pricing, canonical_model_key, fallback_pricing,
+    gpt_55_fast_priority_pricing, lookup_pricing, normalize_model_key,
 };

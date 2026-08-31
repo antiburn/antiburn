@@ -19,24 +19,6 @@ pub const ANTIGRAVITY_PLACEHOLDER_M26_MODEL_KEY: &str = "MODEL_PLACEHOLDER_M26";
 /// Antigravity placeholder observed for user-facing Claude Sonnet 4.6 Thinking usage.
 pub const ANTIGRAVITY_PLACEHOLDER_M35_MODEL_KEY: &str = "MODEL_PLACEHOLDER_M35";
 
-/// Classify a full model ID string into a display tier for grouping.
-///
-/// Used for aggregating costs by model family in insight prompts.
-/// NOT used for pricing lookups — use [`lookup_pricing`] for that.
-pub fn classify_model(model_id: &str) -> &'static str {
-    let lower = model_id.to_lowercase();
-
-    if lower.contains("opus") {
-        "opus"
-    } else if lower.contains("sonnet") {
-        "sonnet"
-    } else if lower.contains("haiku") {
-        "haiku"
-    } else {
-        "other"
-    }
-}
-
 /// Strip trailing `-YYYYMMDD` date suffix from a model ID.
 ///
 /// Model IDs from transcripts look like `claude-opus-4-6-20260301`.
@@ -372,39 +354,6 @@ mod tests {
 
     fn test_pricing_map() -> HashMap<String, ModelPricing> {
         fallback_pricing()
-    }
-
-    #[test]
-    fn test_classify_opus() {
-        assert_eq!(classify_model("claude-opus-4-5-20250929"), "opus");
-        assert_eq!(classify_model("claude-opus-4-6-20260301"), "opus");
-        assert_eq!(classify_model("claude-opus-4-1-20250929"), "opus");
-    }
-
-    #[test]
-    fn test_classify_sonnet() {
-        assert_eq!(classify_model("claude-sonnet-4-5-20250929"), "sonnet");
-        assert_eq!(classify_model("claude-sonnet-4-20250514"), "sonnet");
-        assert_eq!(classify_model("claude-3-5-sonnet-20241022"), "sonnet");
-    }
-
-    #[test]
-    fn test_classify_haiku() {
-        assert_eq!(classify_model("claude-haiku-4-5-20251001"), "haiku");
-        assert_eq!(classify_model("claude-3-5-haiku-20241022"), "haiku");
-        assert_eq!(classify_model("claude-3-haiku-20240307"), "haiku");
-    }
-
-    #[test]
-    fn test_classify_unknown() {
-        assert_eq!(classify_model("gpt-4o"), "other");
-        assert_eq!(classify_model("unknown-model"), "other");
-    }
-
-    #[test]
-    fn test_classify_case_insensitive() {
-        assert_eq!(classify_model("Claude-Opus-4-5-20250929"), "opus");
-        assert_eq!(classify_model("CLAUDE-SONNET-4-5-20250929"), "sonnet");
     }
 
     #[test]

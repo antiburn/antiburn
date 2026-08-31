@@ -276,7 +276,13 @@ fn codex_capabilities_match_published_evidence() {
     let (evidence, _) = composite(&input("records_all_kinds"));
     let capabilities = evidence.capabilities;
 
-    assert_eq!(capabilities, SourceCapabilities::codex());
+    // `cache_write_tokens` is observed per session, not fixed at the
+    // static baseline: `records_all_kinds` carries no cache-write alias
+    // key, so the published capability reads false even though
+    // `SourceCapabilities::codex()` now defaults it true.
+    let mut expected_capabilities = SourceCapabilities::codex();
+    expected_capabilities.cache_write_tokens = false;
+    assert_eq!(capabilities, expected_capabilities);
     assert!(capabilities.request_context_tokens && is_supported(&evidence.context));
     assert!(capabilities.timestamps_and_order && is_supported(&evidence.time_range));
     assert!(capabilities.tool_invocations && is_supported(&evidence.tools));
@@ -405,11 +411,10 @@ fn codex_detector_prerequisites_assess_only_supported_detectors() {
             DetectorId::OverpoweredSubagents,
             DetectorId::OldModelUsage,
             DetectorId::OveruseOfFastMode,
-            // Codex reports `token_classes` and `request_context_tokens`
-            // but no `cache_write_tokens`: `repeated_context` resolves to
-            // uncached-input accounting, so Cache Churn is now eligible —
-            // it just never reads clean, since Codex has no
-            // `record_identity`.
+            // Codex reports `token_classes` and `request_context_tokens`.
+            // `evidence_sink` pins Codex to uncached-input accounting for
+            // `repeated_context` regardless of `cache_write_tokens`.
+            // Cache Churn is eligible. Linear record order lets it read clean.
             DetectorId::CacheChurn,
         ]
     );

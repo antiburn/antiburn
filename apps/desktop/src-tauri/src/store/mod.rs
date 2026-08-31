@@ -69,7 +69,7 @@ pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs"
 const EVIDENCE_BY_KEY_SQL: &str = "SELECT environment_key, agent, session_id, status,
             analyzed_generation, processed_fingerprint,
             parser_revision, analyzer_revision, evidence_schema_revision,
-            evidence_json, diagnostics_json, retry_count, claim_fence,
+            evidence_json, retry_count, claim_fence,
             claimed_at_epoch, lease_expires_at_epoch,
             next_attempt_at_epoch, analyzed_at_epoch, last_error, published_fence
        FROM session_evidence
@@ -131,6 +131,24 @@ pub struct Store {
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
 }
+
+/// [`Store::recent_sessions`]'s query, pulled out to a shared constant so a
+/// schema test can run `EXPLAIN QUERY PLAN` against the exact SQL the method
+/// runs, instead of a copy that could drift from it.
+const RECENT_SESSIONS_SQL: &str = "SELECT environment_key, agent, session_id, source_kind,
+            source_label, wsl_distro, title, title_source, cwd, surface, updated_at_epoch,
+            activity_cursor, activity_source, subagent_count,
+            (SELECT related_id FROM session_relation r
+               WHERE r.environment_key = s.environment_key
+                 AND r.agent = s.agent
+                 AND r.session_id = s.session_id
+                 AND r.kind = 'forkParent'
+               LIMIT 1),
+            s.source_fingerprint
+       FROM session s
+      WHERE COALESCE(updated_at_epoch, 0) >= ?1
+      ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
+      LIMIT ?2";
 
 impl Store {
     /// Open (creating if absent) and migrate the database under `data_dir`.
@@ -588,22 +606,7 @@ impl Store {
     /// Sessions whose activity falls at or after `since_epoch`, newest first.
     pub fn recent_sessions(&self, since_epoch: i64, limit: usize) -> Result<Vec<SessionRecord>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-                    title, title_source, cwd, surface, updated_at_epoch,
-                    activity_cursor, activity_source, subagent_count,
-                    (SELECT related_id FROM session_relation r
-                       WHERE r.environment_key = s.environment_key
-                         AND r.agent = s.agent
-                         AND r.session_id = s.session_id
-                         AND r.kind = 'forkParent'
-                       LIMIT 1),
-                    s.source_fingerprint
-               FROM session s
-              WHERE COALESCE(updated_at_epoch, 0) >= ?1
-              ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
-              LIMIT ?2",
-        )?;
+        let mut statement = connection.prepare(RECENT_SESSIONS_SQL)?;
         let rows = statement.query_map(params![since_epoch, limit as i64], session_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -1021,7 +1024,7 @@ impl Store {
                     SET status = 'failed', retry_count = retry_count + 1,
                         analyzed_generation = ?5, parser_revision = ?7,
                         analyzer_revision = ?8, evidence_schema_revision = ?9,
-                        evidence_json = NULL, diagnostics_json = NULL,
+                        evidence_json = NULL,
                         last_error = ?6, claimed_at_epoch = NULL,
                         lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL
                   WHERE evidence.environment_key = ?1
@@ -1159,13 +1162,13 @@ impl Store {
                 SET status = ?4, analyzed_generation = ?5,
                     processed_fingerprint = ?6, parser_revision = ?7,
                     analyzer_revision = ?8, evidence_schema_revision = ?9,
-                    evidence_json = ?10, diagnostics_json = ?11,
-                    analyzed_at_epoch = ?12, retry_count = 0, last_error = NULL,
+                    evidence_json = ?10,
+                    analyzed_at_epoch = ?11, retry_count = 0, last_error = NULL,
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
-                    next_attempt_at_epoch = NULL, published_fence = ?13
+                    next_attempt_at_epoch = NULL, published_fence = ?12
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
-                AND evidence.status = 'processing' AND evidence.claim_fence = ?13
+                AND evidence.status = 'processing' AND evidence.claim_fence = ?12
                 AND EXISTS (
                     SELECT 1 FROM session
                      WHERE session.environment_key = evidence.environment_key
@@ -1184,7 +1187,6 @@ impl Store {
                 record.analyzer_revision,
                 completion.evidence_schema_revision,
                 completion.evidence_json,
-                completion.diagnostics_json,
                 time::OffsetDateTime::now_utc().unix_timestamp(),
                 completion.claim_fence,
             ],
@@ -1231,14 +1233,6 @@ impl Store {
     pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
         let connection = self.lock();
         mark_evidence_pending_in(&connection, key)
-    }
-
-    /// Deletes every turn row for one session. Used by delete paths that do
-    /// not go through [`Self::delete_session`] or
-    /// [`Self::clear_local_session_data`].
-    pub fn delete_turn_rows_for_session(&self, key: &SessionKey) -> Result<usize> {
-        let connection = self.lock();
-        Ok(delete_turn_rows(&connection, &turn_session_key(key))?)
     }
 
     /// Counts one session's turn rows stamped with `claim_fence`.
@@ -2116,15 +2110,14 @@ fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
         analyzer_revision: row.get(7)?,
         evidence_schema_revision: row.get(8)?,
         evidence_json: row.get(9)?,
-        diagnostics_json: row.get(10)?,
-        retry_count: row.get(11)?,
-        claim_fence: row.get(12)?,
-        claimed_at_epoch: row.get(13)?,
-        lease_expires_at_epoch: row.get(14)?,
-        next_attempt_at_epoch: row.get(15)?,
-        analyzed_at_epoch: row.get(16)?,
-        last_error: row.get(17)?,
-        published_fence: row.get(18)?,
+        retry_count: row.get(10)?,
+        claim_fence: row.get(11)?,
+        claimed_at_epoch: row.get(12)?,
+        lease_expires_at_epoch: row.get(13)?,
+        next_attempt_at_epoch: row.get(14)?,
+        analyzed_at_epoch: row.get(15)?,
+        last_error: row.get(16)?,
+        published_fence: row.get(17)?,
     })
 }
 

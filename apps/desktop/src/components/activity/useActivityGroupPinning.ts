@@ -91,10 +91,9 @@ export function useActivityGroupPinning(
 
   // Coalesces scroll events onto one frame: a trackpad fling fires far more
   // often than the display refreshes, and the answer only changes per frame.
-  // Re-established whenever the label set changes, which — per
-  // `useSyncExternalStore`'s guaranteed post-subscribe resync (see
-  // `useElementWidth`'s doc comment for the same mechanism) — also covers the
-  // initial catch-up an already-scrolled viewport needs on mount, with no
+  // Re-established whenever the label set changes. `useSyncExternalStore`
+  // re-reads `getSnapshot` right after `subscribe` runs, so this also covers
+  // the initial catch-up an already-scrolled viewport needs on mount, with no
   // manual kick required.
   const subscribe = useCallback(
     (onChange: () => void) => {

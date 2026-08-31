@@ -422,22 +422,6 @@ pub fn generate_session_of_bytes(
     generate_session_of_bytes_with_options(seed, session_index, target_bytes, None, false)
 }
 
-/// Grows a session that reuses a bounded set of assistant message ids.
-pub fn generate_session_of_bytes_with_message_modulus(
-    seed: u64,
-    session_index: usize,
-    target_bytes: usize,
-    message_id_modulus: Option<usize>,
-) -> GeneratedSession {
-    generate_session_of_bytes_with_options(
-        seed,
-        session_index,
-        target_bytes,
-        message_id_modulus,
-        false,
-    )
-}
-
 /// Grows a session with synthetic chained record identities.
 pub fn generate_session_of_bytes_with_identity(
     seed: u64,

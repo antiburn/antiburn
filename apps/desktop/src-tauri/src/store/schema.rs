@@ -12,6 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
+    V22, V23,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -366,8 +367,10 @@ ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 /// # Data policy (schema-level contract)
 ///
 /// `turn` stores one row per parsed turn: identity, thread and scope facts,
-/// and token accounting derived from a transcript. `turn_content` exists for
-/// a later change to store the turn's text; nothing writes to it yet.
+/// and token accounting derived from a transcript. `turn_content` stores the
+/// turn's text: `FencedTurnRowStore::write_turn_rows` writes it for every row
+/// with captured content. No production code reads it yet; a later change
+/// adds the drilldown's content read.
 ///
 /// Session deletion and clear-local-session-data remove these rows
 /// explicitly, the same way [`V11`]'s `session_evidence` does — the FK
@@ -447,4 +450,32 @@ ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 const V21: &str = r#"
 ALTER TABLE session_evidence ADD COLUMN published_fence INTEGER;
 UPDATE session_evidence SET published_fence = claim_fence WHERE status IN ('ready','unsupported');
+"#;
+
+/// v22 — drop `session_evidence.diagnostics_json`.
+///
+/// [`V11`] added this column to hold a serialized diagnostics snapshot from
+/// each analyzed pass. Every pass wrote it and [`super::model::EvidenceRow`]
+/// read it back, but no caller ever used the value: only round-trip test
+/// assertions did. Nothing reads it, so this drops it.
+const V22: &str = r#"
+ALTER TABLE session_evidence DROP COLUMN diagnostics_json;
+"#;
+
+/// v23 — an expression index for [`super::Store::recent_sessions`].
+///
+/// That query wraps the indexed column in `COALESCE(updated_at_epoch, 0)`,
+/// in the `WHERE` clause and the `ORDER BY`, so it cannot use [`V1`]'s plain
+/// `session_recency` index — SQLite only matches an index to an expression
+/// it names verbatim. This index names the same `COALESCE` expression, plus
+/// `session_id DESC` as a second key, matching `recent_sessions`'s full
+/// `ORDER BY` exactly.
+///
+/// No other query in this crate orders or filters on a bare
+/// `updated_at_epoch`, so `session_recency` now serves no query and this
+/// migration drops it too.
+const V23: &str = r#"
+DROP INDEX session_recency;
+CREATE INDEX session_recency_coalesced
+    ON session (COALESCE(updated_at_epoch, 0) DESC, session_id DESC);
 "#;

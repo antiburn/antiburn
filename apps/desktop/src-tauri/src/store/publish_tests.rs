@@ -90,7 +90,6 @@ fn evidence_completion(
         status,
         evidence_schema_revision: 1,
         evidence_json,
-        diagnostics_json: Some("[]".into()),
     }
 }
 

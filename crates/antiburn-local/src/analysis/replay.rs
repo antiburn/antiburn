@@ -67,7 +67,7 @@ fn synthesize_tools(row: &TurnRow) -> Vec<ToolCall> {
 /// only `merge_metrics` folds it in as a sub-agent stream.
 /// [`metrics_from_rows`] applies that override itself, after calling this
 /// function, for exactly that case.
-pub fn event_from_row(row: &TurnRow) -> NormalizedEvent {
+pub(crate) fn event_from_row(row: &TurnRow) -> NormalizedEvent {
     let role = match row.role {
         "user" => Role::User,
         "assistant" => Role::Assistant,

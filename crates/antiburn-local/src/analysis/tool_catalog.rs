@@ -108,28 +108,6 @@ impl ToolCatalog {
                 .collect(),
         )
     }
-
-    /// The catalogue name for a raw transcript tool name (`raw`), matched
-    /// case-insensitively against the resolved tool's canonical name or any
-    /// alias. `None` when the lookup itself fails, or when no tool matches.
-    pub fn canonical_tool_name(
-        &self,
-        agent: &str,
-        version: &str,
-        model: &str,
-        raw: &str,
-    ) -> Option<String> {
-        self.lookup(agent, version, model)?
-            .into_iter()
-            .find(|tool| {
-                tool.name.eq_ignore_ascii_case(raw)
-                    || tool
-                        .aliases
-                        .iter()
-                        .any(|alias| alias.eq_ignore_ascii_case(raw))
-            })
-            .map(|tool| tool.name)
-    }
 }
 
 /// The catalogue embedded in the binary at build time, parsed once.
@@ -318,24 +296,6 @@ mod tests {
             .expect("exact model");
         assert!(sonnet.iter().any(|tool| tool.name == "task_create"));
         assert!(!fable.iter().any(|tool| tool.name == "task_create"));
-    }
-
-    #[test]
-    fn resolves_a_raw_transcript_name_through_its_alias() {
-        let catalog = fixture();
-        assert_eq!(
-            catalog.canonical_tool_name("claude", "2.1.246", "claude-fable-5", "Bash"),
-            Some("bash".to_string())
-        );
-        // Matching is case-insensitive on both sides.
-        assert_eq!(
-            catalog.canonical_tool_name("claude", "2.1.246", "claude-fable-5", "BASH"),
-            Some("bash".to_string())
-        );
-        assert_eq!(
-            catalog.canonical_tool_name("claude", "2.1.246", "claude-fable-5", "nonexistent"),
-            None
-        );
     }
 
     #[test]

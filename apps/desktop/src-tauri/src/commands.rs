@@ -2112,7 +2112,6 @@ mod tests {
             evidence_schema_revision: Some(EVIDENCE_SCHEMA_REVISION),
             evidence_json: evidence
                 .map(|value| serde_json::to_string(&value).expect("synthetic evidence serializes")),
-            diagnostics_json: None,
             retry_count: 0,
             claim_fence: 0,
             claimed_at_epoch: None,

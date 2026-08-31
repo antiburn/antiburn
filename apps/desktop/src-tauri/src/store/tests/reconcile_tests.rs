@@ -389,7 +389,7 @@ fn a_stale_row_for_an_agent_outside_the_list_is_neither_enrolled_nor_requeued() 
                 SET status = 'ready', analyzed_generation = 1,
                     processed_fingerprint = 'sv1:current', parser_revision = 1,
                     analyzer_revision = 1, evidence_schema_revision = 1,
-                    evidence_json = '{\"groups\":[]}', diagnostics_json = '[]',
+                    evidence_json = '{\"groups\":[]}',
                     retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![

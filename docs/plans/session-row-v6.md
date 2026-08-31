@@ -7,7 +7,7 @@ Implements the design settled in the HTML proto (session-row-proto.html, iterate
 | Phase | Status |
 | --- | --- |
 | 1. Icon availability check | Done — all six exports verified in installed `lucide-react@1.33.0` |
-| 2. `SessionHygieneBadges` component | Done — `SessionHygieneBadges.tsx` + fan CSS in `session-rows.css` + `design.md` recipe |
+| 2. `SessionStatusBar` component | Done — `SessionStatusBar.tsx` + fan CSS in `session-rows.css` + `design.md` recipe |
 | 3. Row layout restructure | Done — models top, `type-title-3` title, repo line, right rail, hover time |
 | 4. Cost pill goes brand orange | Done — solid `bg-brand-tint text-white` (Keith picked solid over tint) |
 | 5. Tests + checks + screenshot | Done — tests updated/added, all checks green, Keith supplied a demo recording for the PR |
@@ -41,8 +41,8 @@ Post-review refinements folded in during Keith's testing (2026-08-24): titles se
 ### 1. Icon check (5 min)
 `pnpm --filter desktop exec node -e "…"` or simply import the six icons and typecheck. If any name differs in 1.33.0 (e.g. `LifeBuoy` vs `Lifebuoy`), fix the import — the glyphs themselves are all in the catalog.
 
-### 2. `SessionHygieneBadges` component
-New file `apps/desktop/src/components/session/SessionHygieneBadges.tsx`.
+### 2. `SessionStatusBar` component
+Component: `apps/desktop/src/components/session/SessionStatusBar.tsx`.
 
 - Props: `checks: MockSessionHygieneCheck[]` (keep consuming `mockSessionHygiene` — real data is a separate feature).
 - Renders two groups: failed checks (always visible, `text-brand`), passed checks (the fan-out group, `text-label-tertiary`).
@@ -57,7 +57,7 @@ Current structure (top line: title + fork icons; middle: repo · WSL · branch �
 - **Top meta line**: model names (existing `modelRunShortNames` text, `type-footnote text-label-tertiary`).
 - **Title line**: unchanged (title + fork icons, 2-line clamp, shimmer when active).
 - **Bottom line**: repo (+ additional-repos tooltip), WSL badge, branch — and the relative `<time>` right-aligned, `opacity-0 group-hover:opacity-100`. Keep the `<time>` element and its `aria-label` so the timestamp stays available to screen readers at all times; hover-hiding is visual only.
-- **Right rail** (top-aligned with the model line): `SessionHygieneBadges` fails + `SessionCostBadge`. The pass-glyph fan-out overlays the title area when it needs the width (absolutely positioned, anchored `right: 100% + gap` of the rail).
+- **Right rail** (top-aligned with the model line): `SessionStatusBar` fails + `SessionCostBadge`. The pass-glyph fan-out overlays the title area when it needs the width (absolutely positioned, anchored `right: 100% + gap` of the rail).
 - Hygiene dots block (`hygieneChecks.map` with ✓/× spans) is deleted, replaced by the new component.
 
 Open question for review: the proto never showed **branch**. Plan keeps it on the bottom line next to repo; flag in review if it should be hover-only like the time.
@@ -67,7 +67,7 @@ One-line class swap: `bg-system-red/15 text-system-red-text` → `bg-brand-tint/
 
 ### 5. Tests, checks, PR
 - Update `SessionList` tests for the new structure (hygiene ✓/× spans are gone; time visibility class; model line position).
-- Add a render test for `SessionHygieneBadges`: fails render with titles, passes render, orders fails after passes in DOM (rightmost).
+- Add a render test for `SessionStatusBar`: fails render with titles, passes render, orders fails after passes in DOM (rightmost).
 - `pnpm run slop` before finishing; fix any aislop findings this change causes.
 - All commits `git commit -s` (DCO).
 - PR needs a screenshot — capture the row at rest and mid-hover from the running app, or ask Keith for one before `gh pr create`.

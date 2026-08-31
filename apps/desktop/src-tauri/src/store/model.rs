@@ -203,7 +203,6 @@ pub struct EvidenceRow {
     pub analyzer_revision: Option<i64>,
     pub evidence_schema_revision: Option<i64>,
     pub evidence_json: Option<String>,
-    pub diagnostics_json: Option<String>,
     pub retry_count: i64,
     pub claim_fence: i64,
     pub claimed_at_epoch: Option<i64>,
@@ -267,7 +266,6 @@ pub struct EvidenceCompletion {
     pub status: PublishedEvidence,
     pub evidence_schema_revision: i64,
     pub evidence_json: String,
-    pub diagnostics_json: Option<String>,
 }
 
 /// One session's token evidence, as the provider-usage aggregation reads it.

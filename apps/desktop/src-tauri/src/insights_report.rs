@@ -290,7 +290,6 @@ mod tests {
             status,
             evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
             evidence_json: serde_json::to_string(&evidence).unwrap(),
-            diagnostics_json: None,
         };
         assert!(
             store
