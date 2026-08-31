@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::mem::size_of;
 
@@ -1010,10 +1009,6 @@ pub struct CompositeSink {
     metrics: SessionMetricsAccumulator,
     evidence: SessionEvidenceAccumulator,
     turn_rows: Option<TurnRowSink>,
-    /// Set once [`Self::evidence`] queries the row store and the query
-    /// fails. `Cell` because the query happens from `evidence(&self)` —
-    /// see that method's doc comment for why `&self` is enough.
-    turn_row_query_failed: Cell<bool>,
     /// The `SessionSummary` [`RecordSink::finish`] was called with, kept
     /// for [`Self::summary`] — a caller that fans this source's summary out
     /// to a `BTreeMap<source_key, SessionSummary>` (a worker pass, for the
@@ -1029,7 +1024,6 @@ impl CompositeSink {
             metrics,
             evidence,
             turn_rows: None,
-            turn_row_query_failed: Cell::new(false),
             summary: None,
         }
     }
@@ -1046,7 +1040,6 @@ impl CompositeSink {
             metrics,
             evidence,
             turn_rows: Some(turn_rows),
-            turn_row_query_failed: Cell::new(false),
             summary: None,
         }
     }
@@ -1065,8 +1058,8 @@ impl CompositeSink {
     /// `None` when there is no fanned-out [`TurnRowSink`] — a pass without a
     /// row store publishes no evidence — or when the finished residual
     /// cannot publish yet. Otherwise reads the row-derived facts back out
-    /// of the store and builds evidence from them. A query error is kept
-    /// (see [`Self::turn_row_query_failed`]) and this returns `None`.
+    /// of the store and builds evidence from them. A query error makes
+    /// this return `None`.
     ///
     /// `&self`, not `&mut self`: [`RecordSink::finish`] already flushes the
     /// row sink's buffer, so by the time a caller asks for evidence the
@@ -1078,10 +1071,7 @@ impl CompositeSink {
         let turn_rows = self.turn_rows.as_ref()?;
         match turn_rows.query_turn_facts() {
             Ok(facts) => Some(self.evidence.evidence(&facts)),
-            Err(_) => {
-                self.turn_row_query_failed.set(true);
-                None
-            }
+            Err(_) => None,
         }
     }
 
@@ -1094,13 +1084,6 @@ impl CompositeSink {
     /// when this is true — rows and projections would disagree.
     pub fn turn_row_write_failed(&self) -> bool {
         self.turn_rows.as_ref().is_some_and(TurnRowSink::has_error)
-    }
-
-    /// True once a call to [`Self::evidence`] queried the row store and the
-    /// query failed. The caller treats this like a write failure: the pass
-    /// must not publish metrics whose rows it could not read back.
-    pub fn turn_row_query_failed(&self) -> bool {
-        self.turn_row_query_failed.get()
     }
 
     pub fn into_parts(self) -> Option<(SessionMetricsAccumulator, SessionEvidenceAccumulator)> {
